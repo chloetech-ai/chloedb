@@ -23,7 +23,7 @@ use crate::graph::GraphReader;
 use crate::query::agg;
 use crate::query::memory::{Charge, MemoryBudget};
 use crate::query::logical::{Col, Decay, Expand, Fuzzy, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, TimeOf, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
-use crate::query::plan::{CostModel, Estimator, FilterMode, Planner, VectorStrategy};
+use crate::query::plan::{self, CostModel, Estimator, FilterMode, Planner, VectorStrategy};
 use crate::query::rank::{Interval, Rank};
 use crate::query::stats::{FieldStats, TermStats};
 use crate::query::steps::{self, Clock, Mark, Step};
@@ -31,6 +31,7 @@ use crate::query::logical::Seeds;
 use crate::schema::{FieldType, Schema};
 use crate::segment::{DocFilter, DocId, DocSet, SegmentFile};
 use crate::storage::{rowseq, KeyRef, SegmentView, Snapshot, Updates};
+use crate::substring::{self, Like, SubstringIndex};
 use crate::text::{self, Bm25Params, Boost, BoolQuery, CollectionStats, FilterStrategy, Synonyms, TextFieldReader, TopKAlgo};
 use crate::value::Value;
 use crate::vector::{self, multi, ExactQuery, SearchParams, VectorReader};
@@ -163,6 +164,7 @@ pub struct SegmentReaders {
     keyword: Vec<OnceLock<Opened<KeywordColumn>>>,
     vector: Vec<OnceLock<Opened<VectorReader>>>,
     graph: Vec<OnceLock<Opened<GraphReader>>>,
+    substring: Vec<OnceLock<Opened<SubstringIndex>>>,
     store: OnceLock<Opened<DocStore>>,
 }
 
@@ -233,6 +235,7 @@ impl SegmentReaders {
             keyword: cells(n),
             vector: cells(n),
             graph: cells(n),
+            substring: cells(n),
             store: OnceLock::new(),
         })
     }
@@ -246,6 +249,14 @@ impl SegmentReaders {
                 _ => None,
             })
         })
+    }
+
+    /// The substring index of a field with one
+    /// ([`crate::schema::Field::substring`]); `None` where the segment
+    /// has none this version reads, and its values are scanned.
+    pub fn substring(&self, field: usize) -> Result<Option<&SubstringIndex>> {
+        let f = &self.schema.fields[field];
+        opened(&self.substring[field], self.seg.is_fetched(), || if f.substring { SubstringIndex::open(&self.seg, &f.key()) } else { Ok(None) })
     }
 
     pub fn text(&self, field: usize) -> Result<Option<&TextFieldReader>> {
@@ -2140,6 +2151,7 @@ impl<'a> Executor<'a> {
             Pred::True | Pred::False => true,
             Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Present { field } => self.updates(s, *field).is_none(),
             Pred::Prefix { edits, .. } => *edits == 0,
+            Pred::Like { .. } => true,
             Pred::Match { query, expand, .. } => expand.is_none() && !query.contains('~'),
             Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().all(|c| self.own_rows(s, c)),
             Pred::Not(c) => self.own_rows(s, c),
@@ -2229,6 +2241,71 @@ impl<'a> Executor<'a> {
         Ok(res)
     }
 
+    /// The nanoseconds [`Self::like_among`] takes for `rows` documents of
+    /// segment `s`: a block of the store read for each, or every block
+    /// where they are more than the blocks, and each value tested.
+    fn like_among_cost(&self, s: &Seg<'a>, rows: usize) -> f64 {
+        let blocks = s.r.store().ok().flatten().map_or(0, |st| st.n_blocks());
+        rows.min(blocks) as f64 * plan::LIKE_PROBE + rows as f64 * plan::LIKE_SCAN
+    }
+
+    /// The documents of `among` whose stored value of `field` matches the
+    /// `LIKE` pattern, or with `negated` those with a value that does not:
+    /// what a few rows the other conditions left cost less than
+    /// [`Self::like_set`] of the segment.
+    fn like_among(&self, s: &Seg<'a>, among: &DocSet, field: usize, pattern: &str, ci: bool, negated: bool) -> Result<DocSet> {
+        let like = Like::new(pattern, ci);
+        let Some(store) = s.r.store()? else { return Ok(DocSet::empty(s.r.n_docs)) };
+        let mut cache = forward::StoreCache::default();
+        let mut out = Vec::new();
+        for d in among.iter() {
+            if let Some(Value::Str(v)) = store.get_fields_cached(d, &[field], &mut cache)?.pop() {
+                if like.matches(&v) != negated {
+                    out.push(d);
+                }
+            }
+        }
+        Ok(DocSet::from_sorted(out, s.r.n_docs))
+    }
+
+    /// The documents of segment `s` whose value of `field` matches the
+    /// `LIKE` pattern (`ci`: `ILIKE`), or with `negated` those with a value
+    /// that does not: from the field's substring index where the segment
+    /// has one, which reads the values only of the documents it cannot
+    /// decide, and else from every document's stored value.
+    fn like_set(&self, s: &Seg<'a>, field: usize, pattern: &str, ci: bool, negated: bool) -> Result<DocSet> {
+        let n = s.r.n_docs;
+        let like = Like::new(pattern, ci);
+        let store = s.r.store()?;
+        let mut cache = forward::StoreCache::default();
+        let mut value = |d: DocId| -> Result<Option<String>> {
+            Ok(match store {
+                Some(st) => match st.get_fields_cached(d, &[field], &mut cache)?.pop() {
+                    Some(Value::Str(v)) => Some(v),
+                    _ => None,
+                },
+                None => None,
+            })
+        };
+        let Some(index) = s.r.substring(field)? else {
+            // Each value once: whether it is one, and whether it matches.
+            let (mut hits, mut others) = (Vec::new(), Vec::new());
+            for d in 0..n {
+                if let Some(v) = value(d)? {
+                    if like.matches(&v) { &mut hits } else { &mut others }.push(d);
+                }
+            }
+            return Ok(DocSet::from_sorted(if negated { others } else { hits }, n));
+        };
+        let mut stats = substring::like::Stats::default();
+        let hits = substring::like::eval(index, &like, n, &mut value, substring::like::LOCATE_BYTES, &mut stats)?;
+        if !negated {
+            return Ok(hits);
+        }
+        let valued = substring::like::eval(index, &Like::new("%", false), n, &mut value, substring::like::LOCATE_BYTES, &mut stats)?;
+        Ok(valued.difference(&hits))
+    }
+
     fn materialize(&self, s: &Seg<'a>, p: &Pred) -> Result<DocSet> {
         let n = s.r.n_docs;
         Ok(match p {
@@ -2269,6 +2346,7 @@ impl<'a> Executor<'a> {
                 self.keyword(s, *field)?.docs_prefix(&runs)
             }
             Pred::Path { field, path, test } => self.path_set(s, *field, path, test)?,
+            Pred::Like { field, pattern, ci, negated } => self.like_set(s, *field, pattern, *ci, *negated)?,
             Pred::Graph { id } => self.graph_set(*id, s.ord, n),
             Pred::Sub(_) => return Err(unresolved()),
             Pred::Not(c) => self.materialize(s, c)?.complement(),
@@ -2285,20 +2363,29 @@ impl<'a> Executor<'a> {
             }
             Pred::And(cs) => {
                 // Most selective first; once the running result is small,
-                // probing a child per survivor beats materialising it.
+                // probing a child per survivor beats materialising it. A
+                // LIKE that costs more than the conditions beside it
+                // together (a scan of the values, where they read an
+                // index) waits for them all: two halves of a range can
+                // each keep half the rows and leave a handful between
+                // them, which their estimates do not tell.
                 let est = SegEst { ex: self, s, params: None, local_sel: None };
                 let planner = self.planner(&est);
-                let mut ests: Vec<(f64, &Pred)> = cs.iter().map(|c| (planner.estimate(c).card, c)).collect();
-                ests.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let es: Vec<(plan::PredEstimate, &Pred)> = cs.iter().map(|c| (planner.estimate(c), c)).collect();
+                let beside: f64 = es.iter().filter(|(_, c)| !matches!(c, Pred::Like { .. })).map(|(e, _)| e.mat_cost).sum();
+                let mut ests: Vec<(bool, f64, f64, &Pred)> = es.iter().map(|(e, c)| (matches!(c, Pred::Like { .. }) && e.mat_cost > beside, e.card, e.mat_cost, *c)).collect();
+                ests.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
                 let mut acc: Option<DocSet> = None;
-                for (_, c) in ests {
-                    acc = Some(match acc {
-                        None => match self.kept(s, c)? {
+                for (_, _, mat_cost, c) in ests {
+                    acc = Some(match (acc, c) {
+                        (None, _) => match self.kept(s, c)? {
                             Some((set, _)) => DocSet::clone(&set),
                             None => self.materialize(s, c)?,
                         },
-                        Some(a) if a.is_empty() => return Ok(a),
-                        Some(a) => {
+                        (Some(a), _) if a.is_empty() => return Ok(a),
+                        // By each survivor's stored value.
+                        (Some(a), Pred::Like { field, pattern, ci, negated }) if self.like_among_cost(s, a.len()) < mat_cost => self.like_among(s, &a, *field, pattern, *ci, *negated)?,
+                        (Some(a), _) => {
                             let e = planner.estimate(c);
                             if e.probeable && a.len() as f64 * e.probe_cost < e.mat_cost {
                                 let probe = self.compile_probe(s, c)?;
@@ -2378,7 +2465,7 @@ impl<'a> Executor<'a> {
             {
                 ProbeNode::Leaf(Box::new(self.materialize(s, p)?))
             }
-            Pred::Present { .. } | Pred::Path { .. } => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
+            Pred::Present { .. } | Pred::Path { .. } | Pred::Like { .. } => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
             Pred::Prefix { field, .. } if self.schema.fields[*field].multi => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
             Pred::Prefix { field, prefix, edits } => {
                 let runs = self.prefix_runs(s, *field, prefix, *edits)?;
@@ -3280,7 +3367,6 @@ impl<'a> Executor<'a> {
     /// ([`Self::agg_values`]); of a path, from `paths` (each path's values
     /// over the segment's rows): each of a list's, the distinct ones for a
     /// group (`key`), as the operators' aggregate reads them.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
@@ -5095,6 +5181,14 @@ impl Estimator for SegEst<'_, '_> {
             return kw.n_present() as f64;
         }
         self.s.r.numeric(field).ok().flatten().map_or(self.n_docs(), |n| n.col().n_present() as f64)
+    }
+    fn like_estimate(&self, field: usize, pattern: &str, ci: bool) -> (f64, f64) {
+        let n = self.s.r.n_docs as f64;
+        // The index counts a pattern's rows without walking any.
+        match self.s.r.substring(field).ok().flatten().map(|ix| substring::like::estimate(ix, &Like::new(pattern, ci), substring::like::LOCATE_BYTES)) {
+            Some(Ok(e)) => (e.candidates as f64, e.located as f64 * plan::LIKE_LOCATE + e.tested as f64 * plan::LIKE_READ + e.scanned as f64 * plan::LIKE_SCAN),
+            _ => (n / 10.0, n * plan::LIKE_SCAN),
+        }
     }
     fn prefix_count(&self, field: usize, prefix: &str, edits: u8) -> f64 {
         let (Ok(Some(kw)), Ok(runs)) = (self.s.r.keyword(field), self.ex.prefix_runs(self.s, field, prefix, edits)) else { return 0.0 };

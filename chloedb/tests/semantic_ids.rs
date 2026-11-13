@@ -223,6 +223,52 @@ fn deleted_numbers_are_not_given_again() {
     db.storage().check().unwrap();
 }
 
+/// A background flush drops the rows deleted before it sealed the
+/// memtable, as a foreground one does, and keeps their numbers too: also
+/// when none of the sealed rows is left, and when rows are deleted while
+/// it builds.
+#[test]
+fn a_background_flush_keeps_deleted_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("items.strata");
+    let models = dir.path().join("models");
+    let reopen = |db: Db| {
+        drop(db);
+        let db = Db::open(&path, DbOptions::default()).unwrap();
+        db.open_embedders(&models);
+        db
+    };
+    let db = create(dir.path(), DbOptions::default());
+    // Some rows stay, the one with the highest number goes.
+    insert(&db, (0..4).map(|i| row(&format!("a{i}"), "t", at(1, 2, 0.0))).collect());
+    db.sql("DELETE FROM items WHERE id = 'a3'", &Params::new()).unwrap();
+    db.storage().background_flush().unwrap();
+    let db = reopen(db);
+    insert(&db, vec![row("b", "t", at(1, 2, 0.0))]);
+    assert_eq!(codes(&db)["b"], [1, 2, 4]);
+    // Every sealed row is deleted: a segment without documents keeps the
+    // numbers.
+    insert(&db, vec![row("c0", "t", at(3, 3, 0.0)), row("c1", "t", at(3, 3, 0.0))]);
+    db.sql("DELETE FROM items WHERE id IN ('c0', 'c1')", &Params::new()).unwrap();
+    db.storage().background_flush().unwrap();
+    let db = reopen(db);
+    insert(&db, vec![row("d", "t", at(3, 3, 0.0))]);
+    assert_eq!(codes(&db)["d"], [3, 3, 2]);
+    // A row deleted while the flush builds is in its segment, deleted,
+    // and a merge that drops it keeps its number.
+    insert(&db, vec![row("e", "t", at(0, 1, 0.0))]);
+    db.storage().background_flush_with(|| {
+        db.sql("DELETE FROM items WHERE id = 'e'", &Params::new()).unwrap();
+    })
+    .unwrap();
+    db.storage().flush().unwrap();
+    db.storage().merge(&MergePolicy { merge_factor: 2, floor_docs: 10_000, max_deleted_ratio: 0.0, ..MergePolicy::default() }).unwrap();
+    let db = reopen(db);
+    insert(&db, vec![row("f", "t", at(0, 1, 0.0))]);
+    assert_eq!(codes(&db)["f"], [0, 1, 1]);
+    db.storage().check().unwrap();
+}
+
 #[test]
 fn upserts_keep_codes_whose_levels_stay() {
     let dir = tempfile::tempdir().unwrap();
@@ -445,4 +491,9 @@ fn next_codes_are_a_tries_children() {
     assert!(e(&["01".into()], "sid").contains("not a prefix"));
     assert!(e(&[String::new()], "tag").contains("not a semantic-ID field"));
     assert!(db.sid_next("items", "sid", &[String::new()], Some("nope = 1"), &Params::new()).is_err());
+    // The filter is one condition, not text spliced into a statement
+    // (audit Q14): what would change the statement around it is refused.
+    for bad in ["tag = 'blue' LIMIT 0", "tag = 'blue' ORDER BY tag", "tag = 'blue' GROUP BY tag", "tag = 'blue') OR (TRUE", "TRUE; SELECT 1"] {
+        assert!(db.sid_next("items", "sid", &[String::new()], Some(bad), &Params::new()).is_err(), "filter {bad:?} was taken");
+    }
 }

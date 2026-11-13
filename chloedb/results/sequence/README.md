@@ -117,8 +117,9 @@ graph this dense (1.6 million edges over 3,706 items) and its Recall@10 is
 0.005. A change that moves a number by more than its tolerance (0.002, and
 0.005 for coverage) or that stops a source beating both baselines fails CI
 until the fixture is rewritten (`STRATA_RECSYS_GATE=update python gate.py
---ratings ...`) and the pull request says why. Semantic IDs (generative
-retrieval) and a GBDT reranker are not in the gate yet.
+--ratings ...`) and the pull request says why. Semantic IDs' codebooks
+are in the gate ([below](#semantic-ids-in-the-gate)); a decoder over them
+(generative retrieval) and a GBDT reranker are not yet.
 
 ### A global time split
 
@@ -166,6 +167,54 @@ Recall@10 does by more than the tolerance (`encode` here; `encode`,
 gate on one user. `python gate.py` checks both protocols, `--protocol
 loo` or `--protocol time` one.
 
+### Semantic IDs in the gate
+
+Each protocol also trains two codebooks of 3 levels of 256 on its model's
+item vectors (`strata.train.codebook`, seed 0), one as it trains by
+default and one with `balanced=True`, writes the items to a table with a
+semantic-ID field for each, and checks two things. The codes the table
+gave the items, counted by `sid_at` and `sid_next`, must equal what
+`strata.train.codebook_report` says of the same vectors, exactly. And the
+report's numbers must be within a tolerance of the fixture's
+(`semantic_ids` in each): the distinct codes, the items that share a code
+with another, each level's perplexity (how many of its 256 numbers the
+items are spread over, weighed by use), the share of the vectors' squared
+length left after the third level, and how often a user's test item has
+the same first number as their last item (by chance, 1 in 250 or so).
+Measured on a cloud container (Intel Xeon @ 2.30GHz, 4 cores, 16.5 GB),
+2026-11-12:
+
+| codebook | distinct codes | items sharing a code | perplexity, levels 1 / 2 / 3 | left after level 3 | next item under the same first number |
+|---|---|---|---|---|---|
+| leave-one-out (3,706 items), plain | 3,666 | 79 | 223.3 / 59.1 / 40.6 | 0.3883 | 0.0801 |
+| leave-one-out, balanced | 3,704 | 4 | 254.1 / 253.6 / 252.7 | 0.3378 | 0.0851 |
+| time split (3,678 items), plain | 3,659 | 37 | 222.6 / 150.9 / 47.0 | 0.3661 | 0.0314 |
+| time split, balanced | 3,677 | 2 | 253.1 / 253.5 / 252.3 | 0.3393 | 0.0263 |
+
+- **Plain k-means wastes the later levels.** What a level leaves of the
+  vectors points every way alike, and there k-means keeps most centroids
+  on one far item each and gives the rest to a few centroids near the
+  middle: at seed 0, 189 of level 2's 256 numbers have one item each. So
+  the plain codebook's later levels swing with the seed. Over seeds 0 to 4
+  (`--sid-seed`) on leave-one-out, level 2's perplexity was 59 to 158,
+  level 3's 41 to 132, the items sharing a code 10 to 79 and what is left
+  0.344 to 0.388.
+- **Balanced training uses every number alike, and is stable.** Over the
+  same seeds its perplexities stayed between 251.9 and 254.1, the items
+  sharing a code between 2 and 7, and what is left between 0.337 and
+  0.339, below the plain codebook's at every seed.
+- **Neither puts the next item under the same number more often** (0.080
+  to 0.100 plain, 0.085 to 0.093 balanced, over the seeds): balancing
+  spreads the codes, it does not make them say more about what comes next.
+- **What the gate holds.** K-means follows the last bit of a sum, so
+  another processor's kernels end at other centroids, as another seed
+  does. The fixture therefore holds the plain codebook only to its
+  distinct codes (within 60), its first level's perplexity (12), what is
+  left (0.06) and the next-item share (0.03), and the balanced one to all
+  of them (15 codes, 15 shared items, 6 for each level's perplexity, 0.01
+  left), about twice the spread over the five seeds. It also fails when the
+  balanced codebook leaves more items sharing a code than the plain one.
+
 ## The model alone
 
 `strata-encode-bench` (`strata/src/bin/strata-encode-bench.rs`) runs a
@@ -182,6 +231,49 @@ model over 2,000 random histories of each length on one thread
 
 Fifty events through the two layers take 0.28 ms; the cost grows a little
 faster than the length, as attention does.
+
+## In-batch negatives, corrected
+
+The runs above train with every item as a negative, which a catalog of
+millions cannot. With the other targets of the batch as the negatives
+(`negatives="in_batch"`), an item is a negative as often as it is a
+target, so the model learns to rank what is popular low, and an item that
+is seldom a target is almost never a negative. `strata.train.sequence` has
+two options for that: `logq=True` takes from each negative's score the log
+of the chance that the batch holds it, and `uniform_negatives=n` adds `n`
+items drawn evenly to every batch.
+
+[`negatives.py`](negatives.py) trains the model above on Beauty (12,101
+items, items only, no times, batch 128, 2 threads) each way for the same
+15 minutes, and scores each user's last item against every item
+([`negatives/`](negatives)). Measured on a cloud container (Intel Xeon @
+2.30GHz, 4 cores, 16.5 GB), 2026-11-12, two runs at a time:
+
+| negatives | epochs in 15 min | Recall@10 | NDCG@10 |
+|---|---|---|---|
+| in-batch | 48 | 0.0383 | 0.0224 |
+| in-batch, `logq` | 45 | 0.0550 | 0.0333 |
+| in-batch, `logq`, 2,048 uniform | 44 | **0.0588** | **0.0336** |
+| every item (`"all"`) | 28 | 0.0533 | 0.0287 |
+| in-batch, `logq`, 2,048 uniform, trained out (38 min, best epoch 92 of 102) | 102 | 0.0631 | 0.0394 |
+
+- **The correction is most of it**: Recall@10 0.0383 to 0.0550 in the same
+  time, and 0.0588 with uniform negatives too. At 15 minutes both are
+  above training against every item, which had run 28 epochs to their 44;
+  none of the four had stopped improving.
+- **Trained out, it comes near the full softmax, not past it**: 0.0631
+  and 0.0394, against 0.0662 and 0.0406 for the "items only" row above
+  (every item a negative, `eval.py`, 2026-10-31). Use `"all"` while the
+  catalog fits, and these two options when it does not.
+- **On a small catalog the correction alone hurts.** On MovieLens-1M
+  (3,706 items, 200 events a user, 20 minutes each) plain in-batch had
+  Recall@10 0.1141 and with `logq` 0.0826: a batch there holds most
+  items many times over, and the correction for it is large and
+  noisy. Both are far below the 0.278 of training against every item,
+  which is what a catalog this size should use.
+- On Yambda-50M's 629,298 tracks the two options took held-out Recall@10
+  from 0.0229 to 0.0334 after four epochs
+  ([`results/recsys`](../recsys/README.md#in-batch-negatives-corrected)).
 
 ## Running it
 

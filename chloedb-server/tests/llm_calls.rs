@@ -124,7 +124,7 @@ async fn shard(dir: &Path, name: &str, keep: impl Fn(usize) -> bool) -> String {
 }
 
 fn admin() -> Principal {
-    Principal { name: "ops".into(), key: Some("ops-id".into()), scope: Scope::Admin, root: false }
+    Principal { name: "ops".into(), key: Some("ops-id".into()), scope: Scope::Admin, root: false, tables: None }
 }
 
 async fn sql(svc: &Arc<Service>, s: &str) -> SqlAnswer {

@@ -14,6 +14,9 @@
 //!
 //! Its crawls live in its process: a pod started again starts with none,
 //! and the tables they filled stay.
+//!
+//! Once the coordinators make keys limited to tables, it holds a key and a
+//! token of its own instead ([`super::credentials`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -40,6 +43,11 @@ pub struct CrawlerSpec {
     /// No crawler for now: the Deployment keeps no pod (the coordinators
     /// still list it, as an app that does not answer).
     pub paused: bool,
+    /// The tables its key may touch, as `table=scope` (`crawl_*=admin`,
+    /// `*=read`; [`crate::keys::Grant`]); none: the app's own
+    /// ([`super::credentials::default_tables`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
     /// More arguments of `chloedb-crawl serve`.
     pub args: Vec<String>,
     /// Resources of the crawler's container.
@@ -49,7 +57,7 @@ pub struct CrawlerSpec {
 
 impl Default for CrawlerSpec {
     fn default() -> Self {
-        CrawlerSpec { grow: true, split_rows: None, max_shards: None, paused: false, args: Vec::new(), resources: None }
+        CrawlerSpec { grow: true, split_rows: None, max_shards: None, paused: false, tables: Vec::new(), args: Vec::new(), resources: None }
     }
 }
 
@@ -59,6 +67,7 @@ const SET: &[&str] = &["--listen", "--strata", "--key", "--token", "--grow", "--
 impl CrawlerSpec {
     /// What is wrong with it, if anything.
     pub fn check(&self) -> Result<(), String> {
+        super::credentials::check_tables(APP, &self.tables)?;
         if self.max_shards == Some(0) {
             return Err("crawler.maxShards is 1 or more".into());
         }
@@ -96,6 +105,7 @@ pub fn schema() -> Json {
             "splitRows": {"type": "integer", "minimum": 0, "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000)."},
             "maxShards": {"type": "integer", "minimum": 1, "description": "The most shards growing makes (default 8)."},
             "paused": {"type": "boolean", "description": "No crawler pod for now."},
+            "tables": super::credentials::schema(APP),
             "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of chloedb-crawl serve."},
             "resources": {"type": "object", "x-kubernetes-preserve-unknown-fields": true, "description": "Resources of the crawler's container."},
         },

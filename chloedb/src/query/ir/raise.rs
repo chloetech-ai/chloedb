@@ -372,9 +372,10 @@ impl<'a> Raise<'a> {
     }
 
     /// A Search's filter, as the executor reads it: NOTs over plain sets,
-    /// with NULL already accounted for ([`Pred::three_valued`]).
+    /// with NULL accounted for once, at the root ([`Pred::three_valued`]).
     fn filter(&mut self, e: &Expr) -> Result<Pred> {
-        Ok(self.pred(e)?.simplify())
+        let p = self.pred(e)?;
+        Ok(p.three_valued(&|f| self.schema.fields[f].multi).simplify())
     }
 
     fn guard(&mut self, g: &super::Guard) -> Result<logical::Guard> {
@@ -401,6 +402,10 @@ impl<'a> Raise<'a> {
         Ok(logical::Guard { site, need: g.need, min_rows: g.min_rows, max_rows: g.max_rows })
     }
 
+    /// Condition `e` as a predicate whose NOTs are SQL's, as written:
+    /// [`Self::filter`] reads them with NULL in mind, once, over the whole
+    /// tree. Reading each NOT so as it is raised read a NOT over a NOT
+    /// (or over `!=`) wrongly: its NULL rows matched.
     fn pred(&mut self, e: &Expr) -> Result<Pred> {
         Ok(match e {
             Expr::Lit(Value::Bool(b)) => {
@@ -410,29 +415,7 @@ impl<'a> Raise<'a> {
                     Pred::False
                 }
             }
-            Expr::And(xs) => {
-                // `x IS NOT NULL AND NOT (x ...)` is a negated comparison
-                // read with SQL's three values already: its NOT is a plain
-                // complement.
-                let guarded: Vec<&Expr> = xs
-                    .iter()
-                    .filter_map(|x| match x {
-                        Expr::Not(y) => match &**y {
-                            Expr::IsNull(f) => Some(&**f),
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                    .collect();
-                let mut ps = Vec::with_capacity(xs.len());
-                for x in xs {
-                    ps.push(match x {
-                        Expr::Not(y) if comparison_field(y).is_some_and(|f| guarded.contains(&f)) => Pred::Not(Box::new(self.pred(y)?)),
-                        x => self.pred(x)?,
-                    });
-                }
-                Pred::And(ps)
-            }
+            Expr::And(xs) => Pred::And(xs.iter().map(|x| self.pred(x)).collect::<Result<_>>()?),
             Expr::Or(xs) => Pred::Or(xs.iter().map(|x| self.pred(x)).collect::<Result<_>>()?),
             Expr::AtLeast { need, conds } => Pred::AtLeast { need: *need as usize, items: conds.iter().map(|x| self.pred(x)).collect::<Result<_>>()? },
             Expr::IsNull(x) if self.path_of(x)?.is_some() => {
@@ -446,13 +429,11 @@ impl<'a> Raise<'a> {
                     Pred::Path { field, path, test: PathTest::Has(kind) }
                 }
                 Expr::IsNull(y) => Pred::Present { field: self.present_field(y)? },
-                // A comparison with NULL is neither true nor false, and so
-                // is its negation.
-                x => {
-                    let p = Pred::Not(Box::new(self.pred(x)?));
-                    let multi = |f: usize| self.schema.fields[f].multi;
-                    p.three_valued(&multi)
-                }
+                // SQL's NOT, which [`Self::filter`] reads with NULL in mind
+                // once the whole condition is raised: a comparison with
+                // NULL is neither true nor false, and so is its negation,
+                // however many NOTs are around it.
+                x => Pred::Not(Box::new(self.pred(x)?)),
             },
             Expr::Between { expr, lo, hi } if self.path_of(expr)?.is_some() => {
                 let (field, path, kind) = self.typed_path_of(expr)?.expect("a path");
@@ -548,6 +529,14 @@ impl<'a> Raise<'a> {
                     v => return Err(err(format!("PREFIX of {} takes text, not {v:?}", fld.name))),
                 }
             }
+            // A field with a substring index: the Search answers it.
+            Expr::Like { expr, pattern, case_insensitive } if matches!(&**expr, Expr::Field(_)) && self.field_of(expr).is_ok_and(|f| self.schema.fields[f].substring) => {
+                let f = self.field_of(expr)?;
+                match self.lit(pattern)? {
+                    Value::Str(p) => Pred::Like { field: f, pattern: p, ci: *case_insensitive, negated: false },
+                    v => return Err(err(format!("LIKE on {} takes a text pattern, not {v:?}", self.schema.fields[f].name))),
+                }
+            }
             Expr::Graph(g) if !matches!(g.kind, GraphKind::Ppr { .. }) => Pred::Graph { id: self.graph(g)? },
             e => return Err(err(format!("a Search cannot filter by {e:?}"))),
         })
@@ -604,7 +593,7 @@ impl<'a> Raise<'a> {
                 CmpOp::Gt => range(Some((v, false)), None),
                 CmpOp::Ge => range(Some((v, true)), None),
             };
-            return Ok(if op == CmpOp::Ne { Pred::Not(Box::new(p)).three_valued(&|f| self.schema.fields[f].multi) } else { p });
+            return Ok(if op == CmpOp::Ne { Pred::Not(Box::new(p)) } else { p });
         }
         let (f, v, op) = match (left, right) {
             (Expr::Field(f), v) => (self.field(*f)?, self.lit(v)?, op),
@@ -624,7 +613,7 @@ impl<'a> Raise<'a> {
             return Err(err("a comparison with NULL is never true: use IS NULL"));
         }
         let fld = &self.schema.fields[f];
-        let not = |p: Pred| Pred::Not(Box::new(p)).three_valued(&|f| self.schema.fields[f].multi);
+        let not = |p: Pred| Pred::Not(Box::new(p));
         Ok(match fld.ty {
             FieldType::Keyword => {
                 let p = Pred::In { field: f, values: vec![v] };
@@ -999,15 +988,6 @@ impl<'a> Raise<'a> {
             Expr::Call { args, .. } => all(args),
             e => Err(err(format!("SET takes an expression of the row's fields, not {e:?}"))),
         }
-    }
-}
-
-/// The field a comparison (BETWEEN, IN or `field op value`) tests.
-fn comparison_field(e: &Expr) -> Option<&Expr> {
-    match e {
-        Expr::Between { expr, .. } | Expr::In { expr, .. } => Some(expr),
-        Expr::Cmp { left, right, .. } => Some(if matches!(**left, Expr::Field(_) | Expr::Call { func: Func::JsonExtract, .. }) { left } else { right }),
-        _ => None,
     }
 }
 

@@ -156,6 +156,28 @@ On SciFact and NFCorpus, ColBERT ranks BM25's top 20 better than the cross-encod
 
 The price is paid when rows are written. Embedding every token takes 0.1 to 0.16 s a document on the four cores, and the field makes the database 28 to 30 times BM25's: about 35 KB a document on SciFact and NFCorpus, whose documents mostly reach the 300-token cut, and 25 KB on ArguAna. `pool_factor = 2` (Ward's linkage, as for [multi-vector fields](#multi-vector-fields)) halves the field and scores the same or better here, 0.748 on SciFact's top 100; the clustering adds about a tenth to the load. Its p50 query times, in a separate run, are within 8 ms of the unpooled ones, because encoding the query dominates them.
 
+### Other languages
+
+The [analyzers of other languages](index.md#text-in-other-languages) were measured on [MIRACL](https://project-miracl.github.io/)'s dev queries (Wikipedia passages with human judgements) in 11 languages, BM25 through SQL with `chloedb-bm25-eval --analyzer`, 100 rows a query, on a cloud VM (4 vCPUs, Intel Xeon @ 2.10GHz, 15 GB, Linux), 2026-11-12. `english` is the default analyzer, and "best" is the best of `english`, `simple`, `standard`, `cjk` and the language's own. Every run, with `simple`, recall@100, times and sizes: [`chloedb/results/miracl`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/miracl).
+
+| nDCG@10 | passages | `english` | `standard` | best | with |
+|---|---|---|---|---|---|
+| Arabic | 2,061,414 | 0.351 | 0.351 | 0.394 | `arabic` |
+| Bengali | 297,265 | 0.428 | 0.413 | 0.455 | `bengali` |
+| Chinese | 4,934,368 | 0.000 | 0.174 | 0.197 | `chinese` |
+| Finnish | 1,883,509 | 0.419 | 0.423 | 0.475 | `finnish` |
+| Hindi | 506,264 | 0.371 | 0.356 | 0.428 | `hindi` |
+| Japanese | 6,953,614 | 0.048 | 0.295 | 0.295 | `standard` |
+| Korean | 1,486,752 | 0.262 | 0.374 | 0.374 | `standard` |
+| Swahili | 131,924 | 0.430 | 0.429 | 0.430 | `simple` |
+| Telugu | 518,079 | 0.376 | 0.340 | 0.380 | `telugu` |
+| Thai | 542,166 | 0.289 | 0.457 | 0.457 | `standard` |
+| Yoruba | 49,043 | 0.638 | 0.649 | 0.649 | `standard` |
+
+`english` and `simple` find nothing in Chinese and little in Japanese, where a sentence is one term to them, and `standard` reads both, Thai and Korean. ICU's dictionary words rank better than pairs of characters (`cjk`) on Chinese (0.174 against 0.139) and Japanese (0.295 against 0.243), in a smaller database, which is why `standard` takes words. A language's analyzer adds 0.03 to 0.06 where it stems (Arabic, Bengali, Finnish, Hindi). For Hindi, Bengali and Telugu `standard` alone is below `simple`, which cuts a word at its vowel signs: name the language for them.
+
+Pyserini publishes [BM25 baselines for MIRACL](https://castorini.github.io/pyserini/2cr/miracl.html) with Lucene's analyzers and `k1` 0.9, `b` 0.4. With those parameters (`bm25(body, :q, k1 => 0.9, b => 0.4)`) each language's best analyzer here scores within 0.03 nDCG@10 of them on eight of the eleven languages (Korean, 0.424 against 0.453, is the furthest below) and above them on Chinese (0.245 against 0.180), Swahili and Yoruba. Those parameters rank better than ChloeDB's defaults (1.2 and 0.75) on these passages in every language, by 0.004 to 0.110; the defaults stay as the BEIR gate holds them.
+
 ## Hybrid ranking
 
 ![Weighted hybrid ranking: nDCG@10 by BM25 weight on four collections, with RRF of the same two rankings as dashed lines](../assets/img/chart-strata-fusion.png)

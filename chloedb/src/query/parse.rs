@@ -34,6 +34,24 @@ pub fn parse(sql_text: &str) -> Result<Vec<Statement>> {
     Parser::new(&dialect).with_tokens_with_locations(tokens).parse_statements().map_err(|e| Error::Query(syntax_error(&e.to_string(), sql_text)))
 }
 
+/// Parses `text` as one SQL expression (a condition given apart from its
+/// statement), with the bound on depth [`parse`] has: anything after the
+/// expression, such as a `LIMIT` or a second statement, is refused rather
+/// than read as part of a statement around it.
+pub fn parse_expr(text: &str) -> Result<sqlparser::ast::Expr> {
+    let dialect = GenericDialect {};
+    let located = Tokenizer::new(&dialect, text).tokenize_with_location().map_err(|e| Error::Query(format!("SQL syntax error: {e}")))?;
+    let tokens = within_groups(per_caps(located))?;
+    let plain: Vec<Token> = tokens.iter().map(|t| t.token.clone()).collect();
+    check_depth(&plain)?;
+    let mut p = Parser::new(&dialect).with_tokens_with_locations(tokens);
+    let e = p.parse_expr().map_err(|e| Error::Query(syntax_error(&e.to_string(), text)))?;
+    if p.peek_token().token != Token::EOF {
+        return Err(Error::Query(format!("{text:?} is not one condition: it goes on after {e}")));
+    }
+    Ok(e)
+}
+
 /// Keywords a statement is written with, for "did you mean" a misspelt one.
 const KEYWORDS: [&str; 44] = [
     "SELECT", "FROM", "WHERE", "GROUP", "ORDER", "BY", "HAVING", "LIMIT", "OFFSET", "JOIN", "LEFT", "INNER", "ON", "AS", "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "ILIKE", "BETWEEN",

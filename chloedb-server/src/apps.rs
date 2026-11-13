@@ -10,10 +10,25 @@
 //!
 //! The browser reaches an app only through this server: `GET /v1/apps`
 //! lists them, and `/v1/apps/<name>/<path>` is forwarded to the app's
-//! `<path>`, with the server's `CHLOEDB_APP_TOKEN` (`Authorization:
-//! Bearer`) in place of the caller's key. So an app needs no address
-//! that browsers reach, and no keys of its own: the server checks the
-//! caller's (read scope for `GET`, admin for the rest).
+//! `<path>`, with the app's token (`Authorization: Bearer`) in place of
+//! the caller's key: `CHLOEDB_APP_TOKEN_<NAME>` (the name in capitals, `-`
+//! as `_`), else the server's `CHLOEDB_APP_TOKEN`, so that each app can
+//! hold a token of its own and none can call another as the server. So an
+//! app needs no address that browsers reach: the server checks the
+//! caller's key (read scope for `GET`, admin for the rest), and tells the
+//! app who it was in headers it sets itself, which the app may trust
+//! because they come with its token: `x-chloedb-principal` (the key's
+//! name, `token` or `open`), `x-chloedb-key` (its id), `x-chloedb-scope`
+//! and, for a key limited to tables, `x-chloedb-tables`
+//! (`crawl_*=admin,*=read`). A caller's own headers of those names are
+//! never passed on.
+//!
+//! The path is the app's own: `<path>` is joined to the app's URL segment
+//! by segment, each encoded again, so no `..` (written `%2e%2e`, once or
+//! twice encoded) climbs above the app's URL and no decoded `?` or `#`
+//! starts a query (audit D-B9, G-B17). The listing asks every app at once
+//! and keeps a failure as long as a manifest, so an app that does not
+//! answer neither slows the others nor is waited for at every page (G-B10).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -31,10 +46,25 @@ const MAX_ANSWER: usize = 32 << 20;
 pub struct App {
     pub name: String,
     pub url: String,
+    /// The token sent to this app in place of the server's
+    /// (`CHLOEDB_APP_TOKEN_<NAME>`).
+    pub token: Option<String>,
 }
 
-/// `name=url` for each `--app`.
+/// The variable that holds app `name`'s own token: `CHLOEDB_APP_TOKEN_`
+/// and its name in capitals, `-` as `_`.
+pub fn token_var(name: &str) -> String {
+    format!("CHLOEDB_APP_TOKEN_{}", name.to_ascii_uppercase().replace('-', "_"))
+}
+
+/// `name=url` for each `--app`, each with its own token when the
+/// environment holds one ([`token_var`]).
 pub fn parse(specs: &[String]) -> Result<Vec<App>, String> {
+    parse_with(specs, |v| std::env::var(v).ok())
+}
+
+/// [`parse`], the variables read by `var`.
+pub fn parse_with(specs: &[String], var: impl Fn(&str) -> Option<String>) -> Result<Vec<App>, String> {
     let mut out: Vec<App> = Vec::new();
     for s in specs.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         let (name, url) = s.split_once('=').ok_or_else(|| format!("--app {s:?}: name=url, as crawler=http://127.0.0.1:7800"))?;
@@ -48,7 +78,8 @@ pub fn parse(specs: &[String]) -> Result<Vec<App>, String> {
         if out.iter().any(|a| a.name == name) {
             return Err(format!("--app: two apps named {name}"));
         }
-        out.push(App { name: name.to_string(), url: url.to_string() });
+        let token = var(&token_var(name)).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        out.push(App { name: name.to_string(), url: url.to_string(), token });
     }
     Ok(out)
 }
@@ -56,9 +87,13 @@ pub fn parse(specs: &[String]) -> Result<Vec<App>, String> {
 pub struct Apps {
     pub list: Vec<App>,
     token: Option<String>,
+    /// A folder of each app's own token, in a file of its name
+    /// (`--app-token-dir`).
+    token_dir: Option<std::path::PathBuf>,
     http: Option<reqwest::Client>,
-    /// Each app's manifest, read at most every 15 s.
-    manifests: Mutex<HashMap<String, (Instant, Json)>>,
+    /// Each app's manifest, or why it could not be read, read at most every
+    /// 15 s.
+    manifests: Mutex<HashMap<String, (Instant, Result<Json, String>)>>,
 }
 
 impl Default for Apps {
@@ -70,18 +105,32 @@ impl Default for Apps {
 impl Apps {
     pub fn new(list: Vec<App>, token: Option<String>) -> Apps {
         let http = (!list.is_empty()).then(|| crate::http_client().connect_timeout(Duration::from_secs(5)).build().expect("an HTTP client"));
-        Apps { list, token: token.filter(|t| !t.is_empty()), http, manifests: Mutex::new(HashMap::new()) }
+        Apps { list, token: token.filter(|t| !t.is_empty()), token_dir: None, http, manifests: Mutex::new(HashMap::new()) }
+    }
+
+    /// These apps, each one's own token read from `dir` (a file of its
+    /// name) when it holds one.
+    pub fn with_token_dir(mut self, dir: Option<std::path::PathBuf>) -> Apps {
+        self.token_dir = dir;
+        self
     }
 
     fn find(&self, name: &str) -> Option<&App> {
         self.list.iter().find(|a| a.name == name)
     }
 
+    /// The token app `a` is sent: its own (its file in the token folder,
+    /// read now, else its variable), else the server's.
+    fn token_of(&self, a: &App) -> Option<String> {
+        let file = self.token_dir.as_ref().and_then(|d| std::fs::read_to_string(d.join(&a.name)).ok()).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        file.or_else(|| a.token.clone()).or_else(|| self.token.clone())
+    }
+
     /// `GET /v1/apps`: each app with its manifest, or why it does not answer.
     pub async fn listing(&self) -> Json {
+        let manifests = futures::future::join_all(self.list.iter().map(|a| self.manifest(a))).await;
         let mut out = Vec::new();
-        for a in &self.list {
-            let m = self.manifest(a).await;
+        for (a, m) in self.list.iter().zip(manifests) {
             out.push(match m {
                 Ok(m) => json!({
                     "name": a.name, "url": a.url, "up": true,
@@ -97,45 +146,51 @@ impl Apps {
     async fn manifest(&self, a: &App) -> Result<Json, String> {
         if let Some((at, m)) = self.manifests.lock().unwrap_or_else(|e| e.into_inner()).get(&a.name) {
             if at.elapsed() < Duration::from_secs(15) {
-                return Ok(m.clone());
+                return m.clone();
             }
         }
+        let m = self.read_manifest(a).await;
+        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
+        m
+    }
+
+    async fn read_manifest(&self, a: &App) -> Result<Json, String> {
         let http = self.http.as_ref().ok_or("no apps")?;
         let mut req = http.get(format!("{}/app.json", a.url)).timeout(Duration::from_secs(5));
-        if let Some(t) = &self.token {
+        if let Some(t) = self.token_of(a) {
             req = req.bearer_auth(t);
         }
         let r = req.send().await.map_err(|e| format!("{} does not answer: {e}", a.url))?;
         if !r.status().is_success() {
             return Err(format!("{}/app.json answers {}", a.url, r.status()));
         }
-        let m: Json = r.json().await.map_err(|e| format!("{}/app.json is not JSON: {e}", a.url))?;
-        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
-        Ok(m)
+        r.json().await.map_err(|e| format!("{}/app.json is not JSON: {e}", a.url))
     }
 
-    /// `/v1/apps/<name>/<rest>`: the request, sent on to the app.
-    pub async fn forward(&self, name: &str, method: Method, rest: &str, query: Option<&str>, headers: &HeaderMap, body: Bytes) -> Response {
+    /// `/v1/apps/<name>/<rest>`: the request, sent on to the app, with who
+    /// made it (`who`) in its headers.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn forward(&self, name: &str, who: &crate::keys::Principal, method: Method, rest: &str, query: Option<&str>, headers: &HeaderMap, body: Bytes) -> Response {
         let err = |status: StatusCode, m: String| (status, axum::Json(json!({ "error": m }))).into_response();
         let Some(a) = self.find(name) else {
             return err(StatusCode::NOT_FOUND, format!("no app {name}: this server's are {}", if self.list.is_empty() { "none (--app)".into() } else { self.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ") }));
         };
-        if rest.split('/').any(|s| s == ".." || s == ".") {
-            return err(StatusCode::BAD_REQUEST, "a path of an app has no . or .. in it".into());
-        }
-        let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
-        let url = match query {
-            Some(q) if !q.is_empty() => format!("{}/{}?{q}", a.url, rest.trim_start_matches('/')),
-            _ => format!("{}/{}", a.url, rest.trim_start_matches('/')),
+        let url = match app_url(&a.url, rest, query) {
+            Ok(u) => u,
+            Err(m) => return err(StatusCode::BAD_REQUEST, m),
         };
-        let mut req = http.request(method, &url).timeout(Duration::from_secs(120));
+        let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
+        let mut req = http.request(method, url).timeout(Duration::from_secs(120));
         for h in [header::CONTENT_TYPE, header::ACCEPT] {
             if let Some(v) = headers.get(&h) {
                 req = req.header(h, v);
             }
         }
-        if let Some(t) = &self.token {
+        if let Some(t) = self.token_of(a) {
             req = req.bearer_auth(t);
+        }
+        for (h, v) in caller_headers(who) {
+            req = req.header(h, v);
         }
         let r = match req.body(body).send().await {
             Ok(r) => r,
@@ -154,17 +209,132 @@ impl Apps {
     }
 }
 
+/// Whether a path segment (as the router decoded it) is a dot segment, or
+/// one once decoded again (`%2e`, `%2E`, `%252e`...).
+pub fn dot_segment(seg: &str) -> bool {
+    let mut s = seg.to_string();
+    for _ in 0..4 {
+        if s == "." || s == ".." {
+            return true;
+        }
+        let next = percent_decode(&s);
+        if next == s {
+            return false;
+        }
+        s = next;
+    }
+    true
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The app's URL for `rest` (the decoded path after `/v1/apps/<name>/`) and
+/// the request's query as it came: `rest`'s segments added to the app's
+/// path, each encoded, so the URL stays under the app's.
+pub fn app_url(base: &str, rest: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
+    let segs: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
+    if segs.iter().any(|s| dot_segment(s)) {
+        return Err("a path of an app has no . or .. in it".into());
+    }
+    let mut u = reqwest::Url::parse(base).map_err(|e| format!("the app's URL {base}: {e}"))?;
+    let prefix = u.path().trim_end_matches('/').to_string();
+    u.path_segments_mut().map_err(|_| format!("the app's URL {base} has no path"))?.pop_if_empty().extend(segs);
+    u.set_query(query.filter(|q| !q.is_empty()));
+    u.set_fragment(None);
+    if !u.path().starts_with(&format!("{prefix}/")) {
+        return Err(format!("{rest} is not a path of the app"));
+    }
+    Ok(u)
+}
+
+/// The headers that tell an app who called it through the server
+/// ([`Apps::forward`]): only these are sent of the caller, so a caller's
+/// own `x-chloedb-principal` never reaches the app.
+pub fn caller_headers(who: &crate::keys::Principal) -> Vec<(&'static str, String)> {
+    // A header holds visible ASCII: a key's name is kept to that.
+    let clean = |s: &str| s.chars().map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' }).collect::<String>();
+    let mut out = vec![("x-chloedb-principal", clean(&who.name)), ("x-chloedb-scope", who.scope.name().to_string())];
+    if let Some(k) = &who.key {
+        out.push(("x-chloedb-key", clean(k)));
+    }
+    if let Some(t) = &who.tables {
+        out.push(("x-chloedb-tables", t.iter().map(|g| format!("{}={}", g.table, g.scope.name())).collect::<Vec<_>>().join(",")));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_apps() {
-        let a = parse(&["crawler=http://127.0.0.1:7800/".into(), " x-2 = https://h ".into()]).unwrap();
-        assert_eq!(a, vec![App { name: "crawler".into(), url: "http://127.0.0.1:7800".into() }, App { name: "x-2".into(), url: "https://h".into() }]);
+        let a = parse_with(&["crawler=http://127.0.0.1:7800/".into(), " x-2 = https://h ".into()], |_| None).unwrap();
+        assert_eq!(a, vec![App { name: "crawler".into(), url: "http://127.0.0.1:7800".into(), token: None }, App { name: "x-2".into(), url: "https://h".into(), token: None }]);
+        // Each app's own token, by its variable.
+        let a = parse_with(&["crawler=http://c".into(), "x-2=http://x".into()], |v| (v == "CHLOEDB_APP_TOKEN_X_2").then(|| "t-x2".to_string())).unwrap();
+        assert_eq!((a[0].token.as_deref(), a[1].token.as_deref()), (None, Some("t-x2")));
+        let apps = Apps::new(a, Some("shared".into()));
+        assert_eq!((apps.token_of(&apps.list[0]).as_deref(), apps.token_of(&apps.list[1]).as_deref()), (Some("shared"), Some("t-x2")));
+        // A file of the token folder, read as it is sent: written later,
+        // it is taken without a restart.
+        let dir = tempfile::tempdir().unwrap();
+        let apps = apps.with_token_dir(Some(dir.path().to_path_buf()));
+        assert_eq!(apps.token_of(&apps.list[0]).as_deref(), Some("shared"));
+        std::fs::write(dir.path().join("crawler"), "t-crawler\n").unwrap();
+        assert_eq!(apps.token_of(&apps.list[0]).as_deref(), Some("t-crawler"));
         assert!(parse(&["crawler".into()]).is_err());
         assert!(parse(&["Crawler=http://h".into()]).is_err());
         assert!(parse(&["c=ftp://h".into()]).is_err());
         assert!(parse(&["c=http://a".into(), "c=http://b".into()]).is_err());
+    }
+
+    #[test]
+    fn an_apps_path_stays_under_its_url() {
+        let u = |base: &str, rest: &str, q: Option<&str>| app_url(base, rest, q).map(|u| u.to_string());
+        assert_eq!(u("http://h:1", "v1/crawls/c1", Some("x=1")).unwrap(), "http://h:1/v1/crawls/c1?x=1");
+        assert_eq!(u("http://h:1/tools/x", "ui/view.js", None).unwrap(), "http://h:1/tools/x/ui/view.js");
+        assert_eq!(u("http://h:1/tools/x/", "a", None).unwrap(), "http://h:1/tools/x/a");
+        // The router decodes once: %252e%252e arrives as %2e%2e.
+        for rest in ["..", "a/../b", ".", "%2e%2e/admin", "a/%2E%2e/b", "%252e%252e", "%2e"] {
+            assert!(app_url("http://h:1/tools/x", rest, None).is_err(), "{rest}");
+        }
+        // A decoded ? or # stays in its segment.
+        assert_eq!(u("http://h:1/tools/x", "a?admin=1#y", None).unwrap(), "http://h:1/tools/x/a%3Fadmin=1%23y");
+        assert_eq!(u("http://h:1", "a\\..\\b", None).unwrap(), "http://h:1/a%5C..%5Cb");
+        assert!(!dot_segment("...") && !dot_segment("a.") && !dot_segment("%2"));
+    }
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+    use crate::keys::{Grant, Principal, Scope};
+
+    #[test]
+    fn an_app_is_told_who_called() {
+        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()) };
+        let h = caller_headers(&p);
+        assert!(h.contains(&("x-chloedb-principal", "ana?x".into())));
+        assert!(h.contains(&("x-chloedb-scope", "write".into())) && h.contains(&("x-chloedb-key", "0a1b".into())));
+        assert!(h.contains(&("x-chloedb-tables", "sheets_*=write".into())));
+        assert_eq!(caller_headers(&Principal::open()).len(), 2);
     }
 }

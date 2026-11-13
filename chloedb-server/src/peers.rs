@@ -80,6 +80,8 @@ struct Me {
     url: String,
     name: String,
     version: String,
+    /// When it named itself ([`start`]).
+    since_ms: u64,
 }
 
 /// The coordinators a server knows.
@@ -194,7 +196,7 @@ pub fn start(svc: &Arc<Service>, url: String) {
         }
     }
     let _ = c.announce.set(md);
-    let _ = svc.peers.me.set(Me { url, name, version });
+    let _ = svc.peers.me.set(Me { url, name, version, since_ms: now_ms() });
     let weak = Arc::downgrade(svc);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REFRESH);
@@ -316,11 +318,13 @@ pub fn first_heard(app: &App, url: &str) -> Option<u64> {
     lock(&app.peers.first).get(url).copied()
 }
 
-/// Every coordinator this server knows, with each one's version, this one
-/// first if it is one; gone ones too (not heard for [`LIVE_MS`]).
-fn all(app: &App) -> Vec<(Peer, Option<String>)> {
+/// Every coordinator this server knows, with each one's version and
+/// whether it is live, this one first if it is one; gone ones too (not
+/// heard for [`LIVE_MS`], or [`superseded`]).
+fn all(app: &App) -> Vec<(Peer, Option<String>, bool)> {
     let now = now_ms();
     let mut out: Vec<(Peer, Option<String>)> = Vec::new();
+    let mut since: HashMap<String, u64> = HashMap::new();
     match &app.backend {
         Backend::Cluster(_) => {
             let me = app.peers.me.get();
@@ -328,7 +332,9 @@ fn all(app: &App) -> Vec<(Peer, Option<String>)> {
                 Some(m) => (m.url.clone(), m.name.clone(), m.version.clone()),
                 None => (app.identity.public_url.clone().unwrap_or_default(), app.place.name.clone().unwrap_or_else(|| "this coordinator".into()), env!("CARGO_PKG_VERSION").to_string()),
             };
+            since.insert(url.clone(), me.map_or(0, |m| m.since_ms));
             out.push((Peer { url: url.clone(), name, this: true, last_seen_ms: now }, Some(version)));
+            since.extend(lock(&app.peers.first).iter().map(|(u, t)| (u.clone(), *t)));
             for h in app.peers.known.read().unwrap_or_else(|e| e.into_inner()).iter() {
                 if h.url != url {
                     out.push((Peer { url: h.url.clone(), name: h.name.clone(), this: false, last_seen_ms: h.last_seen_ms }, h.version.clone()));
@@ -341,19 +347,32 @@ fn all(app: &App) -> Vec<(Peer, Option<String>)> {
             }
         }
     }
-    out
+    let old: Vec<bool> = out.iter().map(|(p, _)| superseded(p, out.iter().map(|(q, _)| (q, since.get(&q.url).copied())))).collect();
+    out.into_iter().zip(old).map(|((p, v), old)| {
+        let up = !old && live(&p, now);
+        (p, v, up)
+    }).collect()
 }
 
 fn live(p: &Peer, now: u64) -> bool {
     p.this || p.last_seen_ms + LIVE_MS > now
 }
 
+/// Coordinator `p` started again elsewhere: another URL of its name was
+/// first heard after `p` was last heard (a coordinator restarted on another
+/// port or address, as a pod that moved). Its old URL then answers nothing,
+/// and is gone at once rather than for [`LIVE_MS`]. Two coordinators of one
+/// name that both run are heard in turn, so neither was first heard after
+/// the other was last heard.
+fn superseded<'a>(p: &Peer, all: impl Iterator<Item = (&'a Peer, Option<u64>)>) -> bool {
+    !p.this && all.into_iter().any(|(q, first)| q.url != p.url && q.name == p.name && first.is_some_and(|f| f > p.last_seen_ms))
+}
+
 /// Every coordinator of this cluster this one knows, itself included:
 /// those heard from in the last minute, by URL (the lowest first). On a
 /// shard server, the coordinators it heard from.
 pub fn coordinators(app: &App) -> Vec<Peer> {
-    let now = now_ms();
-    let mut v: Vec<Peer> = all(app).into_iter().map(|(p, _)| p).filter(|p| live(p, now)).collect();
+    let mut v: Vec<Peer> = all(app).into_iter().filter(|(_, _, up)| *up).map(|(p, _, _)| p).collect();
     v.sort_by(|a, b| a.url.cmp(&b.url));
     v
 }
@@ -362,7 +381,7 @@ pub fn coordinators(app: &App) -> Vec<Peer> {
 /// [`KEEP_MS`]: `(name, url, last seen)`, the latest gone first.
 pub fn gone(app: &App) -> Vec<(String, String, u64)> {
     let now = now_ms();
-    let mut v: Vec<(String, String, u64)> = all(app).into_iter().map(|(p, _)| p).filter(|p| !live(p, now) && p.last_seen_ms + KEEP_MS > now).map(|p| (p.name, p.url, p.last_seen_ms)).collect();
+    let mut v: Vec<(String, String, u64)> = all(app).into_iter().filter(|(p, _, up)| !up && p.last_seen_ms + KEEP_MS > now).map(|(p, _, _)| (p.name, p.url, p.last_seen_ms)).collect();
     v.sort_by(|a, b| b.2.cmp(&a.2));
     v
 }
@@ -377,9 +396,9 @@ pub fn others(app: &App) -> Vec<Peer> {
 pub fn json(app: &App) -> Json {
     let now = now_ms();
     let (mut up, mut gone) = (Vec::new(), Vec::new());
-    for (p, version) in all(app) {
+    for (p, version, live) in all(app) {
         let j = json!({"url": p.url, "name": p.name, "this": p.this, "last_seen_ms": p.last_seen_ms, "version": version});
-        if live(&p, now) {
+        if live {
             up.push(j);
         } else {
             gone.push(j);
@@ -652,6 +671,28 @@ mod tests {
 
     fn peer(url: &str, name: &str, this: bool) -> Peer {
         Peer { url: url.into(), name: name.into(), this, last_seen_ms: 0 }
+    }
+
+    /// A coordinator started again on another URL: its old one is gone as
+    /// soon as the new one is heard, not a minute later, or every call to
+    /// all coordinators meanwhile says it cannot connect (the race in
+    /// tests/fleet.rs, which restarts coord-b on another port). Two that
+    /// share a name and both run keep both.
+    #[test]
+    fn a_coordinator_heard_at_another_url_since_is_gone_from_the_old_one() {
+        let seen = |url: &str, name: &str, at: u64| Peer { last_seen_ms: at, ..peer(url, name, false) };
+        let me = Peer { last_seen_ms: 10_000, ..peer("http://a:1", "coord-a", true) };
+        let (old, new) = (seen("http://b:1", "coord-b", 5_000), seen("http://b:2", "coord-b", 9_000));
+        let first = |p: &Peer| match p.url.as_str() { "http://b:1" => Some(1_000), "http://b:2" => Some(6_000), _ => Some(0) };
+        let all = [&me, &old, &new];
+        let of = |p: &Peer| superseded(p, all.iter().map(|q| (*q, first(q))));
+        assert_eq!((of(&me), of(&old), of(&new)), (false, true, false));
+        // Both running: each was heard after the other was first heard.
+        let twin = seen("http://b:1", "coord-b", 9_500);
+        let all = [&me, &twin, &new];
+        assert!(!all.iter().any(|p| superseded(p, all.iter().map(|q| (*q, first(q))))));
+        // Not heard of at all yet (no first time): it supersedes nothing.
+        assert!(!superseded(&old, [(&old, None), (&new, None)].into_iter()));
     }
 
     #[test]

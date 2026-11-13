@@ -369,6 +369,13 @@ pub struct Field {
     /// 3 (feature [`JSON_TEXT`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text: bool,
+    /// A single-valued, stored TEXT or KEYWORD field with a substring index
+    /// (`OPTIONS(substring = true)`): each segment holds an FM-index of the
+    /// field's values, from which `LIKE` and `ILIKE` are answered
+    /// ([`crate::substring`]); a segment without one is scanned. Makes the
+    /// database format 3 (feature [`crate::substring::FEATURE`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub substring: bool,
 }
 
 /// What [`Field::added`] records of a field added to a table.
@@ -503,6 +510,7 @@ impl Field {
             added: None,
             partition: None,
             text: false,
+            substring: false,
         }
     }
     /// What the field's sections are named by in a segment
@@ -605,6 +613,11 @@ impl Field {
     /// Indexes a JSON field's strings as text too ([`Field::text`]).
     pub fn json_text(mut self) -> Self {
         self.text = true;
+        self
+    }
+    /// Gives the field a substring index ([`Field::substring`]).
+    pub fn substring(mut self) -> Self {
+        self.substring = true;
         self
     }
     /// The field has a text index that `MATCH` and `bm25` read: an
@@ -1251,6 +1264,12 @@ impl Schema {
             if f.text && !f.indexed {
                 return Err(Error::Schema(format!("field {}: text indexes the field's strings, so the field is indexed", f.name)));
             }
+            if f.substring && (!matches!(f.ty, FieldType::Text { .. } | FieldType::Keyword) || f.multi || f.media.is_some()) {
+                return Err(Error::Schema(format!("field {}: substring is an option of a TEXT or KEYWORD field with one value", f.name)));
+            }
+            if f.substring && !f.stored {
+                return Err(Error::Schema(format!("field {}: a substring index needs the field stored (stored = true): a segment without the index is answered from the values", f.name)));
+            }
         }
         for (i, f) in s.fields.iter().enumerate() {
             if f.default.is_none() {
@@ -1648,7 +1667,7 @@ impl Schema {
     /// its fields' [`Logical::feature`], `not_null`, `default`,
     /// `multi_vector`, `semantic_id`, [`Analyzer::feature`], `media`
     /// ([`Field::media`]), `derive` ([`Field::derive`]), [`JSON`],
-    /// [`JSON_TEXT`] and [`RABITQ`], and
+    /// [`JSON_TEXT`], [`crate::substring::FEATURE`] and [`RABITQ`], and
     /// its options `shard_by`, `cluster_by`, `retain` and `edge_table`
     /// ([`Schema::with_shard_by`], [`Schema::with_cluster_by`],
     /// [`Schema::with_retain`], [`Schema::with_edges`]), [`EXPIRE_BY`],
@@ -1671,6 +1690,7 @@ impl Schema {
                 f.added.as_ref().map(|_| ADDED_FIELDS),
                 (f.ty == FieldType::Json).then_some(JSON),
                 (f.ty == FieldType::Json && f.text).then_some(JSON_TEXT),
+                f.substring.then_some(crate::substring::FEATURE),
                 f.codes.rabitq_bits().map(|_| RABITQ),
                 f.partition.as_ref().map(|_| VECTOR_PARTITION),
             ];
@@ -1902,9 +1922,10 @@ impl Schema {
     /// (`"stored": false`, `"indexed": false`), except that vectors and
     /// generated text (`from`) are not stored. Text keeps positions (for
     /// phrases) unless `"positions": false`, and is analysed by
-    /// `"analyzer"`: `"english"` (the default) or `"simple"`, version 1, or
-    /// `{"name": .., "version": ..}` ([`Analyzer`]; another than `english`
-    /// makes the database format 3). A vector's `index` is
+    /// `"analyzer"`: `"english"` (the default), `"simple"`, `"standard"`
+    /// (any script), `"cjk"` or a language (`"french"`, `"arabic"`, `"hindi"`, ...),
+    /// version 1, or `{"name": .., "version": ..}` ([`Analyzer`]; another
+    /// than `english` makes the database format 3). A vector's `index` is
     /// `"hnsw"` (the default, m 16 and ef_construction 200), `"flat"`,
     /// `{"hnsw": {"m": .., "ef_construction": ..}}` or
     /// `{"ivf": {"nlist": ..}}`, and its `codes` `"sq8"` (default) or
@@ -2110,6 +2131,9 @@ impl Schema {
                 if f.not_null {
                     m.insert("not_null".into(), json!(true));
                 }
+                if f.substring {
+                    m.insert("substring".into(), json!(true));
+                }
                 if let Some(d) = &f.default {
                     m.insert("default".into(), d.clone());
                 }
@@ -2182,7 +2206,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     use serde_json::Value as J;
     let name = j.get("name").and_then(J::as_str).ok_or_else(|| Error::Schema(format!("a field needs a \"name\": {j}")))?;
     let bad = |m: &str| Error::Schema(format!("field {name}: {m}"));
-    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition"];
+    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition", "substring"];
     if let Some(k) = j.as_object().into_iter().flat_map(|o| o.keys()).find(|k| !known.contains(&k.as_str())) {
         return Err(bad(&format!("unknown option {k:?} (known: {})", known.join(", "))));
     }
@@ -2285,12 +2309,13 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     }
     f.not_null = flag("not_null")?.unwrap_or(false);
     f.text = flag("text")?.unwrap_or(false);
+    f.substring = flag("substring")?.unwrap_or(false);
     f.default = j.get("default").filter(|d| !d.is_null()).cloned();
     f.analyzer = match j.get("analyzer") {
         None | Some(J::Null) => None,
         Some(J::String(n)) => Some(Analyzer::of(&n.to_ascii_lowercase(), 1).map_err(|e| bad(&e))?),
         Some(a @ J::Object(_)) => Some(serde_json::from_value(a.clone()).map_err(|e| bad(&e.to_string()))?),
-        Some(_) => return Err(bad("analyzer is a name (\"english\" or \"simple\") or {\"name\": .., \"version\": ..}")),
+        Some(_) => return Err(bad("analyzer is a name (\"english\", \"simple\", \"standard\", \"cjk\" or a language such as \"french\") or {\"name\": .., \"version\": ..}")),
     };
     match j.get("semantic_id") {
         None | Some(J::Null) => {}

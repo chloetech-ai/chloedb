@@ -46,6 +46,8 @@
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
+//! | `POST /v1/relevance/autopilot` | the autopilot's options, `judge?`, `keep?` | `{report, proposal, judged}`: logged queries replayed on one snapshot with the rank profile and with the numbers the search finds, measured on held-out queries ([`crate::autopilot`]) |
+//! | `GET /v1/relevance/proposals`, `GET /v1/relevance/proposals/:id`, `POST .../:id/apply` `{force?}`, `POST .../:id/dismiss` | | the proposals kept, one with its proof, applied or dismissed |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
 //! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
 //! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
@@ -243,6 +245,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
+        // The command center's model manager: an admin's (route_scope).
+        .route("/v1/admin/models/fetch", post(fetch_model))
+        .route("/v1/admin/models/convert", post(convert_model))
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/synonyms/mine", post(mine_synonyms))
@@ -286,6 +291,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/relevance/autopilot", post(autopilot_run))
+        .route("/v1/relevance/proposals", get(autopilot_list))
+        .route("/v1/relevance/proposals/:id", get(autopilot_get))
+        .route("/v1/relevance/proposals/:id/apply", post(autopilot_apply))
+        .route("/v1/relevance/proposals/:id/dismiss", post(autopilot_dismiss))
         .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
         .route("/v1/admin/oncall/runs", get(oncall_runs))
         .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
@@ -356,6 +366,8 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
         .route("/v1/admin/cloud/clusters/:id/delete", post(cloud_delete))
         .route("/v1/admin/cloud/clusters/:id/expiry", post(cloud_expiry))
+        .route("/v1/admin/cloud/found", get(cloud_found))
+        .route("/v1/admin/cloud/found/delete", post(cloud_found_delete))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -782,6 +794,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
+        // A key limited to tables calls the routes that check them, and no
+        // other ([`crate::scoped`]).
+        Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
         Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
         Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
@@ -917,6 +932,9 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
         "/v1/export" => Scope::Admin,
+        // The autopilot writes its tables, may spend Claude's tokens on
+        // grades, and applying a proposal replaces a rank profile.
+        "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
         "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
@@ -938,6 +956,28 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
 /// Who a request is from (the open server's root when no auth ran).
 fn who(req_who: Option<axum::Extension<Principal>>) -> Principal {
     req_who.map_or_else(Principal::open, |axum::Extension(p)| p)
+}
+
+/// Refuses statement `sql` for a key limited to tables when it names a
+/// table the key may not read ([`crate::scoped::check_reads`]).
+fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError> {
+    match who.limited() {
+        true => crate::scoped::check_reads(who, sql, &app.svc.table_names(), &app.svc.functions()),
+        false => Ok(()),
+    }
+}
+
+/// Refuses what a key limited to tables may not do to the table named
+/// `table` (the default table when none is), at `need`.
+async fn table_ok(app: &App, who: &Principal, table: Option<&str>, need: Scope, what: &str) -> Result<(), ApiError> {
+    if !who.limited() {
+        return Ok(());
+    }
+    let name = match table {
+        Some(t) => app.svc.table(t).await.map(|s| s.table.clone()).unwrap_or_else(|_| t.to_string()),
+        None => app.svc.default_table()?.table.clone(),
+    };
+    who.may_table(need, &name, what)
 }
 
 /// Keeps out pages on other sites: one that reached this server through
@@ -1143,17 +1183,20 @@ async fn stats(State(app): State<App>) -> AxJson<Json> {
 }
 
 /// A table's schema: `?table=`, else the first table's.
-async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+async fn schema(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
     let s = match q.get("table") {
         Some(t) => app.svc.table(t).await?,
         None => app.svc.default_table()?,
     };
+    who(w).may_table(Scope::Read, &s.table, "a table's schema")?;
     Ok(AxJson(table_json(&app.svc, &s)))
 }
 
-/// Every table's schema, the first first.
-async fn tables(State(app): State<App>) -> AxJson<Json> {
-    let tables: Vec<Json> = app.svc.tables_listed().await.iter().map(|s| table_json(&app.svc, s)).collect();
+/// Every table's schema, the first first: those the caller may read, for
+/// a key limited to tables.
+async fn tables(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> AxJson<Json> {
+    let who = who(w);
+    let tables: Vec<Json> = app.svc.tables_listed().await.iter().filter(|s| who.table_scope(&s.table).is_some_and(|x| x >= Scope::Read)).map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
 }
 
@@ -1213,7 +1256,8 @@ async fn index_reads(State(app): State<App>, Query(q): Params) -> Res {
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
 /// paths listing ([`chloedb::query::paths`]).
-async fn json_paths(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>, Query(q): Params) -> Res {
+async fn json_paths(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(table): axum::extract::Path<String>, Query(q): Params) -> Res {
+    table_ok(&app, &who(w), Some(&table), Scope::Read, "a table's JSON paths").await?;
     let t0 = Instant::now();
     let field = q.get("field").filter(|f| !f.is_empty()).ok_or_else(|| ApiError::bad("name the JSON field: ?field=attrs"))?;
     let prefix = q.get("path").or_else(|| q.get("prefix")).filter(|p| !p.is_empty() && *p != "$");
@@ -1298,6 +1342,14 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
             return arrow_answer(a).await;
         }
         return Ok(AxJson(answer_of(&b, &a)?).into_response());
+    }
+    if who.limited() {
+        // A logged query writes the rank log's table, and a shard's is a
+        // coordinator's: neither is for a key limited to tables.
+        if let Some(k) = ["log", "shard"].into_iter().find(|k| given(k)) {
+            return Err(who.may_server(&format!("a query with {k}")).unwrap_err());
+        }
+        reads_ok(&app, &who, body_str(&b, "sql")?)?;
     }
     let page = match b.get("page_size") {
         None | Some(Json::Null) => None,
@@ -1438,7 +1490,12 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
 /// transaction n, whose term `after_term` is then; `whole=a,b`: but every
 /// row of tables a and b; `digests=true`: with the digests of the keys). A
 /// failure after the answer started ends it with `{"error": ..., "status": ..}`.
-async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+///
+/// The feed ends when the server stops taking connections
+/// ([`crate::server::Stopping`]), so that a server a follower reads from
+/// stops rather than waiting on it.
+async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::server::Stopping>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+    let stopping = Box::pin(crate::server::Stopping::of(stopping.map(|axum::Extension(s)| s)));
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
@@ -1460,7 +1517,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
                 }
             })
         });
-        return Ok(ndjson(axum::body::Body::from_stream(lines)));
+        return Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))));
     }
     // A shard's own server serves its own feed.
     let own = app.svc.slots().map_or(0, |(_, s)| s as u64);
@@ -1469,7 +1526,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     }
     let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
-    Ok(ndjson(axum::body::Body::from_stream(lines)))
+    Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))))
 }
 
 /// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
@@ -1589,6 +1646,9 @@ pub fn as_objects(j: &mut Json) {
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
+    if w.limited() && b.get("log").is_some() {
+        return Err(w.may_server("a logged query").unwrap_err());
+    }
     if let Some(log) = b.get("log") {
         let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, ..Default::default() };
         return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
@@ -1733,11 +1793,27 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
 
 /// The body's `ops`, applied once per idempotency key (the body's
 /// `idempotency_key` or an `Idempotency-Key` header).
-async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
     let ops = match b.get_mut("ops").map(Json::take) {
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
+    let who = who(w);
+    if who.limited() {
+        // Each operation's table, or the default table for one that names
+        // none.
+        let mut seen = std::collections::BTreeSet::new();
+        for op in &ops {
+            let table = match &op["table"] {
+                Json::Null => None,
+                Json::String(t) => Some(t.as_str()),
+                _ => return Err(ApiError::bad("an operation's table is a table's name")),
+            };
+            if seen.insert(table.map(str::to_ascii_lowercase)) {
+                table_ok(&app, &who, table, Scope::Write, "a write").await?;
+            }
+        }
+    }
     let key = body_key(&b, &headers)?;
     let t0 = std::time::Instant::now();
     // A write from the command center is audited whatever its answer: its
@@ -1794,7 +1870,8 @@ fn path_key(schema: &chloedb::schema::Schema, key: &str) -> Result<Json, ApiErro
 }
 
 /// `GET /v1/kv/:table/:key`: one row by its key, without SQL.
-async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+async fn kv_one(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+    table_ok(&app, &who(w), Some(&table), Scope::Read, "a read by key").await?;
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
     let got = app.svc.get_rows(Some(&table), vec![chloedb::value::Value::Str(key.clone())], None, &after_of_query(&q)?, timeout_ms, true).await?;
@@ -1806,7 +1883,7 @@ async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum:
 }
 
 /// `POST /v1/kv/get`: rows by their keys (MGET), without SQL.
-async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn kv_get(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let keys = match b.get("keys") {
         Some(Json::Array(k)) => k.iter().map(js::param).collect::<Result<Vec<_>, _>>()?,
@@ -1822,6 +1899,7 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Respo
         Some(Json::Array(c)) => Some(c.iter().map(|c| c.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| ApiError::bad("columns are the names of columns"))?),
         Some(_) => return Err(ApiError::bad("columns is an array of the names of columns")),
     };
+    table_ok(&app, &who(w), table, Scope::Read, "a read by key").await?;
     let got = app.svc.get_rows(table, keys, columns, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     Ok(AxJson(KeyRowsJson { got: &got, took_ms: t0.elapsed().as_secs_f64() * 1e3 }).into_response())
 }
@@ -1900,11 +1978,13 @@ fn if_seq_no(op: &mut Json, q: &std::collections::HashMap<String, String>) -> Re
 /// without SQL.
 async fn kv_put(
     State(app): State<App>,
+    w: Option<axum::Extension<Principal>>,
     axum::extract::Path((table, key)): axum::extract::Path<(String, String)>,
     Query(q): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     AxJson(mut doc): AxJson<Json>,
 ) -> Res {
+    table_ok(&app, &who(w), Some(&table), Scope::Write, "a write by key").await?;
     let t0 = Instant::now();
     let schema = app.svc.table(&table).await?;
     let k = path_key(&schema, &key)?;
@@ -1926,10 +2006,12 @@ async fn kv_put(
 /// `DELETE /v1/kv/:table/:key`: deletes the row with that key.
 async fn kv_delete(
     State(app): State<App>,
+    w: Option<axum::Extension<Principal>>,
     axum::extract::Path((table, key)): axum::extract::Path<(String, String)>,
     Query(q): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Res {
+    table_ok(&app, &who(w), Some(&table), Scope::Write, "a delete by key").await?;
     let t0 = Instant::now();
     let schema = app.svc.table(&table).await?;
     let mut op = json!({"op": "delete", "table": schema.table, "key": path_key(&schema, &key)?});
@@ -1992,14 +2074,14 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         None => matches!(ct.as_str(), "application/vnd.sqlite3" | "application/x-sqlite3") || body.starts_with(chloedb::sqlite::MAGIC),
     };
     if sqlite {
-        return import_sqlite(&app, &who(w), &q, body).await;
+        return import_sqlite(&app, &who(w.clone()), &q, body).await;
     }
     let parquet = match q.get("format") {
         Some(f) => f.eq_ignore_ascii_case("parquet"),
         None => matches!(ct.as_str(), "application/vnd.apache.parquet" | "application/x-parquet") || body.starts_with(b"PAR1"),
     };
     if parquet {
-        return import_parquet(&app, &who(w), &q, body).await;
+        return import_parquet(&app, &who(w.clone()), &q, body).await;
     }
     let format = match q.get("format") {
         Some(f) => Some(Format::parse(f).ok_or_else(|| ApiError::bad(format!("unknown format {f:?}: jsonl, json, csv, tsv, sqlite or parquet")))?),
@@ -2016,6 +2098,7 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         }
     };
     let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
+    table_ok(&app, &who(w), q.get("table").map(String::as_str), Scope::Write, "an import").await?;
     let t0 = std::time::Instant::now();
     let (n, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format).await?;
     Ok(AxJson(json!({"written": n, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
@@ -2549,12 +2632,59 @@ async fn schema_check(AxJson(b): AxJson<Json>) -> Res {
 /// The embedding models a schema can name, local and hosted, and whether
 /// each would open on this server ([`chloedb::embed::catalog`]): fetched,
 /// its key set, its feature built. Nothing is loaded or sent.
+/// The models a field may name ([`chloedb::embed::catalog`]), each with
+/// how it makes its vectors ([`chloedb::embed::describe`]), the fields
+/// that name it, and a fetch or conversion asked for here.
 async fn models(State(app): State<App>) -> Res {
     let dir = app.svc.models_dir();
     let d = dir.clone();
-    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d)).await.map_err(ApiError::internal)?;
-    let models: Vec<Json> = list.iter().map(|m| json!({"name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err()})).collect();
-    Ok(AxJson(json!({"dir": dir.display().to_string(), "models": models})))
+    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d).into_iter().map(|m| { let x = chloedb::embed::describe(&m.name, &d); (m, x) }).collect::<Vec<_>>()).await.map_err(ApiError::internal)?;
+    let fields = app.svc.models();
+    let mut jobs = app.svc.model_jobs();
+    let mut models: Vec<Json> = list
+        .iter()
+        .map(|(m, d)| {
+            let used: Vec<Json> = fields.iter().filter(|f| f.spec.model.eq_ignore_ascii_case(&m.name)).map(|f| json!({"table": f.table, "field": f.field})).collect();
+            json!({
+                "name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err(),
+                "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "made_of": d.made_of,
+                // Fetched by the server for a field that names it.
+                "known": chloedb::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(&m.name)),
+                "fields": used, "job": jobs.remove(&m.name.to_lowercase()),
+            })
+        })
+        .collect();
+    // A conversion that failed before its directory held a model.
+    for (name, job) in jobs {
+        models.push(json!({"name": name, "dim": null, "hosted": false, "what": "", "ready": false, "error": job.error, "technique": "static", "fields": [], "job": job}));
+    }
+    // Names a field gave that the catalog does not list (`hash:16`).
+    for f in fields.iter() {
+        if !models.iter().any(|m| m["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&f.spec.model))) {
+            let d = chloedb::embed::describe(&f.spec.model, &dir);
+            let used: Vec<Json> = fields.iter().filter(|g| g.spec.model == f.spec.model).map(|g| json!({"table": g.table, "field": g.field})).collect();
+            models.push(json!({"name": f.spec.model, "dim": chloedb::embed::known_dim(&f.spec.model), "hosted": d.technique == "hosted", "what": "", "ready": f.model.is_ok(), "error": f.model.as_ref().err(), "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "known": false, "fields": used, "job": null}));
+        }
+    }
+    Ok(AxJson(json!({"dir": dir.display().to_string(), "fetches": app.svc.fetch_models, "models": models})))
+}
+
+/// `{"model": name}`: fetches a model the server knows into its models
+/// directory, in the background ([`Service::start_model_job`]).
+async fn fetch_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let made = app.svc.start_model_job(name, None)?;
+    Ok(AxJson(json!({"model": made, "state": "running"})))
+}
+
+/// `{"model": name, "to": "I8" | "F16"}`: writes a static model's table
+/// again in fewer bits, as model `<name>-int8` (or `-f16`), in the
+/// background ([`Service::start_model_job`]).
+async fn convert_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let to = b.get("to").and_then(Json::as_str).unwrap_or("I8");
+    let made = app.svc.start_model_job(name, Some(to))?;
+    Ok(AxJson(json!({"model": made, "from": name, "state": "running"})))
 }
 
 async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
@@ -2617,12 +2747,13 @@ pub fn media_headers(mime: &str, sha256: &str) -> HeaderMap {
     h
 }
 
-async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
+    reads_ok(&app, &who(w), sql)?;
     let params = app.svc.params(b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
-    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first.to_string());
+    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
     let sql = first.as_deref().unwrap_or(sql);
     let catalog = app.svc.catalog();
     let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
@@ -3346,6 +3477,28 @@ async fn judge(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     let req = judge::JudgeReq { table: opt("table"), query: body_str(&b, "query")?.to_string(), keys, fields, model: opt("model"), api_key: opt("api_key") };
     Ok(AxJson(judge::run(&app.svc, req).await?))
+}
+
+/// `POST /v1/relevance/autopilot` ([`crate::autopilot`]).
+async fn autopilot_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::autopilot::run(&app.svc, &who(w), b).await?))
+}
+
+async fn autopilot_list(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::autopilot::list(&app.svc).await?))
+}
+
+async fn autopilot_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::autopilot::get(&app.svc, id).await?))
+}
+
+async fn autopilot_apply(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let force = b.and_then(|AxJson(b)| b.get("force").and_then(|f| f.as_bool())).unwrap_or(false);
+    Ok(AxJson(crate::autopilot::apply(&app.svc, &who(w), id, force).await?))
+}
+
+async fn autopilot_dismiss(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::autopilot::dismiss(&app.svc, &who(w), id).await?))
 }
 
 type Params = Query<std::collections::HashMap<String, String>>;
@@ -4164,13 +4317,14 @@ async fn apps_list(State(app): State<App>) -> AxJson<Json> {
 
 async fn app_forward(
     State(app): State<App>,
+    w: Option<axum::Extension<Principal>>,
     axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    app.svc.apps.forward(&name, method, &rest, uri.query(), &headers, body).await
+    app.svc.apps.forward(&name, &who(w), method, &rest, uri.query(), &headers, body).await
 }
 
 async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
@@ -4811,6 +4965,11 @@ async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): 
     if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
         return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
+    // The path as decoded: no dot segment (once or twice encoded) to climb
+    // out of /v1, and no ? or # to start a query (audit D-B9).
+    if rest.split('/').any(crate::apps::dot_segment) || rest.contains(['?', '#']) {
+        return Err(ApiError::bad("a path the hub forwards has no . or .. segment, ? or # in it"));
+    }
     let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
@@ -4844,18 +5003,24 @@ async fn cloud_one(State(app): State<App>, axum::extract::Path(id): axum::extrac
     Ok(AxJson(m.view()))
 }
 
-/// `{"provider", "plan", "confirm", "delete_after_hours"?, "bring"?}`:
+/// `{"provider", "plan", "confirm", "delete_after_hours" | "keep", "bring"?}`:
 /// makes the plan's cluster, which bills the account until it is deleted.
-/// `confirm` is the cluster's name, typed again; `bring` names tables of
-/// this server the cluster copies in once it is ready
-/// ([`crate::copy::bring_when_ready`]). Refused when the account's limit
-/// would not start the nodes, or when the cloud already has a cluster of
-/// that name. 202: the cluster is on its way; `GET` it to follow.
+/// `confirm` is the cluster's name, typed again; `delete_after_hours` has
+/// it delete itself then, and without it `keep: true` says it is kept
+/// until someone deletes it; `bring` names tables of this server the
+/// cluster copies in once it is ready ([`crate::copy::bring_when_ready`]).
+/// Refused when this server would forget the cluster or the account's key
+/// when it restarts (finding E-6: a coordinator keeps no file by default,
+/// and the cluster then bills until someone finds it in the cloud's
+/// console), when the account's limit would not start the nodes, or when
+/// the cloud already has a cluster of that name. 202: the cluster is on
+/// its way; `GET` it to follow.
 async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     use crate::cloud::clusters::{Made, Phase};
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
     let plan = b["plan"].clone();
     let refuse = |m: String| ApiError { status: 409, message: m };
+    cloud_durable(&app, &provider).map_err(refuse)?;
     let (j, nodes) = match provider.as_str() {
         "aws" => {
             let (p, j) = aws_planned(&app, plan).await?;
@@ -4906,6 +5071,11 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     if b["confirm"].as_str() != Some(cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: making it bills the account until it is deleted")));
     }
+    match (after_ms, b["keep"].as_bool()) {
+        (Some(_), Some(true)) => return Err(ApiError::bad("delete_after_hours or keep, not both")),
+        (None, Some(true)) | (Some(_), _) => {}
+        (None, _) => return Err(ApiError::bad("delete_after_hours (it deletes itself then), or keep: true (it bills the account until someone deletes it)")),
+    }
     let who = who(w);
     let now = crate::operator::now_ms();
     // Who asked for it, as a DigitalOcean tag (letters, digits, ':', '-',
@@ -4949,6 +5119,7 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
         delete_at_ms: after_ms.map(|a| now + a),
         bring,
         brought: None,
+        found: false,
     };
     let m = app.svc.clouds.add(m).map_err(refuse)?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
@@ -4958,6 +5129,29 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
+}
+
+/// Whether a cluster made here, and the key of `provider`'s account that
+/// deletes it, outlive a restart of this server: kept in files, or the key
+/// in the environment. A coordinator keeps no file unless it is given one
+/// (`--cloud-file`, `--aws-file`, `--digitalocean-file`): its list of made
+/// clusters, their deletion times and the key would last as long as the
+/// process (finding E-6).
+fn cloud_durable(app: &App, provider: &str) -> Result<(), String> {
+    let svc = &app.svc;
+    if svc.clouds.file().is_none() {
+        return Err("this server keeps the clusters it makes in memory only (a coordinator keeps no file unless given one): restarted, it would forget this one, which would bill the account until someone deletes it in the cloud's console, and would not delete itself when asked to. Start it with --cloud-file on a disk that outlives it, or make the cluster from a server of a database".into());
+    }
+    let memory_key = match provider {
+        "aws" => svc.aws.creds().is_some_and(|(_, source)| source == "stored") && svc.aws.file().is_none(),
+        "digitalocean" => svc.digitalocean.token().is_some_and(|(_, source)| source == "stored") && svc.digitalocean.file().is_none(),
+        _ => false,
+    };
+    if memory_key {
+        let flag = if provider == "aws" { "--aws-file" } else { "--digitalocean-file" };
+        return Err(format!("this server keeps the account's key in memory only: restarted, it could not delete the cluster. Start it with {flag} on a disk that outlives it, or give the key in its environment"));
+    }
+    Ok(())
 }
 
 /// `delete_after_hours`: a number of hours (above 0, at most 30 days) as
@@ -4997,6 +5191,95 @@ async fn cloud_delete(State(app): State<App>, w: Option<axum::Extension<Principa
     let m = app.svc.clouds.delete(&id, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
     let detail = format!("deleting the cluster {} on {} in {}", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
+    let mut r = audited(m.view(), detail);
+    *r.status_mut() = axum::http::StatusCode::ACCEPTED;
+    Ok(r)
+}
+
+/// The ChloeDB clusters the cloud's account holds that this server's list
+/// does not follow (made from another server, or forgotten here):
+/// `?provider=digitalocean` (every region), or `?provider=aws&region=`
+/// (CloudFormation's stacks are a region's). Each says whether this
+/// server runs on it (`here`), which may not be deleted from here.
+async fn cloud_found(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<AxJson<Json>, ApiError> {
+    Ok(AxJson(json!({"clusters": found(&app, q.get("provider").map(String::as_str).unwrap_or_default(), q.get("region").map(String::as_str)).await?})))
+}
+
+async fn found(app: &App, provider: &str, region: Option<&str>) -> Result<Vec<Json>, ApiError> {
+    let made = app.svc.clouds.list();
+    match provider {
+        "digitalocean" => {
+            let list = app.svc.digitalocean.clusters().await.map_err(do_error)?;
+            Ok(crate::cloud::clusters::found_doks(&list, &made, app.svc.place.node.as_deref()))
+        }
+        "aws" => {
+            let region = region.filter(|r| !r.is_empty()).ok_or_else(|| ApiError::bad("region: CloudFormation's stacks are a region's"))?;
+            let stacks = app.svc.aws.stacks(region).await.map_err(aws_error)?;
+            Ok(crate::cloud::clusters::found_stacks(region, &stacks, &made))
+        }
+        _ => Err(ApiError::bad("provider is aws or digitalocean")),
+    }
+}
+
+/// `{"provider", "cloud_id", "region"?, "confirm"}`: deletes a cluster
+/// [`cloud_found`] lists, as one made here is deleted (its volumes, then
+/// the cloud's cluster), after it is put on this server's list to be
+/// followed. `confirm` is its name, typed again. Refused for one this
+/// list has already, one the cloud no longer has, and the one this server
+/// runs on (deleting it would stop this server halfway).
+async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    use crate::cloud::clusters::{Made, Phase};
+    let provider = b["provider"].as_str().unwrap_or_default().to_string();
+    let id = b["cloud_id"].as_str().filter(|i| !i.is_empty()).ok_or_else(|| ApiError::bad("cloud_id is the cloud's id of the cluster, as /v1/admin/cloud/found lists it"))?;
+    let c = found(&app, &provider, b["region"].as_str()).await?.into_iter().find(|c| c["cloud_id"] == id).ok_or_else(|| ApiError {
+        status: 404,
+        message: format!("the account has no ChloeDB cluster {id} that this server does not follow already"),
+    })?;
+    let cluster = c["cluster"].as_str().unwrap_or_default().to_string();
+    if c["here"] == true {
+        return Err(ApiError { status: 409, message: format!("this server runs on {cluster}: deleting it from here would stop it halfway; delete it from another server, or from the cloud's console") });
+    }
+    if b["confirm"].as_str() != Some(cluster.as_str()) {
+        return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: deleting it deletes its data")));
+    }
+    let who = who(w);
+    let now = crate::operator::now_ms();
+    let m = Made {
+        id: format!("{provider}-{cluster}-{now}"),
+        provider: provider.clone(),
+        name: cluster.trim_start_matches("strata-").to_string(),
+        cluster: cluster.clone(),
+        region: c["region"].as_str().unwrap_or_default().to_string(),
+        machine: c["machine"].as_str().unwrap_or_default().to_string(),
+        nodes: c["nodes"].as_u64().unwrap_or(0) as u32,
+        cost_hour: 0.0,
+        by: who.name.clone(),
+        created_ms: now,
+        phase: Phase::Deleting,
+        cloud_id: Some(id.to_string()),
+        request: Json::Null,
+        image: String::new(),
+        objects: Vec::new(),
+        steps: Vec::new(),
+        error: None,
+        strata: Json::Null,
+        progress: None,
+        ready_ms: None,
+        ended_ms: None,
+        generation: 0,
+        tries: 0,
+        checked_ms: 0,
+        deleting_since_ms: None,
+        volumes_gone: false,
+        delete_asked: false,
+        delete_at_ms: None,
+        bring: Vec::new(),
+        brought: None,
+        found: true,
+    };
+    let m = app.svc.clouds.adopt(m, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
+    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
+    let detail = format!("deleting the cluster {} on {} in {}, found in the account", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
@@ -5103,7 +5386,10 @@ async fn routes(State(app): State<App>, Query(q): Params) -> Res {
 async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> AxJson<Json> {
     let w = who(w);
     let mut j = w.json();
-    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty()});
+    // `app_keys`: this server makes keys limited to tables, and sends each
+    // app its own token ([`crate::apps`]), as the operator asks before it
+    // gives an app a key of its own.
+    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true});
     j["cluster"] = app.svc.identity.json();
     j["caller"] = json!(keys::caller());
     AxJson(j)
@@ -5139,7 +5425,14 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// "expires_days": n}`: a new key; its secret is in this answer only.
 async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let name = body_str(&b, "name")?;
-    let scope = Scope::parse(b.get("scope").and_then(|v| v.as_str()).unwrap_or("read")).ok_or_else(|| ApiError::bad("scope is feed, read, write or admin"))?;
+    // `"tables": {"crawl_*": "admin", "*": "read"}`: a key limited to
+    // those ([`keys::Grant`]), whose scope is the most they give (and no
+    // more than `scope`, when given).
+    let tables = match b.get("tables") {
+        None | Some(Json::Null) => None,
+        Some(t) => Some(keys::grants_of(t)?),
+    };
+    let scope = Scope::parse(b.get("scope").and_then(|v| v.as_str()).unwrap_or(if tables.is_some() { "admin" } else { "read" })).ok_or_else(|| ApiError::bad("scope is feed, read, write or admin"))?;
     let expires = match b.get("expires_days") {
         None | Some(Json::Null) => None,
         Some(v) => Some(telemetry::now_ms() + v.as_f64().filter(|d| *d > 0.0).ok_or_else(|| ApiError::bad("expires_days is a number of days above 0"))?.mul_add(86_400_000.0, 0.0) as u64),
@@ -5148,10 +5441,15 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     // A shard, or a copy in replication, whose callers send no credential.
     let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
-    let (key, secret) = app.svc.keys.create_owned(name, scope, expires, text("owner"), text("note"), app.guarded(), in_cluster)?;
-    keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), after: Some(json!({"id": key.id, "scope": scope.name(), "owner": key.owner, "expires_ms": key.expires_ms})), ..Default::default() });
-    tracing::info!(key = %key.id, name = %key.name, scope = scope.name(), "API key created");
-    let detail = format!("created key {} ({}, {})", key.name, key.id, scope.name());
+    let (key, secret) = app.svc.keys.create_limited(name, scope, tables, expires, text("owner"), text("note"), app.guarded(), in_cluster)?;
+    let scope = key.scope;
+    let limits = key.tables.as_deref().map(keys::grants_json);
+    keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), after: Some(json!({"id": key.id, "scope": scope.name(), "tables": limits, "owner": key.owner, "expires_ms": key.expires_ms})), ..Default::default() });
+    tracing::info!(key = %key.id, name = %key.name, scope = scope.name(), limited = key.tables.is_some(), "API key created");
+    let detail = match &key.tables {
+        Some(t) => format!("created key {} ({}, limited to {})", key.name, key.id, keys::grants_text(t)),
+        None => format!("created key {} ({}, {})", key.name, key.id, scope.name()),
+    };
     Ok(audited(json!({"key": key.json(), "secret": secret, "closed": open}), detail))
 }
 
@@ -5339,7 +5637,13 @@ async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
 
 /// alerts2: merges what another coordinator tells (as it answers
 /// `GET /v1/alerts/peer`, and routes); it is not told on again.
-async fn alert_peer_merge(State(app): State<App>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+/// Only with the cluster's token (or the server's), as another coordinator
+/// sends it: an admin key could otherwise replace the rules, routes and
+/// silences unaudited.
+async fn alert_peer_merge(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    if !who(p).root {
+        return Err(ApiError { status: 403, message: "only another coordinator tells this, with the cluster's token: an API key may not".into() });
+    }
     let from = crate::peers::from_peer(&headers).ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
     let events = app.svc.alerts.merge(&b, &from)?;
     let n = events.len();

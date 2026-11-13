@@ -101,7 +101,7 @@ faults|faults|power losses, full disks and failing syncs (feature fault-injectio
 datafusion|datafusion|DataFusion as the engine (feature datafusion) and the compound-query suites on it
 audio|audio|sound (feature audio): tests and clippy, ChloeDB and chloedb-server
 vision|vision|images (feature vision): tests and clippy, ChloeDB and chloedb-server
-relevance-gate|relevance-gate|BM25 on three BEIR collections against the committed baseline
+relevance-gate|relevance-gate|BM25 on three BEIR collections, and by analyzer on two MIRACL collections, against the committed baselines
 relevance-gate-cross-encoder|relevance-gate-cross-encoder|BM25 reranked by ms-marco-MiniLM-L-6-v2 against its baseline
 server-smoke|server-smoke|a release chloedb-server with a demo catalogue, queried over HTTP; imports and exports; a crawl into a growing cluster
 python|python|the Python package's tests against a real server, the recommender gate, clippy
@@ -549,8 +549,9 @@ job_vision() {
 
 job_relevance_gate() {
     chloedb/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
+    chloedb/tests/fixtures/miracl/fetch.sh "$CI_HOME/miracl" yo sw
     in_chloedb
-    CHLOEDB_BEIR_DIR="$CI_HOME/beir" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
+    CHLOEDB_BEIR_DIR="$CI_HOME/beir" CHLOEDB_MIRACL_DIR="$CI_HOME/miracl" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 }
 
 job_relevance_gate_cross_encoder() {

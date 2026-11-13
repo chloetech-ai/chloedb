@@ -961,6 +961,16 @@ pub(crate) fn build_memseg(schema: &Schema, opts: &BuildOptions, part: &MemPart,
     // The documents were validated when they were written, so a failure
     // here is a bug in an index builder.
     let docs: Vec<Document> = (part.start..part.start + part.len).map(|i| part.docs[i].clone()).collect();
+    // No substring index: a query scans a memtable's values, which costs
+    // less than sorting their suffixes each time the chunk grows.
+    let skip;
+    let opts = match schema.fields.iter().any(|f| f.substring) {
+        true => {
+            skip = opts.clone().set("substring", "skip");
+            &skip
+        }
+        false => opts,
+    };
     let image = rowseq::build(schema, &docs, part.seqs.as_deref(), opts).expect("building a memtable segment");
     let file = SegmentFile::open(OwnedBytes::new(PageAligned::new(&image))).expect("memtable segment opens");
     let pk = PkIndex::open(&file).expect("memtable pk index");

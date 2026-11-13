@@ -456,8 +456,8 @@ export class Database extends Searchable {
   /** Trains a semantic-ID codebook on the vectors of `field` of the first
    * table or `table`, saves it as `name` under `models`, and returns its
    * SHA-256. */
-  async trainCodebook(field, name, { table, models, levels, k, iterations, sample, seed } = {}) {
-    return this.#call("train_codebook", { field, name, table, models: paths(models), levels, k, iterations, sample, seed });
+  async trainCodebook(field, name, { table, models, levels, k, iterations, sample, seed, balanced } = {}) {
+    return this.#call("train_codebook", { field, name, table, models: paths(models), levels, k, iterations, sample, seed, balanced });
   }
 
   /** Readies a table that is done changing for queries: writes the rows
@@ -547,8 +547,8 @@ export function upgrade(path) {
 
 /** Trains a semantic-ID codebook on `vectors` (arrays or Float32Arrays),
  * saves it as `name` under `models`, and returns its SHA-256. */
-export function trainCodebook(vectors, name, { models, levels, k, iterations, sample, seed } = {}) {
-  return callStatic("train_codebook", { vectors: [...vectors], name, models: paths(models), levels, k, iterations, sample, seed });
+export function trainCodebook(vectors, name, { models, levels, k, iterations, sample, seed, balanced } = {}) {
+  return callStatic("train_codebook", { vectors: [...vectors], name, models: paths(models), levels, k, iterations, sample, seed, balanced });
 }
 
 /** The addon's version. */

@@ -107,22 +107,26 @@ pub struct Principal {
     /// cluster token; the token of a server without one; anyone on an
     /// open server.
     pub root: bool,
+    /// A key limited to some tables ([`Grant`]): what it may do to each,
+    /// and nothing on the server beyond them. `None`: every table, at
+    /// `scope`.
+    pub tables: Option<Arc<[Grant]>>,
 }
 
 impl Principal {
     pub fn open() -> Principal {
-        Principal { name: "open".into(), key: None, scope: Scope::Admin, root: true }
+        Principal { name: "open".into(), key: None, scope: Scope::Admin, root: true, tables: None }
     }
 
     /// The `--token`'s holder: the root on a server without a cluster
     /// token (`root`), else an admin.
     fn token(root: bool) -> Principal {
-        Principal { name: "token".into(), key: None, scope: Scope::Admin, root }
+        Principal { name: "token".into(), key: None, scope: Scope::Admin, root, tables: None }
     }
 
     /// Another server of the cluster, by the cluster's token.
     pub fn cluster() -> Principal {
-        Principal { name: "cluster".into(), key: None, scope: Scope::Admin, root: true }
+        Principal { name: "cluster".into(), key: None, scope: Scope::Admin, root: true, tables: None }
     }
 
     /// Whether this is anyone, on a server with no credential to check.
@@ -139,8 +143,146 @@ impl Principal {
     }
 
     pub fn json(&self) -> Json {
-        json!({"name": self.name, "key": self.key, "scope": self.scope.name(), "root": self.root})
+        let mut j = json!({"name": self.name, "key": self.key, "scope": self.scope.name(), "root": self.root});
+        if let Some(t) = &self.tables {
+            j["tables"] = grants_json(t);
+        }
+        j
     }
+
+    /// A key limited to some tables ([`Grant`]).
+    pub fn limited(&self) -> bool {
+        self.tables.is_some()
+    }
+
+    /// What this credential may do to table `table`: its scope, or for a
+    /// key limited to tables the most its grants that name the table give
+    /// (`None`: nothing).
+    pub fn table_scope(&self, table: &str) -> Option<Scope> {
+        match &self.tables {
+            None => Some(self.scope),
+            Some(g) => granted(g, table),
+        }
+    }
+
+    /// Refuses (403) what needs `need` on table `table` and this credential
+    /// may not do there.
+    pub fn may_table(&self, need: Scope, table: &str, what: &str) -> Result<(), ApiError> {
+        match self.table_scope(table) {
+            Some(s) if s >= need => Ok(()),
+            Some(s) => Err(ApiError { status: 403, message: format!("{what} needs the {} scope on table {table}; the key {:?} has {} there", need.name(), self.name, s.name()) }),
+            None => Err(ApiError { status: 403, message: format!("{what} touches table {table}, which the key {:?} may not: it is limited to {}", self.name, self.tables.as_deref().map(grants_text).unwrap_or_default()) }),
+        }
+    }
+
+    /// Refuses (403) what is the server's rather than a table's, for a key
+    /// limited to tables.
+    pub fn may_server(&self, what: &str) -> Result<(), ApiError> {
+        match &self.tables {
+            None => Ok(()),
+            Some(g) => Err(ApiError { status: 403, message: format!("{what} is not for a key limited to tables: the key {:?} may touch only {}", self.name, grants_text(g)) }),
+        }
+    }
+}
+
+/// What a key limited to tables may do to some of them: `table` is a
+/// table's name (`chloectx_memory`), a prefix and `*` (`crawl_*`, every
+/// table whose name starts with `crawl_`), or `*` (every table), in any
+/// case; `scope` is what it may do there. `admin` on tables is `CREATE`,
+/// `ALTER` and `DROP` of them and their rank profiles, never the server's
+/// own admin (keys, shards, functions, settings).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Grant {
+    pub table: String,
+    pub scope: Scope,
+}
+
+impl Grant {
+    pub fn new(table: &str, scope: Scope) -> Result<Grant, ApiError> {
+        let table = table.trim().to_ascii_lowercase();
+        let name = table.strip_suffix('*').unwrap_or(&table);
+        if table.len() > 128 || (name.is_empty() && table != "*") || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(ApiError::bad(format!("{table:?} is not a table grant: a table's name, a prefix of names and * (crawl_*), or * for every table")));
+        }
+        if scope == Scope::Feed {
+            return Err(ApiError::bad("a table grant's scope is read, write or admin: the feed is every table's, for another cluster"));
+        }
+        Ok(Grant { table, scope })
+    }
+
+    /// `crawl_*=admin` (a scope of read when none is given).
+    pub fn parse(s: &str) -> Result<Grant, ApiError> {
+        let (table, scope) = s.split_once('=').unwrap_or((s, "read"));
+        let scope = Scope::parse(scope.trim()).ok_or_else(|| ApiError::bad(format!("{s:?}: a table grant is table=scope, the scope read, write or admin")))?;
+        Grant::new(table, scope)
+    }
+
+    /// Whether it names table `table`.
+    pub fn covers(&self, table: &str) -> bool {
+        let table = table.to_ascii_lowercase();
+        match self.table.strip_suffix('*') {
+            Some(prefix) => table.starts_with(prefix),
+            None => table == self.table,
+        }
+    }
+}
+
+/// The most `grants` give on table `table`.
+pub fn granted(grants: &[Grant], table: &str) -> Option<Scope> {
+    grants.iter().filter(|g| g.covers(table)).map(|g| g.scope).max()
+}
+
+/// Grants as the API shows them: `{"crawl_*": "admin"}`.
+pub fn grants_json(grants: &[Grant]) -> Json {
+    Json::Object(grants.iter().map(|g| (g.table.clone(), json!(g.scope.name()))).collect())
+}
+
+/// Grants in words: `crawl_* (admin), * (read)`.
+pub fn grants_text(grants: &[Grant]) -> String {
+    grants.iter().map(|g| format!("{} ({})", g.table, g.scope.name())).collect::<Vec<_>>().join(", ")
+}
+
+/// Grants from the API: `{"crawl_*": "admin", "*": "read"}`, or a list of
+/// `table=scope`.
+pub fn grants_of(j: &Json) -> Result<Vec<Grant>, ApiError> {
+    let grants = match j {
+        Json::Object(m) => m.iter().map(|(t, s)| Grant::new(t, s.as_str().and_then(Scope::parse).ok_or_else(|| ApiError::bad(format!("the scope of table grant {t} is read, write or admin")))?)).collect::<Result<Vec<_>, _>>()?,
+        Json::Array(a) => a.iter().map(|g| g.as_str().ok_or_else(|| ApiError::bad("a table grant is \"table=scope\"")).and_then(Grant::parse)).collect::<Result<Vec<_>, _>>()?,
+        Json::String(s) => s.split(',').filter(|g| !g.trim().is_empty()).map(Grant::parse).collect::<Result<Vec<_>, _>>()?,
+        _ => return Err(ApiError::bad("tables is {\"table\": \"scope\"}, as {\"crawl_*\": \"admin\", \"*\": \"read\"}")),
+    };
+    if grants.is_empty() {
+        return Err(ApiError::bad("a key limited to tables names one at least"));
+    }
+    if grants.len() > 64 {
+        return Err(ApiError::bad("a key is limited to 64 table grants at most"));
+    }
+    Ok(grants)
+}
+
+/// The most any of `grants` gives: a limited key's scope, which routes are
+/// checked against before its tables are.
+fn widest(grants: &[Grant]) -> Scope {
+    grants.iter().map(|g| g.scope).max().unwrap_or(Scope::Read)
+}
+
+/// How the keys file writes the digest of a key limited to tables: after
+/// this mark, so that a server from before limits, which would read the
+/// key as one of every table (it knows no `tables`), never takes its
+/// secret ([`stored_digest`]).
+const LIMITED: &str = "t:";
+
+/// The digest of `secret` as a key keeps it ([`LIMITED`]).
+fn stored_digest(secret: &str, limited: bool) -> String {
+    match limited {
+        true => format!("{LIMITED}{}", sha256(secret)),
+        false => sha256(secret),
+    }
+}
+
+/// Whether a stored digest is the digest `digest` ([`stored_digest`]).
+fn digest_is(stored: &str, digest: &str) -> bool {
+    same_secret(digest.as_bytes(), stored.strip_prefix(LIMITED).unwrap_or(stored).as_bytes())
 }
 
 /// A key as the keys file keeps it.
@@ -164,13 +306,35 @@ pub struct Key {
     /// The address it was last used from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_addr: Option<String>,
+    /// The tables it is limited to ([`Grant`]); none: every table, at
+    /// `scope`. Its digest is then kept after a mark ([`LIMITED`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tables: Option<Vec<Grant>>,
 }
 
 impl Key {
     /// What the API shows of it.
     pub fn json(&self) -> Json {
-        json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
-            "owner": self.owner, "note": self.note, "last_addr": self.last_addr})
+        let mut j = json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
+            "owner": self.owner, "note": self.note, "last_addr": self.last_addr});
+        if let Some(t) = &self.tables {
+            j["tables"] = grants_json(t);
+        }
+        j
+    }
+
+    /// Who it makes a request, if its digest and its limits agree: a key
+    /// whose digest is marked limited but that lost its tables (a server
+    /// from before limits wrote it back without them) makes no one.
+    fn principal(&self) -> Option<Principal> {
+        let marked = self.sha256.starts_with(LIMITED);
+        let tables: Option<Arc<[Grant]>> = match (&self.tables, marked) {
+            (Some(t), true) if !t.is_empty() => Some(t.clone().into()),
+            (None, false) => None,
+            _ => return None,
+        };
+        let scope = tables.as_deref().map_or(self.scope, |t| widest(t).min(self.scope));
+        Some(Principal { name: self.name.clone(), key: Some(self.id.clone()), scope, root: false, tables })
     }
 }
 
@@ -229,7 +393,9 @@ impl KeySet {
     /// either, by id, but the revoked ones. Of two keys with one id and
     /// other secrets (two servers drew the same 64 random bits), the one
     /// with the smaller digest stays, so that every server keeps the same.
-    /// The time a key was last used is the later of the two.
+    /// The time a key was last used is the later of the two, and the time
+    /// it ends the earlier (a key rotated on one server ends on every
+    /// other, and none that still holds it unended brings it back).
     pub fn merged(&self, other: &KeySet) -> (KeySet, bool) {
         let mut next = self.clone();
         let mut changed = false;
@@ -254,6 +420,20 @@ impl KeySet {
                         x.last_addr = k.last_addr.clone();
                     }
                     x.last_used_ms = x.last_used_ms.max(k.last_used_ms);
+                    let ends = match (x.expires_ms, k.expires_ms) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                    if ends != x.expires_ms {
+                        x.expires_ms = ends;
+                        changed = true;
+                    }
+                    // A server from before limits sent it back without its
+                    // tables: the limits stay.
+                    if x.tables.is_none() && k.tables.is_some() {
+                        x.tables = k.tables.clone();
+                        changed = true;
+                    }
                 }
                 Some(x) => {
                     if k.sha256 < x.sha256 {
@@ -283,6 +463,9 @@ pub struct Peer {
 /// when the server stops, unless other servers of its cluster hold them).
 pub struct Keys {
     set: Mutex<KeySet>,
+    /// Keys of the apps this server starts ([`Self::app_key`]): in memory
+    /// only, never written to the file nor given to other servers.
+    ephemeral: Mutex<Vec<Key>>,
     file: Option<PathBuf>,
     /// Woken when the keys change, for [`crate::keysync`] to pass them on.
     pub changed: tokio::sync::Notify,
@@ -296,6 +479,11 @@ fn hex(b: &[u8]) -> String {
 
 fn sha256(s: &str) -> String {
     hex(&Sha256::digest(s.as_bytes()))
+}
+
+/// `n` random bytes from the operating system, in hex (a token).
+pub fn random_hex(n: usize) -> Result<String, ApiError> {
+    Ok(hex(&random(n)?))
 }
 
 /// `n` random bytes from the operating system.
@@ -320,7 +508,7 @@ impl Keys {
     }
 
     fn of(set: KeySet, file: Option<PathBuf>) -> Keys {
-        Keys { set: Mutex::new(set), file, changed: tokio::sync::Notify::new(), peers: Mutex::new(BTreeMap::new()) }
+        Keys { set: Mutex::new(set), ephemeral: Mutex::new(Vec::new()), file, changed: tokio::sync::Notify::new(), peers: Mutex::new(BTreeMap::new()) }
     }
 
     /// The keys of `file`, which a new key is written to (created when the
@@ -347,7 +535,53 @@ impl Keys {
     }
 
     pub fn list(&self) -> Vec<Json> {
-        self.lock().keys.iter().map(Key::json).collect()
+        let mut out: Vec<Json> = self.lock().keys.iter().map(Key::json).collect();
+        out.extend(self.ephemeral().iter().map(|k| {
+            let mut j = k.json();
+            j["ephemeral"] = json!(true);
+            j
+        }));
+        out
+    }
+
+    fn ephemeral(&self) -> std::sync::MutexGuard<'_, Vec<Key>> {
+        self.ephemeral.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A key for app `app`, which this server starts and hands it to:
+    /// limited to `tables` ([`Grant`]), named and owned `app:<app>`, kept
+    /// in memory only (not in the keys file, not given to the other
+    /// servers of a cluster) and in place of the app's last one, so that
+    /// each start of the app has a new key and the server's stop ends it.
+    /// It does not close an open server: a request with no credential
+    /// stays anyone's, one with this key is the app's. Its secret, not
+    /// kept, is the answer.
+    pub fn app_key(&self, app: &str, tables: Vec<Grant>) -> Result<String, ApiError> {
+        if app.is_empty() || app.len() > 48 || !app.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(ApiError::bad(format!("{app:?} is not an app's name: lowercase letters, digits, - and _")));
+        }
+        if tables.is_empty() {
+            return Err(ApiError::bad("an app's key names one table grant at least"));
+        }
+        let name = format!("app:{app}");
+        let id = hex(&random(8)?);
+        let secret = hex(&random(24)?);
+        let full = format!("sk_{id}_{secret}");
+        let scope = widest(&tables);
+        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables) };
+        let mut e = self.ephemeral();
+        e.retain(|k| k.name != name);
+        e.push(key);
+        Ok(full)
+    }
+
+    /// Ends app `app`'s key ([`Self::app_key`]); whether it had one.
+    pub fn end_app_key(&self, app: &str) -> bool {
+        let name = format!("app:{app}");
+        let mut e = self.ephemeral();
+        let before = e.len();
+        e.retain(|k| k.name != name);
+        e.len() != before
     }
 
     /// The keys and revocations, to give another server.
@@ -414,7 +648,23 @@ impl Keys {
     /// [`Self::create`], with who answers for the key and what it is for.
     #[allow(clippy::too_many_arguments)]
     pub fn create_owned(&self, name: &str, scope: Scope, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        self.create_limited(name, scope, None, expires_ms, owner, note, token, in_cluster)
+    }
+
+    /// [`Self::create_owned`], limited to `tables` when given
+    /// ([`Grant`]): its scope is then the most its grants give, and no
+    /// more than `scope`. Such a key is never a server's first: it does not
+    /// manage the server.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_limited(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
         let name = name.trim();
+        if name.starts_with("app:") {
+            return Err(ApiError::bad("a key's name does not start with app: (the names of the keys a server makes for the apps it starts)"));
+        }
+        if tables.as_ref().is_some_and(|t| t.is_empty()) {
+            return Err(ApiError::bad("a key limited to tables names one at least"));
+        }
+        let scope = tables.as_deref().map_or(scope, |t| widest(t).min(scope));
         if name.is_empty() || name.len() > 64 {
             return Err(ApiError::bad("a key's name has 1 to 64 characters"));
         }
@@ -425,8 +675,8 @@ impl Keys {
             });
         }
         let mut set = self.lock();
-        if !token && set.keys.is_empty() && scope != Scope::Admin {
-            return Err(ApiError::bad("this server has no token and no key: its first key turns on authentication, so it must be an admin key"));
+        if !token && set.keys.is_empty() && (scope != Scope::Admin || tables.is_some()) {
+            return Err(ApiError::bad("this server has no token and no key: its first key turns on authentication, so it must be an admin key of every table"));
         }
         if set.keys.iter().any(|k| k.name == name) {
             return Err(ApiError { status: 409, message: format!("a key named {name:?} exists") });
@@ -434,7 +684,7 @@ impl Keys {
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: sha256(&secret), last_used_ms: 0, owner, note, last_addr: None };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: stored_digest(&secret, tables.is_some()), last_used_ms: 0, owner, note, last_addr: None, tables };
         let mut next = set.clone();
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {
@@ -462,6 +712,14 @@ impl Keys {
     /// [`Self::revoke`], by `by` (a key's name, for the list of revoked
     /// keys).
     pub fn revoke_by(&self, id: &str, token: bool, by: Option<String>) -> Result<bool, ApiError> {
+        {
+            // An app's key: ended here, where alone it is.
+            let mut e = self.ephemeral();
+            if let Some(i) = e.iter().position(|k| k.id == id) {
+                e.remove(i);
+                return Ok(true);
+            }
+        }
         let mut set = self.lock();
         let mut next = set.clone();
         let Some(k) = set.keys.iter().find(|k| k.id == id).cloned() else { return Ok(false) };
@@ -502,7 +760,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{new_id}_{secret}");
         let expires_ms = old.expires_ms.map(|e| now + e.saturating_sub(old.created_ms));
-        let key = Key { id: new_id, sha256: sha256(&secret), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
+        let key = Key { id: new_id, sha256: stored_digest(&secret, old.tables.is_some()), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
         let mut next = set.clone();
         let until = now + grace_ms;
         let mut ending = old.clone();
@@ -532,11 +790,11 @@ impl Keys {
         let (id, secret) = rest.split_once('_')?;
         let digest = sha256(secret);
         let set = self.lock();
-        if let Some(k) = set.keys.iter().find(|k| k.id == id && same_secret(digest.as_bytes(), k.sha256.as_bytes())) {
+        if let Some(k) = set.keys.iter().find(|k| k.id == id && digest_is(&k.sha256, &digest)) {
             let why = if k.expires_ms.is_some_and(|e| now_ms() >= e) { "expired" } else { "valid" };
             return Some((k.id.clone(), k.name.clone(), why));
         }
-        let r = set.revoked.iter().find(|r| r.id == id && r.sha256.as_ref().is_none_or(|d| same_secret(digest.as_bytes(), d.as_bytes())))?;
+        let r = set.revoked.iter().find(|r| r.id == id && r.sha256.as_ref().is_none_or(|d| digest_is(d, &digest)))?;
         Some((r.id.clone(), r.name.clone().unwrap_or_else(|| format!("key {}", r.id)), "revoked"))
     }
 
@@ -555,7 +813,7 @@ impl Keys {
         let digest = sha256(secret);
         let mut set = self.lock();
         let k = set.keys.iter_mut().find(|k| k.id == id)?;
-        if !same_secret(digest.as_bytes(), k.sha256.as_bytes()) || k.expires_ms.is_some_and(|e| now_ms() >= e) {
+        if !digest_is(&k.sha256, &digest) || k.expires_ms.is_some_and(|e| now_ms() >= e) {
             return None;
         }
         // Kept in memory; written with the next change of keys.
@@ -563,7 +821,21 @@ impl Keys {
         if let Some(addr) = caller().and_then(|c| c.addr) {
             k.last_addr = Some(addr);
         }
-        Some(Principal { name: k.name.clone(), key: Some(k.id.clone()), scope: k.scope, root: false })
+        k.principal()
+    }
+
+    /// The app key a bearer credential names ([`Self::app_key`]), if it is
+    /// one of this server's.
+    fn find_app(&self, given: &str) -> Option<Principal> {
+        let (id, secret) = given.strip_prefix("sk_")?.split_once('_')?;
+        let digest = sha256(secret);
+        let mut e = self.ephemeral();
+        let k = e.iter_mut().find(|k| k.id == id && digest_is(&k.sha256, &digest))?;
+        k.last_used_ms = now_ms();
+        if let Some(addr) = caller().and_then(|c| c.addr) {
+            k.last_addr = Some(addr);
+        }
+        k.principal()
     }
 
     /// Who an `Authorization` header value makes a request: another
@@ -571,6 +843,10 @@ impl Keys {
     /// holder, a key's, or (with no token, no cluster token and no key)
     /// anyone. `None`: a wrong or missing credential.
     pub fn resolve(&self, token: Option<&Secret>, cluster: Option<&Secret>, authorization: Option<&str>) -> Option<Principal> {
+        // An app's key is the app's, on an open server too.
+        if let Some(p) = authorization.and_then(|v| v.strip_prefix("Bearer ")).and_then(|g| self.find_app(g)) {
+            return Some(p);
+        }
         if token.is_none() && cluster.is_none() && self.is_empty() {
             return Some(Principal::open());
         }
@@ -587,7 +863,7 @@ impl Keys {
 
 /// Whether `keys` hold an admin key that never expires.
 fn managed(keys: &[Key]) -> bool {
-    keys.iter().any(|k| k.scope == Scope::Admin && k.expires_ms.is_none())
+    keys.iter().any(|k| k.scope == Scope::Admin && k.tables.is_none() && k.expires_ms.is_none())
 }
 
 tokio::task_local! {
@@ -958,6 +1234,125 @@ mod tests {
         let y = KeySet { keys: vec![kb], revoked: vec![] };
         assert_eq!(x.merged(&y).0.keys[0].sha256, "0".repeat(64));
         assert_eq!(y.merged(&x).0.keys[0].sha256, "0".repeat(64));
+    }
+
+    /// D-B1: a key rotated on one server, its old secret ending at once,
+    /// ends on every server it merges with, and on a coordinator that
+    /// starts again with no keys file and takes them back from its shards;
+    /// a server that still holds the key unexpired does not revive it.
+    #[test]
+    fn a_rotated_keys_end_reaches_every_server() {
+        let coordinator = Keys::memory();
+        let shard = Keys::memory();
+        coordinator.create("ops", Scope::Admin, None, true, false).unwrap();
+        let (leaked, secret) = coordinator.create("ci", Scope::Write, None, true, false).unwrap();
+        let admits = |k: &Keys| k.resolve(None, None, Some(&format!("Bearer {secret}"))).is_some();
+        assert!(shard.merge(&coordinator.set()).unwrap());
+        assert!(admits(&shard));
+        coordinator.rotate(&leaked.id, 0, true).unwrap();
+        assert!(!admits(&coordinator));
+        // The shard takes the end, and says its keys changed.
+        assert!(shard.merge(&coordinator.set()).unwrap());
+        assert!(!admits(&shard), "the shard still takes the rotated key");
+        // Merged back, the shard's copy does not lift it.
+        assert!(!coordinator.merge(&shard.set()).unwrap());
+        assert!(!admits(&coordinator));
+        // A coordinator that starts again takes its keys from the shard.
+        let again = Keys::memory();
+        again.merge(&shard.set()).unwrap();
+        assert!(!admits(&again), "a restarted coordinator revived the rotated key");
+        // The earlier end wins whichever side holds it.
+        let late = Key { expires_ms: Some(now_ms() + 86_400_000), ..leaked.clone() };
+        let early = Key { expires_ms: Some(now_ms() - 1), ..leaked.clone() };
+        for (a, b) in [(&late, &early), (&early, &late)] {
+            let x = KeySet { keys: vec![a.clone()], revoked: vec![] };
+            let y = KeySet { keys: vec![b.clone()], revoked: vec![] };
+            assert_eq!(x.merged(&y).0.keys[0].expires_ms, early.expires_ms);
+        }
+        let forever = KeySet { keys: vec![leaked.clone()], revoked: vec![] };
+        let ending = KeySet { keys: vec![late.clone()], revoked: vec![] };
+        let (merged, changed) = forever.merged(&ending);
+        assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, true));
+        let (merged, changed) = ending.merged(&forever);
+        assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, false));
+    }
+
+    /// A key limited to tables: its scope is the most its grants give, its
+    /// digest is marked so that a server from before limits never takes
+    /// it, and a copy that lost its tables (written back by such a server)
+    /// opens nothing, and gets them back when merged.
+    #[test]
+    fn a_key_limited_to_tables_keeps_its_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        let grants = vec![Grant::parse("crawl_*=admin").unwrap(), Grant::parse("Docs=read").unwrap()];
+        // Not a server's first key: it would not manage the server.
+        assert_eq!(keys.create_limited("crawler", Scope::Admin, Some(grants.clone()), None, None, None, false, false).unwrap_err().status, 400);
+        keys.create("ops", Scope::Admin, None, false, false).unwrap();
+        let (k, secret) = keys.create_limited("crawler", Scope::Admin, Some(grants.clone()), None, None, None, false, false).unwrap();
+        assert!(k.sha256.starts_with(LIMITED) && k.scope == Scope::Admin);
+        let p = keys.resolve(None, None, Some(&format!("Bearer {secret}"))).unwrap();
+        assert!(p.limited() && !p.root);
+        assert_eq!((p.table_scope("crawl_x"), p.table_scope("CRAWL_X"), p.table_scope("docs"), p.table_scope("secrets")), (Some(Scope::Admin), Some(Scope::Admin), Some(Scope::Read), None));
+        assert!(p.may_table(Scope::Write, "docs", "a write").unwrap_err().message.contains("read there"));
+        assert!(p.may_server("vacuum").is_err());
+        assert_eq!(p.json()["tables"], json!({"crawl_*": "admin", "docs": "read"}));
+        // It does not count as the key that manages a server without a token.
+        let (only, _) = Keys::memory().create("ops", Scope::Admin, None, true, false).unwrap();
+        assert!(!managed(&[Key { tables: Some(grants.clone()), ..only.clone() }]) && managed(&[only]));
+        // A scope given caps it.
+        let (capped, _) = keys.create_limited("reader", Scope::Read, Some(grants.clone()), None, None, None, false, false).unwrap();
+        assert_eq!(capped.scope, Scope::Read);
+        // Rotated, the new key is limited and marked too.
+        let (new, new_secret, _) = keys.rotate(&k.id, 0, false).unwrap();
+        assert!(new.sha256.starts_with(LIMITED) && new.tables == Some(grants.clone()));
+        assert!(keys.resolve(None, None, Some(&format!("Bearer {new_secret}"))).unwrap().limited());
+        // A server from before limits: its digest is never the secret's.
+        let digest = sha256(new_secret.rsplit_once('_').unwrap().1);
+        assert!(!same_secret(digest.as_bytes(), new.sha256.as_bytes()));
+        // ...and it writes the key back without its tables.
+        let stripped = Key { tables: None, ..new.clone() };
+        let old = Keys::memory();
+        old.merge(&KeySet { keys: vec![stripped.clone()], revoked: vec![] }).unwrap();
+        assert_eq!(old.resolve(None, None, Some(&format!("Bearer {new_secret}"))), None);
+        // Merged with a copy that has them, the limits come back.
+        assert!(old.merge(&keys.set()).unwrap());
+        assert!(old.resolve(None, None, Some(&format!("Bearer {new_secret}"))).unwrap().limited());
+        let (merged, _) = keys.set().merged(&KeySet { keys: vec![stripped], revoked: vec![] });
+        assert_eq!(merged.keys.iter().find(|x| x.id == new.id).unwrap().tables, Some(grants));
+        // Bad grants.
+        for bad in ["", "a.b", "*x", "crawl_*=feed", "t=root"] {
+            assert!(Grant::parse(bad).is_err(), "{bad}");
+        }
+        assert!(grants_of(&json!({})).is_err() && grants_of(&json!("a=read, b_*=write")).unwrap().len() == 2);
+        assert!(keys.create_limited("app:x", Scope::Read, None, None, None, None, false, false).is_err());
+    }
+
+    /// An app's key: in memory only, limited, replaced at the app's next
+    /// start, and no reason to close an open server.
+    #[test]
+    fn an_apps_key_is_kept_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        let secret = keys.app_key("sheets", vec![Grant::parse("sheets_*=admin").unwrap(), Grant::parse("*=read").unwrap()]).unwrap();
+        let p = keys.resolve(None, None, Some(&format!("Bearer {secret}"))).unwrap();
+        assert_eq!((p.name.as_str(), p.scope, p.table_scope("orders")), ("app:sheets", Scope::Admin, Some(Scope::Read)));
+        // Still open to anyone else; nothing written, nothing to sync.
+        assert_eq!(keys.resolve(None, None, None), Some(Principal::open()));
+        assert!(keys.is_empty() && keys.set().keys.is_empty() && !dir.path().join("keys.json").exists());
+        assert_eq!(keys.list()[0]["ephemeral"], true);
+        // On a closed server too.
+        let token = Secret::new("t");
+        assert!(keys.resolve(Some(&token), None, Some(&format!("Bearer {secret}"))).unwrap().limited());
+        // The next start's key ends this one; a revoke ends it as well.
+        let next = keys.app_key("sheets", vec![Grant::parse("sheets_*=write").unwrap()]).unwrap();
+        assert_eq!(keys.resolve(Some(&token), None, Some(&format!("Bearer {secret}"))), None);
+        let id = keys.list()[0]["id"].as_str().unwrap().to_string();
+        assert!(keys.revoke(&id, true).unwrap());
+        assert_eq!(keys.resolve(Some(&token), None, Some(&format!("Bearer {next}"))), None);
+        assert!(keys.revoked().is_empty());
+        assert!(keys.app_key("Bad Name", vec![Grant::parse("a=read").unwrap()]).is_err());
+        assert!(keys.app_key("x", vec![]).is_err());
     }
 
     #[test]

@@ -12,6 +12,7 @@
 // statements) the statement people and the model edit.
 import { compileStatement, screenStatement, sameScreen } from './statement.mjs';
 import { compileRule, ruleStatement, onOf } from './rulesql.mjs';
+import { everyText } from './schedule.mjs';
 import { expandScreen } from './patterns.mjs';
 import { colSql } from './types.mjs';
 
@@ -23,7 +24,7 @@ const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 const parse = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
 
 // A statement starts with CREATE (after -- comments).
-const HEAD = /^\s*(?:--[^\n]*\n\s*)*CREATE\s+(?:OR\s+REPLACE\s+)?(TABLE|SCREEN|RULE|FUNCTION|COMPONENT|HELPER|PATTERN)\b/i;
+const HEAD = /^\s*(?:--[^\n]*\n\s*)*CREATE\s+(?:OR\s+REPLACE\s+)?(TABLE|SCREEN|RULE|SOURCE|FUNCTION|COMPONENT|HELPER|PATTERN)\b/i;
 export const isSource = (code) => typeof code === 'string' && HEAD.test(code);
 
 // A body in dollar quotes, with a tag the body does not hold.
@@ -34,7 +35,7 @@ function wrap(head, language, body) {
 }
 const WRAPPED = /^\s*(?:--[^\n]*\n\s*)*CREATE\s+(?:OR\s+REPLACE\s+)?(SCREEN|RULE|FUNCTION|COMPONENT|HELPER|PATTERN)\s+[\s\S]*?\bLANGUAGE\s+(javascript|json)\s+AS\s+(\$[A-Za-z0-9_]*\$)\n([\s\S]*)\n\3\s*;?\s*$/;
 
-const events = (on) => (on && on.table ? ` AFTER ${[].concat(on.event || 'insert').map((e) => String(e).toUpperCase()).join(' OR ')} ON ${on.table}` : '');
+const events = (on, every = null) => `${on && on.table ? ` AFTER ${[].concat(on.event || 'insert').map((e) => String(e).toUpperCase()).join(' OR ')} ON ${on.table}` : ''}${every ? ` ${everyText(every)}` : ''}`;
 const titled = (slug, title) => `${slug}${title && title !== slug ? ` TITLE ${sqlText(title)}` : ''}`;
 
 // A table as the CREATE TABLE that makes it (with the app's own name for it;
@@ -125,11 +126,11 @@ export function toSource({ kind, slug, title, code, spec = {} }) {
   if (kind === 'function' && spec.rule) {
     const rule = parse(body);
     if (typeof spec.statement === 'string' && rule) {
-      try { const back = compileRule(spec.statement); if (same(back.rule, rule) && same(back.on, onOf(spec.on))) return spec.statement.trim(); } catch { /* stale */ }
+      try { const back = compileRule(spec.statement); if (same(back.rule, rule) && same(back.on, onOf(spec.on)) && same(back.every || null, spec.every || null)) return spec.statement.trim(); } catch { /* stale */ }
     }
-    return (rule && ruleStatement(slug, rule, spec.on)) || wrap(`CREATE RULE ${slug}${events(spec.on)}`, 'json', body);
+    return (rule && ruleStatement(slug, rule, spec.on, spec.every, spec.source)) || wrap(`CREATE RULE ${slug}${events(spec.on, spec.every)}`, 'json', body);
   }
-  if (kind === 'function') return wrap(`CREATE FUNCTION ${slug}${events(spec.on)}`, 'javascript', body);
+  if (kind === 'function') return wrap(`CREATE FUNCTION ${slug}${events(spec.on, spec.every)}`, 'javascript', body);
   if (kind === 'component') return wrap(`CREATE COMPONENT ${slug}`, 'javascript', body);
   if (kind === 'helper') return wrap(`CREATE HELPER ${slug}`, 'javascript', body);
   if (kind === 'pattern') return wrap(`CREATE PATTERN ${slug}`, 'json', body);
@@ -166,7 +167,7 @@ export function fromSource({ kind, slug, title, code, spec = {} }) {
   const what = code.match(HEAD)[1].toUpperCase();
   if (what === 'TABLE') return { code: '', sql: code, statement: null };
   if (what === 'SCREEN') return { code: JSON.stringify(screenOf(code), null, 1), sql: code, statement: spec.derived ? null : withoutPhotos(code) };
-  if (what === 'RULE') return { code: JSON.stringify(compileRule(code).rule, null, 1), sql: code, statement: spec.derived ? null : code };
+  if (what === 'RULE' || what === 'SOURCE') return { code: JSON.stringify(compileRule(code).rule, null, 1), sql: code, statement: spec.derived ? null : code };
   return { code, sql: code, statement: null };
 }
 

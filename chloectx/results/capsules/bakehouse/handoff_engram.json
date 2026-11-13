@@ -1,0 +1,90 @@
+{
+ "capsule": {
+  "backup_ms": 73.299054,
+  "by_kind": {
+   "answer": 329,
+   "decision": 23,
+   "entity": 190,
+   "episode": 40,
+   "error": 49,
+   "fact": 52,
+   "preference": 25,
+   "prompt": 48,
+   "todo": 14
+  },
+  "bytes": 2506752,
+  "created_ts": 1794478343,
+  "dim": 512,
+  "dir": "/home/user/bench/work/bakehouse/engram/capsule",
+  "embedder": "static",
+  "embedder_name": "static:potion-retrieval-32M",
+  "format": "chloectx-capsule/1",
+  "kinds": [
+   "decision",
+   "preference",
+   "fact",
+   "todo",
+   "note",
+   "entity",
+   "prompt",
+   "answer",
+   "episode",
+   "summary",
+   "error"
+  ],
+  "pack_ms": 75.378241,
+  "project": "/home/user/bench/work/bakehouse/engram/bakehouse",
+  "records": 770,
+  "redacted": 0,
+  "sha256": "39cd9595d8329cc352f1f9008d874b3c517cd72363159fc0a4c1214a610d903d",
+  "since_ts": null,
+  "source_last_seq": 1386,
+  "title": "bakehouse",
+  "topics": [
+   "tests/test_orders.py",
+   "src/bakehouse/products.py",
+   "customers.csv",
+   "src/bakehouse/production.py",
+   "Greta Vogel",
+   "Greenway Grocers",
+   "Tomasz",
+   "config.py",
+   "production plan",
+   "orders.py",
+   "production.py",
+   "Dev",
+   "scripts/print_plan.py",
+   "Larkspur Bakery",
+   "src/bakehouse/orders.py",
+   "tests/test_production.py",
+   "print_plan.py",
+   "src/bakehouse/invoice.py",
+   "tests/test_invoice.py",
+   "tests/test_products.py"
+  ],
+  "total_ms": 222.844076,
+  "wall_s": 0.23
+ },
+ "note": {
+  "chars": 12136,
+  "transcript_chars": 204402,
+  "cost_usd": 0.019441870000000003,
+  "wall_s": 22.7,
+  "input_tokens": 87232,
+  "output_tokens": 4887,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ },
+ "note_short": {
+  "chars": 2079,
+  "transcript_chars": 204402,
+  "cost_usd": 0.01880977,
+  "wall_s": 17.1,
+  "input_tokens": 87269,
+  "output_tokens": 3608,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ }
+}

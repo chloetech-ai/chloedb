@@ -1,5 +1,6 @@
 // The runtime inside a view's frame. The frame is sandboxed (no same origin,
-// no network), so everything a view does to data goes to the studio as a
+// no network, no popups; images only from the engine and the photo hosts:
+// web/policy.js), so everything a view does to data goes to the studio as a
 // message, and the studio calls the engine.
 (() => {
   const SA = window.__SA || { params: {} };
@@ -82,8 +83,11 @@
     const a = e.target.closest && e.target.closest('a[href]');
     if (!a) return;
     const href = a.getAttribute('href');
-    if (/^https?:/i.test(href)) { e.preventDefault(); window.open(href, '_blank', 'noopener'); } else if (href === '#' || href.startsWith('#')) { e.preventDefault(); }
+    if (/^https?:/i.test(href)) { e.preventDefault(); if (e.isTrusted) post({ kind: 'link', href: a.href }); } else if (href === '#' || href.startsWith('#')) { e.preventDefault(); }
   });
+  // The frame may open no window; window.open asks the studio, which opens
+  // it only while a click is fresh.
+  window.open = (url) => { try { post({ kind: 'link', href: new URL(String(url)).href }); } catch { /* not a full address */ } return null; };
 
   const pad = (n) => String(n).padStart(2, '0');
   // A calendar day ("2026-11-07") is that day where the person is, not UTC

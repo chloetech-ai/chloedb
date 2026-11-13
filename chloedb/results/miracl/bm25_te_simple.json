@@ -1,0 +1,30 @@
+{
+  "analyzer": "simple",
+  "collections": {
+    "miracl-te": {
+      "db_bytes": 300568616,
+      "docs": 518079,
+      "load_s": 19.179087044,
+      "queries": 828,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 1.791857065217391,
+          "ms_p50": 1.408672,
+          "ms_p99": 6.984808,
+          "ndcg10": 0.37691946452857034,
+          "recall10": 0.5275764895330113,
+          "recall100": 0.7177938808373592
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "te_simple"
+}

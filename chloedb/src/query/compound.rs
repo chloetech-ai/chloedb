@@ -580,6 +580,12 @@ fn needs_rows(c: &Expr, schema: &Schema) -> bool {
         // binder says what is wrong.
         Expr::Like { escape_char: Some(_), .. } | Expr::ILike { escape_char: Some(_), .. } => false,
         Expr::Like { expr, .. } | Expr::ILike { expr, .. } if plain(expr).is_some_and(|f| !matches!(f.ty, FieldType::Keyword | FieldType::Text { .. })) => false,
+        // A field with a substring index: the scan answers any pattern.
+        Expr::Like { any: false, expr, pattern, .. } | Expr::ILike { any: false, expr, pattern, .. }
+            if plain(expr).is_some_and(|f| f.substring) && matches!(pattern.as_ref(), Expr::Value(_)) =>
+        {
+            false
+        }
         Expr::ILike { any: false, .. } => true,
         Expr::Like { any: false, expr, pattern, escape_char, .. } => {
             let prefix_or_value = match pattern.as_ref() {
@@ -2906,6 +2912,41 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                     return Ok(ir::Expr::Not(Box::new(ir::Expr::Cmp { op: CmpOp::Eq, left: l, right: r })));
                 }
                 return Ok(ir::Expr::Cmp { op, left: l, right: r });
+            }
+            // Set operators of lists: `&&` holds when a value of one is a
+            // value of the other; `@>` when each value of a list written out
+            // (ARRAY[...], a list parameter) is one of the other side's.
+            // Lists without values are empty sets, as over one table.
+            if matches!(op, B::PGOverlap | B::AtArrow | B::ArrowAt) {
+                // ARRAY[...] of values is a list value.
+                let side = |x: &Expr| -> Result<Box<ir::Expr>> {
+                    match x {
+                        Expr::Array(a) => {
+                            let vs = a.elem.iter().map(|v| match go(v)? {
+                                ir::Expr::Lit(v) => Ok(v),
+                                _ => Err(err(format!("{x}: an ARRAY of a set operator holds values"))),
+                            });
+                            Ok(Box::new(ir::Expr::Lit(Value::List(vs.collect::<Result<_>>()?))))
+                        }
+                        x => listy(x),
+                    }
+                };
+                let (list, of, contains) = match op {
+                    B::PGOverlap => return Ok(ir::Expr::In { expr: side(left)?, list: vec![*side(right)?] }),
+                    B::AtArrow => (right, left, "@>"),
+                    _ => (left, right, "<@"),
+                };
+                let values = match *side(list)? {
+                    ir::Expr::Lit(Value::List(vs)) => vs,
+                    ir::Expr::Lit(Value::Null) => return Err(err(format!("{e}: the list is NULL"))),
+                    ir::Expr::Lit(v) => vec![v],
+                    _ => return Err(err(format!("{e}: over rows in memory, {contains} tests a list column against a list of values written out (ARRAY[...] or a list parameter), with that list on the {} side; && compares any two", if contains == "@>" { "right" } else { "left" }))),
+                };
+                if values.iter().any(|v| *v == Value::Null) {
+                    return Err(err(format!("{e}: the list holds a NULL, which no value equals")));
+                }
+                let of = side(of)?;
+                return Ok(ir::Expr::And(values.into_iter().map(|v| ir::Expr::In { expr: of.clone(), list: vec![ir::Expr::Lit(v)] }).collect()));
             }
             let arith = match op {
                 B::Plus => Some(ArithOp::Add),

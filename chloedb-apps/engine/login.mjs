@@ -26,7 +26,10 @@ const CODE_MS = 2 * 60000;
 const COOKIE = 'sa_studio';
 // Loaded from inside sandboxed frames, which send no cookies (deploy/gate.mjs
 // lets the same through).
-const OPEN = [/^\/api\/tiles\/\d{1,2}\/\d{1,7}\/\d{1,7}\.png$/, /^\/api\/apps\/[a-z0-9]+\/files\/[a-z0-9]{6,20}$/, /^\/healthz$/];
+// /api/tls/ask is Caddy's question, before it gets a certificate for a host
+// (spec.apps.publish): whether the host is a published app's, which anyone
+// may learn by opening it.
+const OPEN = [/^\/api\/tiles\/\d{1,2}\/\d{1,7}\/\d{1,7}\.png$/, /^\/api\/apps\/[a-z0-9]+\/files\/[a-z0-9]{6,20}$/, /^\/healthz$/, /^\/api\/tls\/ask$/];
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 const hex = (s) => digest(s).toString('hex');
@@ -86,7 +89,7 @@ export class Login {
     if (OPEN.some((re) => re.test(url.pathname)) || url.pathname === '/login') return null;
     if (this.fromServer(req) || await this.signedIn(req)) return null;
     return url.pathname.startsWith('/api/')
-      ? { status: 401, json: { error: 'sign in to the studio from the cluster\'s command center: Apps, then App engine, then Open the studio' } }
+      ? { status: 401, json: { error: 'sign in to the studio from the cluster\'s command center: Apps, then App creator, then Studio on an app' } }
       : { status: 401, html: PAGE };
   }
 
@@ -138,4 +141,4 @@ const PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content
 <style>body{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f5f7;color:#1d2433}
 main{max-width:28rem;padding:2rem;background:#fff;border:1px solid #dfe2e8;border-radius:8px}h1{font-size:1.2rem;margin:0 0 .5rem}p{margin:0}
 @media (prefers-color-scheme: dark){body{background:#14171c;color:#e6e8ec}main{background:#1c2027;border-color:#2c313a}}</style>
-<main><h1>Sign in to the studio</h1><p>Open it from the cluster's command center: Apps, then App engine, then Open the studio. That needs an admin key, and this browser then stays signed in for ${LOGIN_DAYS} days.</p></main>`;
+<main><h1>Sign in to the studio</h1><p>Open it from the cluster's command center: Apps, then App creator, then Studio on an app. That needs an admin key, and this browser then stays signed in for ${LOGIN_DAYS} days.</p></main>`;

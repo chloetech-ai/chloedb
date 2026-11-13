@@ -914,6 +914,18 @@ impl Split {
         format!("classify: {} call{} of a parameter computed before planning", self.folded, if self.folded == 1 { "" } else { "s" })
     }
 
+    /// The first step as SQL text, for a server that sends it on (to its
+    /// shards, or to its own query path): the text parses back to the
+    /// very query [`Self::first`] is, or this fails, so that what runs is
+    /// what was split and never a different reading of printed text.
+    pub fn first_sql(&self) -> Result<String> {
+        let text = self.first.to_string();
+        match super::sql::parse_query(&text) {
+            Ok(q) if *q == self.first => Ok(text),
+            _ => Err(Error::Query(format!("llm(): the query without its calls does not print as SQL that reads back the same ({text}): write it another way"))),
+        }
+    }
+
     /// The models the calls name, each once.
     pub fn models(&self) -> Vec<&str> {
         let mut ms: Vec<&str> = Vec::new();
@@ -1203,10 +1215,24 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(s.first.to_string(), "SELECT id, *, length(body) < 200 AS __llm0, body AS __llm1 FROM t WHERE MATCH(body, 'x') ORDER BY bm25(body, 'x') DESC LIMIT 5");
+        // A server sends the first step on as text: it reads back the same.
+        assert_eq!(s.first_sql().unwrap(), s.first.to_string());
         assert!(s.order.is_empty());
         let s = split(&q("WITH top AS (SELECT * FROM t ORDER BY bm25(body, :q) DESC LIMIT 20) SELECT id, score() FROM top ORDER BY llm('m', 'Grade it', :q, body, returns => 'number') DESC LIMIT 3"), &FunctionSet::default(), &Params::new()).unwrap().unwrap();
         assert_eq!(s.first.to_string(), "WITH top AS (SELECT * FROM t ORDER BY bm25(body, :q) DESC LIMIT 20) SELECT id, body AS __llm0 FROM top LIMIT 101");
         assert_eq!((s.order.len(), s.limit, s.offset), (1, Some(3), 0));
+        assert!(s.first_sql().is_ok());
+        // A first step that would print as other SQL than it is (here a
+        // sum built without its parentheses) is refused, not run as read.
+        let mut odd = s.clone();
+        let sum = |l: Expr, r: Expr| Expr::BinaryOp { left: Box::new(l), op: sql::BinaryOperator::Plus, right: Box::new(r) };
+        let n = |v: &str| Expr::Value(sql::Value::Number(v.into(), false).into());
+        let product = Expr::BinaryOp { left: Box::new(sum(n("1"), n("2"))), op: sql::BinaryOperator::Multiply, right: Box::new(n("3")) };
+        if let sql::SetExpr::Select(sel) = odd.first.body.as_mut() {
+            sel.projection.push(SelectItem::UnnamedExpr(product));
+        }
+        assert!(odd.first.to_string().contains("1 + 2 * 3"), "{}", odd.first);
+        assert!(odd.first_sql().unwrap_err().to_string().contains("reads back the same"));
         for bad in [
             "SELECT id FROM t WHERE llm('m', 'x', body) = 'yes'",
             "WITH a AS (SELECT llm('m', 'x', body) AS s FROM t) SELECT * FROM a",
