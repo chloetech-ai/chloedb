@@ -1150,12 +1150,14 @@ const STEP_LABELS = {
   read: () => 'Read the app and the library',
   plan: (b) => b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change',
   write: (b) => b.first ? 'Write the screens and rules' : 'Write the pieces',
+  fix: () => 'Fix what the checks found',
   store: () => 'Check it and store it in ChloeDB',
 };
 
 function stepKeys(b) {
   const seen = new Set((b?.steps || []).map((x) => x.key));
-  return ['read', 'plan', 'write', 'store'].filter((k) => k !== 'write' || seen.has(k) || b?.split);
+  // fix: a round of fixes the checks asked for, counted once it starts
+  return ['read', 'plan', 'write', 'fix', 'store'].filter((k) => (k !== 'write' || seen.has(k) || b?.split) && (k !== 'fix' || seen.has(k)));
 }
 
 // How far the build is (0..1), how long it has run and about how long is
@@ -1165,7 +1167,7 @@ function stepKeys(b) {
 function buildPace(b) {
   const elapsed = (b.elapsed || 0) + (Date.now() - b.at);
   const keys = stepKeys(b);
-  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
+  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' || k === 'fix' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
   if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };

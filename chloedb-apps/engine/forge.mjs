@@ -1413,7 +1413,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   const STEP = parallel ? PLAN_STEP_PARALLEL : PLAN_STEP;
   let planPrompt = `${prompt}\n\n${STEP}`;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: attempt === 1 ? 'plan' : 'fix' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
     const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
     tr.call(span, answer, system.length + planPrompt.length);
@@ -1473,8 +1473,12 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     const t0 = Date.now();
     let last = 0;
     const done = [];
+    // A plan whose pieces are all screens written as JSON has none to write.
+    if (!pieces.length) return;
     for (const pc of pieces) board.set(pc.slug, { label: pc.label.replace(/^(view|function) /, ''), kind: pc.label.split(' ')[0], state: notes.has(pc.slug) ? 'again' : 'writing', chars: 0 });
-    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`, { step: 'write', pieces: shown() });
+    // Writing again what the checks found is a step of its own (fix), so the
+    // estimate counts it rather than calling the build late.
+    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`, { step: notes.size ? 'fix' : 'write', pieces: shown() });
     await pool(pieces, 8, async (pc) => {
       const fix = notes.get(pc.slug);
       const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
@@ -1578,7 +1582,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const small = !split && smallChange(request.text, view);
   for (let attempt = 1; attempt <= (small ? 3 : 2) && !split; attempt++) {
     const model = small && attempt === 1 ? SMALL_MODEL : SCREEN_MODEL;
-    progress(attempt === 1 ? `Asking the model (${model}${small ? ', for a small change' : ''}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model${small && attempt === 2 ? ` (${SCREEN_MODEL})` : ''} again to fix: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
+    progress(attempt === 1 ? `Asking the model (${model}${small ? ', for a small change' : ''}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model${small && attempt === 2 ? ` (${SCREEN_MODEL})` : ''} again to fix: ${problems.slice(0, 3).join('; ')}`, { step: attempt === 1 ? 'plan' : 'fix' });
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems', { model });
     answer = await ask({ system, prompt: attemptPrompt, model, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);

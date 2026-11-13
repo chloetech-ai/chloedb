@@ -249,6 +249,8 @@ const CSS = `
   .ac .grid3 { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 > .col { height: auto; min-height: 0; }
   .ac .grid3 > .ac-stage { height: 640px; }
+  /* a phone has no keyboard shortcut to show, and the hint wrapped a letter a line */
+  .ac .kbd-hint { visibility: hidden; min-width: 0; overflow: hidden; }
   /* on a phone the app is drawn at the phone's own width, without a frame */
   .ac .device.phone { padding: 0; }
   .ac .device.phone .shell { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
@@ -282,6 +284,7 @@ const STEP_LABELS = {
   read: () => 'Read the app and the library',
   plan: (b) => (b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change'),
   write: (b) => (b.first ? 'Write the screens and rules' : 'Write the pieces'),
+  fix: () => 'Fix what the checks found',
   store: () => 'Check it and store it in ChloeDB',
 };
 const SOURCE_LABEL = { suggestion: 'a suggestion', edit: 'edited by hand' };
@@ -308,14 +311,15 @@ const hue = (s) => { let x = 0; for (const c of String(s)) x = (x * 31 + c.charC
 
 function stepKeys(b) {
   const seen = new Set((b?.steps || []).map((x) => x.key));
-  return ['read', 'plan', 'write', 'store'].filter((k) => k !== 'write' || seen.has(k) || b?.split);
+  // fix: a round of fixes the checks asked for, counted once it starts
+  return ['read', 'plan', 'write', 'fix', 'store'].filter((k) => (k !== 'write' || seen.has(k) || b?.split) && (k !== 'fix' || seen.has(k)));
 }
 // How far a build is (0..1) and about how long is left, as the studio
 // reckons it: each step's expected time from the last builds' timelines.
 function buildPace(b) {
   const elapsed = (b.elapsed || 0) + (Date.now() - b.at);
   const keys = stepKeys(b);
-  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
+  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' || k === 'fix' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
   if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };
@@ -417,7 +421,7 @@ function render(el, ctx) {
     const nameIn = h('input', { class: 'home-name', placeholder: 'Name (optional)', 'aria-label': 'The app’s name (optional; kept as you write it)', maxlength: 60 });
     const go = h('button', { class: 'btn primary', type: 'button', onclick: () => create() }, icon('sparkle'), 'Build it');
     const err = h('span', { class: 'small', style: { color: 'var(--crit-ink)' } });
-    const tip = h('span', { class: 'small muted grow' }, '⌘/Ctrl + Enter');
+    const tip = h('span', { class: 'small muted grow kbd-hint' }, '⌘/Ctrl + Enter');
     async function create() {
       const description = ta.value.trim();
       if (description.length < 5) { ta.focus(); return; }
