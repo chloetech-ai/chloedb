@@ -366,7 +366,20 @@ class App:
         self.last_snap = 0
         self.stop = threading.Event()
         self.wf = wfm.Runner(db)
+        self.wf.readers.append(self.models_reading)
         self.wf_status = "starting"
+
+    def models_reading(self, wf):
+        """The deployed model, when it reads workflow `wf`'s table: deleting
+        the workflow would drop the table every ranking reads."""
+        m = self.model
+        if not m or not m.get("spec"):
+            return []
+        spec = json.loads(m["spec"])
+        used = {f.split(".", 1)[0] for f in spec.get("features", [])}
+        if any(j["workflow"] == wf and wf in used for j in spec.get("joins", [])):
+            return [f"the deployed model {m.get('name') or m['id']}"]
+        return []
 
     # -- setup
 
@@ -830,6 +843,10 @@ class App:
 
     def deploy(self, mid):
         m = self.load_model(mid) if mid != "random" else None
+        if m and m.get("spec"):
+            gone = [j["workflow"] for j in json.loads(m["spec"]).get("joins", []) if j["workflow"] not in self.wf.specs]
+            if gone:
+                raise ValueError(f"{m.get('name') or mid} reads {', '.join(gone)}, which no longer exist{'s' if len(gone) == 1 else ''}: train a model on the workflows there are")
         ops = [{"op": "set", "table": "fs_models", "key": r["id"], "field": "deployed", "value": 1 if r["id"] == mid else 0}
                for r in self.db.rows("SELECT id FROM fs_models")]
         if ops:
