@@ -650,7 +650,14 @@ fn main() {
             let mut failed = 0;
             for (dir, proj, name) in stores {
                 let prefix = if all { format!("{name}: ") } else { String::new() };
-                match redact_store(&dir, &proj, dry_run) {
+                // One store at a time, and a daemon started for it here is
+                // stopped after it (CTX-8: `--all` left one per store).
+                let was_running = std::os::unix::net::UnixStream::connect(paths::StorePaths::new(&dir).socket).is_ok();
+                let res = redact_store(&dir, &proj, dry_run);
+                if !was_running {
+                    let _ = daemon::request_running(&dir, &json!({"op": "shutdown"}), Duration::from_secs(10));
+                }
+                match res {
                     Ok(t) => println!("{prefix}{t}"),
                     Err(e) => {
                         failed += 1;
@@ -663,7 +670,13 @@ fn main() {
             }
         }
         Cmd::Stop { all: false } => {
-            send(&project, json!({"op": "shutdown"}), 10);
+            // Only a daemon that runs: stopping never starts one, nor
+            // creates a store (CTX-13).
+            let dir = paths::store_dir(&project);
+            match daemon::request_running(&dir, &json!({"op": "shutdown"}), Duration::from_secs(10)) {
+                Ok(_) => println!("stopped the daemon of {}; it starts again when a hook or tool needs it", project.display()),
+                Err(_) => println!("no daemon runs for {}", project.display()),
+            }
         }
         Cmd::Stop { all: true } => {
             let mut n = 0;

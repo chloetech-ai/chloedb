@@ -2071,6 +2071,11 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
     let deadline = Instant::now() + timeout;
     match try_request(&paths.socket, req, deadline) {
         Ok(r) => return Ok(r),
+        // A daemon that died as the request reached it (CTX-16): a new one
+        // is started, as for one that is not there.
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(err(format!("daemon: {e}"))),
         Err(_) => {}
     }
@@ -2082,6 +2087,12 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
             Err(_) => std::thread::sleep(Duration::from_millis(15)),
         }
     }
+}
+
+/// A request to the store's daemon only when one runs: never starts one
+/// (and so never creates a store).
+pub fn request_running(dir: &Path, req: &Json, timeout: Duration) -> Result<Json> {
+    try_request(&StorePaths::new(dir).socket, req, Instant::now() + timeout).map_err(|e| err(format!("daemon: {e}")))
 }
 
 /// Rewrites the store's segments that hold deleted records, without them
