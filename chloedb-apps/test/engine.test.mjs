@@ -2459,6 +2459,12 @@ test('a published app is open to the public at its own host, and nothing else is
     assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
   }
   assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A read of the settings that fails (a slow cluster) keeps what was published.
+  const query = store.db.query;
+  store.db.query = async () => { throw new Error('the query ran past its 5000 ms deadline'); };
+  await pub.load(true);
+  assert.deepEqual(await pub.allows(req('GET', host), at('/')), { app: 'a1', page: true });
+  store.db.query = query;
   // A visitor's rate: 5 calls a minute, 2 of them dear.
   const r = req('POST', host, { 'x-forwarded-for': '198.51.100.7, 10.0.0.1' });
   assert.equal(pub.limit(r, true), null);
