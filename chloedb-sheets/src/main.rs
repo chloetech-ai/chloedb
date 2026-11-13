@@ -34,8 +34,9 @@ enum Cmd {
 #[derive(Args)]
 struct Target {
     /// The chloedb-server (one server, or a cluster's coordinator) that keeps the workbooks.
-    #[arg(long, env = "CHLOEDB_URL")]
-    strata: Option<String>,
+    /// `--strata`, its name before the rename, works too.
+    #[arg(long, alias = "strata", env = "CHLOEDB_URL")]
+    server: Option<String>,
     /// Its API key (admin: the first start creates the two tables; then write).
     #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
     key: Option<String>,
@@ -181,8 +182,8 @@ impl Local {
 }
 
 async fn connect(t: &Target, app: Option<(String, Option<String>)>) -> (Strata, Option<Local>) {
-    let (url, local) = match (&t.local, &t.strata) {
-        (Some(_), Some(_)) => fail("give --strata or --local, not both"),
+    let (url, local) = match (&t.local, &t.server) {
+        (Some(_), Some(_)) => fail("give --server or --local, not both"),
         (Some(dir), None) => {
             let l = Local::start(dir, server_bin(&t.server_bin), &t.local_listen, app).await.unwrap_or_else(|e| fail(e));
             eprintln!("chloedb-sheets: a chloedb-server keeps the workbooks in {} and answers at {} (its command center too)", dir.display(), l.url);
