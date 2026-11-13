@@ -155,13 +155,16 @@ const CSS = `
 .ac .ac-usage .sep { flex: none; }
 .ac .device { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow: auto; position: relative; }
 .ac .device .shell { position: relative; background: var(--bg); width: 100%; height: 100%; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 0 var(--line), 0 10px 30px rgba(0,0,0,.08); }
-.ac .device.phone .shell { width: 390px; height: min(800px, 100%); border-radius: 34px; border: 9px solid #15171b; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
+.ac .device.phone { padding: 12px 8px; }
+.ac .device.phone .shell { box-sizing: border-box; width: 408px; max-width: 100%; height: min(800px, 100%); border-radius: 34px; border: 9px solid #15171b; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
 .ac .device.tablet .shell { width: 820px; max-width: 100%; height: min(1000px, 100%); border-radius: 22px; border: 9px solid #15171b; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ac .device.phone .shell, :root:not([data-theme="light"]) .ac .device.tablet .shell { border-color: #3a3f48; } }
 :root[data-theme="dark"] .ac .device.phone .shell, :root[data-theme="dark"] .ac .device.tablet .shell { border-color: #3a3f48; }
 .ac .device iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
-/* Desktop: drawn 1280 px wide (or the stage's width, when wider), scaled to fit (fitDesktop) */
-.ac .device.desktop { padding: 0; overflow: hidden; }
+/* Desktop: drawn 1280 px wide (or the stage's width, when wider), scaled to fit down to MIN_SCALE, then scrolled (fitDevice) */
+.ac .device .sizer { display: none; }
+.ac .device.desktop .sizer { display: block; flex: none; }
+.ac .device.desktop { padding: 0; overflow: auto hidden; justify-content: flex-start; }
 .ac .device.desktop .shell { position: absolute; left: 0; top: 0; border-radius: 0; transform-origin: 0 0; }
 .ac .home-name { border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; min-width: 0; flex: 0 1 200px; padding: 4px 0; border-bottom: 1px dashed var(--line-2); }
 .ac .pubchoices { display: flex; flex-direction: column; gap: 6px; }
@@ -244,9 +247,11 @@ const CSS = `
   .ac .grid3 { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 > .col { height: auto; min-height: 0; }
   .ac .grid3 > .ac-stage { height: 640px; }
+  /* on a phone the app is drawn at the phone's own width, without a frame */
+  .ac .device.phone { padding: 0; }
+  .ac .device.phone .shell { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
   .ac .grid3 > .builder .scroll { max-height: 55vh; }
   .ac .wsbar h1 { max-width: 70vw; }
-  .ac .wsbar .seg { display: none; }
   .ac .hero { padding: 18px; } .ac .hero h1 { font-size: 21px; }
 }
 `;
@@ -287,6 +292,7 @@ const AUTO_LABEL = { repair: 'The engine repairs a piece that failed', look: 'Th
 // 503, 504), too many requests (429).
 const transientError = (err) => !!err && (err.answered === false || [0, 408, 429, 502, 503, 504].includes(Number(err.status)));
 const DESKTOP_W = 1280; // the Desktop stage's width, as a laptop's window
+const MIN_SCALE = 0.6; // the smallest the Desktop stage is drawn: 13 px text at about 8 px
 // Columns whose values look like people's contact details (Publish warns of them).
 const CONTACT = /(^|_)(e_?mail|phone|mobile|cell|tel|telephone|whatsapp|address|postcode|zip)(_|$)/i;
 const secs = (ms) => (ms < 1000 ? `${(ms / 1000).toFixed(1)} s` : ms < 100000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`);
@@ -642,7 +648,9 @@ function render(el, ctx) {
     const W = {
       st: null, view: firstScreen, frames: new Map(), errors: new Map(), left: new Map(),
       lines: [], build: null, runningText: '', runningId: null, ended: new Set(), failed: null, previews: new Map(), previewView: null,
-      tab: 'data', device: (() => { try { return localStorage.getItem('ac-device') || 'desktop'; } catch { return 'desktop'; } })(),
+      // The device the stage draws: the owner's choice, else (auto) the one
+      // the stage's width shows at its real size (fitDevice).
+      tab: 'data', device: (() => { try { return localStorage.getItem('ac-device') || 'auto'; } catch { return 'auto'; } })(),
       tryV: null, pick: null, designCss: '', polling: false, stopped: false, logOpen: false,
     };
     const atV = () => (W.tryV ? `?v=${W.tryV}` : '');
@@ -705,10 +713,9 @@ __sa_ready();
     const title = h('h1', {}, '…');
     const verTag = h('span');
     const status = h('span', { class: 'small muted' });
-    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', `A computer, ${DESKTOP_W} px wide, scaled to fit`]], W.device, (v) => {
+    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', `A computer, ${DESKTOP_W} px wide: drawn smaller when the stage is narrower, down to ${Math.round(MIN_SCALE * 100)}%, then scrolled`]], W.device === 'auto' ? null : W.device, (v) => {
       W.device = v; try { localStorage.setItem('ac-device', v); } catch { /* this visit only */ }
-      deviceBox.className = `device ${v}`;
-      fitDesktop();
+      fitDevice();
     });
     const ownLink = h('a', { class: 'btn sm', target: '_blank', rel: 'noopener', title: 'The app on its own, as people use it: sign-in, a phone', hidden: true }, icon('ext'), 'Its own page');
     // Open to the public, or not: the tag opens the Publish tab.
@@ -783,22 +790,33 @@ __sa_ready();
     const screens = h('div', { class: 'screens', role: 'tablist' });
     const reload = h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Start the screen again', onclick: () => { for (const f of W.frames.values()) f.iframe.remove(); W.frames.clear(); W.errors.clear(); W.left.clear(); paintStage(); } }, icon('refresh'));
     const tryBar = h('div');
-    const deviceBox = h('div', { class: `device ${W.device}` });
+    const deviceBox = h('div', { class: 'device' });
     const shell = h('div', { class: 'shell' });
-    deviceBox.append(shell);
-    // The screens see a computer's width (a table stays a table, its columns
-    // all there), drawn smaller when the stage is narrower than that.
-    function fitDesktop() {
-      if (W.device !== 'desktop') { shell.style.width = shell.style.height = shell.style.transform = shell.style.left = ''; return; }
+    // What the stage scrolls over when the desktop is wider than it, drawn smaller.
+    const sizer = h('div', { class: 'sizer' });
+    deviceBox.append(sizer, shell);
+    // The device drawn: the owner's choice, else the largest the stage shows
+    // at its own size (a computer from 900 px, a tablet from 640 px, else a
+    // phone), so the app's text is never drawn too small to read. A computer
+    // keeps its width (a table stays a table, its columns all there), drawn
+    // smaller when the stage is narrower, but never under MIN_SCALE: the
+    // stage scrolls sideways instead.
+    function fitDevice() {
       const w = deviceBox.clientWidth, ht = deviceBox.clientHeight;
+      const dev = W.device !== 'auto' ? W.device : !w ? 'phone' : w >= 900 ? 'desktop' : w >= 640 ? 'tablet' : 'phone';
+      deviceBox.className = `device ${dev}`;
+      devices.set(dev);
+      if (dev !== 'desktop') { shell.style.width = shell.style.height = shell.style.transform = shell.style.left = sizer.style.width = sizer.style.height = ''; return; }
       if (!w || !ht) return;
       const width = Math.max(DESKTOP_W, w);
-      const k = w / width;
+      const k = Math.max(MIN_SCALE, w / width);
       shell.style.width = `${width}px`;
       shell.style.height = `${Math.round(ht / k)}px`;
       shell.style.transform = k < 1 ? `scale(${k})` : '';
+      sizer.style.width = `${Math.round(width * k)}px`;
+      sizer.style.height = `${ht}px`;
     }
-    const fitter = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fitDesktop()) : null;
+    const fitter = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fitDevice()) : null;
     fitter?.observe(deviceBox);
     // Usage: the Activity view (web/activity.js, the studio's), over the whole stage.
     const usageBox = h('div', { class: 'ac-usage', hidden: true });
@@ -1028,8 +1046,8 @@ __sa_ready();
         c?.status === 'ready' ? h('button', { class: 'btn sm primary', onclick: () => decide(c, 'keep') }, 'Keep') : null,
         h('button', { class: 'btn sm ghost', onclick: () => tryVersion(null) }, 'Back to live'))] : []));
       // screens drawn while the model writes the rest
-      shell.querySelector('.previewbar')?.remove();
-      shell.querySelector('.building')?.remove();
+      deviceBox.querySelector('.previewbar')?.remove();
+      deviceBox.querySelector('.building')?.remove();
       if (W.previews.size && W.lines.length) {
         const list = [...W.previews.values()].sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
         const cur = W.previews.get(W.previewView) || list[0];
@@ -1043,7 +1061,7 @@ __sa_ready();
           pv.srcdoc = srcdoc({ slug: cur.slug, id: `preview:${cur.slug}`, title: cur.title, spec: { screen: true }, code: JSON.stringify({ ...cur.screen, preview: true }) }, {});
           shell.append(pv);
         }
-        shell.append(h('div', { class: 'previewbar' }, h('span', { class: 'spin' }), h('b', {}, 'Preview'), h('span', { class: 'grow muted' }, 'while the agent writes the rest'),
+        deviceBox.append(h('div', { class: 'previewbar' }, h('span', { class: 'spin' }), h('b', {}, 'Preview'), h('span', { class: 'grow muted' }, 'while the agent writes the rest'),
           list.map((p) => h('button', { class: 'ac-chip', style: p.slug === cur.slug ? { borderColor: 'var(--accent)' } : null, onclick: () => { W.previewView = p.slug; paintStage(); } }, p.title))));
         return;
       }
@@ -1052,7 +1070,7 @@ __sa_ready();
         for (const f of W.frames.values()) f.iframe.remove();
         W.frames.clear();
         const failedFirst = !st.running && !W.lines.length && (st.requests || []).find((r) => r.status === 'failed');
-        shell.append(h('div', { class: 'building' }, h('div', { class: 'box' },
+        deviceBox.append(h('div', { class: 'building' }, h('div', { class: 'box' },
           h('h2', {}, failedFirst ? 'The first version did not build' : 'Building the first version'),
           h('div', { class: 'small dim', style: { textAlign: 'center' } }, st.app.description),
           W.lines.length ? h('div', { class: 'small muted', style: { textAlign: 'center' } }, 'Follow it on the left; its screens show here as soon as they are written.')
@@ -1084,10 +1102,10 @@ __sa_ready();
       }
       for (const [slug, f] of W.frames) f.iframe.hidden = slug !== W.view;
       if (W.view === USAGE) return;
-      shell.querySelector('.viewerr')?.remove();
+      deviceBox.querySelector('.viewerr')?.remove();
       const err = W.errors.get(W.view);
       if (err) {
-        shell.append(h('div', { class: 'viewerr' }, icon('bad'), h('div', { class: 'grow' }, h('b', {}, 'This screen hit an error. '), err.message,
+        deviceBox.append(h('div', { class: 'viewerr' }, icon('bad'), h('div', { class: 'grow' }, h('b', {}, 'This screen hit an error. '), err.message,
           err.repairing ? h('div', { class: 'small muted' }, h('span', { class: 'spin' }), ' The engine is repairing it; the fixed version replaces it when ready.') : null),
           !err.repairing ? h('button', { class: 'btn sm', onclick: () => ask(`The screen "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
           h('button', { class: 'btn sm ghost', onclick: () => { W.errors.delete(W.view); paintStage(); } }, 'Dismiss')));
