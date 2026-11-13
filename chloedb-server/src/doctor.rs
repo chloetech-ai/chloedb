@@ -195,7 +195,7 @@ pub fn glibc_check(version: Option<&str>) -> Check {
     if k < vec![2, 28] {
         Check::new(Level::Warn, name, format!("{v}: older than every prebuilt program and wheel needs (2.35; Python wheels from 0.2.1, 2.28)"), Some("docker run ghcr.io/chloetech-ai/chloedb-server, or build from source".into()))
     } else if k < vec![2, 35] {
-        Check::new(Level::Warn, name, format!("{v}: the prebuilt server, JavaScript addon and release 0.2.0's Python wheels need 2.35; Python wheels from 0.2.1 (manylinux_2_28) run here"), Some("docker run ghcr.io/chloetech-ai/chloedb-server for the server".into()))
+        Check::new(Level::Warn, name, format!("{v}: the prebuilt server, JavaScript addon and release 0.2.0's Python wheels need 2.35; Python wheels from 0.2.1 (glibc 2.28, manylinux_2_28) run here"), Some("docker run ghcr.io/chloetech-ai/chloedb-server for the server".into()))
     } else {
         Check::new(Level::Ok, name, format!("{v}: the prebuilt programs and wheels run here"), None)
     }
