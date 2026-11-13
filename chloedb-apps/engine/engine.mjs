@@ -212,7 +212,7 @@ export class Engine extends EventEmitter {
     const user = ctx.user || null;
     // A build's tests (checks.mjs) reach no model and no web: app.ask and
     // app.fetch answer empty there.
-    const inner = { depth, by: fn.id, user, test: !!ctx.test };
+    const inner = { depth, by: fn.id, user, test: !!ctx.test, pub: !!ctx.pub };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -258,7 +258,10 @@ export class Engine extends EventEmitter {
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
-      if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call');
+      // Nor is a failure a published app's visitor set off (ctx.pub): its
+      // text holds what they sent, and a repair becomes the live version.
+      if (!e.refused && !ctx.pub) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call');
+      else if (!e.refused) this.log(`${fn.id} failed for a visitor (no repair): ${String(e.message).slice(0, 200)}`);
       throw e;
     }
   }
@@ -352,7 +355,7 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test })
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, pub: !!ctx.pub })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
       this.pending.add(run);
       run.finally(() => this.pending.delete(run));
