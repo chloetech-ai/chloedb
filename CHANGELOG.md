@@ -13,6 +13,22 @@ changes collect under "Unreleased".
 
 ### Added
 
+- `chloedb-netops`: network operations on ChloeDB, an app of the command
+  center (`chloedb-server --app netops=URL`, the operator's `spec.netops`,
+  port 7840, a key limited to `netops_*`). The shift's home page (a
+  handover written from the tables and one list of what waits), a lookup
+  of anything a ticket names, a Diagnose page (the stack by place with
+  the lowest broken layer named, one broken thing asked of the graph, the
+  logs, the history and past incidents, and a trace hop by hop), incidents grouped over the topology graph
+  with a root-cause agent that keeps its SQL, a board per incident that
+  starts from its cause's template and that people extend by asking for a
+  panel, alerts with owners and silences, changes carried out and checked
+  against the network before them, a customer's "is it the network?",
+  carriers' maintenance notices checked for collisions, the topology read
+  from the logs, and a leadership view of the same tables. It ships with a
+  simulated carrier network and six faults; `--no-simulate` reads the
+  network from the inventory tables and judges whatever feeds write
+  ([docs](docs/chloedb/netops.md)).
 - ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
   queries the rank log kept that rank by a rank profile, on one snapshot,
   with the profile as it is and with the numbers a coordinate-ascent search

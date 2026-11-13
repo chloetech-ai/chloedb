@@ -39,6 +39,7 @@ pub mod crawler;
 pub mod follow;
 pub mod kube;
 pub mod lease;
+pub mod netops;
 pub mod sheets;
 pub mod upgrade;
 
@@ -46,6 +47,7 @@ pub use apps::AppsSpec;
 pub use chloectx::ChloectxSpec;
 pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
+pub use netops::NetopsSpec;
 pub use sheets::SheetsSpec;
 
 use std::collections::HashMap;
@@ -148,6 +150,10 @@ pub struct Spec {
     /// Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<AppsSpec>,
+    /// Network operations beside the cluster ([`netops`]): `chloedb-netops
+    /// serve` in a Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub netops: Option<NetopsSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -390,6 +396,7 @@ impl Default for Spec {
             sheets: None,
             chloectx: None,
             apps: None,
+            netops: None,
         }
     }
 }
@@ -425,7 +432,7 @@ impl Spec {
 
     /// The apps beside the cluster that the coordinators list, by name.
     pub fn apps(&self) -> Vec<&'static str> {
-        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.chloectx.is_some(), chloectx::APP), (self.apps.is_some(), apps::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
+        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.chloectx.is_some(), chloectx::APP), (self.apps.is_some(), apps::APP), (self.netops.is_some(), netops::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
     }
 
     /// `settings` with `secretEnv` when there is one: a cluster without it
@@ -490,6 +497,9 @@ impl Spec {
         }
         if let Some(c) = &self.chloectx {
             c.check()?;
+        }
+        if let Some(n) = &self.netops {
+            n.check()?;
         }
         if let Some(a) = &self.apps {
             a.check()?;
@@ -671,6 +681,12 @@ pub trait Platform {
     /// Deployment of one, its Service and its volume on Kubernetes.
     /// Applied once the coordinators are there.
     async fn apps(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Runs the network operations app `spec.netops` asks for, or none
+    /// ([`netops`]): a Deployment of one and its Service on Kubernetes.
+    /// Applied once the coordinators are there.
+    async fn netops(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
     /// Gives each app beside the cluster a key limited to its tables and a
@@ -1099,6 +1115,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
     p.sheets(spec).await?;
     p.chloectx(spec).await?;
     p.apps(spec).await?;
+    p.netops(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1941,6 +1958,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         if new.sheets.is_some() {
             warnings.push("no token: anything that reaches the spreadsheets' pod may read and change the cluster's tables through it".into());
         }
+        if new.netops.is_some() {
+            warnings.push("no token: anything that reaches the network operations pod may read and change its tables through it, and start its simulator's faults".into());
+        }
         if new.chloectx.is_some() {
             warnings.push("no token: anything that reaches ChloeCtx's pod may read and change the cluster's tables through it, and call the model with the cluster's key".into());
         }
@@ -2051,6 +2071,16 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (None, None) => unreachable!("the sheets specs differ"),
         });
     }
+    if new.netops != old.netops {
+        steps.push(match (&old.netops, &new.netops) {
+            (None, Some(_)) => "network operations start beside the cluster (chloedb-netops serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Network operations; the network, its telemetry and its incidents are kept in the tables netops_*, which the app makes and its simulator writes to each minute".into(),
+            (Some(_), None) => "network operations stop (their Deployment and Service go; the tables netops_* stay) and the coordinators no longer list them".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "network operations pause: their pod goes (the tables netops_* stay, and nothing is written to them)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => "network operations start again, from the tables they had".into(),
+            (_, Some(_)) => "network operations restart with the new settings, from the tables they had".into(),
+            (None, None) => unreachable!("the netops specs differ"),
+        });
+    }
     if new.chloectx != old.chloectx {
         steps.push(match (&old.chloectx, &new.chloectx) {
             (None, Some(c)) => format!("ChloeCtx starts beside the cluster (chloectx app, a Deployment of one{}) and the coordinators list it, so the command center shows Apps → ChloeCtx; its spaces are kept in the tables ctx_spaces and ctx_<space>", if c.needs_model() { ", which downloads its embedding model at each start" } else { "" }),
@@ -2142,6 +2172,7 @@ pub fn crd() -> Json {
             "sheets": sheets::schema(),
             "chloectx": chloectx::schema(),
             "apps": apps::schema(),
+            "netops": netops::schema(),
         },
     });
     let status = free("What the operator found and does.");

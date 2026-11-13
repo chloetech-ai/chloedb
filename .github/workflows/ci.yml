@@ -134,7 +134,7 @@ jobs:
         # chloedb-crawl's crawl into a real cluster, and chloedb-sheets'
         # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
-        crate: [chloedb, chloectx, chloedb-server, chloedb-crawl, chloedb-sheets]
+        crate: [chloedb, chloectx, chloedb-server, chloedb-crawl, chloedb-sheets, chloedb-netops]
     runs-on: ${{ matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: chloedb-server's tests took
@@ -531,6 +531,7 @@ jobs:
             chloedb-server
             chloedb-crawl
             chloedb-sheets
+            chloedb-netops
             chloectx
           key: chloedb-server-smoke
       - name: Build
@@ -586,6 +587,16 @@ jobs:
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_SHEETS_NEED_SERVER: "1"
+        run: cargo test --locked --profile ci --test cluster
+      # The network operations app on a server of this build: its 31
+      # tables, the topology found from logs, each of the simulator's six
+      # faults diagnosed and checked against its answer key, an action
+      # approved, and the same network read back after a restart.
+      - name: Network operations on a server
+        working-directory: chloedb-netops
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOEDB_NETOPS_NEED_SERVER: "1"
         run: cargo test --locked --profile ci --test cluster
       # ChloeCtx as an app of a cluster of this build's servers (two shards
       # and a coordinator): spaces, notes, contexts within a budget, an

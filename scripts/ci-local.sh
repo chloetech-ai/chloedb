@@ -96,6 +96,7 @@ test-chloectx|test|chloectx's tests and clippy
 test-chloedb-server|test|chloedb-server's tests, the simulator's seeds, and clippy
 test-chloedb-crawl|test|chloedb-crawl's tests and clippy
 test-chloedb-sheets|test|chloedb-sheets' tests and clippy
+test-chloedb-netops|test|chloedb-netops' tests and clippy
 kernels|kernels|ChloeDB's SIMD kernels in a generic build, then with SIMD off (x86-64 under Rosetta on a Mac, then the native generic build)
 faults|faults|power losses, full disks and failing syncs (feature fault-injection)
 datafusion|datafusion|DataFusion as the engine (feature datafusion) and the compound-query suites on it
@@ -224,7 +225,7 @@ while [ $# -gt 0 ]; do
         -*) die "unknown option $1 (see --help)" ;;
         *)
             if [ "$1" = test ]; then
-                SELECTED="$SELECTED test-chloedb test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets"
+                SELECTED="$SELECTED test-chloedb test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets test-chloedb-netops"
             elif job_names | grep -qx -- "$1"; then
                 SELECTED="$SELECTED $1"
             else
@@ -491,6 +492,12 @@ job_test_chloedb_sheets() {
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
+job_test_chloedb_netops() {
+    cd chloedb-netops
+    crate_tests
+    cargo clippy --release --all-targets -- $CLIPPY_LINTS
+}
+
 # RUSTFLAGS, even empty, replaces chloedb/.cargo/config.toml's target-cpu=native.
 kernels() {
     export RUSTFLAGS=$1
@@ -609,6 +616,9 @@ job_server_smoke() {
     # Spreadsheets kept in a server of this build, read back after a restart.
     cd ../chloedb-sheets
     CHLOEDB_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" CHLOEDB_SHEETS_NEED_SERVER=1 cargo test --profile ci --test cluster
+    # The network operations app on a server of this build: its faults diagnosed, and read back after a restart.
+    cd ../chloedb-netops
+    CHLOEDB_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" CHLOEDB_NETOPS_NEED_SERVER=1 cargo test --profile ci --test cluster
 }
 
 # Redpanda for the Kafka consumer's exactly-once test: CI's container on
@@ -737,7 +747,7 @@ miri_part() {
 # lanes. Each job's outcome is a line of $RUN_DIR/results.
 
 MIRI_PIDS="" LANE_PIDS=""
-LANE2_JOBS="test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets server-smoke python javascript java"
+LANE2_JOBS="test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets test-chloedb-netops server-smoke python javascript java"
 record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$RUN_DIR/results"; }
 failed_any() { [ -f "$RUN_DIR/results" ] && grep -qv '|success|' "$RUN_DIR/results"; }
 lane_of() {
@@ -772,12 +782,12 @@ prune_dirs() {
 prune_job() {
     local rel crate
     if [ "$LANES" = 1 ]; then
-        prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+        prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-netops/target chloedb-js/target chloedb-java/target
         return 0
     fi
     case "$LANE" in
         1) prune_dirs chloedb/target ;;
-        2) prune_dirs chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target ;;
+        2) prune_dirs chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-netops/target chloedb-js/target chloedb-java/target ;;
     esac
     { sed -n 's/^ *Running .* (\(target\/[^)]*\))$/\1/p' "$1"; cat "$1.binaries" 2>/dev/null; } | sort -u | while read -r rel; do
         case "$rel" in
@@ -923,6 +933,7 @@ find_affected() {
             chloedb-java/*) AFFECTED="$AFFECTED java" ;;
             chloedb-crawl/*) AFFECTED="$AFFECTED test-chloedb-crawl server-smoke" ;;
             chloedb-sheets/*) AFFECTED="$AFFECTED test-chloedb-sheets server-smoke" ;;
+            chloedb-netops/*) AFFECTED="$AFFECTED test-chloedb-netops server-smoke" ;;
             chloedb-server/*) AFFECTED="$AFFECTED test-chloedb-server server-smoke python javascript audio vision" ;;
             *) all=1 ;;
         esac
@@ -998,7 +1009,7 @@ else
         LANE_PIDS="$LANE_PIDS $!"
     done
     supervise
-    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-netops/target chloedb-js/target chloedb-java/target
     finish_miri
 fi
 
