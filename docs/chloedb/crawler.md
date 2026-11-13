@@ -143,6 +143,8 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `GET /v1/grow` | the shards' rows of the crawls' tables, slots moving, and the shards added |
 | `GET /app.json`, `GET /ui/view.js` | the manifest and view the command center reads |
 
+Through chloedb-server the crawler checks its callers (`"checks_callers": true` in its manifest): a key that may write starts crawls, which are its own, and pauses, resumes, stops and forgets only those (an admin of every table steers any); a key limited to tables lists only its own crawls. A crawl writes its table as the key that started it: the crawler sends its token narrowed to that key's grants (`x-chloedb-as-tables`, [server](server.md#apps)), so a key limited to `crawl_*` crawls into `crawl_*` tables only, and a table it may not write is the server's 403. Called directly with its token, it answers as before.
+
 ## Limits
 
 - Pages are read as their HTML arrives: a page built by JavaScript in the browser shows only what its HTML holds (JSON-LD and meta tags often carry its fields anyway).
