@@ -33,7 +33,9 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod rollup;
 mod writes;
+pub use rollup::RefreshStats;
 pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
@@ -1856,6 +1858,10 @@ impl Db {
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
+        }
+        // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`.
+        if let Some(st) = crate::query::rollup::parse_statement(sql)? {
+            return self.rollup_statement(st, opts);
         }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function.

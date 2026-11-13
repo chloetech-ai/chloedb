@@ -3493,6 +3493,23 @@ impl Service {
         db.expire(chloedb::timestamp::now(), EXPIRE_BATCH)
     }
 
+    /// Refreshes the database's rollups ([`Db::refresh_rollup`]), every
+    /// bucket of each when `full`, as a server that takes writes does
+    /// every few seconds ([`crate::server::spawn_rollups`]): not a replica,
+    /// which applies the rollups' writes its primary ships. The buckets it
+    /// folded again.
+    pub fn refresh_rollups_due(&self, full: bool) -> chloedb::Result<u64> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() || self.moving.mask().is_some() {
+            return Ok(0);
+        }
+        let mut folded = 0;
+        for r in db.rollups()? {
+            folded += db.refresh_rollup(&r.name, full)?.folded;
+        }
+        Ok(folded)
+    }
+
     /// Deletes the database's records of idempotency keys older than
     /// [`idem::TTL`] ([`idem::forget_expired`]), as a server that takes
     /// writes does every minute ([`crate::server::spawn_key_forgetter`]):
@@ -3627,6 +3644,11 @@ impl Service {
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
         }
+        // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`
+        // ([`chloedb::query::rollup`]).
+        if let Some(st) = chloedb::query::rollup::parse_statement(sql)? {
+            return self.rollup_statement(who, st, sql, timeout_ms).await;
+        }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function ([`chloedb::query::table_synonyms`]).
         if let Some(st) = chloedb::query::table_synonyms::parse_statement(sql)? {
@@ -3732,6 +3754,58 @@ impl Service {
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// A rollup's statement ([`chloedb::query::rollup`]), on a database of
+    /// its own: `CREATE ROLLUP` and `DROP ROLLUP` as table statements are
+    /// ([`Self::ddl`]), `REFRESH ROLLUP` answered with what it did.
+    async fn rollup_statement(self: &Arc<Self>, who: &Principal, st: chloedb::query::rollup::Statement, sql: &str, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::rollup::Statement;
+        who.may(Scope::Admin, "a rollup statement")?;
+        if who.limited() {
+            return Err(ApiError::bad("query error: a rollup statement needs a key that is not limited to tables"));
+        }
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("query error: rollups do not run through a coordinator yet; each shard keeps its own"));
+        };
+        let t0 = Instant::now();
+        match st {
+            Statement::Refresh { name, full } => {
+                self.takes_writes()?;
+                let db = db.clone();
+                let s = tokio::task::spawn_blocking(move || db.refresh_rollup(&name, full)).await.map_err(ApiError::internal)??;
+                let columns = ["buckets_checked", "buckets_folded", "rows_written", "seconds"].map(String::from).to_vec();
+                let rows = vec![vec![Value::Int(s.checked as i64), Value::Int(s.folded as i64), Value::Int(s.rows_written as i64), Value::Float(s.seconds)]];
+                let rs = ResultSet { columns, rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+                Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "rollup", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+            }
+            Statement::Create { rollup, if_not_exists } => {
+                // Made here, and folded by the refresher a few seconds on:
+                // a long table's first fold takes minutes.
+                keys::note(obs::truncate(sql, 500).into_owned());
+                self.takes_writes()?;
+                let _entry = self.moving.enter();
+                self.not_held()?;
+                let by = self.admitted();
+                let timeout = self.timeout_of(timeout_ms);
+                let db = db.clone();
+                let w = tokio::task::spawn_blocking(move || {
+                    wait_for_writer(Instant::now() + timeout, || {
+                        db.create_rollup(&rollup, if_not_exists, &db.exec)?;
+                        Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
+                    })
+                })
+                .await
+                .map_err(ApiError::internal)??;
+                let w = self.replicated(w, timeout, by).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+            Statement::Drop { .. } => {
+                keys::note(obs::truncate(sql, 500).into_owned());
+                let w = self.ddl(sql, &Params::new(), timeout_ms, &who.name).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+        }
     }
 
     /// `CREATE CLASSIFIER`: the rows it trains on read as a query reads

@@ -996,6 +996,28 @@ A `SUM` or `AVG` of `FLOAT` values is exact: the values are added without roundi
 - **Of columns and expressions.** Over one table they take indexed `INT` and `FLOAT` columns, read from the columns as the other aggregates are; over joined or derived rows, any numeric expression (`MEDIAN(s.price * 1.2)`). `p` is a constant or a parameter (`:p`); the order is ascending (`ORDER BY f DESC` is an error: write `1 - p`). They are aggregates of groups, not window functions.
 - **Exact, so they hold the values.** A group keeps each of its values (8 bytes each, counted against the [query's memory budget](server.md#limits)) and orders them once when it is read: a median over 5 million rows holds 40 MB. A shard sends a group's values to the coordinator as runs of equal values, so prices that repeat travel once with their count, and the coordinator's answer is one server's. Plans with a percentile carry the plan feature `percentiles`, which a version of ChloeDB from before them refuses by name.
 
+### Rollups: `CREATE ROLLUP`
+
+A rollup is a table of counts, sums, least and greatest values per bucket of time and per group, kept up to date from another table as rows arrive: a time-bucket query over weeks of logs reads a few thousand rows of the rollup instead of millions of the table.
+
+```sql
+CREATE ROLLUP logs_5m ON logs OPTIONS(lateness = '10 minutes', retain = '400 days') AS
+  SELECT date_bin('5 minutes', ts), service, severity, COUNT(*), SUM(latency), MAX(latency) AS worst
+  WHERE severity <> 'DEBUG';
+
+SELECT date_trunc('hour', bucket) AS h, service, SUM(count), SUM(sum_latency) / SUM(count) AS mean, MAX(worst)
+FROM logs_5m WHERE bucket >= '2026-11-01' GROUP BY h, service;
+
+REFRESH ROLLUP logs_5m;        -- now, without waiting for the background job
+REFRESH ROLLUP logs_5m FULL;   -- every bucket, for rows later than the lateness
+DROP ROLLUP IF EXISTS logs_5m;
+```
+
+- **The bucket** is `date_bin('<width>', field)`, any whole number of seconds, minutes, hours, days or weeks counted from 1970-01-01, or `date_trunc('second' | 'minute' | 'hour' | 'day', field)`, of a `TIMESTAMP` column. The groups are `KEYWORD`, `INT`, `BOOL` or `TIMESTAMP` columns, and the aggregates `COUNT(*)`, `SUM(f)`, `MIN(f)`, `MAX(f)` and `AVG(f)` of numeric columns (`MIN` and `MAX` of a `TIMESTAMP` too). A `WHERE` keeps some rows only; `FROM`, when written, names the table after `ON`.
+- **The rollup is an ordinary table**, named by the statement, with a row per bucket and group: `rollup_key` (its primary key), the bucket (`bucket`, or the name `AS` gives it), the group columns, typed as in the table, and a column per aggregate, `count`, `sum_<field>`, `min_<field>` and `max_<field>` unless `AS` names it. `AVG(f)` keeps `sum_f` and `count`, so the mean is `SUM(sum_f) / SUM(count)`. A `count` column is always kept. Query it by name, and add its rows up into larger buckets or fewer groups (`SUM(count)`, `MIN(min_latency)`); a query of the table is not rewritten onto it. `OPTIONS(retain = ...)` is the rollup's own [retention](#tables), kept by its bucket: a rollup outlives the rows it counts.
+- **How it is kept.** `CREATE ROLLUP` folds the table's rows at once (on a server, its refresher does, a few seconds on). From then on a refresh compares, bucket by bucket, how many rows of the table the bucket holds with the rollup's count for it (a count over a time window reads the column's index, well under a millisecond), and folds again, in one transaction, the buckets that differ. A plain refresh compares the buckets from the newest row less the `lateness` (10 minutes by default) to the newest, and any the rollup has not folded yet; `FULL` compares them all. A server refreshes every rollup every few seconds, and all their buckets every few minutes; an embedding program calls `Db::spawn_rollups` (or runs `REFRESH ROLLUP`). Buckets older than the table's `retain` are not compared again, so they keep what they counted.
+- **For tables rows are added to**, such as logs: a change that leaves a bucket's count as it was (an `UPDATE`, or a delete and an insert into one bucket between two refreshes) is seen only when the bucket is next folded. The definition is kept as a [stored function](#stored-functions), `rollup__<name>()`, whose body is the statement, so it needs nothing new on disk and travels with the database. On a server with shards, each shard keeps a rollup of its own rows; rollups through a coordinator come later.
+
 ## Subqueries, WITH and joins
 
 ```sql

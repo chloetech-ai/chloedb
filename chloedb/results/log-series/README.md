@@ -9,12 +9,15 @@ Measured with `examples/log_series_bench.rs`:
 cargo build --release --example log_series_bench
 log_series_bench stream DB gen:20000000:30 600 190    # 10 minutes, kept 190 s
 log_series_bench load DB bgl.jsonl && log_series_bench query DB 7
+log_series_bench ingest DB gen:20000000:30 4          # writers at once, background merges
+log_series_bench rollup DB 7                          # a rollup of a loaded table
 ```
 
 | file | what |
 |---|---|
 | `baseline.jsonl` | main at f46bfb7f (the harness at 3a3003c9) |
 | `step1-windows.jsonl` | merges within windows of time for tables with `retain` (this branch) |
+| `step6-rollups.jsonl` | ingest with 1, 2 and 4 writers; rollups (this branch, on a91f4601 with the rollup changes uncommitted) |
 
 All measured on 2026-11-13 on a cloud container: 4-core Intel Xeon @
 2.10GHz, 15 GB of RAM, release builds.
@@ -87,3 +90,52 @@ written in arrival order already tile time (overlap 1.00 to 1.01 after
 segments, the zone maps passing over the others' blocks, so skipping
 segments by time up front (step 2 of the plan) has little to win on
 local segments; it was not built.
+
+## Ingest
+
+`ingest` writes the 20M synthetic lines as a server does: writers sending
+batches of 5,000 at once, the flusher and merger in the background.
+
+| writers | lines/s, written | lines/s, merges settled | segments |
+|---|---|---|---|
+| 1 | 221,221 | 217,497 | 21 |
+| 2 | 223,601 | 222,212 | 26 |
+| 4 | 210,753 | 209,563 | 26 |
+
+About 220,000 lines a second, the same with one writer as with four: the
+writer applies one group of writes at a time, and one thread makes the
+lines. `load`, which merges after each flush on its own thread, writes
+80,000 a second (100M lines in 1,256 s); its slowness was the harness,
+not the database.
+
+## Rollups
+
+`rollup` makes `CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5
+minutes', ts), service, severity, COUNT(*), SUM(latency), MIN(latency),
+MAX(latency)` on a loaded table, then queries it beside the same query of
+the table, 7 runs each. The answers were equal wherever both ask the same
+(by severity the table's query is by minute, the nearest it has without
+`date_bin`).
+
+| log | query | rollup ms | table ms |
+|---|---|---|---|
+| synthetic 100M | hourly counts, 7 days | 9.17 | 876 |
+| synthetic 100M | counts by 5 minutes and severity, 24 h | 6.01 | 156 (by minute) |
+| synthetic 100M | mean latency per hour and service, 24 h | 4.36 | 129 |
+| synthetic 100M | greatest latency per hour, 24 h | 2.98 | 149 |
+| HDFS 11.2M | hourly counts, 7 days | 0.43 | 396 |
+| HDFS 11.2M | mean latency per hour and service, 24 h | 0.77 | 321 |
+
+Keeping it, on the 100M lines (838,404 rows of rollup, 8,648 buckets):
+
+| | seconds |
+|---|---|
+| first fold, `CREATE ROLLUP` | 251 |
+| refresh, nothing new | 0.011 |
+| refresh after 50,000 new lines in the last minute | 1.61 |
+| full refresh, every bucket compared | 7.1 |
+
+The first fold runs a query per bucket, about 29 ms each: folding many
+buckets in one query waits for `date_bin` in the columnar GROUP BY. The
+refresh after new lines is the first query over rows still in memory;
+repeated by hand in the same container it took 18 ms.
