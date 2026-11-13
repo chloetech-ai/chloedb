@@ -175,9 +175,11 @@ fn whole_number(field: &Field, n: &serde_json::Number) -> Result<i64> {
 
 /// `x` as a whole number for INT field `field`, or why it is not one.
 pub(crate) fn whole(field: &Field, x: f64) -> Result<i64> {
-    // 2^63, the first float past i64::MAX.
+    // 2^63, the first float past i64::MAX. -2^63 is refused too: a float
+    // that equals it may be a rounded literal past i64::MIN
+    // (-9223372036854775809 reads as -2^63).
     const END: f64 = 9_223_372_036_854_775_808.0;
-    match x.fract() == 0.0 && (-END..END).contains(&x) {
+    match x.fract() == 0.0 && x > -END && x < END {
         true => Ok(x as i64),
         false => Err(Error::Schema(format!("{} is an INT column: {x} is not a whole number from {} to {} (a FLOAT column holds fractions)", field.name, i64::MIN, i64::MAX))),
     }
