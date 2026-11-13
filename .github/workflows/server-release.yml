@@ -2,7 +2,10 @@ name: chloedb-server release
 
 # Prebuilt chloedb-server, so that running it needs no Rust, no C compiler
 # and no 15-minute first build: one archive per platform, holding the
-# server binary, attached to a GitHub release.
+# server binary, attached to a GitHub release. Beside it, an archive per
+# platform of each of the programs the guides use with it, chloedb-crawl,
+# chloedb-sheets and chloectx (ChloeCtx), built from the same commit:
+# `install.sh --with crawl,sheets,ctx` installs them too.
 #
 # A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
 # the old name, strata-server-v<version>, works too) builds every
@@ -77,6 +80,16 @@ jobs:
       - name: Build
         working-directory: chloedb-server
         run: cargo build --locked --release --bin chloedb-server
+      # The other programs, each its own crate with its own Cargo.lock.
+      - name: Build chloedb-crawl, chloedb-sheets and chloectx
+        shell: bash
+        run: |
+          (cd chloedb-crawl && cargo build --locked --release --bin chloedb-crawl)
+          (cd chloedb-sheets && cargo build --locked --release --bin chloedb-sheets)
+          (cd chloectx && cargo build --locked --release --bin chloectx)
+          for b in chloedb-crawl/target/release/chloedb-crawl chloedb-sheets/target/release/chloedb-sheets chloectx/target/release/chloectx; do
+            "$b" --version
+          done
       # The binary starts on a new database, takes a table and a row, and
       # answers a query, from outside the checkout.
       - name: Run it
@@ -108,6 +121,18 @@ jobs:
           cp LICENSE* "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          # An archive of each other program, laid out as the server's is.
+          for tool in chloedb-crawl:chloedb-crawl chloedb-sheets:chloedb-sheets chloectx:chloectx; do
+            crate=${tool%%:*} bin=${tool#*:}
+            name="$bin-${{ matrix.platform }}"
+            mkdir -p "dist/$name"
+            cp "$crate/target/release/$bin" "dist/$name/"
+            # ChloeCtx was called engram: that name runs it too, for a release.
+            if [ "$bin" = chloectx ]; then ln -s chloectx "dist/$name/engram"; fi
+            cp LICENSE* "dist/$name/" 2>/dev/null || true
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          done
           ls -la dist
       # The one-line installer (docs/install.sh, which GitHub Pages serves)
       # picks this platform's archive, checks its SHA-256 and installs it,
@@ -119,17 +144,25 @@ jobs:
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
           rel="$RUNNER_TEMP/releases/chloedb-server-v$v"
           mkdir -p "$rel"
-          cp dist/chloedb-server-${{ matrix.platform }}.tar.gz* "$rel/"
+          cp dist/*-${{ matrix.platform }}.tar.gz* "$rel/"
           export CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOEDB_VERSION="$v"
           CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh
           "$RUNNER_TEMP/bin/chloedb-server" --version | grep -F "$v"
+          test ! -e "$RUNNER_TEMP/bin/chloedb-crawl"
+          # --with: the other programs too.
+          CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with crawl,sheets,ctx
+          for b in chloedb-crawl chloedb-sheets chloectx; do "$RUNNER_TEMP/bin/$b" --version; done
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$rel/chloedb-server-${{ matrix.platform }}.tar.gz.sha256"
           if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh; then echo "::error::installed an archive whose SHA-256 is wrong"; exit 1; fi
           test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-server-${{ matrix.platform }}
-          path: dist/chloedb-server-*.tar.gz*
+          path: |
+            dist/chloedb-server-*.tar.gz*
+            dist/chloedb-crawl-*.tar.gz*
+            dist/chloedb-sheets-*.tar.gz*
+            dist/chloectx-*.tar.gz*
           if-no-files-found: error
 
   # The Homebrew formula, written from the archives just built, installs
@@ -190,7 +223,7 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.strata\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it."
+            gh release create "$TAG" --repo "$REPO" --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.strata\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it. The chloedb-crawl, chloedb-sheets and chloectx archives hold the crawler, the spreadsheet app and ChloeCtx, built from the same commit; \`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx\` installs them with the server."
           fi
           gh release upload "$TAG" dist/* --repo "$REPO" --clobber
       # The Homebrew formula of this release, from the archives' checksums:
@@ -235,3 +268,51 @@ jobs:
           if git diff --cached --quiet; then echo "The tap already has this formula."; exit 0; fi
           git commit -m "chloedb ${TAG#chloedb-server-v}"
           git push origin HEAD
+
+  # The docs of this release, kept beside main's: docs/site/docs/v<version>/
+  # rendered from the tag (build_docs.py --snapshot), and versions.json's
+  # latest release moved to it, so that main's pages say which release is
+  # out and link to its docs. GitHub Pages publishes main's docs/, so this
+  # opens a pull request with them rather than pushing to main (the
+  # repository's Actions settings must let workflows open pull requests).
+  docs-snapshot:
+    name: Docs of the release
+    needs: release
+    if: startsWith(github.ref_name, 'chloedb-server-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: Render the release's docs and open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#chloedb-server-v}"
+          pip install -r docs/site/scripts/requirements.txt
+          python docs/site/scripts/build_docs.py --snapshot "$TAG"
+          python - "$v" <<'PY'
+          import json, sys
+          p = "docs/site/versions.json"
+          json.dump({"latest": sys.argv[1]}, open(p, "w"))
+          open(p, "a").write("\n")
+          PY
+          python docs/site/scripts/build_docs.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="docs/v$v"
+          git switch -c "$branch"
+          git add docs/site
+          if git diff --cached --quiet; then echo "the docs of $v are there already"; exit 0; fi
+          git commit -m "Docs: the snapshot of release $v, and main's pages say it is the latest"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Docs of release $v" --body "docs/site/docs/v$v/ rendered from $TAG by build_docs.py --snapshot, and docs/site/versions.json's latest release set to $v (main's pages link to it). Opened by server-release.yml."
