@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: reap, image or status
+        description: reap, image, status or start (makes the droplet and waits for its runners, to test it)
         default: reap
 
 permissions:
@@ -91,3 +91,26 @@ jobs:
           GH_ADMIN_TOKEN: ${{ secrets.CI_RUNNER_ADMIN_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 .github/ci-runner/ci_runner.py status
+
+  # By hand: make the droplet now (or find it) and wait for its runners, as
+  # CI's job `runner` does when GitHub's runners are full. The reaper
+  # destroys it once CI has been idle 15 minutes.
+  start:
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'start'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/ci-runner
+      - name: Start
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          GH_ADMIN_TOKEN: ${{ secrets.CI_RUNNER_ADMIN_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_RUNNER_REGION: ${{ vars.CI_RUNNER_REGION }}
+          CI_RUNNER_SIZE: ${{ vars.CI_RUNNER_SIZE }}
+          CI_RUNNER_COUNT: ${{ vars.CI_RUNNER_COUNT }}
+        run: |
+          python3 .github/ci-runner/ci_runner.py want --force --wait 420
+          python3 .github/ci-runner/ci_runner.py status
