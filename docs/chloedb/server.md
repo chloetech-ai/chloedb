@@ -20,7 +20,7 @@ New to it? [Build an app](build-an-app.md) goes from an empty server to search, 
 A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server [release](https://github.com/chloetech-ai/chloedb/releases) (tagged `chloedb-server-v<version>`) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
 
 ```sh
-v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+v=0.3.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz
 chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo catalogue

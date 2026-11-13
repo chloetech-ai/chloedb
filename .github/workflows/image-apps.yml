@@ -30,8 +30,11 @@ on:
       - ".github/workflows/image-apps.yml"
   workflow_dispatch:
 
+# A run that builds nothing (its CI run failed or was cancelled) has a group
+# of its own, so that it cannot cancel the build of the last green commit;
+# CI's runs by hand and at night are in a group apart from its pushes.
 concurrency:
-  group: image-apps-${{ github.event_name == 'workflow_run' && format('{0}:{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || github.ref }}
+  group: image-apps-${{ github.event_name == 'workflow_run' && (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' && format('{0}:{1}:{2}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch, github.event.workflow_run.event) || format('nothing-{0}', github.run_id)) || github.ref }}
   cancel-in-progress: true
 
 permissions:
