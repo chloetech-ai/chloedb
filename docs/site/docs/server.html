@@ -376,6 +376,11 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td>the largest body of a write or an import, and of a gRPC message; other requests take up to 16 MiB</td>
 </tr>
 <tr>
+<td><code>--otlp-retain PERIOD</code></td>
+<td>none (kept for ever)</td>
+<td>how long a table <a href="#opentelemetry-logs">OpenTelemetry logs</a> make keeps its rows (<code>'30 days'</code>, <code>'12h'</code>); tables already there keep theirs</td>
+</tr>
+<tr>
 <td><code>--model ID</code></td>
 <td><code>claude-haiku-5-5</code></td>
 <td>the agent's default model</td>
@@ -1587,7 +1592,7 @@ service:
 <li><code>attributes</code> holds the record's attributes, its event name as <code>event_name</code>, and bytes as base64, in a <a href="sql.html#json-fields-keys-no-schema-names">JSON field</a> whose paths filters read from its index.</li>
 <li><code>batch</code> is a random number per request: through a <a href="#sharding-one-coordinator-many-shards">coordinator</a> it places the table's rows (<code>shard_by</code>), so that a request's rows go to one shard and requests spread over all of them. A log has no key, and the table has none.</li>
 </ul>
-<p>A table made beforehand takes the columns of these that it has, by name, so make it first for another retention (<code>retain = '30 days'</code>), more columns indexed or fewer kept. Its doc store is compressed with <a href="sql.html#tables">zstd</a>: on four of Loghub's logs sent this way, <code>otel_logs</code> took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/log-bytes">results</a>). The rows are searched as any are:</p>
+<p><code>--otlp-retain PERIOD</code> (<code>'30 days'</code>, <code>'12h'</code>) makes the table with that retention (<code>retain = '30 days'</code>), so its rows older than that are dropped, a window of segments at a time (<a href="sql.html#tables">tables</a>); without it they are kept. A table made beforehand takes the columns of these that it has, by name, so make it first for another retention, more columns indexed or fewer kept. Its doc store is compressed with <a href="sql.html#tables">zstd</a>: on four of Loghub's logs sent this way, <code>otel_logs</code> took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/log-bytes">results</a>). The rows are searched as any are:</p>
 <pre data-lang="sql">SELECT ts, service, severity, body FROM otel_logs
 WHERE severity IN (&#x27;ERROR&#x27;, &#x27;FATAL&#x27;) AND MATCH(body, &#x27;timeout OR refused&#x27;) AND ts &gt; &#x27;2026-11-08T06:00:00Z&#x27;
 ORDER BY ts DESC LIMIT 100;
