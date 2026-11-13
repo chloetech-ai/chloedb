@@ -577,9 +577,28 @@ enum Command {
         /// repository, owner/name.
         name: String,
         /// Where to put it (default: --models, $CHLOEDB_MODELS, or
-        /// ~/.local/share/strata/models).
+        /// ~/.local/share/chloedb/models).
         #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
+    },
+    /// Check this machine for the guides: this version against the latest
+    /// release, the Python package (ChloeDB or PyPI's placeholder), the
+    /// models folder, port 7700, and glibc against the prebuilt programs.
+    /// Changes nothing; exits 1 when a check fails.
+    Doctor {
+        /// The models folder to look in (default: $CHLOEDB_MODELS, or
+        /// ~/.local/share/chloedb/models).
+        #[arg(long, env = "CHLOEDB_MODELS")]
+        models: Option<PathBuf>,
+        /// The port the guides' servers listen on.
+        #[arg(long, default_value_t = 7700)]
+        port: u16,
+        /// Do not ask GitHub for the latest release.
+        #[arg(long)]
+        offline: bool,
+        /// The Python interpreter whose chloedb package to check.
+        #[arg(long, default_value = "python3")]
+        python: String,
     },
     /// Write a static (Model2Vec) model with its table in int8 (or f16):
     /// 4x (2x) smaller, ranking within 0.001 nDCG@10 of float32 on BEIR.
@@ -949,6 +968,17 @@ async fn run() {
             match server::fetch_model(name, &dir).await {
                 Ok(path) => tracing::info!(model = name, dir = %path.display(), "fetched the model"),
                 Err(e) => fail(&e),
+            }
+            return;
+        }
+        Some(Command::Doctor { models, port, offline, python }) => {
+            let dir = models.clone().unwrap_or_else(chloedb::embed::models_dir);
+            let checks = chloedb_server::doctor::run(&chloedb_server::doctor::Options { models: &dir, port: *port, online: !offline, python }).await;
+            for c in &checks {
+                println!("{}", c.line());
+            }
+            if checks.iter().any(|c| c.level == chloedb_server::doctor::Level::Fail) {
+                std::process::exit(1);
             }
             return;
         }

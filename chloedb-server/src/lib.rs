@@ -27,6 +27,7 @@ pub mod apps;
 pub mod aws;
 pub mod cloud;
 pub mod digitalocean;
+pub mod doctor;
 pub mod auth;
 pub mod autopilot;
 pub mod coord;
