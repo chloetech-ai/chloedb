@@ -142,20 +142,15 @@ kill $server $demo
 
 ## ChloeDB from Python, with no server
 
-The Python package runs a database inside your process, the way `sqlite3` runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server, plus Linux with glibc 2.28 or later.
+The Python package runs a database inside your process, the way `sqlite3` runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server: macOS 11 or later, and Linux with glibc 2.35 or later for release 0.2.0 (2.28 or later from 0.2.1). Install it from the release:
 
 ```sh
 # install
 python3 -m venv .venv && . .venv/bin/activate
-pip install chloedb
+pip install --upgrade chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
 
-Until the package is on PyPI, install the wheel from the release instead:
-
-```sh
-# install
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
-```
+The `chloedb` on PyPI is still a placeholder that only holds the name, so a bare `pip install chloedb` installs that, not ChloeDB. `-f` points pip at the release's wheels, and `--upgrade` replaces the placeholder if you installed it already. Once the releases are published to PyPI, `pip install chloedb` is all it takes. If `import chloedb` says it is a placeholder, the release has no wheel for your machine: see [the Python page](chloedb/python.md#prebuilt).
 
 ```sh
 python3 - <<'EOF'

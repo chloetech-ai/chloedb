@@ -277,4 +277,6 @@ def test_database_error_codes(db, tmp_path):
     assert e.value.code == "bad_request"
     with pytest.raises(chloedb.ChloeDBError) as e:
         db.insert({"id": "b0001", "title": "again"})
-    assert e.value.code == "bad_request"
+    # A key the table holds: a conflict (still a BadRequestError).
+    assert e.value.code == "conflict"
+    assert isinstance(e.value, (chloedb.DuplicateKeyError, chloedb.BadRequestError))

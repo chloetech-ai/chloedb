@@ -19,6 +19,14 @@ pub fn read_by(q: &sql::Query) -> Vec<String> {
     w.tables.into_iter().filter(|t| seen.insert(t.to_ascii_lowercase())).collect()
 }
 
+/// [`read_by`] of an SQL text: the tables a SELECT reads, the one its
+/// `FROM` names first; none for a text that is not a SELECT that parses.
+/// The bindings default a parameter's table (`{"vector_of": key}`,
+/// `{"embed": text}`) to the first of them.
+pub fn read_by_sql(sql_text: &str) -> Vec<String> {
+    crate::query::sql::parse_query_cached(sql_text).map(|p| read_by(&p.query)).unwrap_or_default()
+}
+
 #[derive(Default)]
 struct Names {
     tables: Vec<String>,
@@ -130,5 +138,12 @@ mod tests {
         assert_eq!(read("SELECT id FROM papers WHERE REACHABLE(cites, (SELECT id FROM papers LIMIT 2)) AND EXISTS (SELECT id FROM tags)"), ["papers", "tags"]);
         assert_eq!(read("SELECT id FROM papers ORDER BY year > (SELECT AVG(year) FROM other) DESC"), ["papers", "other"]);
         assert!(read("SELECT 1").is_empty());
+    }
+
+    #[test]
+    fn read_by_sql_names_the_from_table_first() {
+        assert_eq!(read_by_sql("SELECT id FROM second ORDER BY similarity(vec, :v) DESC"), ["second"]);
+        assert!(read_by_sql("UPDATE t SET a = 1").is_empty());
+        assert!(read_by_sql("not sql").is_empty());
     }
 }

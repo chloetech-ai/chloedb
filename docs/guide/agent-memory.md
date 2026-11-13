@@ -4,7 +4,11 @@ An agent that works over many sessions needs to remember: what was said, what wa
 
 [ChloeCtx](../chloectx/index.md) is this idea built out for Claude Code, with hooks that record every session and a daemon that decides when to bring history back. Use this recipe for your own agent.
 
-You need Python with the `chloedb` package and `chloedb-server` on your `PATH` ([quickstart](../quickstart.md)).
+You need Python with the `chloedb` package and `chloedb-server` on your `PATH` ([quickstart](../quickstart.md)), and the embedding model the tables below name. Fetch it once (about 130 MB, into `~/.local/share/chloedb/models`, or `$CHLOEDB_MODELS`; a machine that already has it, from the [RAG recipe](rag.md) say, checks it and downloads nothing):
+
+```sh
+chloedb-server fetch-model potion-retrieval-32M    # once: about 130 MB
+```
 
 ## The store
 

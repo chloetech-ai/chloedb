@@ -859,6 +859,15 @@ jobs:
         run: |
           pip install -r docs/site/scripts/requirements.txt
           python docs/site/scripts/build_docs.py --check
+      # The pages a newcomer follows use the new names (Strata and Engram are
+      # the old ones), and the Python modules and extras the docs name exist,
+      # marked "since" where the latest release lacks them (its tag, fetched).
+      - name: Old names, and the documented Python modules
+        run: |
+          python scripts/check-old-names.py
+          v=$(python -c 'import json; print(json.load(open("docs/site/versions.json"))["latest"])')
+          git fetch --no-tags --depth 1 origin "refs/tags/chloedb-py-v$v:refs/tags/chloedb-py-v$v" || echo "::warning::no tag chloedb-py-v$v"
+          python scripts/check-documented-python.py
 
   # Every code block of the guide's pages (docs/guide/*.md,
   # docs/quickstart.md) runs, in order, against this commit's programs, and
@@ -894,11 +903,8 @@ jobs:
           . "$RUNNER_TEMP/venv/bin/activate"
           pip install maturin -r docs/guide/requirements.txt
           (cd chloedb-py && maturin develop --locked --profile ci)
-      # The embedding models the pages name are kept between runs.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/.cache/chloedb-docs/models
-          key: docs-models-v1
+      # Each page starts with no models (run.py gives it an empty folder), so
+      # a page that uses a model and does not fetch it fails here.
       - name: Run the guide's pages
         run: |
           . "$RUNNER_TEMP/venv/bin/activate"

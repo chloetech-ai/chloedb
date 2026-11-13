@@ -3,6 +3,16 @@
 #
 #   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 #
+# With --with, it installs programs of the same release beside the server:
+#
+#   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx
+#
+#   crawl    chloedb-crawl, the crawler (Crawl to search, the crawler app)
+#   sheets   chloedb-sheets, the spreadsheet app
+#   ctx      chloectx, ChloeCtx: long-term memory for Claude Code (then
+#            `chloectx install --project DIR`; see docs/chloectx/setup.md)
+#   all      the three
+#
 # It downloads the newest chloedb-server release for this machine from
 # GitHub (Linux x86_64 and aarch64 with glibc 2.35 or later, macOS arm64 and
 # x86_64, macOS 11 or later), checks the archive against the SHA-256 the
@@ -14,6 +24,7 @@
 # pipe: `curl ... | CHLOEDB_VERSION=0.2.0 sh`):
 #
 #   CHLOEDB_VERSION       the version to install (0.2.0); the newest release by default
+#   CHLOEDB_WITH          the programs --with names (crawl,sheets,ctx), when not given
 #   CHLOEDB_INSTALL_DIR   where to put the program (default ~/.local/bin)
 #   CHLOEDB_RELEASES_URL  where the release archives are (default this
 #                         repository's GitHub releases; a local folder or
@@ -30,6 +41,7 @@ REPO="chloetech-ai/chloedb"
 RELEASES_URL="${CHLOEDB_RELEASES_URL:-https://github.com/$REPO/releases/download}"
 INSTALL_DIR="${CHLOEDB_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${CHLOEDB_VERSION:-}"
+WITH="${CHLOEDB_WITH:-}"
 
 say() { printf '%s\n' "$*"; }
 fail() {
@@ -37,6 +49,26 @@ fail() {
   exit 1
 }
 have() { command -v "$1" > /dev/null 2>&1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --with) [ $# -gt 1 ] || fail "--with needs a list: crawl,sheets,ctx or all"; WITH="$2"; shift 2 ;;
+    --with=*) WITH="${1#--with=}"; shift ;;
+    -h | --help) sed -n '2,40p' "$0" 2> /dev/null || true; exit 0 ;;
+    *) fail "unknown option $1 (--with crawl,sheets,ctx is the one there is)" ;;
+  esac
+done
+# The programs to install beside the server, by their binaries' names.
+EXTRA=""
+for w in $(printf '%s' "$WITH" | tr ',' ' '); do
+  case "$w" in
+    crawl | chloedb-crawl) EXTRA="$EXTRA chloedb-crawl" ;;
+    sheets | chloedb-sheets) EXTRA="$EXTRA chloedb-sheets" ;;
+    ctx | chloectx) EXTRA="$EXTRA chloectx" ;;
+    all) EXTRA="$EXTRA chloedb-crawl chloedb-sheets chloectx" ;;
+    *) fail "--with $w: the programs are crawl, sheets, ctx (or all)" ;;
+  esac
+done
 
 # Fetch a URL to stdout (or to a file with a second argument). A path or
 # file:// URL is read from disk, for testing against a local release.
@@ -112,9 +144,6 @@ VERSION=${VERSION#chloedb-server-v}
 
 # --- Download, check, install ----------------------------------------------
 
-name="chloedb-server-$platform"
-url="$RELEASES_URL/chloedb-server-v$VERSION/$name.tar.gz"
-
 if have sha256sum; then
   sha256() { sha256sum "$1" | cut -d' ' -f1; }
 elif have shasum; then
@@ -127,27 +156,38 @@ have tar || fail "needs tar to unpack the release"
 tmp=$(mktemp -d 2> /dev/null || mktemp -d -t chloedb)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-say "Installing chloedb-server $VERSION for $platform"
-say "  from $url"
-fetch "$url" "$tmp/$name.tar.gz" || fail "could not download $url (is $VERSION a released version? see https://github.com/$REPO/releases)"
-fetch "$url.sha256" "$tmp/$name.tar.gz.sha256" || fail "could not download $url.sha256"
-want=$(cut -d' ' -f1 < "$tmp/$name.tar.gz.sha256")
-got=$(sha256 "$tmp/$name.tar.gz")
-[ -n "$want" ] && [ "$want" = "$got" ] || fail "the download's SHA-256 is $got, and the release says $want: not installing it"
+# Installs the program $1 from its archive, $1-<platform>.tar.gz, of the
+# release chloedb-server-v$VERSION, after checking its SHA-256.
+install_program() {
+  prog=$1
+  name="$prog-$platform"
+  url="$RELEASES_URL/chloedb-server-v$VERSION/$name.tar.gz"
+  say "Installing $prog $VERSION for $platform"
+  say "  from $url"
+  fetch "$url" "$tmp/$name.tar.gz" || fail "could not download $url (is $VERSION a released version, and does it have $prog? see https://github.com/$REPO/releases)"
+  fetch "$url.sha256" "$tmp/$name.tar.gz.sha256" || fail "could not download $url.sha256"
+  want=$(cut -d' ' -f1 < "$tmp/$name.tar.gz.sha256")
+  got=$(sha256 "$tmp/$name.tar.gz")
+  [ -n "$want" ] && [ "$want" = "$got" ] || fail "the download's SHA-256 is $got, and the release says $want: not installing it"
 
-tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-[ -f "$tmp/$name/chloedb-server" ] || fail "the archive has no $name/chloedb-server"
+  tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+  [ -f "$tmp/$name/$prog" ] || fail "the archive has no $name/$prog"
 
-mkdir -p "$INSTALL_DIR"
-# Into a temporary name and then renamed, so that a server running from the
-# old file keeps running and a failed copy leaves the old one in place.
-cp "$tmp/$name/chloedb-server" "$INSTALL_DIR/.chloedb-server.new"
-chmod 755 "$INSTALL_DIR/.chloedb-server.new"
-mv -f "$INSTALL_DIR/.chloedb-server.new" "$INSTALL_DIR/chloedb-server"
-"$INSTALL_DIR/chloedb-server" --version > /dev/null 2>&1 \
-  || fail "installed $INSTALL_DIR/chloedb-server, but it does not start on this machine: run it to see why"
+  mkdir -p "$INSTALL_DIR"
+  # Into a temporary name and then renamed, so that a program running from
+  # the old file keeps running and a failed copy leaves the old one in place.
+  cp "$tmp/$name/$prog" "$INSTALL_DIR/.$prog.new"
+  chmod 755 "$INSTALL_DIR/.$prog.new"
+  mv -f "$INSTALL_DIR/.$prog.new" "$INSTALL_DIR/$prog"
+  "$INSTALL_DIR/$prog" --version > /dev/null 2>&1 \
+    || fail "installed $INSTALL_DIR/$prog, but it does not start on this machine: run it to see why"
+  say "Installed $INSTALL_DIR/$prog ($("$INSTALL_DIR/$prog" --version 2>&1 | head -n 1))"
+}
 
-say "Installed $INSTALL_DIR/chloedb-server ($("$INSTALL_DIR/chloedb-server" --version 2>&1 | head -n 1))"
+install_program chloedb-server
+for prog in $EXTRA; do
+  install_program "$prog"
+done
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) bin=chloedb-server ;;
@@ -164,4 +204,10 @@ say "Try it: a demo catalogue of 20,000 products, with the query console at http
 say "  $bin --demo 20000 --db demo.chloedb"
 say "Then a first search, from another terminal:"
 say "  curl -s 127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{\"sql\": \"SELECT title FROM products WHERE MATCH(body, '\\''waterproof jacket'\\'') LIMIT 5\"}'"
-say "The five-minute guide: https://github.com/$REPO/blob/main/docs/quickstart.md"
+say "The five-minute guide: https://chloetech-ai.github.io/chloedb/site/docs/quickstart.html"
+if "$INSTALL_DIR/chloedb-server" doctor --help > /dev/null 2>&1; then
+  say "Something in the way? $bin doctor checks the version, the Python package, the models and port 7700."
+fi
+case " $EXTRA " in
+  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project (see https://chloetech-ai.github.io/chloedb/site/docs/chloectx-setup.html)" ;;
+esac

@@ -100,8 +100,9 @@ fn sql_json(r: SqlResult) -> Json {
 /// `f`'s model, or an image's or a sound's for `{"embed": {"image":
 /// "<base64>"}}` or `{"embed": {"audio": "<base64>"}}`) or `{"vector_of":
 /// key, "field": f}` (a stored row's vector), each with `"table"` for a
-/// field of another table than the first.
-fn param(db: &Db, j: &Json) -> Result<Value> {
+/// field of another table than `from` (the statement's `FROM` table), else
+/// the first.
+fn param(db: &Db, j: &Json, from: Option<&str>) -> Result<Value> {
     Ok(match j {
         Json::Null => Value::Null,
         Json::Bool(b) => Value::Bool(*b),
@@ -114,9 +115,9 @@ fn param(db: &Db, j: &Json) -> Result<Value> {
         // where a vector is expected, a list of numbers is one.
         Json::Array(xs) if !xs.is_empty() && xs.iter().all(|x| x.is_i64()) => Value::List(xs.iter().map(|x| Value::Int(x.as_i64().unwrap_or(0))).collect()),
         Json::Array(xs) if !xs.is_empty() && xs.iter().all(|x| x.is_number()) => Value::Vector(xs.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect::<Vec<_>>().into()),
-        Json::Array(xs) => Value::List(xs.iter().map(|x| param(db, x)).collect::<Result<_>>()?),
+        Json::Array(xs) => Value::List(xs.iter().map(|x| param(db, x, from)).collect::<Result<_>>()?),
         Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| k == "embed" || k == "field" || k == "table") => {
-            let s = table_of(db, o.get("table").and_then(|t| t.as_str()))?;
+            let s = table_of(db, o.get("table").and_then(|t| t.as_str()).or(from))?;
             let field = match o.get("field").and_then(|f| f.as_str()) {
                 Some(f) => f.to_string(),
                 None => s.fields.iter().find(|f| db.embedder_in(&s.table, &f.name).is_some()).map(|f| f.name.clone()).ok_or_else(|| bad("no embedded field has its model open"))?,
@@ -134,7 +135,7 @@ fn param(db: &Db, j: &Json) -> Result<Value> {
             }
         }
         Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| k == "vector_of" || k == "field" || k == "table") => {
-            let s = &*table_of(db, o.get("table").and_then(|t| t.as_str()))?;
+            let s = &*table_of(db, o.get("table").and_then(|t| t.as_str()).or(from))?;
             let pk = s.primary_key.ok_or_else(|| bad("vector_of needs a primary key"))?;
             let field = match o.get("field").and_then(|f| f.as_str()) {
                 Some(f) => f.to_string(),
@@ -154,13 +155,25 @@ fn param(db: &Db, j: &Json) -> Result<Value> {
     })
 }
 
-fn params(db: &Db, j: Option<&Json>) -> Result<Params> {
+/// The parameters of the statement `sql`: those that name no table read
+/// the table its `FROM` names first (when the database has it), else the
+/// first table.
+fn params(db: &Db, j: Option<&Json>, sql: &str) -> Result<Params> {
+    let from = match j {
+        Some(Json::Object(m)) if !m.is_empty() => chloedb::query::tables::read_by_sql(sql).into_iter().find(|t| db.storage().table(t).is_some()),
+        _ => None,
+    };
+    params_in(db, j, from.as_deref())
+}
+
+/// The parameters, those that name no table reading `from` (else the first table).
+fn params_in(db: &Db, j: Option<&Json>, from: Option<&str>) -> Result<Params> {
     let mut p = Params::new();
     match j {
         None | Some(Json::Null) => {}
         Some(Json::Object(m)) => {
             for (k, v) in m {
-                p = p.set(k, param(db, v)?);
+                p = p.set(k, param(db, v, from)?);
             }
         }
         Some(_) => return Err(bad("params are an object of names to values")),
@@ -637,7 +650,7 @@ fn embed(db: &Db, a: &Args) -> Result<Json> {
     if let Some(t) = table {
         o.insert("table".into(), json!(t));
     }
-    match param(db, &Json::Object(o))? {
+    match param(db, &Json::Object(o), None)? {
         Value::Vector(v) => Ok(json!(v.to_vec())),
         _ => Err(bad("the field's model embeds a text a vector a token (a multi-vector field): embedTokens gives them")),
     }
@@ -732,15 +745,15 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             Ok(Json::Null)
         }
         "query" => {
-            let p = params(db, a.get("params"))?;
+            let p = params(db, a.get("params"), a.need_str("sql")?)?;
             Ok(result_json(&db.query_with(a.need_str("sql")?, &p, opts).map_err(stopped)?))
         }
         "sql" => {
-            let p = params(db, a.get("params"))?;
+            let p = params(db, a.get("params"), a.need_str("sql")?)?;
             Ok(sql_json(db.sql_with(a.need_str("sql")?, &p, opts).map_err(stopped)?))
         }
         "query_logged" => {
-            let p = params(db, a.get("params"))?;
+            let p = params(db, a.get("params"), a.need_str("sql")?)?;
             let log = Log::from_json(a.get("log").ok_or_else(|| bad("log is missing"))?)?;
             let l = db.query_logged(a.need_str("sql")?, &p, &log)?;
             let mut out = result_json(&l.rs);
@@ -760,7 +773,7 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             Ok(Json::Array(out))
         }
         "plan" => {
-            let p = params(db, a.get("params"))?;
+            let p = params(db, a.get("params"), a.need_str("sql")?)?;
             let text = db.explain(a.need_str("sql")?, &p)?.to_json_text()?;
             serde_json::from_str(&text).map_err(|e| bad(format!("the plan: {e}")))
         }
@@ -826,8 +839,8 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             }
         }
         "sid_next" => {
-            let p = params(db, a.get("params"))?;
             let table = table_of(db, a.str("table")?)?.table.clone();
+            let p = params_in(db, a.get("params"), Some(&table))?;
             let prefixes = a.strings("prefixes")?.unwrap_or_default();
             let got = db.sid_next(&table, a.need_str("field")?, &prefixes, a.str("where")?, &p)?;
             Ok(Json::Object(prefixes.into_iter().zip(got).map(|(p, cs)| (p, Json::Array(cs.into_iter().map(|(c, n)| json!([c, n])).collect()))).collect()))
