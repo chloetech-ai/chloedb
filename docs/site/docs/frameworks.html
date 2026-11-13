@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/guide/frameworks.md: edit that file and run the script, not this page. -->
@@ -73,6 +73,7 @@
       <span class="eyebrow">Clients</span>
       <h1>LangChain, LangGraph, LlamaIndex and pandas</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install">Install</a></li><li><a href="#langchain-a-vector-store-and-a-retriever">LangChain: a vector store and a retriever</a></li><li><a href="#langgraph-a-checkpointer-and-long-term-memory">LangGraph: a checkpointer and long-term memory</a></li><li><a href="#llamaindex-an-index-over-the-same-articles">LlamaIndex: an index over the same articles</a></li><li><a href="#pandas-and-db-api-sql-over-all-of-it">pandas and DB-API: SQL over all of it</a></li><li><a href="#on-a-server-or-a-cluster">On a server or a cluster</a></li></ol></details>
     <div class="doc-body">
@@ -89,7 +90,9 @@ file, <code>support.chloedb</code>. Nothing on it needs an API key: ChloeDB embe
 texts itself with a model it runs in the process. The full list of arguments,
 methods and filter operators is in <a href="frameworks-reference.html">the reference</a>.</p>
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
-<pre data-lang="sh">pip install &quot;chloedb[langchain,langgraph,llama-index]&quot; pandas</pre>
+<p><span class="since unreleased">since 0.2.1 (unreleased)</span> The adapters are new in 0.2.1, which is not released yet: release 0.2.0's wheel does not have them. Until it is, build the package from the repository (it needs Rust and a C compiler, and takes several minutes):</p>
+<pre data-lang="sh">pip install &quot;chloedb[langchain,langgraph,llama-index] @ git+https://github.com/chloetech-ai/chloedb#subdirectory=chloedb-py&quot; pandas</pre>
+<p>Once 0.2.1 is released, its wheel installs them with no build: <code>pip install --upgrade "chloedb[langchain,langgraph,llama-index]" pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.1</code> (and a plain <code>pip install "chloedb[langchain,langgraph,llama-index]"</code> once ChloeDB is on PyPI).</p>
 <p>Each extra pulls in its framework's core package only (<code>langchain-core</code>,
 <code>langgraph</code>, <code>llama-index-core</code>). The examples embed with
 <code>potion-retrieval-32M</code>, a 129 MB static model that runs on a CPU in a few

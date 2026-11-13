@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/javascript.md: edit that file and run the script, not this page. -->
@@ -73,6 +73,7 @@
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from JavaScript</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/javascript.md">docs/chloedb/javascript.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install">Install</a></li><li><a href="#a-database-in-the-process">A database in the process</a></li><li><a href="#a-server-from-javascript">A server from JavaScript</a></li><li><a href="#search-on-the-device">Search on the device</a></li><li><a href="#bun-and-deno">Bun and Deno</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -81,7 +82,7 @@
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-js"><code>chloedb-js/</code></a>: a Node-API addon written in Rust (<a href="https://napi.rs">napi-rs</a>) and the JavaScript around it, an ES module, for Node 18 or later, Bun and Deno.</p>
 <h3 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h3>
-<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler. The package is not on npm yet, so install the tarball for your platform:</p>
+<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler. Install the tarball for your platform:</p>
 <pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz</pre>
 <p>It imports as <code>"chloedb"</code>. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as <code>strata-db</code> and imports as <code>"strata-db"</code>.</p>
 <div class="doc-table"><table>
@@ -111,6 +112,7 @@
 </tbody>
 </table></div>
 <p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml"><code>js-release.yml</code></a> builds the tarballs on a <code>chloedb-js-v&lt;version&gt;</code> tag and runs each one in an empty app before attaching it to the release; <code>node scripts/pack.mjs &lt;platform&gt;</code> packs one by hand.</p>
+<p><code>chloedb</code> on npm is a placeholder (0.0.x) that holds the name until the releases are published there: a bare <code>npm install chloedb</code> installs it, and importing it throws an error that says how to install ChloeDB. From 0.2.1 the same workflow can publish to npm the way napi-rs packages are: <code>chloedb</code>, the JavaScript, with a package per platform holding its addon (<code>@chloedb/linux-x64-gnu</code>, <code>@chloedb/darwin-arm64</code>, ...) as optional dependencies, of which npm installs the one of your machine. Once it has (the workflow's header says what that needs), <code>npm install chloedb</code> is all it takes. <code>node scripts/pack.mjs --npm &lt;platform&gt;</code> and <code>--npm-main</code> pack those packages by hand.</p>
 <h3 id="from-source">From source<a class="anchor" href="#from-source" aria-label="Link to this section">#</a></h3>
 <p>It needs Rust (stable) and a C compiler.</p>
 <pre data-lang="sh">cd chloedb-js
@@ -140,7 +142,7 @@ for (const row of await db.search(&quot;dragon&quot;)) console.log(row.id, row.t
 const r = await db.query(&quot;SELECT year, COUNT(*) FROM books GROUP BY year&quot;);
 r.rows;          // [[1999, 1]]
 await db.close();</pre>
-<p><code>open(path, {schema})</code> opens the file, or creates it with the schema when it does not exist; <code>Database.create(path, schema)</code> and <code>Database.open(path)</code> do one or the other. A schema is an object, JSON text or the path of a JSON file, in the <a href="server.html#schemas">short form or the long one</a>. <code>directory: true</code> keeps a database as a directory of segment files, <code>models</code> is where embedded fields' models are (<code>$CHLOEDB_MODELS</code>, else <code>~/.local/share/strata/models</code>; <code>chloedb-server fetch-model</code> fetches them), and <code>threads</code> how many cores index builds and each query use (every core by default).</p>
+<p><code>open(path, {schema})</code> opens the file, or creates it with the schema when it does not exist; <code>Database.create(path, schema)</code> and <code>Database.open(path)</code> do one or the other. A schema is an object, JSON text or the path of a JSON file, in the <a href="server.html#schemas">short form or the long one</a>. <code>directory: true</code> keeps a database as a directory of segment files, <code>models</code> is where embedded fields' models are (<code>$CHLOEDB_MODELS</code>, else <code>~/.local/share/chloedb/models</code> (or <code>~/.local/share/strata/models</code>, on a machine that has that folder from before the rename; before 0.2.1, always); <code>chloedb-server fetch-model</code> fetches them), and <code>threads</code> how many cores index builds and each query use (every core by default).</p>
 <p>Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it (a second one gets "busy: the database is open elsewhere"). Others can open it with <code>Database.open(path, { readOnly: true })</code> to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and <code>refresh()</code> looks for new commits at once (<a href="design.html#readers-in-other-processes">how readers follow the writer</a>). For writes from several processes, serve it with chloedb-server.</p>
 <h3 id="querying">Querying<a class="anchor" href="#querying" aria-label="Link to this section">#</a></h3>
 <div class="doc-table"><table>

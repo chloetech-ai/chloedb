@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/guide/search.md: edit that file and run the script, not this page. -->
@@ -73,6 +73,7 @@
       <span class="eyebrow">Search and SQL</span>
       <h1>Search guide</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#words-match-and-bm25">Words: MATCH and bm25</a></li><li><a href="#typos">Typos</a></li><li><a href="#filters-and-facets">Filters and facets</a></li><li><a href="#meaning-vectors">Meaning: vectors</a></li><li><a href="#both-hybrid-ranking">Both: hybrid ranking</a></li><li><a href="#spread-results-out-max-k-per">Spread results out: MAX k PER</a></li><li><a href="#what-the-planner-did">What the planner did</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -93,7 +94,7 @@
 {&quot;id&quot;: &quot;b10&quot;, &quot;title&quot;: &quot;The Dragon Accords&quot;, &quot;author&quot;: &quot;Lena Novak&quot;, &quot;genres&quot;: [&quot;fantasy&quot;], &quot;year&quot;: 2022, &quot;rating&quot;: 3.7, &quot;description&quot;: &quot;Diplomats negotiate a treaty between kingdoms and the last of the dragons.&quot;}
 {&quot;id&quot;: &quot;b11&quot;, &quot;title&quot;: &quot;Quiet Machines&quot;, &quot;author&quot;: &quot;Mei Chen&quot;, &quot;genres&quot;: [&quot;science fiction&quot;, &quot;literary&quot;], &quot;year&quot;: 2024, &quot;rating&quot;: 4.7, &quot;description&quot;: &quot;Household robots begin to write poems, and a lonely engineer reads every one.&quot;}
 {&quot;id&quot;: &quot;b12&quot;, &quot;title&quot;: &quot;Tides of Glass&quot;, &quot;author&quot;: &quot;Ana Ruiz&quot;, &quot;genres&quot;: [&quot;fantasy&quot;, &quot;romance&quot;], &quot;year&quot;: 2011, &quot;rating&quot;: 4.0, &quot;description&quot;: &quot;A glassblower falls for a sea witch who trades storms for memories.&quot;}</pre>
-<p>A table with a primary key, text to search, keywords and numbers to filter on, and a vector that ChloeDB computes from the title and description with a small embedding model. Fetch the model once (it is about 130 MB, kept in <code>~/.local/share/strata/models</code>, or wherever <code>CHLOEDB_MODELS</code> says):</p>
+<p>A table with a primary key, text to search, keywords and numbers to filter on, and a vector that ChloeDB computes from the title and description with a small embedding model. Fetch the model once (it is about 130 MB, kept in <code>~/.local/share/chloedb/models</code>, or wherever <code>CHLOEDB_MODELS</code> says; a machine with <code>~/.local/share/strata/models</code> from before the rename keeps using that):</p>
 <pre data-lang="sh">chloedb-server fetch-model potion-retrieval-32M</pre>
 <pre data-lang="python" data-title="load.py">import json
 import chloedb

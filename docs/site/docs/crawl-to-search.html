@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/guide/crawl-to-search.md: edit that file and run the script, not this page. -->
@@ -73,12 +73,15 @@
       <span class="eyebrow">Cookbook</span>
       <h1>Crawl a site into search</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#a-site-to-crawl">A site to crawl</a></li><li><a href="#look-before-you-crawl">Look before you crawl</a></li><li><a href="#crawl">Crawl</a></li><li><a href="#search-it">Search it</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p><code>chloedb-crawl</code> reads a site, finds the fields its pages carry (JSON-LD, meta tags, spec tables, the site's own template), makes a table from them and fills it. This recipe crawls a small shop, served on your machine so that it runs anywhere, and searches the table it made with SQL.</p>
-<p>You need <code>chloedb-server</code> and <code>chloedb-crawl</code> on your <code>PATH</code>. From a checkout of the repository: <code>(cd chloedb-server &amp;&amp; cargo build --release) &amp;&amp; (cd chloedb-crawl &amp;&amp; cargo build --release)</code>, then add both <code>target/release</code> directories to <code>PATH</code>.</p>
+<p>You need <code>chloedb-server</code> and <code>chloedb-crawl</code> on your <code>PATH</code>. <span class="since unreleased">since 0.2.1 (unreleased)</span> From release 0.2.1, the installer puts both there prebuilt, with nothing to compile:</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl</pre>
+<p>Release 0.2.0 has no prebuilt crawler. With it, or to build from source, use a checkout of the repository (Rust and a C compiler, several minutes): <code>(cd chloedb-server &amp;&amp; cargo build --release) &amp;&amp; (cd chloedb-crawl &amp;&amp; cargo build --release)</code>, then add both <code>target/release</code> directories to <code>PATH</code>.</p>
 <h2 id="a-site-to-crawl">A site to crawl<a class="anchor" href="#a-site-to-crawl" aria-label="Link to this section">#</a></h2>
 <p>A shop with a home page that links to six products. Each product page has its fields in JSON-LD, as most shops do. This script writes the site's pages into <code>shop/</code>:</p>
 <pre data-lang="python" data-title="make_shop.py">import json

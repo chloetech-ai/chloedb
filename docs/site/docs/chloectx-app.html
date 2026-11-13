@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloectx/app.md: edit that file and run the script, not this page. -->
@@ -73,6 +73,7 @@
       <span class="eyebrow">Apps</span>
       <h1>ChloeCtx as an app of a ChloeDB cluster</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/app.md">docs/chloectx/app.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#start-it">Start it</a></li><li><a href="#where-the-memory-is">Where the memory is</a></li><li><a href="#the-api">The API</a></li><li><a href="#inspector">Inspector</a></li><li><a href="#seen-before">Seen before</a></li><li><a href="#create-an-app-from-a-space">Create an app from a space</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -135,7 +136,7 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 </tbody>
 </table></div>
 <p>Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when <code>ANTHROPIC_API_KEY</code> is set (model <code>CHLOECTX_APP_MODEL</code>, by default Haiku), else to the <code>claude</code> CLI when it is on the PATH (<code>CHLOECTX_DISTILL_MODEL</code>). <code>CHLOECTX_APP_MODEL=off</code> turns them off. Everything else, asking included, works without a model. At most four conversations are distilled at once and 256 wait; past that an exchange is stored without notes (its answer says <code>skipped</code>, and <code>/v1/info</code> counts it under <code>distill.skipped</code>). The app serves 64 requests at once and answers one more with 503.</p>
-<p>The app refuses requests that carry an <code>Origin</code> header: a browser reaches it only through chloedb-server, which checks the signed-in key (reads need a read key, writes an admin key) and forwards with the app's token.</p>
+<p>The app refuses requests that carry an <code>Origin</code> header: a browser reaches it only through chloedb-server, which checks the signed-in key and forwards with the app's token and who called (<code>x-chloedb-scope</code>, and <code>x-chloedb-tables</code> for a key limited to tables). The app's manifest says <code>"checks_callers": true</code>, and it refuses what the caller's key may not do itself: reading a space or asking it needs read on its table (<code>ctx_&lt;space&gt;</code>), adding or retiring notes and exchanges write there, making a space admin there (it makes the table), the incidents are the space <code>incidents</code>'s (<code>ctx_incidents</code>), and what is not a space's (building apps, handing an alert to the on-call agent, this machine's stores) needs an admin key of every table to change and a key of every table to read. So a write key records notes, and a key limited to <code>ctx_ops_*=write</code> writes the spaces <code>ops_*</code> and nothing else (<code>GET /v1/spaces</code> lists the spaces it reads). A request with none of those headers (a program calling the app itself with its token) may do anything, as before.</p>
 <h3 id="on-kubernetes">On Kubernetes<a class="anchor" href="#on-kubernetes" aria-label="Link to this section">#</a></h3>
 <p>A cluster the <a href="server.html#on-kubernetes">operator</a> runs gets ChloeCtx from its <code>StrataCluster</code>, with nothing to start by hand:</p>
 <pre data-lang="sh">kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&quot;chloectx&quot;: {}}}&#x27;</pre>

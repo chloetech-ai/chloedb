@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloectx/setup.md: edit that file and run the script, not this page. -->
@@ -73,8 +73,9 @@
       <span class="eyebrow">Apps</span>
       <h1>Install ChloeCtx on your machine</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#install-in-one-command">Install in one command</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeCtx runs next to your own Claude Code: hooks record each session into a local ChloeDB file per project, and a small MCP server lets the model search that history. This page takes a fresh macOS or Linux machine to a working install in a few minutes, shows how to check it, and covers remote boxes, dev containers and upgrades.</p>
@@ -95,12 +96,12 @@
 </tr>
 <tr>
 <td>Rust, stable</td>
-<td>ChloeCtx is built from source</td>
+<td>to build ChloeCtx from source (not for <a href="#prebuilt">the prebuilt binary</a>)</td>
 <td><code>cargo --version</code> (install from <a href="https://rustup.rs">rustup.rs</a>)</td>
 </tr>
 <tr>
 <td>a C compiler</td>
-<td>the tokenizer's regex library is C</td>
+<td>to build from source: the tokenizer's regex library is C</td>
 <td><code>cc --version</code> (<code>xcode-select --install</code> on macOS, <code>build-essential</code> on Debian/Ubuntu)</td>
 </tr>
 <tr>
@@ -117,7 +118,14 @@
 </table></div>
 <p>Python 3 is only needed for the scripted demo and the evaluation harnesses, not for ChloeCtx itself.</p>
 <p>The CLI login matters more than it looks. The distiller runs <code>claude -p</code> in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. <code>chloectx doctor</code> checks for it.</p>
-<h2 id="install-in-one-command">Install in one command<a class="anchor" href="#install-in-one-command" aria-label="Link to this section">#</a></h2>
+<h2 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h2>
+<p><span class="since unreleased">since 0.2.1 (unreleased)</span> From release 0.2.1, the ChloeDB installer fetches <code>chloectx</code> prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
+~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
+~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session
+~/.local/bin/chloectx doctor</pre>
+<p>Release 0.2.0 has no prebuilt <code>chloectx</code>: build it from source, below. This installer (the website's <code>install.sh</code>) is not the repository's <code>./install.sh</code>, which builds ChloeCtx from a checkout.</p>
+<h2 id="install-in-one-command-from-source">Install in one command, from source<a class="anchor" href="#install-in-one-command-from-source" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">git clone https://github.com/chloetech-ai/chloedb &amp;&amp; cd chloedb &amp;&amp; ./install.sh</pre>
 <p><code>install.sh</code> does five things and can be run again at any time:</p>
 <ol>
@@ -194,7 +202,7 @@ chloectx sql &quot;SELECT kind, tag, text FROM memory WHERE kind IN (&#x27;decis
 <h2 id="explore-your-stores-chloectx-ui">Explore your stores: <code>chloectx ui</code><a class="anchor" href="#explore-your-stores-chloectx-ui" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">chloectx ui                      # opens the inspector at http://127.0.0.1:8765/?token=...
 chloectx ui --no-open --port 9000
-chloectx ui --home ~/engram-demo/engram     # stores kept elsewhere (here: the scripted demo&#x27;s)</pre>
+chloectx ui --home ~/chloectx-demo/chloectx  # stores kept elsewhere (here: the scripted demo&#x27;s)</pre>
 <p><img alt="chloectx ui: a session rebuilt from its records on the left, with the briefing, recall decisions and what the distiller kept; the store's knowledge on the right" src="../../assets/img/inspector-ui-conversation.png" /></p>
 <p><code>chloectx ui</code> is the <a href="chloectx-inspector.html">live inspector</a> pointed at your own data. The left column picks a store (one per project directory, newest first) and a session, and replays that session from its records: prompts, answers, tool calls (open one to see its stored result), the briefing at session start, every recall decision with its gate score and the records it injected, and the notes the distiller kept, superseded or closed. A session that is still running grows as it goes. The right side has every panel of the inspector, scoped to the chosen store: the live feed of records and daemon events, knowledge, the table, the graph, the vectors, an SQL console and the storage layout.</p>
 <p>It is built into the binary (no Python, no checkout needed) and only reads: each store is opened through its project's daemon, as the hooks do, so it is safe to keep open while sessions write. It listens on 127.0.0.1, and every request must carry the random token in the URL it prints, because stores hold transcripts. Links keep the store, session and tab in the address (<code>?store=…&amp;session=…&amp;tab=knowledge</code>), so a view can be reopened later.</p>

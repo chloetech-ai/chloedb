@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/sheets.md: edit that file and run the script, not this page. -->
@@ -73,6 +73,7 @@
       <span class="eyebrow">Apps</span>
       <h1>chloedb-sheets: spreadsheets in ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/sheets.md">docs/chloedb/sheets.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-app">The app</a></li><li><a href="#how-workbooks-are-kept">How workbooks are kept</a></li><li><a href="#its-api">Its API</a></li></ol></details>
     <div class="doc-body">
@@ -95,8 +96,9 @@ target/release/chloedb-sheets serve --local ./sheets-cluster --server-bin ../chl
 <p><img alt="Sheets in the command center: search over every workbook, the workbooks, an import area, and the cluster's tables" src="../../assets/img/strata-sheets-home.png" /></p>
 <p><code>--local DIR</code> starts a chloedb-server on <code>127.0.0.1:7700</code> (<code>--local-listen</code>) with its database in <code>DIR</code>, lists chloedb-sheets on it as the app <code>sheets</code>, and stops it when chloedb-sheets stops; the same <code>DIR</code> again serves the same workbooks.</p>
 <p>Against a cluster that runs elsewhere, give chloedb-sheets the server (a coordinator or one server) and a key, and give the server the app. Its first start creates the two tables it keeps workbooks in, which takes an admin key; after that a key that can write is enough:</p>
-<pre data-lang="sh">chloedb-sheets serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SHEETS_TOKEN&quot; --listen 0.0.0.0:7820
+<pre data-lang="sh">chloedb-sheets serve --server http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SHEETS_TOKEN&quot; --listen 0.0.0.0:7820
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN</pre>
+<p><code>--server</code> was <code>--strata</code> before 0.2.1; the old name still works.</p>
 <p><code>--token</code> (or <code>CHLOEDB_SHEETS_TOKEN</code>) is the bearer token its API requires; the server sends its <code>CHLOEDB_APP_TOKEN</code> (<a href="server.html#apps">apps</a>). Requests that carry an <code>Origin</code> header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.</p>
 <h3 id="on-kubernetes">On Kubernetes<a class="anchor" href="#on-kubernetes" aria-label="Link to this section">#</a></h3>
 <p>A cluster the <a href="server.html#on-kubernetes">operator</a> runs gets spreadsheets of its own from its <code>StrataCluster</code>, with nothing to start by hand:</p>
@@ -126,9 +128,9 @@ chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOK
 <p>Removing <code>spec.sheets</code> deletes its Deployment and Service and restarts the coordinators without it; the workbooks stay in <code>sheets_books</code> and <code>sheets_cells</code>.</p>
 <h3 id="from-the-command-line">From the command line<a class="anchor" href="#from-the-command-line" aria-label="Link to this section">#</a></h3>
 <p><code>import</code> and <code>export</code> move files without the UI:</p>
-<pre data-lang="sh">target/release/chloedb-sheets import budget.xlsx --strata http://127.0.0.1:7700
-target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --strata http://127.0.0.1:7700
-target/release/chloedb-sheets export &lt;workbook id&gt; -o budget.xlsx --strata http://127.0.0.1:7700</pre>
+<pre data-lang="sh">target/release/chloedb-sheets import budget.xlsx --server http://127.0.0.1:7700
+target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --server http://127.0.0.1:7700
+target/release/chloedb-sheets export &lt;workbook id&gt; -o budget.xlsx --server http://127.0.0.1:7700</pre>
 <h2 id="the-app">The app<a class="anchor" href="#the-app" aria-label="Link to this section">#</a></h2>
 <p><strong>Sheets</strong> lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.</p>
 <p><img alt="A workbook: a color scale, data bars, number formats, a frozen header row and a stacked column chart over the sheet" src="../../assets/img/strata-sheets-workbook.png" /></p>
