@@ -371,10 +371,7 @@ impl Cluster {
                         // (images and operators before 0.2.1) are given to
                         // that group once.
                         "securityContext": run_as(true),
-                        // Copies of a shard on different nodes, when there are.
-                        "affinity": {"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
-                            {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
-                        ]}},
+                        "affinity": self.copies_apart(&labels),
                         "containers": [container],
                         "volumes": [{"name": "schema", "configMap": {"name": format!("{}-schema", self.name)}}],
                     },
@@ -384,8 +381,34 @@ impl Cluster {
         })
     }
 
-    /// The coordinators' Deployment, over `shards` (each shard's servers).
-    pub fn coordinator_deployment(&self, shards: &[Vec<String>], replicas: usize) -> Json {
+    /// Copies of a shard on different nodes, when there are: preferred,
+    /// so that a cluster of fewer nodes than copies still runs them all.
+    /// A rollout of a shard of fewer than three copies adds a third
+    /// ([`super::RolloutSpec::extra_copies`]) and removes it after: a copy
+    /// that restarts beside it weighed the extra copy's node as much as its
+    /// peer's, so it landed beside its peer as often as not, and once the
+    /// extra copy went both copies of each shard ran on one node (LIV-6).
+    /// The shard's own copies (`apps.kubernetes.io/pod-index` below
+    /// `spec.replicas`, the label Kubernetes 1.28 and later give a
+    /// StatefulSet's pods) weigh twice as much as any copy of the set, which
+    /// alone counts where the label is not given.
+    fn copies_apart(&self, labels: &Json) -> Json {
+        let own: Vec<String> = (0..self.spec.replicas).map(|k| k.to_string()).collect();
+        let mut indexed = json!({"matchLabels": labels, "matchExpressions": [{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": own}]});
+        if self.spec.replicas == 0 {
+            indexed = json!({"matchLabels": labels});
+        }
+        json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+            {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": indexed}},
+            {"weight": 50, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
+        ]}})
+    }
+
+    /// The coordinators, over `shards` (each shard's servers): a
+    /// Deployment, or with `spec.coordinatorStorage` a StatefulSet whose
+    /// coordinators each keep their history on a volume of their own
+    /// ([`super::COORDINATOR_FILES`]).
+    pub fn coordinator_workload(&self, shards: &[Vec<String>], replicas: usize) -> Json {
         let s = &self.spec;
         let mut labels = self.labels();
         labels["app.kubernetes.io/component"] = json!("coordinator");
@@ -393,6 +416,13 @@ impl Cluster {
         let mut args = vec!["--shards".to_string(), list, "--listen".into(), "0.0.0.0:7700".into(), "--grpc".into(), "off".into()];
         if s.token_secret.is_none() {
             args.push("--no-token".into());
+        }
+        if s.coordinator_storage.is_some() {
+            // Not a flag coordinatorArgs gives itself: one given twice is refused.
+            let given = |flag: &str| s.coordinator_args.iter().any(|a| a == flag || a.starts_with(&format!("{flag}=")));
+            for (flag, path) in super::COORDINATOR_FILES.into_iter().filter(|(f, _)| !given(f)) {
+                args.extend([flag.to_string(), path.to_string()]);
+            }
         }
         args.extend(s.coordinator_args.iter().cloned());
         let mut env = self.coordinator_token_env();
@@ -430,15 +460,50 @@ impl Cluster {
         if let Some(p) = &s.image_pull_policy {
             container["imagePullPolicy"] = json!(p);
         }
-        if !mounts.is_empty() {
-            container["volumeMounts"] = json!(mounts);
-        }
         if let Some(r) = &s.coordinator_resources {
             container["resources"] = r.clone();
         }
-        let mut pod = json!({"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(false), "containers": [container]});
+        if s.coordinator_storage.is_some() {
+            mounts.push(json!({"name": "data", "mountPath": "/data"}));
+        }
+        if !mounts.is_empty() {
+            container["volumeMounts"] = json!(mounts);
+        }
+        let mut pod = json!({"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(s.coordinator_storage.is_some()), "containers": [container]});
         if !volumes.is_empty() {
             pod["volumes"] = json!(volumes);
+        }
+        if let Some(st) = &s.coordinator_storage {
+            // Coordinators on different nodes, when there are: a node lost
+            // takes one.
+            pod["affinity"] = json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+                {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
+            ]}});
+            let mut claim = json!({"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": st.size}}});
+            if let Some(c) = &st.storage_class_name {
+                claim["storageClassName"] = json!(c);
+            }
+            return json!({
+                "apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
+                "spec": {
+                    "serviceName": self.name,
+                    "replicas": replicas,
+                    "podManagementPolicy": "Parallel",
+                    "selector": {"matchLabels": labels},
+                    // A volume is one coordinator's, so one restarts before
+                    // the next starts: with two or more, the others serve.
+                    "updateStrategy": {"type": "RollingUpdate"},
+                    "minReadySeconds": 2,
+                    // A coordinator's history is kept when the cluster or
+                    // the coordinator goes.
+                    "persistentVolumeClaimRetentionPolicy": {"whenDeleted": "Retain", "whenScaled": "Retain"},
+                    "template": {
+                        "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
+                        "spec": pod,
+                    },
+                    "volumeClaimTemplates": [{"metadata": {"name": "data", "labels": labels}, "spec": claim}],
+                },
+            });
         }
         json!({
             "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
@@ -1040,8 +1105,30 @@ impl Cluster {
         ns_path(&self.ns, "apps/v1", "statefulsets")
     }
 
+    /// The coordinators' object as the spec has them: a StatefulSet with
+    /// `coordinatorStorage`, else a Deployment.
     fn coordinator_path(&self) -> String {
-        format!("{}/{}-coordinator", ns_path(&self.ns, "apps/v1", "deployments"), self.name)
+        self.coordinator_path_of(self.spec.coordinator_storage.is_some())
+    }
+
+    /// The coordinators' object of the other kind: the one they ran as
+    /// before `coordinatorStorage` was given or taken away, which stops
+    /// once the new ones serve.
+    fn old_coordinator_path(&self) -> String {
+        self.coordinator_path_of(self.spec.coordinator_storage.is_none())
+    }
+
+    fn coordinator_path_of(&self, stateful: bool) -> String {
+        format!("{}/{}-coordinator", ns_path(&self.ns, "apps/v1", if stateful { "statefulsets" } else { "deployments" }), self.name)
+    }
+
+    /// The coordinators' object: of the kind the spec has them, else of
+    /// the other (they run so until they restart with the new settings).
+    async fn coordinator_object(&self) -> Result<Option<Json>, String> {
+        match self.kube.get(&self.coordinator_path()).await? {
+            Some(d) => Ok(Some(d)),
+            None => self.kube.get(&self.old_coordinator_path()).await,
+        }
     }
 
     /// The coordinators' URL, through their Service.
@@ -1078,6 +1165,22 @@ fn run_as(volume: bool) -> Json {
         s["fsGroupChangePolicy"] = json!("OnRootMismatch");
     }
     s
+}
+
+/// How far the coordinators' Deployment or StatefulSet is in restarting
+/// them with its template.
+fn rolled_of(d: &Json) -> super::Rolled {
+    let st = &d["status"];
+    let n = |j: &Json| j.as_u64().unwrap_or(0);
+    let (want, updated, ready, all) = (n(&d["spec"]["replicas"]), n(&st["updatedReplicas"]), n(&st["readyReplicas"]), n(&st["replicas"]));
+    let seen = n(&st["observedGeneration"]) >= n(&d["metadata"]["generation"]);
+    // A StatefulSet counts no unavailable ones: its revisions say whether
+    // every pod runs the template.
+    let current = d["kind"] != "StatefulSet" || st["currentRevision"] == st["updateRevision"];
+    let done = seen && updated == want && ready >= want && all == want && n(&st["unavailableReplicas"]) == 0 && current;
+    let old = all.saturating_sub(updated);
+    let text = format!("{updated} of {want} restarted, {ready} ready{}", if old > 0 { format!(", {old} older still serving") } else { String::new() });
+    super::Rolled { done, text }
 }
 
 const SERVER_SCRIPT: &str = r#"set -e
@@ -1301,7 +1404,13 @@ impl Platform for Cluster {
     }
 
     async fn coordinator(&self) -> Result<Option<(Vec<Vec<String>>, usize)>, String> {
-        let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(None) };
+        let Some(d) = self.coordinator_object().await? else { return Ok(None) };
+        // Coordinators of both kinds (the spec's were made while the others
+        // served, by a restart or a change of their list): once the spec's
+        // all serve, the others stop, whichever step made them.
+        if d["kind"] == if self.spec.coordinator_storage.is_some() { "StatefulSet" } else { "Deployment" } && rolled_of(&d).done && self.kube.get(&self.old_coordinator_path()).await?.is_some() {
+            self.kube.delete(&self.old_coordinator_path()).await?;
+        }
         let args: Vec<&str> = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
         let list = args.iter().position(|a| *a == "--shards").and_then(|k| args.get(k + 1)).copied().unwrap_or_default();
         let shards = list.split(',').filter(|s| !s.is_empty()).map(|s| s.split('|').map(str::to_string).collect()).collect();
@@ -1309,7 +1418,9 @@ impl Platform for Cluster {
     }
 
     async fn set_coordinator(&self, shards: &[Vec<String>], replicas: usize) -> Result<(), String> {
-        self.kube.apply(&self.coordinator_path(), &self.coordinator_deployment(shards, replicas)).await.map(|_| ())
+        // Those of the other kind serve on until these do: the restart
+        // waits for these, then stops them ([`Self::coordinators_rolled`]).
+        self.kube.apply(&self.coordinator_path(), &self.coordinator_workload(shards, replicas)).await.map(|_| ())
     }
 
     async fn follow(&self, spec: &Spec) -> Result<(), String> {
@@ -1473,7 +1584,7 @@ impl Platform for Cluster {
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
-        let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(None) };
+        let Some(d) = self.coordinator_object().await? else { return Ok(None) };
         Ok(Some(d["spec"]["template"]["metadata"]["annotations"][CONFIG].as_str().unwrap_or_default().to_string()))
     }
 
@@ -1541,14 +1652,19 @@ impl Platform for Cluster {
 
     async fn coordinators_rolled(&self) -> Result<super::Rolled, String> {
         let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(super::Rolled { done: true, text: "no coordinators".into() }) };
-        let st = &d["status"];
-        let n = |j: &Json| j.as_u64().unwrap_or(0);
-        let (want, updated, ready, all) = (n(&d["spec"]["replicas"]), n(&st["updatedReplicas"]), n(&st["readyReplicas"]), n(&st["replicas"]));
-        let seen = n(&st["observedGeneration"]) >= n(&d["metadata"]["generation"]);
-        let done = seen && updated == want && ready >= want && all == want && n(&st["unavailableReplicas"]) == 0;
-        let old = all.saturating_sub(updated);
-        let text = format!("{updated} of {want} restarted, {ready} ready{}", if old > 0 { format!(", {old} older still serving") } else { String::new() });
-        Ok(super::Rolled { done, text })
+        let mut rolled = rolled_of(&d);
+        // The coordinators of the other kind (before coordinatorStorage was
+        // given or taken away) stop once these all serve.
+        if self.kube.get(&self.old_coordinator_path()).await?.is_some() {
+            if rolled.done {
+                self.kube.delete(&self.old_coordinator_path()).await?;
+                rolled.text = format!("{}; the coordinators of before stop", rolled.text);
+            } else {
+                rolled.text = format!("{}; the coordinators of before serve until then", rolled.text);
+            }
+            rolled.done = false;
+        }
+        Ok(rolled)
     }
 
     async fn trouble(&self, spec: &Spec) -> Result<Vec<super::Trouble>, String> {
@@ -2125,7 +2241,7 @@ mod tests {
         assert_eq!(from(&d, "STRATA_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "key"})));
         assert_eq!(from(&d, "STRATA_APP_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "token"})));
         // The coordinators read each app's token from a folder of them.
-        let co = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let co = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         let pod = &co["spec"]["template"]["spec"];
         let sources = pod["volumes"][0]["projected"]["sources"].as_array().unwrap();
         assert_eq!(sources.len(), 4);
@@ -2134,7 +2250,7 @@ mod tests {
         assert!(from(&co, "STRATA_APP_TOKEN").is_some() && env(&co).to_string().contains("STRATA_APP_TOKEN_DIR"));
         // A cluster without apps mounts nothing.
         let none = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
-        assert!(none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["volumes"].is_null());
+        assert!(none.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["volumes"].is_null());
         // base64 both ways.
         for t in ["", "a", "ab", "abc", "sk_0a1b_00ff"] {
             assert_eq!(base64_decode(&base64_encode(t.as_bytes())).unwrap(), t.as_bytes());
@@ -2202,11 +2318,11 @@ mod tests {
         assert_eq!(s["spec"]["ports"][0]["port"], 7800);
         // The coordinators list it, with the token it takes; the servers
         // do not restart for it, the coordinators do.
-        let coord = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let coord = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         let env = coord["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://orders-crawler:7800"));
         assert!(env.iter().any(|e| e["name"] == "STRATA_APP_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"));
-        let plain = none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let plain = none.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         assert!(!plain["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().iter().any(|e| e["name"] == "STRATA_APPS"));
         assert_eq!(c.spec.server_config(), none.spec.server_config());
         assert_ne!(c.spec.coordinator_config(), none.spec.coordinator_config());
@@ -2269,7 +2385,7 @@ mod tests {
         assert_eq!(s["metadata"]["name"], "orders-sheets");
         assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
         assert_eq!(s["spec"]["ports"][0]["port"], 7820);
-        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env_of = |c: &Cluster| c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = |c: &Cluster| env_of(c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].as_str().unwrap().to_string());
         assert_eq!(apps(&c).as_deref(), Some("sheets=http://orders-sheets:7820"));
         let both = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {}, "sheets": {}}));
@@ -2321,7 +2437,7 @@ mod tests {
         assert_eq!(s["metadata"]["name"], "orders-chloectx");
         assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
         assert_eq!(s["spec"]["ports"][0]["port"], 7760);
-        let env = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = env.iter().find(|e| e["name"] == "STRATA_APPS").and_then(|e| e["value"].as_str()).unwrap_or_default().to_string();
         assert_eq!(apps, "sheets=http://orders-sheets:7820,chloectx=http://orders-chloectx:7760");
         // The servers do not restart for it.
@@ -2378,7 +2494,7 @@ mod tests {
         let v = c.apps_claim(a);
         assert_eq!((&v["metadata"]["name"], &v["spec"]["resources"]["requests"]["storage"]), (&json!("orders-apps"), &json!("1Gi")));
         assert_eq!(v["metadata"]["ownerReferences"][0]["uid"], "u-1", "it goes with the cluster");
-        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env_of = |c: &Cluster| c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = env_of(&c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].clone());
         assert_eq!(apps, Some(json!("apps=http://orders-apps:7730")));
         let plain = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"image": "registry.example/apps:1", "paused": true, "storage": {"size": "2Gi", "storageClassName": "fast"}}}));
@@ -2464,7 +2580,7 @@ mod tests {
     #[test]
     fn the_coordinators_are_given_every_shards_servers() {
         let c = cluster(json!({"demo": 10, "coordinatorArgs": ["--hedge-ms", "40"]}));
-        let d = c.coordinator_deployment(&[vec!["a".into(), "b".into()], vec!["c".into()]], 2);
+        let d = c.coordinator_workload(&[vec!["a".into(), "b".into()], vec!["c".into()]], 2);
         let args = &d["spec"]["template"]["spec"]["containers"][0]["args"];
         assert_eq!(args[1], "a|b,c");
         assert!(args.as_array().unwrap().contains(&json!("--no-token")));
@@ -2496,6 +2612,61 @@ mod tests {
         assert_eq!(binding["subjects"][0], json!({"kind": "ServiceAccount", "name": "orders-coordinator", "namespace": "db"}));
     }
 
+    /// LIV-2: the coordinators kept their audit log, events, alerts,
+    /// statement statistics and table growth in memory only, and every
+    /// rollout forgot them. With `coordinatorStorage` each keeps them on a
+    /// volume of its own; without it they run as before, to the hash.
+    #[test]
+    fn coordinators_with_storage_keep_their_history_on_a_volume_each() {
+        let plain = cluster(json!({"demo": 10}));
+        let d = plain.coordinator_workload(&[vec!["a".into()]], 2);
+        assert_eq!(d["kind"], "Deployment");
+        assert!(d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().iter().all(|a| a != "--log-store" && a != "--audit-log"), "{d}");
+        assert_eq!(plain.coordinator_path(), "/apis/apps/v1/namespaces/db/deployments/orders-coordinator");
+        let c = cluster(json!({"demo": 10, "coordinators": 2, "coordinatorStorage": {"size": "3Gi", "storageClassName": "fast"}, "coordinatorArgs": ["--alerts", "/data/mine.json"]}));
+        c.spec.check().unwrap();
+        assert_ne!(c.spec.coordinator_config(), plain.spec.coordinator_config(), "giving it restarts the coordinators");
+        let s = c.coordinator_workload(&[vec!["a".into()]], 2);
+        assert_eq!((s["kind"].as_str(), s["metadata"]["name"].as_str()), (Some("StatefulSet"), Some("orders-coordinator")));
+        let args: Vec<&str> = s["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().iter().filter_map(Json::as_str).collect();
+        let after = |flag: &str| args.iter().position(|a| *a == flag).map(|k| args[k + 1]);
+        assert_eq!((after("--log-store"), after("--audit-log"), after("--alerts")), (Some("/data/logs"), Some("/data/audit.jsonl"), Some("/data/mine.json")), "{args:?}");
+        assert_eq!(args.iter().filter(|a| **a == "--alerts").count(), 1, "a flag coordinatorArgs gives is not given twice");
+        let pod = &s["spec"]["template"]["spec"];
+        assert!(pod["containers"][0]["volumeMounts"].as_array().unwrap().contains(&json!({"name": "data", "mountPath": "/data"})));
+        assert_eq!(pod["securityContext"]["fsGroup"], 10001);
+        assert_eq!(s["spec"]["volumeClaimTemplates"][0]["spec"], json!({"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "3Gi"}}, "storageClassName": "fast"}));
+        assert_eq!((s["spec"]["serviceName"].as_str(), s["spec"]["replicas"].as_u64()), (Some("orders"), Some(2)));
+        assert_eq!(s["spec"]["persistentVolumeClaimRetentionPolicy"], json!({"whenDeleted": "Retain", "whenScaled": "Retain"}));
+        assert_eq!(s["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/component"], "coordinator", "the cluster's Service selects them");
+        assert_eq!((c.coordinator_path(), c.old_coordinator_path()), ("/apis/apps/v1/namespaces/db/statefulsets/orders-coordinator".to_string(), "/apis/apps/v1/namespaces/db/deployments/orders-coordinator".to_string()));
+        let bad: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorStorage": {"size": "lots"}})).unwrap();
+        assert!(bad.check().unwrap_err().contains("coordinatorStorage.size"));
+        let dflt: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorStorage": {}})).unwrap();
+        assert_eq!(dflt.coordinator_storage.unwrap().size, "2Gi");
+        // A StatefulSet has rolled when every pod runs its revision.
+        let st = |cur: &str| json!({"kind": "StatefulSet", "metadata": {"generation": 3}, "spec": {"replicas": 2}, "status": {"observedGeneration": 3, "replicas": 2, "readyReplicas": 2, "updatedReplicas": 2, "currentRevision": cur, "updateRevision": "b"}});
+        assert!(!rolled_of(&st("a")).done);
+        assert!(rolled_of(&st("b")).done);
+    }
+
+    /// LIV-6: a rollout's extra copy weighed as much as a shard's own, so
+    /// a copy restarting beside it landed on its peer's node as often as
+    /// not. The shard's own copies weigh twice.
+    #[test]
+    fn a_shards_own_copies_keep_apart_more_than_its_extra_copy() {
+        let c = cluster(json!({"demo": 10, "replicas": 2}));
+        let set = c.statefulset(0, 3, None);
+        let terms = set["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"].as_array().unwrap().clone();
+        assert_eq!(terms.len(), 2, "{terms:?}");
+        assert!(set["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"].is_null(), "a cluster of one node still runs every copy");
+        let own = &terms[0];
+        assert_eq!(own["weight"], 100);
+        assert_eq!(own["podAffinityTerm"]["labelSelector"]["matchExpressions"], json!([{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": ["0", "1"]}]), "copies 0 and 1, not the extra copy 2");
+        assert_eq!(own["podAffinityTerm"]["labelSelector"]["matchLabels"]["strata.chloetech.ai/set"], "0");
+        assert_eq!((terms[1]["weight"].as_u64(), terms[1]["podAffinityTerm"]["labelSelector"]["matchExpressions"].is_null()), (Some(50), true));
+    }
+
     #[test]
     fn a_link_names_one_cluster() {
         let o = Options { api: Some("http://127.0.0.1:1".into()), ..Default::default() };
@@ -2519,13 +2690,13 @@ mod tests {
         };
         let s = c.statefulset(0, 3, Some((0, 1)));
         assert_eq!(names(&s["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_CLUSTER_TOKEN".to_string(), "inner".to_string())]);
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         let coordinator = &d["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(names(&coordinator["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string()), ("STRATA_CLUSTER_TOKEN".to_string(), "inner".to_string())]);
         assert!(!coordinator["args"].as_array().unwrap().contains(&json!("--no-token")));
         // Without one, the token is everyone's, as before.
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         assert_eq!(names(&d["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string())]);
     }
 
@@ -2534,7 +2705,7 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}, {"name": "OPENAI_API_KEY", "secret": "models", "key": "openai"}]}));
         let from = |env: &Json, name: &str| env.as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
         let s = c.statefulset(0, 2, Some((0, 1)));
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         for env in [&s["spec"]["template"]["spec"]["containers"][0]["env"], &d["spec"]["template"]["spec"]["containers"][0]["env"]] {
             assert_eq!(from(env, "ANTHROPIC_API_KEY"), Some(json!({"name": "anthropic", "key": "key"})));
             assert_eq!(from(env, "OPENAI_API_KEY"), Some(json!({"name": "models", "key": "openai"})));
