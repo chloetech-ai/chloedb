@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -42,8 +42,8 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/maintenance/:id/:action", post(maintenance_act))
 }
 
-fn who(body: &Option<Json<Value>>) -> String {
-    body.as_ref().and_then(|b| b["who"].as_str()).filter(|s| !s.is_empty()).unwrap_or("NOC engineer").to_string()
+fn who(headers: &HeaderMap, body: &Option<Json<Value>>) -> String {
+    crate::api::actor(headers, body.as_ref().and_then(|b| b["who"].as_str()), "NOC engineer")
 }
 
 /// An id that a restart does not hand out again: the minute and a counter.
@@ -214,7 +214,7 @@ async fn silences(State(svc): State<Shared>) -> Answer {
     q.done(json!({"silences": rows, "quiet": quiet, "at": iso(q.last())}))
 }
 
-async fn silence_add(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
+async fn silence_add(State(svc): State<Shared>, headers: HeaderMap, Json(b): Json<Value>) -> Answer {
     let e = &svc.engine;
     let kind = b["kind"].as_str().unwrap_or("device");
     if !["device", "link", "site", "rule", "service"].contains(&kind) {
@@ -227,7 +227,7 @@ async fn silence_add(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer 
     }
     let hours = b["hours"].as_f64().unwrap_or(2.0).clamp(0.25, 72.0);
     let m = e.st().last_minute;
-    let row = e.silence(kind, matcher, reason, b["who"].as_str().unwrap_or("NOC engineer"), m, m + (hours * 3600.0) as i64, "manual").await?;
+    let row = e.silence(kind, matcher, reason, &crate::api::actor(&headers, b["who"].as_str(), "NOC engineer"), m, m + (hours * 3600.0) as i64, "manual").await?;
     Ok(Json(row))
 }
 
@@ -239,9 +239,9 @@ async fn silence_end(State(svc): State<Shared>, Path(id): Path<String>) -> Answe
     Ok(Json(json!({"id": id, "status": "ended"})))
 }
 
-async fn alert_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, body: Option<Json<Value>>) -> Answer {
+async fn alert_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, headers: HeaderMap, body: Option<Json<Value>>) -> Answer {
     let e = &svc.engine;
-    let by = who(&body);
+    let by = who(&headers, &body);
     let m = e.st().last_minute;
     let rows = e.db.query("SELECT * FROM netops_alerts WHERE id = :id", json!({"id": id})).await?;
     let Some(mut a) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no alert {id}"))) };
@@ -354,10 +354,10 @@ pub(crate) async fn checks_for(q: &Q, c: &Row) -> std::result::Result<Value, Api
     Ok(json!({"before_at": iso(t0 - t0.rem_euclid(60)), "after_at": iso(t1 - t1.rem_euclid(60)), "checks": checks, "ok": ok, "live": status == "in_progress"}))
 }
 
-async fn change_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, body: Option<Json<Value>>) -> Answer {
+async fn change_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, headers: HeaderMap, body: Option<Json<Value>>) -> Answer {
     let q = Q::new(&svc);
     let e = &svc.engine;
-    let by = who(&body);
+    let by = who(&headers, &body);
     let m = q.last();
     let rows = q.rows("The change", "SELECT * FROM netops_changes WHERE id = :id", json!({"id": id})).await?;
     let Some(mut c) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no change {id}"))) };
@@ -761,9 +761,9 @@ async fn maintenance_parse(State(svc): State<Shared>, Json(b): Json<Value>) -> A
     Ok(Json(row))
 }
 
-async fn maintenance_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, body: Option<Json<Value>>) -> Answer {
+async fn maintenance_act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>, headers: HeaderMap, body: Option<Json<Value>>) -> Answer {
     let e = &svc.engine;
-    let by = who(&body);
+    let by = who(&headers, &body);
     let m = e.st().last_minute;
     let rows = e.db.query("SELECT * FROM netops_maintenance WHERE id = :id", json!({"id": id})).await?;
     let Some(mut n) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no notice {id}"))) };
@@ -1134,13 +1134,13 @@ async fn customer(State(svc): State<Shared>, Path(id): Path<String>, Query(p): Q
 
 // ---- the shift: what happened, and what waits
 
-async fn note_add(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
+async fn note_add(State(svc): State<Shared>, headers: HeaderMap, Json(b): Json<Value>) -> Answer {
     let e = &svc.engine;
     let body = b["body"].as_str().unwrap_or("").trim();
     if body.is_empty() {
         return Err(bad("body is the note"));
     }
-    let row = json!({"id": format!("note-{}", uid(e, crate::sim::now())), "ts": iso(crate::sim::now()), "kind": "note", "author": b["who"].as_str().unwrap_or("NOC engineer"), "body": body, "done": false});
+    let row = json!({"id": format!("note-{}", uid(e, crate::sim::now())), "ts": iso(crate::sim::now()), "kind": "note", "author": crate::api::actor(&headers, b["who"].as_str(), "NOC engineer"), "body": body, "done": false});
     e.db.upsert("netops_handovers", vec![row.clone()]).await?;
     Ok(Json(row))
 }

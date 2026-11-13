@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -377,7 +377,7 @@ async fn board(q: &Q, e: &Engine, inc: &Row, now: i64, keep: bool) -> std::resul
     Ok(rows)
 }
 
-async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<Value>) -> Answer {
     let q = Q::new(&svc);
     let e = &svc.engine;
     let inc = load(&q, &id).await?;
@@ -385,7 +385,7 @@ async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, Json(b): J
     if ask.is_empty() {
         return Err(bad("ask is what the panel should show: a sentence or a SELECT"));
     }
-    let who = b["who"].as_str().unwrap_or("NOC engineer");
+    let who = &crate::api::actor(&headers, b["who"].as_str(), "NOC engineer");
     let mut spec = read_ask(e, &inc, ask).map_err(|m| bad(&m))?;
     if let Some(t) = b["title"].as_str().filter(|t| !t.trim().is_empty()) {
         spec.title = t.trim().to_string();
@@ -406,10 +406,10 @@ async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, Json(b): J
     q.done(json!({"panel": row, "rows": got.len(), "understood": spec.title}))
 }
 
-async fn panel_act(State(svc): State<Shared>, Path((id, panel, action)): Path<(String, String, String)>, body: Option<Json<Value>>) -> Answer {
+async fn panel_act(State(svc): State<Shared>, Path((id, panel, action)): Path<(String, String, String)>, headers: HeaderMap, body: Option<Json<Value>>) -> Answer {
     let e = &svc.engine;
     let q = Q::new(&svc);
-    let who = body.as_ref().and_then(|b| b["who"].as_str()).unwrap_or("NOC engineer").to_string();
+    let who = crate::api::actor(&headers, body.as_ref().and_then(|b| b["who"].as_str()), "NOC engineer");
     let inc = load(&q, &id).await?;
     board(&q, e, &inc, q.last(), true).await?;
     let rows = q.rows("The panel", "SELECT * FROM netops_panels WHERE id = :p AND incident = :id", json!({"p": panel, "id": id})).await?;
