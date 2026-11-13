@@ -8,6 +8,8 @@
 import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, copy, drawer, modal, every, can, needs } from "../core.js";
 
 // A run under a millisecond reads "<1 ms" rather than "0".
+// A target table, linked to its page in Tables (a click there does not open the drawer).
+const tableLink = (t) => h("a", { href: `#/table/${encodeURIComponent(t)}?tab=data`, title: `Open ${t} in Tables`, onclick: (e) => e.stopPropagation() }, t);
 const took = (v) => (v === 0 ? "<1 ms" : fmt.ms(v));
 
 export default {
@@ -61,12 +63,12 @@ function render(page) {
       const last = c.runs?.[0];
       return h("tr", { class: "click", onclick: () => open(c.name) },
         h("td", {}, h("div", { class: "stack", style: { gap: "2px" } }, h("b", {}, c.name), h("span", { class: "small dim" }, kindTitle(c.kind), c.note ? ` · ${c.note}` : ""))),
-        h("td", { class: "mono small" }, c.target),
+        h("td", { class: "mono small" }, tableLink(c.target)),
         h("td", {}, healthPill(c), st.failures > 1 ? h("span", { class: "small dim" }, ` ×${st.failures}`) : null),
         h("td", { class: "small", style: { whiteSpace: "nowrap" } }, st.last_run_ms ? fmt.ago(st.last_run_ms) : "never", last ? h("div", { class: "dim" }, `${fmt.plural(last.rows_ || 0, "row")} · ${took(last.took_ms)}`) : null),
         h("td", { class: "num small" }, fmt.si(st.rows_total || 0)),
         h("td", { class: "small dim", style: { whiteSpace: "nowrap" } }, every_text(c)),
-        h("td", { class: st.last_error ? "small error" : "small", style: { maxWidth: "320px" } }, st.last_error ? st.last_error.slice(0, 160) : ""));
+        h("td", { class: st.last_error ? "small error" : "small", style: { maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_error ? st.last_error.slice(0, 160) : ""));
     });
     clear(main, card({
       title: "Connectors", sub: `${fmt.plural(cs.length, "connector")} · configs in ${v.tables.configs}, runs in ${v.tables.runs}`,
@@ -249,9 +251,9 @@ function render(page) {
       h("td", {}, r.ok ? pill("ok", "ok") : pill("failing", "failed")),
       h("td", { class: "num small" }, fmt.n(r.records || 0)), h("td", { class: "num small" }, fmt.n(r.rows_ || 0)),
       h("td", { class: "num small" }, took(r.took_ms)),
-      h("td", { class: r.error ? "small error" : "small", style: { maxWidth: "300px" } }, r.error || (r.dropped?.length ? h("span", { class: "dim" }, `left out: ${r.dropped.join(", ")}`) : ""))));
+      h("td", { class: r.error ? "small error" : "small", style: { maxWidth: "300px", overflowWrap: "anywhere" } }, r.error || (r.dropped?.length ? h("span", { class: "dim" }, `left out: ${r.dropped.join(", ")}`) : ""))));
     const facts = [
-      ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, c.target)], ["Health", healthPill(c)], ["Schedule", every_text(c)],
+      ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, tableLink(c.target))], ["Health", healthPill(c)], ["Schedule", every_text(c)],
       ["Runs", fmt.n(st.runs || 0)], ["Rows written", fmt.n(st.rows_total || 0)], ["Last ok", st.last_ok_ms ? fmt.ago(st.last_ok_ms) : "never"],
       ["Cursor", h("span", { class: "mono small", style: { wordBreak: "break-all" } }, (st.cursor || "–").slice(0, 120))],
       ["Secrets", c.secrets?.length ? h("span", { class: "mono" }, c.secrets.join(", ")) : "none"],

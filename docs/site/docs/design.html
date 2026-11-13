@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/index.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html" aria-current="page">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -79,7 +83,7 @@
     <div class="doc-body">
 
 <p>ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions, and is queried with SQL. Every table is indexed for full text (posting lists), structured columns (a columnar forward index) and vectors, rows can hold graph edges to other rows, and a cost-based planner combines all of it in one statement.</p>
-<p>This page is the design: the file format, transactions, every index and the planner. To use ChloeDB, start with the <a href="https://github.com/chloetech-ai/chloedb/blob/main/README.md">README</a> or <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a>.</p>
+<p>This page is the design: the file format, transactions, every index and the planner. To use ChloeDB, start with the <a href="https://github.com/chloetech-ai/chloedb/blob/main/README.md">README</a> or <a href="build-an-app.html">Build an app</a>.</p>
 <h2 id="goals">Goals<a class="anchor" href="#goals" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>Embedded and single-file.</strong> One <code>.chloedb</code> file plus a <code>-wal</code> sidecar, like SQLite in WAL mode. Opening a database maps the file and loads nothing eagerly, so databases larger than RAM work and a cold open costs the same whatever the size.</li>
@@ -304,7 +308,7 @@ $$</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/index.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="graphs.html">← Graphs</a><a href="rag.html">Retrieval for RAG →</a></span>
+      <span class="pager"><a href="slices.html">← Search on the device</a><a href="rag.html">Retrieval for RAG →</a></span>
     </footer>
   </article>
 </div></main>

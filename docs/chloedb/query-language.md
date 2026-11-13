@@ -910,7 +910,7 @@ SELECT id FROM papers WHERE MATCH(body, 'gnn', synonyms => 1) LIMIT 10;
 
 ## Query expansion: `expand`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `bm25(body, :q, expand => 10)` ranks by the query's words and by the words its first ranking's top 10 rows hold most: pseudo-relevance feedback (RM3). It finds rows that use other words for what the query asks, such as `antibodies` for `vaccines`.
 
@@ -928,7 +928,7 @@ ORDER BY bm25(body, :q, expand => :n, expand_terms => 10, expand_weight => 0.7) 
 
 ## Understanding a query's words: `understand`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `bm25(field, :q, understand => 'boost')` reads the words of a search for the values of the table's `KEYWORD` fields they name (`white`, a colour; `coffee table`, a class) and for ranges of numbers (`under $300`), and ranks by the text and by them:
 
@@ -951,7 +951,7 @@ ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'class, colo
 
 ## Did you mean: correcting a query's words
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `Db::correct(table, field, text)` (chloedb-server's [`POST /v1/correct`](server.md)) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":
 
@@ -995,6 +995,28 @@ A `SUM` or `AVG` of `FLOAT` values is exact: the values are added without roundi
 
 - **Of columns and expressions.** Over one table they take indexed `INT` and `FLOAT` columns, read from the columns as the other aggregates are; over joined or derived rows, any numeric expression (`MEDIAN(s.price * 1.2)`). `p` is a constant or a parameter (`:p`); the order is ascending (`ORDER BY f DESC` is an error: write `1 - p`). They are aggregates of groups, not window functions.
 - **Exact, so they hold the values.** A group keeps each of its values (8 bytes each, counted against the [query's memory budget](server.md#limits)) and orders them once when it is read: a median over 5 million rows holds 40 MB. A shard sends a group's values to the coordinator as runs of equal values, so prices that repeat travel once with their count, and the coordinator's answer is one server's. Plans with a percentile carry the plan feature `percentiles`, which a version of ChloeDB from before them refuses by name.
+
+### Rollups: `CREATE ROLLUP`
+
+A rollup is a table of counts, sums, least and greatest values per bucket of time and per group, kept up to date from another table as rows arrive: a time-bucket query over weeks of logs reads a few thousand rows of the rollup instead of millions of the table.
+
+```sql
+CREATE ROLLUP logs_5m ON logs OPTIONS(lateness = '10 minutes', retain = '400 days') AS
+  SELECT date_bin('5 minutes', ts), service, severity, COUNT(*), SUM(latency), MAX(latency) AS worst
+  WHERE severity <> 'DEBUG';
+
+SELECT date_trunc('hour', bucket) AS h, service, SUM(count), SUM(sum_latency) / SUM(count) AS mean, MAX(worst)
+FROM logs_5m WHERE bucket >= '2026-11-01' GROUP BY h, service;
+
+REFRESH ROLLUP logs_5m;        -- now, without waiting for the background job
+REFRESH ROLLUP logs_5m FULL;   -- every bucket, for rows later than the lateness
+DROP ROLLUP IF EXISTS logs_5m;
+```
+
+- **The bucket** is `date_bin('<width>', field)`, any whole number of seconds, minutes, hours, days or weeks counted from 1970-01-01, or `date_trunc('second' | 'minute' | 'hour' | 'day', field)`, of a `TIMESTAMP` column. The groups are `KEYWORD`, `INT`, `BOOL` or `TIMESTAMP` columns, and the aggregates `COUNT(*)`, `SUM(f)`, `MIN(f)`, `MAX(f)` and `AVG(f)` of numeric columns (`MIN` and `MAX` of a `TIMESTAMP` too). A `WHERE` keeps some rows only; `FROM`, when written, names the table after `ON`.
+- **The rollup is an ordinary table**, named by the statement, with a row per bucket and group: `rollup_key` (its primary key), the bucket (`bucket`, or the name `AS` gives it), the group columns, typed as in the table, and a column per aggregate, `count`, `sum_<field>`, `min_<field>` and `max_<field>` unless `AS` names it. `AVG(f)` keeps `sum_f` and `count`, so the mean is `SUM(sum_f) / SUM(count)`. A `count` column is always kept. Query it by name, and add its rows up into larger buckets or fewer groups (`SUM(count)`, `MIN(min_latency)`); a query of the table is not rewritten onto it. `OPTIONS(retain = ...)` is the rollup's own [retention](#tables), kept by its bucket: a rollup outlives the rows it counts.
+- **How it is kept.** `CREATE ROLLUP` folds the table's rows at once (on a server, its refresher does, a few seconds on). From then on a refresh compares, bucket by bucket, how many rows of the table the bucket holds with the rollup's count for it (a count over a time window reads the column's index, well under a millisecond), and folds again, in one transaction, the buckets that differ. A plain refresh compares the buckets from the newest row less the `lateness` (10 minutes by default) to the newest, and any the rollup has not folded yet; `FULL` compares them all. A server refreshes every rollup every few seconds, and all their buckets every few minutes; an embedding program calls `Db::spawn_rollups` (or runs `REFRESH ROLLUP`). Buckets older than the table's `retain` are not compared again, so they keep what they counted.
+- **For tables rows are added to**, such as logs: a change that leaves a bucket's count as it was (an `UPDATE`, or a delete and an insert into one bucket between two refreshes) is seen only when the bucket is next folded. The definition is kept as a [stored function](#stored-functions), `rollup__<name>()`, whose body is the statement, so it needs nothing new on disk and travels with the database. On a server with shards, each shard keeps a rollup of its own rows; rollups through a coordinator come later.
 
 ## Subqueries, WITH and joins
 
@@ -1186,6 +1208,8 @@ Caps trade relevance for spread. ArguAna's answer to a query is the argument aga
 
 ## As much as fits: `PACK n TOKENS`
 
+**Experimental:** what `PACK` reads and how it chooses may change between releases. Against the top rows of a ranking cut in the client ([measured](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/pack/README.md) on SciFact and NFCorpus), it reaches more of the relevant documents when the budget holds one to three (SciFact 0.74 against 0.65 at 500 tokens) and spends less of the budget on them, and the two are the same once it holds five or more.
+
 A query's answer is often the context a language model is given, and the model has a budget of tokens, not of rows. `PACK n TOKENS` at the end of a SELECT fills that budget: it reads the query's rows in its order and decides each once, so that a long row, a row that repeats one already taken and a row linked to one taken are weighed inside the query rather than by the application after a top k.
 
 ```sql
@@ -1199,18 +1223,20 @@ PACK 4000 TOKENS DEDUPE 0.85 FOLLOW links 1 HOP WITH RECEIPT;
 Each row, in the query's order, is:
 
 - **taken** whole when its text fits what is left of the budget;
-- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most words of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut;
-- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's words are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
-- **skipped as over budget** when not even an excerpt of 32 tokens fits.
+- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most terms of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut. Terms are found as the column's analyzer makes them (stemmed for `english`, dictionary words for Chinese and Japanese under `standard`), and the text is cut between words, or inside a run without spaces (Chinese, Japanese, Thai, a URL, base64), so an excerpt never spends more than its room;
+- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's terms (as its analyzer makes them) are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
+- **skipped as over budget** when not even an excerpt of 32 tokens fits;
+- **skipped as no text** when none of its counted columns holds text.
 
 With `FOLLOW edges n HOP` (1 to 3 hops, 1 by default), each row taken brings the rows its [`EDGES`](#graphs) field reaches, up to 16, right after it in the order of its edges, if they pass the query's `WHERE`, decided the same way (`linked from k`). The rows are read by key, a hop at a time, so `FOLLOW` works through a coordinator, where graph walks do not: a decision a file note links to is taken with the note, though it shares no word with the task.
 
-The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`) and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
+The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`, `skip: no text`), with their text columns `NULL`, so that the text of the rows answered is still what fits the budget, and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
 
-- **The text counted** is every text column but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of letters is a token per six letters, a run of digits a token per three, a CJK character or a punctuation mark one each.
-- **Reads.** The rows are read in slices, 64 and then four times as many, and reading stops once what is left of the budget is too small for any row: a query whose first rows fill the budget reads one slice. `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every slice, and every row followed, is a query of its own on the same snapshot.
+- **The budget** is a whole number from 1 to 10,000,000, or a parameter that holds one: `PACK :budget TOKENS`.
+- **The text counted** is every column a row read holds text in, but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of Latin letters is a token per six letters, a run of another alphabet's (Cyrillic, Greek, Arabic, Hebrew, the scripts of India) a token per three, a run of digits a token per three, a CJK or Thai character or a punctuation mark one each. Against OpenAI's cl100k_base and o200k_base it counts English and code 13 to 27% high, the safe side; other scripts are counted high against o200k_base but low against cl100k_base, by up to 2.4 times for Hindi ([measured](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/pack/README.md)).
+- **Reads.** The rows are read in growing reads, the first 64, then the first 320, 1,344 and so on, each from `OFFSET`, and the rows seen before are passed over by their keys; reading stops once what is left of the budget is too small for any row, so a query whose first rows fill the budget reads once. A deeper read rather than the next page, because a fused ranking (`rrf`, a weighted sum) ranks its candidates to a depth that grows with the `LIMIT`: a deeper read is a better ranking of the same rows, and one that comes back short is the end of the ranking. (In a table without a primary key the reads are pages instead.) `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every read, and every row followed, is a query of its own on the same snapshot: on a server, a lease held for the pack (kept for the client with `hold`, or the client's own `snapshot`), and the statement is admitted once, by its text, and held to one deadline. Through a coordinator each shard reads its latest version at each read.
 - **Choosing** is greedy in the query's order. A row that does not fit whole is excerpted rather than skipped, so that one long log cannot spend the budget, and a smaller row after one over the budget is still taken.
-- **Where.** On a file, a server and a coordinator alike: a coordinator merges each slice from its shards, and packs. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
+- **Where.** On a file, a server and a coordinator alike: a coordinator merges each read from its shards, and packs. A key limited to tables runs it as it runs the query without the clause. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
 
 ## Graphs
 
@@ -1346,7 +1372,7 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 ## Classifiers: `CREATE CLASSIFIER` and `classify()`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 A classifier learns a table's labels from its rows' embeddings, and is kept as a [stored function](#stored-functions) of a vector: versioned, rolled back and dropped as any function is, and held by every shard of a cluster. It classifies rows by their stored vectors, and a query's text by the same model's vector of it.
 
@@ -1376,7 +1402,7 @@ DROP CLASSIFIER topic;
 
 ## Chunks of a table's text: `chunks_of()`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `chunks_of(table, text_field)` is a table of the pieces of each row's text, for a table of chunks that a vector field embeds, or a budgeted context packs from.
 
@@ -1450,7 +1476,7 @@ DROP TABLE IF EXISTS wrote, authors;
 - **`NOT NULL`** refuses a row without a value in that column, from any write: SQL, JSON, a file or the Rust API. **`DEFAULT value`** is the value a write that leaves the column out gets: a constant of the column's type on a single-valued `TEXT`, `KEYWORD`, `INT`, `FLOAT`, `BOOL` or `TIMESTAMP` column that is not the key, or `CURRENT_TIMESTAMP` (or `now()`) on a `TIMESTAMP`, the time of the statement, the same in all its rows. An `INSERT` that leaves a column out, a JSON row without its key and a CSV file without its column give it the default; a `NULL` that a write gives stays `NULL`, and a column with `NOT NULL` refuses it. In SQL the keyword `DEFAULT` stands for a column's default, in `VALUES` and in `SET`, and `CURRENT_TIMESTAMP` (or `now()`, `LOCALTIMESTAMP`) is the time of the statement there and in conditions (`SET seen = CURRENT_TIMESTAMP`, also in `ON CONFLICT ... DO UPDATE`). The Rust API writes a row as it is given; `Schema::defaults` returns a row of the defaults to start from. The JSON schema's options are `"not_null": true` and `"default"` (`"now"` for the time of the write).
 - **`OPTIONS(shard_by = 'column')`** after the columns places the table's rows on [shards](server.md#tables-on-shards) by that column instead of by the primary key, so that a user's events sit on one shard together. The column is a stored, single-valued `KEYWORD` or `INT` with `NOT NULL`, other than the key, and a row keeps it: `UPDATE` does not change it (delete the row and insert it again). In JSON it is `"shard_by": "usr"`. One database places nothing, so the option only matters to a coordinator.
 - **`OPTIONS(cluster_by = 'column')`** stores each segment's rows sorted by that column, rows of one value in the order they were written: a flush sorts the rows it writes, and a merge sorts the rows of the segments it joins. A user's history then sits in one run of each segment instead of scattered across it, so reading it touches a few pages rather than one per row. The column is an indexed, single-valued `KEYWORD`, `INT` or `TIMESTAMP`, and a row keeps it (`UPDATE` does not change it). Queries return the same rows either way; only `ORDER BY` fixes their order. In JSON it is `"cluster_by": "usr"`.
-- **`OPTIONS(retain = '400 days')`** drops rows once their time is older than the period: a flush does not write them, and a merge leaves them out of the segment it writes, or drops a segment whose rows are all past it without rewriting anything; the merger looks for such segments on its own. Until then a query still finds them, so filter on the time where that matters (`WHERE ts > '2025-10-01'`). The time is the table's only `TIMESTAMP` column, or the one `retain_by = 'column'` names (indexed, single-valued, and not changed by `UPDATE`); a row without one is kept. A period is a whole number and a unit: seconds, minutes, hours, days or weeks (`'90 s'`, `'12h'`, `'2 weeks'`). In JSON it is `"retain": "400 days"` with `"retain_by"`.
+- **`OPTIONS(retain = '400 days')`** drops rows once their time is older than the period: a flush does not write them, and a merge leaves them out of the segment it writes, or drops a segment whose rows are all past it without rewriting or reading anything; the merger looks for such segments on its own. Such a table's segments merge only within windows of time, a thirtieth of the period each (from a second to a day): a segment holds rows of one window, as of its newest row, so a table kept 30 days holds segments of a day at most, and each leaves whole once its newest row is past the period rather than being rewritten as its rows expire. Until then a query still finds them, so filter on the time where that matters (`WHERE ts > '2025-10-01'`). The time is the table's only `TIMESTAMP` column, or the one `retain_by = 'column'` names (indexed, single-valued, and not changed by `UPDATE`); a row without one is kept. A period is a whole number and a unit: seconds, minutes, hours, days or weeks (`'90 s'`, `'12h'`, `'2 weeks'`). In JSON it is `"retain": "400 days"` with `"retain_by"`.
 - **`OPTIONS(expire_by = 'column')`** expires each row at the time its column holds, as a key-value store's TTL does: from that moment on queries, counts, joins and reads by key leave the row out, and a write by its key finds no row there (an `INSERT` of the key succeeds, an `UPDATE` changes nothing). Rows without a time never expire, and `UPDATE ... SET until = ...` (or a `set` in place) moves a row's time. A server that takes writes deletes expired rows every few seconds, and `Db::expire` (Python: `expire()`) does it at once; those deletes are logged as any delete is, so [replicas](server.md#replication-a-primary-and-its-replicas) hold the same rows without reading a clock. Unlike `retain`, which drops old rows when segments are written and leaves them visible until then, an expired row is gone for reads at once. The column is an indexed, single-valued `TIMESTAMP`, the table has a primary key, and `DROP COLUMN` keeps the column (`RENAME COLUMN` renames the option too). It makes the database format 3, feature `expire_by`. In JSON it is `"expire_by": "until"`.
 
 ```sql

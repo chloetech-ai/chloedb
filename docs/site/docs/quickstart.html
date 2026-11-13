@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Quickstart: a first search in five minutes · ChloeDB docs</title>
-<meta name="description" content="This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB&#x27;s server, make a table, put a few rows in it, search them, and open the query…">
+<meta name="description" content="This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB&#x27;s server, make a table, put a few rows in it, search them, and open the command…">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/quickstart.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html" aria-current="page">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -75,10 +79,10 @@
       <h1>Quickstart: a first search in five minutes</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">1. Install the server</a></li><li><a href="#2-start-it">2. Start it</a></li><li><a href="#3-make-a-table-and-fill-it">3. Make a table and fill it</a></li><li><a href="#4-search">4. Search</a></li><li><a href="#5-open-the-query-console">5. Open the query console</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
-<p>This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the query console in a browser. The last section does the same from Python, with the database inside your process and no server at all.</p>
+<p>This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the command center in a browser. The last section does the same from Python, with the database inside your process and no server at all.</p>
 <p>You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer), and <code>curl</code>. On Windows, use WSL 2 or Docker.</p>
 <h2 id="1-install-the-server">1. Install the server<a class="anchor" href="#1-install-the-server" aria-label="Link to this section">#</a></h2>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
@@ -139,8 +143,8 @@ EOF</pre>
 <pre data-lang="sh">sql &lt;&lt;&#x27;EOF&#x27;
 {&quot;sql&quot;: &quot;SELECT category, COUNT(*), AVG(price) FROM products WHERE MATCH(body, &#x27;waterproof OR warm&#x27;) GROUP BY category ORDER BY 2 DESC&quot;}
 EOF</pre>
-<h2 id="5-open-the-query-console">5. Open the query console<a class="anchor" href="#5-open-the-query-console" aria-label="Link to this section">#</a></h2>
-<p>Open <a href="http://127.0.0.1:7700">http://127.0.0.1:7700</a> in a browser. The query console lists the table, builds queries from a search box and filters, shows the SQL it runs and the plan the planner chose, and runs any SQL you type. With <code>--demo 20000</code>, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:</p>
+<h2 id="5-open-the-command-center">5. Open the command center<a class="anchor" href="#5-open-the-command-center" aria-label="Link to this section">#</a></h2>
+<p>Open <a href="http://127.0.0.1:7700">http://127.0.0.1:7700</a> in a browser. In the command center, <strong>Start here</strong> walks through the first steps and ticks each one off once it is done. <strong>Tables</strong> lists <code>products</code>: its page searches it from one box (by words, by meaning, or both), shows its rows, how full each field is, and what uses it, and <strong>Save as a saved search</strong> keeps the query as a stored function that SQL, HTTP, Python, JavaScript and agents (over MCP) all call. The <strong>SQL workbench</strong> runs any SQL you type and shows the plan the planner chose; <strong>Ask</strong> (Ctrl+J) answers a question in words by querying the tables, with an Anthropic API key (the server's, or one you give the tab). The older query console is still at <a href="http://127.0.0.1:7700/classic">/classic</a>. With <code>--demo 20000</code>, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:</p>
 <pre data-lang="sh">chloedb-server --db demo.chloedb --demo 20000 --listen 127.0.0.1:7710 --grpc off &gt; demo.log 2&gt;&amp;1 &amp;
 demo=$!
 until curl -sf http://127.0.0.1:7710/livez &gt; /dev/null; do sleep 0.2; done
@@ -151,9 +155,8 @@ curl -sS http://127.0.0.1:7710/v1/sql -H &#x27;content-type: application/json&#x
 <h2 id="chloedb-from-python-with-no-server">ChloeDB from Python, with no server<a class="anchor" href="#chloedb-from-python-with-no-server" aria-label="Link to this section">#</a></h2>
 <p>The Python package runs a database inside your process, the way <code>sqlite3</code> runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server, plus Linux with glibc 2.28 or later.</p>
 <pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
-pip install chloedb</pre>
-<p>Until the package is on PyPI, install the wheel from the release instead:</p>
-<pre data-lang="sh">pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
+<p>The wheels come from the release: <code>chloedb</code> on PyPI is still a placeholder of version 0.0.1 that holds the name, and <code>pip install chloedb</code> alone installs that, which fails at <code>import chloedb</code>.</p>
 <pre data-lang="sh">python3 - &lt;&lt;&#x27;EOF&#x27;
 import chloedb
 

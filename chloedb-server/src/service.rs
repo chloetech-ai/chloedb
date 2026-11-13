@@ -598,6 +598,9 @@ pub struct Service {
     /// The largest body `/v1/write` and `/v1/import` (and a gRPC message)
     /// may have, in bytes; other routes take [`SMALL_BODY`].
     pub max_body: usize,
+    /// How long a table OTLP's logs make keeps its rows, in seconds
+    /// (`--otlp-retain`; `None`: for ever).
+    pub otlp_retain: Option<i64>,
     pub lease_ttl: Duration,
     leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
@@ -775,6 +778,7 @@ impl Service {
             engine: Engine::from_env(),
             max_queued_writes: usize::MAX,
             max_body: 256 << 20,
+            otlp_retain: None,
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
@@ -2173,7 +2177,7 @@ impl Service {
     /// parameters with their vectors; `None` when it has none.
     async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
         use chloedb::query::embed_sql::{self, Request};
-        if !embed_sql::may_embed(sql) {
+        if !embed_sql::may_embed_with(sql, params) {
             return Ok(None);
         }
         let catalog = self.readable();
@@ -2625,6 +2629,15 @@ impl Service {
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
+        self.dispatch(req).await
+    }
+
+    /// [`Self::query`] of a query the Contain rules admitted: a query that
+    /// runs as steps runs each step here, under the turn its statement
+    /// took, rather than asking for another (a rule that lets one query of
+    /// a key run at a time would otherwise refuse the statement's second
+    /// step while its first holds the turn).
+    async fn dispatch(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // A query that asks a language model about its rows
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
@@ -2635,23 +2648,65 @@ impl Service {
         // from its shards), and the choice here.
         if req.plan.is_none() && !req.shard && chloedb::query::pack::may_pack(&req.sql) {
             let catalog = self.catalog();
-            let key_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).and_then(|s| s.primary_key.map(|k| s.fields[k].name.clone()));
-            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &key_of)? {
+            let table_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).cloned();
+            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &table_of)? {
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that packs its rows is not scrolled: PACK n TOKENS reads what fills the budget"));
                 }
                 let t0 = Instant::now();
-                let mut last = None;
-                while let Some(sql) = p.next_query()? {
-                    let mut sub = req.clone();
-                    sub.sql = sql;
-                    let mut a = Box::pin(self.query(sub)).await?;
-                    p.feed(std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }))?;
-                    last = Some(a);
+                let deadline = t0 + self.timeout_of(req.timeout_ms);
+                // Every read of one version: on a server, the client's
+                // lease, or one held for the pack and released after it
+                // (kept for the client with `hold`). A coordinator's shards
+                // each read their latest.
+                let local = matches!(self.backend, Backend::Local(_));
+                let mut lease = req.snapshot;
+                let (mut last, mut failed) = (None, None);
+                loop {
+                    let step: Result<Option<Answer>, ApiError> = async {
+                        let Some(next) = p.next_query()? else { return Ok(None) };
+                        let mut sub = req.clone();
+                        // As text that reads back as the very query.
+                        sub.sql = next.sql()?;
+                        sub.params = next.params;
+                        (sub.snapshot, sub.hold, sub.release) = (lease, local && lease == 0, false);
+                        // What is left of the statement's time, not a
+                        // deadline of each read's own.
+                        sub.timeout_ms = (deadline.saturating_duration_since(Instant::now()).as_millis() as u64).max(1);
+                        let mut a = Box::pin(self.dispatch(sub)).await?;
+                        p.feed(std::mem::replace(&mut a.rs, no_rows()))?;
+                        Ok(Some(a))
+                    }
+                    .await;
+                    match step {
+                        Ok(Some(a)) => {
+                            if lease == 0 {
+                                lease = a.lease;
+                            }
+                            last = Some(a);
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            failed = Some(e);
+                            break;
+                        }
+                    }
                 }
-                let packed = p.finish(None, None)?;
+                let read = match (local, lease) {
+                    (true, l) if l != 0 => self.leased(l).ok().map(|s| (s.txn(), s.seq_no())),
+                    _ => None,
+                };
+                let made = lease != req.snapshot && lease != 0;
+                if (made && (!req.hold || failed.is_some())) || (req.release && req.snapshot != 0) {
+                    self.release(&[lease]);
+                }
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+                let packed = p.finish(read.map(|r| r.0), read.and_then(|r| r.1))?;
                 let Some(mut a) = last else { return Err(ApiError::bad("PACK: the query read no rows")) };
                 a.rs = packed.rs;
+                a.lease = if req.hold { lease } else { 0 };
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -2668,7 +2723,7 @@ impl Service {
                 loop {
                     let mut source = req.clone();
                     (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql_of(&schema, rows)?, None, false, true);
-                    let mut a = Box::pin(self.query(source)).await?;
+                    let mut a = Box::pin(self.dispatch(source)).await?;
                     let t0 = Instant::now();
                     let chunks = c.finish(&a.rs);
                     if let Some(more) = c.more_rows(rows, &a.rs, &chunks) {
@@ -2697,7 +2752,7 @@ impl Service {
                 }
                 let mut second = req.clone();
                 second.sql = u.rewrite(&made)?.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
@@ -2716,7 +2771,7 @@ impl Service {
                 for f in x.feedback(&schemas)? {
                     let mut fr = req.clone();
                     (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
-                    rows.push(Box::pin(self.query(fr)).await?.rs);
+                    rows.push(Box::pin(self.dispatch(fr)).await?.rs);
                 }
                 let analyzers = x
                     .fields()
@@ -2729,7 +2784,7 @@ impl Service {
                 let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
                 let mut second = req.clone();
                 second.sql = rewritten.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
@@ -3492,6 +3547,23 @@ impl Service {
         db.expire(chloedb::timestamp::now(), EXPIRE_BATCH)
     }
 
+    /// Refreshes the database's rollups ([`Db::refresh_rollup`]), every
+    /// bucket of each when `full`, as a server that takes writes does
+    /// every few seconds ([`crate::server::spawn_rollups`]): not a replica,
+    /// which applies the rollups' writes its primary ships. The buckets it
+    /// folded again.
+    pub fn refresh_rollups_due(&self, full: bool) -> chloedb::Result<u64> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() || self.moving.mask().is_some() {
+            return Ok(0);
+        }
+        let mut folded = 0;
+        for r in db.rollups()? {
+            folded += db.refresh_rollup(&r.name, full)?.folded;
+        }
+        Ok(folded)
+    }
+
     /// Deletes the database's records of idempotency keys older than
     /// [`idem::TTL`] ([`idem::forget_expired`]), as a server that takes
     /// writes does every minute ([`crate::server::spawn_key_forgetter`]):
@@ -3626,6 +3698,11 @@ impl Service {
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
         }
+        // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`
+        // ([`chloedb::query::rollup`]).
+        if let Some(st) = chloedb::query::rollup::parse_statement(sql)? {
+            return self.rollup_statement(who, st, sql, timeout_ms).await;
+        }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function ([`chloedb::query::table_synonyms`]).
         if let Some(st) = chloedb::query::table_synonyms::parse_statement(sql)? {
@@ -3731,6 +3808,58 @@ impl Service {
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// A rollup's statement ([`chloedb::query::rollup`]), on a database of
+    /// its own: `CREATE ROLLUP` and `DROP ROLLUP` as table statements are
+    /// ([`Self::ddl`]), `REFRESH ROLLUP` answered with what it did.
+    async fn rollup_statement(self: &Arc<Self>, who: &Principal, st: chloedb::query::rollup::Statement, sql: &str, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::rollup::Statement;
+        who.may(Scope::Admin, "a rollup statement")?;
+        if who.limited() {
+            return Err(ApiError::bad("query error: a rollup statement needs a key that is not limited to tables"));
+        }
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("query error: rollups do not run through a coordinator yet; each shard keeps its own"));
+        };
+        let t0 = Instant::now();
+        match st {
+            Statement::Refresh { name, full } => {
+                self.takes_writes()?;
+                let db = db.clone();
+                let s = tokio::task::spawn_blocking(move || db.refresh_rollup(&name, full)).await.map_err(ApiError::internal)??;
+                let columns = ["buckets_checked", "buckets_folded", "rows_written", "seconds"].map(String::from).to_vec();
+                let rows = vec![vec![Value::Int(s.checked as i64), Value::Int(s.folded as i64), Value::Int(s.rows_written as i64), Value::Float(s.seconds)]];
+                let rs = ResultSet { columns, rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+                Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "rollup", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+            }
+            Statement::Create { rollup, if_not_exists } => {
+                // Made here, and folded by the refresher a few seconds on:
+                // a long table's first fold takes minutes.
+                keys::note(obs::truncate(sql, 500).into_owned());
+                self.takes_writes()?;
+                let _entry = self.moving.enter();
+                self.not_held()?;
+                let by = self.admitted();
+                let timeout = self.timeout_of(timeout_ms);
+                let db = db.clone();
+                let w = tokio::task::spawn_blocking(move || {
+                    wait_for_writer(Instant::now() + timeout, || {
+                        db.create_rollup(&rollup, if_not_exists, &db.exec)?;
+                        Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
+                    })
+                })
+                .await
+                .map_err(ApiError::internal)??;
+                let w = self.replicated(w, timeout, by).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+            Statement::Drop { .. } => {
+                keys::note(obs::truncate(sql, 500).into_owned());
+                let w = self.ddl(sql, &Params::new(), timeout_ms, &who.name).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+        }
     }
 
     /// `CREATE CLASSIFIER`: the rows it trains on read as a query reads

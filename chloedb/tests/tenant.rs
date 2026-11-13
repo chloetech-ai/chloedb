@@ -419,6 +419,10 @@ const TAKES: u32 = 0;
 const DROPS: u32 = 1;
 /// Writes it, then fails: the caller cannot tell.
 const TAKES_AND_FAILS: u32 = 2;
+/// Writes it, then answers that the object had changed: what a store's
+/// client reports when it sent the put again after an answer it lost,
+/// and the store refused the second, the first having changed the object.
+const TAKES_AND_REFUSES: u32 = 3;
 
 /// A store that fails on request.
 #[derive(Debug)]
@@ -508,6 +512,10 @@ impl ObjectStore for Faulty {
                 self.inner.put_if_version(key, bytes, version)?;
                 Err(failed("the put timed out (and was made)"))
             }
+            TAKES_AND_REFUSES => {
+                self.inner.put_if_version(key, bytes, version)?.expect("the first put is taken");
+                Ok(None)
+            }
             _ => {
                 self.up()?;
                 self.inner.put_if_version(key, bytes, version)
@@ -586,6 +594,120 @@ fn a_put_the_store_does_not_answer_is_settled_one_way_or_the_other() {
     assert_eq!(ids(&c), set([1, 3, 4, 5, 6, 8]));
     c.write(|db| sql(db, &format!("INSERT INTO notes VALUES (9, '{big}')"))).unwrap();
     assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "d")).unwrap()), set([1, 3, 4, 5, 6, 8, 9]));
+}
+
+fn count(t: &Tenant, id: i64) -> i64 {
+    match t.read(|db| sql(db, &format!("SELECT count(*) FROM notes WHERE id = {id}"))).unwrap()[0][0] {
+        Value::Int(n) => n,
+        ref other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_put_the_store_refuses_although_it_took_it_is_found_committed() {
+    let dir = tmp("refused");
+    let s = Faulty::new(&dir);
+    let t = Tenant::create(s.clone(), "t", node(&dir, "a"), notes).unwrap();
+    insert(&t, 1).unwrap();
+
+    // The store took the write and says it did not. The handle looks
+    // before it believes that: the write is committed, and it says so,
+    // so that nobody makes it a second time.
+    s.fail_next(1, TAKES_AND_REFUSES);
+    t.write(|db| sql(db, "INSERT INTO notes VALUES (2, 'two')")).unwrap();
+    assert_eq!(ids(&t), set([1, 2]));
+    assert_eq!(count(&t, 2), 1);
+    assert_eq!(ids(&Tenant::open(s.clone(), "t", node(&dir, "b")).unwrap()), set([1, 2]));
+    // The handle writes on (it loaded the tenant again, and takes the
+    // epoch anew).
+    insert(&t, 3).unwrap();
+
+    // The same for the writes that shared the commit: all are in it.
+    s.fail_next(1, TAKES_AND_REFUSES);
+    t.write(|db| {
+        sql(db, "INSERT INTO notes VALUES (4, 'four')")?;
+        sql(db, "INSERT INTO notes VALUES (5, 'five')")
+    })
+    .unwrap();
+    assert_eq!(ids(&t), set([1, 2, 3, 4, 5]));
+
+    // A refusal that is one (another node wrote first) is still told as
+    // one, and nothing of the write is anywhere.
+    let other = Tenant::open(s.clone(), "t", node(&dir, "c")).unwrap();
+    insert(&t, 6).unwrap();
+    insert(&other, 7).unwrap();
+    assert!(matches!(insert(&t, 8), Err(TenantError::NotWriter)));
+    assert_eq!(ids(&t), set([1, 2, 3, 4, 5, 6, 7]));
+    insert(&t, 8).unwrap();
+
+    // Refused, and then the store cannot be read: the handle cannot tell
+    // and says that, not that nothing was written. The write is there.
+    s.fail_next(1, TAKES_AND_REFUSES);
+    let r = t.write(|db| {
+        let rows = sql(db, "INSERT INTO notes VALUES (9, 'nine')");
+        s.down.store(1, Ordering::SeqCst);
+        rows
+    });
+    assert!(matches!(r, Err(TenantError::InDoubt(_))), "{r:?}");
+    s.down.store(0, Ordering::SeqCst);
+    assert_eq!(ids(&t), set([1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "d")).unwrap()), set([1, 2, 3, 4, 5, 6, 7, 8, 9]));
+}
+
+/// A directory store's delete and its conditional writes of one key
+/// exclude each other: a write that found the object as it expected does
+/// not put it back after the delete.
+#[test]
+fn a_directory_stores_delete_is_not_undone_by_a_conditional_put() {
+    let dir = tmp("delete-lock");
+    let s = store(&dir);
+    for round in 0..400u32 {
+        let key = format!("k{}/HEAD", round % 7);
+        let v = s.put_if_absent(&key, b"one").unwrap().expect("absent");
+        std::thread::scope(|scope| {
+            let put = scope.spawn(|| s.put_if_version(&key, format!("two {round}").as_bytes(), &v).unwrap());
+            let del = scope.spawn(|| s.delete(&key).unwrap());
+            put.join().unwrap();
+            del.join().unwrap();
+        });
+        // Whichever came first, the delete holds: before it, the put was
+        // deleted with the object; after it, the put found nothing.
+        assert_eq!(s.get(&key).unwrap(), None, "round {round}: the object is back after its delete");
+    }
+    // A delete takes its lock's file with it: what is left is that of a
+    // put that came after its key's last delete, one a key at most.
+    let locks = std::fs::read_dir(dir.join("store").join(".locks")).unwrap().count();
+    assert!(locks <= 7, "{locks} lock files for 7 keys");
+}
+
+/// The lock of a key is one lock although deletes remove its file: of
+/// the threads that create an object, delete it and create it again, one
+/// at a time has it.
+#[test]
+fn a_directory_stores_key_lock_outlives_its_file() {
+    let dir = tmp("lock-file");
+    let s = store(&dir);
+    let wins = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        for me in 0..4u8 {
+            let (s, wins) = (&s, &wins);
+            scope.spawn(move || {
+                for _ in 0..150 {
+                    let Some(v) = s.put_if_absent("k", &[me]).unwrap() else { continue };
+                    wins.fetch_add(1, Ordering::SeqCst);
+                    // Nobody else created it meanwhile, nor replaces it
+                    // on a version that is not its.
+                    assert_eq!(s.get("k").unwrap(), Some((vec![me], v.clone())));
+                    assert_eq!(s.put_if_version("k", &[me, me], "not its version").unwrap(), None);
+                    let v2 = s.put_if_version("k", &[me, me], &v).unwrap().expect("its own object, unchanged");
+                    assert_eq!(s.get("k").unwrap(), Some((vec![me, me], v2)));
+                    s.delete("k").unwrap();
+                }
+            });
+        }
+    });
+    assert!(wins.load(Ordering::SeqCst) > 0);
+    assert_eq!(s.get("k").unwrap(), None);
 }
 
 #[test]

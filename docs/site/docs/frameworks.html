@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/guide/frameworks.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -265,6 +269,12 @@ goes, with the server's token as <code>token=</code> or in <code>$CHLOEDB_TOKEN<
 <pre data-lang="python">store = ChloeDBVectorStore(&quot;https://search.example.com&quot;, table=&quot;articles&quot;, model=&quot;potion-retrieval-32M&quot;)
 saver = ChloeDBSaver(&quot;https://search.example.com&quot;)
 conn = chloedb.dbapi.connect(&quot;https://search.example.com&quot;)</pre>
+<p>Each adapter reads through a session of its own, so its reads see its own
+writes from any copy: start the servers with <code>--seq-no</code>, and a LangGraph thread
+resumed a moment after its last step reads the checkpoint that step wrote,
+also through a coordinator, where the checkpoints of a thread sit on one
+shard. A DB-API read through a server is fetched a page at a time, past the
+server's result window.</p>
 <p><a href="server.html">Run a server</a> says how to start one, and the server's
 vector fields embed with the same models.</p>
     </div>

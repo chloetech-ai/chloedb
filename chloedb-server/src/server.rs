@@ -114,6 +114,9 @@ pub struct Options {
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
     pub max_body_mb: usize,
+    /// How long tables OTLP's logs make keep their rows, in seconds
+    /// (`None`: for ever).
+    pub otlp_retain: Option<i64>,
     pub model: String,
     pub api_key: Option<String>,
     pub api_base: String,
@@ -494,6 +497,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
     }
+    svc.otlp_retain = o.otlp_retain;
     let aws = o.aws_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::aws::Aws::file_of));
     if let Some(file) = aws {
         svc.aws = Arc::new(crate::aws::Aws::open(file)?);
@@ -633,6 +637,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_rollups(&svc, Duration::from_secs(5));
     spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
@@ -1204,6 +1209,42 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
     });
 }
 
+/// Refreshes the rollups every `every`, and every bucket of each every
+/// sixtieth time ([`Service::refresh_rollups_due`]), until the service is
+/// dropped.
+pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        let mut tick: u64 = 0;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            let full = tick % 60 == 59;
+            tick += 1;
+            match tokio::task::spawn_blocking(move || svc.refresh_rollups_due(full)).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(buckets = n, "refreshed rollups");
+                    }
+                }
+                Ok(Err(e)) => {
+                    let why = e.to_string();
+                    if reported.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not refresh the rollups; the next try is in a few seconds");
+                    }
+                    reported = Some(why);
+                }
+                Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
+            }
+        }
+    });
+}
+
 /// Deletes the database's records of idempotency keys older than
 /// [`crate::idem::TTL`], every `every` ([`Service::forget_keys_due`]),
 /// until the service is dropped.
@@ -1250,7 +1291,9 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
         loop {
             tick.tick().await;
             let Some(svc) = svc.upgrade() else { return };
-            let s = svc.sample();
+            let mut s = svc.sample();
+            crate::alerts::refresh_sql(&svc);
+            s.named = svc.alerts.sql_values();
             if let Some(point) = svc.series.add(s) {
                 // alerts agent: this server's rules, and a coordinator's cluster.
                 crate::alerts::tick(&svc, &point);

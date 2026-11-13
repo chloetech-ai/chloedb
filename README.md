@@ -4,7 +4,7 @@
 
 ChloeDB keeps full text, structured columns, vectors and graph edges over the same rows, in one file, and answers all of them in one SQL query. Use it inside your app like SQLite, serve it over HTTP, or grow it to a sharded cluster without changing a query.
 
-[Website](https://chloetech-ai.github.io/chloedb/) · [Documentation](docs/README.md) · [Query language](docs/chloedb/query-language.md) · [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) · [Changelog](CHANGELOG.md)
+[Website](https://chloetech-ai.github.io/chloedb/) · [Documentation](https://chloetech-ai.github.io/chloedb/site/docs/) · [Query language](docs/chloedb/query-language.md) · [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) · [Changelog](CHANGELOG.md)
 
 ```sql
 SELECT id, title, price, score() FROM products
@@ -34,7 +34,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh    # into ~/.l
 chloedb-server --demo 20000 --db products.chloedb
 ```
 
-Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
+Open http://127.0.0.1:7700 for the command center: your tables, searchable from one box by words or by meaning, saved searches that code and agents call, a SQL workbench, the health of the server or cluster, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
 
 Or run the container image, which serves `/data/chloedb.chloedb`:
 
@@ -65,7 +65,7 @@ More in [the server guide](docs/chloedb/server.md).
 
 | language | install | guide |
 |---|---|---|
-| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md) |
+| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
 | JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.0` release | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
 | Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
@@ -92,11 +92,12 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 
 | | |
 |---|---|
-| **Full-text search** | BM25, boolean queries, phrases, typos, synonyms and autocomplete, on [ChloeDB's own posting lists](docs/posting-lists.md). |
-| **Vector search** | HNSW, IVF or exact search under any filter, hybrid fusion with text, multi-vector MaxSim, sparse vectors, and embeddings computed on write. |
+| **Full-text search** | BM25, boolean queries, phrases, typos, synonyms and autocomplete, on [ChloeDB's own posting lists](docs/posting-lists.md), with analyzers for [22 languages and any script](docs/chloedb/index.md#text-in-other-languages), Chinese, Japanese, Korean and Thai included. |
+| **Substring search** | `LIKE` and `ILIKE` with a wildcard anywhere, answered from a [substring index](docs/chloedb/query-language.md#substrings-like-and-ilike-anywhere-in-a-value): IP addresses, paths and identifiers in logs. |
+| **Vector search** | HNSW, IVF or exact search under any filter, hybrid fusion with text, multi-vector MaxSim, learned sparse vectors, and embeddings computed on write or in a query (`embed('model', :q)`). |
 | **SQL** | Joins, subqueries, `WITH`, window functions, set operations, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, and ACID transactions with snapshot isolation. |
 | **Graphs** | Edges stored with the rows: reachability, shortest paths and personalised PageRank inside a query ([graphs](docs/chloedb/graphs.md)). |
-| **Ranking** | Any expression of scores and columns, rerank phases, rank profiles, LightGBM and XGBoost models, and cross-encoders. |
+| **Ranking** | Any expression of scores and columns, rerank phases, rank profiles, LightGBM and XGBoost models, cross-encoders, and `PACK n TOKENS` to fill a model's context budget. |
 | **Recommendations** | Sequence models, counted next items and bought-together walks, mixed with business rules in the same query. |
 | **Data in and out** | [SQLite](docs/chloedb/sqlite.md) and [Parquet](docs/chloedb/parquet.md) in and out (local files or S3), and [following a Postgres database](docs/chloedb/postgres.md) by logical replication. |
 | **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents. |
@@ -109,6 +110,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-crawl](docs/chloedb/crawler.md)**: give it a URL and it turns the site into a table, adding shards as the table grows.
 - **[chloedb-sheets](docs/chloedb/sheets.md)**: spreadsheets whose cells are rows, with formulas, charts, pivots and SQL queries of the cluster.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
+- **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
 
 The crawler and sheets appear as apps in the command center.
 
@@ -137,7 +139,9 @@ chloectx ui                                     # the inspector, per project and
 chloectx search "why did we pick JSON over SQLite"
 ```
 
-Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/) · [ChloeCtx beside a cluster](docs/chloectx/app.md)
+`chloectx blame src/pay.rs:42` says which earlier session decided a line, and every answer ChloeCtx injects keeps a [receipt](docs/chloectx/receipts.md) of what it was built from.
+
+Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [blame and receipts](docs/chloectx/receipts.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/) · [ChloeCtx beside a cluster](docs/chloectx/app.md)
 
 ## Results at a glance
 

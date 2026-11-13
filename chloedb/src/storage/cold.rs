@@ -200,10 +200,20 @@ impl ObjectStore for DirStore {
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        match std::fs::remove_file(self.path(key)?) {
+        let path = self.path(key)?;
+        // Under the key's lock, as its conditional writes are: one of
+        // them that found the object as it expected does not put it back
+        // after the delete.
+        let _held = self.lock_key(key)?;
+        let done = match std::fs::remove_file(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
-        }
+        };
+        // The lock's file goes with the object, while the lock is held:
+        // who waits for it finds that it is no longer the key's
+        // ([`DirStore::lock_key`]).
+        let _ = std::fs::remove_file(self.lock_path(key));
+        done
     }
 
     fn describe(&self) -> String {
@@ -317,19 +327,35 @@ fn version_of(bytes: &[u8]) -> String {
 }
 
 impl DirStore {
+    fn lock_path(&self, key: &str) -> PathBuf {
+        self.root.join(LOCKS).join(version_of(key.as_bytes()))
+    }
+
     /// Holds key `key`'s lock until the file returned is dropped: an
     /// exclusive `flock` on a file of its own, so that conditional writes
-    /// of one key exclude each other, between processes too.
+    /// of one key and its deletes exclude each other, between processes
+    /// too. A delete removes the lock's file while it holds the lock, so
+    /// the lock taken is the key's only when its file is still the one at
+    /// its path: otherwise this takes the lock of the file that is.
     fn lock_key(&self, key: &str) -> Result<File> {
+        use std::os::unix::fs::MetadataExt;
         self.path(key)?;
-        let dir = self.root.join(LOCKS);
-        std::fs::create_dir_all(&dir)?;
-        let f = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(version_of(key.as_bytes())))?;
-        // SAFETY: `f` is an open file, whose descriptor the call only locks.
-        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
+        let path = self.lock_path(key);
+        std::fs::create_dir_all(self.root.join(LOCKS))?;
+        loop {
+            let f = OpenOptions::new().create(true).truncate(false).write(true).open(&path)?;
+            // SAFETY: `f` is an open file, whose descriptor the call only locks.
+            if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let mine = f.metadata()?;
+            match std::fs::metadata(&path) {
+                Ok(now) if now.ino() == mine.ino() && now.dev() == mine.dev() => return Ok(f),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
-        Ok(f)
     }
 }
 

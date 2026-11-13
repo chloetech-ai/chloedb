@@ -401,7 +401,9 @@ pub fn search_with(store: &Store, query: &str, tail: Option<&Tail>, filter: &Fil
     // knowing match a repeated question best and carry nothing: they would
     // inflate the gate and repeat the failure.
     let qterms: HashSet<String> = terms.iter().cloned().collect();
-    let useful = |r: &Record| r.tag != "uncertain" && r.tag != "superseded" && !same_question(r, &qterms);
+    // Envelopes a harness wrapped prompts in, stored before they were
+    // cleaned off ([`crate::envelope`]), are machinery, not earlier work.
+    let useful = |r: &Record| r.tag != "uncertain" && r.tag != "superseded" && !same_question(r, &qterms) && !crate::envelope::is_envelope(&r.text);
     bm.retain(|(r, _)| useful(r));
     dv.retain(|(r, _)| useful(r));
     td.retain(|(r, _)| useful(r));
@@ -797,7 +799,7 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
     let todo_open = |r: &Record| r.kind != Kind::Todo || r.tag == "planned";
     let mut out: Vec<(Record, f64, f64)> = by
         .into_values()
-        .filter(|(r, _)| !skip.contains(&r.id) && r.tag != "superseded" && r.tag != "done" && todo_open(r))
+        .filter(|(r, _)| !skip.contains(&r.id) && r.tag != "superseded" && r.tag != "done" && todo_open(r) && !crate::envelope::is_envelope(&r.text))
         .map(|(r, c)| {
             // A note's `When:` line counts: it names the requests it bears on.
             let have = analyzed(&r.key_text());
@@ -818,7 +820,7 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
 pub fn related(store: &Store, text: &str, n: usize) -> Result<Vec<Record>> {
     let store = &store.pinned();
     let f = Filter { kinds: KNOWLEDGE.to_vec(), ..Default::default() };
-    let live = |r: &Record| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned");
+    let live = |r: &Record| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned") && !crate::envelope::is_envelope(&r.text);
     let (bm, dv) = both(
         || if chloedb::text::analyze_query(text).is_empty() { Ok(Vec::new()) } else { store.bm25_top(text, n * 2, &f) },
         || store.vector_top(&store.embedder.embed_query(text)?, n * 2, &f),
@@ -907,7 +909,7 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
     let mut section = |title: &str, recs: Vec<Record>, n: usize, keep: usize, s: &mut String, stale: &mut Vec<(Record, String)>, unshown: &mut Vec<Record>| {
         let mut lines = Vec::new();
         for r in recs {
-            if r.tag == "superseded" || r.tag == "done" || (distilled && r.tag == "cue") || !seen.insert(norm(&r.text)) {
+            if r.tag == "superseded" || r.tag == "done" || (distilled && r.tag == "cue") || crate::envelope::is_envelope(&r.text) || !seen.insert(norm(&r.text)) {
                 continue;
             }
             let fresh = match check.as_deref_mut() {
