@@ -199,6 +199,8 @@ function drawBadges() {
   if (state.paused && drawBadges.done) return;
   drawBadges.done = true;
   for (const a of nav.querySelectorAll("a[data-view]")) {
+    // An app's "!" (not answering) is its link's own, drawn with the list of apps.
+    if (a.dataset.view.startsWith("app/")) continue;
     const e = ENTRIES.find((x) => x.id === a.dataset.view);
     const v = e && viewOf(e);
     let b = null;
