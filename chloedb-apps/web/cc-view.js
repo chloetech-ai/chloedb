@@ -155,6 +155,16 @@ const CSS = `
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ac .device.phone .shell, :root:not([data-theme="light"]) .ac .device.tablet .shell { border-color: #3a3f48; } }
 :root[data-theme="dark"] .ac .device.phone .shell, :root[data-theme="dark"] .ac .device.tablet .shell { border-color: #3a3f48; }
 .ac .device iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+/* Desktop: drawn 1280 px wide (or the stage's width, when wider), scaled to fit (fitDesktop) */
+.ac .device.desktop { padding: 0; overflow: hidden; }
+.ac .device.desktop .shell { position: absolute; left: 0; top: 0; border-radius: 0; transform-origin: 0 0; }
+.ac .home-name { border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; min-width: 0; flex: 0 1 200px; padding: 4px 0; border-bottom: 1px dashed var(--line-2); }
+.ac .pubchoices { display: flex; flex-direction: column; gap: 6px; }
+.ac .pubchoice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.ac .pubchoice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.ac .pubchoice input { margin-top: 3px; }
+.ac .pubchoice .what { display: block; font-size: 12.5px; color: var(--text-2); }
+.ac .pubwarn { border-radius: 10px; padding: 8px 10px; font-size: 12.5px; background: var(--warn-soft, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--warn, #b7791f) 30%, transparent); }
 .ac .device iframe[hidden] { display: none; }
 .ac .viewerr { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: var(--crit-soft); border: 1px solid color-mix(in srgb, var(--crit) 30%, transparent); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; }
 .ac .building { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; }
@@ -267,6 +277,9 @@ const SOURCE_LABEL = { suggestion: 'a suggestion', edit: 'edited by hand' };
 const AUTO = new Set(['repair', 'look', 'use']);
 const AUTO_LABEL = { repair: 'The engine repairs a piece that failed', look: 'The engine fixes what its screen check found', use: 'The engine builds a change from how the app is used' };
 
+const DESKTOP_W = 1280; // the Desktop stage's width, as a laptop's window
+// Columns whose values look like people's contact details (Publish warns of them).
+const CONTACT = /(^|_)(e_?mail|phone|mobile|cell|tel|telephone|whatsapp|address|postcode|zip)(_|$)/i;
 const secs = (ms) => (ms < 1000 ? `${(ms / 1000).toFixed(1)} s` : ms < 100000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`);
 const bsecs = (ms) => (ms < 950 ? 'under 1 s' : ms < 10000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 90000 ? `${Math.round(ms / 5000) * 5} s` : `${Math.round(ms / 60000)} min`);
 const money = (c) => `$${(c || 0).toFixed(2)}`;
@@ -377,6 +390,7 @@ function render(el, ctx) {
 
   function home() {
     const ta = h('textarea', { placeholder: 'Describe the first version: what it keeps, what you do with it, what you want to see.', 'aria-label': 'Describe your app' });
+    const nameIn = h('input', { class: 'home-name', placeholder: 'Name (optional)', 'aria-label': 'The app’s name (optional; kept as you write it)', maxlength: 60 });
     const go = h('button', { class: 'btn primary', type: 'button', onclick: () => create() }, icon('sparkle'), 'Build it');
     const err = h('span', { class: 'small', style: { color: 'var(--crit-ink)' } });
     const tip = h('span', { class: 'small muted grow' }, '⌘/Ctrl + Enter');
@@ -387,7 +401,7 @@ function render(el, ctx) {
       go.replaceChildren(h('span', { class: 'spin' }), 'Starting');
       err.textContent = '';
       try {
-        const out = await post('/api/apps', { description });
+        const out = await post('/api/apps', { description, ...(nameIn.value.trim() ? { name: nameIn.value.trim() } : {}) });
         location.hash = ctx.href('a', out.app);
       } catch (e) {
         err.textContent = e.status === 403 ? 'Building an app needs an admin key' : e.message;
@@ -400,7 +414,7 @@ function render(el, ctx) {
     const hero = h('section', { class: 'hero' },
       h('h1', {}, 'What should we build?'),
       h('p', { class: 'lead' }, 'Describe an app in a sentence or two. The agent plans it, declares its tables, screens and rules as CREATE statements, writes JavaScript only where a statement cannot say it, checks every piece, and keeps the app in this cluster as rows. Then change it by asking.'),
-      h('div', { class: 'prompt' }, ta, h('div', { class: 'bar' }, tip, err, go)),
+      h('div', { class: 'prompt' }, ta, h('div', { class: 'bar' }, nameIn, tip, err, go)),
       h('div', { class: 'examples' }, EXAMPLES.map(([t, d]) => h('button', { class: 'ac-chip', type: 'button', title: d, onclick: () => { ta.value = d; ta.focus(); } }, icon('plus'), t))),
       facts);
     const gallery = h('div', { class: 'gallery' }, h('div', { class: 'small muted' }, 'Loading the apps...'));
@@ -414,7 +428,7 @@ function render(el, ctx) {
       const initials = String(a.name || a.id).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
       return h('a', { class: 'appcard', href: ctx.href('a', a.id) },
         h('div', { class: 'row' }, h('div', { class: 'ico', style: { background: `hsl(${hue(a.id)} 55% 48%)` } }, initials || '·'),
-          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, a.head ? h('span', { class: 'tag live' }, `v${a.head}`) : h('span', { class: 'tag try' }, 'building'), a.created ? core.ago(new Date(a.created).getTime()) : null))),
+          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, a.head ? h('span', { class: 'tag live' }, `v${a.head}`) : h('span', { class: 'tag try' }, 'building'), a.created ? core.ago(new Date(a.created).getTime()) : null, a.cost?.builds ? h('span', { title: `What its ${a.cost.builds} build${a.cost.builds === 1 ? '' : 's'} cost` }, money(a.cost.usd)) : null))),
         h('div', { class: 'ds' }, a.description || ''),
         m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'ac-meter' }));
     };
@@ -432,7 +446,7 @@ function render(el, ctx) {
           h('span', {}, h('b', {}, String(apps.length)), ` app${apps.length === 1 ? '' : 's'}`),
           h('span', {}, 'built by ', h('b', {}, status.model || '–')),
           h('span', {}, s ? [h('b', {}, money(s.usd)), ` spent of the $${s.cap} limit`] : 'no spending limit'),
-          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null);
+          ...(status.feed ? [h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes')] : []));
         // What each app is made of, a few at a time.
         for (const a of apps.slice(0, 24)) {
           if (made.has(a.id) || !a.head) continue;
@@ -584,7 +598,7 @@ function render(el, ctx) {
     const W = {
       st: null, view: firstScreen, frames: new Map(), errors: new Map(), left: new Map(),
       lines: [], build: null, runningText: '', runningId: null, ended: new Set(), failed: null, previews: new Map(), previewView: null,
-      tab: 'made', device: (() => { try { return localStorage.getItem('ac-device') || 'desktop'; } catch { return 'desktop'; } })(),
+      tab: 'data', device: (() => { try { return localStorage.getItem('ac-device') || 'desktop'; } catch { return 'desktop'; } })(),
       tryV: null, pick: null, designCss: '', polling: false, stopped: false, logOpen: false,
     };
     const atV = () => (W.tryV ? `?v=${W.tryV}` : '');
@@ -647,15 +661,71 @@ __sa_ready();
     const title = h('h1', {}, '…');
     const verTag = h('span');
     const status = h('span', { class: 'small muted' });
-    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', 'The whole stage']], W.device, (v) => {
+    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', `A computer, ${DESKTOP_W} px wide, scaled to fit`]], W.device, (v) => {
       W.device = v; try { localStorage.setItem('ac-device', v); } catch { /* this visit only */ }
       deviceBox.className = `device ${v}`;
+      fitDesktop();
     });
     const ownLink = h('a', { class: 'btn sm', target: '_blank', rel: 'noopener', title: 'The app on its own, as people use it: sign-in, a phone', hidden: true }, icon('ext'), 'Its own page');
     // Open to the public, or not: the tag opens the Publish tab.
     const pubTag = h('button', { class: 'pubtag', type: 'button', onclick: () => { W.tab = 'publish'; paintInspector(); } });
     const studioBtn = h('button', { class: 'btn sm ghost', type: 'button', title: 'Open the standalone studio in a tab of its own', onclick: () => openStudio(`#/app/${appId}`) }, 'Studio');
-    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, h('span', { class: 'grow' }), devices, pubTag, ownLink, studioBtn);
+    const moreBtn = h('button', { class: 'btn sm ghost icon', type: 'button', title: 'Rename or delete this app', 'aria-label': 'Rename or delete this app',
+      onclick: (e) => core.menu(e.currentTarget, [{ label: 'Rename…', icon: 'edit', onclick: renameApp }, { label: 'Duplicate', icon: 'copy', onclick: duplicateApp },
+        { label: 'Export its data (JSON)', icon: 'download', onclick: () => exportData() }, '-', { label: 'Delete app…', icon: 'trash', danger: true, onclick: deleteApp }]) }, icon('dots'));
+    const costTag = h('span', { class: 'small muted', title: 'What the model cost for every build of this app' });
+    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, costTag, h('span', { class: 'grow' }), devices, pubTag, ownLink, studioBtn, moreBtn);
+
+    function renameApp() {
+      const input = h('input', { class: 'input', value: W.st?.app.name || '', maxlength: 60, 'aria-label': 'The app’s name', style: { width: '100%' } });
+      const save = h('button', { class: 'btn primary' }, 'Rename');
+      const cancel = h('button', { class: 'btn' }, 'Cancel');
+      const m = core.modal({ title: 'Rename this app', body: [h('p', { class: 'dim', style: { marginTop: 0 } }, 'The name in the gallery and on its screens. It stays as you write it: later changes do not rename it.'), input], foot: [cancel, save] });
+      const go = async () => {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        save.disabled = true;
+        try { await post(`${base}/rename`, { name }); m.close(); toast('Renamed', 'ok'); refresh(); } catch (e) { save.disabled = false; toast(e.status === 403 ? 'Renaming an app needs an admin key' : e.message, 'bad'); }
+      };
+      save.onclick = go;
+      cancel.onclick = () => m.close();
+      input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+    }
+    async function duplicateApp() {
+      try {
+        const out = await post(`${base}/duplicate`, {});
+        toast('Copied, with its data', 'ok');
+        location.hash = ctx.href('a', out.app);
+      } catch (e) { toast(e.status === 403 ? 'Copying an app needs an admin key' : e.message, 'bad'); }
+    }
+    // Every table's rows as one JSON file, or one table's as CSV.
+    const save = (text, file, type) => { const url = URL.createObjectURL(new Blob([text], { type })); const a = h('a', { href: url, download: file }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+    const fileName = () => String(W.st?.app.name || appId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || appId;
+    async function exportData(table = null) {
+      try {
+        const out = await api(`${base}/export`);
+        if (!table) { save(JSON.stringify(out, null, 2), `${fileName()}.json`, 'application/json'); return; }
+        const rows = out.tables[table] || [];
+        const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+        const cell = (v) => { const t = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+        save([cols.join(','), ...rows.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\r\n'), `${fileName()}-${table}.csv`, 'text/csv');
+      } catch (e) { toast(e.message, 'bad'); }
+    }
+    async function deleteApp() {
+      const st = W.st;
+      const name = st?.app.name || appId;
+      const rows = (st?.tables || []).reduce((a, t) => a + (t.rows || 0), 0);
+      const ok = await core.confirm({
+        title: `Delete ${name}?`, ok: 'Delete app', danger: true, typed: appId,
+        body: `This removes the app for good: its screens and versions, its ${(st?.tables || []).length} table${(st?.tables || []).length === 1 ? '' : 's'} (app_${appId}_*, ${num(rows)} row${rows === 1 ? '' : 's'}), its files and what people did in it${st?.publish?.on ? ', and its public address' : ''}. Other apps and the shared library stay as they are.`,
+      });
+      if (!ok) return;
+      try {
+        await post(`${base}/delete`, {});
+        toast(`${name} deleted`, 'ok');
+        location.hash = ctx.href();
+      } catch (e) { toast(e.status === 403 ? 'Deleting an app needs an admin key' : e.message, 'bad'); }
+    }
 
     const convo = h('div', { class: 'convo' });
     const convoScroll = h('div', { class: 'scroll' }, convo);
@@ -672,6 +742,20 @@ __sa_ready();
     const deviceBox = h('div', { class: `device ${W.device}` });
     const shell = h('div', { class: 'shell' });
     deviceBox.append(shell);
+    // The screens see a computer's width (a table stays a table, its columns
+    // all there), drawn smaller when the stage is narrower than that.
+    function fitDesktop() {
+      if (W.device !== 'desktop') { shell.style.width = shell.style.height = shell.style.transform = shell.style.left = ''; return; }
+      const w = deviceBox.clientWidth, ht = deviceBox.clientHeight;
+      if (!w || !ht) return;
+      const width = Math.max(DESKTOP_W, w);
+      const k = w / width;
+      shell.style.width = `${width}px`;
+      shell.style.height = `${Math.round(ht / k)}px`;
+      shell.style.transform = k < 1 ? `scale(${k})` : '';
+    }
+    const fitter = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fitDesktop()) : null;
+    fitter?.observe(deviceBox);
     // Usage: the Activity view (web/activity.js, the studio's), over the whole stage.
     const usageBox = h('div', { class: 'ac-usage', hidden: true });
     const stage = h('section', { class: 'col ac-stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox, usageBox);
@@ -736,6 +820,7 @@ __sa_ready();
     function paint() {
       const st = W.st;
       title.textContent = st.app.name || appId;
+      costTag.textContent = st.cost?.builds ? `${money(st.cost.usd)} in ${st.cost.builds} build${st.cost.builds === 1 ? '' : 's'}` : '';
       verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`) : h('span', { class: 'tag try' }, 'first version'));
       status.replaceChildren(...(W.lines.length ? [h('span', { class: 'spin' }), ' building'] : []));
       const pub = st.publish;
@@ -889,7 +974,7 @@ __sa_ready();
       // the screens
       screens.replaceChildren(...(st.views.length ? st.views.map((v) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(v.slug === W.view), onclick: () => switchView(v.slug) },
         v.title, W.errors.has(v.slug) ? h('span', { class: 'dot', title: 'This screen hit an error' }) : null)) : [h('span', { class: 'small muted', style: { padding: '0 6px' } }, 'No screens yet')]),
-        st.views.length ? h('button', { type: 'button', role: 'tab', class: 'usage-tab', title: 'What people did in the app: each visit, step by step', 'aria-pressed': String(W.view === USAGE), onclick: () => switchView(USAGE) }, h('span', { class: 'pulse' }), 'Usage') : null);
+        ...(st.views.length ? [h('button', { type: 'button', role: 'tab', class: 'usage-tab', title: 'What people did in the app: each visit, step by step', 'aria-pressed': String(W.view === USAGE), onclick: () => switchView(USAGE) }, h('span', { class: 'pulse' }), 'Usage')] : []));
       paintUsage();
       // trying a version
       const c = st.version.trying ? (st.evolve?.candidates || []).find((x) => x.n === st.version.trying) : null;
@@ -1048,7 +1133,9 @@ __sa_ready();
 
     // ---- the inspector
 
-    const TABS = [['made', 'Made of'], ['time', 'Time'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach'], ['publish', 'Publish']];
+    // What an owner needs first (their data, its versions, its look, who can
+    // use it), then how it is made.
+    const TABS = [['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['publish', 'Publish'], ['reach', 'Reach'], ['made', 'Made of'], ['time', 'Time'], ['code', 'Code']];
     function paintInspector() {
       const st = W.st;
       itabs.replaceChildren(...TABS.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(W.tab === k), onclick: () => { W.tab = k; W.pick = null; paintInspector(); } }, label,
@@ -1056,7 +1143,8 @@ __sa_ready();
       const keepScroll = ibody.parentNode.scrollTop;
       const draw = { made: madeTab, time: timeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab, publish: publishTab }[W.tab] || madeTab;
       // A tab with a field being typed in is left as it is.
-      if (ibody.contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && ibody.dataset.tab === W.tab) return;
+      const typing = document.activeElement && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && !/^(checkbox|radio|button)$/.test(document.activeElement.type || '');
+      if (ibody.contains(document.activeElement) && typing && ibody.dataset.tab === W.tab) return;
       ibody.dataset.tab = W.tab;
       ibody.replaceChildren(...draw(st).flat(Infinity).filter(Boolean));
       ibody.parentNode.scrollTop = keepScroll;
@@ -1219,10 +1307,11 @@ __sa_ready();
         }).catch((e) => rows.replaceChildren(h('div', { class: 'small' }, e.message)));
       }
       return [
-        h('div', { class: 'note' }, 'The app’s data is in this cluster, in tables named ', h('span', { class: 'mono' }, `app_${appId}_*`), '. Tables only grow, so data survives every change and every step back.'),
+        h('div', { class: 'note' }, 'What people keep in the app. Pick a list to see its newest entries; nothing here is lost when the app changes or goes back a version.'),
         h('div', { class: 'list' }, st.tables.map((t) => h('div', { class: `li${W.pickTable === t.name ? ' on' : ''}`, onclick: () => { W.pickTable = W.pickTable === t.name ? null : t.name; paintInspector(); } },
           icon('table'), h('span', { class: 'grow' }, h('div', { class: 'nm' }, t.name), h('div', { class: 'small muted', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (t.columns || []).map((c) => c.name).join(', '))),
-          h('span', { class: 'small muted' }, `${num(t.rows)} row${t.rows === 1 ? '' : 's'}`)))),
+          h('span', { class: 'small muted' }, `${num(t.rows)} row${t.rows === 1 ? '' : 's'}`),
+          h('button', { class: 'btn sm ghost', type: 'button', title: `Download ${t.name} as a CSV file (a spreadsheet opens it)`, onclick: (e) => { e.stopPropagation(); exportData(t.name); } }, 'CSV')))),
         rows,
       ];
     }
@@ -1315,14 +1404,48 @@ __sa_ready();
       };
       const onIp = kit.publicUrl ? `${kit.publicUrl}/a/${appId}` : null;
       const links = [...p.urls, ...(onIp ? [onIp] : [])];
-      const name = h('input', { class: 'input mono', value: p.name || '', placeholder: 'kids-reading', 'aria-label': 'The app’s name in its address', style: { flex: '1 1 120px', minWidth: '0' } });
+      const suggested = String(st.app.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'my-app';
+      const name = h('input', { class: 'input mono', value: p.name || '', placeholder: suggested, 'aria-label': 'The app’s name in its address', style: { flex: '1 1 120px', minWidth: '0' } });
       const host = h('input', { class: 'input mono', placeholder: 'books.example.org', 'aria-label': 'A host of your own', style: { flex: '1 1 160px', minWidth: '0' } });
       const linkRow = (u) => h('div', { class: 'reach' }, icon('ext'), h('a', { class: 'grow mono', href: u, target: '_blank', rel: 'noopener', style: { wordBreak: 'break-all' } }, u.replace(/\/$/, '')),
         h('button', { class: 'btn sm ghost', onclick: () => core.copy(u) }, icon('copy'), 'Copy'));
+      // Who can see this? Four choices, from the safest; picked, seen as a
+      // stranger would see it, then made so.
+      const now = p.on ? (p.access || 'change') : 'off';
+      const pick = W.pubPick && W.pubPick.app === appId ? W.pubPick.v : now;
+      const CHOICES = [
+        ['off', 'Only me', 'Only you and other admins of this cluster can open it, from here or the studio.'],
+        ['look', 'Visitors can look', 'Anyone with the address sees what its screens show; nothing they do changes its data.'],
+        ['add', 'Customers can look and add', 'Anyone can also add entries and upload files (a booking, an order, a sign-up), and change or delete only what they added themselves, never anyone else’s.'],
+        ['change', 'Anyone can do anything', 'Anyone with the address can edit and delete every entry, other people’s included, as you can.'],
+      ];
+      const radios = CHOICES.map(([v, label, what]) => {
+        const id = `ac-pub-${appId}-${v}`;
+        const input = h('input', { type: 'radio', name: `ac-pub-${appId}`, id, value: v, checked: pick === v, onchange: () => { W.pubPick = { app: appId, v }; paintInspector(); } });
+        return h('label', { class: `pubchoice${pick === v ? ' on' : ''}`, for: id }, input, h('span', { class: 'grow' }, h('b', {}, label, v === now ? h('span', { class: 'small muted' }, ' · now') : null), h('span', { class: 'what' }, what)));
+      });
+      const contact = (st.tables || []).flatMap((t) => (t.columns || []).filter((c) => CONTACT.test(c.name)).map((c) => ({ table: t.name, column: c.name, rows: t.rows || 0 })));
+      const apply = async () => {
+        if (pick === 'change') {
+          const ok = await core.confirm({ title: 'Let anyone edit and delete?', ok: 'Let anyone do anything', danger: true, typed: p.name || appId,
+            body: 'Anyone with the address could edit or delete every entry, other people’s included. For an app strangers use, “Customers can look and add” is usually enough.' });
+          if (!ok) return;
+        }
+        W.pubPick = null;
+        await set(pick === 'off' ? { on: false } : { on: true, access: pick }, pick === 'off' ? 'Only you and other admins can open it now' : `Published: ${CHOICES.find((c) => c[0] === pick)[1].toLowerCase()}`);
+      };
+      const asStranger = () => openStudio(`a/${appId}?stranger=${pick === 'off' ? 'look' : pick}`);
       return [
-        h('div', { class: 'reach' }, core.toggle(p.on, (v) => set({ on: v }, v ? 'Open to the public' : 'Only admins can open it now')),
-          h('span', { class: 'grow' }, h('b', {}, 'Open to the public'), h('span', { class: 'what' }, p.on ? 'Anyone with the address can use it, with no account here.' : 'Only you and other admins can open it, from here or the studio.'))),
+        h('div', { class: 'lbl' }, 'Who can see this?'),
+        h('div', { class: 'pubchoices', role: 'radiogroup', 'aria-label': 'Who can see this app' }, radios),
+        contact.length && pick !== 'off' ? h('div', { class: 'pubwarn' }, icon('warn'), ' ', h('b', {}, 'Visible to everyone: '),
+          `${contact.map((c) => `${c.table}.${c.column}${c.rows ? ` (${num(c.rows)} entr${c.rows === 1 ? 'y' : 'ies'})` : ''}`).join(', ')} look${contact.length === 1 ? 's' : ''} like people’s emails, phone numbers or addresses. Anyone with the address could read them wherever a screen shows them. To keep them private, ask for sign-in, and for each person to see only their own entries.`) : null,
+        h('div', { class: 'row nw', style: { gap: '8px', flexWrap: 'wrap' } },
+          h('button', { class: 'btn sm', type: 'button', title: 'Open the app as someone with no account would, with this choice', onclick: asStranger }, icon('eye'), 'See it as a stranger'),
+          pick !== now ? h('button', { class: `btn sm ${pick === 'change' ? 'danger' : 'primary'}`, type: 'button', onclick: apply }, pick === 'off' ? 'Make it private' : now === 'off' ? 'Publish' : 'Save') : null,
+          pick !== now ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { W.pubPick = null; paintInspector(); } }, 'Cancel') : null),
         p.on && links.length ? [h('div', { class: 'lbl' }, 'Its addresses'), h('div', { class: 'list' }, links.map(linkRow))] : null,
+        h('div', { class: 'note' }, 'Whatever you choose, what visitors write is checked (only the choices its forms offer, nothing over 10 KB), and they never see how it is made, its versions or its people’s emails, nor reach other apps or this studio.'),
         p.domain ? [
           h('div', { class: 'lbl' }, 'Name'),
           h('div', { class: 'row nw' }, name, h('span', { class: 'small muted mono' }, `.${p.domain}`), h('button', { class: 'btn sm', onclick: () => set({ name: name.value.trim() }, 'Name saved') }, 'Save')),
@@ -1331,9 +1454,7 @@ __sa_ready();
           h('div', { class: 'row nw' }, host, h('button', { class: 'btn sm', onclick: () => host.value.trim() && set({ hosts: [...p.hosts, host.value.trim()] }, `${host.value.trim()} added`) }, 'Add')),
           h('div', { class: 'note' }, `Point a CNAME record for your host at ${p.name || 'its name'}.${p.domain}; the cluster gets its certificate once the record resolves.`),
         ] : h('div', { class: 'note' }, `This engine has no domain yet, so a published app is reached at ${onIp || '/a/<id> on the engine’s address'}. Give it one (the operator’s spec.apps.domain, with a wildcard DNS record) and each app gets a name of its own, like kids-reading.apps.example.com.`),
-        h('div', { class: 'lbl' }, 'What the public can do'),
-        h('div', { class: 'note' }, 'Use the app as its screens let them: read and write its tables, run its functions, sign up and in, upload files; and ask the model or fetch pages if Reach allows it, within its questions a day. Each visitor is held to a rate a minute. They never see how it is made, its versions or its people, nor reach other apps or this studio.'),
-        h('div', { class: 'note', style: { color: 'var(--warn-ink, var(--text-2))' } }, 'Anyone with the address can do what its screens do, edits and deletes included. For an app strangers use, ask for sign-in and for each person to see only their own rows.'),
+        h('div', { class: 'note' }, 'Visitors may also sign up and in, and ask the model or fetch pages if Reach allows it, within its questions a day. Each visitor is held to a rate a minute. Errors they hit are recorded under Usage; they never start a repair.'),
       ];
     }
 
@@ -1385,6 +1506,7 @@ __sa_ready();
         W.stopped = true;
         W.act?.destroy();
         clearInterval(pacer);
+        fitter?.disconnect();
         poll?.();
         window.removeEventListener('message', onMessage);
         window.removeEventListener('resize', onResize);

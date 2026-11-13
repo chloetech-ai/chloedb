@@ -108,3 +108,40 @@ export function planDecisions({ plan, view, library, shared, pinned, written, co
   for (const [key, c] of hadShared) if (pinned?.get(key) === c.id && !written?.has(key)) out.push({ t: at, decision: 'keep', kind: c.kind, name: c.slug, title: c.title, shared: true });
   return out;
 }
+
+// How long each step of a build usually takes, first versions apart from
+// changes, from the last builds' timelines (sa_traces): the studio's
+// progress bar moves at the pace builds here really go.
+// Before any build here, a minute or so (what builds took on a cluster in
+// November 2026); after one, the steps are scaled to what builds here took
+// in all (the median of their real durations), so the bar does not say
+// "20 s left" of a build that takes a minute.
+export const STEP_DEFAULTS = { first: { read: 300, plan: 25000, write: 25000, store: 8000 }, change: { read: 300, plan: 30000, write: 20000, store: 8000 } };
+export function expectedSteps(traces, defaults = STEP_DEFAULTS) {
+  const out = structuredClone(defaults);
+  const seen = { first: {}, change: {} };
+  const totals = { first: [], change: [] };
+  for (const t of traces) {
+    if (t.status !== 'done' || !Array.isArray(t.spans)) continue;
+    const kind = t.spans.some((x) => /first version/.test(x.label || '')) ? 'first' : 'change';
+    const span = (k) => { const ss = t.spans.filter((x) => k.includes(x.kind)); return ss.length ? Math.max(...ss.map((x) => x.end ?? x.start)) - Math.min(...ss.map((x) => x.start)) : 0; };
+    const plan = span(['plan', 'model']);
+    const write = span(['write', 'fix']);
+    const read = t.spans.find((x) => x.kind === 'strata')?.end || 0;
+    const store = Math.max(0, (t.ms || 0) - read - plan - write);
+    for (const [k, v] of Object.entries({ read, plan, write, store })) if (v > 0 || k !== 'write') (seen[kind][k] ||= []).push(v);
+    if (t.ms > 0) totals[kind].push(t.ms);
+  }
+  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  for (const kind of ['first', 'change']) {
+    for (const [k, list] of Object.entries(seen[kind])) if (list.length >= 3) out[kind][k] = Math.round(median(list));
+    // A change with no write step (a small one) does not count write in the sum.
+    if (totals[kind].length) {
+      const want = median(totals[kind]);
+      const keys = Object.keys(out[kind]).filter((k) => k !== 'write' || seen[kind].write?.length);
+      const sum = keys.reduce((a, k) => a + out[kind][k], 0);
+      if (sum > 0) for (const k of keys) out[kind][k] = Math.round(out[kind][k] * want / sum);
+    }
+  }
+  return out;
+}

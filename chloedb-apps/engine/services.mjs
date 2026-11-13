@@ -84,7 +84,15 @@ export class Services {
     const e = String(email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(e)) throw err('Enter an email address');
     if (String(password || '').length < 8) throw err('Choose a password of at least 8 characters');
-    if (await this.personByEmail(e)) throw err('That email already has an account: sign in instead');
+    // Accounts are one for every app here. Signing up again with the email
+    // and password of one is signing in; any other answer says only that this
+    // email and password cannot be used, the same words whatever app the
+    // account came from (no "that email has an account" for strangers).
+    const had = await this.personByEmail(e);
+    if (had) {
+      if (await Services.checkPassword(password, had.hash)) return this.signIn(appId, { email: e, password });
+      throw err('That email and password cannot be used to sign up: sign in, or use another email');
+    }
     const person = { id: newId(10), email: e, name: String(name || '').trim().slice(0, 80) || e.split('@')[0], hash: await Services.hashPassword(password) };
     await this.db.write([{ op: 'insert', table: 'sa_people', doc: person }]);
     await this.join(appId, person.id);
@@ -122,12 +130,15 @@ export class Services {
   }
 
   // The signed-in person as an app sees them: {id, name, email, role}, or
-  // null. A person signed in through another app joins this one on first use.
-  async user(appId, personId) {
+  // null. A person signed in through another app joins this one on first use
+  // (join), except where the app is published to visitors: there they are
+  // someone of the app only once they signed up or in on it.
+  async user(appId, personId, { join = true } = {}) {
     if (!personId) return null;
     const [p] = await this.db.get('sa_people', [personId]);
     if (!p) return null;
-    const m = await this.join(appId, personId);
+    const m = join ? await this.join(appId, personId) : await this.member(appId, personId);
+    if (!m) return null;
     return { id: p.id, name: p.name, email: p.email, role: m.role };
   }
 
