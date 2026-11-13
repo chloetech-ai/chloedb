@@ -387,6 +387,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
         .route("/v1/admin/keys/clients", get(key_clients))
         .route("/v1/admin/keys/:id", axum::routing::delete(revoke_key))
+        // A key's own keys, within its tables (an app engine's for each app).
+        .route("/v1/keys/own", get(own_keys).merge(post(create_own_key)))
+        .route("/v1/keys/own/:id", axum::routing::delete(revoke_own_key))
         .route("/v1/admin/audit", get(audit_log))
         // alerts (alerts agent)
         .route("/v1/alerts", get(alerts))
@@ -5539,8 +5542,9 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     let mut j = w.json();
     // `app_keys`: this server makes keys limited to tables, and sends each
     // app its own token ([`crate::apps`]), as the operator asks before it
-    // gives an app a key of its own.
-    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true});
+    // gives an app a key of its own. `own_keys`: a key with the admin
+    // scope on tables makes keys within them (`/v1/keys/own`).
+    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true});
     j["cluster"] = app.svc.identity.json();
     j["caller"] = json!(keys::caller());
     AxJson(j)
@@ -5602,6 +5606,47 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
         None => format!("created key {} ({}, {})", key.name, key.id, scope.name()),
     };
     Ok(audited(json!({"key": key.json(), "secret": secret, "closed": open}), detail))
+}
+
+/// `GET /v1/keys/own`: the keys the calling key made
+/// ([`keys::Keys::create_delegated`]).
+async fn own_keys(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> Res {
+    let by = who(w);
+    let keys: Vec<Json> = by.key.as_deref().map(|id| app.svc.keys.delegated(id)).unwrap_or_default().iter().map(keys::Key::json).collect();
+    Ok(AxJson(json!({"keys": keys, "max": keys::DELEGATED_MAX})))
+}
+
+/// `POST /v1/keys/own {"name": "app-x1y2z3", "tables": {"app_x1y2z3_*":
+/// "write"}, "note": ...}`: a key the calling key makes, limited to tables
+/// it has the admin scope on, named `<its name>/<name>`, which opens
+/// nothing once the calling key is revoked or expires; one of that name it
+/// made before is revoked. Its secret is in this answer only. An app
+/// engine gives each of its apps such a key, so that an app's queries are
+/// held to its own tables by the server rather than by the engine.
+async fn create_own_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let by = who(w);
+    let name = body_str(&b, "name")?;
+    let tables = keys::grants_of(b.get("tables").ok_or_else(|| ApiError::bad("tables names what the key may touch: {\"app_x_*\": \"write\"}"))?)?;
+    let note = b.get("note").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
+    let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
+    let (key, secret) = app.svc.keys.create_delegated(&by, name, tables, note, in_cluster && !app.guarded())?;
+    let limits = key.tables.as_deref().map(keys::grants_json);
+    keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), after: Some(json!({"id": key.id, "scope": key.scope.name(), "tables": limits, "owner": key.owner, "parent": key.parent})), ..Default::default() });
+    tracing::info!(key = %key.id, name = %key.name, by = %by.name, "API key made by a key");
+    let detail = format!("key {} made key {} ({}, limited to {})", by.name, key.name, key.id, key.tables.as_deref().map(keys::grants_text).unwrap_or_default());
+    Ok(audited(json!({"key": key.json(), "secret": secret}), detail))
+}
+
+/// `DELETE /v1/keys/own/:id`: revokes a key the calling key made.
+async fn revoke_own_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let by = who(w);
+    let Some(k) = by.key.as_deref().and_then(|me| app.svc.keys.delegated(me).into_iter().find(|k| k.id == id)) else {
+        return Err(ApiError { status: 404, message: format!("no key {id} made by {:?}", by.name) });
+    };
+    app.svc.keys.revoke_by(&id, app.guarded(), Some(keys::audit_name(&by)))?;
+    keys::note_change(keys::Change { object: Some(format!("key {}", k.name)), before: Some(json!({"id": id})), ..Default::default() });
+    tracing::info!(key = %id, by = %by.name, "API key made by a key revoked");
+    Ok(audited(json!({"revoked": id}), format!("key {} revoked key {} ({id})", by.name, k.name)))
 }
 
 async fn revoke_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {

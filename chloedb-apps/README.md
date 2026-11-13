@@ -141,7 +141,11 @@ cd chloedb-apps
 ```
 
 `run.sh` starts chloedb-server on `127.0.0.1:7720` with its database in
-`chloedb-apps/data/apps.strata`, and the engine on `127.0.0.1:7730`. Options:
+`chloedb-apps/data/apps.strata` and a token of its own in
+`chloedb-apps/data/strata.token` (made on first start; send it as
+`Authorization: Bearer <token>` to reach that server yourself), and the engine
+on `127.0.0.1:7730`. The engine gives each app a key of its own
+(`STRATA_APPS_KEYS` below). Options:
 
 | | |
 |---|---|
@@ -149,6 +153,7 @@ cd chloedb-apps
 | `--data DIR` (or `STRATA_APPS_DATA`) | where the engine keeps its database |
 | `--strata URL` (or `STRATA_URL`, with `STRATA_TOKEN`) | use a chloedb-server that is already running (started with `--seq-no` for live updates) |
 | `STRATA_SERVER_BIN` | the chloedb-server to start |
+| `STRATA_APPS_KEYS` | `per-app` (default): each app reads and writes ChloeDB with a key of its own that the server holds to the app's tables (`app_<id>_*`), made from the engine's key with `POST /v1/keys/own`; an engine given an admin credential trades it for a key of its own limited to `sa_*` and `app_*` (`chloedb-apps`) and keeps the admin credential for the feed alone. `shared`: every app goes through the engine's one credential, as before. An open server (no `--token`) makes no keys, so there the engine says so and shares; `GET /api/status` says which (`keys`) |
 | `STRATA_APPS_WAIT_S` | how long the engine waits at start for a chloedb-server named by `--strata` to answer (default 300 s: beside a cluster, its coordinators may start after it) |
 | `STRATA_APP_TOKEN`, `STRATA_APPS_PUBLIC_URL` | beside a cluster: the token chloedb-server sends when it forwards `/v1/apps/apps/...` here (set, it turns the studio's login on), and where browsers reach the studio, for the one-time links the command center hands out ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 | `STRATA_APPS_TEST_SHARDS` | `npm test` against a coordinator over this many shards, in place of one server |

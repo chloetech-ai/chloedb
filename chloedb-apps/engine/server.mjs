@@ -31,6 +31,7 @@ import { Scheduler } from './schedule.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
+import { AppKeys } from './appkeys.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -49,7 +50,19 @@ const AUTOREPAIR = process.env.STRATA_APPS_AUTOREPAIR !== '0';
 if (spend.cap) await mkdir(DATA, { recursive: true }).then(() => useSpendFile(path.join(DATA, 'spend.json')));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
+// The token of the chloedb-server the engine starts itself: DATA/strata.token,
+// made on first start, readable by its owner only.
+async function ownToken() {
+  const file = path.join(DATA, 'strata.token');
+  try { const t = (await readFile(file, 'utf8')).trim(); if (t) return t; } catch { /* made below */ }
+  await mkdir(DATA, { recursive: true });
+  await writeFile(file, `${randomBytes(24).toString('hex')}\n`, { mode: 0o600, flag: 'wx' }).catch(() => {});
+  await chmod(file, 0o600).catch(() => {});
+  return (await readFile(file, 'utf8')).trim();
+}
+
 let strataUrl = arg('strata', process.env.STRATA_URL || '');
+let strataToken = process.env.STRATA_TOKEN;
 let child = null;
 if (!strataUrl) {
   const bin = findServerBinary(REPO);
@@ -58,13 +71,17 @@ if (!strataUrl) {
     process.exit(1);
   }
   const listen = arg('strata-listen', '127.0.0.1:7720');
-  ({ child } = await startServer({ bin, db: path.join(DATA, 'apps.strata'), listen, log }));
+  // The server of its own takes a token (kept in DATA/strata.token), so
+  // that it makes each app a key of its own (appkeys.mjs) and is not open
+  // to every process of the machine. (Over test shards: none, as before.)
+  if (!Number(process.env.STRATA_APPS_TEST_SHARDS)) strataToken = await ownToken();
+  ({ child } = await startServer({ bin, db: path.join(DATA, 'apps.strata'), listen, log, token: strataToken }));
   strataUrl = `http://${listen}`;
   const stop = () => { child?.kill('SIGTERM'); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }
-const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
+const db = new Strata(strataUrl, strataToken);
 // A Strata of its own answers before startServer returns; one named by
 // --strata may start after the engine does (a cluster's coordinators
 // beside its pod): wait for it, up to STRATA_APPS_WAIT_S (default 300 s).
@@ -127,6 +144,11 @@ async function secretKey() {
 }
 const reach = new Reach({ store: engine.store, log, secretKey: await secretKey() });
 engine.reach = reach;
+// Each app's own key, which the server holds to the app's tables
+// (appkeys.mjs); the engine trades an admin credential for a key of its own.
+const appKeys = new AppKeys({ db, store: engine.store, box: reach.box, log, ownServer: !!child });
+await appKeys.init();
+engine.keys = appKeys;
 // Rules and functions that run on a clock (schedule.mjs), once their app's
 // owner switched "Schedules" on.
 const scheduler = new Scheduler({ engine, reach, log });
@@ -595,7 +617,7 @@ const routes = [
   ['GET', /^\/app\.json$/, async () => MANIFEST],
   // A one-time link into the studio, for the command center (login.mjs).
   ['POST', /^\/api\/handoff$/, async (b, m, url, cx) => login.handoff(cx.req, String(b.next || ''))],
-  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR,
+  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, keys: appKeys.status(), data: child ? DATA : null, autorepair: AUTOREPAIR,
     login: login.on ? { publicUrl: login.publicUrl } : null,
     spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],

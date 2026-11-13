@@ -19,11 +19,17 @@
 //! The statement is parsed by ChloeDB's own parser
 //! ([`chloedb::query::parse::parse`]), so that it is read here as the
 //! engine reads it. What cannot be checked by its names is refused rather
-//! than allowed: a table function (a stored function's body names tables
-//! the text does not), a `WITH` table named as a table is, a name in parts
-//! (`a.b`), a call of `llm()` (its second step is SQL a model writes) or of
+//! than allowed: a table function that is not a stored one (a stored
+//! one is checked by the tables its body reads, written out as the engine
+//! runs it), a `WITH` table named as a table is, a name in parts (`a.b`),
+//! a call of `llm()` (its second step is SQL a model writes) or of
 //! `encode()` (a sequence model reads its own table's vectors), and a
 //! stored function when one of them calls `llm()`.
+//!
+//! Such a key with the admin scope on some tables may define a stored
+//! function no one has, or the same one again, whose body reads only
+//! tables it may read ([`check_function`]): an app installs its own SQL
+//! functions. It replaces and drops none.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
@@ -60,6 +66,9 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         "/v1/feedback" => get || method == Method::POST,
         "/v1/feedback/:id" => get || method == Method::PATCH || method == Method::DELETE,
         "/v1/feedback/:id/shot" | "/v1/feedback/:id/thumb" => get,
+        // Keys of its own within its tables ([`crate::keys::Keys::create_delegated`]).
+        "/v1/keys/own" => get || method == Method::POST,
+        "/v1/keys/own/:id" => method == Method::DELETE,
         _ => false,
     }
 }
@@ -98,8 +107,39 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
         Command::CreateRankProfile { table, .. } => who.may_table(Scope::Admin, table, "CREATE RANK PROFILE"),
         Command::DropRankProfile { table: Some(t), .. } => who.may_table(Scope::Admin, t, "DROP RANK PROFILE"),
         Command::DropRankProfile { table: None, .. } => Err(ApiError { status: 403, message: "a key limited to tables names the table of the rank profile it drops: DROP RANK PROFILE name ON table".into() }),
-        Command::Function(_) => who.may_server("a stored function (CREATE or DROP FUNCTION)"),
+        Command::Function(f) => check_function(who, f, tables, functions),
     }
+}
+
+/// Refuses (403) `CREATE FUNCTION` `f` by `who`, a key limited to tables,
+/// unless it is a key with the admin scope on some tables (an app's) that
+/// defines a function no one has, or the one it defined again (the same
+/// definition, as an app installs its functions at each start), whose
+/// body reads only tables it may read and calls no model. It replaces
+/// none, and drops none: those stay an admin's of the server, since a
+/// stored function is every client's.
+fn check_function(who: &Principal, f: &chloedb::query::function::Statement, tables: &[String], functions: &FunctionSet) -> Result<(), ApiError> {
+    use chloedb::query::function::{Kind, Statement};
+    let Statement::Create { def, at: None, .. } = f else {
+        return who.may_server("DROP FUNCTION, a version made from another or AT VERSION");
+    };
+    if !who.tables.as_deref().unwrap_or_default().iter().any(|g| g.scope == Scope::Admin) {
+        return who.may_server("a stored function, without the admin scope on any table,");
+    }
+    if let Some(cur) = functions.current(&def.name) {
+        if cur.hash != def.hash() {
+            return Err(ApiError {
+                status: 403,
+                message: format!("function {} exists (version {}): a key limited to tables defines new functions, and the same ones again, but replaces none (an admin key does); the key {:?} is limited to tables", def.name, cur.version, who.name),
+            });
+        }
+    }
+    // Its body, as a query reads it: what it reads, and no llm().
+    let body = match def.kind {
+        Kind::Table => def.body.clone(),
+        Kind::Scalar => format!("SELECT {}", def.body),
+    };
+    check_reads(who, &body, tables, functions).map_err(|e| ApiError { message: format!("the body of {}: {}", def.name, e.message), ..e })
 }
 
 /// Refuses (403) a query or statement `text` that names a table `who` may
@@ -118,7 +158,7 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
     let mut walk = Walk::default();
     for s in &statements {
-        let _ = s.visit(&mut walk);
+        walk_statement(s, functions, &mut walk)?;
     }
     if let Some(m) = walk.refused {
         return Err(refuse(m));
@@ -156,6 +196,25 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
         if functions.calls_llm() && functions.current(base).is_some() {
             return Err(refuse(format!("{base}() is a stored function, and this database's functions call llm()")));
         }
+    }
+    Ok(())
+}
+
+/// Walks statement `s`, a query with its stored functions written out
+/// ([`chloedb::query::function::expand`], as the engine runs it), so that
+/// a table function is checked by the tables its body reads.
+fn walk_statement(s: &sql::Statement, functions: &FunctionSet, walk: &mut Walk) -> Result<(), ApiError> {
+    let q = match s {
+        sql::Statement::Query(q) => q,
+        sql::Statement::Explain { statement, .. } => return walk_statement(statement, functions, walk),
+        other => {
+            let _ = other.visit(walk);
+            return Ok(());
+        }
+    };
+    match chloedb::query::function::expand(q, functions).map_err(|e| ApiError::bad(e.to_string()))? {
+        Some((expanded, _)) => drop(expanded.visit(walk)),
+        None => drop(q.visit(walk)),
     }
     Ok(())
 }
@@ -337,10 +396,58 @@ mod tests {
         // Read on a table is not write there.
         let w = key(&["sheets_*=read"]);
         assert_eq!(check(&w, "DELETE FROM sheets_x").unwrap_err().status, 403);
-        // Functions are the server's.
+        // A function: a key with admin on some tables defines a new one;
+        // one with read alone does not.
         let f = "CREATE FUNCTION twice(x FLOAT) RETURNS FLOAT AS :x * 2";
         let command = chloedb::query::sql::bind_command(f, &catalog, &Default::default()).unwrap();
-        assert_eq!(check_statement(&key(&["*=admin"]), f, &command, &names, &functions).unwrap_err().status, 403);
+        assert!(check_statement(&key(&["*=admin"]), f, &command, &names, &functions).is_ok());
+        assert_eq!(check_statement(&key(&["*=read"]), f, &command, &names, &functions).unwrap_err().status, 403);
+    }
+
+    /// The function set of these definitions.
+    fn defined(sqls: &[&str]) -> FunctionSet {
+        use chloedb::query::function::{change, parse_statement, Change};
+        let mut set = FunctionSet::default();
+        for s in sqls {
+            let stmt = parse_statement(s).unwrap().unwrap();
+            if let Change::Put(f) = change(&set, &stmt, None, Some("admin")).unwrap() {
+                set = FunctionSet::of(set.all().map(|f| (**f).clone()).chain([f]));
+            }
+        }
+        set
+    }
+
+    #[test]
+    fn stored_functions_and_a_limited_key() {
+        let k = key(&["crawl_*=admin", "sa_numbers=read"]);
+        let mut names = tables();
+        names.push("sa_numbers".into());
+        let set = defined(&[
+            "CREATE FUNCTION days(n INT DEFAULT 7) RETURNS TABLE AS SELECT id FROM sa_numbers WHERE id < :n LIMIT 100",
+            "CREATE FUNCTION leak() RETURNS TABLE AS SELECT email AS id FROM sa_people LIMIT 10",
+            "CREATE FUNCTION twice(x FLOAT) RETURNS FLOAT AS :x * 2",
+        ]);
+        let reads = |sql: &str| check_reads(&k, sql, &names, &set);
+        // A table function is checked by what its body reads.
+        assert!(reads("SELECT * FROM days(3)").is_ok(), "{:?}", reads("SELECT * FROM days(3)"));
+        assert!(reads("SELECT d.id FROM crawl_docs d JOIN days(3) n ON n.id = d.id").is_ok());
+        assert_eq!(reads("SELECT * FROM leak()").unwrap_err().status, 403);
+        assert_eq!(reads("SELECT d.id FROM crawl_docs d WHERE d.id IN (SELECT id FROM leak())").unwrap_err().status, 403);
+        assert!(reads("SELECT twice(2) AS x FROM crawl_docs").is_ok());
+        // Not a stored one: refused, as before.
+        assert_eq!(reads("SELECT * FROM recall('q')").unwrap_err().status, 403);
+        // Defining: new, or the same again; never another's in its place.
+        let create = |sql: &str| {
+            let stmt = chloedb::query::function::parse_statement(sql).unwrap().unwrap();
+            check_statement(&k, sql, &Command::Function(stmt), &names, &set)
+        };
+        assert!(create("CREATE OR REPLACE FUNCTION twice(x FLOAT) RETURNS FLOAT AS :x * 2").is_ok());
+        assert_eq!(create("CREATE OR REPLACE FUNCTION twice(x FLOAT) RETURNS FLOAT AS :x * 3").unwrap_err().status, 403);
+        assert!(create("CREATE FUNCTION mine(n INT DEFAULT 2) RETURNS TABLE AS SELECT id FROM crawl_docs LIMIT :n").is_ok());
+        assert!(create("CREATE FUNCTION thrice(x FLOAT) RETURNS FLOAT AS :x * 3").is_ok());
+        assert_eq!(create("CREATE FUNCTION peek() RETURNS TABLE AS SELECT email AS id FROM sa_people LIMIT 1").unwrap_err().status, 403);
+        assert_eq!(create("CREATE FUNCTION ask(x TEXT) RETURNS TEXT AS llm('m', 'say', :x)").unwrap_err().status, 403);
+        assert_eq!(create("DROP FUNCTION twice").unwrap_err().status, 403);
     }
 
     #[test]

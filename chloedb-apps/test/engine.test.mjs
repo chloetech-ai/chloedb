@@ -2864,3 +2864,96 @@ test('a source on a schedule fills a table in Strata once per item, through the 
     child.kill();
   }
 });
+
+// Audit N-G5/N-G6: against a server with a token, the engine runs on a key
+// limited to sa_* and app_* (as the operator gives it), installs its SQL
+// functions with it, and gives each app a key of its own, so that the
+// server, not only the rewrite, keeps an app to its own tables.
+test('each app reads and writes with a key of its own, held to its tables by the server', async (t) => {
+  const { findServerBinary, startServer, Strata } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const { Engine } = await import('../engine/engine.mjs');
+  const { AppKeys, appGrants, ENGINE_KEY_NAME } = await import('../engine/appkeys.mjs');
+  const { readSqlLibrary, install } = await import('../engine/sqlfns.mjs');
+  const { useTableFunctions, useFunctionReads } = await import('../engine/sql.mjs');
+  const { sealer } = await import('../engine/reach.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const dir = mkdtempSync(join(tmpdir(), 'sa-keys-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client: root } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {}, token: 'root-token' });
+  try {
+    if (!(await root.req('GET', '/v1/whoami')).auth?.own_keys) return t.skip('this chloedb-server makes no keys of a key\'s own');
+    const made = await root.req('POST', '/v1/admin/keys', { name: 'apps-app', tables: { 'sa_*': 'admin', 'app_*': 'admin' } });
+    const db = new Strata(root.url, made.secret);
+    const box = sealer('test');
+    const logs = [];
+    const engine = new Engine(db, { log: (m) => logs.push(m) });
+    await engine.init();
+    // The library's functions install on the limited key (N-G6).
+    const fns = readSqlLibrary(join(import.meta.dirname, '..', 'library', 'sql'));
+    const ok = await install(db, fns, (m) => logs.push(m));
+    assert.equal(ok.length, fns.length, logs.join('\n'));
+    useTableFunctions(ok.filter((f) => f.returns === 'TABLE').map((f) => f.name));
+    useFunctionReads(ok.map((f) => f.sql));
+    // ...and again at the next start, unchanged.
+    assert.equal((await install(db, fns, (m) => logs.push(m))).length, fns.length, logs.join('\n'));
+    assert.equal(appGrants('aaaaaa')['app_aaaaaa_*'], 'write');
+    assert.equal(appGrants('aaaaaa').sa_numbers, 'read');
+    for (const a of ['aaaaaa', 'bbbbbb']) await db.sql(`CREATE TABLE app_${a}_tasks (id KEYWORD PRIMARY KEY, title TEXT, created TIMESTAMP)`);
+    await db.write([{ op: 'upsert', table: 'app_bbbbbb_tasks', doc: { id: 'b1', title: 'theirs' } }]);
+    const keys = new AppKeys({ db, store: engine.store, box, log: (m) => logs.push(m) });
+    await keys.init();
+    assert.equal(keys.mode, 'per-app', logs.join('\n'));
+    engine.keys = keys;
+    engine.view = async () => ({ tables: [{ spec: { name: 'tasks', columns: [{ name: 'title', type: 'text' }] } }], functions: [], helpers: [], comp: { n: 1 } });
+    await engine.insert('aaaaaa', 'tasks', { title: 'mine' });
+    assert.deepEqual((await engine.sql('aaaaaa', 'SELECT title FROM tasks')).map((r) => r.title), ['mine']);
+    // A table function, its body checked by the server against the app's key.
+    assert.equal((await engine.sql('aaaaaa', 'SELECT * FROM days_from(:s, 3)', { s: '2026-01-01' })).length, 3);
+    // The app's own key reaches nothing else, whatever the SQL.
+    const own = await keys.client('aaaaaa');
+    assert.ok(own.own);
+    assert.match((await own.req('GET', '/v1/whoami')).name, /^apps-app\/app-aaaaaa$/);
+    for (const sql of ['SELECT * FROM app_bbbbbb_tasks', 'SELECT * FROM sa_settings', 'SELECT * FROM app_aaaaaa_tasks WHERE id IN (SELECT id FROM sa_people)', 'WITH sa_people AS (SELECT 1 AS x) SELECT * FROM app_aaaaaa_tasks']) {
+      await assert.rejects(own.query(sql), (e) => e.status === 403 || e.status === 400, sql);
+    }
+    await assert.rejects(own.write([{ op: 'upsert', table: 'app_bbbbbb_tasks', doc: { id: 'x', title: 'no' } }]), (e) => e.status === 403);
+    await assert.rejects(own.sql('CREATE TABLE app_aaaaaa_more (id KEYWORD PRIMARY KEY)'), (e) => e.status === 403);
+    // Kept sealed: a new start reuses each key rather than making another.
+    const before = (await db.req('GET', '/v1/keys/own')).keys.length;
+    const again = new AppKeys({ db, store: engine.store, box, log: () => {} });
+    await again.init();
+    assert.match((await (await again.client('aaaaaa')).req('GET', '/v1/whoami')).name, /app-aaaaaa/);
+    assert.equal((await db.req('GET', '/v1/keys/own')).keys.length, before);
+    // A key the server no longer takes is made again.
+    const kept = (await db.req('GET', '/v1/keys/own')).keys.find((k) => k.name.endsWith('/app-aaaaaa'));
+    await db.req('DELETE', `/v1/keys/own/${kept.id}`);
+    const third = new AppKeys({ db, store: engine.store, box, log: () => {} });
+    await third.init();
+    assert.equal((await (await third.client('aaaaaa')).query('SELECT title FROM app_aaaaaa_tasks')).length, 1);
+    // An engine given the admin token makes itself a limited key, and
+    // keeps the token for the feed alone.
+    const admin = new Strata(root.url, 'root-token');
+    const traded = new AppKeys({ db: admin, store: new Store(admin, () => {}), box, log: (m) => logs.push(m) });
+    await traded.init();
+    assert.equal(traded.mode, 'per-app', logs.join('\n'));
+    assert.equal((await admin.req('GET', '/v1/whoami')).name, ENGINE_KEY_NAME);
+    assert.equal(admin.feedToken, 'root-token');
+    assert.notEqual(admin.token, 'root-token');
+    assert.match(logs.join('\n'), /admin token/);
+    // ...the same key at its next start.
+    const admin2 = new Strata(root.url, 'root-token');
+    const traded2 = new AppKeys({ db: admin2, store: new Store(admin2, () => {}), box, log: () => {} });
+    await traded2.init();
+    assert.equal(admin2.token, admin.token);
+    // A key of every table that reads only: shared, said loudly.
+    const reader = await root.req('POST', '/v1/admin/keys', { name: 'reader', scope: 'read' });
+    const shared = new AppKeys({ db: new Strata(root.url, reader.secret), store: engine.store, box, log: (m) => logs.push(m) });
+    await shared.init();
+    assert.equal(shared.mode, 'shared');
+    assert.match(logs.join('\n'), /APP KEYS OFF/);
+  } finally {
+    child.kill();
+  }
+});

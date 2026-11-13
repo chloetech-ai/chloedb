@@ -162,6 +162,84 @@ async fn a_key_limited_to_tables_touches_those_alone() {
     assert_eq!(call(&base, "POST", "/v1/query", key, Some(json!({"sql": "SELECT * FROM crawl_docs"}))).await.0, 401);
 }
 
+/// An app engine's key makes each app a key within its tables, over the
+/// HTTP API: what the app's key reaches, the stored functions it may run
+/// and define, and that it ends with the engine's key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_makes_its_apps_keys_and_they_end_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let base = serve(svc.clone(), Access { token: Some(Secret::new("root-token")), ..Default::default() }).await;
+    let root = Some("root-token");
+    for t in ["app_a1_tasks", "app_b2_tasks", "sa_people", "sa_numbers"] {
+        let (s, j) = call(&base, "POST", "/v1/sql", root, Some(json!({"sql": format!("CREATE TABLE {t} (id KEYWORD PRIMARY KEY, body TEXT)")}))).await;
+        assert_eq!(s, 200, "{t}: {j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/write", root, Some(json!({"ops": [{"op": "upsert", "table": "app_b2_tasks", "doc": {"id": "b", "body": "theirs"}}, {"op": "upsert", "table": "sa_numbers", "doc": {"id": "1"}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (_, who) = call(&base, "GET", "/v1/whoami", root, None).await;
+    assert_eq!(who["auth"]["own_keys"], true);
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "apps-app", "tables": {"sa_*": "admin", "app_*": "admin"}}))).await;
+    assert_eq!(s, 200, "{made}");
+    let engine = made["secret"].as_str().unwrap().to_string();
+    let e = Some(engine.as_str());
+
+    // The engine makes app a1's key, within its own tables.
+    let (s, a1) = call(&base, "POST", "/v1/keys/own", e, Some(json!({"name": "app-a1", "tables": {"app_a1_*": "write", "sa_numbers": "read"}}))).await;
+    assert_eq!(s, 200, "{a1}");
+    assert_eq!(a1["key"]["name"], "apps-app/app-a1");
+    let app = a1["secret"].as_str().unwrap().to_string();
+    let k = Some(app.as_str());
+    let file = std::fs::read_to_string(dir.path().join("a.strata.keys.json")).unwrap();
+    assert!(file.contains("\"sha256\": \"d:"), "{file}");
+    for bad in [json!({"*": "read"}), json!({"crawl_x": "read"}), json!({"app_*": "admin", "other": "read"})] {
+        let (s, j) = call(&base, "POST", "/v1/keys/own", e, Some(json!({"name": "x", "tables": bad}))).await;
+        assert_eq!(s, 403, "{j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/keys/own", k, Some(json!({"name": "y", "tables": {"app_a1_x": "read"}}))).await;
+    assert_eq!(s, 403, "a key so made makes none: {j}");
+    let (s, j) = call(&base, "GET", "/v1/keys/own", e, None).await;
+    assert_eq!((s, j["keys"].as_array().map(Vec::len)), (200, Some(1)), "{j}");
+
+    // Its own rows, and nothing else.
+    let (s, j) = call(&base, "POST", "/v1/write", k, Some(json!({"ops": [{"op": "upsert", "table": "app_a1_tasks", "doc": {"id": "a", "body": "mine"}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/query", k, Some(json!({"sql": "SELECT body FROM app_a1_tasks"}))).await;
+    assert_eq!((s, j["rows"].as_array().map(Vec::len)), (200, Some(1)), "{j}");
+    for sql in ["SELECT * FROM app_b2_tasks", "SELECT * FROM sa_people", "SELECT * FROM app_a1_tasks WHERE id IN (SELECT id FROM app_b2_tasks)"] {
+        let (s, j) = call(&base, "POST", "/v1/query", k, Some(json!({"sql": sql}))).await;
+        assert_eq!(s, 403, "{sql}: {j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/write", k, Some(json!({"ops": [{"op": "upsert", "table": "app_b2_tasks", "doc": {"id": "x", "body": "no"}}]}))).await;
+    assert_eq!(s, 403, "{j}");
+
+    // The engine defines its functions with its key; the app runs a table
+    // function whose body reads a table its key covers, and not one whose
+    // body reads another app's.
+    for f in ["CREATE FUNCTION nums(n INT DEFAULT 5) RETURNS TABLE AS SELECT id FROM sa_numbers LIMIT :n", "CREATE FUNCTION others() RETURNS TABLE AS SELECT id, body FROM app_b2_tasks LIMIT 10"] {
+        let (s, j) = call(&base, "POST", "/v1/sql", e, Some(json!({"sql": f}))).await;
+        assert_eq!(s, 200, "{f}: {j}");
+        let (s, j) = call(&base, "POST", "/v1/sql", e, Some(json!({"sql": f}))).await;
+        assert!(s == 200 || j.to_string().contains("exists"), "the same again: {j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/sql", e, Some(json!({"sql": "CREATE OR REPLACE FUNCTION nums(n INT DEFAULT 5) RETURNS TABLE AS SELECT id FROM sa_numbers LIMIT 1"}))).await;
+    assert_eq!(s, 403, "a limited key replaces no function: {j}");
+    let (s, j) = call(&base, "POST", "/v1/query", k, Some(json!({"sql": "SELECT * FROM nums(3)"}))).await;
+    assert_eq!((s, j["rows"].as_array().map(Vec::len)), (200, Some(1)), "{j}");
+    let (s, j) = call(&base, "POST", "/v1/query", k, Some(json!({"sql": "SELECT * FROM others()"}))).await;
+    assert_eq!(s, 403, "{j}");
+
+    // Revoking the engine's key ends the app's.
+    let id = made["key"]["id"].as_str().unwrap();
+    let (s, _) = call(&base, "DELETE", &format!("/v1/admin/keys/{id}"), root, None).await;
+    assert_eq!(s, 200);
+    let (s, _) = call(&base, "POST", "/v1/query", k, Some(json!({"sql": "SELECT body FROM app_a1_tasks"}))).await;
+    assert_eq!(s, 401);
+    // The token makes no key of its own here.
+    let (s, _) = call(&base, "POST", "/v1/keys/own", root, Some(json!({"name": "z", "tables": {"a": "read"}}))).await;
+    assert_eq!(s, 403);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_grant_reads_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
