@@ -48,6 +48,7 @@
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/relevance/autopilot` | the autopilot's options, `judge?`, `keep?` | `{report, proposal, judged}`: logged queries replayed on one snapshot with the rank profile and with the numbers the search finds, measured on held-out queries ([`crate::autopilot`]) |
 //! | `GET /v1/relevance/proposals`, `GET /v1/relevance/proposals/:id`, `POST .../:id/apply` `{force?}`, `POST .../:id/dismiss` | | the proposals kept, one with its proof, applied or dismissed |
+//! | `POST /v1/feedback`, `GET /v1/feedback?status=&kind=&q=&limit=`, `GET`/`PATCH`/`DELETE /v1/feedback/:id`, `GET /v1/feedback/:id/shot` | `{note, kind?, shot?, marks?, ...}`; triage `{status?, priority?, assignee?, resolution?, if_status?}` | the command center's feedback, kept in table `cc_feedback` ([`crate::feedback`]): sent and triaged with a write key, read with a read key, deleted by an admin |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
 //! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
 //! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
@@ -296,6 +297,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/relevance/proposals/:id", get(autopilot_get))
         .route("/v1/relevance/proposals/:id/apply", post(autopilot_apply))
         .route("/v1/relevance/proposals/:id/dismiss", post(autopilot_dismiss))
+        // The command center's feedback ([`crate::feedback`]).
+        .route("/v1/feedback", get(feedback_list).post(feedback_submit))
+        .route("/v1/feedback/:id", get(feedback_get).patch(feedback_update).delete(feedback_delete))
+        .route("/v1/feedback/:id/shot", get(feedback_shot))
+        .route("/v1/feedback/:id/thumb", get(feedback_thumb))
         .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
         .route("/v1/admin/oncall/runs", get(oncall_runs))
         .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
@@ -334,6 +340,14 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/apps", get(apps_list))
         // An app may take files (a spreadsheet's import): rows' size, as /v1/import.
         .route("/v1/apps/:name/*rest", axum::routing::any(app_forward).layer(rows.clone()))
+        // Tenants (experimental): databases kept in an object store (crate::tenants).
+        .route("/v1/admin/tenants", get(tenant_list).post(tenant_create))
+        .route("/v1/admin/tenants/:id", get(tenant_get).delete(tenant_delete))
+        .route("/v1/admin/tenants/:id/sql", post(tenant_sql).layer(rows.clone()))
+        .route("/v1/admin/tenants/:id/base", post(tenant_base))
+        // A blackboard's tools, for agents (crate::board).
+        .route("/v1/admin/tenants/:id/board/:tool", post(tenant_board))
+        .route("/v1/admin/tenants/:id/mcp", post(tenant_mcp))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -946,6 +960,10 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // feedback: sending and triaging write; deleting is an admin's.
+        "/v1/feedback" if method == Method::POST => Scope::Write,
+        "/v1/feedback/:id" if method == Method::PATCH => Scope::Write,
+        "/v1/feedback/:id" if method == Method::DELETE => Scope::Admin,
         // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
         "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
@@ -3487,6 +3505,44 @@ async fn autopilot_run(State(app): State<App>, w: Option<axum::Extension<Princip
     Ok(AxJson(crate::autopilot::run(&app.svc, &who(w), b).await?))
 }
 
+async fn feedback_submit(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::feedback::submit(&app.svc, &who(w), b).await?))
+}
+
+async fn feedback_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    Ok(AxJson(crate::feedback::list(&app.svc, &who(w), &q).await?))
+}
+
+async fn feedback_get(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    let shot = q.get("shot").is_some_and(|s| s == "1" || s == "true");
+    Ok(AxJson(crate::feedback::get(&app.svc, &who(w), &id, shot).await?))
+}
+
+async fn feedback_update(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::feedback::update(&app.svc, &who(w), &id, b).await?))
+}
+
+async fn feedback_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::feedback::delete(&app.svc, &who(w), &id).await?))
+}
+
+/// A feedback's picture, served inert as media files are ([`media_headers`]).
+async fn feedback_picture(app: App, w: Option<axum::Extension<Principal>>, id: String, thumb: bool) -> Result<Response, ApiError> {
+    let (mime, bytes) = crate::feedback::image(&app.svc, &who(w), &id, thumb).await?;
+    let mut h = media_headers(&mime, "");
+    // A triage changes the row, never its pictures; still, a private cache.
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("private, max-age=3600"));
+    Ok((h, bytes).into_response())
+}
+
+async fn feedback_shot(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    feedback_picture(app, w, id, false).await
+}
+
+async fn feedback_thumb(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    feedback_picture(app, w, id, true).await
+}
+
 async fn autopilot_list(State(app): State<App>) -> Res {
     Ok(AxJson(crate::autopilot::list(&app.svc).await?))
 }
@@ -4312,6 +4368,98 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+/// The tenants this server serves, or 404 when it serves none.
+fn tenants(app: &App) -> Result<Arc<crate::tenants::Tenants>, ApiError> {
+    app.svc.tenants.clone().ok_or_else(|| ApiError { status: 404, message: "this server serves no tenants (start it with --tenants URL; experimental)".into() })
+}
+
+/// A tenant's call: it reads and writes the object store, and blocks.
+async fn tenant_call<T: Send + 'static>(f: impl FnOnce() -> Result<T, chloedb::tenant::TenantError> + Send + 'static) -> Result<T, ApiError> {
+    Ok(tokio::task::spawn_blocking(f).await.map_err(ApiError::internal)??)
+}
+
+async fn tenant_create(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let id = body_str(&b, "id")?.to_string();
+    if !chloedb::tenant::valid_id(&id) {
+        return Err(ApiError::bad("a tenant's id is 1 to 128 of A-Z a-z 0-9 . _ -, not starting with . or _"));
+    }
+    let not_sql = || ApiError::bad("sql is a statement or a list of statements");
+    let statements: Vec<String> = match b.get("sql") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::String(s)) => vec![s.clone()],
+        Some(Json::Array(a)) => a.iter().map(|s| s.as_str().map(String::from).ok_or_else(not_sql)).collect::<Result<_, _>>()?,
+        Some(_) => return Err(not_sql()),
+    };
+    let template = match b.get("template") {
+        None | Some(Json::Null) => None,
+        Some(Json::String(name)) if crate::tenants::Tenants::TEMPLATES.contains(&name.as_str()) => Some(name.clone()),
+        Some(_) => return Err(ApiError::bad(format!("template is one of: {}", crate::tenants::Tenants::TEMPLATES.join(", ")))),
+    };
+    Ok(AxJson(tenant_call(move || t.create(&id, &statements, template.as_deref())).await?))
+}
+
+/// `POST /v1/admin/tenants/:id/board/:tool`: a tool of the tenant's
+/// blackboard, for the agent the body names ([`crate::board`]).
+async fn tenant_board(State(app): State<App>, axum::extract::Path((id, tool)): axum::extract::Path<(String, String)>, AxJson(mut b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let agent = body_str(&b, "agent")?.to_string();
+    if let Some(o) = b.as_object_mut() {
+        o.remove("agent");
+    }
+    let called = tokio::task::spawn_blocking(move || -> Result<Json, ApiError> { Ok(crate::board::call(&*t.get(&id)?, &agent, &tool, &b)?) });
+    Ok(AxJson(called.await.map_err(ApiError::internal)??))
+}
+
+/// `POST /v1/admin/tenants/:id/mcp?agent=NAME`: the blackboard's tools as
+/// an MCP server, for the agent the URL names. A request is answered
+/// with JSON; notifications alone with 202 and no body.
+async fn tenant_mcp(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Query(q): Query<std::collections::HashMap<String, String>>, body: Bytes) -> Result<Response, ApiError> {
+    let t = tenants(&app)?;
+    let agent = q.get("agent").filter(|a| !a.is_empty()).cloned().ok_or_else(|| ApiError::bad("the URL names the agent: ?agent=NAME"))?;
+    let answered = tokio::task::spawn_blocking(move || -> Result<(bool, Option<Json>), ApiError> { Ok(crate::board::mcp(&*t.get(&id)?, &agent, &body)) });
+    Ok(match answered.await.map_err(ApiError::internal)?? {
+        (true, Some(answer)) => AxJson(answer).into_response(),
+        (true, None) => StatusCode::ACCEPTED.into_response(),
+        (false, answer) => (StatusCode::BAD_REQUEST, AxJson(answer.unwrap_or(Json::Null))).into_response(),
+    })
+}
+
+async fn tenant_list(State(app): State<App>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.list()).await?))
+}
+
+async fn tenant_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.describe(&id)).await?))
+}
+
+async fn tenant_sql(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let sql = body_str(&b, "sql")?.to_string();
+    let params = crate::json::params(b.get("params"))?;
+    let (latest, objects) = (body_bool(&b, "latest")?, body_bool(&b, "objects")?);
+    let mut j = tenant_call(move || t.sql(&id, &sql, &params, latest)).await?;
+    if objects && j.get("columns").is_some() {
+        as_objects(&mut j);
+    }
+    Ok(AxJson(j))
+}
+
+async fn tenant_base(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.make_base(&id)).await?))
+}
+
+async fn tenant_delete(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    match tenant_call(move || t.delete(&id)).await? {
+        true => Ok(AxJson(json!({"deleted": true}))),
+        false => Err(ApiError { status: 404, message: "no tenant has this id".into() }),
+    }
 }
 
 async fn apps_list(State(app): State<App>) -> AxJson<Json> {
