@@ -298,7 +298,7 @@ Each step is SQL the page shows before running, and could be run from the workbe
 | `siglip-base-patch16-224` | SigLIP base: images and text in one space, 768 dimensions | build with `--features vision`; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM |
 | `clap-htsat-unfused` | CLAP (HTSAT and RoBERTa): sound and text in one space, 512 dimensions | build with `--features audio`; about 0.27 s for each 10 seconds of sound and 20 ms a text on a 4-vCPU cloud VM |
 | `answerai-colbert-small-v1` | ColBERT (BERT, 33M parameters), a 96-dimension vector a token, for a [multi-vector field](#a-vector-a-token) | build with `--features bert` |
-| `hash:N` | hashed bag of words, *N* dimensions (on a multi-vector field, a vector a word) | no files; tests and the demo |
+| `hash:N` | hashed bag of words, *N* dimensions, 1 to 65,536 (on a multi-vector field, a vector a word) | no files; tests and the demo |
 | `ms-marco-MiniLM-L-6-v2` | a [cross-encoder](query-language.md#cross-encoders-cross_encodermodel-fields-query) (BERT, 22M parameters, English), not an embedding model | build with `--features bert` |
 | `bge-reranker-base` | a cross-encoder (XLM-RoBERTa, 278M parameters, English and Chinese) | build with `--features bert`; larger and slower |
 | `ms-marco-MiniLM-L-6-v2-int8` | `ms-marco-MiniLM-L-6-v2` quantized to int8, its repository's ONNX export for this CPU (ARM64's on ARM, AVX-512 VNNI's on an x86-64 with VNNI, AVX2's on one without) | build with `--features onnx` |
