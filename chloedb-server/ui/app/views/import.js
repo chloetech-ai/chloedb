@@ -497,22 +497,20 @@ function render(page) {
       sub.textContent = v === "parquet" ? "a Parquet file a table, for Spark, DuckDB, polars and pandas" : "the database as a SQLite file";
       hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its ChloeDB schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
     });
-    // A coordinator holds no rows: say so before anything is asked for.
-    if (isCoordinator()) {
-      const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), h("span", { class: "sub" }, "SQLite or Parquet")),
-        h("div", { class: "bd stack", style: { gap: "10px" } },
-          h("div", { class: "banner dt-done" }, icon("info", "lg"), h("div", { class: "grow" }, h("b", {}, "Export runs on a shard's server, not on this coordinator"),
-            h("div", { class: "small muted" }, "A coordinator holds no rows. Open the command center of each shard's primary and export there, or run chloedb-server export --db on its database; each shard's file holds that shard's rows."))),
-          sizeNote));
-      const old = right.querySelector("#imp-export");
-      if (old) old.replaceWith(card); else right.prepend(card);
-      estimate();
-      return;
+    // A coordinator exports a table a file (Parquet, from every shard);
+    // the whole database as one SQLite file runs on a shard's server.
+    const coord = isCoordinator();
+    if (coord) {
+      format = "parquet";
+      sqliteOpts.classList.add("hidden");
+      go.lastChild.textContent = "Download as Parquet";
+      sub.textContent = "a Parquet file a table, of every shard's rows";
+      hint.textContent = "Vectors go as lists of float32, timestamps in UTC. The whole database as SQLite: export on each shard's server (chloedb-server export --db).";
     }
     gate(go, "admin");
     const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), sub),
       h("div", { class: "bd stack", style: { gap: "10px" } },
-        formatSeg,
+        coord ? null : formatSeg,
         h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size || !can("admin"); estimate(); } }, icon("table"), t.table))),
         sqliteOpts,
         sizeNote,
