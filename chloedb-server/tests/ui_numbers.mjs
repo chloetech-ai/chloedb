@@ -87,6 +87,17 @@ assert.equal(sqlView.statementAt(three, [30, 30]).sql.trim(), "-- the shop's fir
 const tricky = `SELECT 'a;b', "x;y" FROM t /* ; it's */ WHERE s = 'it''s;'; -- done; isn't it\nSELECT 3`;
 assert.deepEqual(sqlView.statements(tricky).map((x) => x.sql.trim()), [`SELECT 'a;b', "x;y" FROM t /* ; it's */ WHERE s = 'it''s;'`, "-- done; isn't it\nSELECT 3"]);
 assert.equal(sqlView.statements("SELECT 1; -- only a comment\n").length, 1);
+// CCB-8, CCB-9: a .json of one object a line is JSON Lines; a CSV
+// separated by ';' is read as such, decimal commas as numbers.
+const imp = await import(new URL("views/import.js", app));
+assert.equal(await imp.sniff(new File(['{"a":1}\n{"a":2}\n'], "events.json")), "jsonl");
+assert.equal(await imp.sniff(new File(['[{"a":1}]'], "rows.json")), "json");
+assert.equal(await imp.sniff(new File(['{\n  "a": 1\n}'], "one.json")), "json");
+assert.equal(imp.otherSeparator("id;name;amount"), ";");
+assert.equal(imp.otherSeparator("id,name,amount"), null);
+assert.equal(imp.otherSeparator("id|name|tags"), "|");
+assert.equal(imp.toCommaCsv('id;name;amount\n1;Anna;3,5\n2;"Bo; Jr";4\n', ";"), 'id,name,amount\n1,Anna,3.5\n2,Bo; Jr,4\n');
+assert.equal(imp.toCommaCsv("id;city\n1;Paris, France\n", ";"), 'id,city\n1,"Paris, France"\n');
 const { isStored } = await import(new URL("catalog.js", app));
 assert.deepEqual(products.short.fields.map(isStored), [true, true, true, false, true, true, false]);
 assert.equal(isStored({ name: "b", type: "text", from: ["a"], stored: true }), true);
