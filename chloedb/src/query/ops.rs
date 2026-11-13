@@ -185,7 +185,7 @@ struct Ops<'a, 'r> {
 /// What an operator's step is called, and what it works on.
 fn label(n: &Node) -> (&'static str, String) {
     match n {
-        Node::Join { kind, keys, .. } => ("join", format!("{} on {} key{}", if *kind == JoinKind::Left { "left" } else { "inner" }, keys.len(), if keys.len() == 1 { "" } else { "s" })),
+        Node::Join { kind, keys, .. } => ("join", format!("{} on {} key{}", kind_name(*kind), keys.len(), if keys.len() == 1 { "" } else { "s" })),
         Node::With { ctes, .. } => ("with", ctes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")),
         Node::Limit { offset, limit, .. } => ("limit", match limit {
             Some(l) => format!("{l} after {offset}"),
@@ -1181,7 +1181,12 @@ impl<'a> Ops<'a, '_> {
             lefts.push(vals);
         }
         let right_at: Vec<usize> = keys.iter().map(|k| output(&k.right)).collect::<Result<_>>()?;
-        let r = if lefts.iter().any(|v| v.is_empty()) {
+        let full = *kind == JoinKind::Full;
+        // A full join reads the whole right side: its rows that match no
+        // left row are part of the answer.
+        let r = if full {
+            self.node(right, "join")?
+        } else if lefts.iter().any(|v| v.is_empty()) {
             Rows { columns: self.columns(right), ..Rows::default() }
         } else if right.is_leaf() {
             let restrict = keys.iter().zip(&right_at).zip(lefts).map(|((k, &j), vals)| Ok((self.restriction(right, j, k, vals.clone())?, vals.len()))).collect::<Result<_>>()?;
@@ -1211,6 +1216,8 @@ impl<'a> Ops<'a, '_> {
         let width = r.columns.len().max(r.rows.first().map_or(0, Vec::len));
         let mut out = Rows { columns: l.columns.iter().chain(&r.columns).cloned().collect(), rows: Vec::new(), keys: None, scores: Some(Vec::new()) };
         let scores = out.scores.as_mut().expect("scores");
+        // The right rows a left row joined (a full join's).
+        let mut joined = if full { vec![false; r.rows.len()] } else { Vec::new() };
         for (li, lrow) in l.rows.iter().enumerate() {
             self.tick()?;
             let mut combos: Vec<Vec<Part>> = vec![Vec::new()];
@@ -1231,9 +1238,12 @@ impl<'a> Ops<'a, '_> {
                     out.rows.push(row);
                     scores.push(score);
                     any = true;
+                    if full {
+                        joined[ri] = true;
+                    }
                 }
             }
-            if !any && *kind == JoinKind::Left {
+            if !any && *kind != JoinKind::Inner {
                 let row: Vec<Value> = lrow.iter().cloned().chain(std::iter::repeat_n(Value::Null, width)).collect();
                 self.charge.row(&row)?;
                 out.rows.push(row);
@@ -1243,7 +1253,21 @@ impl<'a> Ops<'a, '_> {
                 return Err(err(format!("the join makes more than {MAX_ROWS} rows; add conditions or a LIMIT")));
             }
         }
-        self.plan.push(format!("join ({}): {} rows", if *kind == JoinKind::Left { "left" } else { "inner" }, out.rows.len()));
+        if full {
+            // The right rows no left row joined, with NULLs on the left.
+            let lwidth = l.columns.len().max(l.rows.first().map_or(0, Vec::len));
+            for row in r.rows.iter().zip(&joined).filter(|(_, j)| !**j).map(|(row, _)| row) {
+                self.tick()?;
+                let row: Vec<Value> = std::iter::repeat_n(Value::Null, lwidth).chain(row.iter().cloned()).collect();
+                self.charge.row(&row)?;
+                out.rows.push(row);
+                scores.push(0.0);
+            }
+            if out.rows.len() > MAX_ROWS {
+                return Err(err(format!("the join makes more than {MAX_ROWS} rows; add conditions or a LIMIT")));
+            }
+        }
+        self.plan.push(format!("join ({}): {} rows", kind_name(*kind), out.rows.len()));
         Ok(out)
     }
 
@@ -1490,12 +1514,26 @@ pub(crate) fn driver_of(n: &Node) -> Option<&Node> {
         Node::Project { input, .. } | Node::Filter { input, .. } if !n.is_leaf() => driver_of(input),
         Node::Join { .. } => {
             let mut x = n;
-            while let Node::Join { left, .. } = x {
+            while let Node::Join { left, kind, .. } = x {
+                // A full join's unmatched right rows are those no left row
+                // matches, which only the whole left side tells.
+                if *kind == JoinKind::Full {
+                    return None;
+                }
                 x = left;
             }
             x.is_leaf().then_some(x)
         }
         _ => None,
+    }
+}
+
+/// How a plan line names a join's kind.
+fn kind_name(k: JoinKind) -> &'static str {
+    match k {
+        JoinKind::Inner => "inner",
+        JoinKind::Left => "left",
+        JoinKind::Full => "full",
     }
 }
 

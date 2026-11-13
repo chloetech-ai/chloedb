@@ -134,8 +134,16 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     if let Some(c) = walk.ctes.iter().find(|c| catalog.contains(*c)) {
         return Err(refuse(format!("WITH {c} names a table too: name it otherwise")));
     }
+    // `recommend(...)` reads its recommender's counts table.
+    let recommenders = chloedb::query::recommend::names_sql(text).map_err(refuse)?;
+    for n in &recommenders {
+        who.may_table(Scope::Read, &chloedb::query::recommend::counts_table(n), "recommend()")?;
+    }
     for r in &walk.relations {
         if walk.ctes.contains(r) || made.iter().any(|m| m.eq_ignore_ascii_case(r)) {
+            continue;
+        }
+        if r == chloedb::query::recommend::NAME && !recommenders.is_empty() {
             continue;
         }
         who.may_table(Scope::Read, r, "a query")?;

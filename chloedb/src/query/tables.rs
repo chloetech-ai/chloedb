@@ -84,7 +84,7 @@ impl Names {
         for j in &t.joins {
             self.factor(&j.relation);
             let on = match &j.join_operator {
-                sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) | sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) => Some(c),
+                sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) | sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) | sql::JoinOperator::FullOuter(c) => Some(c),
                 _ => None,
             };
             if let Some(sql::JoinConstraint::On(e)) = on {

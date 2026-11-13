@@ -66,16 +66,20 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 33] = [
+pub const FEATURES: [&str; 34] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
     SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, TERMS_SYNTAX,
-    TIME_BUCKET,
+    TIME_BUCKET, FULL_JOIN,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
 /// `WITH`, a subquery, `DISTINCT`, or a node over another's rows than a
 /// Search's ([module docs](self)).
 pub const OPERATORS: &str = "operators";
+
+/// The feature of a plan with a `FULL JOIN` ([`JoinKind::Full`]), which
+/// a Strata from before it cannot read.
+pub const FULL_JOIN: &str = "full_join";
 
 /// The feature of a plan with window functions ([`Node::Window`]).
 pub const WINDOW: &str = "window";
@@ -268,7 +272,9 @@ pub enum Node {
     /// Each row of `left` beside each row of `right` whose `keys` match it
     /// and for which `on` holds: the left's columns, then the right's. A
     /// left join keeps a left row that matches none, with NULLs on the
-    /// right. Rows keep the left's order.
+    /// right; a full join also keeps each right row that matches no left
+    /// row, with NULLs on the left, after the others, in the right's
+    /// order (needs [`FULL_JOIN`]). Rows keep the left's order.
     Join {
         left: Box<Node>,
         right: Box<Node>,
@@ -352,6 +358,9 @@ pub enum JoinKind {
     #[default]
     Inner,
     Left,
+    /// `FULL [OUTER] JOIN`: the rows of a left join, then the right's rows
+    /// that matched none.
+    Full,
 }
 
 impl JoinKind {
@@ -1341,6 +1350,12 @@ impl Node {
         matches!(self, Node::SetOp { .. }) || self.inputs().into_iter().any(Node::has_set_ops)
     }
 
+    /// Whether the node or one below it (outside subqueries) is a
+    /// [`JoinKind::Full`] join.
+    fn has_full_join(&self) -> bool {
+        matches!(self, Node::Join { kind: JoinKind::Full, .. }) || self.inputs().into_iter().any(Node::has_full_join)
+    }
+
     /// Whether the node or one below it (outside subqueries) keeps more
     /// than the first row of a group ([`PER_CAP`]).
     fn caps_per(&self) -> bool {
@@ -2193,6 +2208,15 @@ impl Plan {
         });
         if set_ops {
             features.push(SET_OPS.to_string());
+        }
+        let mut full = root.has_full_join();
+        root.visit_exprs(&mut |e| {
+            if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
+                full |= n.has_full_join();
+            }
+        });
+        if full {
+            features.push(FULL_JOIN.to_string());
         }
         if root.walks_edge_tables() {
             features.push(EDGE_TABLE.to_string());

@@ -200,6 +200,70 @@ fn right_join_and_correlated_exists() {
 }
 
 #[test]
+fn full_outer_join() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    let n = Value::Null;
+    // Rows of both, rows only in the left (log 4 of host c), only in the right (host z).
+    let both = vec![
+        vec![i(1), s("a"), s("ams")],
+        vec![i(2), s("a"), s("ams")],
+        vec![i(3), s("b"), s("fra")],
+        vec![i(4), s("c"), n.clone()],
+        vec![i(5), s("b"), s("fra")],
+        vec![n.clone(), n.clone(), s("nyc")],
+    ];
+    for q in [
+        "SELECT l.id, l.host, h.site FROM logs l FULL JOIN hosts h ON l.host = h.name ORDER BY l.id NULLS LAST",
+        "SELECT l.id, l.host, h.site FROM logs l FULL OUTER JOIN hosts h ON h.name = l.host ORDER BY l.id NULLS LAST",
+    ] {
+        assert_eq!(rows(&db, q), both, "{q}");
+    }
+    // Without ORDER BY the left's rows come first, then the right's unmatched ones.
+    let got = rows(&db, "SELECT l.id, h.name FROM logs l FULL JOIN hosts h ON l.host = h.name");
+    assert_eq!(got.len(), 6);
+    assert_eq!(got.last(), Some(&vec![n.clone(), s("z")]));
+    // COALESCE of the two keys names every key once.
+    assert_eq!(
+        rows(&db, "SELECT coalesce(l.host, h.name) AS k, count(l.id) AS n FROM logs l FULL JOIN hosts h ON l.host = h.name GROUP BY k ORDER BY k"),
+        vec![vec![s("a"), i(2)], vec![s("b"), i(2)], vec![s("c"), i(1)], vec![s("z"), i(0)]]
+    );
+    // An extra condition in ON joins fewer pairs; the rows it parts keep NULLs, on both sides.
+    assert_eq!(
+        rows(&db, "SELECT l.id, h.name FROM logs l FULL JOIN hosts h ON l.host = h.name AND l.severity = 'error' AND h.site = 'ams' ORDER BY l.id NULLS LAST, h.name"),
+        vec![vec![i(1), s("a")], vec![i(2), n.clone()], vec![i(3), n.clone()], vec![i(4), n.clone()], vec![i(5), n.clone()], vec![n.clone(), s("b")], vec![n.clone(), s("z")]]
+    );
+    // WHERE filters the joined rows, not either side's scan.
+    assert_eq!(rows(&db, "SELECT l.id, h.name FROM logs l FULL JOIN hosts h ON l.host = h.name WHERE h.site IS NULL ORDER BY l.id"), vec![vec![i(4), n.clone()]]);
+    assert_eq!(rows(&db, "SELECT h.name FROM logs l FULL JOIN hosts h ON l.host = h.name WHERE l.id IS NULL"), vec![vec![s("z")]]);
+    assert_eq!(rows(&db, "SELECT count(*) FROM logs l FULL JOIN hosts h ON l.host = h.name WHERE l.severity = 'error'"), vec![vec![i(3)]]);
+    // NULL keys match nothing: such a row comes once, from its own side.
+    db.sql("INSERT INTO hosts VALUES ('ok', NULL)", &Params::new()).unwrap();
+    db.sql("INSERT INTO logs (id, severity) VALUES (6, 'info')", &Params::new()).unwrap();
+    db.sql("CREATE TABLE sites (code KEYWORD PRIMARY KEY, city KEYWORD)", &Params::new()).unwrap();
+    db.sql("INSERT INTO sites VALUES ('ams', 'Amsterdam'), ('lon', 'London')", &Params::new()).unwrap();
+    assert_eq!(
+        rows(&db, "SELECT h.name, s.code FROM hosts h FULL JOIN sites s ON h.site = s.code ORDER BY h.name NULLS LAST"),
+        vec![vec![s("a"), s("ams")], vec![s("b"), n.clone()], vec![s("ok"), n.clone()], vec![s("z"), n.clone()], vec![n.clone(), s("lon")]]
+    );
+    assert_eq!(rows(&db, "SELECT count(*) FROM logs l FULL JOIN hosts h ON l.host = h.name WHERE l.id IS NULL"), vec![vec![i(2)]]);
+    // A LIMIT reads every row of both sides first.
+    assert_eq!(rows(&db, "SELECT h.name FROM logs l FULL JOIN hosts h ON l.host = h.name WHERE l.id IS NULL LIMIT 5").len(), 2);
+    // A third table after a full join, joined to either side.
+    assert_eq!(
+        rows(&db, "SELECT l.id, h.name, s.city FROM logs l FULL JOIN hosts h ON l.host = h.name LEFT JOIN sites s ON s.code = h.site WHERE l.id IS NULL OR l.id = 1 ORDER BY h.name"),
+        vec![vec![i(1), s("a"), s("Amsterdam")], vec![n.clone(), s("ok"), n.clone()], vec![n.clone(), s("z"), n.clone()]]
+    );
+    // SELECT * has both sides' columns.
+    let cols = columns(&db, "SELECT * FROM logs l FULL JOIN hosts h ON l.host = h.name");
+    assert_eq!((cols.first().map(String::as_str), cols.last().map(String::as_str)), (Some("l.id"), Some("h.site")));
+    // The plan says so, and needs its feature.
+    let plan = db.explain("SELECT l.id, h.name FROM logs l FULL JOIN hosts h ON l.host = h.name", &Params::new()).unwrap();
+    assert!(plan.features.iter().any(|f| f == "full_join"), "{:?}", plan.features);
+    assert!(plan.explain(&[]).iter().any(|l| l.contains("Full join")), "{:?}", plan.explain(&[]));
+}
+
+#[test]
 fn which_queries_rank_rows() {
     use chloedb::query::sql::ranks;
     for q in [

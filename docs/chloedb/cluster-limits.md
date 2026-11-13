@@ -14,8 +14,11 @@ A coordinator over shards ([sharding](server.md#sharding-one-coordinator-many-sh
 | The relevance autopilot (`POST /v1/relevance/autopilot`) | runs | refused: it replays queries on one snapshot | run it on a server with a copy of the tables |
 | `/v1/export` of the database as SQLite (`format=sqlite`) | the admin's | refused: a coordinator holds no files | `format=parquet`, `jsonl`, `csv` or `arrow` export one table's rows from a cluster |
 | `EXPLAIN` through `/v1/sql` | refused on both | | `POST /v1/explain` |
+| Recommenders: `CREATE RECOMMENDER`, `recommend(...)` ([query language](query-language.md#recommenders-create-recommender-and-recommend)) | run | refused: a recommender counts each user's events in order, and they are spread over the shards | run it on a server that holds the events table; or keep counts in an [edge table](query-language.md#edge-tables) or [next-items table](next-items.md) and rank with `ranked(...)` of what you read |
 
 ## Different on a cluster
+
+- **`FULL JOIN`** runs on the coordinator over every row of both sides, which it reads whole from the shards (a `JOIN` or `LEFT JOIN` reads the second side's rows by the first side's join values only); it answers as one database does.
 
 - **A write across shards is one transaction a shard, not one over all.** The coordinator checks each shard's part first and writes nothing when one refuses; what can still fail partway, and how to finish it with the idempotency key, is in [when a write fails](server.md#when-a-write-fails).
 - **`UPDATE ... LIMIT n` and `DELETE ... [ORDER BY ...] LIMIT n`** are two steps: the coordinator reads the keys of the rows the statement's `WHERE`, `ORDER BY` and `LIMIT` pick (over every shard), then runs the statement without its `LIMIT` over those keys alone (`WHERE (...) AND key IN (...)`). A row changed in between so that it no longer matches is left alone, so fewer than n rows may change. The table needs a primary key, and the `LIMIT` is at most 10,000.

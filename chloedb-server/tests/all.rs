@@ -66,6 +66,7 @@ mod rank_cross;
 mod rank_log;
 mod rank_models;
 mod rank_profiles;
+mod recommender;
 mod replication;
 mod safety;
 mod scoped_keys;
