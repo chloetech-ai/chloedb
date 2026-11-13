@@ -12,6 +12,7 @@ import alerts from "./alerts.js";
 import oncall from "./oncall.js";
 import cluster from "./cluster.js";
 import logs from "./logs.js";
+import explorer from "./explorer.js";
 import queries from "./queries.js";
 import statement from "./statement.js";
 import performance from "./performance.js";
@@ -44,7 +45,7 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, explorer, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, media, graph, classic, apps];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -61,6 +62,7 @@ export const NAV = [
     { id: "cluster", title: "Cluster", icon: "cluster", key: "c" },
     { id: "timeline", title: "Timeline", icon: "timeline", key: "t" },
     { id: "logs", title: "Logs", icon: "logs", key: "l" },
+    { id: "explorer", title: "Log explorer", icon: "search", key: "e" },
     { id: "queries", title: "Queries", icon: "queries", key: "q" },
     { id: "performance", title: "Performance", icon: "perf", key: "p" },
   ]],
