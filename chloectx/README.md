@@ -21,8 +21,8 @@ model remembering to save. The design is in [DESIGN.md](DESIGN.md).
 
 | when | ChloeCtx |
 |---|---|
-| session start, resume, clear, compaction | injects a briefing: planned work and its requirements, rules, decisions, facts, where the last session stopped, and a reminder to search memory before design decisions |
-| every prompt | stores it; injects the earlier decisions, rules and requirements that match it; searches older history (never what is still in context) and injects the best records when the evidence is strong (up to 4,000 characters), three records when it is weak (1,200), nothing otherwise |
+| session start, resume, clear, compaction | injects a briefing: planned work and its requirements, rules, decisions, facts, where the last session stopped, and a reminder to search memory before design decisions; when distillation has been failing (an expired `claude` CLI login, most often), says so first, to the person and to the model, and once a day that a newer version is in the checkout |
+| every prompt | stores it (without the envelopes a harness may wrap it in, such as `<system-reminder>`); injects the earlier decisions, rules and requirements that match it; searches older history (never what is still in context) and injects the best records when the evidence is strong (up to 4,000 characters), three records when it is weak (1,200), nothing otherwise |
 | before `Edit`/`Write` of a file | injects up to two earlier errors or decisions about that file, once per context window |
 | every tool call | stores the call and its result (errors flagged, long output trimmed to head and tail, secrets redacted) |
 | end of a turn | stores the answer, the commentary written between tool calls, and an episode card (prompt, files changed, commands, errors, outcome); then a small model writes down the decisions, rules, planned work and facts the turn stated, updating or closing earlier ones |
@@ -84,7 +84,16 @@ enable BGE-small vectors in the daemon (`"embedder": "bert"` in the store's
 
 ## Use by hand
 
+`chloectx --help` lists the everyday commands (install, uninstall, doctor,
+upgrade, ui, ask, search, remember, stores, prune, stop); the others are
+named below it by what they are for, and `chloectx help <command>` explains
+each.
+
 ```sh
+chloectx doctor                   # is it working here? each failed line says how to fix it
+chloectx upgrade                  # pull the checkout it was built from, rebuild, reinstall
+chloectx stores                   # every store: project, size, last use
+chloectx prune                    # remove the stores of folders that are gone or temporary (asks first)
 chloectx search "why did the planner pick post-filtering"
 chloectx sql "SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'exec') ORDER BY ts DESC LIMIT 5"
 chloectx remember decision "Prices are integer cents"
