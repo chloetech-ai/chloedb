@@ -73,7 +73,8 @@ pub struct Proposal {
     pub expires_ms: u64,
     /// Who asked the agent.
     pub asked_by: String,
-    /// `contain`, `remove_contain`, `cancel_query` or `silence_alert`.
+    /// `contain`, `remove_contain`, `cancel_query` or `silence_alert`; a
+    /// change request ([`crate::changes`]) is `change`.
     pub action: String,
     /// What it does, in words.
     pub what: String,
@@ -83,7 +84,8 @@ pub struct Proposal {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Json>,
-    /// `pending`, `applying`, `applied`, `failed`, `rejected` or `expired`.
+    /// `pending`, `applying`, `applied`, `failed`, `rejected`, `withdrawn`
+    /// (a change request its asker took back) or `expired`.
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,
@@ -93,6 +95,19 @@ pub struct Proposal {
     /// reason when rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Json>,
+    /// A change request's tier ([`crate::ops::tier`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<u8>,
+    /// A change request's dry run when it was filed ([`crate::changes`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Json>,
+    /// The fingerprint of that dry run: an approval dry runs it again, and
+    /// a different one fails `plan_stale`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// Whether an agent filed it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 impl Proposal {
@@ -230,7 +245,7 @@ impl Desk {
             p.result = Some(json!({"error": "the server restarted while it was being applied: check whether it took"}));
             p.decided_ms.get_or_insert(t);
         }
-        let top = ps.iter().filter_map(|p| p.id.strip_prefix('p')?.parse::<u64>().ok()).max().unwrap_or(0);
+        let top = ps.iter().filter_map(|p| p.id.strip_prefix(['p', 'c'])?.parse::<u64>().ok()).max().unwrap_or(0);
         let next = j["next"].as_u64().unwrap_or(0).max(top);
         *lock(&self.inner) = (next, ps);
         let mut g = lock(&self.runs);
@@ -256,10 +271,44 @@ impl Desk {
         }
     }
 
-    fn add(&self, mut p: Proposal) -> String {
+    fn add(&self, p: Proposal) -> String {
+        self.add_as(p, 'p')
+    }
+
+    /// Keeps change request `p` ([`crate::changes`]), pending: its id,
+    /// `c<n>`.
+    pub fn add_change(&self, p: Proposal) -> String {
+        let id = self.add_as(p, 'c');
+        self.save();
+        id
+    }
+
+    /// Proposal or change request `id`, if kept.
+    pub fn get(&self, id: &str) -> Option<Json> {
+        let t = now_ms();
+        lock(&self.inner).1.iter().find(|p| p.id == id).map(|p| p.json(t))
+    }
+
+    /// Proposal or change request `id` itself, if kept.
+    pub fn proposal_of(&self, id: &str) -> Option<Proposal> {
+        lock(&self.inner).1.iter().find(|p| p.id == id).cloned()
+    }
+
+    /// Withdraws pending change request `id`: only by whoever filed it.
+    pub fn withdraw(&self, id: &str, by: &str, reason: &str) -> Result<Json, ApiError> {
+        match self.proposal_of(id) {
+            Some(p) if p.asked_by != by => return Err(ApiError::coded(403, "scope_refused", format!("{id} was filed by {}: only they withdraw it (a person rejects it)", p.asked_by))),
+            None => return Err(ApiError::coded(404, "not_found", format!("no change request {id}: the server keeps the latest {KEPT}"))),
+            _ => {}
+        }
+        let p = self.take(id)?;
+        Ok(self.decide(&p.id, "withdrawn", by, json!({"reason": reason})))
+    }
+
+    fn add_as(&self, mut p: Proposal, prefix: char) -> String {
         let mut g = lock(&self.inner);
         g.0 += 1;
-        p.id = format!("p{}", g.0);
+        p.id = format!("{prefix}{}", g.0);
         let id = p.id.clone();
         let t = now_ms();
         if g.1.len() >= KEPT {
@@ -289,13 +338,13 @@ impl Desk {
     fn take(&self, id: &str) -> Result<Proposal, ApiError> {
         let t = now_ms();
         let mut g = lock(&self.inner);
-        let p = g.1.iter_mut().find(|p| p.id == id).ok_or_else(|| ApiError { status: 404, message: format!("no proposal {id}: the server keeps the latest {KEPT}") })?;
+        let p = g.1.iter_mut().find(|p| p.id == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no proposal {id}: the server keeps the latest {KEPT}") })?;
         match p.state_now(t) {
             "pending" => {
                 p.state = "applying".into();
                 Ok(p.clone())
             }
-            s => Err(ApiError { status: 409, message: format!("proposal {id} is {s}, not pending") }),
+            s => Err(ApiError::coded(409, "change_not_pending", format!("{} {id} is {s}, not pending", if id.starts_with('c') { "change request" } else { "proposal" }))),
         }
     }
 
@@ -420,9 +469,9 @@ impl Desk {
     pub fn stop(&self, id: &str, by: &str) -> Result<Json, ApiError> {
         {
             let mut g = lock(&self.runs);
-            let r = g.iter_mut().find(|r| r.id == id).ok_or_else(|| ApiError { status: 404, message: format!("no run {id}: the server keeps the latest {RUNS}") })?;
+            let r = g.iter_mut().find(|r| r.id == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no run {id}: the server keeps the latest {RUNS}") })?;
             if r.state != "running" {
-                return Err(ApiError { status: 409, message: format!("run {id} is {}, not running", r.state) });
+                return Err(ApiError { code: None, status: 409, message: format!("run {id} is {}, not running", r.state) });
             }
             r.stopped_by.get_or_insert_with(|| by.to_string());
         }
@@ -437,9 +486,9 @@ impl Desk {
     /// reports of the runs it follows, oldest first.
     fn conversation(&self, id: &str) -> Result<(Vec<Json>, Option<String>), ApiError> {
         let g = lock(&self.runs);
-        let r = g.iter().find(|r| r.id == id).ok_or_else(|| ApiError { status: 404, message: format!("no run {id} to follow up: the server keeps the latest {RUNS}") })?;
+        let r = g.iter().find(|r| r.id == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no run {id} to follow up: the server keeps the latest {RUNS}") })?;
         if r.state == "running" {
-            return Err(ApiError { status: 409, message: format!("run {id} is still running: follow it up once it has reported") });
+            return Err(ApiError { code: None, status: 409, message: format!("run {id} is still running: follow it up once it has reported") });
         }
         if !r.messages.is_empty() {
             return Ok((r.messages.clone(), r.alert.clone()));
@@ -579,7 +628,7 @@ fn query_string(pairs: &[(&str, String)]) -> String {
 }
 
 /// The read a tool makes: its route.
-fn read_path(name: &str, input: &Json) -> Result<Option<String>, String> {
+pub(crate) fn read_path(name: &str, input: &Json) -> Result<Option<String>, String> {
     let t = now_ms();
     Ok(Some(match name {
         "health" if input["fleet"].as_bool() == Some(true) => "/v1/health/fleet".into(),
@@ -622,7 +671,7 @@ fn read_path(name: &str, input: &Json) -> Result<Option<String>, String> {
 }
 
 /// The proposal a `propose_*` tool makes, without its id.
-fn proposal(name: &str, input: &Json, run: &str, by: &str) -> Result<Option<Proposal>, String> {
+pub(crate) fn proposal(name: &str, input: &Json, run: &str, by: &str) -> Result<Option<Proposal>, String> {
     let why = input["why"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("say why: `why` is required")?.to_string();
     let (action, what, method, path, body) = match name {
         "propose_contain" => {
@@ -686,6 +735,10 @@ fn proposal(name: &str, input: &Json, run: &str, by: &str) -> Result<Option<Prop
         decided_by: None,
         decided_ms: None,
         result: None,
+        tier: Some(1),
+        plan: None,
+        fingerprint: None,
+        agent: true,
     }))
 }
 
@@ -721,7 +774,7 @@ pub async fn run(svc: &Arc<Service>, router: Option<Router>, headers: &HeaderMap
     svc.oncall.ready(svc);
     let router = router.ok_or_else(|| ApiError::internal("the on-call agent's routes are missing"))?;
     let key = req.api_key.clone().or_else(|| svc.agent.api_key.clone()).ok_or_else(|| ApiError {
-        status: 400,
+        code: None, status: 400,
         message: "no Anthropic API key: start the server with ANTHROPIC_API_KEY set, or pass api_key".into(),
     })?;
     let (mut messages, alert) = match &req.follows {
@@ -770,7 +823,7 @@ pub async fn run(svc: &Arc<Service>, router: Option<Router>, headers: &HeaderMap
     let (task_svc, task_id, headers) = (svc.clone(), id.clone(), as_oncall(headers));
     tokio::spawn(async move {
         let (svc, id) = (task_svc, task_id);
-        let caller = Caller { headers: &headers, peer };
+        let caller = Caller { headers: &headers, peer, who: None };
         let t0 = Instant::now();
         let r = drive(&svc, &router, &caller, &key, &id, &model, &mut messages, &req, &stop).await;
         let took = t0.elapsed().as_secs_f64() * 1e3;
@@ -932,30 +985,39 @@ async fn note(svc: &Arc<Service>, router: &Router, caller: &Caller<'_>, id: &str
     let head = format!("On-call agent ({id}): ");
     let room = 2000usize.saturating_sub(head.chars().count() + tail.chars().count());
     let text = format!("{head}{}{tail}", answer.chars().take(room).collect::<String>());
-    match forward(router, caller, Method::POST, "/v1/events/notes", Some(json!({"text": text}))).await {
+    match crate::mcp::forward_with(router, caller, Method::POST, "/v1/events/notes", Some(json!({"text": text})), &[("x-strata-reason", format!("the report of on-call run {id}"))]).await {
         Ok(j) => j,
         Err(e) => json!({"error": e}),
     }
 }
 
-/// Applies pending proposal `id`: its request, with the approver's
-/// credential and the proposal's reason.
-pub async fn approve(svc: &Arc<Service>, router: Option<Router>, headers: &HeaderMap, peer: Option<std::net::SocketAddr>, id: &str, by: &str) -> Result<Json, ApiError> {
+/// Applies pending proposal or change request `id`: its request, with
+/// the approver's credential and the proposal's reason. Refused to an
+/// agent (`approval_refused`); a change request whose dry run now differs
+/// from the one it was filed with fails `plan_stale` and is not applied.
+#[allow(clippy::too_many_arguments)]
+pub async fn approve(svc: &Arc<Service>, router: Option<Router>, headers: &HeaderMap, peer: Option<std::net::SocketAddr>, id: &str, by: &str, approver_agent: bool) -> Result<Json, ApiError> {
     svc.oncall.ready(svc);
+    if approver_agent {
+        return Err(ApiError::coded(403, "approval_refused", format!("{id} is approved by a person with an admin key, in the command center or with the admin's own key; an agent (an agent key, MCP, the on-call agent, x-chloedb-agent-*) never approves")));
+    }
     let router = router.ok_or_else(|| ApiError::internal("the on-call agent's routes are missing"))?;
     let p = svc.oncall.take(id)?;
-    let mut h = headers.clone();
-    let reason = format!("on-call proposal {}: {}", p.id, p.why);
-    if let Ok(v) = HeaderValue::from_str(&crate::obs::truncate(&reason.replace(['\r', '\n'], " "), 500)) {
-        h.insert("x-strata-reason", v);
+    let h = crate::changes::applying(headers, &p.id, &p.why);
+    let caller = Caller { headers: &h, peer, who: None };
+    if p.fingerprint.is_some() {
+        if let Err(now) = crate::changes::still_holds(svc, &router, &caller, &p).await {
+            let was = p.plan.clone().unwrap_or(Json::Null);
+            svc.oncall.decide(&p.id, "failed", by, json!({"code": "plan_stale", "error": "the cluster changed since the change was planned", "was": was, "now": now}));
+            return Err(ApiError::coded(409, "plan_stale", format!("{}: the cluster changed since it was planned (its dry run differs now); it was not applied: file it again", p.id)));
+        }
     }
-    let caller = Caller { headers: &h, peer };
     let method = Method::from_bytes(p.method.as_bytes()).unwrap_or(Method::POST);
     let (state, result) = match forward(&router, &caller, method, &p.path, p.body.clone()).await {
         Ok(j) => ("applied", j),
         Err(e) => ("failed", json!({"error": e})),
     };
-    tracing::info!(proposal = %p.id, by, state, "on-call proposal {}: {}", if state == "applied" { "applied" } else { "failed" }, p.what);
+    tracing::info!(proposal = %p.id, by, state, "{} {}: {}", if p.action == "change" { "change request" } else { "on-call proposal" }, if state == "applied" { "applied" } else { "failed" }, p.what);
     Ok(svc.oncall.decide(&p.id, state, by, result))
 }
 

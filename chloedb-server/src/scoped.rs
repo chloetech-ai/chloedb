@@ -97,7 +97,7 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
         }
         Command::CreateRankProfile { table, .. } => who.may_table(Scope::Admin, table, "CREATE RANK PROFILE"),
         Command::DropRankProfile { table: Some(t), .. } => who.may_table(Scope::Admin, t, "DROP RANK PROFILE"),
-        Command::DropRankProfile { table: None, .. } => Err(ApiError { status: 403, message: "a key limited to tables names the table of the rank profile it drops: DROP RANK PROFILE name ON table".into() }),
+        Command::DropRankProfile { table: None, .. } => Err(ApiError { code: None, status: 403, message: "a key limited to tables names the table of the rank profile it drops: DROP RANK PROFILE name ON table".into() }),
         Command::Function(_) => who.may_server("a stored function (CREATE or DROP FUNCTION)"),
     }
 }
@@ -114,7 +114,7 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     if !who.limited() {
         return Ok(());
     }
-    let refuse = |m: String| ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
+    let refuse = |m: String| ApiError { code: None, status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
     let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
     let mut walk = Walk::default();
     for s in &statements {
@@ -240,7 +240,7 @@ mod tests {
     fn key(grants: &[&str]) -> Principal {
         let g: Vec<Grant> = grants.iter().map(|g| Grant::parse(g).unwrap()).collect();
         let scope = g.iter().map(|g| g.scope).max().unwrap();
-        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()) }
+        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()), role: None, agent: false, on_behalf_of: None }
     }
 
     fn tables() -> Vec<String> {
@@ -295,7 +295,7 @@ mod tests {
         // Not a table at all: refused too (it might be a function).
         assert_eq!(reads(&k, "SELECT * FROM nothing_here").unwrap_err().status, 403);
         // A key of every table is not checked here.
-        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None };
+        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None };
         assert!(reads(&all, "SELECT * FROM secrets").is_ok());
     }
 

@@ -348,7 +348,7 @@ fn new_id() -> String {
 }
 
 fn conflict(message: String) -> ApiError {
-    ApiError { status: 409, message }
+    ApiError { code: None, status: 409, message }
 }
 
 /// A path beside the database at `db` for a copy of it, which no other
@@ -1401,7 +1401,7 @@ impl Follow {
             if now >= until {
                 self.reads_refused.fetch_add(1, Ordering::Relaxed);
                 return Err(ApiError {
-                    status: 503,
+                    code: None, status: 503,
                     message: format!("this replica holds transactions up to {at}, and the read must see transaction {seq}, which it has not applied in time: read from the primary"),
                 });
             }

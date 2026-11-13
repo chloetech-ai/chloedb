@@ -377,7 +377,7 @@ pub fn view(svc: &Arc<Service>) -> Json {
 pub fn report(svc: &Arc<Service>, id: &str) -> Result<Json, ApiError> {
     let sim = &svc.simulator;
     sim.load(svc);
-    lock(&sim.state).reports.iter().find(|r| r["id"] == id).cloned().ok_or_else(|| ApiError { status: 404, message: format!("no report {id} is kept here") })
+    lock(&sim.state).reports.iter().find(|r| r["id"] == id).cloned().ok_or_else(|| ApiError { code: None, status: 404, message: format!("no report {id} is kept here") })
 }
 
 /// `POST /v1/admin/simulator/predict {"run"?, "shards"?: [..], "copies"?:
@@ -389,8 +389,8 @@ pub fn predict(svc: &Arc<Service>, body: &Json) -> Result<Json, ApiError> {
     sim.load(svc);
     let st = lock(&sim.state);
     let r = match body["run"].as_str() {
-        Some(id) => st.reports.iter().find(|r| r["id"] == id).ok_or_else(|| ApiError { status: 404, message: format!("no report {id} is kept here") })?,
-        None => st.reports.iter().find(|r| r["fit"].is_object()).ok_or_else(|| ApiError { status: 404, message: "no test run has a model yet: run one first".into() })?,
+        Some(id) => st.reports.iter().find(|r| r["id"] == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no report {id} is kept here") })?,
+        None => st.reports.iter().find(|r| r["fit"].is_object()).ok_or_else(|| ApiError { code: None, status: 404, message: "no test run has a model yet: run one first".into() })?,
     };
     super::report::predict(r, body)
 }
@@ -413,7 +413,7 @@ pub fn start(svc: &Arc<Service>, who: &str, config: Config) -> Result<Json, ApiE
     let id = {
         let mut st = lock(&sim.state);
         if st.run.as_ref().is_some_and(|r| r.state == "running") {
-            return Err(ApiError { status: 409, message: "a test run is under way: wait for it, or stop it".into() });
+            return Err(ApiError { code: None, status: 409, message: "a test run is under way: wait for it, or stop it".into() });
         }
         let n = sim.next.fetch_add(1, Ordering::Relaxed);
         let id = format!("s{}-{}", now_ms() / 1000 % 1_000_000, n);
@@ -490,7 +490,7 @@ pub fn start(svc: &Arc<Service>, who: &str, config: Config) -> Result<Json, ApiE
 /// `DELETE /v1/admin/simulator/table`: drops the test table.
 pub async fn drop_table(svc: &Arc<Service>) -> Result<Json, ApiError> {
     if lock(&svc.simulator.state).run.as_ref().is_some_and(|r| r.state == "running") && !svc.simulator.stopping() {
-        return Err(ApiError { status: 409, message: "a test run is using the table".into() });
+        return Err(ApiError { code: None, status: 409, message: "a test run is using the table".into() });
     }
     drop_now(svc).await
 }
@@ -777,7 +777,7 @@ async fn load(svc: &Arc<Service>, corpus: &Arc<Corpus>, from: u64, to: u64, id: 
     use futures::StreamExt;
     let mut last = Instant::now();
     while let Some(r) = it.next().await {
-        r.map_err(|e| ApiError { status: e.status, message: format!("loading the test documents: {}", e.message) })?;
+        r.map_err(|e| ApiError { code: None, status: e.status, message: format!("loading the test documents: {}", e.message) })?;
         if last.elapsed() > Duration::from_millis(500) {
             last = Instant::now();
             let n = done.load(Ordering::Relaxed);

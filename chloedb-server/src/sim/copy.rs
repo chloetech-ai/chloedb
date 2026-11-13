@@ -282,7 +282,7 @@ impl Sim {
                         }
                         Ok(a)
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 self.answer(i, from, call, Resp::Vote(a));
                 if step_down {
@@ -344,7 +344,7 @@ impl Sim {
                         }
                         a
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 self.answer(i, from, call, Resp::Replicate(a));
             }
@@ -385,7 +385,7 @@ impl Sim {
                         }
                         a
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 if a.is_ok() {
                     self.history.stats.copies += 1;
@@ -395,7 +395,7 @@ impl Sim {
             Req::Write { id } => {
                 let admitted = match &self.copies[i].role {
                     Role::Primary(run) => run.core.admit(n.term, now),
-                    _ => Err(ApiError { status: 409, message: "this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into() }),
+                    _ => Err(ApiError { code: None, status: 409, message: "this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into() }),
                 };
                 if let Err(e) = admitted {
                     return self.answer(i, from, call, Resp::Write(Err(e)));
@@ -419,7 +419,7 @@ impl Sim {
                 let a = match &self.copies[i].role {
                     Role::Primary(run) => run.core.readable(now, n.term).map(|_| true),
                     Role::Replica(rep) => rep.readable().map(|_| false),
-                    Role::Down => Err(ApiError { status: 503, message: "down".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 503, message: "down".into() }),
                 };
                 let a = match a {
                     Ok(primary) => {
@@ -435,8 +435,8 @@ impl Sim {
             Req::Promote => {
                 let a = match (&self.copies[i].role, self.copies[i].election.is_some()) {
                     (Role::Replica(_), false) => Ok(()),
-                    (Role::Replica(_), true) => Err(ApiError { status: 409, message: "an election is under way".into() }),
-                    _ => Err(ApiError { status: 409, message: "this server is not a replica (--replica): only a replica is promoted".into() }),
+                    (Role::Replica(_), true) => Err(ApiError { code: None, status: 409, message: "an election is under way".into() }),
+                    _ => Err(ApiError { code: None, status: 409, message: "this server is not a replica (--replica): only a replica is promoted".into() }),
                 };
                 match a {
                     Err(e) => self.answer(i, from, call, Resp::Promote(Err(e))),

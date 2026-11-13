@@ -1044,7 +1044,7 @@ impl Service {
                 false => known.join(", "),
             };
             return Err(ApiError {
-                status: 403,
+                code: None, status: 403,
                 message: format!(
                     "{} {} not among this shard's copies, which promotion calls with the cluster's token; known copies: {known}",
                     unknown.iter().map(|u| u.as_str()).collect::<Vec<_>>().join(", "),
@@ -1541,12 +1541,12 @@ impl Service {
             }
         };
         if from.is_some() && dir.join(&target).join("model.safetensors").exists() {
-            return Err(ApiError { status: 409, message: format!("model {target} is here already") });
+            return Err(ApiError { code: None, status: 409, message: format!("model {target} is here already") });
         }
         {
             let mut jobs = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner());
             if jobs.get(&target.to_lowercase()).is_some_and(|j| j.state == "running") {
-                return Err(ApiError { status: 409, message: format!("model {target} is being made already") });
+                return Err(ApiError { code: None, status: 409, message: format!("model {target} is being made already") });
             }
             let job = ModelJob { action: if from.is_some() { "convert" } else { "fetch" }, from: from.as_ref().map(|f| f.0.clone()), state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None };
             jobs.insert(target.to_lowercase(), job);
@@ -1940,7 +1940,7 @@ impl Service {
     /// 429 when [`Self::max_queued_writes`] requests hold one.
     fn enqueue(&self) -> Result<InQueue, ApiError> {
         InQueue::start(&self.writer_state, self.max_queued_writes)
-            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes, so the write was not applied; send it again in a second", self.max_queued_writes) })
+            .ok_or_else(|| ApiError { code: None, status: 429, message: format!("{} writes are queued, the most this server takes, so the write was not applied; send it again in a second", self.max_queued_writes) })
     }
 
     /// Hands a write to the writer thread and waits for its commit. The
@@ -2195,7 +2195,7 @@ impl Service {
             let t0 = Instant::now();
             let core = match tokio::time::timeout(self.timeout, self.embedding.clone().acquire_owned()).await {
                 Ok(p) => p.map_err(ApiError::internal)?,
-                Err(_) => return Err(ApiError { status: 429, message: "every core is embedding; try again".into() }),
+                Err(_) => return Err(ApiError { code: None, status: 429, message: "every core is embedding; try again".into() }),
             };
             let v = tokio::task::spawn_blocking(move || {
                 let _core = core;
@@ -2276,7 +2276,7 @@ impl Service {
         let now = Instant::now();
         l.retain(|_, x| x.until > now);
         if l.len() >= MAX_LEASES {
-            return Err(ApiError { status: 429, message: format!("{MAX_LEASES} snapshot leases are held; try again when some expire") });
+            return Err(ApiError { code: None, status: 429, message: format!("{MAX_LEASES} snapshot leases are held; try again when some expire") });
         }
         let id = self.next_lease.fetch_add(1, Ordering::Relaxed);
         l.insert(id, Lease { snap, until: now + ttl, expansions: Arc::default() });
@@ -2466,7 +2466,7 @@ impl Service {
                     let t0 = Instant::now();
                     let core = match tokio::time::timeout(self.timeout, self.embedding.clone().acquire_owned()).await {
                         Ok(p) => p.map_err(ApiError::internal)?,
-                        Err(_) => return Err(ApiError { status: 429, message: "every core is embedding; try again".into() }),
+                        Err(_) => return Err(ApiError { code: None, status: 429, message: "every core is embedding; try again".into() }),
                     };
                     let v = tokio::task::spawn_blocking(move || {
                         let _core = core;
@@ -2561,7 +2561,7 @@ impl Service {
                 return Ok((mime, bytes));
             }
         }
-        Err(ApiError { status: 404, message: format!("no row names a file of sha256 {sha256}") })
+        Err(ApiError { code: None, status: 404, message: format!("no row names a file of sha256 {sha256}") })
     }
 
     /// The gazetteers of keyword fields that query understanding reads: a
@@ -3188,7 +3188,7 @@ impl Service {
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
         let res = match r {
-            Err(_) if Instant::now() > deadline => Err(ApiError { status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
+            Err(_) if Instant::now() > deadline => Err(ApiError { code: None, status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
             r => r,
         };
         let Some(ask) = scroll else {
@@ -3946,8 +3946,8 @@ impl Service {
                     self.metrics.replay();
                     return self.replicated(n, self.timeout_of(timeout_ms), self.admitted()).await;
                 }
-                idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
-                idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for a different statement".into() }),
+                idem::Begin::Busy => return Err(ApiError { code: None, status: 409, message: "a write with this idempotency key is still running".into() }),
+                idem::Begin::Mismatch => return Err(ApiError { code: None, status: 422, message: "this idempotency key was used for a different statement".into() }),
             }
         }
         let r = async {
@@ -4024,8 +4024,8 @@ impl Service {
                             // acknowledge waits for them again.
                             return self.replicated(n, self.timeout, self.admitted()).await;
                         }
-                        idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
-                        idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for different operations".into() }),
+                        idem::Begin::Busy => return Err(ApiError { code: None, status: 409, message: "a write with this idempotency key is still running".into() }),
+                        idem::Begin::Mismatch => return Err(ApiError { code: None, status: 422, message: "this idempotency key was used for different operations".into() }),
                     }
                 }
                 // A hold of the shard's writes: from here on it takes no
@@ -4035,7 +4035,7 @@ impl Service {
                     if let Some((k, _)) = &key {
                         self.idempotency.finish(k, None);
                     }
-                    return self.wrote(Err(ApiError { status: 503, message: format!("the writes under way did not commit within {} s, so the writes are not held: try again", self.timeout.as_secs()) }), t0, None);
+                    return self.wrote(Err(ApiError { code: None, status: 503, message: format!("the writes under way did not commit within {} s, so the writes are not held: try again", self.timeout.as_secs()) }), t0, None);
                 }
                 let r = async {
                     // Not a retry of a write applied: a primary may refuse
@@ -4124,7 +4124,7 @@ impl Service {
         let until = Instant::now() + BACKLOG_WAIT;
         while db.storage().backlogged() {
             if Instant::now() >= until {
-                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second".into() });
+                return Err(ApiError { code: None, status: 429, message: "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second".into() });
             }
             tokio::time::sleep(STREAM_POLL).await;
         }
@@ -5132,7 +5132,7 @@ fn statement_hash(sql: &str, params: &Params, slots: Option<&[usize]>) -> u64 {
 }
 
 fn conflict(message: String) -> ApiError {
-    ApiError { status: 409, message }
+    ApiError { code: None, status: 409, message }
 }
 
 /// What a shard says of a request routed by a newer cluster map than the
@@ -5166,7 +5166,7 @@ fn shard_leaf(leaf: Leaf) -> chloedb::Result<(ResultSet, Vec<u8>)> {
 }
 
 fn too_many() -> ApiError {
-    ApiError { status: 429, message: "too many queries running; try again".into() }
+    ApiError { code: None, status: 429, message: "too many queries running; try again".into() }
 }
 
 /// How many rows of `db`, of any table, are placed outside shard
@@ -5495,7 +5495,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
     let now = Instant::now();
     let (late, group): (Vec<Queued>, Vec<Queued>) = group.into_iter().partition(|q| q.deadline <= now);
     for q in late {
-        q.answer(Err(ApiError { status: 503, message: "the deadline passed while waiting for the writer".into() }));
+        q.answer(Err(ApiError { code: None, status: 503, message: "the deadline passed while waiting for the writer".into() }));
     }
     // Taken by a primary of a term the database left (it stepped down, and
     // took its new primary's transactions): refused unapplied.
@@ -5739,7 +5739,7 @@ fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
             if e.status == 503 {
                 return Err(e);
             }
-            return Err(ApiError { status: e.status, message: format!("{VALIDATE_OP} {j}{VALIDATE_OF}{}", e.message) });
+            return Err(ApiError { code: None, status: e.status, message: format!("{VALIDATE_OP} {j}{VALIDATE_OF}{}", e.message) });
         }
     }
     t.rollback();
@@ -5931,7 +5931,7 @@ fn check_seq_no(t: &TableTxn<'_, '_>, op: &Json, key: &Value) -> Result<(), ApiE
         Some(n) => format!("its sequence number is {n}"),
         None => "no row has the key, or an earlier operation of this request wrote it".to_string(),
     };
-    Err(ApiError { status: 409, message: format!("if_seq_no {want} does not hold for key {}: {found}", key_text(key)) })
+    Err(ApiError { code: None, status: 409, message: format!("if_seq_no {want} does not hold for key {}: {found}", key_text(key)) })
 }
 
 fn key_text(key: &Value) -> String {

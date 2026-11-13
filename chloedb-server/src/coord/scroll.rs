@@ -279,7 +279,7 @@ impl Coordinator {
                     continue;
                 }
                 Err(_) => {
-                    failed = failed.or(Some(ApiError { status: 504, message: format!("{name}: its scroll's page ran past the deadline") }));
+                    failed = failed.or(Some(ApiError { code: None, status: 504, message: format!("{name}: its scroll's page ran past the deadline") }));
                     continue;
                 }
             };

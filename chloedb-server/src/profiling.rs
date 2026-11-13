@@ -334,12 +334,12 @@ fn by_of(b: &Json) -> &str {
 
 /// A second profile of a kind: who takes the first, and for how long.
 fn busy(t: profiler::Taker) -> ApiError {
-    ApiError { status: 409, message: t.busy() }
+    ApiError { code: None, status: 409, message: t.busy() }
 }
 
 fn refused(e: profiler::Refused) -> ApiError {
     match e {
-        profiler::Refused::Busy => ApiError { status: 409, message: "a profile of this kind is being taken: one at a time".into() },
-        profiler::Refused::Unavailable(m) => ApiError { status: 501, message: format!("no profile: {m}") },
+        profiler::Refused::Busy => ApiError { code: None, status: 409, message: "a profile of this kind is being taken: one at a time".into() },
+        profiler::Refused::Unavailable(m) => ApiError { code: None, status: 501, message: format!("no profile: {m}") },
     }
 }

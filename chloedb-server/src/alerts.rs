@@ -1753,7 +1753,7 @@ impl Alerts {
     /// Answers `{took, rules_ms}`.
     pub fn set_copy_rules(&self, rules: Vec<Rule>, by: &str, at_ms: u64) -> Result<Json, ApiError> {
         if self.is_coordinator() {
-            return Err(ApiError { status: 409, message: "this server is a coordinator: its each_copy rules are its own".into() });
+            return Err(ApiError { code: None, status: 409, message: "this server is a coordinator: its each_copy rules are its own".into() });
         }
         let mine = self.rules_ms.load(Ordering::Relaxed);
         if mine > at_ms {
@@ -1778,7 +1778,7 @@ impl Alerts {
             let mut probe = json!({"rule": id, "state": "ok"});
             Self::add_elsewhere(&mut probe, &self.live_views());
             if probe.get("elsewhere").is_none() {
-                return Err(ApiError { status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") });
+                return Err(ApiError { code: None, status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") });
             }
             let mut st = St::new(t);
             st.ack = Some(Ack { by: by.into(), at_ms: t, note: note.clone() });
@@ -1794,7 +1794,7 @@ impl Alerts {
             return Ok(e);
         }
         let mut states = lock(&self.states);
-        let st = states.get_mut(id).filter(|s| matches!(s.state, "firing" | "pending")).ok_or_else(|| ApiError { status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") })?;
+        let st = states.get_mut(id).filter(|s| matches!(s.state, "firing" | "pending")).ok_or_else(|| ApiError { code: None, status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") })?;
         st.ack = Some(Ack { by: by.into(), at_ms: t, note: note.clone() });
         if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
             push_note(st, by, t, n);
@@ -1836,7 +1836,7 @@ impl Alerts {
         let r = self.rule(id)?;
         let t = now_ms();
         let mut states = lock(&self.states);
-        let st = states.get_mut(id).filter(|s| s.silenced.as_ref().is_some_and(|s| s.until_ms > t)).ok_or_else(|| ApiError { status: 404, message: format!("{id} is not silenced") })?;
+        let st = states.get_mut(id).filter(|s| s.silenced.as_ref().is_some_and(|s| s.until_ms > t)).ok_or_else(|| ApiError { code: None, status: 404, message: format!("{id} is not silenced") })?;
         // Kept as a silence that ended now: the newest word wins between
         // coordinators.
         if let Some(si) = st.silenced.as_mut() {
@@ -1874,7 +1874,7 @@ impl Alerts {
     }
 
     fn rule(&self, id: &str) -> Result<Rule, ApiError> {
-        self.rules().into_iter().find(|r| r.id == id).ok_or_else(|| ApiError { status: 404, message: format!("no alert rule {id}") })
+        self.rules().into_iter().find(|r| r.id == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no alert rule {id}") })
     }
 
     /// Rule `r`'s state as the API answers it.
@@ -2636,7 +2636,7 @@ impl Alerts {
 
     /// Posts a test message to route `name`.
     pub async fn test_route(&self, name: &str, by: &str) -> Result<Json, ApiError> {
-        let r = self.routes().into_iter().find(|r| r.name == name).ok_or_else(|| ApiError { status: 404, message: format!("no route {name}") })?;
+        let r = self.routes().into_iter().find(|r| r.name == name).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no route {name}") })?;
         let id = self.identity();
         let text = format!("[chloedb TEST] A test of route {} on {}, sent by {by}.{}", r.name, id.name, id.public_url.map(|u| format!(" {u}/#/alerts")).unwrap_or_default());
         let t0 = std::time::Instant::now();
@@ -3383,7 +3383,7 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     let (points, source) = match held {
         Some(h) if in_memory(h) => (memory.into_iter().filter(|p| p["t"].as_u64().is_some_and(|t| t >= lead && t <= to)).collect::<Vec<_>>(), "memory"),
         _ => {
-            let store = svc.log_store.clone().ok_or_else(|| ApiError { status: 409, message: "memory holds the last hour, and this server keeps no log store for older points".into() })?;
+            let store = svc.log_store.clone().ok_or_else(|| ApiError { code: None, status: 409, message: "memory holds the last hour, and this server keeps no log store for older points".into() })?;
             if !LOAD_METRICS.contains(&rule.metric.as_str()) {
                 return Err(ApiError::bad(format!("the log store's load table keeps {} a minute, not {}: a backtest past the last hour replays only those", LOAD_METRICS.join(", "), rule.metric)));
             }

@@ -627,7 +627,7 @@ impl Sim {
                     self.serve(to, from, call, req);
                 }
                 Msg::Resp { call, resp } => self.answered(to, call, Ok(resp)),
-                Msg::Refused { call } => self.answered(to, call, Err(ApiError { status: 503, message: "connection refused".into() })),
+                Msg::Refused { call } => self.answered(to, call, Err(ApiError { code: None, status: 503, message: "connection refused".into() })),
             },
             Event::Timer { at, inc, timer } => {
                 self.mix(100 + at as u64);
@@ -637,7 +637,7 @@ impl Sim {
                 match timer {
                     Timer::Call(id) => {
                         if self.calls.contains_key(&id) {
-                            self.answered(at, id, Err(ApiError { status: 504, message: "no answer within the call's timeout".into() }));
+                            self.answered(at, id, Err(ApiError { code: None, status: 504, message: "no answer within the call's timeout".into() }));
                         }
                     }
                     Timer::HoldEnds { id } => self.hold_ends(at, id),

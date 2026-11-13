@@ -370,7 +370,7 @@ mod caller_tests {
 
     #[test]
     fn an_app_is_told_who_called() {
-        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()) };
+        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()), role: None, agent: false, on_behalf_of: None };
         let h = caller_headers(&p);
         assert!(h.contains(&("x-chloedb-principal", "ana?x".into())));
         assert!(h.contains(&("x-chloedb-scope", "write".into())) && h.contains(&("x-chloedb-key", "0a1b".into())));

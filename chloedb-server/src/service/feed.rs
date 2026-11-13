@@ -370,7 +370,7 @@ impl Service {
         let deadline = Instant::now() + COPY_WAIT;
         while self.feed_reaches()? < seq {
             if Instant::now() >= deadline {
-                return Err(ApiError { status: 503, message: format!("the replicas in sync did not reach transaction {seq} within {} s: copy again", COPY_WAIT.as_secs()) });
+                return Err(ApiError { code: None, status: 503, message: format!("the replicas in sync did not reach transaction {seq} within {} s: copy again", COPY_WAIT.as_secs()) });
             }
             tokio::time::sleep(POLL).await;
         }
@@ -498,7 +498,7 @@ impl Service {
         match since {
             None => Ok(()),
             Some(ms) => Err(ApiError {
-                status: 503,
+                code: None, status: 503,
                 message: format!(
                     "this cluster holds its writes (since {}, {HOLD_WRITES}): a switch-over to a cluster that follows it may be under way; write to the cluster that takes over, or again once the hold ends",
                     chloedb::timestamp::format(ms.saturating_mul(1000))
@@ -617,7 +617,7 @@ impl Service {
         }
         let view = self.follow_view().await?;
         let Some(c) = view["clusters"].as_array().into_iter().flatten().find(|c| c["name"] == name) else {
-            return Err(ApiError { status: 404, message: format!("this cluster never followed {name}") });
+            return Err(ApiError { code: None, status: 404, message: format!("this cluster never followed {name}") });
         };
         if c["following"] == 0 {
             return Ok(json!({"stopped": name, "already": true}));

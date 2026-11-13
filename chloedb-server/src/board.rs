@@ -158,7 +158,7 @@ impl From<Failed> for crate::ApiError {
             // Nothing was written, and the same call would be refused again.
             Failed::Board(BoardError::Refused(_)) => 409,
         };
-        crate::ApiError { status, message: e.to_string() }
+        crate::ApiError { code: None, status, message: e.to_string() }
     }
 }
 

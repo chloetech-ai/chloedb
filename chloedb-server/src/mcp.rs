@@ -55,7 +55,12 @@ similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": 
 query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON. \
 check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
 list_feedback and get_feedback read what people asked of the command center, with screenshots; update_feedback takes an item and marks it done. \
-The key you connect with decides what you may change (whoami): read, write, or admin for tables.";
+The key you connect with decides what you may change (whoami): read, write, or admin for tables. \
+With an admin, ops or propose key there are tools to operate the server too: health, cluster, alerts, events, queries, logs and audit read it; \
+plan_* and dry_run show what a change would do without making it; contain, cancel_query, silence_alert and ack_alert act at once, for a while, with a reason; \
+anything bigger is propose_change, which a person approves. runbook finds what to do for an alert or a problem.";
+
+mod ops_tools;
 
 /// What a tool's call does.
 enum Act {
@@ -66,6 +71,11 @@ enum Act {
     CheckSql(String),
     /// `search_docs`: found here.
     SearchDocs { query: String, limit: usize },
+    /// An operation of tier 1 and up ([`crate::ops`]): a route sent with
+    /// the reason the agent gave, which the audit log keeps.
+    Action { method: Method, path: String, body: Option<Json>, reason: String },
+    /// A runbook, found here ([`crate::runbooks`]).
+    Runbook { query: String },
 }
 
 /// What a tool keeps of a route's answer.
@@ -389,10 +399,23 @@ const TOOLS: &[Tool] = &[
     },
 ];
 
-/// `tools/list`'s answer.
+/// `tools/list`'s answer: every tool.
 pub fn tools_json() -> Json {
-    let tools: Vec<Json> = TOOLS
-        .iter()
+    tools_listed(TOOLS.iter().chain(ops_tools::OPS_TOOLS))
+}
+
+/// `tools/list`'s answer for `who`: the operations tools only for a key
+/// that may see the server's views ([`crate::ops::may`]).
+pub fn tools_for(who: Option<&crate::keys::Principal>) -> Json {
+    let ops = who.is_none_or(|w| crate::ops::may(w)["server_views"] == true);
+    match ops {
+        true => tools_json(),
+        false => tools_listed(TOOLS.iter()),
+    }
+}
+
+fn tools_listed<'a>(tools: impl Iterator<Item = &'a Tool>) -> Json {
+    let tools: Vec<Json> = tools
         .map(|t| {
             json!({
                 "name": t.name,
@@ -569,6 +592,9 @@ pub fn check_sql(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Resul
 pub struct Caller<'a> {
     pub headers: &'a HeaderMap,
     pub peer: Option<SocketAddr>,
+    /// Who sent the message, as the route's check found ([`crate::keys`]):
+    /// `tools/list` offers the operations tools to who may use them.
+    pub who: Option<&'a crate::keys::Principal>,
 }
 
 fn error(id: &Json, code: i64, message: impl Into<String>) -> Json {
@@ -633,7 +659,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             }))
         }
         "ping" | "logging/setLevel" => ok(&id, json!({})),
-        "tools/list" => ok(&id, tools_json()),
+        "tools/list" => ok(&id, tools_for(caller.who)),
         "resources/list" => ok(&id, resources_json()),
         "resources/templates/list" => ok(&id, json!({"resourceTemplates": []})),
         "prompts/list" => ok(&id, json!({"prompts": []})),
@@ -659,7 +685,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
 
 /// A tool's call: its answer's content, text and perhaps an image.
 async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, name: &str, args: &Json) -> Result<Vec<Json>, Failed> {
-    let tool = TOOLS.iter().find(|t| t.name == name).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))?;
+    let tool = TOOLS.iter().chain(ops_tools::OPS_TOOLS).find(|t| t.name == name).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))?;
     if !args.is_object() {
         return Err(Failed::Arguments("arguments are an object".into()));
     }
@@ -667,6 +693,11 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
     let answer = match (tool.act)(args)? {
         Act::CheckSql(sql) => check_sql(&sql, &svc.tables_listed().await).map_err(Failed::Call)?,
         Act::SearchDocs { query, limit } => search_docs(&query, limit),
+        Act::Runbook { query } => crate::runbooks::find(&query),
+        Act::Action { method, path, body, reason } => {
+            let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
+            forward_with(router, caller, method, &path, body, &[("x-strata-reason", reason)]).await.map_err(Failed::Call)?
+        }
         Act::Route { method, path, body, shape } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
             let mut j = forward(router, caller, method, &path, body).await.map_err(Failed::Call)?;
@@ -684,6 +715,12 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
     let mut content = vec![json!({"type": "text", "text": text})];
     content.extend(image);
     Ok(content)
+}
+
+/// A header's value from any text: percent-encoded past ASCII, as
+/// `x-chloedb-reason` is read ([`crate::http`]'s `header_text`).
+pub(crate) fn encode_header(v: &str) -> String {
+    v.bytes().map(|b| if (0x20..0x7f).contains(&b) && b != b'%' { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 /// An MCP image content block of a `data:` URL's picture.
@@ -726,12 +763,41 @@ fn shaped(mut j: Json, shape: Shape) -> Json {
 /// A request to this server's own routes, with the caller's credential:
 /// its JSON answer, or why it failed (`<status>: <error>`).
 pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+    forward_with(router, caller, method, path, body, &[]).await
+}
+
+/// [`forward`], with headers of its own (`extra`, which win over the
+/// caller's).
+pub(crate) async fn forward_with(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>, extra: &[(&str, String)]) -> Result<Json, String> {
     use tower::ServiceExt;
     let mut b = Request::builder().method(method).uri(path);
-    for h in [header::AUTHORIZATION, header::HOST, header::USER_AGENT, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH), header::HeaderName::from_static("x-forwarded-for"), header::HeaderName::from_static("x-strata-reason")] {
+    let passed = [
+        header::AUTHORIZATION,
+        header::HOST,
+        header::USER_AGENT,
+        header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH),
+        header::HeaderName::from_static("x-forwarded-for"),
+        header::HeaderName::from_static("x-strata-reason"),
+        // ops: what the agent says of itself, for the audit log.
+        header::HeaderName::from_static("x-strata-agent-model"),
+        header::HeaderName::from_static("x-strata-agent-session"),
+        header::HeaderName::from_static("x-strata-agent-run"),
+        // The change request an approval applies ([`crate::changes`]).
+        header::HeaderName::from_static("x-strata-change"),
+    ];
+    for h in passed {
+        if extra.iter().any(|(n, _)| *n == h.as_str()) {
+            continue;
+        }
         if let Some(v) = caller.headers.get(&h) {
             b = b.header(h, v.clone());
         }
+    }
+    for (n, v) in extra {
+        // A header's value is one line of visible text.
+        let v: String = v.chars().map(|c| if c.is_control() { ' ' } else { c }).take(500).collect();
+        let v = crate::mcp::encode_header(&v);
+        b = b.header(*n, v);
     }
     // Who the query log and Access name: the MCP client, as `mcp`.
     let app = caller.headers.get("x-strata-app").cloned().unwrap_or(HeaderValue::from_static("mcp"));
@@ -763,7 +829,12 @@ pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method
             None if bytes.is_empty() => status.canonical_reason().unwrap_or("no answer").to_string(),
             None => j.to_string(),
         };
-        return Err(format!("{}: {why}", status.as_u16()));
+        // errors: the code and what to do, for the model to act on.
+        let code = match j.get("code").and_then(|c| c.as_str()) {
+            Some(c) => format!(" [code {c}{}]", j.get("hint").and_then(|h| h.as_str()).map(|h| format!(": {h}")).unwrap_or_default()),
+            None => String::new(),
+        };
+        return Err(format!("{}: {why}{code}", status.as_u16()));
     }
     Ok(j)
 }
@@ -782,6 +853,10 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
     }
     let client = builder.build().map_err(|e| e.to_string())?;
     let endpoint = format!("{}/v1/mcp", url.trim_end_matches('/'));
+    // ops: this bridge is one agent's session, which the audit log names;
+    // the model, when the client's environment says it.
+    let session = format!("stdio-{}-{:x}", std::process::id(), crate::telemetry::now_ms());
+    let model = std::env::var("CHLOEDB_AGENT_MODEL").ok().filter(|m| !m.trim().is_empty()).map(|m| encode_header(m.trim()));
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
@@ -789,7 +864,10 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
             continue;
         }
         let id = serde_json::from_str::<Json>(&line).ok().and_then(|m| m.get("id").cloned());
-        let mut r = client.post(&endpoint).header(header::CONTENT_TYPE, "application/json").header(header::ACCEPT, "application/json, text/event-stream").header("x-strata-app", "mcp-stdio");
+        let mut r = client.post(&endpoint).header(header::CONTENT_TYPE, "application/json").header(header::ACCEPT, "application/json, text/event-stream").header("x-strata-app", "mcp-stdio").header("x-chloedb-agent-session", &session);
+        if let Some(m) = &model {
+            r = r.header("x-chloedb-agent-model", m);
+        }
         if let Some(k) = key {
             r = r.bearer_auth(k);
         }
@@ -837,7 +915,7 @@ mod tests {
     fn every_tool_has_a_schema_of_an_object() {
         let j = tools_json();
         let tools = j["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), TOOLS.len());
+        assert_eq!(tools.len(), TOOLS.len() + ops_tools::OPS_TOOLS.len());
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }

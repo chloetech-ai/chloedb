@@ -282,6 +282,9 @@ async fn dispatch(State(os): State<Arc<Os>>, peer: Option<ConnectInfo<std::net::
         };
         os.svc.audit_keep(
             crate::keys::Entry {
+                agent: None,
+                on_behalf_of: None,
+                change_request: None,
                 ts_ms: crate::telemetry::now_ms(),
                 who: who.as_ref().map_or_else(|| known.as_ref().map_or("unknown".into(), |k| k.1.clone()), crate::keys::audit_name),
                 key: who.as_ref().and_then(|w| w.key.clone()).or_else(|| known.as_ref().map(|k| k.0.clone())),

@@ -678,7 +678,7 @@ impl Coordinator {
     /// first): its version and its last point (disk).
     async fn probe(&self, url: &str) -> Result<Json, ApiError> {
         let (mut c, _) = self.admit(url, false).await?;
-        let h = c.health(crate::pb::Empty {}).await.map_err(|s| ApiError { status: 502, message: format!("{url}: {}", s.message()) })?.into_inner();
+        let h = c.health(crate::pb::Empty {}).await.map_err(|s| ApiError { code: None, status: 502, message: format!("{url}: {}", s.message()) })?.into_inner();
         let d: Json = serde_json::from_str(&h.detail).unwrap_or(Json::Null);
         Ok(json!({"version": d["system"]["version"], "load": d["load"]}))
     }
@@ -1082,10 +1082,10 @@ pub fn apply(svc: &Arc<Service>, body: &Json, who: Who) -> Result<Json, ApiError
     }
     let steps: Vec<Json> = list.iter().enumerate().map(|(k, v)| step_of(k, v)).collect::<Result<_, _>>()?;
     let Ok(busy) = c.plans.busy.clone().try_lock_owned() else {
-        return Err(ApiError { status: 409, message: "a plan is being applied on this coordinator: wait for it, or stop it".into() });
+        return Err(ApiError { code: None, status: 409, message: "a plan is being applied on this coordinator: wait for it, or stop it".into() });
     };
     if let Some(r) = lock(&c.plans.run).as_ref().filter(|r| r.state == "interrupted") {
-        return Err(ApiError { status: 409, message: format!("a plan stopped at step {} of {} when this coordinator restarted: resume it or discard it first", r.at + 1, r.steps.len()) });
+        return Err(ApiError { code: None, status: 409, message: format!("a plan stopped at step {} of {} when this coordinator restarted: resume it or discard it first", r.at + 1, r.steps.len()) });
     }
     // The shards each step names, by their servers now and the copies the
     // plan adds them (a shard is found by those once its old copies left);
@@ -1154,7 +1154,7 @@ pub fn stop(svc: &Arc<Service>) -> Result<Json, ApiError> {
     let c = svc.coordinator()?;
     let kind = {
         let r = lock(&c.plans.run);
-        let r = r.as_ref().filter(|r| r.state == "running").ok_or_else(|| ApiError { status: 409, message: "no plan is being applied on this coordinator".into() })?;
+        let r = r.as_ref().filter(|r| r.state == "running").ok_or_else(|| ApiError { code: None, status: 409, message: "no plan is being applied on this coordinator".into() })?;
         r.steps.get(r.at).map(|s| s.kind().to_string()).unwrap_or_default()
     };
     c.plans.stop.store(true, Ordering::Relaxed);
@@ -1170,13 +1170,13 @@ pub fn stop(svc: &Arc<Service>) -> Result<Json, ApiError> {
 pub fn resume(svc: &Arc<Service>, by: String) -> Result<Json, ApiError> {
     let c = svc.coordinator()?.clone();
     let Ok(busy) = c.plans.busy.clone().try_lock_owned() else {
-        return Err(ApiError { status: 409, message: "a plan is being applied on this coordinator already".into() });
+        return Err(ApiError { code: None, status: 409, message: "a plan is being applied on this coordinator already".into() });
     };
     let at = {
         let mut g = lock(&c.plans.run);
-        let r = g.as_mut().ok_or_else(|| ApiError { status: 409, message: "no plan to resume".into() })?;
+        let r = g.as_mut().ok_or_else(|| ApiError { code: None, status: 409, message: "no plan to resume".into() })?;
         if !matches!(r.state.as_str(), "interrupted" | "failed" | "stopped") {
-            return Err(ApiError { status: 409, message: format!("the plan is {}: only one that stopped is resumed", r.state) });
+            return Err(ApiError { code: None, status: 409, message: format!("the plan is {}: only one that stopped is resumed", r.state) });
         }
         r.state = "running".into();
         r.error = None;
@@ -1202,9 +1202,9 @@ pub fn resume(svc: &Arc<Service>, by: String) -> Result<Json, ApiError> {
 pub fn discard(svc: &Arc<Service>) -> Result<Json, ApiError> {
     let c = svc.coordinator()?;
     let Ok(_busy) = c.plans.busy.clone().try_lock_owned() else {
-        return Err(ApiError { status: 409, message: "the plan is being applied: stop it first".into() });
+        return Err(ApiError { code: None, status: 409, message: "the plan is being applied: stop it first".into() });
     };
-    let was = lock(&c.plans.run).take().map(|r| r.json()).ok_or_else(|| ApiError { status: 409, message: "no plan to discard".into() })?;
+    let was = lock(&c.plans.run).take().map(|r| r.json()).ok_or_else(|| ApiError { code: None, status: 409, message: "no plan to discard".into() })?;
     c.plans.save();
     Ok(json!({"discarded": was}))
 }
@@ -1310,6 +1310,9 @@ fn audit_step(svc: &Service, c: &Coordinator, k: usize, status: u16, ms: f64, er
     let detail = format!("plan {}, step {} of {}: {what}{}", run.id, k + 1, run.steps.len(), error.map_or(String::new(), |e| format!(" (it failed: {e})")));
     svc.audit_keep(
         crate::keys::Entry {
+            agent: None,
+            on_behalf_of: None,
+            change_request: None,
             ts_ms: now_ms(),
             who: run.by.clone(),
             key: run.key.clone(),
@@ -1356,7 +1359,7 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
     let st = &s.step;
     let i = st["shard"].as_u64().unwrap_or(0) as usize;
     let url = st["url"].as_str().unwrap_or_default().to_string();
-    let gone = |what: &str| Halt::Failed(ApiError { status: 409, message: format!("shard {i} {what}: it is not in the cluster any more (another change removed it)") });
+    let gone = |what: &str| Halt::Failed(ApiError { code: None, status: 409, message: format!("shard {i} {what}: it is not in the cluster any more (another change removed it)") });
     let by = lock(&c.plans.run).as_ref().map(|r| r.by.clone()).unwrap_or_default();
     match s.kind() {
         "add_copy" => {
@@ -1405,7 +1408,7 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
         }
         "move" => {
             let to = st["to"].as_u64().unwrap_or(0) as usize;
-            let to = find_shard(c, &s.to_servers, to).ok_or_else(|| Halt::Failed(ApiError { status: 409, message: format!("the shard the slots go to (shard {to}) is not in the cluster any more") }))?;
+            let to = find_shard(c, &s.to_servers, to).ok_or_else(|| Halt::Failed(ApiError { code: None, status: 409, message: format!("the shard the slots go to (shard {to}) is not in the cluster any more") }))?;
             let map = c.map().ok_or_else(|| ApiError::bad("a coordinator routing by the hash before slots cannot move slots"))?;
             let slots: Vec<usize> = st["slots"].as_array().into_iter().flatten().filter_map(|r| Some((r[0].as_u64()? as usize)..(r[1].as_u64()? as usize))).flatten().filter(|&sl| sl < SLOTS && map.owner(sl) != to).collect();
             if slots.is_empty() {
@@ -1477,7 +1480,7 @@ async fn wait_idle(c: &Arc<Coordinator>, k: usize, resuming: bool) -> Result<(),
                 c.finish_move().await?;
                 continue;
             }
-            return Err(Halt::Failed(ApiError { status: 409, message: "a move is left in the cluster map by a coordinator that stopped: finish it (Finish it, on Cluster), then resume the plan".into() }));
+            return Err(Halt::Failed(ApiError { code: None, status: 409, message: "a move is left in the cluster map by a coordinator that stopped: finish it (Finish it, on Cluster), then resume the plan".into() }));
         }
         let mv = &m["moving"];
         let what = format!("slots {} from shard {} to shard {}, {}", mv["slots"].as_array().into_iter().flatten().map(|r| format!("{}..{}", r[0], r[1])).collect::<Vec<_>>().join(", "), mv["from"], mv["to"], mv["state"].as_str().unwrap_or("under way"));
@@ -1528,7 +1531,7 @@ async fn wait_job(c: &Arc<Coordinator>, k: usize) -> Result<String, Halt> {
         });
         match m["state"].as_str() {
             Some("done") if m["moving"].is_null() => return Ok(words),
-            Some("failed") => return Err(Halt::Failed(ApiError { status: 500, message: m["job"]["error"].as_str().unwrap_or("a move failed").to_string() })),
+            Some("failed") => return Err(Halt::Failed(ApiError { code: None, status: 500, message: m["job"]["error"].as_str().unwrap_or("a move failed").to_string() })),
             Some("stopped") => return Err(Halt::Stopped(format!("{words}; stopped after the move under way: the slots that moved stay where they are"))),
             _ => {}
         }
@@ -1550,11 +1553,11 @@ async fn wait_sync(c: &Arc<Coordinator>, k: usize, i: usize, url: &str) -> Resul
         let primary = copies.iter().find(|r| shard["primary"].as_str().is_some_and(|p| r["url"] == p));
         let f = primary.and_then(|p| p["detail"]["health"]["replication"]["replicas"].as_array()).and_then(|v| v.iter().find(|f| f["url"] == url)).cloned();
         match (me, &f) {
-            (None, _) => return Err(Halt::Failed(ApiError { status: 409, message: format!("{url} is not a copy of shard {i} any more") })),
+            (None, _) => return Err(Halt::Failed(ApiError { code: None, status: 409, message: format!("{url} is not a copy of shard {i} any more") })),
             (Some(r), _) if r["status"] == "down" => {
                 let since = *down_since.get_or_insert_with(Instant::now);
                 if since.elapsed() > Duration::from_secs(60) {
-                    return Err(Halt::Failed(ApiError { status: 503, message: format!("{url} has not answered for a minute: {}", r["error"].as_str().unwrap_or("no answer")) }));
+                    return Err(Halt::Failed(ApiError { code: None, status: 503, message: format!("{url} has not answered for a minute: {}", r["error"].as_str().unwrap_or("no answer")) }));
                 }
                 note(c, k, "it does not answer".into());
             }

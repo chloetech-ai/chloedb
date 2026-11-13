@@ -661,6 +661,30 @@ enum Command {
         #[arg(long)]
         ca: Option<PathBuf>,
     },
+    /// The API from a shell, for scripts and agents without MCP: one
+    /// request, its answer's JSON on stdout, and an exit code by what
+    /// happened (0 done, 1 failed, 2 refused for the key, 3 stale: look
+    /// again, 4 retry later, 5 not reached).
+    Admin {
+        /// The server's HTTP URL (a coordinator, or a single server).
+        #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// The API key (or the server's token) to send as a bearer.
+        #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// A CA certificate (PEM) to trust for an https URL.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        /// Why: sent as x-chloedb-reason, kept in the audit log (an
+        /// agent's change needs one).
+        #[arg(long, env = "CHLOEDB_REASON")]
+        reason: Option<String>,
+        /// Print the answer on one line.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        what: AdminCmd,
+    },
     /// Make a running replica the primary of a new term (POST
     /// /v1/admin/promote), once a majority of its shard's copies vote for
     /// it: a primary that serves steps down. It refuses while a copy holds
@@ -1038,6 +1062,49 @@ async fn run() {
                 fail(&e);
             }
             return;
+        }
+        Some(Command::Admin { url, key, ca, reason, json, what }) => {
+            use chloedb_server::admin_cli::{self as cli, Call};
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            let q = |base: &str, k: &str, v: &Option<String>| match v {
+                Some(v) => format!("{base}?{k}={}", chloedb_server::mcp::encode(v)),
+                None => base.to_string(),
+            };
+            let call = match what {
+                AdminCmd::Whoami => Ok(Call::get("/v1/whoami")),
+                AdminCmd::Health => Ok(Call::get("/v1/health/fleet")),
+                AdminCmd::Catalog { q: words } => Ok(Call::get(q("/v1/catalog", "q", words))),
+                AdminCmd::Jobs => Ok(Call::get("/v1/admin/jobs")),
+                AdminCmd::Audit { limit } => Ok(Call::get(format!("/v1/admin/audit?limit={limit}"))),
+                AdminCmd::Changes { id: None, state } => Ok(Call::get(q("/v1/admin/changes", "state", state))),
+                AdminCmd::Changes { id: Some(id), .. } => Ok(Call::get(format!("/v1/admin/changes/{}", chloedb_server::mcp::encode(id)))),
+                AdminCmd::Runbook { id } => Ok(Call::get(format!("/v1/runbooks?for={}", chloedb_server::mcp::encode(id)))),
+                AdminCmd::Call { method, path, body } => cli::call_of(method, path, body.as_deref()),
+                AdminCmd::Preview { method, path, body } => cli::call_of(method, path, body.as_deref()).map(|c| cli::previewed(&c)),
+                AdminCmd::Propose { method, path, body, what } => match reason.as_deref() {
+                    Some(r) if !r.trim().is_empty() => cli::call_of(method, path, body.as_deref()).map(|c| cli::proposed(&c, r, what.as_deref())),
+                    _ => Err("a change request says why: --reason".to_string()),
+                },
+            };
+            let call = call.unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1)
+            });
+            let target = cli::Target { url: url.clone(), key: key.clone(), ca, reason: reason.clone() };
+            match cli::send(&target, &call).await {
+                Ok((status, answer)) => {
+                    let text = if *json { answer.to_string() } else { serde_json::to_string_pretty(&answer).unwrap_or_default() };
+                    println!("{text}");
+                    std::process::exit(cli::exit_code(status, &answer));
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(5);
+                }
+            }
         }
         Some(Command::Promote { url, replicas, write_acks, force, token }) => {
             match server::promote(url, replicas, write_acks, *force, token.as_deref()).await {
@@ -1467,6 +1534,48 @@ async fn serve_opensearch(svc: std::sync::Arc<chloedb_server::service::Service>,
     if let Err(e) = server::serve_opensearch(svc, l, access, &version).await {
         tracing::error!(error = %e, "OpenSearch API stopped");
     }
+}
+
+/// What `chloedb-server admin` asks ([`chloedb_server::admin_cli`]).
+#[derive(Subcommand)]
+enum AdminCmd {
+    /// The key: its scope, role, and what it may do (`may`).
+    Whoami,
+    /// The fleet: its problems, each with what to do next.
+    Health,
+    /// The routes (with their scope, tier, dry run and MCP tool) and the
+    /// error codes; words narrow the routes by path.
+    Catalog { q: Option<String> },
+    /// What runs in the background: plans, moves, on-call runs, change
+    /// requests.
+    Jobs,
+    /// The latest entries of the audit log.
+    Audit {
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+    },
+    /// The change requests (or one, by id).
+    Changes {
+        id: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// The runbook for an alert's rule or a fleet problem's id.
+    Runbook { id: String },
+    /// Any request: METHOD PATH [BODY] (JSON, `-` for stdin, `@file`).
+    Call { method: String, path: String, body: Option<String> },
+    /// The dry run of a change: METHOD PATH [BODY].
+    Preview { method: String, path: String, body: Option<String> },
+    /// File a change request for a person to approve: METHOD PATH [BODY]
+    /// with --reason.
+    Propose {
+        method: String,
+        path: String,
+        body: Option<String>,
+        /// What it does, in words (the dry run's, by default).
+        #[arg(long)]
+        what: Option<String>,
+    },
 }
 
 fn fail(msg: &str) -> ! {
