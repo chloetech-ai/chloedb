@@ -496,7 +496,7 @@ fn describe(r: &Record, terms: &HashSet<String>, now: i64, label: &str, max: usi
         }
     }
     let t = recall::snippet(&r.text, terms, max);
-    s += &format!("\n  {}", t.split_whitespace().collect::<Vec<_>>().join(" "));
+    s += &format!("\n  {}", crate::envelope::defuse(&t.split_whitespace().collect::<Vec<_>>().join(" ")));
     s
 }
 
