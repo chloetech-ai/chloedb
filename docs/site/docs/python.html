@@ -87,8 +87,8 @@
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-py"><code>chloedb-py/</code></a>: a Rust extension built with <a href="https://www.maturin.rs">maturin</a>, for CPython 3.10 and later.</p>
 <h3 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h3>
-<p>Each <code>chloedb-py-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The package is not on PyPI yet, so point pip at the release and it picks the wheel for your machine:</p>
-<pre data-lang="sh">pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
+<p>Each <code>chloedb-py-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The same wheels are on <a href="https://pypi.org/project/chloedb/">PyPI</a>, so pip picks the one for your machine:</p>
+<pre data-lang="sh">pip install chloedb</pre>
 <p>The old name, <code>import strata</code>, still works for a release, with a <code>DeprecationWarning</code>; release 0.1.0 was published as <code>strata-db</code> and imports as <code>strata</code> only.</p>
 <div class="doc-table"><table>
 <thead>
@@ -116,7 +116,7 @@
 </tr>
 </tbody>
 </table></div>
-<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml"><code>py-release.yml</code></a> builds them on a tag <code>chloedb-py-v&lt;version&gt;</code> (or <code>strata-py-v&lt;version&gt;</code>; the version in <code>chloedb-py/pyproject.toml</code>), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI once the repository is set up for it (the workflow's header says how), and <code>pip install chloedb</code> then takes them; until then the package is not on PyPI. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).</p>
+<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml"><code>py-release.yml</code></a> builds them on a tag <code>chloedb-py-v&lt;version&gt;</code> (or <code>strata-py-v&lt;version&gt;</code>; the version in <code>chloedb-py/pyproject.toml</code>), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI, from 0.3.0 on; <code>pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v&lt;version&gt;</code> installs a release from GitHub instead. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).</p>
 <h3 id="only-the-client-with-no-build">Only the client, with no build<a class="anchor" href="#only-the-client-with-no-build" aria-label="Link to this section">#</a></h3>
 <p><a href="#a-server-from-python"><code>chloedb.connect</code></a>, the client of a running chloedb-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put <code>chloedb-py/python</code> on the path and import it:</p>
 <pre data-lang="sh">PYTHONPATH=chloedb-py/python python3 -c &#x27;import chloedb; print(chloedb.connect(&quot;http://127.0.0.1:7700&quot;).health())&#x27;</pre>

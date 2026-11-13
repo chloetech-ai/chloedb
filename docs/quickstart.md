@@ -147,10 +147,8 @@ The Python package runs a database inside your process, the way `sqlite3` runs S
 ```sh
 # install
 python3 -m venv .venv && . .venv/bin/activate
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
+pip install chloedb
 ```
-
-The wheels come from the release: `chloedb` on PyPI is still a placeholder of version 0.0.1 that holds the name, and `pip install chloedb` alone installs that, which fails at `import chloedb`.
 
 ```sh
 python3 - <<'EOF'
