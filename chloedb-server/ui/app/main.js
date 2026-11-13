@@ -798,7 +798,9 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey) && !document.querySelector(".fb-ed")) { e.preventDefault(); openPalette(); return; }
   if ((e.key === "j" || e.key === "J") && (e.ctrlKey || e.metaKey) && !document.querySelector(".fb-ed,.palette")) { e.preventDefault(); openAsk(); return; }
   // Feedback takes a drawer or a dialog too, so f works over them.
-  if (e.key === "f" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector(".palette,.fb-ed,.menu")) { e.preventDefault(); openFeedback(); return; }
+  // (g then f goes to the Feedback view: the g comes first.)
+  const afterG = gPending && Date.now() - gPending < 1200;
+  if (e.key === "f" && !afterG && !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector(".palette,.fb-ed,.menu")) { e.preventDefault(); openFeedback(); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".modal,.palette,.drawer,.fb-ed")) return;
   if (gPending && Date.now() - gPending < 1200 && GKEYS[e.key]) { gPending = 0; location.hash = link(GKEYS[e.key].id); e.preventDefault(); return; }
   gPending = 0;
