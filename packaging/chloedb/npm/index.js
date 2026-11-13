@@ -1,4 +1,6 @@
 throw new Error(
-  "chloedb 0.0.1 is a placeholder that holds the name for ChloeDB (https://github.com/chloetech-ai/chloedb). " +
-  "Install a release from GitHub instead; see https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/javascript.md"
+  "This is chloedb 0.0.2, a placeholder that holds the name on npm for ChloeDB (https://github.com/chloetech-ai/chloedb), not ChloeDB itself. " +
+  "Install ChloeDB's package for your platform from its GitHub release instead, for example: " +
+  "npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-linux-x64-gnu.tgz " +
+  "(also linux-arm64-gnu, darwin-arm64, darwin-x64); see https://chloetech-ai.github.io/chloedb/site/docs/javascript.html"
 );
