@@ -111,22 +111,125 @@ pub struct Principal {
     /// and nothing on the server beyond them. `None`: every table, at
     /// `scope`.
     pub tables: Option<Arc<[Grant]>>,
+    /// What a key limited to tables may do beyond its tables' routes
+    /// ([`Allow`]); `None` for any other.
+    pub allow: Option<Arc<Allow>>,
+}
+
+/// What a key limited to tables may reach beyond the routes of its tables
+/// ([`crate::scoped::route_ok`]), as its maker gave it or a preset
+/// ([`preset`]) expanded: groups of read-only routes ([`ROUTE_GROUPS`]),
+/// and apps that do not check a caller's tables themselves, which it may
+/// read through (`GET`) only if it reads every table. It never widens what
+/// the key may do to a table. A server from before it reads such a key
+/// without it: the key may do less there, never more.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Allow {
+    /// The preset it was made from, for showing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
+}
+
+/// The groups of routes a key limited to tables may be given
+/// ([`Allow::routes`]): each `GET` alone.
+pub const ROUTE_GROUPS: &[(&str, &[&str], &str)] = &[(
+    "fleet",
+    &["/v1/health/fleet", "/v1/events", "/metrics", "/v1/timeseries", "/v1/coordinators"],
+    "the fleet's health, its events (which name every table and who changed what), its metrics and charts",
+)];
+
+impl Allow {
+    /// Whether it opens `GET route`.
+    pub fn route(&self, method: &axum::http::Method, route: &str) -> bool {
+        let get = method == axum::http::Method::GET || method == axum::http::Method::HEAD;
+        get && ROUTE_GROUPS.iter().any(|(g, routes, _)| self.routes.iter().any(|r| r == g) && routes.contains(&route))
+    }
+
+    pub fn json(&self) -> Json {
+        json!({"preset": self.preset, "routes": self.routes, "apps": self.apps})
+    }
+
+    /// An allowance from the API: `routes` (names of [`ROUTE_GROUPS`]) and
+    /// `apps` (apps' names).
+    pub fn of(routes: Option<&Json>, apps: Option<&Json>) -> Result<Allow, ApiError> {
+        let names = |j: Option<&Json>, what: &str| -> Result<Vec<String>, ApiError> {
+            match j {
+                None | Some(Json::Null) => Ok(Vec::new()),
+                Some(Json::Array(a)) => a.iter().map(|v| v.as_str().map(|s| s.trim().to_ascii_lowercase()).ok_or_else(|| ApiError::bad(format!("{what} is a list of names")))).collect(),
+                Some(_) => Err(ApiError::bad(format!("{what} is a list of names"))),
+            }
+        };
+        let routes = names(routes, "routes")?;
+        if let Some(r) = routes.iter().find(|r| !ROUTE_GROUPS.iter().any(|(g, _, _)| g == r)) {
+            return Err(ApiError::bad(format!("{r:?} is not a group of routes: they are {}", ROUTE_GROUPS.iter().map(|(g, _, w)| format!("{g} ({w})")).collect::<Vec<_>>().join(", "))));
+        }
+        let apps = names(apps, "apps")?;
+        if let Some(a) = apps.iter().find(|a| a.is_empty() || a.len() > 64 || !a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')) {
+            return Err(ApiError::bad(format!("{a:?} is not an app's name")));
+        }
+        Ok(Allow { preset: None, routes, apps })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.preset.is_none() && self.routes.is_empty() && self.apps.is_empty()
+    }
+}
+
+/// The presets of keys limited to tables, for the jobs they are for: each
+/// is its grants and allowance, as a key could be given them by hand.
+pub const PRESETS: &[(&str, &str)] = &[
+    ("analyst", "reads every table, and is admin of the prefix's (its own results); opens Sheets to read"),
+    ("oncall", "writes logs (OTLP too) into the prefix's tables and notes into ChloeCtx spaces ctx_<prefix>, reads the incidents, and sees the fleet's health, events, alerts and metrics"),
+    ("ml-app", "is admin of the prefix's tables: queries logged into them, their rank logs, plans, PACK, and the models of their fields"),
+    ("app-owner", "is admin of the prefix's tables (app_* for the app creator's), and names the app creator, which takes it once it checks its callers' tables"),
+];
+
+/// Preset `name` ([`PRESETS`]) over the tables `prefix` names (`team_*`):
+/// its grants and allowance.
+pub fn preset(name: &str, prefix: &str) -> Result<(Vec<Grant>, Allow), ApiError> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    let stem = prefix.strip_suffix('*').filter(|s| !s.is_empty()).ok_or_else(|| ApiError::bad(format!("a preset's prefix names tables by their start and *, as team_*, not {prefix:?}")))?;
+    let own = Grant::new(&prefix, Scope::Admin)?;
+    let g = |t: &str, s: Scope| Grant::new(t, s);
+    let mut allow = Allow { preset: Some(name.to_string()), ..Default::default() };
+    let grants = match name {
+        "analyst" => {
+            allow.apps = vec!["sheets".into()];
+            vec![g("*", Scope::Read)?, own]
+        }
+        "oncall" => {
+            allow.routes = vec!["fleet".into()];
+            let space = format!("ctx_{}*", stem.strip_prefix("ctx_").unwrap_or(stem));
+            vec![g(&prefix, Scope::Write)?, g(&space, Scope::Write)?, g("ctx_incidents", Scope::Read)?]
+        }
+        "ml-app" => vec![own],
+        "app-owner" => {
+            allow.apps = vec!["apps".into()];
+            vec![own]
+        }
+        _ => return Err(ApiError::bad(format!("{name:?} is not a preset: they are {}", PRESETS.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join("; ")))),
+    };
+    Ok((grants, allow))
 }
 
 impl Principal {
     pub fn open() -> Principal {
-        Principal { name: "open".into(), key: None, scope: Scope::Admin, root: true, tables: None }
+        Principal { name: "open".into(), key: None, scope: Scope::Admin, root: true, tables: None, allow: None }
     }
 
     /// The `--token`'s holder: the root on a server without a cluster
     /// token (`root`), else an admin.
     fn token(root: bool) -> Principal {
-        Principal { name: "token".into(), key: None, scope: Scope::Admin, root, tables: None }
+        Principal { name: "token".into(), key: None, scope: Scope::Admin, root, tables: None, allow: None }
     }
 
     /// Another server of the cluster, by the cluster's token.
     pub fn cluster() -> Principal {
-        Principal { name: "cluster".into(), key: None, scope: Scope::Admin, root: true, tables: None }
+        Principal { name: "cluster".into(), key: None, scope: Scope::Admin, root: true, tables: None, allow: None }
     }
 
     /// Whether this is anyone, on a server with no credential to check.
@@ -146,8 +249,31 @@ impl Principal {
         let mut j = json!({"name": self.name, "key": self.key, "scope": self.scope.name(), "root": self.root});
         if let Some(t) = &self.tables {
             j["tables"] = grants_json(t);
+            // What its scope means: its tables', not the server's.
+            j["limited"] = json!(true);
+        }
+        if let Some(a) = &self.allow {
+            if let Some(p) = &a.preset {
+                j["preset"] = json!(p);
+            }
+            j["allow"] = a.json();
         }
         j
+    }
+
+    /// Whether a key limited to tables was given route `route`
+    /// ([`Allow::routes`]).
+    pub fn allowed_route(&self, method: &axum::http::Method, route: &str) -> bool {
+        self.allow.as_ref().is_some_and(|a| a.route(method, route))
+    }
+
+    /// Whether it reads every table: a key of every table of read scope or
+    /// more, or one limited to tables with a grant of `*`.
+    pub fn reads_all(&self) -> bool {
+        match &self.tables {
+            None => self.scope >= Scope::Read,
+            Some(g) => g.iter().any(|g| g.table == "*" && g.scope >= Scope::Read),
+        }
     }
 
     /// A key limited to some tables ([`Grant`]).
@@ -310,6 +436,10 @@ pub struct Key {
     /// `scope`. Its digest is then kept after a mark ([`LIMITED`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tables: Option<Vec<Grant>>,
+    /// What it may reach beyond its tables' routes, for a key limited to
+    /// tables ([`Allow`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Allow>,
 }
 
 impl Key {
@@ -319,6 +449,14 @@ impl Key {
             "owner": self.owner, "note": self.note, "last_addr": self.last_addr});
         if let Some(t) = &self.tables {
             j["tables"] = grants_json(t);
+            // Its scope is its tables', not the server's.
+            j["limited"] = json!(true);
+        }
+        if let Some(a) = self.allow.as_ref().filter(|_| self.tables.is_some()) {
+            if let Some(p) = &a.preset {
+                j["preset"] = json!(p);
+            }
+            j["allow"] = a.json();
         }
         j
     }
@@ -334,7 +472,9 @@ impl Key {
             _ => return None,
         };
         let scope = tables.as_deref().map_or(self.scope, |t| widest(t).min(self.scope));
-        Some(Principal { name: self.name.clone(), key: Some(self.id.clone()), scope, root: false, tables })
+        // An allowance is a limited key's alone.
+        let allow = self.allow.clone().filter(|_| tables.is_some()).map(Arc::new);
+        Some(Principal { name: self.name.clone(), key: Some(self.id.clone()), scope, root: false, tables, allow })
     }
 }
 
@@ -432,6 +572,11 @@ impl KeySet {
                     // tables: the limits stay.
                     if x.tables.is_none() && k.tables.is_some() {
                         x.tables = k.tables.clone();
+                        changed = true;
+                    }
+                    // Likewise its allowance, which such a server drops.
+                    if x.allow.is_none() && k.allow.is_some() {
+                        x.allow = k.allow.clone();
                         changed = true;
                     }
                 }
@@ -568,7 +713,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables) };
+        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables), allow: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
@@ -657,6 +802,17 @@ impl Keys {
     /// manage the server.
     #[allow(clippy::too_many_arguments)]
     pub fn create_limited(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        self.create_allowed(name, scope, tables, None, expires_ms, owner, note, token, in_cluster)
+    }
+
+    /// [`Self::create_limited`], a key limited to tables given `allow`
+    /// too ([`Allow`]; refused for a key of every table).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_allowed(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, allow: Option<Allow>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        let allow = allow.filter(|a| !a.is_empty());
+        if allow.is_some() && tables.is_none() {
+            return Err(ApiError::bad("routes, apps and presets are for a key limited to tables: a key of every table reaches every route its scope allows"));
+        }
         let name = name.trim();
         if name.starts_with("app:") {
             return Err(ApiError::bad("a key's name does not start with app: (the names of the keys a server makes for the apps it starts)"));
@@ -684,7 +840,7 @@ impl Keys {
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: stored_digest(&secret, tables.is_some()), last_used_ms: 0, owner, note, last_addr: None, tables };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: stored_digest(&secret, tables.is_some()), last_used_ms: 0, owner, note, last_addr: None, tables, allow };
         let mut next = set.clone();
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {

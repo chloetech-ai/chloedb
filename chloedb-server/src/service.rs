@@ -2129,7 +2129,20 @@ impl Service {
     /// its stored functions written out.
     async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
-        let embedded = self.embed_texts(sql, params).await?;
+        let mut embedded = self.embed_texts(sql, params).await?;
+        // A rank profile whose body takes text where a vector goes
+        // (`similarity(emb, :q)`, `embed(:q)`): written out, its texts are
+        // embedded as a query's are, and the plan names the profile as it
+        // would have.
+        let mut profiled = None;
+        if embedded.is_none() && contains_word(sql, "rank_profile") {
+            if let Some((written, r)) = self.written_profile(sql) {
+                if let Some(e) = self.embed_texts(&written.1, params).await? {
+                    embedded = Some(e);
+                    profiled = Some((written.0, r));
+                }
+            }
+        }
         let (sql, params) = match &embedded {
             Some((s, p)) => (s.as_str(), p),
             None => (sql, params),
@@ -2140,10 +2153,25 @@ impl Service {
             let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
             compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
         };
-        match run() {
-            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => Ok(run()?),
-            r => Ok(r?),
-        }
+        let plan = match run() {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => run()?,
+            r => r?,
+        };
+        Ok(match profiled {
+            Some((table, r)) => profile::mark(plan, &table, &r),
+            None => plan,
+        })
+    }
+
+    /// Query `sql` written out with the rank profile it ranks by
+    /// ([`profile::expand`]): its table and text, and the profile; `None`
+    /// when it ranks by none (or does not parse: the plan says why).
+    fn written_profile(&self, sql: &str) -> Option<((String, String), chloedb::query::ir::ProfileRef)> {
+        let statements = chloedb::query::parse::parse(sql).ok()?;
+        let [sqlparser::ast::Statement::Query(q)] = statements.as_slice() else { return None };
+        let (out, r) = profile::expand(q, &|t, n| self.rank_profile(t, n)).ok()??;
+        let table = crate::scoped::named_tables(sql).into_iter().next()?;
+        Some(((table, out.to_string()), r))
     }
 
     /// Query `sql` with the texts it gives where vectors go embedded
@@ -2416,18 +2444,48 @@ impl Service {
     /// vectors, as `maxsim` takes them; that of a SPARSE field embedded by
     /// a learned sparse model, its term weights, as `similarity` takes them.
     pub async fn params(self: &Arc<Self>, j: Option<&Json>) -> Result<Params, ApiError> {
+        self.params_for(j, None, &Principal::open()).await
+    }
+
+    /// [`Self::params`] of statement `sql` (when there is one), for `who`.
+    /// A `{"vector_of"}` or `{"embed"}` parameter that names no `table`
+    /// resolves against the tables the statement names: the one of them
+    /// with such a field, refused when several have one; and only when
+    /// none has, the first table of the database with one (of those `who`
+    /// may read). Whatever table it reads (a row's vector, the model of a
+    /// field, whose provider's key it may spend), `who` reads it: a key
+    /// limited to tables reads no other through a parameter.
+    pub async fn params_for(self: &Arc<Self>, j: Option<&Json>, sql: Option<&str>, who: &Principal) -> Result<Params, ApiError> {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
         let m = j.as_object().ok_or_else(|| ApiError::bad("params must be an object"))?;
+        let named: Vec<String> = sql.map(crate::scoped::named_tables).unwrap_or_default();
         for (k, v) in m {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
-                    let table = o.get("table").and_then(|f| f.as_str());
-                    let (table, field) = self.vector_field(table, o.get("field").and_then(|f| f.as_str()))?;
+                    let field = o.get("field").and_then(|f| f.as_str());
+                    let catalog = self.catalog();
+                    let has = |t: &str| {
+                        catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).is_some_and(|s| match field {
+                            Some(f) => s.field(f).is_some(),
+                            None => s.fields.iter().any(|f| matches!(f.ty, chloedb::FieldType::Vector { .. })),
+                        })
+                    };
+                    let order: Vec<String> = catalog.iter().map(|s| s.table.clone()).collect();
+                    if let Some(t) = o.get("table").and_then(|f| f.as_str()) {
+                        who.may_table(Scope::Read, t, &format!("parameter :{k} ({{\"vector_of\"}} reads a row)"))?;
+                    }
+                    let table = param_table(o.get("table").and_then(|f| f.as_str()), &named, &order, who, &has, "vector_of").map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    if table.is_none() && who.limited() {
+                        return Err(ApiError::bad(format!("parameter :{k}: no table the key {:?} may read has {}", who.name, field.map_or("a VECTOR field".to_string(), |f| format!("a field {f}")))));
+                    }
+                    let (table, field) = self.vector_field(table.as_deref(), field)?;
+                    who.may_table(Scope::Read, &table, &format!("parameter :{k} ({{\"vector_of\"}} reads a row)"))?;
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, field, e) = self.model(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named, who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    let (table, field, e) = self.model(Some(&table), o.get("field").and_then(|f| f.as_str()))?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
@@ -2470,6 +2528,55 @@ impl Service {
             p = p.set(k, value);
         }
         Ok(p)
+    }
+
+    /// The table and embedded field whose model embeds a text for `who`
+    /// (`{"embed"}`, `/v1/embed`): `field` of `table`; with no `table`, of
+    /// the one of the tables a statement names (`named`, lowercase) with
+    /// such a field, refused when several have one, else of the first
+    /// table that has one and `who` may read. `who` reads the table: its
+    /// model is the table's, and may spend its provider's key.
+    pub fn embed_target(&self, given: Option<&str>, field: Option<&str>, named: &[String], who: &Principal) -> Result<(String, String), ApiError> {
+        // A table created since the models were listed.
+        let listed = self.models();
+        let unlisted = |t: &str| !listed.iter().any(|m| m.table.eq_ignore_ascii_case(t));
+        let embeds = |t: &str| self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(t) && s.fields.iter().any(|f| f.embed.is_some()));
+        if given.into_iter().chain(named.iter().map(String::as_str)).any(|t| unlisted(t) && embeds(t)) {
+            self.refresh_models();
+        }
+        let models = self.models();
+        let has = |t: &str| {
+            models.iter().any(|m| {
+                m.table.eq_ignore_ascii_case(t)
+                    && match field {
+                        Some(f) => m.field.eq_ignore_ascii_case(f),
+                        None => m.model.is_ok(),
+                    }
+            })
+        };
+        let mut order: Vec<String> = Vec::new();
+        for m in models.iter() {
+            if !order.iter().any(|t| t.eq_ignore_ascii_case(&m.table)) {
+                order.push(m.table.clone());
+            }
+        }
+        if let Some(t) = given {
+            who.may_table(Scope::Read, t, "a text embedded by a table's model")?;
+        }
+        let table = param_table(given, named, &order, who, &has, "embed")?;
+        let none = || match (who.limited(), field) {
+            (true, Some(f)) => ApiError::bad(format!("no table the key {:?} may read has an embedded field {f}; pass a vector", who.name)),
+            (true, None) => ApiError::bad(format!("no table the key {:?} may read has a field this server can embed text for; pass a vector", who.name)),
+            (false, _) => ApiError::bad("no table has a field this server can embed text for; pass a vector"),
+        };
+        let table = match table {
+            Some(t) => t,
+            None if who.limited() => return Err(none()),
+            None => return self.model(None, field).map(|(t, f, _)| (t, f)),
+        };
+        let (table, field, _) = self.model(Some(&table), field)?;
+        who.may_table(Scope::Read, &table, &format!("a text embedded by the model of {table}.{field}"))?;
+        Ok((table, field))
     }
 
     /// The table and VECTOR field `{"vector_of": key}` reads: `field` of
@@ -2690,13 +2797,28 @@ impl Service {
     /// ([`Log::interleave`]) runs both rankings at once and answers their
     /// [`rank_log::interleave`], with each row's team.
     pub async fn query_logged(self: &Arc<Self>, who: &Principal, mut req: QueryReq, log: Log) -> Result<(Answer, rank_log::Served, Written), ApiError> {
-        who.may(Scope::Write, "a logged query (it writes the rank log)")?;
+        // A key limited to tables: write on the log's table, and read on
+        // every table the query (and an interleaved one) reads.
+        match who.limited() {
+            true => {
+                who.may_table(Scope::Write, &log.table, "a logged query (it writes the rank log)")?;
+                let (names, functions) = (self.table_names(), self.functions());
+                crate::scoped::check_reads(who, &req.sql, &names, &functions)?;
+                if let Some(il) = &log.interleave {
+                    crate::scoped::check_reads(who, &il.sql, &names, &functions)?;
+                }
+            }
+            false => who.may(Scope::Write, "a logged query (it writes the rank log)")?,
+        }
         self.takes_writes()?;
         let schema = match self.table(&log.table).await {
             Ok(s) => s,
             Err(_) => {
                 let what = format!("the first query logged to {} (it creates the table; log once with an admin key, or create it with CREATE TABLE)", log.table);
-                who.may(Scope::Admin, &what)?;
+                match who.limited() {
+                    true => who.may_table(Scope::Admin, &log.table, &what)?,
+                    false => who.may(Scope::Admin, &what)?,
+                }
                 self.sql(who, &rank_log::create_sql(&log.table)?, &Params::new(), After::Any, req.timeout_ms).await?;
                 self.table(&log.table).await?
             }
@@ -2741,6 +2863,7 @@ impl Service {
     /// table). A coordinator takes writes as SQL until its shards take write
     /// plans. A read sees the writes `after` names.
     pub async fn run_plan(self: &Arc<Self>, who: &Principal, plan: Plan, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        crate::scoped::check_plan(who, &plan)?;
         if plan.writes() {
             who.may(Scope::Write, "a write plan")?;
             if !plan.is_write() {
@@ -5893,4 +6016,30 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         assert_eq!(state.queued.load(Ordering::Relaxed), 0);
     }
+}
+
+/// The table a `{"vector_of"}` or `{"embed"}` parameter (`form`)
+/// resolves against ([`Service::params_for`]): `given`, else the one of the
+/// tables its statement names (`named`, lowercase) that `has` such a
+/// field, refused when several do; else the first of `order` (the
+/// database's) that has one and `who` may read. `None`: none has one.
+fn param_table(given: Option<&str>, named: &[String], order: &[String], who: &Principal, has: &dyn Fn(&str) -> bool, form: &str) -> Result<Option<String>, ApiError> {
+    if let Some(t) = given {
+        return Ok(Some(t.to_string()));
+    }
+    let of_statement: Vec<&String> = order.iter().filter(|t| named.iter().any(|n| n.eq_ignore_ascii_case(t)) && has(t)).collect();
+    match of_statement.as_slice() {
+        [t] => return Ok(Some(t.to_string())),
+        [] => {}
+        many => {
+            let names: Vec<&str> = many.iter().map(|t| t.as_str()).collect();
+            return Err(ApiError::bad(format!("{{\"{form}\"}} names no table, and the statement reads {} with such a field: add \"table\" to the parameter", names.join(" and "))));
+        }
+    }
+    Ok(order.iter().find(|t| has(t) && who.table_scope(t).is_some_and(|s| s >= Scope::Read)).cloned())
+}
+
+/// Whether `text` holds `word`, in any case.
+fn contains_word(text: &str, word: &str) -> bool {
+    text.as_bytes().windows(word.len()).any(|w| w.eq_ignore_ascii_case(word.as_bytes()))
 }
