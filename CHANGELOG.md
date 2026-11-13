@@ -13,6 +13,18 @@ changes collect under "Unreleased".
 
 ### Added
 
+- `chloedb-server`: feedback on the command center. Any view is taken as a
+  picture in the browser (a copy of the page drawn onto a canvas, or the
+  browser's screen capture), marked up with numbered boxes, arrows, a pen,
+  text and black boxes over what must not be kept, and sent with a note
+  (`f`, or the speech bubble in the top bar). Each item is a row of table
+  `cc_feedback` with the picture, the marks and what was under each on the
+  page, the view, and its status and priority; the **Feedback** view lists
+  and triages them. `POST /v1/feedback`, `GET /v1/feedback`,
+  `GET`/`PATCH`/`DELETE /v1/feedback/:id`, `GET /v1/feedback/:id/shot`, and
+  the MCP tools `list_feedback`, `get_feedback` (the screenshot as an
+  image) and `update_feedback`, whose `if_status` lets one agent take an
+  item.
 - ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
   queries the rank log kept that rank by a rank profile, on one snapshot,
   with the profile as it is and with the numbers a coordinate-ascent search
