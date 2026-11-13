@@ -2074,16 +2074,30 @@ impl<'a> Binder<'a> {
         let vector = match self.literal(v) {
             Ok(Value::Str(s)) if serde_json::from_str::<Vec<f32>>(&s).is_err() => {
                 let fld = &self.schema.fields[field];
-                let embedded = match &fld.embed {
-                    Some(e) => format!("{} holds {}'s embeddings of {}; ", fld.name, e.model, e.from.join(" and ")),
-                    None => String::new(),
-                };
-                return Err(err(format!(
-                    "similarity({}, ...) takes a vector, and {} is text. {embedded}give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
-                    fld.name,
-                    self.described(v),
-                    fld.name
-                )));
+                // Text is embedded only by a field's own model: a field of
+                // none takes a vector, which no other table's model makes
+                // with its dimensions.
+                return Err(err(match &fld.embed {
+                    Some(e) => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        e.model,
+                        e.from.join(" and "),
+                        self.schema.table,
+                        fld.name,
+                        fld.name
+                    ),
+                    None => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"q\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :q) by a model of {dim} dimensions",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        self.schema.table,
+                        fld.name
+                    ),
+                }));
             }
             _ => self.vector(v)?,
         };
