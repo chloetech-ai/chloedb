@@ -499,7 +499,7 @@ function render(page, r) {
       let j;
       if (logs) j = await api("/v1/logs/query", { body: { sql, params }, signal: running.signal });
       else if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
-      else if (!p.write && READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
+      else if (!p.write && READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace, steps: true }, signal: running.signal });
       else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });
       j.roundtrip_ms = performance.now() - t0;
       last = { j, sql, explain, p, reason, sent, logs };

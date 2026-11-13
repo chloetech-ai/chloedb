@@ -656,6 +656,11 @@ message QueryRequest {
   // Protocol 18: how long the scroll is kept after this page (0: the
   // server's lease TTL), an hour at most.
   uint64 keep_alive_ms = 21;
+  // Leave the steps out of the answer's statistics (stats_json's steps):
+  // a coordinator's query for a client that did not ask for them. The
+  // shard still keeps them in its own list of queries. A server that does
+  // not know the field answers them, which the coordinator drops.
+  bool skip_steps = 22;
 }
 
 // A plan (chloedb::query::ir): a statement as a tree of operators over typed

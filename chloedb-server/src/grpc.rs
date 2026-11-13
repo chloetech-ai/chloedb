@@ -273,6 +273,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         boosts_alone: r.shard && r.protocol >= BOOSTS_PROTOCOL,
         // A scroll's start names its owner ([`Grpc::query`]).
         scroll: None,
+        skip_steps: r.skip_steps,
     })
 }
 

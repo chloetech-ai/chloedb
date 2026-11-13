@@ -256,6 +256,12 @@ pub struct QueryReq {
     /// shard leaves out the boost's inputs' top rows
     /// ([`ExecOptions::boost_inputs`]). False answers them, for any other.
     pub boosts_alone: bool,
+    /// Answer without the timed steps (`stats.steps`), which are kept in
+    /// the list of queries all the same: a client's query that did not ask
+    /// for them, and a coordinator's shards for it. Most of an answer's
+    /// bytes are its steps, and a coordinator spends a sixth of its CPU
+    /// reading its shards' and writing them out again.
+    pub skip_steps: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -2562,6 +2568,17 @@ impl Service {
     /// changed since (through another coordinator, or on that shard), the
     /// coordinator asks again and plans once more.
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        let skip = req.skip_steps;
+        let mut a = self.query_steps(req).await?;
+        if skip {
+            a.rs.stats.steps = Vec::new();
+            a.rs.stats.steps_dropped = 0;
+        }
+        Ok(a)
+    }
+
+    /// [`Self::query`], with its steps.
+    async fn query_steps(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
         // A query that asks a language model about its rows
