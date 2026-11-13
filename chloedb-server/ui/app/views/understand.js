@@ -1,7 +1,13 @@
-// Query and content understanding: what the database's understanding
-// components do to a search and to a row, and where they are configured.
+// Understanding: what models make of a table's rows and of a search, as
+// workflows (views/enrich.js), and where the components are configured.
 //
-// - Explore a query: "did you mean" (/v1/correct), the words that name a
+// - Enrich rows: steps that each add a field a model makes of a row's
+//   text (a language, phrases, names, a class, a language model's text,
+//   a vector), tried on sample rows, added, and the old rows filled in.
+// - Enrich queries: steps that read a search (spelling, values, class,
+//   language, names, context) and add what they read to the request,
+//   run beside plain BM25 and saved as a search.
+// - Explore a query (folded into Enrich queries): "did you mean" (/v1/correct), the words that name a
 //   table's values (/v1/understand), each classifier's classes of the text
 //   (/v1/classify), and the top rows of plain BM25 beside the same search
 //   with understanding, expansion, synonyms or typo tolerance on, with
@@ -17,8 +23,9 @@
 import { h, clear, api, store, empty, seg, failure, sqlBlock, toggle, card, gate, toast, confirm, fmt } from "../core.js";
 import { tables, table as tableOf } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
+import { enrichRows, enrichQueries } from "./enrich.js";
 
-export default { id: "understand", title: "Query understanding", icon: "sparkle", group: "Labs", full: true, range: false, keywords: "query understanding content understanding classify classifier synonyms mine spell correct did you mean chunks chunking derive keyphrases language entities expand rm3 understand boost filter", render };
+export default { id: "understand", title: "Understanding", icon: "sparkle", group: "Labs", full: true, range: false, keywords: "query understanding content understanding enrich rows enrich queries features extract fields workflow pipeline models llm embed backfill classify classifier synonyms mine spell correct did you mean chunks chunking derive keyphrases language entities expand rm3 understand boost filter", render };
 
 const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 const fieldsOf = (t) => t?.short?.fields || [];
@@ -38,7 +45,9 @@ function render(page) {
   const save = () => store.set("qu.state", st);
   const top = h("div", { class: "qu-top" });
   const body = h("div", { class: "qu-body" });
-  page.append(h("div", { class: "qu" }, top, body));
+  page.append(h("div", { class: "qu" },
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Understanding"), h("p", {}, "What models make of each row and of each search: fields added to the rows when they are written, and features read from a search and added to its request."))),
+    top, body));
   let classifiers = [], synonyms = null;
 
   const t = () => tableOf(st.table);
@@ -58,14 +67,14 @@ function render(page) {
     if (!usable.length) { clear(body, empty("sparkle", "No text to understand", "Understanding reads a table's TEXT fields: make a table with one, then come back.")); return; }
     if (!tableOf(st.table) || !textFields(tableOf(st.table)).length) st.table = usable[0].table;
     fixFields();
-    st.tab = st.tab || "explore";
+    if (!st.tab || st.tab === "explore") st.tab = st.tab === "explore" ? "queries" : "rows";
     save(); drawTop(); draw();
     function drawTop() {
       const tsel = h("select", { class: "select", onchange: () => { st.table = tsel.value; st.field = st.vector = null; fixFields(); save(); drawTop(); draw(); } }, usable.map((x) => h("option", { value: x.table, selected: x.table === st.table }, x.table)));
       const fsel = h("select", { class: "select", title: "The text field searches read", onchange: () => { st.field = fsel.value; save(); draw(); } }, textFields(t()).map((f) => h("option", { value: f.name, selected: f.name === st.field }, f.name)));
       const vs = vectorFields(t());
       const vsel = vs.length ? h("select", { class: "select", title: "The vector field classifiers and mining embed with", onchange: () => { st.vector = vsel.value; save(); draw(); } }, vs.map((f) => h("option", { value: f.name, selected: f.name === st.vector }, f.name))) : null;
-      const tabs = seg([["explore", "Explore a query"], ["preview", "Preview rows"], ["configure", "Configure"]], st.tab, (v) => { st.tab = v; save(); draw(); });
+      const tabs = seg([["rows", "Enrich rows"], ["queries", "Enrich queries"], ["preview", "Inspect a row"], ["configure", "Configure"]], st.tab, (v) => { st.tab = v; save(); draw(); });
       clear(top,
         h("label", { class: "row nw" }, h("span", { class: "small dim" }, "Table"), tsel),
         h("label", { class: "row nw" }, h("span", { class: "small dim" }, "Text"), fsel),
@@ -80,10 +89,16 @@ function render(page) {
     if (!vectorFields(x).some((f) => f.name === st.vector)) st.vector = vectorFields(x)[0]?.name || null;
   }
 
+  let pending = null;
+  const env = () => ({ body, st, save, table: t, field: st.field, vector: st.vector, classifiers: mine, synonyms: () => synonyms,
+    redraw: (fill) => { pending = fill; draw(); } });
   function draw() {
     if (st.tab === "preview") return drawPreview();
     if (st.tab === "configure") return drawConfigure();
-    return drawExplore();
+    if (st.tab === "explore") return drawExplore();
+    if (st.tab === "queries") return enrichQueries(env());
+    const lane = enrichRows(env());
+    if (pending && lane) { const f = pending; pending = null; lane.fill(f); }
   }
 
   // ------------------------------------------------------------ explore

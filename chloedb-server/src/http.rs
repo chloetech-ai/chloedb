@@ -40,7 +40,7 @@
 //! | `POST /v1/synonyms/mine` | `{table, field, vector? \| log?, min_cos?, per_word?, max_words?, min_df?, window?, min_support?}` | `{proposals: [{from, to, rule, score, from_count, to_count}], rules, rows, words, took_ms}`: synonyms of a text field mined from its words' vectors or from a table of searches, proposed and not applied; on a server of its own |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
 //! | `GET /v1/classifiers` | | `{classifiers: [{name, version, method, table, field, labels_from, model, labels, label_names, holdout_accuracy, trained_rows, ...}]}`: the classifiers `CREATE CLASSIFIER` made, without their weights |
-//! | `POST /v1/derive/preview` | `{model, text}` | `{model, many, values}`: what a built-in content model (`builtin:lang`, `builtin:keyphrases`, `builtin:minhash`) makes of a text, as a derived KEYWORD field would hold it |
+//! | `POST /v1/derive/preview` | `{model, text, table?, field?, many?}` | `{model, many, values}`: what a content model makes of a text, as a derived KEYWORD field would hold it: a built-in one (`builtin:lang`, `builtin:keyphrases`, `builtin:minhash`), a dictionary (`dict:<table>.<field>`, the text analysed as `table`'s `field`), or a classifier (`classifier:<name>`, its best label, or with `many` the labels a `KEYWORD[]` holds, and `top`) |
 //! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
@@ -3105,8 +3105,39 @@ async fn classifiers(State(app): State<App>) -> Res {
 /// `builtin:keyphrases`, `builtin:minhash`) makes of a text, as a derived
 /// KEYWORD field of it would hold: before the field exists, or for rows
 /// written before it.
-async fn derive_preview(AxJson(b): AxJson<Json>) -> Res {
+/// `{model, text, table?, field?, many?}`: what a content model makes of a
+/// text, as a derived KEYWORD field of it would hold it. A built-in model
+/// needs nothing else; a dictionary (`dict:<table>.<field>`) reads the
+/// values its table holds now, the text analysed as `table`'s `field` is
+/// (English without them); a classifier (`classifier:<name>`) gives its
+/// best label, or with `many` the labels a `KEYWORD[]` field would hold.
+async fn derive_preview(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let (model, text) = (body_str(&b, "model")?, body_str(&b, "text")?);
+    let catalog = app.svc.catalog();
+    let schema_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).cloned().ok_or_else(|| ApiError::bad(format!("no table {t}")));
+    if model.starts_with(chloedb::content::DICT) {
+        let analyzer = match (b.get("table").and_then(Json::as_str), b.get("field").and_then(Json::as_str)) {
+            (Some(t), Some(f)) => schema_of(t)?.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer(),
+            _ => chloedb::text::Analyzer::English,
+        };
+        let d = chloedb::content::DictEntities::new(model, analyzer).map_err(|e| ApiError::bad(e.to_string()))?;
+        let dict = schema_of(&d.table)?;
+        let f = dict.field(&d.field).filter(|f| f.ty == chloedb::schema::FieldType::Keyword).ok_or_else(|| ApiError::bad(format!("{}.{} is not a KEYWORD field", dict.table, d.field)))?;
+        let key = (dict.table.clone(), f.name.clone(), analyzer);
+        if let Some(g) = app.svc.gazetteers(std::slice::from_ref(&key), None).await?.get(&key) {
+            d.set(g.clone());
+        }
+        return Ok(AxJson(json!({"model": model, "many": true, "values": d.of(text)})));
+    }
+    if let Some(name) = chloedb::content::classifier_name(model) {
+        let many = b.get("many").and_then(Json::as_bool).unwrap_or(false);
+        let c = app.svc.classify(name, text, 10).await?;
+        let values: Vec<&str> = match many {
+            false => c.label.as_deref().into_iter().collect(),
+            true => c.top.iter().filter(|(_, p)| *p >= c.min_score && *p >= 0.1).map(|(l, _)| l.as_str()).collect(),
+        };
+        return Ok(AxJson(json!({"model": model, "many": many, "values": values, "top": c.top})));
+    }
     let d = chloedb::content::open(model).map_err(|e| ApiError::bad(e.to_string()))?;
     let made = d.derive(&[chloedb::embed::Input::Text(text)])?;
     let values: Vec<&str> = made.first().map(|v| v.split(chloedb::content::SEP).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
