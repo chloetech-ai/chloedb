@@ -88,8 +88,8 @@ const CSS = `
 .sx-values label { display: flex; gap: 8px; align-items: center; padding: 2px 0; font-size: 13px; }
 .sx-home-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .sx-home-grid > * { min-width: 0; }
-.sx-scroll { overflow-x: auto; max-width: 100%; }
-.sx-scroll table { min-width: 100%; }
+.sx-hscroll { overflow-x: auto; max-width: 100%; }
+.sx-hscroll table { min-width: 100%; }
 .sx-whose { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .sx-whose button { border: 0; background: transparent; padding: 3px 10px; font-size: 12.5px; color: inherit; cursor: pointer; }
 .sx-whose button[aria-pressed="true"] { background: var(--line); font-weight: 600; }
@@ -3155,7 +3155,7 @@ function homePage(root, ctx) {
         core.card({ title: "Workbooks", tools: [whoseBar, newBtn], body: books, flush: true })),
       h("div", { class: "stack", style: { gap: "16px" } },
         core.card({ title: "Import", body: drop }),
-        core.card({ title: "Tables of the cluster", sub: "open one live, or copy it into a workbook", body: h("div", { class: "sx-scroll" }, tables), flush: true }))));
+        core.card({ title: "Tables of the cluster", sub: "open one live, or copy it into a workbook", body: h("div", { class: "sx-hscroll" }, tables), flush: true }))));
 
   async function newBook() {
     const name = await ask(core, { title: "A new workbook", label: "Its name", value: "Untitled" });
