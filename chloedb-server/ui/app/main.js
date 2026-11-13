@@ -8,6 +8,7 @@ import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
+import { openFeedback, setViewOf } from "./feedback.js";
 
 const app = document.getElementById("app");
 const byId = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
@@ -226,6 +227,9 @@ const bell = h("a", { class: "btn ghost icon", href: "#/alerts", title: "Alerts"
 const bellCount = h("span", { class: "count hidden bellc" });
 bell.append(bellCount);
 const themeBtn = h("button", { class: "btn ghost icon", title: "Light or dark (t)", onclick: toggleTheme }, icon(isDark() ? "sun" : "moon"));
+// Feedback: this view as a picture, to mark up and send (feedback.js).
+const feedbackBtn = h("button", { class: "btn ghost icon fb-open", title: "Feedback: take this view as a picture, mark what is wrong or what you want, and send it (f)", "aria-label": "Send feedback", onclick: () => openFeedback() }, icon("feedback"));
+setViewOf(() => ({ id: currentEntry?.id || current?.id || null, title: currentEntry?.title || current?.title || null }));
 const whoBtn = h("button", { class: "btn ghost sm who", title: "Who you are signed in as" }, icon("user"), h("span", {}, "…"));
 whoBtn.onclick = () => menu(whoBtn, [
   { label: "Use another key or token", icon: "access", onclick: askToken },
@@ -238,7 +242,7 @@ whoBtn.onclick = () => menu(whoBtn, [
 // button holds the range, the window, Share, the theme and the key.
 const navBtn = h("button", { class: "btn ghost icon hamb", "aria-label": "Views", title: "Views", "aria-expanded": "false", onclick: () => openNav(!shell.classList.contains("nav-open")) }, icon("menu"));
 const moreBtn = h("button", { class: "btn sm more", "aria-haspopup": "dialog", title: "Time range, Share, theme and key", onclick: () => moreSheet() }, icon("clock"), h("span", { class: "lbl" }, "1h"));
-const top = h("header", { class: "top" }, navBtn, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, moreBtn, shareBtn, bell, themeBtn, whoBtn);
+const top = h("header", { class: "top" }, navBtn, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, moreBtn, shareBtn, feedbackBtn, bell, themeBtn, whoBtn);
 // Says when the server does not answer, and that what shows is old.
 const downBar = h("div", { class: "downbar hidden", role: "alert" });
 const content = h("main", { class: "content", id: "content" });
@@ -278,6 +282,7 @@ function moreSheet() {
       timed && state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
       row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)),
       row("share", "Share a link to this view", timed ? "with this window as fixed times; it opens paused" : null, share),
+      row("feedback", "Send feedback", "mark up a picture of this view", () => setTimeout(() => openFeedback(), 250)),
       h("hr"),
       row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),
       row("user", w ? `Signed in as ${w.name}` : hasToken() ? "The key was refused" : "Signed out", w ? `${w.tables ? "limited to " + keyLabel(w) : w.scope + " key"} · use another one` : "use a key or the server's token", askToken),
@@ -509,6 +514,7 @@ const go = (hash) => () => { location.hash = hash; };
 const ACTIONS = [
   { name: "Share a link to this view and window", icon: "share", run: () => share(), hint: "s" },
   { name: "Pause or resume the live view", icon: "pause", run: () => setPaused(!state.paused), hint: "p" },
+  { name: "Send feedback: mark up a picture of this view", icon: "feedback", run: () => setTimeout(() => openFeedback(), 50), hint: "f" },
   ...RANGES.map(([k, m], i) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m), hint: String(i + 1) })),
   { name: "Show a fixed window (dates and times)", icon: "clock", run: () => pickWindow() },
   { name: "What happened overnight (Timeline, 18:00 to 08:00)", icon: "timeline", run: () => { const [a, b] = overnight(); setWindow(a, b); location.hash = link("timeline"); } },
@@ -734,7 +740,7 @@ function shortcuts() {
     ["Ctrl K, /", "Find a shard, copy, node, table, statement, alert, key, view or action"],
     ...ENTRIES.filter((e) => e.key).map((e) => [`g then ${e.key}`, `${e.title} (${e.group})`]),
     ["1 2 3 4 5", "Show the last 15 min, 1 h, 6 h, 24 h, 7 days"],
-    ["p", "Pause or go live"], ["s", "Share: copy a link to this view and window"], ["t", "Light or dark"], ["[", "Collapse or expand the sidebar"], ["?", "These shortcuts"], ["Esc", "Close a panel, a dialog or the palette"],
+    ["p", "Pause or go live"], ["s", "Share: copy a link to this view and window"], ["f", "Feedback: mark up a picture of this view and send it"], ["t", "Light or dark"], ["[", "Collapse or expand the sidebar"], ["?", "These shortcuts"], ["Esc", "Close a panel, a dialog or the palette"],
   ];
   modal({ title: "Keyboard shortcuts", wide: true, body: h("dl", { class: "kv shortcuts" }, rows.flatMap(([k, v]) => [h("dt", {}, k.split(", ").map((x, i) => [i ? " or " : "", ...x.split(" then ").map((y, j) => [j ? " then " : "", ...y.split(" ").map((z, m) => [m ? " " : "", h("kbd", {}, z)])])])), h("dd", {}, v)])) });
 }
@@ -742,8 +748,10 @@ function shortcuts() {
 let gPending = 0;
 document.addEventListener("keydown", (e) => {
   const typing = e.target.closest?.("input,textarea,select,[contenteditable=true]");
-  if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey)) { e.preventDefault(); openPalette(); return; }
-  if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".modal,.palette,.drawer")) return;
+  if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey) && !document.querySelector(".fb-ed")) { e.preventDefault(); openPalette(); return; }
+  // Feedback takes a drawer or a dialog too, so f works over them.
+  if (e.key === "f" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector(".palette,.fb-ed,.menu")) { e.preventDefault(); openFeedback(); return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".modal,.palette,.drawer,.fb-ed")) return;
   if (gPending && Date.now() - gPending < 1200 && GKEYS[e.key]) { gPending = 0; location.hash = link(GKEYS[e.key].id); e.preventDefault(); return; }
   gPending = 0;
   if (e.key === "g") gPending = Date.now();

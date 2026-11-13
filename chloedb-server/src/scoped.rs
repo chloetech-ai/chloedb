@@ -66,6 +66,10 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // themselves ([`crate::apps`]; the others refuse it there).
         "/v1/apps" => get,
         "/v1/apps/:name/*rest" => true,
+        // The command center's feedback, by its table ([`crate::feedback::may`]).
+        "/v1/feedback" => get || method == Method::POST,
+        "/v1/feedback/:id" => get || method == Method::PATCH || method == Method::DELETE,
+        "/v1/feedback/:id/shot" | "/v1/feedback/:id/thumb" => get,
         _ => false,
     }
 }

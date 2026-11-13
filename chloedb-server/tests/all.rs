@@ -34,6 +34,7 @@ mod empty_database;
 mod encode;
 mod failover;
 mod feed;
+mod feedback;
 mod fleet;
 mod follow;
 mod follow_retries;

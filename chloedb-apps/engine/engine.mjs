@@ -292,7 +292,7 @@ export class Engine extends EventEmitter {
     // app.fetch answer empty there.
     // A visitor's call (a published app's public) stays one all the way
     // down: its writes are checked as theirs, its errors only recorded.
-    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor };
+    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -338,7 +338,7 @@ export class Engine extends EventEmitter {
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
-      if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call', { visitor: !!ctx.visitor });
+      if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call', { visitor: !!(ctx.visitor || ctx.pub) });
       throw e;
     }
   }
@@ -445,7 +445,7 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, visitor: !!ctx.visitor })
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor) })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
       this.pending.add(run);
       run.finally(() => this.pending.delete(run));

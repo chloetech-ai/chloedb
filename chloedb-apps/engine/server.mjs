@@ -546,6 +546,10 @@ async function appState(appId) {
   };
 }
 
+// The options of app.ask a visitor may pass: the answer's shape only, never
+// instructions of their own, the web or a fresh (uncached) call.
+const publicAsk = (o = {}) => (o.json ? { json: true } : {});
+
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
@@ -690,14 +694,14 @@ const routes = [
     return { request: r.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where() }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where() }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where() }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where() }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/signout$/, async (b, m, url, cx) => { await services.signOut(tokenOf(cx.req)); setSession(cx.res, null); return { ok: true }; }],
   // A published app's people are for its signed-in members only, and their
   // emails for its owner: never for someone passing by.
@@ -726,8 +730,12 @@ const routes = [
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id]) => ({ answer: await reach.ask(id, b.prompt, b.opts || {}) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id]) => ({ page: await reach.fetch(id, b.url, b.opts || {}) })],
+  // A published app's visitors name no secret, header or method of their own
+  // (reach.fetch), add no host to the owner's list of hosts asked for, and
+  // give app.ask no instructions, web search or fresh call of their own:
+  // they get the plain call, under the app's switches and limits.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id], url, cx) => ({ answer: await reach.ask(id, b.prompt, cx.public ? publicAsk(b.opts) : b.opts || {}) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id], url, cx) => ({ page: await reach.fetch(id, b.url, cx.public ? {} : b.opts || {}, { pub: !!cx.public }) })],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => reachOf(id, await engine.view(id))],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => {
     const on = await reach.setSwitches(id, b || {});
@@ -766,6 +774,10 @@ const routes = [
     return { ok: true };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/error$/, async (b, [id], url, cx) => {
+    // A published app's visitors start no build: their text would go into
+    // the model's prompt, and a repair becomes the live version. Their
+    // errors are logged for the owner to see in the studio.
+    if (cx.public) { log(`[${id}] error from a visitor (no repair): ${String(b.cap || '').slice(0, 40)} ${String(b.message || '').slice(0, 200)}`); return { ok: true, repairing: false }; }
     const cap = String(b.cap || '');
     // An error from code the app no longer runs (a window still showing an
     // older version) is not sent to the forge; nor is a visitor's (a
