@@ -8,7 +8,7 @@
 // #/table lists the tables, the user's own first.
 
 import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, seg, gate, can, sqlBlock, store, debounce, table } from "../core.js";
-import { tables, cached, table as tableOf, isStored, typeBadge, invalidate } from "../catalog.js";
+import { tables, cached, table as tableOf, isStored, isTestModel, typeBadge, invalidate } from "../catalog.js";
 import { ownerOf, isMine, folded } from "../owners.js";
 import { quoteName } from "../sqledit.js";
 import { grid, answerStats, exportMenu } from "../results.js";
@@ -216,7 +216,7 @@ function render(page, r) {
         h("div", { class: "small dim ellipsis" }, `${fmt.plural(fs.length, "field")}${text.length ? " · search " + text.map((f) => f.name).join(", ") : " · no text to search"}`),
         idx[t.table] ? h("div", { class: "small muted ellipsis", title: "on disk, and the use of the last 5 minutes" }, use(idx[t.table])) : null,
         h("div", { class: "row nw small", style: { gap: "6px", marginTop: "4px" } },
-          text.length ? h("span", { class: "badge" }, "words") : null, vecs.length ? h("span", { class: "badge accent" }, "meaning") : text.length ? h("span", { class: "badge muted", title: "Add vectors to search by meaning" }, "no meaning yet") : null,
+          text.length ? h("span", { class: "badge" }, "words") : null, vecs.length ? (vecs.every((v) => isTestModel(v.embed?.model)) ? h("span", { class: "badge muted", title: `A test model (${vecs[0].embed.model}): hashed words, no meaning` }, "test vectors") : h("span", { class: "badge accent" }, "meaning")) : text.length ? h("span", { class: "badge muted", title: "Add vectors to search by meaning" }, "no meaning yet") : null,
           o ? h("span", { class: "badge", title: o.about }, o.owner) : null));
     };
     // The list: every table a row, sortable by size and use, apps' tables
@@ -230,7 +230,7 @@ function render(page, r) {
       { key: "writes", label: "Writes/min", num: true, sort: (t) => idx[t.table]?.writes_per_min, render: (t) => idx[t.table] ? fmt.si(idx[t.table].writes_per_min || 0) : "–" },
       { key: "last", label: "Last write", num: true, sort: (t) => idx[t.table]?.last_write_ms, render: (t) => idx[t.table]?.last_write_ms ? fmt.ago(idx[t.table].last_write_ms) : "–" },
       { key: "fields", label: "Fields", num: true, sort: (t) => (t.short?.fields || []).length, render: (t) => String((t.short?.fields || []).length) },
-      { key: "search", label: "Search", sortable: false, render: (t) => h("span", { class: "row nw", style: { gap: "4px" } }, proseFields(t).length ? h("span", { class: "badge" }, "words") : h("span", { class: "muted small" }, "none"), meaningFields(t).length ? h("span", { class: "badge accent" }, "meaning") : null) },
+      { key: "search", label: "Search", sortable: false, render: (t) => h("span", { class: "row nw", style: { gap: "4px" } }, proseFields(t).length ? h("span", { class: "badge" }, "words") : h("span", { class: "muted small" }, "none"), meaningFields(t).some((v) => !isTestModel(v.embed?.model)) ? h("span", { class: "badge accent" }, "meaning") : meaningFields(t).length ? h("span", { class: "badge muted" }, "test vectors") : null) },
     ], { rows: ts, sortKey: "docs", desc: true, onRow: (t) => { location.hash = `#/table/${encodeURIComponent(t.table)}`; } });
     let how = store.get("tables.how", "tiles");
     const host = h("div");
@@ -268,7 +268,8 @@ function render(page, r) {
     const saved = store.get(key, {});
     let picked = new Set((saved.fields || text.map((f) => f.name)).filter((n) => text.some((f) => f.name === n)));
     if (!picked.size && text[0]) picked.add(text[0].name);
-    let mode = saved.mode || (vecs.length && text.length ? "both" : vecs.length ? "meaning" : "words");
+    // A test model's vectors rank by hashed words, not meaning: words first.
+    let mode = saved.mode || (vecs.length && text.length ? (isTestModel(vecs[0].embed?.model) ? "words" : "both") : vecs.length ? "meaning" : "words");
     const inp = h("input", { class: "input search-big", placeholder: text.length || vecs.length ? `Search ${t.table}: a question or some words` : "This table has no text to search", value: saved.q || "", "aria-label": `Search ${t.table}` });
     const modeBox = h("div");
     const fieldsBox = h("div", { class: "row nw small", style: { gap: "6px", flexWrap: "wrap" } });
@@ -280,7 +281,7 @@ function render(page, r) {
       vecs = meaningFields(tableOf(t.table) || t);
       if (!vecs.length && mode !== "words") mode = "words";
       if (!text.length && mode !== "meaning") mode = vecs.length ? "meaning" : "words";
-      clear(modeBox, seg([["words", "Words", "Rows with your words, the more and rarer the higher"], ["meaning", "Meaning", vecs.length ? `Rows close in meaning (${vecs[0].embed.model})` : "Add meaning first"], ["both", "Both", "Words and meaning fused: the best of the two rankings"]].filter(([k]) => (k === "words" ? text.length : vecs.length) && (k !== "both" || text.length)), mode, (v) => { mode = v; keep(); go(); }, { "aria-label": "Search by" }));
+      clear(modeBox, seg([["words", "Words", "Rows with your words, the more and rarer the higher"], ["meaning", "Meaning", vecs.length ? (isTestModel(vecs[0].embed.model) ? `${vecs[0].embed.model} is a test model: it hashes words and knows no meaning (change it in Models)` : `Rows close in meaning (${vecs[0].embed.model})`) : "Add meaning first"], ["both", "Both", "Words and meaning fused: the best of the two rankings"]].filter(([k]) => (k === "words" ? text.length : vecs.length) && (k !== "both" || text.length)), mode, (v) => { mode = v; keep(); go(); }, { "aria-label": "Search by" }));
       clear(fieldsBox, mode === "meaning" ? h("span", { class: "muted" }, `by meaning, with ${vecs[0]?.name} (${vecs[0]?.embed?.model})`) : [h("span", { class: "muted" }, "in"), text.map((f) => h("button", { class: "chip", "aria-pressed": String(picked.has(f.name)), title: picked.has(f.name) ? `Stop searching ${f.name}` : `Search ${f.name} too`, onclick: () => { if (picked.has(f.name) && picked.size > 1) picked.delete(f.name); else picked.add(f.name); keep(); drawControls(); go(); } }, typeBadge(f), f.name))]);
       clear(meaningBox, vecs.length || !text.length ? null : meaningOffer(t, () => { invalidate(); tables(true).then(() => { mode = "both"; drawControls(); go(); }); }));
     }

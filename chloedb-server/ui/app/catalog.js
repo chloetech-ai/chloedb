@@ -19,6 +19,9 @@ bus.on("token", () => { cache = null; at = 0; });
 
 export const table = (name) => cached().find((t) => t.table.toLowerCase() === String(name).toLowerCase());
 
+/** Whether a model is the test one (hash:N): words hashed, no meaning. */
+export const isTestModel = (m) => /^hash:/.test(String(m || ""));
+
 /**
  * Whether a SELECT returns a field's values: what the schema says, else
  * its type's default as the short schema leaves it out. A TEXT made from
