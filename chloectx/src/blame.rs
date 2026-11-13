@@ -3,8 +3,9 @@
 //! agent's context before it did, and whether that recall replays.
 //!
 //! The edit is found among the stored tool calls (`Edit`, `MultiEdit`,
-//! `Write`) of the file: the newest whose new text holds the line, else the
-//! newest edit of the file. Its turn gives the prompt, the calls before it
+//! `Write`) of the file: the newest that added the line (a whole line of
+//! its new text, and not one of the text it replaced), else the newest
+//! edit of the file. Its turn gives the prompt, the calls before it
 //! and the notes distilled from the turn. The turn's receipts, and the
 //! session's earlier ones still in context, give the records recalled, with
 //! their scores; each is checked against the store as it is now (deleted,
@@ -27,6 +28,9 @@ use crate::snapshots::Snapshots;
 use crate::store::{row_record, Store};
 use crate::{err, Result};
 
+/// The turns before an edit's whose recalls blame shows.
+pub const EARLIER_TURNS: i64 = 3;
+
 /// Tools whose stored calls changed a file.
 const EDIT_TOOLS: &str = "'Edit', 'MultiEdit', 'Write', 'NotebookEdit'";
 
@@ -48,10 +52,32 @@ fn new_text(r: &Record) -> &str {
     r.text.split_once('\n').map_or("", |x| x.1)
 }
 
-/// The path relative to the project, as stored edits name it.
+/// The text an edit record says it replaced (none for a `Write`).
+fn old_text(r: &Record) -> &str {
+    match (r.text.find(": replaced\n"), r.text.find("\nwith\n")) {
+        (Some(a), Some(b)) if a + 11 <= b => &r.text[a + 11..b],
+        _ => "",
+    }
+}
+
+/// Whether `text` holds `line` as one of its lines, spaces at the ends aside.
+fn has_line(text: &str, line: &str) -> bool {
+    text.lines().any(|l| l.trim() == line)
+}
+
+/// Whether edit `r` added `line`: a line of what it wrote, and not of what
+/// it replaced (an edit that only moved code around it did not write it).
+pub fn added_line(r: &Record, line: &str) -> bool {
+    has_line(new_text(r), line) && !has_line(old_text(r), line)
+}
+
+/// The path relative to the project, as stored edits name it. A relative
+/// path is taken as relative to the project: the daemon's own working
+/// directory is wherever the process that started it happened to be (the
+/// CLI makes the path absolute against its own first).
 pub fn relative(project: &str, path: &str) -> String {
     let p = Path::new(path);
-    let abs = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.to_path_buf()) };
+    let abs = if p.is_absolute() { p.to_path_buf() } else { Path::new(project).join(p) };
     let abs = abs.canonicalize().unwrap_or(abs);
     let proj = Path::new(project).canonicalize().unwrap_or_else(|_| Path::new(project).to_path_buf());
     match abs.strip_prefix(&proj) {
@@ -151,8 +177,8 @@ pub fn blame(store: &Store, book: Option<&Book>, snaps: &Snapshots, project: &st
         .collect();
     let git = line.and_then(|n| git_line(project, &rel, n));
     let wanted = line_text.as_deref().filter(|t| t.chars().count() >= 2);
-    let (edit, how) = match wanted.and_then(|t| edits.iter().find(|e| new_text(e).contains(t))) {
-        Some(e) => (Some(e), "the newest recorded edit whose new text holds the line"),
+    let (edit, how) = match wanted.and_then(|t| edits.iter().find(|e| added_line(e, t))) {
+        Some(e) => (Some(e), "the newest recorded edit that added the line"),
         None => match (wanted, git.as_ref().and_then(|g| g["time"].as_i64()).filter(|_| git.as_ref().is_some_and(|g| g["uncommitted"] != true))) {
             (Some(_), Some(t)) => (edits.iter().find(|e| e.ts <= t + 60).or(edits.first()), "no recorded edit holds the line's text; the newest edit of the file before its commit"),
             (Some(_), None) => (edits.first(), "no recorded edit holds the line's text; the newest recorded edit of the file"),
@@ -198,13 +224,15 @@ pub fn blame(store: &Store, book: Option<&Book>, snaps: &Snapshots, project: &st
         text += &format!("{:<11} {} ({})\n", n.kind.as_str(), one_line(n, 120), n.id);
     }
 
-    // The receipts of recalls before the edit, in its session.
+    // The receipts of recalls before the edit, in its session: its turn's
+    // and up to EARLIER_TURNS turns before it, read by turn (a session's
+    // oldest receipts say nothing about a late edit).
     let receipts: Vec<Receipt> = match book {
-        Some(b) => b.of_turns(&edit.session, 0, edit.turn)?.into_iter().filter(|r| r.snapshot.last_seq < edit.seq && !r.shown.is_empty()).collect(),
+        Some(b) => b.of_turns(&edit.session, edit.turn - EARLIER_TURNS, edit.turn)?.into_iter().filter(|r| r.snapshot.last_seq < edit.seq && !r.shown.is_empty()).collect(),
         None => Vec::new(),
     };
     let this_turn: Vec<&Receipt> = receipts.iter().filter(|r| r.turn == edit.turn).collect();
-    let earlier: Vec<&Receipt> = receipts.iter().filter(|r| r.turn < edit.turn).rev().take(3).collect();
+    let earlier: Vec<&Receipt> = receipts.iter().filter(|r| r.turn < edit.turn).rev().collect();
     let shown_ids: Vec<String> = this_turn.iter().chain(earlier.iter()).flat_map(|r| r.shown.iter().cloned()).collect();
     let now_recs = store.get(&shown_ids)?;
     let status = |id: &str| -> Vec<String> {

@@ -54,7 +54,7 @@ pub fn run(event: &str, user: bool) -> i32 {
     // The session's settings travel with each request: the daemon may have
     // been started from elsewhere (a shell, the MCP server) without them.
     let distill_model = std::env::var("CHLOECTX_DISTILL_MODEL").unwrap_or_default();
-    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model});
+    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model, "receipts": daemon::receipts_env()});
     let wait = budget(&event, &deep);
     match daemon::request(&dir, &project.to_string_lossy(), &req, wait) {
         Ok(resp) => {

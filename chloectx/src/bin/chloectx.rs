@@ -125,9 +125,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// The newest receipts: one for every recall and memory search.
+    /// The newest receipts: one for every recall and memory search. With
+    /// `on` or `off`, turns receipts and automatic snapshots on or off for
+    /// this project's store (in its config.json, which wins over
+    /// $CHLOECTX_RECEIPTS).
     #[command(hide = true)]
     Receipts {
+        #[arg(value_parser = ["on", "off"])]
+        switch: Option<String>,
+        /// With `off`: also remove the receipts and automatic snapshots kept so far.
+        #[arg(long, requires = "switch")]
+        purge: bool,
         #[arg(long)]
         session: Option<String>,
         #[arg(long, default_value_t = 20)]
@@ -470,6 +478,13 @@ fn main() {
         }
         Cmd::Sql { sql } => text(&send(&project, json!({"op": "sql", "sql": sql}), 30)),
         Cmd::Blame { target, no_replay, json: as_json } => {
+            // Relative to where it is typed, not to the daemon's directory.
+            let (path, line) = chloectx::blame::parse_target(&target);
+            let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone().into());
+            let target = match line {
+                Some(n) => format!("{}:{n}", abs.display()),
+                None => abs.display().to_string(),
+            };
             let r = send(&project, json!({"op": "blame", "target": target, "replay": !no_replay}), 120);
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
@@ -477,7 +492,8 @@ fn main() {
                 text(&r);
             }
         }
-        Cmd::Receipts { session, limit } => text(&send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30)),
+        Cmd::Receipts { switch: Some(s), purge, .. } => text(&send(&project, json!({"op": "receipts_switch", "on": s == "on", "purge": purge}), 600)),
+        Cmd::Receipts { switch: None, session, limit, .. } => text(&send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30)),
         Cmd::Receipt { id, no_replay, text: show, json: as_json } => {
             let r = send(&project, json!({"op": "receipt", "id": id, "replay": !no_replay, "text": show}), 120);
             if as_json {
@@ -575,10 +591,13 @@ fn main() {
                     std::process::exit(2)
                 })).collect()
             };
-            // A consistent copy of the store, which no daemon writes while it is cut.
-            let tmp = std::env::temp_dir().join(format!("chloectx-pack-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            let _ = std::fs::create_dir_all(&tmp);
+            // A consistent copy of the store, which no daemon writes while
+            // it is cut, in a directory only this user can open: it holds
+            // the whole store, its event log and session state.
+            let tmp = paths::private_temp_dir("chloectx-pack").unwrap_or_else(|e| {
+                eprintln!("chloectx pack: a private temporary directory: {e}");
+                std::process::exit(1)
+            });
             let backup = tmp.join("backup");
             send(&project, json!({"op": "backup", "dest": backup}), 3600);
             let backup_ms = t0.elapsed().as_secs_f64() * 1000.0;
