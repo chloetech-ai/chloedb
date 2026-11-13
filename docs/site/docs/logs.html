@@ -195,7 +195,7 @@ curl -s &quot;localhost:7700/v1/import?table=logs_syslog&amp;format=jsonl&quot; 
   -H &#x27;content-type: application/x-ndjson&#x27; --data-binary @syslog.jsonl
 echo</pre>
 <pre data-lang="text" data-title="Output" class="output">648 lines
-{&quot;skipped_fields&quot;:[],&quot;took_ms&quot;:...</pre>
+{&quot;receipt&quot;:{&quot;collapsed&quot;:0,&quot;deleted&quot;:0,&quot;inserted&quot;:648,...</pre>
 <p>The same call imports lines from a script or a cron job: <code>printf '%s\n' '{"ts": "...", "host": "...", "body": "..."}' | curl ... --data-binary @-</code>.</p>
 <h2 id="the-first-five-queries-of-an-incident">The first five queries of an incident<a class="anchor" href="#the-first-five-queries-of-an-incident" aria-label="Link to this section">#</a></h2>
 <p>Every query here runs with the on-call key, through <code>POST /v1/sql</code>. This shell function sends one and prints its rows:</p>

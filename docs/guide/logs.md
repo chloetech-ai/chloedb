@@ -172,7 +172,7 @@ echo
 
 ```text output
 648 lines
-{"skipped_fields":[],"took_ms":...
+{"receipt":{"collapsed":0,"deleted":0,"inserted":648,...
 ```
 
 The same call imports lines from a script or a cron job: `printf '%s\n' '{"ts": "...", "host": "...", "body": "..."}' | curl ... --data-binary @-`.
