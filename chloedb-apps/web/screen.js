@@ -160,12 +160,14 @@
           const def = typeof q === 'string' ? { sql: q } : q || {};
           // An expression for sql gives the SELECT to run (one that depends on
           // state), or the rows themselves.
+          // A query that names :today and gives it no value gets the day here.
+          const bind = (sql, p) => (/:today\b/.test(sql) && (p.today === undefined || p.today === null) ? { ...p, today: app.today() } : p);
           if (isExpr(def.sql)) {
             const sql = await val(def.sql, s, where);
             if (typeof sql !== 'string') return sql;
-            return await app.sql(sql, val(def.params || {}, s, `${where}.params`));
+            return await app.sql(sql, bind(sql, val(def.params || {}, s, `${where}.params`)));
           }
-          return await app.sql(def.sql, val(def.params || {}, s, `${where}.params`));
+          return await app.sql(def.sql, bind(String(def.sql || ''), val(def.params || {}, s, `${where}.params`)));
         } catch (e) {
           // Nobody answered (the network, the engine restarting): what was
           // shown stays, and the data is asked for again shortly.

@@ -3373,3 +3373,19 @@ test('a failed build says what went wrong in a sentence (APC-7)', async () => {
   assert.match(other.title, /did not go through/);
   for (const m of ['claude exited 1: Invalid API key', 'x']) assert.doesNotMatch(explainFailure(m).title + explainFailure(m).hint, /^[a-z]/, 'a sentence starts with a capital');
 });
+
+test('a screen written as JSON gets :today as a CREATE SCREEN does: in the build\'s check and in the browser (APC-10)', async (t) => {
+  const { dryRunScreens } = await import('../engine/forge.mjs');
+  const seen = [];
+  const db = { explain: async () => ({ ir: {} }), query: async (sql, params) => { seen.push(params); if (/:today/.test(sql) && !params.today) throw new Error('strata /v1/query: query error: unbound parameter :today'); return []; } };
+  const plan = { views: [{ slug: 'plants', screen: { data: { due: 'SELECT name FROM plants WHERE next_due <= :today', mine: { sql: 'SELECT name FROM plants WHERE next_due <= :today', params: { today: '2026-01-01' } } } } }] };
+  assert.deepEqual(await dryRunScreens(db, 'a1', ['plants'], plan), [], 'no paid fix round for :today');
+  assert.match(seen[0].today, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(seen[1].today, '2026-01-01', 'a value the screen gives stays');
+  let params = null;
+  const f = await screenInFrame(t, { data: { due: 'SELECT name FROM plants WHERE next_due <= :today' }, body: [{ each: '=due', body: ['=item.name'] }] },
+    { answer: (method, args) => { if (method === 'sql') params = args[1]; return { value: [{ name: 'Fern' }] }; } });
+  if (!f) return;
+  await f.page.waitForTimeout(500);
+  assert.match(params?.today || '', /^\d{4}-\d{2}-\d{2}$/);
+});

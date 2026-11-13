@@ -671,6 +671,8 @@ export async function dryRunScreens(db, appId, names, plan) {
       if (typeof sql !== 'string' || sql.startsWith('=')) continue;
       const params = {};
       for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = guess(x, state);
+      // :today is the screen's own, as a CREATE SCREEN's query has it (screen.js binds it).
+      if (/:today\b/.test(sql) && params.today == null) params.today = today;
       // A parameter worked out from what only the running screen has (its
       // data, a helper) cannot be known here: such a query is not run, so
       // that a right query is never sent back as wrong.
