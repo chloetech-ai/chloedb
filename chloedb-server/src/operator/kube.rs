@@ -2071,7 +2071,9 @@ pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Opti
                 Ok(i) => {
                     if s.apps_track != tag || s.apps.as_ref().is_none_or(|l| l.digest != i.digest) {
                         let runs = if u.mode == Mode::On { "; the app engine runs it" } else { "" };
-                        s.note(now, format!("{tag} names {}{runs}", said(&i)));
+                        // Said as the app engine's (LIV-15): under the server's
+                        // versions, "latest names <commit>" read as the servers'.
+                        s.note(now, format!("App engine image: {tag} names {}{runs}", said(&i)));
                     }
                     s.apps = Some(i);
                     s.apps_track = tag;
