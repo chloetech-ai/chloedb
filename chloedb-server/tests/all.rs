@@ -23,6 +23,7 @@ mod arrow_leaves;
 mod autoscale;
 mod aws;
 mod chaos;
+mod cli;
 mod cloud_clusters;
 mod cluster;
 mod cluster_keys;

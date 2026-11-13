@@ -104,6 +104,22 @@ pub fn http_client() -> reqwest::ClientBuilder {
     reqwest::Client::builder().tls_built_in_native_certs(false)
 }
 
+/// Writes a line of a command's answer to stdout. A reader that stops early
+/// (`chloedb-server admin catalog | head -1`) closes the pipe, and that ends
+/// the command quietly, with exit code 0, as it ends other tools, where
+/// `println!` panics (exit code 101).
+pub fn print_out(line: &str) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("chloedb-server: writing to stdout: {e}");
+        std::process::exit(1);
+    }
+}
+
 pub mod pb {
     tonic::include_proto!("strata.v1");
 }
