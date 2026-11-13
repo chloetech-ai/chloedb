@@ -13,7 +13,7 @@ name: Nightly report
 # nothing.
 on:
   workflow_run:
-    workflows: [CI, Chaos, Fuzz, Supply chain]
+    workflows: [CI, Chaos, Fuzz, Supply chain, Perf]
     types: [completed]
     branches: [main]
 
