@@ -44,7 +44,7 @@ struct Args {
     /// The model, by the name a schema gives it.
     #[arg(long, default_value = "clap-htsat-unfused")]
     model: String,
-    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/chloedb/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep the first n recordings.

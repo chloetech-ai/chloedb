@@ -50,7 +50,7 @@ def codebook(
     balanced: bool = False,
 ) -> str:
     """Trains a semantic-ID codebook and saves it as `name` under `models`
-    (default $CHLOEDB_MODELS or ~/.local/share/strata/models); returns its
+    (default $CHLOEDB_MODELS or ~/.local/share/chloedb/models); returns its
     SHA-256.
 
     `source` is a `Database`, whose VECTOR `field` (of `table`, the first
@@ -203,7 +203,7 @@ def sequence(
     log: Any = None,
 ) -> dict:
     """Trains a sequence encoder with PyTorch and saves it as `name` under
-    `models` (default $CHLOEDB_MODELS or ~/.local/share/strata/models), for
+    `models` (default $CHLOEDB_MODELS or ~/.local/share/chloedb/models), for
     `encode('name', (SELECT item, action, ts FROM ... ORDER BY ts DESC))`
     to turn a history into a vector of VECTOR `field` of `table`.
 
@@ -294,7 +294,7 @@ def sequence(
 
 
 def _models_dir(models: str | os.PathLike | None) -> str:
-    return os.fspath(models) if models is not None else os.environ.get("CHLOEDB_MODELS") or os.environ.get("STRATA_MODELS") or os.path.expanduser("~/.local/share/strata/models")
+    return os.fspath(models) if models is not None else os.environ.get("CHLOEDB_MODELS") or os.environ.get("STRATA_MODELS") or _default_models()
 
 
 def write_vectors(source: Any, name: str, *, models: str | os.PathLike | None = None) -> int:
@@ -316,3 +316,14 @@ def write_vectors(source: Any, name: str, *, models: str | os.PathLike | None = 
     for k, v in items.items():
         written += int(source.sql(f"UPDATE {table} SET {field} = :v WHERE {pk} = :k", {"k": k, "v": v}) or 0)
     return written
+
+
+def _default_models() -> str:
+    """~/.local/share/chloedb/models, or the folder from before the rename,
+    ~/.local/share/strata/models, on a machine that has it and no
+    ~/.local/share/chloedb (as the engine picks it)."""
+    share = os.path.expanduser("~/.local/share")
+    old = os.path.join(share, "strata", "models")
+    if os.path.isdir(old) and not os.path.exists(os.path.join(share, "chloedb")):
+        return old
+    return os.path.join(share, "chloedb", "models")
