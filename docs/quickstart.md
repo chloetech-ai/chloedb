@@ -36,7 +36,7 @@ chloedb-server --version
 
 ## 2. Start it
 
-A database is one file. Give the server a path that does not exist yet and it creates an empty database there; it listens on `127.0.0.1:7700`, which only this machine can reach.
+A database is a file, with its write-ahead log and the server's own logs beside it (`quickstart.chloedb-wal`, `quickstart.chloedb.logs`). Give the server a path that does not exist yet and it creates an empty database there; it listens on `127.0.0.1:7700`, which only this machine can reach.
 
 ```sh
 mkdir -p chloedb-quickstart && cd chloedb-quickstart
