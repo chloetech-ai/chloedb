@@ -34,6 +34,75 @@ pub struct Service {
     /// The contact of crawls that give none (`--contact`): whom a site's
     /// owner reaches, in the user agent.
     pub contact: Option<String>,
+    /// Who started each crawl (its key's name), by the crawl's id.
+    owners: Mutex<std::collections::HashMap<String, String>>,
+}
+
+/// Who called, as chloedb-server says in the headers it sets on what it
+/// forwards to an app that checks its callers (`"checks_callers": true`):
+/// `x-chloedb-principal`, `x-chloedb-scope` and, for a key limited to
+/// tables, `x-chloedb-tables`. A crawl runs with this app's token narrowed
+/// to the caller's tables (`x-chloedb-as-tables`), so it makes and fills
+/// only a table the caller's key may; a key limited to tables sees and
+/// steers only its own crawls; starting one takes the write scope. A
+/// request without the headers (a program with the app's token) may do
+/// anything.
+#[derive(Clone, Debug, Default)]
+pub struct Caller {
+    pub name: Option<String>,
+    /// 0 feed, 1 read, 2 write, 3 admin.
+    pub scope: u8,
+    pub tables: Option<String>,
+}
+
+const SCOPES: [&str; 4] = ["feed", "read", "write", "admin"];
+
+impl Caller {
+    pub fn of(h: &HeaderMap) -> Caller {
+        let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let scope = get("x-chloedb-scope");
+        let level = |s: &str| SCOPES.iter().position(|x| x.eq_ignore_ascii_case(s.trim())).unwrap_or(0) as u8;
+        Caller { name: get("x-chloedb-principal").or_else(|| scope.as_ref().map(|_| "someone".into())), scope: scope.as_deref().map_or(3, level), tables: get("x-chloedb-tables").filter(|t| !t.trim().is_empty()) }
+    }
+
+    fn direct(&self) -> bool {
+        self.name.is_none()
+    }
+
+    /// The grants its crawls' statements are narrowed to.
+    pub fn as_tables(&self) -> Option<String> {
+        if self.direct() {
+            return None;
+        }
+        Some(match &self.tables {
+            Some(t) => t.clone(),
+            None => format!("*={}", SCOPES[self.scope as usize]),
+        })
+    }
+
+    /// Whether it sees a crawl `owner` started: every crawl for a key of
+    /// every table (read), its own for one limited to tables.
+    fn sees(&self, owner: Option<&str>) -> bool {
+        self.direct() || (self.tables.is_none() && self.scope >= 1) || (owner.is_some() && owner == self.name.as_deref())
+    }
+
+    /// Refuses (403) what takes the write scope.
+    fn may_write(&self, what: &str) -> Result<(), ApiError> {
+        if self.direct() || self.scope >= 2 {
+            return Ok(());
+        }
+        Err(ApiError(StatusCode::FORBIDDEN, format!("{what} takes a key that may write; the key {:?} has the {} scope", self.name.as_deref().unwrap_or("?"), SCOPES[self.scope as usize])))
+    }
+
+    /// Refuses (403) steering a crawl it did not start, unless an admin of
+    /// every table.
+    fn may_steer(&self, owner: Option<&str>) -> Result<(), ApiError> {
+        self.may_write("steering a crawl")?;
+        if self.direct() || (self.tables.is_none() && self.scope >= 3) || (owner.is_some() && owner == self.name.as_deref()) {
+            return Ok(());
+        }
+        Err(ApiError(StatusCode::FORBIDDEN, format!("the crawl is {}'s: the key {:?} steers only its own", owner.unwrap_or("an admin"), self.name.as_deref().unwrap_or("?"))))
+    }
 }
 
 impl Service {
@@ -42,7 +111,11 @@ impl Service {
     }
 
     pub fn with_contact(strata: Strata, grower: Arc<Grower>, token: Option<String>, local: bool, contact: Option<String>) -> Arc<Service> {
-        Arc::new(Service { strata, grower, jobs: Mutex::new(Vec::new()), token: token.filter(|t| !t.is_empty()), next: AtomicU64::new(1), local, contact: contact.filter(|c| !c.trim().is_empty()) })
+        Arc::new(Service { strata, grower, jobs: Mutex::new(Vec::new()), token: token.filter(|t| !t.is_empty()), next: AtomicU64::new(1), local, contact: contact.filter(|c| !c.trim().is_empty()), owners: Mutex::default() })
+    }
+
+    fn owner(&self, id: &str) -> Option<String> {
+        self.owners.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Job>>> {
@@ -54,7 +127,13 @@ impl Service {
     }
 
     /// Starts a crawl. Two crawls may not fill one table at once.
-    pub fn start(&self, mut spec: Spec) -> Result<Arc<Job>, String> {
+    pub fn start(&self, spec: Spec) -> Result<Arc<Job>, String> {
+        self.start_for(spec, &Caller::default(), self.strata.clone())
+    }
+
+    /// Starts a crawl for `who`, writing with `strata` (narrowed to the
+    /// caller's tables).
+    fn start_for(&self, mut spec: Spec, who: &Caller, strata: Strata) -> Result<Arc<Job>, String> {
         if spec.contact.is_none() {
             spec.contact = self.contact.clone();
         }
@@ -67,8 +146,11 @@ impl Service {
             }
             jobs.push(job.clone());
         }
+        if let Some(n) = &who.name {
+            self.owners.lock().unwrap_or_else(|e| e.into_inner()).insert(job.id.clone(), n.clone());
+        }
         self.grower.watch(&job.table);
-        tokio::spawn(job.clone().run(self.strata.clone()));
+        tokio::spawn(job.clone().run(strata));
         Ok(job)
     }
 
@@ -134,6 +216,35 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
     next.run(req).await
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caller(h: &[(&'static str, &str)]) -> Caller {
+        let mut m = HeaderMap::new();
+        for (k, v) in h {
+            m.insert(*k, v.parse().unwrap());
+        }
+        Caller::of(&m)
+    }
+
+    #[test]
+    fn crawls_by_the_callers_keys() {
+        let own = caller(&[("x-chloedb-principal", "crawl-bot"), ("x-chloedb-scope", "admin"), ("x-chloedb-tables", "crawl_*=admin")]);
+        let reader = caller(&[("x-chloedb-principal", "r"), ("x-chloedb-scope", "read")]);
+        let admin = caller(&[("x-chloedb-principal", "token"), ("x-chloedb-scope", "admin")]);
+        let program = caller(&[]);
+        assert_eq!(own.as_tables().as_deref(), Some("crawl_*=admin"));
+        assert_eq!(reader.as_tables().as_deref(), Some("*=read"));
+        assert_eq!(program.as_tables(), None);
+        assert!(own.sees(Some("crawl-bot")) && !own.sees(Some("other")) && !own.sees(None));
+        assert!(reader.sees(Some("other")), "a key of every table sees every crawl");
+        assert!(reader.may_write("x").is_err());
+        assert!(own.may_steer(Some("crawl-bot")).is_ok() && own.may_steer(Some("other")).is_err());
+        assert!(admin.may_steer(Some("other")).is_ok() && program.may_steer(None).is_ok());
+    }
+}
+
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -146,6 +257,9 @@ async fn manifest() -> Json<Value> {
         "icon_svg": ICON,
         "view": "ui/view.js",
         "version": env!("CARGO_PKG_VERSION"),
+        // It refuses what x-chloedb-scope and x-chloedb-tables do not allow
+        // ([`Caller`]): the server forwards it keys limited to tables.
+        "checks_callers": true,
     }))
 }
 
@@ -172,24 +286,47 @@ pub fn default_spec() -> Spec {
     serde_json::from_value(json!({"seeds": []})).expect("defaults")
 }
 
-async fn list(State(svc): State<Shared>) -> Json<Value> {
-    let jobs: Vec<Value> = svc.jobs().iter().rev().map(|j| j.summary()).collect();
+async fn list(State(svc): State<Shared>, headers: HeaderMap) -> Json<Value> {
+    let who = Caller::of(&headers);
+    let jobs: Vec<Value> = svc
+        .jobs()
+        .iter()
+        .rev()
+        .filter_map(|j| {
+            let owner = svc.owner(&j.id);
+            who.sees(owner.as_deref()).then(|| {
+                let mut s = j.summary();
+                s["owner"] = json!(owner);
+                s
+            })
+        })
+        .collect();
     Json(json!({"crawls": jobs}))
 }
 
-async fn create(State(svc): State<Shared>, Json(spec): Json<Spec>) -> Result<Json<Value>, ApiError> {
-    let job = svc.start(spec).map_err(bad)?;
+async fn create(State(svc): State<Shared>, headers: HeaderMap, Json(spec): Json<Spec>) -> Result<Json<Value>, ApiError> {
+    let who = Caller::of(&headers);
+    who.may_write("starting a crawl")?;
+    let job = svc.start_for(spec, &who, svc.strata.as_caller(who.as_tables())).map_err(bad)?;
     Ok(Json(json!({"id": job.id, "table": job.table})))
 }
 
-async fn one(State(svc): State<Shared>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn one(State(svc): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    if !Caller::of(&headers).sees(svc.owner(&id).as_deref()) {
+        return Err(not_found(&id));
+    }
     let job = svc.job(&id).ok_or_else(|| not_found(&id))?;
     let mut s = job.status();
     s["grow"] = svc.grower.status();
     Ok(Json(s))
 }
 
-async fn forget(State(svc): State<Shared>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn forget(State(svc): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let who = Caller::of(&headers);
+    if !who.sees(svc.owner(&id).as_deref()) {
+        return Err(not_found(&id));
+    }
+    who.may_steer(svc.owner(&id).as_deref())?;
     let job = svc.job(&id).ok_or_else(|| not_found(&id))?;
     if job.active() {
         return Err(ApiError(StatusCode::CONFLICT, format!("crawl {id} runs: stop it first")));
@@ -198,7 +335,12 @@ async fn forget(State(svc): State<Shared>, Path(id): Path<String>) -> Result<Jso
     Ok(Json(json!({"forgot": id})))
 }
 
-async fn act(State(svc): State<Shared>, Path((id, action)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
+async fn act(State(svc): State<Shared>, headers: HeaderMap, Path((id, action)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
+    let who = Caller::of(&headers);
+    if !who.sees(svc.owner(&id).as_deref()) {
+        return Err(not_found(&id));
+    }
+    who.may_steer(svc.owner(&id).as_deref())?;
     let job = svc.job(&id).ok_or_else(|| not_found(&id))?;
     match action.as_str() {
         "pause" => job.pause(true),
@@ -210,7 +352,7 @@ async fn act(State(svc): State<Shared>, Path((id, action)): Path<(String, String
 }
 
 async fn preview(State(svc): State<Shared>, headers: HeaderMap, Json(mut b): Json<Value>) -> Result<Json<Value>, ApiError> {
-    let _ = headers;
+    Caller::of(&headers).may_write("a crawl's preview (it fetches pages)")?;
     let n = b.get("pages").and_then(Value::as_u64).unwrap_or(6).clamp(1, 20) as usize;
     if let Some(o) = b.as_object_mut() {
         o.remove("pages");
