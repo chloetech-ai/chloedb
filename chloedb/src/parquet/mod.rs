@@ -62,7 +62,7 @@
 mod export;
 mod import;
 
-pub use export::{export, ExportOptions, Exported, TableExport, ROW_GROUP_BYTES};
+pub use export::{export, ExportOptions, Exported, TableExport, Writer, ROW_GROUP_BYTES};
 pub use crate::arrow_rows::nonfinite_notes;
 pub use import::{import, import_new, plan, ImportOptions, Imported, Plan, Source, SAMPLE};
 
