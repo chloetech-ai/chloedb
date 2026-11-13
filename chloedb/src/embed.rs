@@ -639,7 +639,7 @@ pub fn check_fingerprint(field: &str, model: &str, want: Option<&str>, models: &
 /// field must hold.
 pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dyn Embedder>> {
     if let Some(d) = model.strip_prefix("hash:") {
-        let d = d.parse().map_err(|_| model_err(format!("model {model}: hash:<dimensions>")))?;
+        let d = d.parse::<usize>().ok().filter(|d| (1..=crate::schema::MAX_VECTOR_DIM).contains(d)).ok_or_else(|| model_err(format!("model {model}: hash:<dimensions>, from 1 to {}", crate::schema::MAX_VECTOR_DIM)))?;
         return Ok(Arc::new(HashEmbedder { dim: d }));
     }
     let dir = if Path::new(model).is_absolute() { PathBuf::from(model) } else { models.join(model) };

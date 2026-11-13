@@ -187,6 +187,10 @@ chloectx blame src/retry.rs:88 --json --no-replay
 chloectx receipts [--session S] [--limit N]
 chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release</pre>
+<p><code>blame path:line</code> reads the line from a regular file inside the project,
+after links and <code>..</code> are resolved, of at most 8 MiB; any other path is
+refused, so neither the command center's Blame tab nor the daemon's socket
+can be used to read a file elsewhere.</p>
 <p>Every <code>memory_search</code> answer ends with its receipt's id, so an agent (or
 the person reading its transcript) can ask why a record ranked where it did.</p>
 <h2 id="in-the-command-center">In the command center<a class="anchor" href="#in-the-command-center" aria-label="Link to this section">#</a></h2>
