@@ -95,7 +95,9 @@ async fn postgres() -> Option<Pg> {
         return Some(Pg { url, child: None, _dir: None });
     }
     let Some(bin) = bin_dir() else {
-        let required = std::env::var("GITHUB_ACTIONS").is_ok() && cfg!(target_os = "linux");
+        // GitHub's own Linux runners have it; CI's self-hosted runner
+        // (.github/ci-runner) does not, and skips these tests.
+        let required = std::env::var("RUNNER_ENVIRONMENT").is_ok_and(|e| e == "github-hosted") && cfg!(target_os = "linux");
         assert!(!required, "GitHub's Linux runners have Postgres: initdb not found");
         eprintln!("no Postgres here (initdb not found, CHLOEDB_TEST_POSTGRES_URL not set): skipping");
         return None;

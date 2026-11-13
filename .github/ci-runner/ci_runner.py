@@ -129,7 +129,15 @@ def create(region, size, count):
     if vol.get("droplet_ids"):
         raise RuntimeError(f"volume {VOLUME} is attached to droplet {vol['droplet_ids']}")
     token = gh(f"/repos/{REPO}/actions/runners/registration-token", "POST", admin=True)["token"]
-    user_data = "#cloud-config\nruncmd:\n  - [/opt/ci-runner/boot.sh, %s, %s, '%d']\n" % (json.dumps(token), LABEL, count)
+    # Each runner gets CPUs of its own (systemd's AllowedCPUs, picked up by
+    # boot.sh's daemon-reload), so one job's build does not slow the other's
+    # timing tests: replay's M/D/1 test measured 15.5 ms of service for 4
+    # while the other runner compiled (#466). nproc in a job is its share.
+    cpus = (
+        "n=$(nproc); k=$((n / %d)); for i in $(seq 1 %d); do d=/etc/systemd/system/ci-runner-$i.service.d; "
+        "mkdir -p $d; printf '[Service]\\nAllowedCPUs=%%s-%%s\\n' $(((i - 1) * k)) $((i * k - 1)) > $d/cpus.conf; done"
+    ) % (count, count)
+    user_data = "#cloud-config\nruncmd:\n  - [bash, -c, %s]\n  - [/opt/ci-runner/boot.sh, %s, %s, '%d']\n" % (json.dumps(cpus), json.dumps(token), LABEL, count)
     d = do("/droplets", "POST", {
         "name": NAME, "region": region, "size": size, "image": int(snap["id"]),
         "volumes": [vol["id"]], "tags": [TAG], "user_data": user_data, "monitoring": False, "ipv6": False,
