@@ -3332,7 +3332,8 @@ function homePage(root, ctx) {
     const sqlite = String.fromCharCode(...head).startsWith("SQLite format 3");
     if (sqlite) return importSqlite(file);
     const fmt = /\.xlsx?m?$/i.test(name) ? "xlsx" : /\.tsv$/i.test(name) ? "tsv" : "csv";
-    const busy = toastBusy(`Importing ${name}…`);
+    const about = fmt === "xlsx" ? null : await csvSeconds(file).catch(() => null);
+    const busy = toastBusy(`Importing ${name}…`, about);
     try {
       const b = await ctx.api(`/v1/import?name=${encodeURIComponent(name)}&format=${fmt}`, { body: file, type: "application/octet-stream", timeout: 300000 });
       busy();
@@ -3375,10 +3376,26 @@ function homePage(root, ctx) {
       } catch (e) { out.textContent = e.message; out.style.color = "var(--crit-ink)"; go.disabled = false; }
     };
   }
-  function toastBusy(msg) {
-    const el = h("div", { class: "toast info", style: { position: "fixed", right: "16px", bottom: "16px", zIndex: 95 } }, icon("clock"), h("div", { class: "grow" }, msg));
+  // A toast while a long request runs, with the seconds it has taken (an
+  // import of a large file takes a while: every cell is a row written).
+  function toastBusy(msg, about) {
+    const t0 = Date.now(), took = h("span", { class: "muted" });
+    const el = h("div", { class: "toast info", role: "status", style: { position: "fixed", right: "16px", bottom: "16px", zIndex: 95 } }, icon("clock"), h("div", { class: "grow" }, msg, " ", took));
+    const tick = () => { const s = Math.round((Date.now() - t0) / 1000); took.textContent = s >= 2 ? `${s} s${about ? ` of about ${about} s` : ""}` : ""; };
+    const timer = setInterval(tick, 1000);
     document.body.append(el);
-    return () => el.remove();
+    return () => { clearInterval(timer); el.remove(); };
+  }
+  // About how long an import of a CSV file takes: its cells, counted on its
+  // first 64 KB, at the 25,000 rows a second a server writes.
+  async function csvSeconds(file) {
+    const head = await file.slice(0, 65536).text();
+    const lines = head.split("\n").length - 1;
+    if (lines < 2) return null;
+    const first = head.split("\n")[0], d = [",", ";", "\t", "|"].reduce((a, x) => first.split(x).length > first.split(a).length ? x : a, ",");
+    const cells = (file.size / Math.max(1, head.length)) * lines * first.split(d).length;
+    const secs = Math.round(cells / 25000);
+    return secs >= 5 ? secs : null;
   }
 
   ctx.api("/v1/info", { timeout: 8000 }).then((j) => {
