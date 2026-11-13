@@ -78,6 +78,10 @@ pub struct Config {
     pub sync: bool,
     /// Calls lost while faults run, in parts per million.
     pub drop_ppm: u64,
+    /// Calls held up by 50 ms to 1.5 s while faults run, per thousand
+    /// (at most 900): long enough to arrive after their caller gave up on
+    /// them, and after calls it sent later.
+    pub held_per_mille: u64,
     /// How far each clock's rate may be from true, in parts per million.
     pub drift_ppm: u64,
     /// Faults run for this long, then the network heals, the copies start
@@ -164,10 +168,18 @@ pub enum Bug {
     /// them takes the primary's next ones on top of its own, and its
     /// history stays apart from the primary's.
     TrustsTheSameTerm,
+    /// A replica installs a copy of the primary it follows that ends
+    /// before transactions of that primary's term it holds since
+    /// ([`chloedb::storage::Database::install_copy`]), as it did before it
+    /// refused one: a copy delivered after its call gave up on it, after a newer
+    /// copy and the transactions that follow, drops what the replica
+    /// acknowledged since, and an election the replica then wins loses
+    /// them (seed 624036738 of the nightly run, finding E-0g).
+    InstallsALateCopy,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 8] = [
+    pub const ALL: [Bug; 9] = [
         Bug::AsksAKnownTerm,
         Bug::TakesWritesInALease,
         Bug::RefusesOlderTerms,
@@ -176,6 +188,7 @@ impl Bug {
         Bug::AcksAnOlderTerm,
         Bug::CommitsAfterSteppingDown,
         Bug::TrustsTheSameTerm,
+        Bug::InstallsALateCopy,
     ];
 
     pub fn name(self) -> &'static str {
@@ -188,6 +201,7 @@ impl Bug {
             Bug::AcksAnOlderTerm => "acks-an-older-term",
             Bug::CommitsAfterSteppingDown => "commits-after-stepping-down",
             Bug::TrustsTheSameTerm => "trusts-the-same-term",
+            Bug::InstallsALateCopy => "installs-a-late-copy",
         }
     }
 
@@ -217,6 +231,7 @@ impl Config {
             batch: r.between(1, 16) as usize,
             sync: true,
             drop_ppm: r.below(20_000),
+            held_per_mille: 3,
             drift_ppm: r.below(10_000),
             faults_for: Duration::from_secs(20),
             settle: Duration::from_secs(20) + copy_retry * 3,
@@ -231,6 +246,30 @@ impl Config {
             // the runs without them (which find other bugs) stay as many.
             pause_every: if r.below(2) == 0 { Duration::ZERO } else { r.ms(1000, 10_000) },
             slow_every: if r.below(2) == 0 { Duration::ZERO } else { r.ms(1000, 10_000) },
+        }
+    }
+}
+
+impl Config {
+    /// Seed `seed` where copies of the primary often reach a replica late
+    /// (`chloedb-sim --late-copies`): a ship log of one transaction sends
+    /// a copy to any replica a call left behind, a call is given up after
+    /// 500 ms, and three in ten calls while faults run arrive 50 ms to
+    /// 1.5 s later; three copies, acknowledged by a majority, three
+    /// clients. A copy then often arrives after its call gave up, after a
+    /// newer copy and the transactions that follow it: in about one seed
+    /// in five, and with [`Bug::InstallsALateCopy`] put back an
+    /// acknowledged write is lost in about one seed in a hundred.
+    pub fn late_copies(seed: u64) -> Config {
+        Config {
+            copies: 3,
+            clients: 3,
+            acks: Acks::Majority,
+            ship_max: 1,
+            call_timeout: Duration::from_millis(500),
+            copy_retry: Duration::from_millis(200),
+            held_per_mille: 300,
+            ..Config::of(seed)
         }
     }
 }
@@ -544,9 +583,10 @@ impl Sim {
     /// to the link's extra while it is slowed down.
     fn delay(&mut self, from: usize, to: usize) -> Time {
         let base = self.rng.between(50, 600);
+        let held = 30 + self.cfg.held_per_mille.min(900);
         let spike = match self.rng.below(1000) {
             0..=29 => self.rng.between(1_000, 20_000),
-            30..=32 if self.faults => self.rng.between(50_000, 1_500_000),
+            n if n < held && self.faults => self.rng.between(50_000, 1_500_000),
             _ => 0,
         };
         let slow = match self.slow.get(&(from, to)) {

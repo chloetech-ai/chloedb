@@ -48,11 +48,14 @@ NAV = [
         ("index", "Overview", "docs/guide/index.md", "guide"),
         ("quickstart", "Quickstart", "docs/quickstart.md", "guide"),
         ("concepts", "Concepts", "docs/guide/concepts.md", "guide"),
+        ("build-an-app", "Build an app on the HTTP API", "docs/chloedb/build-an-app.md", "reference"),
     ]),
     ("Search and SQL", [
         ("search", "Search guide", "docs/guide/search.md", "guide"),
         ("sql", "SQL reference", "docs/chloedb/query-language.md", "reference"),
         ("graphs", "Graphs", "docs/chloedb/graphs.md", "reference"),
+        ("next-items", "Next items", "docs/chloedb/next-items.md", "reference"),
+        ("slices", "Search on the device", "docs/chloedb/slices.md", "reference"),
         ("design", "How ChloeDB works", "docs/chloedb/index.md", "reference"),
     ]),
     ("Cookbook", [
@@ -74,6 +77,7 @@ NAV = [
         ("parquet", "Parquet and S3", "docs/chloedb/parquet.md", "reference"),
         ("postgres", "Following Postgres", "docs/chloedb/postgres.md", "reference"),
         ("opensearch", "OpenSearch API", "docs/chloedb/opensearch.md", "reference"),
+        ("compatibility", "Versions and compatibility", "docs/compatibility.md", "reference"),
     ]),
     ("Apps", [
         ("apps", "Apps on a cluster", "docs/guide/apps.md", "guide"),
@@ -361,7 +365,9 @@ def render_page(p, all_pages, by_source, hashes):
         badge = (f'<p class="doc-badge">Reference, rendered from <a href="{GITHUB}/blob/{BRANCH}/{p.rel}">{p.rel}</a>.</p>')
     toc_html = ""
     if len(toc) >= 3:
-        items = "".join(f'<li><a href="#{i}">{n}</a></li>' for _, i, n in toc)
+        # The list numbers its items, so a heading that numbers itself
+        # ("1. Install the server") loses its own number here.
+        items = "".join(f'<li><a href="#{i}">{re.sub(r"^[0-9]+[.] +", "", n)}</a></li>' for _, i, n in toc)
         toc_html = f'<details class="doc-toc" open><summary>On this page</summary><ol>{items}</ol></details>'
     start = "quickstart.html" if any(q.page == "quickstart" for q in all_pages) else "index.html"
     return TEMPLATE.format(

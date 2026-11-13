@@ -11,11 +11,7 @@ TOOLCHAIN="${1:-1.100.0}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends build-essential pkg-config git curl ca-certificates jq unzip \
-  python3 python3-venv python3-pip libssl-dev clang lld postgresql
-# Postgres as GitHub's ubuntu image has it: installed, its service off.
-# chloedb-server's tests/postgres.rs starts its own from initdb, and
-# requires one on a Linux runner of GitHub Actions.
-systemctl disable --now postgresql || true
+  python3 python3-venv python3-pip libssl-dev clang lld
 id runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner
 # Rust for the runner user; dtolnay/rust-toolchain in each job installs the
 # toolchain the job names, which is this one, so it is already there.
