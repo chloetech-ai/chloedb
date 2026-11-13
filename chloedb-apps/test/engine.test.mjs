@@ -3300,6 +3300,7 @@ test('a view whose data read is not answered says so, reads again, and reports n
   assert.match(await f.frame().evaluate(() => document.body.innerText), /No answer from the app/);
   await f.page.waitForTimeout(2600);
   assert.match(await f.frame().evaluate(() => document.body.innerText), /Fern/, 'read again by itself');
+  assert.doesNotMatch(await f.frame().evaluate(() => document.body.innerText), /No answer/, 'and the note goes once it is answered');
   const seen = await f.seen();
   assert.deepEqual(seen.filter((x) => x.kind === 'error'), [], 'nothing reported as the view\'s error');
   assert.ok(sql >= 2);

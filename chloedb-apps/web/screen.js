@@ -184,8 +184,8 @@
     let missed = false;
     function retryLoad(was) {
       missed = false;
-      if (!was) { retryIn = 0; return; }
-      if (!retryIn && window.__sa_report) window.__sa_report({ transient: true });
+      if (!was) { if (retryIn && window.__sa_offline) window.__sa_offline(false); retryIn = 0; return; }
+      if (!retryIn && window.__sa_offline) window.__sa_offline(true);
       retryIn = Math.min(30000, retryIn ? retryIn * 2 : 2000);
       clearTimeout(retryTimer);
       retryTimer = setTimeout(() => { refresh().catch(() => {}); }, retryIn);

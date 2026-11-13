@@ -110,6 +110,7 @@ const CSS = `
 .ac .msg.it.bad { background: var(--crit-soft); border-color: transparent; }
 .ac .msg.sys { align-self: stretch; max-width: none; background: transparent; border: 1px dashed var(--line-2); color: var(--text-2); font-size: 12px; }
 .ac .msg.sys .i { width: 13px; height: 13px; vertical-align: -2px; }
+.ac-down { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 14px; font-size: 12.5px; color: var(--text-2); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
 .ac .prog .stopbar { display: flex; gap: 6px; align-items: center; }
 .ac .msg .m { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .ac .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
@@ -368,6 +369,10 @@ function render(el, ctx) {
 
   // ---- live updates: long polls of the engine's events
 
+  // While the engine does not answer its events (restarting, or down), a
+  // note says so; it goes once the engine answers again.
+  const downNote = h('div', { class: 'ac-down', role: 'status', style: { display: 'none' } }, h('span', { class: 'spin' }), ' The app engine is not answering (restarting?). Trying again…');
+  el.append(downNote);
   let seq = null;
   (async () => {
     let fails = 0;
@@ -376,6 +381,7 @@ function render(el, ctx) {
         const out = await api(`/api/events?after=${seq ?? 0}&wait=${seq === null ? 0 : 20000}`, { timeout: 45000 });
         const first = seq === null;
         seq = out.seq;
+        if (fails) { downNote.style.display = 'none'; if (!first) page?.onEvent?.('app', {}); }
         fails = 0;
         if (!first) for (const e of out.events) { try { page?.onEvent?.(e.type, e.data || {}); } catch (err) { console.warn(err); } }
       } catch (e) {
@@ -383,6 +389,7 @@ function render(el, ctx) {
         // An engine from before /api/events: the page polls on its own.
         if (e.status === 404) { page?.noEvents?.(); return; }
         fails++;
+        if (transientError(e)) downNote.style.display = '';
         await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * 2 ** Math.min(fails, 4))));
       }
     }

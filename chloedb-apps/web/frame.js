@@ -18,15 +18,23 @@
   // A call the network, a restarting engine or a busy server did not answer
   // (transient) is no fault of the view's code: it is said to the person and
   // tried again, never reported as an error (which could start a repair).
-  const offline = () => {
-    if (document.querySelector('.__toast.__offline')) return;
-    const el = document.createElement('div');
-    el.className = '__toast __offline';
-    el.setAttribute('role', 'status');
-    el.textContent = 'No answer from the app just now (the connection, or it is restarting). Trying again…';
-    document.body.append(el);
-    setTimeout(() => el.remove(), 4000);
+  // offline(true) keeps the note until offline(false) (a screen reading
+  // again until it is answered); offline() shows it for a few seconds.
+  let offlineTimer = 0;
+  const offline = (on) => {
+    let el = document.querySelector('.__toast.__offline');
+    if (on === false) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.className = '__toast __offline';
+      el.setAttribute('role', 'status');
+      el.textContent = 'No answer from the app just now (the connection, or it is restarting). Trying again…';
+      document.body.append(el);
+    }
+    clearTimeout(offlineTimer);
+    if (on !== true) offlineTimer = setTimeout(() => el.remove(), 4000);
   };
+  window.__sa_offline = offline;
   const report = (e) => {
     // A rule's refusal ("Only 2 left") is an answer for the person, not a bug;
     // so is a call this visitor may not make ("read-only for visitors").
