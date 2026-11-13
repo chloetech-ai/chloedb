@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/query-language.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html" aria-current="page">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -55,6 +58,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -1137,7 +1141,7 @@ out = chloedb.train.sequence(db, &quot;next&quot;, table=&quot;items&quot;, fiel
 chloedb.train.write_vectors(db, &quot;next&quot;)   # with learn_items, the items&#x27; learned vectors into items.emb</pre>
 <p>It trains next-item prediction over each user's events, with every item in the field (<code>negatives="all"</code>) or the other targets of a batch (<code>"in_batch"</code>, for many items; with <code>logq=True</code> and <code>uniform_negatives=n</code> it no longer learns to rank popular items low) as the negatives, and writes the model where <code>models=</code> says (the models directory by default), with the item vectors it was trained with. With <code>learn_items=True</code> the item vectors are trained too, starting from the field's: <code>chloedb.train.write_vectors</code> writes them into the field, changing nothing else of each row, and until then <code>encode</code> refuses the model. Otherwise the field's vectors are kept as they are and only the model learns.
 - <strong>Equal to PyTorch's</strong>: ChloeDB's vector is the one the PyTorch module gives for the same history, within 2·10⁻⁵ (<code>chloedb/tests/sequence.rs</code>), and the items a query ranks are the ones PyTorch's vector ranks.
-- <strong>How well it ranks</strong>: on MovieLens-1M and Amazon Beauty, leave-one-out over every item as SASRec is measured, a model of two layers that reads items only has Recall@10 0.278 and 0.066 (NDCG@10 0.159 and 0.041). That is above the original SASRec's published 0.250 and 0.061, but below SASRec trained the same way as this model, with cross-entropy over every item (SASRec+, 0.315 on MovieLens), and on Beauty below counted transitions from the same events (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/next-items.md"><code>chloedb.next_items</code></a>, 0.069): good, not the best published. Reading times too, it has 0.319 and 0.077. Both MovieLens runs stopped at a time limit while still improving. ChloeDB's answers equal PyTorch's on every user (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/sequence"><code>results/sequence</code></a>, with the protocol and the published numbers), and CI checks ranking quality on MovieLens-1M against popularity and item-kNN baselines and ChloeDB's other sources (<code>chloedb/results/sequence/gate.py</code>): there a model trained for an hour has Recall@10 0.306, <code>ppr</code> over what came after what 0.242, counted transitions 0.211 and item-kNN 0.069.
+- <strong>How well it ranks</strong>: on MovieLens-1M and Amazon Beauty, leave-one-out over every item as SASRec is measured, a model of two layers that reads items only has Recall@10 0.278 and 0.066 (NDCG@10 0.159 and 0.041). That is above the original SASRec's published 0.250 and 0.061, but below SASRec trained the same way as this model, with cross-entropy over every item (SASRec+, 0.315 on MovieLens), and on Beauty below counted transitions from the same events (<a href="next-items.html"><code>chloedb.next_items</code></a>, 0.069): good, not the best published. Reading times too, it has 0.319 and 0.077. Both MovieLens runs stopped at a time limit while still improving. ChloeDB's answers equal PyTorch's on every user (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/sequence"><code>results/sequence</code></a>, with the protocol and the published numbers), and CI checks ranking quality on MovieLens-1M against popularity and item-kNN baselines and ChloeDB's other sources (<code>chloedb/results/sequence/gate.py</code>): there a model trained for an hour has Recall@10 0.306, <code>ppr</code> over what came after what 0.242, counted transitions 0.211 and item-kNN 0.069.
 - <strong>What it costs</strong>: the model alone, on one thread of a cloud VM's Xeon at 2.80 GHz, takes 0.09 ms for 10 events, 0.28 ms for 50 and 1.5 ms for 200 (p50); the whole query, reading the history and searching the field, 0.6 to 0.7 ms on Beauty's 50 events and 2 to 3 ms on MovieLens's 200. Keep <code>max_len</code> as short as the ranking allows.
 - <strong>A plan names the model and the hash of its files</strong> and needs the plan feature <code>encode</code>; a database or shard whose files of that name are others refuses it. A coordinator runs <code>encode</code> itself, from the history its shards return, so it needs the model; the shards don't.</p>
 <h3 id="decayfield-origin-scale--closeness-to-a-value"><code>decay(field, origin, scale, …)</code>: closeness to a value<a class="anchor" href="#decayfield-origin-scale--closeness-to-a-value" aria-label="Link to this section">#</a></h3>
@@ -1191,7 +1195,7 @@ SELECT id FROM papers WHERE MATCH(body, &#x27;gnn&#x27;, synonyms =&gt; 1) LIMIT
 - <strong>Mined synonyms</strong> (experimental) are proposals for that list, never applied by themselves: <code>Db::mine_synonyms</code> or <code>POST /v1/synonyms/mine</code> reads the words of a stored text field and embeds the 3,000 most frequent with the model of one of the table's vector fields, proposing pairs whose vectors are close (cosine 0.6 or more) and whose spellings are not alike (a model of word pieces puts <code>adel</code> by <code>adela</code>; numbers such as <code>b10</code> and <code>b11</code> still pass); or reads a table of searches (<code>context</code>, <code>ts</code> in seconds, <code>text</code>) and proposes <code>a =&gt; b</code> where people of two or more contexts rewrote one word of a search into another within a minute. On Wayfair's WANDS (<code>chloedb-synonyms-eval</code>, <code>chloedb/results/text/synonyms_wands.json</code>, an Intel Xeon at 2.10 GHz, 4 cores), the words of 42,994 product names embedded by potion-retrieval-32M gave pairs such as <code>kids, children</code>, <code>bike, bicycle</code> and <code>picture, photo</code> beside related words that are not synonyms (<code>animal, dog</code>, <code>hawaii, honolulu</code>), and none of the lists made a measurable difference to nDCG@10 (0.4327 without; 0.4343 with the 33 rules at cosine 0.6, p = 0.31), while the 462 rules at 0.4 lowered it to 0.4231 (p = 0.007). Read the proposals before keeping them. A mining keeps to bounds whoever asks: 200,000 rows read, 5,000 words compared, a cosine of 0.3 or more and 10 proposals a word at most; on a server it takes an admin key.</p>
 <h2 id="query-expansion-expand">Query expansion: <code>expand</code><a class="anchor" href="#query-expansion-expand" aria-label="Link to this section">#</a></h2>
 <blockquote>
-<p><strong>Experimental.</strong> This is new in the release after 0.2.1, and its options and answers may change in a later release.</p>
+<p><strong>Experimental.</strong> This is new in 0.3.0, and its options and answers may change in a later release.</p>
 </blockquote>
 <p><code>bm25(body, :q, expand =&gt; 10)</code> ranks by the query's words and by the words its first ranking's top 10 rows hold most: pseudo-relevance feedback (RM3). It finds rows that use other words for what the query asks, such as <code>antibodies</code> for <code>vaccines</code>.</p>
 <pre data-lang="sql">SELECT id, title FROM papers ORDER BY bm25(body, :q, expand =&gt; 10) DESC LIMIT 10;
@@ -1206,7 +1210,7 @@ ORDER BY bm25(body, :q, expand =&gt; :n, expand_terms =&gt; 10, expand_weight =&
 </ul>
 <h2 id="understanding-a-querys-words-understand">Understanding a query's words: <code>understand</code><a class="anchor" href="#understanding-a-querys-words-understand" aria-label="Link to this section">#</a></h2>
 <blockquote>
-<p><strong>Experimental.</strong> This is new in the release after 0.2.1, and its options and answers may change in a later release.</p>
+<p><strong>Experimental.</strong> This is new in 0.3.0, and its options and answers may change in a later release.</p>
 </blockquote>
 <p><code>bm25(field, :q, understand =&gt; 'boost')</code> reads the words of a search for the values of the table's <code>KEYWORD</code> fields they name (<code>white</code>, a colour; <code>coffee table</code>, a class) and for ranges of numbers (<code>under $300</code>), and ranks by the text and by them:</p>
 <pre data-lang="sql">SELECT id, name FROM products
@@ -1226,7 +1230,7 @@ ORDER BY bm25(body, :q, understand =&gt; &#x27;boost&#x27;, understand_fields =&
 </ul>
 <h2 id="did-you-mean-correcting-a-querys-words">Did you mean: correcting a query's words<a class="anchor" href="#did-you-mean-correcting-a-querys-words" aria-label="Link to this section">#</a></h2>
 <blockquote>
-<p><strong>Experimental.</strong> This is new in the release after 0.2.1, and its options and answers may change in a later release.</p>
+<p><strong>Experimental.</strong> This is new in 0.3.0, and its options and answers may change in a later release.</p>
 </blockquote>
 <p><code>Db::correct(table, field, text)</code> (chloedb-server's <a href="server.html"><code>POST /v1/correct</code></a>) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":</p>
 <pre data-lang="json">{&quot;text&quot;: &quot;mRNA vaccines for neural networks&quot;, &quot;changed&quot;: true,
@@ -1585,7 +1589,7 @@ ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMI
 <ul>
 <li>Each row is an edge from the row whose key is in <code>src</code> to the row whose key is in <code>dst</code>, weighted by <code>w</code>, or by 1 without a weight column (<code>edges = 'src, dst'</code>). <code>src</code> and <code>dst</code> are stored, single-valued <code>KEYWORD</code> or <code>INT</code> columns of the type of the other table's key, and the weight is a stored <code>FLOAT</code> or <code>INT</code>. If <code>src</code> references a table, walks are over that table.</li>
 <li>Writing an edge writes its row and nothing else: insert it, delete it, or add to its weight with an <code>add</code> operation, whose <code>doc</code> creates the row on the edge's first event (<a href="server.html#writes">writes</a>).</li>
-<li>Edges are directed, from <code>src</code> to <code>dst</code>. For a click on item <em>i</em> after the user's last items <em>h</em>₁ … <em>h</em>₅ (<em>h</em>₁ the most recent), adding 1/<em>g</em> to the edge <em>h</em>_g → <em>i</em> records what comes after what: <code>ppr(cooc, :x, dir =&gt; 'out')</code> and <code>REACHABLE(cooc, :x, dir =&gt; 'out')</code> follow the items that came after <em>x</em>, and <code>dir =&gt; 'both'</code>, <code>ppr</code>'s default, reads them as seen together. That is five <code>add</code> operations per event. For the next item alone, counts of what came after the last one or two items are cheaper and exact (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/next-items.md">Next items</a>).</li>
+<li>Edges are directed, from <code>src</code> to <code>dst</code>. For a click on item <em>i</em> after the user's last items <em>h</em>₁ … <em>h</em>₅ (<em>h</em>₁ the most recent), adding 1/<em>g</em> to the edge <em>h</em>_g → <em>i</em> records what comes after what: <code>ppr(cooc, :x, dir =&gt; 'out')</code> and <code>REACHABLE(cooc, :x, dir =&gt; 'out')</code> follow the items that came after <em>x</em>, and <code>dir =&gt; 'both'</code>, <code>ppr</code>'s default, reads them as seen together. That is five <code>add</code> operations per event. For the next item alone, counts of what came after the last one or two items are cheaper and exact (<a href="next-items.html">Next items</a>).</li>
 <li>An edge is followed while its weight, as it is now, is above 0. <code>UPDATE cooc SET w = w * 0.9</code> decays every weight in place, and an edge whose weight is 0 or <code>NULL</code> stays in the table without being followed. <code>src</code> and <code>dst</code> are never changed in place: an <code>UPDATE</code> of a <code>KEYWORD</code> one rewrites the row, and <code>set</code>, <code>add</code> or an <code>UPDATE</code> of an <code>INT</code> one is refused, as for <code>shard_by</code> (delete the row and insert it again).</li>
 <li><code>REACHABLE</code>, <code>PATH</code>, <code>hops()</code> and <code>ppr</code> take an edge table with every option but <code>label</code>, since its edges have none. A walk over <code>cooc</code> and a walk over an <code>EDGES</code> field holding the same edges and weights find the same rows at the same hops and the same PageRank, up to rounding.</li>
 <li>Each segment of the edge table indexes its rows by the keys they link, which flushes and merges build, so a walk finds a row's edges with one lookup of its key in each of the edge table's segments (<a href="graphs.html#edge-tables">how, and what it costs</a>).</li>
@@ -1649,7 +1653,7 @@ ORDER BY llm(&#x27;anthropic/claude-haiku-5-5&#x27;, &#x27;Grade from 0 to 10 ho
 </ul>
 <h2 id="classifiers-create-classifier-and-classify">Classifiers: <code>CREATE CLASSIFIER</code> and <code>classify()</code><a class="anchor" href="#classifiers-create-classifier-and-classify" aria-label="Link to this section">#</a></h2>
 <blockquote>
-<p><strong>Experimental.</strong> This is new in the release after 0.2.1, and its options and answers may change in a later release.</p>
+<p><strong>Experimental.</strong> This is new in 0.3.0, and its options and answers may change in a later release.</p>
 </blockquote>
 <p>A classifier learns a table's labels from its rows' embeddings, and is kept as a <a href="#stored-functions">stored function</a> of a vector: versioned, rolled back and dropped as any function is, and held by every shard of a cluster. It classifies rows by their stored vectors, and a query's text by the same model's vector of it.</p>
 <pre data-lang="sql">-- trains on the rows with a label; answers what it measured
@@ -1676,7 +1680,7 @@ DROP CLASSIFIER topic;</pre>
 </ul>
 <h2 id="chunks-of-a-tables-text-chunks_of">Chunks of a table's text: <code>chunks_of()</code><a class="anchor" href="#chunks-of-a-tables-text-chunks_of" aria-label="Link to this section">#</a></h2>
 <blockquote>
-<p><strong>Experimental.</strong> This is new in the release after 0.2.1, and its options and answers may change in a later release.</p>
+<p><strong>Experimental.</strong> This is new in 0.3.0, and its options and answers may change in a later release.</p>
 </blockquote>
 <p><code>chunks_of(table, text_field)</code> is a table of the pieces of each row's text, for a table of chunks that a vector field embeds, or a budgeted context packs from.</p>
 <pre data-lang="sql">SELECT id, n, tokens, chunk FROM chunks_of(docs, body, max_tokens =&gt; 256, overlap =&gt; 32)

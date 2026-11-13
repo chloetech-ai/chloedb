@@ -912,7 +912,7 @@ SELECT id FROM papers WHERE MATCH(body, 'gnn', synonyms => 1) LIMIT 10;
 
 ## Query expansion: `expand`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `bm25(body, :q, expand => 10)` ranks by the query's words and by the words its first ranking's top 10 rows hold most: pseudo-relevance feedback (RM3). It finds rows that use other words for what the query asks, such as `antibodies` for `vaccines`.
 
@@ -930,7 +930,7 @@ ORDER BY bm25(body, :q, expand => :n, expand_terms => 10, expand_weight => 0.7) 
 
 ## Understanding a query's words: `understand`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `bm25(field, :q, understand => 'boost')` reads the words of a search for the values of the table's `KEYWORD` fields they name (`white`, a colour; `coffee table`, a class) and for ranges of numbers (`under $300`), and ranks by the text and by them:
 
@@ -953,7 +953,7 @@ ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'class, colo
 
 ## Did you mean: correcting a query's words
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `Db::correct(table, field, text)` (chloedb-server's [`POST /v1/correct`](server.md)) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":
 
@@ -1360,7 +1360,7 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 ## Classifiers: `CREATE CLASSIFIER` and `classify()`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 A classifier learns a table's labels from its rows' embeddings, and is kept as a [stored function](#stored-functions) of a vector: versioned, rolled back and dropped as any function is, and held by every shard of a cluster. It classifies rows by their stored vectors, and a query's text by the same model's vector of it.
 
@@ -1390,7 +1390,7 @@ DROP CLASSIFIER topic;
 
 ## Chunks of a table's text: `chunks_of()`
 
-> **Experimental.** This is new in the release after 0.2.1, and its options and answers may change in a later release.
+> **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
 
 `chunks_of(table, text_field)` is a table of the pieces of each row's text, for a table of chunks that a vector field embeds, or a budgeted context packs from.
 

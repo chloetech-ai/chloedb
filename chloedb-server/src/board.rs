@@ -25,6 +25,14 @@
 //! A call that another server beat to the tenant (`NotWriter`: nothing of
 //! it was written) is tried again here, twice. A call whose commit is in
 //! doubt answers 503, and is safe to send again with the same `key`.
+//!
+//! The calls that are not the same when made twice (`claim`, `complete`,
+//! `fail`, `post`, and `add_tasks` with a task that has no id) must name
+//! themselves with a `key`: whoever sends one again, an agent after a
+//! timeout or this server after `NotWriter`, sends the same call, and it
+//! is applied once. The library ([`Board`]) leaves the key to its
+//! caller; these tools do not, because their callers are models and the
+//! networks between.
 
 use chloedb::blackboard::{Board, BoardError, NewTask};
 use chloedb::tenant::{Tenant, TenantError};
@@ -39,7 +47,7 @@ pub struct Tool {
     required: &'static [&'static str],
 }
 
-const KEY: &str = "A name of your own for this call (letters, digits, dashes). Send the same key when you send the call again after an error or a timeout: it is then applied once, and answers what it answered the first time.";
+const KEY: &str = "A name of your own for this call (letters, digits, dashes), new for each call you make. Send the same key only when you send the same call again after an error or a timeout: it is then applied once, and answers what it answered the first time.";
 const LATEST: &str = "true looks at the store first, to see what other servers committed (slower).";
 
 pub const TOOLS: [Tool; 10] = [
@@ -47,7 +55,7 @@ pub const TOOLS: [Tool; 10] = [
         name: "claim",
         description: "Claims work: gives you up to n tasks nobody is working on (open ones, and claimed ones whose lease has passed), oldest first. Each is yours for lease_s seconds: call heartbeat before that if you need longer, and complete or fail when you are through. An empty list means there is nothing to do now.",
         properties: || json!({"n": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many tasks at most (1 unless given)."}, "lease_s": {"type": "integer", "minimum": 1, "maximum": 86400, "description": "Seconds each task is yours (300 unless given)."}, "key": {"type": "string", "description": KEY}}),
-        required: &[],
+        required: &["key"],
     },
     Tool {
         name: "heartbeat",
@@ -59,19 +67,19 @@ pub const TOOLS: [Tool; 10] = [
         name: "complete",
         description: "Ends your claim on a task: it is done, with your result. Refused when the task is not yours any more (your lease passed and another agent claimed it), so a task is done once.",
         properties: || json!({"task": {"type": "string"}, "result": {"type": "string", "description": "What you did, for the others to read."}, "key": {"type": "string", "description": KEY}}),
-        required: &["task", "result"],
+        required: &["task", "result", "key"],
     },
     Tool {
         name: "fail",
         description: "Ends your claim on a task: it failed, with the reason. Nobody is given it again.",
         properties: || json!({"task": {"type": "string"}, "why": {"type": "string"}, "key": {"type": "string", "description": KEY}}),
-        required: &["task", "why"],
+        required: &["task", "why", "key"],
     },
     Tool {
         name: "post",
         description: "Records a finding for the other agents: something you learned that they should not have to learn again. Name the task it is about if there is one. When an earlier finding says the same in nearly the same words, yours is kept as its duplicate (dup_of names it).",
         properties: || json!({"body": {"type": "string"}, "task": {"type": "string"}, "key": {"type": "string", "description": KEY}}),
-        required: &["body"],
+        required: &["body", "key"],
     },
     Tool {
         name: "search",
@@ -99,7 +107,7 @@ pub const TOOLS: [Tool; 10] = [
     },
     Tool {
         name: "add_tasks",
-        description: "Takes tasks in, for agents to claim. A task whose id the board has already is left as it is, so sending a list twice makes each task with an id once; a task without an id is given one (t1, t2, ...).",
+        description: "Takes tasks in, for agents to claim. A task whose id the board has already is left as it is, so sending a list twice makes each task with an id once; a task without an id is given one (t1, t2, ...), and a list with such a task needs a key.",
         properties: || json!({"tasks": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "spec": {"type": "string", "description": "What to do, in full."}}, "required": ["title"], "additionalProperties": false}}, "key": {"type": "string", "description": KEY}}),
         required: &["tasks"],
     },
@@ -108,7 +116,7 @@ pub const TOOLS: [Tool; 10] = [
 const INSTRUCTIONS: &str = "This is a blackboard: a shared store for the agents working one job. \
 Call claim to be given tasks, do them, and call complete (or fail) for each; call heartbeat on a task that takes longer than its lease. \
 Call search before you start, and post what you learn that others would otherwise have to find out again. \
-When a call fails or times out, send it again with the same key: it is applied once.";
+Give every claim, complete, fail and post a key of its own; when a call fails or times out, send it again with the same key: it is applied once.";
 
 /// `tools/list`'s answer.
 pub fn tools_json() -> Json {
@@ -202,10 +210,14 @@ pub fn call(tenant: &Tenant, agent: &str, tool: &str, args: &Json) -> Result<Jso
         let names: Vec<&str> = takes.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
         return Err(Failed::Arguments(format!("{tool} takes no argument {unknown:?}: it takes {}", if names.is_empty() { "none".into() } else { names.join(", ") })));
     }
+    let key = text(args, "key")?.filter(|k| !k.is_empty());
+    let unnamed = || args.get("tasks").and_then(|t| t.as_array()).is_some_and(|t| t.iter().any(|t| t.get("id").map_or(true, |id| id.is_null())));
+    if key.is_none() && (spec.required.contains(&"key") || (tool == "add_tasks" && unnamed())) {
+        return Err(Failed::Arguments(format!("key is missing: give this {tool} a name of its own, and send the same key if you send the call again, so that it is applied once")));
+    }
     if !tenant.read(|db| Ok(chloedb::blackboard::is_board(db))).map_err(BoardError::Tenant)? {
         return Err(Failed::NotABoard);
     }
-    let key = text(args, "key")?;
     let board = Board::new(tenant, agent)?.latest(flag(args, "latest")?);
     let once = || -> Result<Json, Failed> {
         match tool {
