@@ -2911,7 +2911,7 @@ test('a source on a schedule fills a table in Strata once per item, through the 
 
 // ---- a published app's visitors (the appmaker persona's findings, 2026-11-13)
 
-test('a published app: who can do what, chosen by its owner; an app published before the choice keeps what it had', async () => {
+test('a published app: who can do what, chosen by its owner; an app that never chose is at the safest, look', async () => {
   const { Publish, strangerOf, forVisitor } = await import('../engine/publish.mjs');
   const rows = new Map([['old1', JSON.stringify({ on: true, name: 'old-app', hosts: [] })]]);
   const store = { db: { query: async () => [...rows].map(([app, value]) => ({ app, value })) }, putSetting: async (app, name, value) => rows.set(app, value) };
@@ -2919,9 +2919,13 @@ test('a published app: who can do what, chosen by its owner; an app published be
   await pub.load(true);
   const req = (method, host) => ({ method, headers: { host }, socket: { remoteAddress: '203.0.113.9' } });
   const at = (p) => new URL(p, 'http://x');
-  // Published before the choice: anyone can still change it, as before.
-  assert.equal(pub.of('old1').access, 'change');
-  assert.ok(!(await pub.allows(req('POST', 'old-app.apps.example.com'), at('/api/apps/old1/remove'))).denied);
+  // Published before the choice existed, and never chosen since: visitors only look,
+  // until the owner chooses more (it used to be "anyone can do anything").
+  assert.equal(pub.of('old1').access, 'look');
+  assert.match((await pub.allows(req('POST', 'old-app.apps.example.com'), at('/api/apps/old1/remove'))).denied, /read-only for visitors/);
+  assert.equal((await pub.allows(req('POST', 'old-app.apps.example.com'), at('/api/apps/old1/sql'))).denied, undefined);
+  await pub.set('old1', 'Old app', { access: 'change' });
+  assert.ok(!(await pub.allows(req('POST', 'old-app.apps.example.com'), at('/api/apps/old1/remove'))).denied, 'its owner may still choose change');
   // Never published: only me (off); a publish naming no access starts at look.
   assert.deepEqual([pub.of('n1').on, pub.of('n1').access], [false, 'look']);
   await pub.set('n1', 'New one', { on: true });

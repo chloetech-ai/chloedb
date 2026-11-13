@@ -1438,7 +1438,7 @@ __sa_ready();
         h('button', { class: 'btn sm ghost', onclick: () => core.copy(u) }, icon('copy'), 'Copy'));
       // Who can see this? Four choices, from the safest; picked, seen as a
       // stranger would see it, then made so.
-      const now = p.on ? (p.access || 'change') : 'off';
+      const now = p.on ? (p.access || 'look') : 'off';
       const pick = W.pubPick && W.pubPick.app === appId ? W.pubPick.v : now;
       const CHOICES = [
         ['off', 'Only me', 'Only you and other admins of this cluster can open it, from here or the studio.'],

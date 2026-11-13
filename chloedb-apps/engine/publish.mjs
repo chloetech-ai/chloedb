@@ -26,10 +26,10 @@
 // - add: also add rows, upload files and run its functions, and edit or
 //   delete the rows they added themselves (as told by sa_events), never
 //   anyone else's;
-// - change: edit and delete any row (what every published app could do
-//   before the choice existed, so a row without "access" means change).
+// - change: edit and delete any row, only when its owner chose it.
 // Not publishing at all ("only me") stays the default; a publish that names
-// no access starts at look. Whatever the choice, a visitor's writes are
+// no access starts at look, and so does an app published before the choice
+// existed whose row names none: until its owner chooses, the safest. Whatever the choice, a visitor's writes are
 // checked on the server (engine.mjs, checkVisitorWrite), a visitor's errors
 // are only recorded (never sent to the forge as a repair), and the app's
 // people are listed only to its signed-in members.
@@ -48,7 +48,7 @@ export function nameFor(title) {
 
 // What visitors may do, from the safest (see above).
 export const ACCESS = ['look', 'add', 'change'];
-const accessOf = (p) => (ACCESS.includes(p?.access) ? p.access : 'change');
+const accessOf = (p) => (ACCESS.includes(p?.access) ? p.access : 'look');
 // The routes a published app's page uses, and only those (method, path
 // after /api/apps/<id>), each with the access it needs. GET /api/apps/<id>
 // itself answers publicState. /error only records what a visitor's browser
@@ -142,8 +142,8 @@ export class Publish {
     const p = had || { on: false, name: null, hosts: [] };
     return {
       on: !!p.on, name: p.name || null, hosts: p.hosts || [], domain: this.domain,
-      // An app never published starts at look; one published before the choice existed keeps change.
-      access: had ? accessOf(had) : 'look', choices: ACCESS,
+      // An app that never chose (never published, or published before the choice existed) is at look.
+      access: accessOf(had), choices: ACCESS,
       urls: p.on ? [...(this.domain && p.name ? [`${this.scheme}://${p.name}.${this.domain}/`] : []), ...(p.hosts || []).map((h) => `https://${h}/`)] : [],
     };
   }
@@ -160,8 +160,8 @@ export class Publish {
       if (!ACCESS.includes(access)) throw Object.assign(new Error(`access is ${ACCESS.join(', ')}`), { status: 400 });
       next.access = access;
     }
-    // Kept as it was for an app published before the choice (change), the safest for a new one.
-    if (!next.access) next.access = had ? accessOf(had) : 'look';
+    // The owner's choice, else the safest.
+    if (!next.access) next.access = accessOf(had);
     if (name !== undefined) {
       const n = String(name || '').trim().toLowerCase();
       if (!NAME.test(n)) throw Object.assign(new Error('a name is 1 to 40 letters, digits and dashes, starting and ending with a letter or a digit'), { status: 400 });
