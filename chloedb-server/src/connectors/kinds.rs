@@ -126,6 +126,50 @@ pub fn default_schema(kind: &str, table: &str) -> String {
     format!("CREATE TABLE IF NOT EXISTS {table} ({cols}){retain}")
 }
 
+/// The table a connector's own `map` makes when its target does not exist:
+/// a column per mapped name, typed by its `"as"` (`int` an INT, `float` a
+/// FLOAT, `bool` a BOOL, `time` or `{"now": true}` a TIMESTAMP, `list` a
+/// KEYWORD[], `json` a JSON, `hash` a KEYWORD, any other TEXT), `id` (an
+/// INT `as` int, else a KEYWORD) its primary key; without an `id`, no
+/// primary key, and each record is a new row.
+pub fn map_schema(m: &Map<String, Json>, table: &str) -> Result<String, String> {
+    let mut cols = Vec::new();
+    for (name, spec) in m {
+        if name.is_empty() || name.len() > 128 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.starts_with(|c: char| c.is_ascii_digit()) {
+            return Err(format!("map column {name:?} is not a column name: letters, digits and _, not starting with a digit"));
+        }
+        let ty = match spec {
+            Json::Object(o) if o.get("now").and_then(Json::as_bool) == Some(true) && o.get("as").is_none() => "TIMESTAMP",
+            Json::Object(o) => match o.get("as").and_then(Json::as_str) {
+                Some("int") => "INT",
+                Some("float") => "FLOAT",
+                Some("bool") => "BOOL",
+                Some("time") => "TIMESTAMP",
+                Some("list") => "KEYWORD[]",
+                Some("json") => "JSON",
+                Some("hash") => "KEYWORD",
+                _ if name == "id" => "KEYWORD",
+                _ => "TEXT",
+            },
+            Json::Bool(_) => "BOOL",
+            Json::Number(n) if n.is_i64() || n.is_u64() => "INT",
+            Json::Number(_) => "FLOAT",
+            _ if name == "id" => "KEYWORD",
+            _ => "TEXT",
+        };
+        if name == "id" {
+            cols.push(format!("id {} PRIMARY KEY", if ty == "INT" { "INT" } else { "KEYWORD" }));
+        } else {
+            // Quoted: a map may name a column as SQL names a word (`when`).
+            cols.push(format!("\"{name}\" {ty}"));
+        }
+    }
+    if cols.is_empty() {
+        return Err("the map names no column".into());
+    }
+    Ok(format!("CREATE TABLE IF NOT EXISTS {table} ({})", cols.join(", ")))
+}
+
 /// The map a kind's connector writes its default target with.
 fn default_map(c: &Connector) -> Option<Json> {
     Some(match c.kind.as_str() {
@@ -218,7 +262,8 @@ pub struct Ctx<'a> {
 #[derive(Debug, Default)]
 pub struct Fetched {
     pub records: Vec<Json>,
-    /// The cursor to start from next time (none: keep the last one).
+    /// The cursor to start from next time (none: keep the last one; an
+    /// empty one: none).
     pub cursor: Option<String>,
     /// It stopped at the limit: run again soon.
     pub more: bool,
@@ -275,9 +320,9 @@ impl Ctx<'_> {
     }
 
     async fn json(&self, url: &str) -> Result<Json, String> {
-        let res = self.get(url).send().await.map_err(|e| format!("GET {}: {e}", strip_query(url)))?;
+        let res = self.get(url).send().await.map_err(|e| format!("GET {}: {}", strip_query(url), http_error(e)))?;
         let status = res.status();
-        let body = res.bytes().await.map_err(|e| format!("GET {}: {e}", strip_query(url)))?;
+        let body = res.bytes().await.map_err(|e| format!("GET {}: {}", strip_query(url), http_error(e)))?;
         if !status.is_success() {
             return Err(format!("GET {} answered {status}: {}", strip_query(url), String::from_utf8_lossy(&body).chars().take(300).collect::<String>()));
         }
@@ -285,11 +330,11 @@ impl Ctx<'_> {
     }
 
     async fn text(&self, url: &str) -> Result<String, String> {
-        let res = self.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
+        let res = self.get(url).send().await.map_err(|e| format!("GET {}: {}", strip_query(url), http_error(e)))?;
         let status = res.status();
-        let body = res.text().await.map_err(|e| format!("GET {url}: {e}"))?;
+        let body = res.text().await.map_err(|e| format!("GET {}: {}", strip_query(url), http_error(e)))?;
         if !status.is_success() {
-            return Err(format!("GET {url} answered {status}: {}", body.chars().take(300).collect::<String>()));
+            return Err(format!("GET {} answered {status}: {}", strip_query(url), body.chars().take(300).collect::<String>()));
         }
         Ok(body)
     }
@@ -304,6 +349,54 @@ fn strip_query(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }
 
+/// `e` for a message. reqwest's own text names the URL it asked, query
+/// and all, and a query may hold a secret (`?api_key={secret:token}`):
+/// this is the text without the URL, with its causes (what failed to
+/// connect, and why).
+fn http_error(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut out = e.to_string();
+    let mut cause = std::error::Error::source(&e);
+    while let Some(c) = cause {
+        let t = c.to_string();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push_str(": ");
+            out.push_str(&t);
+        }
+        cause = c.source();
+    }
+    out
+}
+
+/// `text` as it may leave a connector (in its state's `last_error`, its
+/// runs' rows, a reply, the log), all of which a read key or an operator
+/// sees: every URL's query cut off (it may hold a token), and every
+/// value of `secrets` (as given, and as it is in a URL) replaced by `***`,
+/// wherever a system echoed it.
+pub fn redact(text: &str, secrets: &HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = ["http://", "https://"].iter().filter_map(|p| rest.find(p)).min() {
+        out.push_str(&rest[..i]);
+        let end = rest[i..].find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '<' | '>' | ',' | ']')).map_or(rest.len(), |j| i + j);
+        let url = &rest[i..end];
+        out.push_str(strip_query(url));
+        if url.contains('?') {
+            out.push_str("?...");
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    for v in secrets.values().filter(|v| !v.is_empty()) {
+        out = out.replace(v.as_str(), "***");
+        let e = enc(v);
+        if e != *v {
+            out = out.replace(&e, "***");
+        }
+    }
+    out
+}
+
 fn enc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -315,8 +408,12 @@ fn enc(s: &str) -> String {
     out
 }
 
-/// One pull of `ctx`'s connector.
+/// One pull of `ctx`'s connector; its error [`redact`]ed.
 pub async fn pull(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    pull_unredacted(ctx).await.map_err(|e| redact(&e, ctx.secrets))
+}
+
+async fn pull_unredacted(ctx: &Ctx<'_>) -> Result<Fetched, String> {
     match ctx.c.kind.as_str() {
         "prometheus" => prometheus(ctx).await,
         "servicenow" => servicenow(ctx).await,
@@ -327,8 +424,12 @@ pub async fn pull(ctx: &Ctx<'_>) -> Result<Fetched, String> {
     }
 }
 
-/// The records of a push to `ctx`'s connector.
+/// The records of a push to `ctx`'s connector; its error [`redact`]ed.
 pub async fn push(ctx: &Ctx<'_>, body: &[u8], content_type: &str) -> Result<Vec<Json>, String> {
+    push_unredacted(ctx, body, content_type).await.map_err(|e| redact(&e, ctx.secrets))
+}
+
+async fn push_unredacted(ctx: &Ctx<'_>, body: &[u8], content_type: &str) -> Result<Vec<Json>, String> {
     let as_json = || serde_json::from_slice::<Json>(body).map_err(|e| format!("the body is not JSON: {e}"));
     match ctx.c.kind.as_str() {
         "webhook" => {
@@ -731,53 +832,105 @@ async fn oxidized(ctx: &Ctx<'_>, one: Option<(String, Option<String>)>) -> Resul
 
 // ----- http_json
 
+/// Whether `v` is past `b`: by number when both are numbers, else as text.
+fn higher(b: Option<&Json>, v: &Json) -> bool {
+    match (b, v) {
+        (_, Json::Null) => false,
+        (None, _) => true,
+        (Some(b), v) => match (map::number(b), map::number(v)) {
+            (Some(x), Some(y)) => y > x,
+            _ => map::text(v) > map::text(b),
+        },
+    }
+}
+
+/// `url` as it may be kept in the connector's state (which a read key
+/// sees): each secret's value, as given or as it is in a URL, back to its
+/// `{secret:NAME}`, which [`Ctx::with_secrets`] puts back when it is asked.
+fn with_placeholders(url: &str, secrets: &HashMap<String, String>) -> String {
+    let mut out = url.to_string();
+    let mut by_len: Vec<_> = secrets.iter().filter(|(_, v)| !v.is_empty()).collect();
+    by_len.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+    for (name, v) in by_len {
+        out = out.replace(&enc(v), &format!("{{secret:{name}}}")).replace(v.as_str(), &format!("{{secret:{name}}}"));
+    }
+    out
+}
+
+/// An `http_json` pull. Without a cursor that moves the URL on (a
+/// `{cursor}` in the URL and a `cursor` path in the records), a run that
+/// stops at its limit keeps the next page's URL in its cursor as
+/// `{"next": URL, "cursor": C}`, and the next run goes on from there
+/// rather than from the first page again; the run that reads the last page
+/// clears it.
 async fn http_json(ctx: &Ctx<'_>) -> Result<Fetched, String> {
     let url0 = ctx.need("url")?;
-    let cursor = ctx.cursor.clone().or_else(|| ctx.s("start").map(str::to_string)).unwrap_or_default();
-    let mut url = url0.replace("{cursor}", &enc(&cursor));
+    let kept = ctx.cursor.clone().filter(|c| !c.is_empty());
+    let resume: Option<(String, Option<String>)> = kept.as_deref().and_then(|k| serde_json::from_str::<Json>(k).ok()).and_then(|j| {
+        let next = j.get("next")?.as_str()?.to_string();
+        Some((next, j.get("cursor").and_then(Json::as_str).map(str::to_string)))
+    });
+    let cursor = match &resume {
+        Some((_, c)) => c.clone(),
+        None => kept,
+    };
+    let start_cursor = cursor.clone().or_else(|| ctx.s("start").map(str::to_string)).unwrap_or_default();
+    let mut url = match &resume {
+        Some((next, _)) => next.clone(),
+        None => url0.replace("{cursor}", &enc(&start_cursor)),
+    };
     let records_path = ctx.s("records").map(str::to_string);
     let mut out = Fetched::default();
     let mut best: Option<Json> = None;
-    for _page in 0..1000 {
+    let mut left: Option<String> = None;
+    for page in 0..1000 {
         let j = ctx.json(&ctx.with_secrets(&url)).await?;
         let batch = map::records(&j, records_path.as_deref());
         if let Some(cp) = ctx.s("cursor") {
             for r in &batch {
                 let v = map::path(r, cp);
-                let higher = match (&best, &v) {
-                    (_, Json::Null) => false,
-                    (None, _) => true,
-                    (Some(b), v) => match (map::number(b), map::number(v)) {
-                        (Some(x), Some(y)) => y > x,
-                        _ => map::text(v) > map::text(b),
-                    },
-                };
-                if higher {
+                if higher(best.as_ref(), &v) {
                     best = Some(v);
                 }
             }
         }
         out.records.extend(batch);
-        let next = ctx.s("next").map(|p| map::text(&map::path(&j, p))).filter(|n| !n.is_empty());
-        match next {
-            Some(n) if out.records.len() < ctx.limit => {
-                url = if n.starts_with("http://") || n.starts_with("https://") {
-                    n
-                } else if n.starts_with('/') {
-                    let origin: String = url0.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
-                    format!("{origin}{n}")
-                } else {
-                    n
-                };
-            }
-            Some(_) => {
-                out.more = true;
-                break;
-            }
-            None => break,
+        let Some(n) = ctx.s("next").map(|p| map::text(&map::path(&j, p))).filter(|n| !n.is_empty()) else { break };
+        let n = if n.starts_with("http://") || n.starts_with("https://") {
+            n
+        } else if n.starts_with('/') {
+            let origin: String = url0.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+            format!("{origin}{n}")
+        } else {
+            n
+        };
+        if out.records.len() >= ctx.limit || page == 999 {
+            left = Some(n);
+            break;
         }
+        url = n;
     }
-    out.cursor = best.map(|b| map::text(&b));
+    // The highest cursor value read so far in this pass.
+    let pass_best = match (best, cursor.as_ref().map(|c| Json::String(c.clone()))) {
+        (Some(b), Some(c)) => Some(if higher(Some(&c), &b) { b } else { c }),
+        (b, c) => b.or(c),
+    };
+    let pass_best = pass_best.map(|b| map::text(&b));
+    let moves_on = url0.contains("{cursor}") && ctx.s("cursor").is_some() && pass_best.is_some() && pass_best != cursor;
+    match left {
+        // The next run starts from the new cursor.
+        Some(_) if moves_on && resume.is_none() => {
+            out.more = true;
+            out.cursor = pass_best;
+        }
+        // The next run goes on from the next page.
+        Some(next) => {
+            out.more = true;
+            out.cursor = Some(json!({"next": with_placeholders(&next, ctx.secrets), "cursor": pass_best}).to_string());
+        }
+        // The last page: the pass is over.
+        None => out.cursor = Some(pass_best.unwrap_or_default()),
+    }
     Ok(out)
 }
 
@@ -807,6 +960,103 @@ mod tests {
         assert_eq!(f["status"], "In Progress");
         assert_eq!(f["url"], "https://x.atlassian.net/browse/NET-7");
         assert_eq!(f["custom"]["devices"], json!(["cr1-nyc", "cr2-nyc"]));
+    }
+
+    fn connector(kind: &str, config: Json) -> Connector {
+        Connector { name: "t".into(), kind: kind.into(), target: "t".into(), enabled: true, every_s: 60, config, push_key: None, note: String::new(), created_ms: 0, updated_ms: 0 }
+    }
+
+    #[test]
+    fn redact_cuts_queries_and_masks_secrets_wherever_they_are() {
+        let secrets: HashMap<String, String> = [("token".to_string(), "SUPER secret/1".to_string())].into();
+        let e = "GET http://h:1/x: error sending request for url (http://h:1/x?api_key=SUPER%20secret%2F1&b=2), and SUPER secret/1 echoed, see https://h/y?q=1.";
+        let r = redact(e, &secrets);
+        assert!(!r.contains("SUPER") && !r.contains("api_key"), "{r}");
+        assert_eq!(r, "GET http://h:1/x: error sending request for url (http://h:1/x?...), and *** echoed, see https://h/y?...");
+    }
+
+    #[test]
+    fn next_page_urls_keep_secrets_as_placeholders() {
+        let secrets: HashMap<String, String> = [("token".to_string(), "s3 cr/t".to_string())].into();
+        assert_eq!(with_placeholders("http://h/x?key=s3%20cr%2Ft&page=2", &secrets), "http://h/x?key={secret:token}&page=2");
+        assert_eq!(with_placeholders("http://h/s3 cr/t", &secrets), "http://h/{secret:token}");
+    }
+
+    #[test]
+    fn a_map_makes_a_table_of_its_columns() {
+        let m = json!({"id": "$.id", "title": "$.title", "n": {"path": "$.n", "as": "int"}, "when": {"path": "$.when", "as": "time"}, "seen": {"now": true}, "tags": {"path": "$.tags", "as": "list"}, "x": 1.5});
+        let ddl = map_schema(m.as_object().unwrap(), "items_t").unwrap();
+        for col in ["id KEYWORD PRIMARY KEY", "\"title\" TEXT", "\"n\" INT", "\"when\" TIMESTAMP", "\"seen\" TIMESTAMP", "\"tags\" KEYWORD[]", "\"x\" FLOAT"] {
+            assert!(ddl.contains(col), "{col}: {ddl}");
+        }
+        assert!(map_schema(json!({"bad name": "$.a"}).as_object().unwrap(), "t").is_err());
+        assert!(!map_schema(json!({"a": "$.a"}).as_object().unwrap(), "t").unwrap().contains("PRIMARY KEY"));
+    }
+
+    /// A source of `n` records, ten a page, each page naming the next.
+    async fn pages(n: usize) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::extract::Query;
+        let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let g = gets.clone();
+        let app = axum::Router::new().route(
+            "/items",
+            axum::routing::get(move |Query(q): Query<HashMap<String, String>>| {
+                let g = g.clone();
+                async move {
+                    g.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let p: usize = q.get("page").and_then(|p| p.parse().ok()).unwrap_or(0);
+                    let items: Vec<Json> = (p * 10..((p + 1) * 10).min(n)).map(|i| json!({"id": i})).collect();
+                    let next = ((p + 1) * 10 < n).then(|| format!("/items?page={}&key={}", p + 1, q.get("key").cloned().unwrap_or_default()));
+                    axum::Json(json!({"items": items, "next": next}))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        (url, gets)
+    }
+
+    #[tokio::test]
+    async fn a_pull_without_a_cursor_goes_on_from_the_page_it_stopped_at() {
+        let (up, gets) = pages(45).await;
+        let c = connector("http_json", json!({"url": format!("{up}/items?key={{secret:token}}"), "records": "$.items", "next": "$.next"}));
+        let secrets: HashMap<String, String> = [("token".to_string(), "k3y".to_string())].into();
+        let http = reqwest::Client::new();
+        let mut cursor = None;
+        let mut ids = Vec::new();
+        let mut runs = 0;
+        loop {
+            let ctx = Ctx { c: &c, cursor: cursor.clone(), secrets: &secrets, http: &http, now_us: 0, limit: 20 };
+            let f = pull(&ctx).await.unwrap();
+            runs += 1;
+            ids.extend(f.records.iter().map(|r| r["id"].as_u64().unwrap()));
+            if let Some(cur) = f.cursor {
+                assert!(!cur.contains("k3y"), "a secret is not kept in the state: {cur}");
+                cursor = Some(cur).filter(|c| !c.is_empty());
+            }
+            if !f.more {
+                break;
+            }
+            assert!(runs < 5, "it does not start over: {ids:?}");
+        }
+        assert_eq!(ids, (0..45).collect::<Vec<_>>(), "each record once, in three runs");
+        assert_eq!((runs, cursor), (3, None), "the pass is over: the next run starts from the first page");
+        assert_eq!(gets.load(std::sync::atomic::Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_names_no_secret_and_no_query() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let c = connector("http_json", json!({"url": format!("http://127.0.0.1:{port}/x?api_key={{secret:token}}"), "records": "$.items"}));
+        let secrets: HashMap<String, String> = [("token".to_string(), "SUPERSECRET123".to_string())].into();
+        let http = reqwest::Client::new();
+        let ctx = Ctx { c: &c, cursor: None, secrets: &secrets, http: &http, now_us: 0, limit: 20 };
+        let e = pull(&ctx).await.unwrap_err();
+        assert!(!e.contains("SUPERSECRET123") && !e.contains("api_key"), "{e}");
+        assert!(e.starts_with(&format!("GET http://127.0.0.1:{port}/x: error sending request")), "{e}");
     }
 
     #[test]

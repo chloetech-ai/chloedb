@@ -575,11 +575,12 @@ impl Connectors {
                 svc.keys.end_ephemeral(&format!("connector-run:{}", c.name));
             }
             if let Some(e) = &first_err {
-                report["first_skip"] = json!(e);
+                report["first_skip"] = json!(kinds::redact(e, &secrets));
             }
             Ok((records, n, skipped, dropped, f.cursor, f.more))
         }
-        .await;
+        .await
+        .map_err(|e| kinds::redact(&e, &secrets));
         let took_ms = t0.elapsed().as_millis() as u64;
         let mut st = self.state_of(&c.name);
         st.runs += 1;
@@ -598,8 +599,9 @@ impl Connectors {
                 st.rows_total += *rows as u64;
                 st.last_rows = *rows as u64;
                 st.more = *more;
+                // None keeps the last; an empty one clears it.
                 if let Some(cur) = cursor {
-                    st.cursor = Some(cur.clone());
+                    st.cursor = Some(cur.clone()).filter(|c| !c.is_empty());
                 }
                 (true, None)
             }
@@ -834,8 +836,9 @@ fn spec(b: &Json, old: Option<&Connector>) -> Result<Connector, ApiError> {
     Ok(c)
 }
 
-/// Makes `c`'s target with its kind's default table when it has none,
-/// with the caller's credential.
+/// Makes `c`'s target when it has none, with the caller's credential: with
+/// the columns of its own map ([`kinds::map_schema`]) when it has one and
+/// writes a table of its choosing, else with its kind's default table.
 async fn make_target(svc: &Arc<Service>, c: &Connector, caller: &Caller) -> Result<bool, ApiError> {
     if svc.table(&c.target).await.is_ok() {
         return Ok(false);
@@ -843,7 +846,11 @@ async fn make_target(svc: &Arc<Service>, c: &Connector, caller: &Caller) -> Resu
     if c.target != kinds::default_target(c) && c.config["create_target"] != true {
         return Err(ApiError { code: None, status: 404, message: format!("there is no table {}: make it first, or write the kind's own table ({}), or pass \"create_target\": true in config to make {} with that table's columns", c.target, kinds::default_target(c), c.target) });
     }
-    let ddl = kinds::default_schema(&c.kind, &c.target);
+    // Its own map's columns, else its kind's table.
+    let ddl = match &c.config["map"] {
+        Json::Object(m) if !m.is_empty() => kinds::map_schema(m, &c.target).map_err(bad)?,
+        _ => kinds::default_schema(&c.kind, &c.target),
+    };
     svc.connectors.call(caller.auth.as_ref(), Method::POST, "/v1/sql", Some(json!({ "sql": ddl }))).await.map_err(|e| ApiError { code: None, status: 400, message: format!("making {}: {e}", c.target) })?;
     Ok(true)
 }

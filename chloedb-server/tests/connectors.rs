@@ -377,3 +377,70 @@ async fn the_schedule_runs_a_pull_by_itself_and_config_rows_changed_by_sql_count
     let (_, one) = call(&c, reqwest::Method::GET, &format!("{base}/v1/admin/connectors/prom"), ROOT, None).await;
     assert_eq!(one["health"], "disabled", "{one}");
 }
+
+/// A source of JSON records, ten a page.
+async fn items(n: usize) -> String {
+    let app = Router::new().route(
+        "/items",
+        get(move |Query(q): Query<HashMap<String, String>>| async move {
+            let p: usize = q.get("page").and_then(|p| p.parse().ok()).unwrap_or(0);
+            let items: Vec<Json> = (p * 10..((p + 1) * 10).min(n)).map(|i| json!({"id": format!("i{i}"), "title": format!("item {i}"), "n": format!("{i}"), "when": format!("2026-11-13T03:{:02}:00Z", i % 60)})).collect();
+            let next = ((p + 1) * 10 < n).then(|| format!("/items?page={}", p + 1));
+            AxJson(json!({"data": {"items": items}, "next": next}))
+        }),
+    );
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    url
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_pull_names_no_secret_and_a_mapped_target_has_its_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), false).await;
+    let c = reqwest::Client::new();
+    let admin = |p: &str| format!("{base}/v1/admin/connectors{p}");
+    let (s, k) = post(&c, &format!("{base}/v1/admin/keys"), ROOT, json!({"name": "reader", "scope": "read"})).await;
+    assert_eq!(s, 200, "{k}");
+    let reader = k["secret"].as_str().unwrap().to_string();
+
+    // A secret in the URL's query, and nothing listening there.
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (s, j) = post(&c, &admin(""), ROOT, json!({"name": "leaky", "kind": "http_json", "every_s": 0, "config": {"url": format!("http://127.0.0.1:{port}/x?api_key={{secret:token}}"), "records": "$.items"}, "secrets": {"token": "SUPERSECRET123"}})).await;
+    assert_eq!(s, 200, "{j}");
+    let (_, r) = post(&c, &admin("/leaky/run"), ROOT, json!({})).await;
+    assert_eq!(r["ok"], false, "{r}");
+    let e = r["error"].as_str().unwrap();
+    assert!(e.contains(&format!("127.0.0.1:{port}/x")) && e.contains("error sending request"), "it still says what failed: {e}");
+    let (_, dry) = post(&c, &admin("/test"), ROOT, json!({"name": "leaky"})).await;
+    let mut seen = vec![r.to_string(), dry.to_string()];
+    for q in ["SELECT connector, error FROM chloedb_connector_runs", "SELECT id, last_error FROM chloedb_connector_state"] {
+        let (s, rows) = post(&c, &format!("{base}/v1/query"), &reader, json!({"sql": q})).await;
+        assert_eq!(s, 200, "{q}: {rows}");
+        assert!(rows.to_string().contains("error sending request"), "{rows}");
+        seen.push(rows.to_string());
+    }
+    let (_, one) = call(&c, reqwest::Method::GET, &admin("/leaky"), ROOT, None).await;
+    seen.push(one.to_string());
+    for text in seen {
+        assert!(!text.contains("SUPERSECRET123") && !text.contains("api_key="), "a secret in an error: {text}");
+    }
+
+    // A target made from the connector's own map has the mapped columns.
+    let up = items(25).await;
+    let (s, j) = post(&c, &admin(""), ROOT, json!({"name": "items", "kind": "http_json", "target": "items_t", "every_s": 0,
+        "config": {"url": format!("{up}/items"), "records": "$.data.items", "next": "$.next", "create_target": true,
+            "map": {"id": "$.id", "title": "$.title", "n": {"path": "$.n", "as": "int"}, "when": {"path": "$.when", "as": "time"}}}})).await;
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(j["made_target"], true);
+    let (_, r) = post(&c, &admin("/items/run"), ROOT, json!({})).await;
+    assert_eq!((r["ok"].clone(), r["rows"].clone(), r["dropped"].clone()), (json!(true), json!(25), json!([])), "{r}");
+    let rows = sql(&c, &base, "SELECT id, title, n, \"when\" FROM items_t WHERE id = 'i7'").await;
+    assert_eq!(rows[0]["title"], "item 7");
+    assert_eq!(rows[0]["n"], 7);
+    assert!(rows[0]["when"].as_str().unwrap().starts_with("2026-11-"), "{}", rows[0]);
+}
