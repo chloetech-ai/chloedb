@@ -1634,7 +1634,7 @@ function dataPage(body, app) {
 const WHO = "You";
 const utc = (iso) => (iso ? iso.slice(11, 16) : "");
 const dayUtc = (iso) => (iso ? new Date(Date.parse(iso)).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "");
-const windowText = (a, b) => `${dayUtc(a)} ${utc(a)} to ${utc(b)} UTC`;
+const windowText = (a, b) => `${dayUtc(a)} ${utc(a)} to ${dayUtc(b) !== dayUtc(a) ? dayUtc(b) + " " : ""}${utc(b)} UTC`;
 const WORK = { approval: ["Approve", "bolt"], incident: ["Incident", "alerts"], change: ["Change", "clock"], maintenance: ["Carrier", "route"], alert: ["Alert", "alerts"], ticket: ["Ticket", "logs"], silence: ["Silence", "clock"], note: ["Note", "copy"] };
 
 /** Opens what a worklist row or a lookup hit points at. */
@@ -1983,10 +1983,28 @@ function carriersPage(body, app) {
     const ta = h("textarea", { class: "input mono", rows: 12, placeholder: "Paste the carrier's email here. It needs one of our circuit ids and a start and an end such as 2026-11-14 01:00 UTC." });
     const out = h("div", { style: { marginTop: "10px" } });
     const btn = h("button", { class: "btn primary" }, "Read it");
-    const d = C.drawer({ title: "A carrier's notice", sub: "Read into a row of netops_maintenance, then checked against the other plane, the change calendar and the capacity left", body: [ta, out], foot: btn });
+    const save = h("button", { class: "btn primary", style: { display: "none" } }, "Save it");
+    const d = C.drawer({ title: "A carrier's notice", sub: "Read into a row of netops_maintenance, then checked against the other plane, the change calendar and the capacity left", body: [ta, out], foot: [btn, save] });
+    // Read first and show what was read: the window is what collisions and
+    // "in progress" are computed from, so a person confirms it before it is kept.
+    let read = "";
+    ta.oninput = () => { if (ta.value !== read) { save.style.display = "none"; btn.className = "btn primary"; } };
     btn.onclick = async () => {
-      try { const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: ta.value } }); C.toast(`${n.id}: ${n.provider} on ${n.circuit}, ${windowText(n.window_start, n.window_end)}`, "ok", 6000); d.close?.(); stop.run(); }
+      try {
+        const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: ta.value, save: false } });
+        read = ta.value;
+        put(out, h("div", { class: "no-act" }, h("div", { class: "small dim" }, "Read as:"),
+          facts(app, [["carrier", n.provider], ["circuit", n.circuit], ["link", n.link], ["starts", `${n.window_start.replace("T", " ").replace(":00Z", "")} UTC`], ["ends", `${n.window_end.replace("T", " ").replace(":00Z", "")} UTC`], ["impact", n.impact], ["their reference", n.reference || "none found"]]),
+          (n.notes || []).map((x) => h("div", { class: "small", style: { color: "var(--warn)" } }, C.icon("warn"), " ", x)),
+          h("div", { class: "small muted", style: { marginTop: "6px" } }, "If this is right, save it; if not, correct the Start and End lines of the text and read it again.")));
+        save.style.display = ""; btn.className = "btn";
+      } catch (e) { save.style.display = "none"; put(out, h("div", { class: "banner", style: { borderColor: "var(--crit)" } }, e.message)); }
+    };
+    save.onclick = async () => {
+      save.disabled = true;
+      try { const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: read } }); C.toast(`${n.id}: ${n.provider} on ${n.circuit}, ${windowText(n.window_start, n.window_end)}`, "ok", 6000); d.close?.(); stop.run(); }
       catch (e) { put(out, h("div", { class: "banner", style: { borderColor: "var(--crit)" } }, e.message)); }
+      save.disabled = false;
     };
   };
   body.append(h("div", { class: "row between", style: { marginBottom: "12px" } }, h("div", { class: "dim" }, "Carriers' maintenance notices, each matched to the circuit it names and checked for what it collides with."), h("button", { class: "btn sm primary", onclick: paste }, C.icon("plus"), "Paste a notice")), h("div", { class: "no-cols wide" }, list, side));
