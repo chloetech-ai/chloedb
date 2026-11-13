@@ -6231,6 +6231,17 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// `{"name": ..., "scope": "feed" | "read" | "write" | "admin",
 /// "expires_days": n}`: a new key; its secret is in this answer only.
 async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    // A misspelt field would otherwise be left out without a word, and a
+    // key without its limits reads every table: refuse what is not a
+    // field of a key.
+    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason"];
+    let Json::Object(fields) = &b else { return Err(ApiError::bad("a key is a JSON object: {\"name\": ..., \"scope\": ...}")) };
+    if let Some(k) = fields.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        return Err(ApiError::bad(format!("{k:?} is not a field of a key: {}", FIELDS.join(", "))));
+    }
+    if b.get("prefix").is_some_and(|p| !p.is_null()) && b.get("preset").is_none_or(Json::is_null) {
+        return Err(ApiError::bad("prefix is the tables of a preset: give a \"preset\" (GET /v1/whoami lists them), or limit the key with \"tables\": {\"team_*\": \"write\"}"));
+    }
     let name = body_str(&b, "name")?;
     // `"tables": {"crawl_*": "admin", "*": "read"}`: a key limited to
     // those ([`keys::Grant`]), whose scope is the most they give (and no
