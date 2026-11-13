@@ -168,6 +168,57 @@ pub fn trunc(micros: i64, unit: Unit) -> Option<i64> {
     start.checked_mul(MICROS_PER_DAY)
 }
 
+/// The units a [`bin`] width is written in, as [`parse_stride`] reads
+/// them: microseconds each, largest first.
+const STRIDE_UNITS: [(i64, &str); 7] = [
+    (604_800_000_000, "weeks"),
+    (86_400_000_000, "days"),
+    (3_600_000_000, "hours"),
+    (60_000_000, "minutes"),
+    (1_000_000, "seconds"),
+    (1_000, "milliseconds"),
+    (1, "microseconds"),
+];
+
+/// The width of a `date_bin` bucket, in microseconds: a whole number and
+/// a fixed unit, `'5 minutes'`, `'1 hour'`, `'30s'`, `'15m'`, `'250ms'`,
+/// `'2 days'`, `'1 week'`; `None` for anything else, or a width that is
+/// not positive. Months and years are not a fixed width: `date_trunc`
+/// takes those.
+pub fn parse_stride(text: &str) -> Option<i64> {
+    let t = text.trim();
+    let digits = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let n: i64 = t[..digits].parse().ok()?;
+    let unit = match t[digits..].trim().to_ascii_lowercase().as_str() {
+        "us" | "µs" | "usec" | "usecs" | "microsecond" | "microseconds" => 1,
+        "ms" | "msec" | "msecs" | "millisecond" | "milliseconds" => 1_000,
+        "s" | "sec" | "secs" | "second" | "seconds" => 1_000_000,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60_000_000,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3_600_000_000,
+        "d" | "day" | "days" => MICROS_PER_DAY,
+        "w" | "week" | "weeks" => 7 * MICROS_PER_DAY,
+        _ => return None,
+    };
+    n.checked_mul(unit).filter(|&w| w > 0)
+}
+
+/// A width in microseconds as [`parse_stride`] reads it back, in the
+/// largest unit it is a whole number of: `'5 minutes'`, `'90 seconds'`.
+pub fn stride_text(width: i64) -> String {
+    let (u, name) = STRIDE_UNITS.into_iter().find(|(u, _)| width % u == 0).unwrap_or((1, "microseconds"));
+    format!("{} {name}", width / u)
+}
+
+/// The start of the bucket of `width` microseconds that `micros` is in,
+/// buckets counted from `origin` (`date_bin`, as PostgreSQL's): `origin +
+/// ⌊(micros − origin) / width⌋ · width`. `None` when the start is outside
+/// the integers.
+pub fn bin(micros: i64, width: i64, origin: i64) -> Option<i64> {
+    let d = (micros as i128) - (origin as i128);
+    let start = (origin as i128) + d.div_euclid(width as i128) * width as i128;
+    i64::try_from(start).ok()
+}
+
 /// A part of a time that `EXTRACT` and `date_part` read, in UTC, as
 /// PostgreSQL names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -411,6 +462,36 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strides_read_and_bins_count_from_the_origin() {
+        assert_eq!(parse_stride("5 minutes"), Some(300_000_000));
+        assert_eq!(parse_stride(" 15m "), Some(900_000_000));
+        assert_eq!(parse_stride("250ms"), Some(250_000));
+        assert_eq!(parse_stride("1 HOUR"), Some(3_600_000_000));
+        assert_eq!(parse_stride("2d"), Some(2 * MICROS_PER_DAY));
+        assert_eq!(parse_stride("1 week"), Some(7 * MICROS_PER_DAY));
+        for bad in ["0 minutes", "-5 minutes", "1 month", "5", "minutes", "1.5 hours", "99999999999999999 weeks"] {
+            assert_eq!(parse_stride(bad), None, "{bad}");
+        }
+        for w in [1, 1_000, 300_000_000, 90_000_000, MICROS_PER_DAY, 7 * MICROS_PER_DAY, 123_456_789] {
+            assert_eq!(parse_stride(&stride_text(w)), Some(w), "{}", stride_text(w));
+        }
+        assert_eq!(stride_text(300_000_000), "5 minutes");
+        let t = parse("2026-11-13T02:07:31.5Z").unwrap();
+        assert_eq!(bin(t, 300_000_000, 0), parse("2026-11-13T02:05:00Z"));
+        // From an origin of :02:30, five-minute buckets start at :02:30 and :07:30.
+        assert_eq!(bin(t, 300_000_000, parse("2000-01-01T00:02:30Z").unwrap()), parse("2026-11-13T02:07:30Z"));
+        // Before 1970 and before the origin, the bucket below.
+        assert_eq!(bin(-1, 60_000_000, 0), Some(-60_000_000));
+        assert_eq!(bin(5, 10, 100), Some(0));
+        assert_eq!(bin(i64::MIN, 60_000_000, 0), None);
+        // A daily bin is date_trunc('day').
+        for t in [0, -1, 1_234_567_890_123_456, -987_654_321_000] {
+            assert_eq!(bin(t, MICROS_PER_DAY, 0), trunc(t, Unit::Day));
+            assert_eq!(bin(t, 60_000_000, 0), trunc(t, Unit::Minute));
+        }
+    }
 
     const DAY: i64 = MICROS_PER_DAY;
 

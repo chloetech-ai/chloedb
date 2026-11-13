@@ -11,7 +11,8 @@
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
 //! FLOAT fields, or a part of a single-valued TIMESTAMP's times
-//! (`date_trunc('year', at)`, `EXTRACT(dow FROM at)`), and whose
+//! (`date_trunc('year', at)`, `date_bin('5 minutes', at)`, `EXTRACT(dow
+//! FROM at)`), and whose
 //! aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
 //! `AVG`, `MIN`, `MAX` and percentiles of single-valued INT or FLOAT
 //! fields; anything
@@ -55,7 +56,7 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
                 times.push(None);
             }
             // A part of a time is a number; text (`strftime`) goes row by row.
-            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_)) && single(tc.field, &[FieldType::Int])) => {
+            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_) | TimeOf::Bin { .. }) && single(tc.field, &[FieldType::Int])) => {
                 groups.push(q.times[t].field);
                 times.push(Some(t));
             }
@@ -70,7 +71,7 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
     for p in needed {
         match p {
             Projection::Count => aggs.push(None),
-            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
+            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
                 aggs.push(Some(*f))
             }
             _ => return None,
