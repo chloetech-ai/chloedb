@@ -1104,8 +1104,6 @@ jobs:
           path: .docs-bin/
           retention-days: 3
           if-no-files-found: error
-          # upload-artifact leaves out hidden files, and every file under
-          # .docs-bin is one by its path.
           include-hidden-files: true
 
   docs:
