@@ -1272,14 +1272,21 @@ async fn replicas_are_compared_while_writes_go_on() {
     assert_eq!(follower(&p, 1).await["divergences"], 1);
 
     // Writers at once, while rounds compare every 100 ms and when asked:
-    // each round compares one version on both sides.
+    // each round compares one version on both sides. They keep the
+    // replicas within 2,000 transactions: on a slow machine (two CPUs)
+    // four writers commit twice as fast as batches this small ship, and
+    // replicas falling ever further behind make each round longer.
     let writing = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let writers: Vec<_> = (0..4)
         .map(|w| {
-            let (p, writing) = (p.clone(), writing.clone());
+            let (p, writing, pdb, r0db, r1db) = (p.clone(), writing.clone(), pdb.clone(), r0db.clone(), r1db.clone());
             tokio::spawn(async move {
                 let mut i = 0;
                 while writing.load(std::sync::atomic::Ordering::Relaxed) {
+                    if last(&pdb) > last(&r0db).min(last(&r1db)) + 2000 {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        continue;
+                    }
                     let key = format!("p{:07}", (w * 50 + i) % N);
                     if key != "p0000009" {
                         p.write_ops(vec![set(&key, "reviews", json!(i))], None).await.unwrap();
@@ -1297,6 +1304,15 @@ async fn replicas_are_compared_while_writes_go_on() {
         // committed since the last round makes its version newer, however
         // long commits take meanwhile (a slow fsync holds them all).
         until("a write after the last round's version", || async { last(&pdb) > at }).await;
+        // A round compares once each replica reaches its version, and four
+        // writers can keep replicas on a slow machine (two CPUs) further
+        // behind than the round waits: ask once both hold what the primary
+        // held a moment ago, while the writes go on.
+        let held = last(&pdb);
+        until("both replicas hold the primary's last write", || async {
+            follower(&p, 0).await["seq_no"].as_u64().unwrap() >= held && follower(&p, 1).await["seq_no"].as_u64().unwrap() >= held
+        })
+        .await;
         let v = p.verify_replicas(Duration::from_secs(10)).await.unwrap();
         for k in 0..2 {
             let r = &v["replicas"][k];
