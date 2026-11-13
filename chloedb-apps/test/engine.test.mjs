@@ -825,6 +825,24 @@ test('a rule sends its email once its writes are stored, and none when it stops'
   assert.equal(order.length, 2, 'a rule that stops writes nothing and sends nothing');
 });
 
+test('a function that fails for a published app\'s visitor asks for no repair', async () => {
+  const { Engine } = await import('../engine/engine.mjs');
+  const { compileRule } = await import('../engine/rulesql.mjs');
+  const engine = new Engine({ write: async () => { throw new Error('requests.title takes text, not <a visitor\'s words>'); }, get: async () => [] }, { log: () => {} });
+  engine.store = { track: async () => {} };
+  engine.sql = async () => [];
+  const errors = [];
+  engine.on('error', (e) => errors.push(e));
+  const view = { comp: { n: 1 }, helpers: [], tables: [{ spec: { name: 'requests', columns: [{ name: 'title', type: 'text' }] } }], functions: [
+    { id: 'a/function/add', slug: 'add', code: JSON.stringify(compileRule("CREATE RULE add AS INSERT INTO requests (title) VALUES (:title);").rule), spec: { rule: true } },
+  ] };
+  engine.view = async () => view;
+  await assert.rejects(engine.call('a', 'add', { title: 'x' }, { pub: true }), /takes text/);
+  assert.equal(errors.length, 0, 'no repair from the public path');
+  await assert.rejects(engine.call('a', 'add', { title: 'x' }), /takes text/);
+  assert.equal(errors.length, 1, 'the owner\'s own failure still gets its repair');
+});
+
 test('rule steps loop over rows, refuse with a message, insert or update, and return a value', async () => {
   const { Refused } = await import('../engine/rules.mjs');
   const writes = [];

@@ -556,9 +556,9 @@ async function appState(appId) {
   };
 }
 
-// The options of app.ask a visitor may pass: the answer's shape and the
-// screen's own instructions, never the web or a fresh (uncached) call.
-const publicAsk = (o = {}) => ({ ...(o.json ? { json: true } : {}), ...(typeof o.system === 'string' ? { system: o.system } : {}) });
+// The options of app.ask a visitor may pass: the answer's shape only, never
+// instructions of their own, the web or a fresh (uncached) call.
+const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
@@ -665,10 +665,10 @@ const routes = [
     return { request: r.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -695,10 +695,11 @@ const routes = [
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
   // A published app's visitors name no secret, header or method of their own
-  // (reach.fetch) and do not search the web or skip the cache (reach.ask):
+  // (reach.fetch), add no host to the owner's list of hosts asked for, and
+  // give app.ask no instructions, web search or fresh call of their own:
   // they get the plain call, under the app's switches and limits.
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id], url, cx) => ({ answer: await reach.ask(id, b.prompt, cx.public ? publicAsk(b.opts) : b.opts || {}) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id], url, cx) => ({ page: await reach.fetch(id, b.url, cx.public ? {} : b.opts || {}) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id], url, cx) => ({ page: await reach.fetch(id, b.url, cx.public ? {} : b.opts || {}, { pub: !!cx.public }) })],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => reachOf(id, await engine.view(id))],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => {
     const on = await reach.setSwitches(id, b || {});

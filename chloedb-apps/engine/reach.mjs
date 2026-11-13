@@ -530,7 +530,7 @@ export class Reach {
   }
 
   // app.fetch(url, {method, json, body, headers}).
-  async fetch(appId, url, opts = {}, { test = false } = {}) {
+  async fetch(appId, url, opts = {}, { test = false, pub = false } = {}) {
     if (test) return { ok: false, status: 0, url: String(url || ''), type: '', size: 0, truncated: false };
     opts = opts && typeof opts === 'object' ? opts : {};
     const on = await this.switches(appId);
@@ -539,7 +539,7 @@ export class Reach {
     const method = String(opts.method || 'GET').toUpperCase();
     const send = method !== 'GET' && method !== 'HEAD';
     const refuse = async (host) => {
-      await this.noteAsked(appId, host, send);
+      if (!pub) await this.noteAsked(appId, host, send);
       return err(`app.fetch: ${host} is not among the hosts this app may ${send ? 'send to' : 'read from'}; its owner can allow it in the studio, under "Model and web"`, 403, { off: 'host', host, send, refused: true });
     };
     const host = u.hostname.toLowerCase().replace(/\.$/, '');
@@ -571,7 +571,7 @@ export class Reach {
     const { secret: _s, fresh: _f, ...rest } = opts;
     let out;
     try { out = await this.fetchFn(u.href, rest, { allow, secret }); } catch (e) {
-      if (refusedHop) await this.noteAsked(appId, refusedHop, send);
+      if (refusedHop && !pub) await this.noteAsked(appId, refusedHop, send);
       throw secret ? Object.assign(e, { message: redact(e.message, secret.value) }) : e;
     }
     if (secret) out = redact(out, secret.value);
