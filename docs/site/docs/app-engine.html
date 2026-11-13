@@ -95,7 +95,7 @@
 <li><strong>Apps get services:</strong> sign-in, files, email (held in an outbox unless a mail server is set), address search and maps, and, when the owner switches them on, a model and the web (below).</li>
 </ul>
 <p>It is a program of its own, in Node.js, that talks to chloedb-server over HTTP. Views run in sandboxed frames in the browser, and server functions run in QuickJS compiled to WebAssembly, with no network and a time limit.</p>
-<p><img alt="The studio: an app on the left, and on the right the request box, the version's summary, and the Model and web switches" src="../../assets/img/strata-apps-studio.png" /></p>
+<p><img loading="lazy" decoding="async" alt="The studio: an app on the left, and on the right the request box, the version's summary, and the Model and web switches" src="../../assets/img/strata-apps-studio.png" /></p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>You need Node.js 20 or later, chloedb-server, and Claude Code signed in (<code>claude</code> on the PATH). The engine calls <code>claude -p</code>, so it uses that sign-in and needs no API key of its own.</p>
 <pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
