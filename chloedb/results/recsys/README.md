@@ -94,7 +94,8 @@ day, one query at a time.
 - **Fusing by plain RRF loses to `history` alone** (NDCG@10 0.1655 against
   0.1854, Recall@100 0.2325 against 0.2663; HR@100 0.756 against 0.728):
   equal weights let two weaker lists push repeats down. Weights or a
-  learned blend, chosen on the validation day, are the next step there.
+  learned blend, chosen on the validation day, are the next step there
+  ([measured below](#the-corrected-model-on-the-next-day-and-fusion-weights)).
 
 ### In-batch negatives, corrected
 
@@ -113,6 +114,7 @@ listen after each epoch, measured on a cloud container (Intel Xeon @
 |---|---|---|---|---|---|
 | in-batch, from the SVD ([`quality/train.json`](quality/train.json), 2026-11-06) | 0.0057 | 0.0119 | 0.0181 | 0.0229 | 0.0258 |
 | corrected, 4,096 uniform, from the SVD ([`quality/train-logq.json`](quality/train-logq.json)) | 0.0110 | 0.0205 | 0.0274 | **0.0334** | not reached |
+| the same, run to five epochs ([`quality/train-logq-5.json`](quality/train-logq-5.json)) | 0.0110 | 0.0205 | 0.0273 | 0.0336 | **0.0373** |
 | corrected, 4,096 uniform, from random vectors ([`quality/train-logq-random.json`](quality/train-logq-random.json)) | 0.0039 | 0.0026 | 0.0047 | 0.0076 | 0.0099 |
 
 - **Epoch for epoch the corrected model is ahead by about half** (0.0334
@@ -123,10 +125,59 @@ listen after each epoch, measured on a cloud container (Intel Xeon @
 - **From random vectors it now learns** (0.0099 after five epochs, rising),
   where the plain run stayed at chance after an epoch. The SVD start is
   still worth three epochs.
-- **Not measured yet:** the table above (the next-day test against
-  ItemKNN and `history`) still has the plain model's row. The corrected
-  model has to go through `load` and `eval` for that, and to train for
-  longer than 80 minutes on 4 cores to say where it ends.
+- **Five epochs take it to 0.0373**, against the plain run's 0.0258,
+  and it was still rising. That run was paused and shared the machine,
+  so its time is not a measure; its last epoch, alone on the 4 cores,
+  took 17 minutes.
+
+### The corrected model on the next day, and fusion weights
+
+The five-epoch corrected model went through `load` and `eval`, and
+`yambda.py fuse` then chose weights for fusing `history`, `encode` and
+`ppr`. It reads each source's top 100 and scores once, tries every share
+of 1 among the three in steps of 0.1, and splits the test users in two:
+each half is scored with the weights that had the best NDCG@10 on the
+other half. The fusion is a weighted sum of normalised scores, which the
+query language has
+(`0.8 * tmm(ranked(:hist), lo => -101) + 0.1 * tmm(similarity(emb, encode(..))) + 0.1 * tmm(ppr(..))`),
+and its row below is that query run for every user. Same container,
+2026-11-12 ([`quality/strata-logq.json`](quality/strata-logq.json),
+[`quality/fuse.json`](quality/fuse.json)):
+
+| source | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | HR@10 | HR@100 | Coverage@100 | query p50 / p99, ms |
+|---|---|---|---|---|---|---|---|---|
+| `history` | 0.1854 | 0.2297 | 0.0915 | 0.2663 | 0.451 | 0.728 | 0.1681 | 3.1 / 9.6 |
+| `encode`, the plain model (the table above) | 0.0799 | 0.0978 | 0.0378 | 0.1173 | 0.308 | 0.639 | 0.1766 | 4.1 / 53.3 |
+| `encode`, the corrected model | 0.0970 | 0.1250 | 0.0444 | 0.1567 | 0.377 | 0.748 | 0.0596 | 3.3 / 50.7 |
+| `ppr` | 0.1199 | 0.1167 | 0.0610 | 0.1139 | 0.343 | 0.565 | 0.1876 | 584.0 / 792.9 |
+| `fused`: `rrf(history, encode, ppr)`, equal weights | 0.1672 | 0.2064 | 0.0843 | 0.2460 | 0.459 | **0.793** | 0.1436 | 585.1 / 802.6 |
+| weighted sum, the query | 0.1894 | 0.2344 | 0.0947 | **0.2722** | 0.460 | 0.740 | 0.1738 | 583.8 / 826.0 |
+| weighted reciprocal ranks, worked out in Python (`rrf` takes no weights) | **0.1912** | **0.2352** | **0.0958** | 0.2719 | **0.465** | 0.740 | 0.1729 | – |
+
+- **The corrected model passes ItemKNN at 100**: Recall@100 0.1567
+  against ItemKNN's 0.1360 and the plain model's 0.1173. At 10 it is
+  still below ItemKNN (NDCG@10 0.0970 against 0.1152).
+- **It answers with far fewer tracks**: Coverage@100 0.0596 against the
+  plain model's 0.1766. The plain model ranked popular tracks low, which
+  spread its answers; corrected, it no longer does.
+- **Weights turn the fusion from a loss into a small gain.** With equal
+  weights `rrf` is below `history` alone (NDCG@10 0.1672 against
+  0.1854). The weighted sum is above it: NDCG@10 0.1894, Recall@100
+  0.2722 against 0.2663. Both halves gave `history` most of the weight
+  (0.8, with 0.1 each for `encode` and `ppr`; and 0.9, with 0.1 for
+  `ppr`), so on this task the other sources add about 2% to `history`.
+- **Equal weights find something for more users** (HR@100 0.793 against
+  0.740) and rank it lower: they give a user with little history two
+  sources that do not need one.
+- **Weights on reciprocal ranks do no better than weights on scores**
+  (NDCG@10 0.1912 and 0.1890 from the same lists in Python), so the
+  weighted sum the query language has is enough here, and `rrf` needs
+  no weights for it.
+- The weights were chosen on other users of the test day, not on the
+  day before, and in steps of 0.1. The weighted sum's times were taken
+  with a training job on the machine. `ppr`'s row differs from the
+  table above's (0.1199 against 0.1188, and 584 ms against 434): another
+  build of the database on another machine.
 
 ## Serving: r1 to r6 on eight engines
 
@@ -311,6 +362,7 @@ python yambda.py prep  --data ~/data/yambda --work ~/data/yambda/work    # split
 python yambda.py train --data ~/data/yambda --work ~/data/yambda/work --minutes 80
 python yambda.py load  --data ~/data/yambda --work ~/data/yambda/work
 python yambda.py eval  --data ~/data/yambda --work ~/data/yambda/work
+python yambda.py fuse  --data ~/data/yambda --work ~/data/yambda/work    # fusion weights (90 min here: every source for every user, then the query)
 python serving_data.py --data ~/data/yambda --work ~/data/yambda/work --out ~/data/recsys-100k --items 100000
 cd ../../../strata-server && cargo build --profile ci --bins
 DATA=~/data/recsys-100k OUT=~/data/recsys-out RUN_ARGS="--users 300" \

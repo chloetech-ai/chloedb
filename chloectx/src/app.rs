@@ -3,11 +3,14 @@
 //! (`ctx_<space>`, the records of [`crate::record`], [`Store::open_remote`]),
 //! and the spaces themselves in `ctx_spaces`. The command center shows it
 //! (`chloedb-server --app chloectx=URL`, which loads `ui/view.js` from
-//! here) with two pages:
+//! here) with three pages:
 //!
 //! * **Context**: any agent writes notes and exchanges into a space and
 //!   asks it for context within a token budget, answered by search alone
 //!   ([`context::build`]); the page shows what went into an answer and why.
+//! * **Inspector**: the memory of Claude Code sessions that `chloectx sync`
+//!   copied into the cluster (`chloectx_memory`), read as `chloectx ui`
+//!   reads a local store: by project, session, kind and search.
 //! * **Seen before**: incidents (symptom, cause, fix) kept in the space
 //!   `incidents`; the cluster's firing alerts each with the closest past
 //!   incidents, which can be handed to the on-call agent.
@@ -44,6 +47,7 @@
 //! | `POST /v1/spaces/:s/apps/items` | `{kinds}` | the notes a build of those kinds would be loaded with |
 //! | `POST /v1/spaces/:s/apps`, `GET` | `{title, description, kinds, exclude?, confirm}` | a build by the app engine, loaded with the approved notes; the builds |
 //! | `POST /v1/spaces/:s/apps/:build/open` | | a one-time link into the studio, at the built app |
+//! | `GET /v1/memory`, `/v1/memory/sessions`, `/v1/memory/records` | | the Inspector: Claude Code's memory as `chloectx sync` copies it (`chloectx_memory`), by project, session, kind and search ([`memory`]) |
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpListener;
@@ -64,6 +68,7 @@ use crate::ui::{read_request, respond, respond_json, same, Request};
 use crate::{distill, err, Result};
 
 mod from_context;
+mod memory;
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 
@@ -960,6 +965,16 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
     match (m, p.as_slice()) {
         ("GET", ["v1", "info"]) => Ok(app.info()),
         ("GET", ["v1", "spaces"]) => Ok(app.spaces()?),
+        ("GET", ["v1", "memory"]) => app.memory(),
+        ("GET", ["v1", "memory", "sessions"]) => app.memory_sessions(req.param("project").unwrap_or("")),
+        ("GET", ["v1", "memory", "records"]) => app.memory_records(
+            req.param("project").unwrap_or(""),
+            req.param("session"),
+            req.param("kind"),
+            req.param("q"),
+            num("limit", 200),
+            req.param("before").and_then(|b| b.parse().ok()),
+        ),
         ("POST", ["v1", "spaces"]) => {
             let b = body_json(req)?;
             let name = b["name"].as_str().unwrap_or("").trim();
