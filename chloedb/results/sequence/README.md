@@ -275,6 +275,76 @@ items, items only, no times, batch 128, 2 threads) each way for the same
   from 0.0229 to 0.0334 after four epochs
   ([`results/recsys`](../recsys/README.md#in-batch-negatives-corrected)).
 
+## New items
+
+A sequence model with learned item vectors cannot answer an item it never
+trained on. [`cold.py`](cold.py) measures what can, on Beauty: a tenth of
+the 12,101 items, drawn at random, are new, with every event of theirs
+taken out of training, as if they were listed after the models were
+trained. A user's last item is the test, as above, ranked against every
+item but the user's own, and the users are split by whether that item is
+old (19,875 users) or new (2,488).
+
+The sources are the model above with learned vectors, the same model
+reading and ranking the items' text vectors (bge-small-en-v1.5,
+`learn_items=False`), and the decoder of
+[`results/generative`](../generative/README.md) over semantic IDs. The
+codebook is trained on the old items only (`chloedb.train.codebook`,
+3 levels of 256) and the new items get their codes when they are written
+to the table: 363 of the 1,210 share all three numbers with an old item
+and 943 the first two. Measured on a cloud container (Intel Xeon @
+2.30GHz, 4 cores, 16.5 GB), 2026-11-12 ([`cold/`](cold)); the two
+sequence models trained side by side for 45 minutes each on 2 threads,
+the decoder after them on 4 (it stopped at epoch 20, after 37 minutes):
+
+| what ranks the items | Recall@10, old | Recall@10, new | Recall@10, all | NDCG@10, all |
+|---|---|---|---|---|
+| learned item vectors | 0.0577 | 0 | 0.0513 | 0.0305 |
+| text vectors | 0.0427 | **0.0394** | 0.0423 | 0.0224 |
+| decoder over semantic IDs | 0.0646 | 0 | 0.0574 | 0.0315 |
+| `rrf` of learned and text | 0.0649 | 0.0032 | 0.0580 | 0.0326 |
+| `rrf` of the three | 0.0754 | 0.0012 | 0.0672 | 0.0369 |
+| decoder, 1 of 10 places to new items under a decoded item's three numbers | 0.0625 | 0.0080 | 0.0565 | 0.0312 |
+| decoder, 5 of 10 places to new items under a decoded item's first two numbers | 0.0460 | 0.0470 | 0.0461 | 0.0279 |
+| ranker over learned and text's top 100, their ranks only | 0.0587 | 0.0032 | 0.0525 | 0.0313 |
+| ranker, with semantic-ID prefix features | 0.0712 | 0.0189 | 0.0654 | 0.0386 |
+| ranker, with text-vector similarity to the history | 0.0785 | 0.0281 | 0.0729 | 0.0448 |
+| ranker, with both | 0.0776 | 0.0297 | 0.0723 | 0.0445 |
+| ranker, with both, and the decoder's top 20 and its rank | **0.0868** | 0.0273 | **0.0802** | **0.0481** |
+
+The rankers are LightGBM (lambdarank, 200 trees), trained on the test
+items of half the users and scored on the other half, both ways. The
+prefix features say how many of the user's last 20 items, and whether the
+last one, share the candidate's first one, two and three numbers; the
+similarity features are the candidate's greatest cosine to those 20
+items' text vectors and its cosine to the last one's.
+
+- **The decoder does not find new items.** Of its 223,630 places in the
+  users' top 10s, 11 went to a new item, and none of those was the test
+  item. It learned which sequences of numbers follow a history, and a
+  new item's sequence was never a target, tie number included. Handing
+  places to unseen items under a decoded prefix, as TIGER does, gets
+  some back and gives up about as many hits on old items as it wins on
+  new ones.
+- **`rrf` buries new items.** Two of its three sources can never rank
+  one, so the one that can is outvoted: 0.0012 on new items for the best
+  plain fusion on old ones.
+- **A ranker over the sources' candidates is the answer here**: 0.0802 on
+  all users against 0.0513 for learned vectors alone and 0.0672 for
+  `rrf` of the three, with new items found at 0.0273, about two thirds
+  of what the text-vector model alone finds, and old items above every
+  single source.
+- **Semantic-ID prefixes work as ranker features, less well than the
+  vectors they were cut from.** They take the ranker from 0.0525 to
+  0.0654, the vectors' similarity takes it to 0.0729, and the two
+  together are no better than the similarity alone. Prefixes are what
+  to use where the vectors are not at hand; they are keywords, so
+  `sid_at` filters, groups and joins on them.
+
+One split and one seed, and the rankers learn from test items of other
+users, not from an earlier period, so read the order of the rows and not
+their third digit.
+
 ## Running it
 
 ```bash
@@ -286,5 +356,6 @@ python eval.py --data ml-1m --dir ~/data/seq/ml-1m --out . --max-minutes 95 --no
 python eval.py --data beauty --dir ~/data/seq/beauty --out . --max-len 50
 python eval.py --data beauty --dir ~/data/seq/beauty --out . --max-len 50 --no-time --tag=-no-time
 cargo run --release --bin strata-encode-bench -- <work>/models/ml1m
+for stage in embed id text decoder rank; do python cold.py $stage --dir ~/data/seq/beauty --work <work>; done   # needs meta_Beauty.json.gz too, sentence-transformers and lightgbm
 python gate.py --ratings ~/data/seq/ml-1m/ratings.dat       # the CI gate, both protocols (--protocol time --train 300 --epochs 70 retrains the time split's model)
 ```

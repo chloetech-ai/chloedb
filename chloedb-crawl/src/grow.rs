@@ -314,6 +314,8 @@ impl Local {
         let err = log.try_clone().map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&self.bin);
         cmd.args(args).stdout(Stdio::from(log)).stderr(Stdio::from(err)).stdin(Stdio::null()).kill_on_drop(true);
+        // The crawler is this cluster's app: its servers start none of their own.
+        cmd.env("CHLOEDB_START_APPS", "off");
         for (k, v) in env {
             cmd.env(k, v);
         }
