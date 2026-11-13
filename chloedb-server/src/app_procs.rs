@@ -8,7 +8,11 @@
 //! Each child
 //!
 //! - listens on a loopback port of its own, which only this server calls
-//!   ([`crate::apps`] forwards `/v1/apps/<name>/...` to it);
+//!   ([`crate::apps`] forwards `/v1/apps/<name>/...` to it): the server
+//!   binds it, keeps it for its own life, and hands the child the
+//!   listening socket as file descriptor 3 ([`LISTEN_FD`]), so that no
+//!   other process can take the port between the server choosing it and
+//!   the app listening (at its first start or after a crash);
 //! - takes requests only with a token of its own, made at each start, which
 //!   the server sends it and no one else holds;
 //! - calls the server back with a key of its own, scoped to what the app
@@ -43,6 +47,12 @@ pub const KNOWN: &[(&str, &str)] = &[("crawler", "chloedb-crawl"), ("sheets", "c
 /// The lines of an app's output kept for `GET /v1/apps`.
 const TAIL: usize = 40;
 
+/// The file descriptor an app's child finds its listening socket on, and
+/// the setting that says so (`CHLOEDB_LISTEN_FD=3`): the programs the
+/// server starts listen on it rather than binding a port themselves.
+pub const LISTEN_FD: i32 = 3;
+pub const LISTEN_FD_ENV: &str = "CHLOEDB_LISTEN_FD";
+
 /// One app the server starts: what [`plan`] chose.
 #[derive(Clone, Debug)]
 pub struct Plan {
@@ -50,6 +60,10 @@ pub struct Plan {
     pub bin: PathBuf,
     /// The loopback port it listens on.
     pub port: u16,
+    /// The socket bound to `port`, listening, which the server holds while
+    /// it runs and each start of the child inherits ([`LISTEN_FD`]).
+    /// `None` only in tests of [`command`].
+    pub listener: Option<Arc<std::net::TcpListener>>,
     /// What the server sends it (`Authorization: Bearer`), and it requires.
     pub token: String,
 }
@@ -128,7 +142,8 @@ pub fn plan(choice: &str, taken: &[String], role: &Role, own_dir: Option<&Path>)
             None if auto => continue,
             None => return Err(format!("--start-apps {name}: no {program} beside chloedb-server or on the PATH")),
         };
-        out.push(Plan { name: name.to_string(), bin, port: free_port()?, token: random_token()? });
+        let (listener, port) = listener()?;
+        out.push(Plan { name: name.to_string(), bin, port, listener: Some(Arc::new(listener)), token: random_token()? });
     }
     Ok(out)
 }
@@ -150,10 +165,15 @@ fn random_token() -> Result<String, String> {
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
-/// A loopback port no one listens on now.
-fn free_port() -> Result<u16, String> {
+/// A loopback socket listening on a port of its own, and the port: kept,
+/// never closed and bound again, so that the port is the app's for as
+/// long as the server runs (audit N-P1: a port chosen and released could
+/// be taken by any local process, which would then get the app's token
+/// and serve the command center's pages for it).
+fn listener() -> Result<(std::net::TcpListener, u16), String> {
     let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("no loopback port for an app: {e}"))?;
-    l.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
+    let port = l.local_addr().map(|a| a.port()).map_err(|e| e.to_string())?;
+    Ok((l, port))
 }
 
 /// How an app gets the key it calls the server with: `Ok(None)` on an
@@ -227,6 +247,9 @@ fn command(p: &Plan, server: &str, key: Option<&str>) -> (Vec<String>, Vec<(&'st
     let listen = format!("127.0.0.1:{}", p.port);
     // CHLOEDB_APP_OF: the server it is an app of, which lists it already.
     let mut env: Vec<(&'static str, String)> = vec![("CHLOEDB_START_APPS", "off".into()), ("CHLOEDB_APP_OF", server.to_string())];
+    if p.listener.is_some() {
+        env.push((LISTEN_FD_ENV, LISTEN_FD.to_string()));
+    }
     if let Some(k) = key {
         env.push(("CHLOEDB_KEY", k.to_string()));
     }
@@ -357,9 +380,24 @@ impl Proc {
         let mut cmd = Command::new(&self.plan.bin);
         cmd.args(&args).env_clear().envs(child_env()).envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(unix)]
+        let listen_fd = self.plan.listener.as_ref().map(|l| std::os::fd::AsRawFd::as_raw_fd(l.as_ref()));
+        #[cfg(unix)]
         // SAFETY: async-signal-safe calls between fork and exec.
         unsafe {
-            cmd.pre_exec(|| {
+            cmd.pre_exec(move || {
+                // The listening socket, at LISTEN_FD and kept open across
+                // exec (dup2 clears close-on-exec on the copy; on the
+                // descriptor itself, if it is LISTEN_FD already, fcntl).
+                if let Some(fd) = listen_fd {
+                    if fd == LISTEN_FD {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    } else if libc::dup2(fd, LISTEN_FD) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 // A group of its own: a Ctrl-C in the server's terminal
                 // reaches the server, which stops the app, rather than
                 // both at once (which the app would be started again for).
@@ -464,6 +502,11 @@ mod tests {
         assert_eq!(p.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["sheets", "chloectx"]);
         assert_ne!(p[0].token, p[1].token, "a token of its own each");
         assert_ne!(p[0].port, p[1].port);
+        // Each port is held, so that no other process can bind it.
+        for a in &p {
+            assert_eq!(a.listener.as_ref().unwrap().local_addr().unwrap().port(), a.port);
+            assert!(std::net::TcpListener::bind(("127.0.0.1", a.port)).is_err(), "port {} is the app's", a.port);
+        }
         // An --app of the name wins.
         let p = plan("auto", &["sheets".into()], &role(), Some(&dir)).unwrap();
         assert_eq!(p.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["chloectx"]);
@@ -489,7 +532,7 @@ mod tests {
 
     #[test]
     fn each_app_gets_its_token_and_key_under_its_own_names() {
-        let p = Plan { name: "chloectx".into(), bin: "chloectx".into(), port: 7761, token: "t".into() };
+        let p = Plan { name: "chloectx".into(), bin: "chloectx".into(), port: 7761, listener: None, token: "t".into() };
         let (args, env) = command(&p, "http://127.0.0.1:7700", Some("sk_a_b"));
         assert_eq!(args, ["app", "--server", "http://127.0.0.1:7700", "--host", "127.0.0.1", "--port", "7761"]);
         assert!(env.contains(&("CHLOECTX_APP_TOKEN", "t".into())) && env.contains(&("CHLOEDB_KEY", "sk_a_b".into())) && env.contains(&("CHLOEDB_START_APPS", "off".into())));
@@ -497,5 +540,9 @@ mod tests {
         let (args, env) = command(&p, "http://127.0.0.1:7700", None);
         assert!(args.windows(2).any(|w| w == ["--grow", "off"]));
         assert!(!env.iter().any(|(k, _)| *k == "CHLOEDB_KEY"));
+        assert!(!env.iter().any(|(k, _)| *k == LISTEN_FD_ENV), "no socket to hand over");
+        let (l, port) = listener().unwrap();
+        let p = Plan { port, listener: Some(Arc::new(l)), ..p };
+        assert!(command(&p, "http://127.0.0.1:7700", None).1.contains(&(LISTEN_FD_ENV, "3".into())));
     }
 }

@@ -2436,7 +2436,12 @@ impl Service {
     /// model of its tokens, such as ColBERT, is the list of its tokens'
     /// vectors, as `maxsim` takes them; that of a SPARSE field embedded by
     /// a learned sparse model, its term weights, as `similarity` takes them.
-    pub async fn params(self: &Arc<Self>, j: Option<&Json>) -> Result<Params, ApiError> {
+    ///
+    /// `who` is the request's credential: a key limited to tables may read
+    /// a stored vector, or embed by a field's model, only of a table it may
+    /// read. `None` is the server's own caller (an admin's route), whose
+    /// scope was checked already.
+    pub async fn params(self: &Arc<Self>, who: Option<&Principal>, j: Option<&Json>) -> Result<Params, ApiError> {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
         let m = j.as_object().ok_or_else(|| ApiError::bad("params must be an object"))?;
@@ -2444,11 +2449,11 @@ impl Service {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
                     let table = o.get("table").and_then(|f| f.as_str());
-                    let (table, field) = self.vector_field(table, o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, field) = self.vector_field_for(who, table, o.get("field").and_then(|f| f.as_str()))?;
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, field, e) = self.model(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, field, e) = self.model_for(who, o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
@@ -2491,6 +2496,28 @@ impl Service {
             p = p.set(k, value);
         }
         Ok(p)
+    }
+
+    /// [`Service::vector_field`], for `who`: a key limited to tables names
+    /// the table, one it may read, so that nothing is looked up in the
+    /// others (not even whether one has the field).
+    fn vector_field_for(&self, who: Option<&Principal>, table: Option<&str>, field: Option<&str>) -> Result<(String, String), ApiError> {
+        let Some(who) = who.filter(|w| w.limited()) else { return self.vector_field(table, field) };
+        let t = table.ok_or_else(|| ApiError::bad("a key limited to tables names the table of a vector_of parameter: {\"vector_of\": key, \"table\": \"t\"}"))?;
+        who.may_table(Scope::Read, t, "a vector_of parameter")?;
+        self.vector_field(Some(t), field)
+    }
+
+    /// [`Service::model`], for `who`: the table whose field's model embeds
+    /// is one a key limited to tables may read.
+    pub fn model_for(&self, who: Option<&Principal>, table: Option<&str>, field: Option<&str>) -> Result<(String, String, Arc<dyn chloedb::embed::Embedder>), ApiError> {
+        let Some(who) = who.filter(|w| w.limited()) else { return self.model(table, field) };
+        if let Some(t) = table {
+            who.may_table(Scope::Read, t, "an embed parameter")?;
+        }
+        let m = self.model(table, field)?;
+        who.may_table(Scope::Read, &m.0, "an embed parameter")?;
+        Ok(m)
     }
 
     /// The table and VECTOR field `{"vector_of": key}` reads: `field` of
@@ -3779,7 +3806,7 @@ impl Service {
         let functions = self.functions();
         let f = functions.current(name).ok_or_else(|| ApiError::bad(format!("no classifier named {name}")))?;
         let c = chloedb::query::classify::of_function(f)?.ok_or_else(|| ApiError::bad(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
-        let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
+        let p = self.params(None, Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
         let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
         Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
     }
