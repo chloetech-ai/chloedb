@@ -214,8 +214,8 @@ async fn replicas_hold_what_their_primary_wrote() {
     let seq3 = pdb.storage().seq_of(None, &Value::Str("p0000003".into())).unwrap().unwrap();
     let w = p.write_ops(vec![json!({"op": "add", "key": "p0000003", "field": "sold", "value": 1, "if_seq_no": seq3})], None).await.unwrap();
     holds(w.seq_no.unwrap());
-    let (n, _) = p.import(None, axum::body::Bytes::from("id,title,price\nc1,Copper kettle,12.5\nc2,Iron pan,30\n"), chloedb::ingest::Format::Csv).await.unwrap();
-    assert_eq!(n, 2);
+    let (n, _) = p.import(None, axum::body::Bytes::from("id,title,price\nc1,Copper kettle,12.5\nc2,Iron pan,30\n"), chloedb::ingest::Format::Csv, Default::default()).await.unwrap();
+    assert_eq!(n.rows, 2);
     holds(last(&pdb));
     // Writers at once, which the writer groups into shared transactions. Each
     // adds to a row the primary holds, so that each write numbers one.
@@ -274,7 +274,7 @@ async fn replicas_hold_what_their_primary_wrote() {
     assert!(e.status == 409 && e.message.contains("this server is a replica"), "{}", e.message);
     let e = r1.sql(&Principal::open(), "UPDATE products SET sold = 0", &Params::new(), After::Any, 0).await.err().unwrap();
     assert_eq!(e.status, 409, "{}", e.message);
-    let e = r1.import(None, axum::body::Bytes::from("id,title\nc3,x\n"), chloedb::ingest::Format::Csv).await.unwrap_err();
+    let e = r1.import(None, axum::body::Bytes::from("id,title\nc3,x\n"), chloedb::ingest::Format::Csv, Default::default()).await.unwrap_err();
     assert_eq!(e.status, 409, "{}", e.message);
     assert_eq!(last(&r1db), end);
     let e = p.replicate(pb::ReplicateRequest { term: 1, primary: "another".into(), ..Default::default() }).await.unwrap_err();
@@ -1505,7 +1505,7 @@ async fn a_key_s_promotion_calls_only_the_shard_s_known_copies() {
     let x = grpc(xs).await;
     let r = server::service(&server::Options { replica: true, replicas: vec![x.clone()], ..opts("r.strata") }).await.unwrap();
     assert_eq!(r.known_copies(), vec![x.clone()]);
-    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false, tables: None, role: None, agent: false, on_behalf_of: None };
+    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
     let admin = key(chloedb_server::keys::Scope::Admin);
     for asked in [vec![fake_url.clone()], vec![x.clone(), fake_url.clone()]] {
         let e = r.promote(&admin, asked, Acks::All, false).await.unwrap_err();

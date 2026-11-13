@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/next-items.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,8 +81,9 @@
       <span class="eyebrow">Search and SQL</span>
       <h1>Next items</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/next-items.md">docs/chloedb/next-items.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#counts-in-a-table">Counts in a table</a></li><li><a href="#reading-with-backoff">Reading with backoff</a></li><li><a href="#measured">Measured</a></li><li><a href="#several-steps-ahead">Several steps ahead</a></li><li><a href="#which-to-use">Which to use</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#counts-in-a-table">Counts in a table</a></li><li><a href="#reading-with-backoff">Reading with backoff</a></li><li><a href="#measured">Measured</a></li><li><a href="#several-steps-ahead">Several steps ahead</a></li><li><a href="#kept-for-you-create-recommender">Kept for you: CREATE RECOMMENDER</a></li><li><a href="#which-to-use">Which to use</a></li></ol></details>
     <div class="doc-body">
 
 <p>What a user will open, watch or buy next, from what came after the same items before: counts kept in an ordinary table as events arrive, read with backoff from the last two items to the last one. They update with every event, explain themselves, and are the baseline that a learned sequence model has to beat.</p>
@@ -167,7 +169,10 @@ SELECT nxt FROM next WHERE id IN (...) AND n &gt; 0;   -- the candidates&#x27; k
 <pre data-lang="sql">SELECT id FROM items
 ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5), dir =&gt; &#x27;out&#x27;, eps =&gt; 1e-6) DESC
 LIMIT 20;</pre>
+<p>A walk runs on one database: a coordinator refuses <code>ppr</code> and the other graph queries (<a href="graphs.html#on-a-cluster">graphs on a cluster</a>), while the counts above run anywhere.</p>
 <p>Personalized PageRank pushes a row only while its share of the walk is at least <code>eps</code> (1e-4 by default) times the sum of its edges' weights, so a single seed whose edges add up to more than 10,000 is never pushed and the walk returns nothing. Pass a smaller <code>eps</code>, as above, or keep the weights decayed or normalised.</p>
+<h2 id="kept-for-you-create-recommender">Kept for you: <code>CREATE RECOMMENDER</code><a class="anchor" href="#kept-for-you-create-recommender" aria-label="Link to this section">#</a></h2>
+<p><code>CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)</code> keeps the counts of order 1 and items seen together from the writes of an events table, and <code>ORDER BY recommend('shop', :u)</code> fuses them with the similarity of the user's recent items and with popularity, leaving out what the user had (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>). It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.</p>
 <h2 id="which-to-use">Which to use<a class="anchor" href="#which-to-use" aria-label="Link to this section">#</a></h2>
 <p>Counts are exact and live: an event changes the next answer, and each suggestion is explained by a count. They know only the last one or two items and nothing about a context never seen, where they fall back to the last item alone. A walk over directed edges reaches several steps ahead and related items, at five writes per event. Learned sequence models, which read long histories and combine what they have not seen together, are the next step; these counts are the baseline they have to beat.</p>
     </div>

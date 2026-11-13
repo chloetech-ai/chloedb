@@ -258,7 +258,22 @@ const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7
  * the command center (`x-strata-client`), so the server leaves the UI's own
  * calls out of the routes and queries it shows.
  */
+// A GET a key limited to tables was refused ("... is not for a key limited
+// to tables"): its path (without the query) is not asked again for that key,
+// so that a page polling it does not send a refused request a poll. The
+// refusal is thrown again, as the server gave it.
+const refusedFor = { token: null, paths: new Map() };
+const routeOf = (path) => String(path).split("?")[0];
+/** The refusal of a route this key was refused as a key limited to tables, or null. */
+export function refusedRoute(path) {
+  if (refusedFor.token !== token) return null;
+  return refusedFor.paths.get(routeOf(path)) || null;
+}
+
 export async function api(path, opts = {}) {
+  const get = !opts.method && opts.body === undefined;
+  const held = get && !opts.hub ? refusedRoute(path) : null;
+  if (held) throw new ApiError(403, held, { error: held, limited: true });
   const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
@@ -311,6 +326,11 @@ export async function api(path, opts = {}) {
   }
   answered();
   if (r.status === 401) bus.emit("unauthorized", path);
+  if (r.status === 403 && get && typeof j?.error === "string" && j.error.includes("not for a key limited to tables")) {
+    if (refusedFor.token !== token) { refusedFor.token = token; refusedFor.paths = new Map(); }
+    refusedFor.paths.set(routeOf(path), j.error);
+    j.limited = true;
+  }
   if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;
 }
@@ -337,10 +357,28 @@ export function can(scope) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
+  // A key limited to tables is never the server's admin: its admin is its
+  // tables' (CREATE, ALTER, DROP).
+  if (w.tables && (RANK[scope] || RANK.admin) >= RANK.admin) return false;
   return (RANK[w.scope] || 0) >= (RANK[scope] || RANK.admin);
 }
 /** The tooltip of an action the key cannot take: "needs an admin key". */
-export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+export const needs = (scope) => ctx.whoami?.tables && scope === "admin" ? "needs an admin key of the server (this key is limited to tables)" : `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Whether the signed-in key is limited to tables (whoami's `tables`). */
+export const limited = () => !!ctx.whoami?.tables;
+/** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
+export const grantsText = (tables) => Object.entries(tables || {}).map(([t, s]) => `${t} ${s}`).join(", ");
+/** What the header says of a key: its scope, or for a key limited to tables its grants (and its preset). */
+export function keyLabel(w) {
+  if (!w) return "";
+  if (!w.tables) return w.scope;
+  return (w.preset ? w.preset + ": " : "") + grantsText(w.tables);
+}
+/** Why a page shows nothing for an error `e`: "this key can't see …" for a key limited to tables, else the error. */
+export function cannotSee(e, what) {
+  if (e?.status === 403 && (e.body?.limited || limited())) return `This key can't see ${what}: it is limited to tables (${grantsText(ctx.whoami?.tables)}).`;
+  return e?.message || String(e);
+}
 /** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
 export function gate(btn, scope) {
   if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
@@ -477,6 +515,35 @@ export const fmt = {
   },
   pct(v, d = 1) { if (v == null || Number.isNaN(v)) return "–"; return (v * 100).toFixed(d).replace(/\.0+$/, "") + "%"; },
   rate(v) { return v == null ? "–" : fmt.si(v) + "/s"; },
+  /**
+   * A value of the data (a cell, a chart's point, a Sheets cell's sum): the
+   * one number format of every grid and chart, so a number reads the same in
+   * each. Grouped digits, 2 decimals from 1,000 up and up to 6 below, and an
+   * exponent outside 1e-4 to 1e15, where grouped digits stop being read.
+   */
+  num(v) {
+    if (v == null || v === "" || Number.isNaN(Number(v))) return "–";
+    v = Number(v);
+    if (!Number.isFinite(v)) return String(v);
+    const a = Math.abs(v);
+    if (a !== 0 && (a >= 1e15 || a < 1e-4)) return v.toExponential(4).replace(/\.?0+e/, "e");
+    return v.toLocaleString(undefined, { maximumFractionDigits: a >= 1000 ? 2 : 6 });
+  },
+  /** A chart axis's ticks: about `n` round values (1, 2, 2.5 or 5 times a power of ten) from lo to hi. */
+  ticks(lo, hi, n = 4) {
+    if (!(hi > lo)) hi = lo + 1;
+    const raw = (hi - lo) / Math.max(1, n), mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+    const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+    const out = [];
+    for (let t = Math.floor(lo / step) * step; t <= Math.ceil(hi / step) * step + step / 2; t += step) out.push(+t.toPrecision(12));
+    return out;
+  },
+  /** A tick's label: short (1.5M, 250k), as round as the ticks are. */
+  tick(v) {
+    const a = Math.abs(v);
+    const short = (x, u) => +x.toPrecision(3) + u;
+    return a >= 1e12 ? short(v / 1e12, "T") : a >= 1e9 ? short(v / 1e9, "B") : a >= 1e6 ? short(v / 1e6, "M") : a >= 1e4 ? short(v / 1e3, "k") : fmt.num(+v.toPrecision(6));
+  },
   /** How long until a disk fills, from days: minutes or hours under a day, as the server's texts say it. */
   fills(days) {
     if (days == null || !Number.isFinite(days)) return "–";
@@ -787,6 +854,7 @@ export function every(ms, f, now = true, opts = {}) {
 
 /** What an error says, for a view that could not load. */
 export function failure(e, what) {
+  if (e instanceof ApiError && e.status === 403 && (e.body?.limited || limited())) return empty("lock", `This key can't see ${what.toLowerCase()}`, cannotSee(e, what.toLowerCase()), h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 403) return empty("lock", `${what} needs an admin key`, e.message, h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 401) return empty("lock", "Sign in to see " + what.toLowerCase(), "This server needs a token or an API key.", h("button", { class: "btn sm primary", onclick: () => bus.emit("unauthorized") }, "Enter a key"));
   return h("div", { class: "error" }, `${what}: ${e.message}`);

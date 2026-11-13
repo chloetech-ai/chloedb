@@ -144,7 +144,14 @@ use crate::{agent, json as js, judge, obs, profiling, telemetry, ui, ApiError};
 struct Failure(Arc<str>);
 
 impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
+        // A key the table holds already (the engine's `conflict`,
+        // [`chloedb::Error::code`]): 409 over HTTP. Not over gRPC, where a
+        // coordinator takes FAILED_PRECONDITION for a slot map's refusal.
+        // So is a strict write's refusal, 400 over gRPC for the same reason.
+        if self.status == 400 && (self.message.contains("duplicate primary key") || self.message.contains("strict: ")) {
+            self.status = 409;
+        }
         let code = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let failure = (self.status >= 500).then(|| Failure(self.message.as_str().into()));
         let client = (400..500).contains(&self.status).then(|| ClientError(self.message.as_str().into()));
@@ -257,6 +264,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
+        .route("/v1/sql/check", post(sql_check))
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
@@ -865,6 +873,15 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // itself and does not pass it on.
     let token = header_str(req.headers(), header::AUTHORIZATION).or_else(|| header_str(req.headers(), header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
     let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+    // An app that checks its callers runs a caller's statement narrowed
+    // to the caller's tables ([`Principal::narrowed`]): checked as theirs.
+    let (who, narrowing) = match (who, header_str(req.headers(), header::HeaderName::from_static(keys::AS_TABLES))) {
+        (Some(w), Some(g)) => match w.narrowed(g) {
+            Ok(n) => (Some(n), None),
+            Err(e) => (Some(w), Some(e)),
+        },
+        (w, _) => (w, None),
+    };
     // A refused credential that is a key known here (expired, revoked):
     // its name and id, so that Access names the client still sending it.
     let known = match &who {
@@ -884,10 +901,11 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { code: None, status: 401, message: "missing or wrong token".into() }),
+        Some(_) if narrowing.is_some() => narrowing,
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
         Some(_) if app_grants => None,
-        Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) => w.may_server(&format!("{method} {route}")).err(),
+        Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         // A key for operations: the server's views, and for `ops` the
         // bounded actions ([`crate::ops::role_may`]).
         Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may(need, &format!("{method} {route}")).err(),
@@ -902,6 +920,16 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let (res, note, change) = match refused {
+        // An MCP client reads a JSON-RPC error: why the key may not use the
+        // tools (a key limited to tables, whose tools' tables they would not
+        // check), with the HTTP status still saying it.
+        Some(e) if route == "/v1/mcp" && e.status == 403 => {
+            let message = format!("{}; ChloeDB's MCP tools take a key of every table (use the HTTP API with this key: /v1/query, /v1/sql, /v1/write)", e.message);
+            let body = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32001, "message": message}});
+            let mut r = (StatusCode::FORBIDDEN, AxJson(body)).into_response();
+            r.extensions_mut().insert(ClientError(e.message.into()));
+            (r, None, keys::Change::default())
+        }
         Some(e) => (e.into_response(), None, keys::Change::default()),
         None => {
             // Who the request's queries are from ([`telemetry::Caller`]).
@@ -944,9 +972,11 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cluster2: why a request failed (its error), kept in its entry's
     // `after`, so that the Changes list says what went wrong.
     let failed = (status >= 400).then(|| res.extensions().get::<ClientError>().map(|e| e.0.clone()).or_else(|| res.extensions().get::<Failure>().map(|e| e.0.clone()))).flatten();
+    // A change through an app is audited as an admin's change is.
+    let app_change = route == "/v1/apps/:name/*rest" && !read;
     // An approved change request being applied: audited whatever its route.
     let applying = keys::caller().and_then(|c| c.change).filter(|id| app.svc.oncall.proposal_of(id).is_some_and(|p| p.state == "applying"));
-    if refusal || detail.is_some() || (need == Scope::Admin && !read) || (applying.is_some() && !read) {
+    if refusal || detail.is_some() || ((need == Scope::Admin || app_change) && !read) || (applying.is_some() && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
         let caller = keys::caller().unwrap_or_default();
         // ops: an agent's request, and what it said of itself.
@@ -1061,7 +1091,8 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
-        "/v1/export" => Scope::Admin,
+        // The rows of one table need read on it; the files, the admin ([`export`]).
+        "/v1/export" => Scope::Read,
         // The autopilot writes its tables, may spend Claude's tokens on
         // grades, and applying a proposal replaces a rank profile.
         "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
@@ -1080,8 +1111,10 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/feedback" if method == Method::POST => Scope::Write,
         "/v1/feedback/:id" if method == Method::PATCH => Scope::Write,
         "/v1/feedback/:id" if method == Method::DELETE => Scope::Admin,
-        // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
-        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
+        // An app's reads are a reader's; what changes it (starts a crawl) an
+        // admin's, or a writer's for an app that checks its callers itself
+        // ([`crate::apps::checks_callers`], checked as it is forwarded).
+        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Write,
         // The inspector names the keys most read.
         // The hub's calls to other clusters carry their keys: its owner's.
         r if r.starts_with("/c/") => Scope::Admin,
@@ -1332,11 +1365,21 @@ async fn stats(State(app): State<App>) -> AxJson<Json> {
 
 /// A table's schema: `?table=`, else the first table's.
 async fn schema(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    let who = who(w);
     let s = match q.get("table") {
-        Some(t) => app.svc.table(t).await?,
+        Some(t) => {
+            // A table it may not read is refused whether or not it exists.
+            if who.limited() {
+                who.may_table(Scope::Read, t, "a table's schema")?;
+            }
+            app.svc.table(t).await?
+        }
+        // A key limited to tables: the first table it may read, rather than
+        // a refusal of one it did not name.
+        None if who.limited() => app.svc.tables_listed().await.iter().find(|s| who.table_scope(&s.table).is_some_and(|x| x >= Scope::Read)).cloned().ok_or_else(|| ApiError::bad(format!("the key {:?} may read no table yet: it is limited to {}", who.name, who.tables.as_deref().map(keys::grants_text).unwrap_or_default())))?,
         None => app.svc.default_table()?,
     };
-    who(w).may_table(Scope::Read, &s.table, "a table's schema")?;
+    who.may_table(Scope::Read, &s.table, "a table's schema")?;
     Ok(AxJson(table_json(&app.svc, &s)))
 }
 
@@ -1492,10 +1535,11 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         return Ok(AxJson(answer_of(&b, &a)?).into_response());
     }
     if who.limited() {
-        // A logged query writes the rank log's table, and a shard's is a
-        // coordinator's: neither is for a key limited to tables.
-        if let Some(k) = ["log", "shard"].into_iter().find(|k| given(k)) {
-            return Err(who.may_server(&format!("a query with {k}")).unwrap_err());
+        // A shard's query is a coordinator's, not for a key limited to
+        // tables; a logged one writes the log's table, which
+        // [`Service::query_logged`] checks.
+        if given("shard") {
+            return Err(who.may_server("a query with shard").unwrap_err());
         }
         reads_ok(&app, &who, body_str(&b, "sql")?).await?;
     }
@@ -1515,7 +1559,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     };
     let req = QueryReq {
         sql: body_str(&b, "sql")?.to_string(),
-        params: app.svc.params(Some(&who), b.get("params")).await?,
+        params: app.svc.params_for(b.get("params"), Some(body_str(&b, "sql")?), &who).await?,
         timeout_ms: body_u64(&b, "timeout_ms"),
         shard: b.get("shard").and_then(|v| v.as_bool()).unwrap_or(false),
         stats,
@@ -1556,7 +1600,8 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     if req.shard && req.scroll.is_some() {
         return Err(ApiError::bad("a shard answers its coordinator at once: leave out page_size"));
     }
-    let a = app.svc.query(req).await?;
+    let mut a = app.svc.query(req).await?;
+    hide_hosts(&who, &mut a.rs.stats.steps);
     if arrow {
         return arrow_answer(a).await;
     }
@@ -1622,7 +1667,8 @@ async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
 async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = chloedb::rank_log::Log::from_json(log)?;
     let skip = req.skip_steps;
-    let (a, served, w) = app.svc.query_logged(who, req, log).await?;
+    let (mut a, served, w) = app.svc.query_logged(who, req, log).await?;
+    hide_hosts(who, &mut a.rs.stats.steps);
     let mut j = answer(&a);
     if skip {
         without_steps(&mut j);
@@ -1778,15 +1824,27 @@ async fn feed_keys(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Ax
 /// The records of a log table ([`chloedb::rank_log::export`]) as NDJSON,
 /// read from one snapshot of a local database as they are sent. A failure
 /// after the first record ends the answer with `{"error": ..., "status":
-/// ..}`. A coordinator refuses it: each shard's server exports its own
-/// rows, which hold every row of a context when the log and the events
-/// are placed by it (`shard_by`).
-async fn export_rank_log(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+/// ..}`. A coordinator runs the export's queries over its shards
+/// ([`crate::export::rank_log`]), each read whole.
+async fn export_rank_log(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let x = chloedb::rank_log::Export::from_json(&b)?;
-    let db = app.svc.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator does not export a rank log: export from each shard's server"))?;
+    let p = who(w);
+    rank_log_ok(&p, &x)?;
     // Refused before the answer starts.
     chloedb::rank_log::check(&*app.svc.table(&x.table).await?)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Json>(1024);
+    let Some(db) = app.svc.local_db().cloned() else {
+        let (svc, owner) = (app.svc.clone(), crate::service::scroll_owner(&p));
+        tokio::spawn(async move {
+            let out = tx.clone();
+            let r = crate::export::rank_log(&svc, &owner, x, move |r| out.blocking_send(r).map_err(|_| chloedb::Error::Query("the export's client left".into()))).await;
+            if let Err(e) = r {
+                let _ = tx.send(json!({"error": e.message, "status": e.status})).await;
+            }
+        });
+        let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|j| Ok::<_, std::convert::Infallible>(Bytes::from(format!("{j}\n"))));
+        return Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], axum::body::Body::from_stream(lines)).into_response());
+    };
     tokio::task::spawn_blocking(move || {
         let r = db.export_rank_log(&x, |r| tx.blocking_send(r).map_err(|_| chloedb::Error::Query("the export's client left".into())));
         if let Err(e) = r {
@@ -1798,16 +1856,55 @@ async fn export_rank_log(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res
     Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], axum::body::Body::from_stream(lines)).into_response())
 }
 
+/// Refuses an export of a rank log for a key limited to tables that may
+/// not read the log's table or its events'.
+fn rank_log_ok(who: &Principal, x: &chloedb::rank_log::Export) -> Result<(), ApiError> {
+    who.may_table(Scope::Read, &x.table, "a rank log's export")?;
+    if let Some(e) = &x.events {
+        who.may_table(Scope::Read, &e.table, "a rank log's export (its events)")?;
+    }
+    Ok(())
+}
+
 /// The credit of each pair of interleaved rankings in a log table
 /// ([`chloedb::rank_log::Credits`]) over an export of it (the body is
 /// `/v1/rank_log/export`'s), from a local database as the export is.
-async fn interleaving(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn interleaving(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let x = chloedb::rank_log::Export::from_json(&b)?;
-    let db = app.svc.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator does not export a rank log: ask each shard's server"))?;
+    let p = who(w);
+    rank_log_ok(&p, &x)?;
     chloedb::rank_log::check(&*app.svc.table(&x.table).await?)?;
     let t0 = std::time::Instant::now();
-    let pairs = tokio::task::spawn_blocking(move || db.interleaving_credit(&x)).await.map_err(ApiError::internal)??;
+    let pairs = match app.svc.local_db().cloned() {
+        Some(db) => tokio::task::spawn_blocking(move || db.interleaving_credit(&x)).await.map_err(ApiError::internal)??,
+        // Credited over the export through the coordinator.
+        None => {
+            let credits = Arc::new(std::sync::Mutex::new(chloedb::rank_log::Credits::default()));
+            let c = credits.clone();
+            crate::export::rank_log(&app.svc, &crate::service::scroll_owner(&p), x, move |r| {
+                c.lock().unwrap_or_else(|e| e.into_inner()).add(&r);
+                Ok(())
+            })
+            .await?;
+            let c = std::mem::take(&mut *credits.lock().unwrap_or_else(|e| e.into_inner()));
+            c.finish()
+        }
+    };
     Ok(AxJson(json!({"pairs": pairs.iter().map(|c| c.to_json()).collect::<Vec<_>>(), "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+}
+
+/// A query's steps as a caller who is not the server's admin (a key of
+/// read or write scope, or one limited to tables) sees them: a shard's step
+/// says which shard, not the address of the copy that answered.
+fn hide_hosts(who: &Principal, steps: &mut [chloedb::query::steps::Step]) {
+    if who.scope == Scope::Admin && !who.limited() {
+        return;
+    }
+    for s in steps.iter_mut().filter(|s| s.op == "shard") {
+        if let Some(i) = s.detail.rfind(", ").filter(|&i| s.detail[i + 2..].contains("://")) {
+            s.detail.truncate(i);
+        }
+    }
 }
 
 /// A query's answer; one a coordinator gave without some shards says
@@ -1887,10 +1984,7 @@ pub fn as_objects(j: &mut Json) {
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let w = who(w);
-    let params = app.svc.params(Some(&w), b.get("params")).await?;
-    if w.limited() && b.get("log").is_some() {
-        return Err(w.may_server("a logged query").unwrap_err());
-    }
+    let params = app.svc.params_for(b.get("params"), b.get("sql").and_then(Json::as_str), &w).await?;
     if let Some(log) = b.get("log") {
         let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, who: Some(w.clone()), ..Default::default() };
         return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
@@ -1912,7 +2006,10 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
     let key = body_key(&b, &headers)?;
     let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
     match r {
-        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer_of(&b, &a)?).into_response()),
+        Ok(SqlAnswer::Rows(mut a)) => {
+            hide_hosts(&w, &mut a.rs.stats.steps);
+            Ok(AxJson(answer_of(&b, &a)?).into_response())
+        }
         Ok(SqlAnswer::Written { w, took_ms }) => {
             audit_ui_write(statement, Some(w.rows as u64), None);
             Ok(AxJson(written(w, took_ms)).into_response())
@@ -2020,6 +2117,9 @@ fn table_written(sql: &str) -> Option<String> {
 /// coordinator each shard's ([`Written`]).
 fn written(w: Written, took_ms: f64) -> Json {
     let mut j = json!({"written": w.rows, "took_ms": took_ms});
+    if let Some(r) = receipt_json(&w) {
+        j["receipt"] = r;
+    }
     if w.skipped > 0 {
         j["skipped"] = json!(w.skipped);
     }
@@ -2032,11 +2132,56 @@ fn written(w: Written, took_ms: f64) -> Json {
     j
 }
 
+/// What a write's operations found ([`crate::service::Receipt`]):
+/// `{received, inserted, replaced, updated, deleted, collapsed, not_found,
+/// per_shard}`, the counts null where a shard did not say (an older one).
+/// None for a write without operations (a SQL statement on one server).
+fn receipt_json(w: &Written) -> Option<Json> {
+    if w.receipt.is_none() && w.shards.is_empty() && w.received == 0 {
+        return None;
+    }
+    let counts = |r: Option<crate::service::Receipt>| match r {
+        Some(r) => serde_json::to_value(r).unwrap_or_default(),
+        None => json!({"inserted": null, "replaced": null, "updated": null, "deleted": null, "collapsed": null, "not_found": null}),
+    };
+    let mut j = counts(w.receipt);
+    j["received"] = json!(w.received);
+    if !w.shards.is_empty() {
+        j["per_shard"] = Json::Array(
+            w.shards
+                .iter()
+                .map(|p| {
+                    let mut s = counts(p.receipt);
+                    s["shard"] = json!(p.shard);
+                    s["rows"] = json!(p.rows);
+                    s
+                })
+                .collect(),
+        );
+    }
+    Some(j)
+}
+
+/// `strict` (a body's or a query's): each operation is sent with
+/// `"strict": true`, which refuses, writing nothing, one that would
+/// replace a row, write a key an earlier one wrote, or find no row.
+fn strict_ops(ops: &mut [Json]) {
+    for op in ops.iter_mut().filter(|op| !crate::service::is_mark(op)) {
+        if op.get("strict").is_none() {
+            op["strict"] = json!(true);
+        }
+    }
+}
+
 /// Runs a plan ([`chloedb::query::ir`]) as `/v1/sql` runs a statement.
 async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let plan = chloedb::query::ir::Plan::from_json(b.get("plan").ok_or_else(|| ApiError::bad("the body needs a \"plan\""))?)?;
-    match app.svc.run_plan(&who(w), plan, after(&b)?, body_u64(&b, "timeout_ms")).await? {
-        SqlAnswer::Rows(a) => Ok(AxJson(answer_of(&b, &a)?)),
+    let who = who(w);
+    match app.svc.run_plan(&who, plan, after(&b)?, body_u64(&b, "timeout_ms")).await? {
+        SqlAnswer::Rows(mut a) => {
+            hide_hosts(&who, &mut a.rs.stats.steps);
+            Ok(AxJson(answer_of(&b, &a)?))
+        }
         SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(w, took_ms))),
     }
 }
@@ -2044,10 +2189,15 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
 /// The body's `ops`, applied once per idempotency key (the body's
 /// `idempotency_key` or an `Idempotency-Key` header).
 async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
-    let ops = match b.get_mut("ops").map(Json::take) {
+    let mut ops = match b.get_mut("ops").map(Json::take) {
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
+    match b.get("strict") {
+        None | Some(Json::Null) | Some(Json::Bool(false)) => {}
+        Some(Json::Bool(true)) => strict_ops(&mut ops),
+        Some(_) => return Err(ApiError::bad("strict is true or false")),
+    }
     let who = who(w);
     if who.limited() {
         // Each operation's table, or the default table for one that names
@@ -2356,8 +2506,17 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
     let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
     table_ok(&app, &who(w), q.get("table").map(String::as_str), Scope::Write, "an import").await?;
     let t0 = std::time::Instant::now();
-    let (n, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format).await?;
-    Ok(AxJson(json!({"written": n, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+    let empty = match q.get("empty") {
+        None => chloedb::ingest::EmptyCell::Default,
+        Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
+    };
+    let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
+    let (w, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
+    let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
+    if let Some(r) = receipt_json(&w) {
+        j["receipt"] = r;
+    }
+    Ok(AxJson(j))
 }
 
 /// A query parameter that is true or false (`1`, `0`, `yes`, `no`), or
@@ -2431,12 +2590,38 @@ async fn import_parquet(_: &App, _: &Principal, _: &std::collections::HashMap<St
 /// `?format=parquet`, one table (`?tables=`, which a database of one
 /// table may leave out) as a Parquet file ([`Service::export_parquet`]),
 /// `?schemas=false` leaving out its kept Strata schema.
-async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+///
+/// `?format=jsonl`, `csv` or `arrow`, and on a coordinator `parquet` too,
+/// answer one table's rows read by a scroll ([`crate::export`]), which a
+/// key with read on that table may ask for; the database's files (SQLite,
+/// a server's own Parquet) are the admin's.
+async fn export(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let format = q.get("format").map(|f| f.to_ascii_lowercase());
+    let who = who(w);
+    let cluster = app.svc.coordinator().is_ok();
+    let rows = match format.as_deref() {
+        Some("parquet") if !cluster => None,
+        Some(f) => crate::export::Format::parse(f),
+        None => None,
+    };
+    if let Some(f) = rows {
+        let mut tables = tables_param(&q);
+        let table = match (tables.pop(), tables.is_empty()) {
+            (Some(t), true) => t,
+            _ => return Err(ApiError::bad("an export of rows is of one table: name it (?tables=name)")),
+        };
+        table_ok(&app, &who, Some(&table), Scope::Read, "an export").await?;
+        who.may(Scope::Read, "an export")?;
+        return crate::export::rows(&app.svc, &crate::service::scroll_owner(&who), &table, f).await;
+    }
+    if who.limited() {
+        return Err(ApiError { code: None, status: 403, message: "an export of the database's files (format sqlite or parquet) is not for a key limited to tables: format jsonl, csv or arrow export a table's rows with read on it".into() });
+    }
+    who.may(Scope::Admin, "an export of the database's files (format sqlite or parquet; format jsonl, csv or arrow export a table's rows with read on it)")?;
     match format.as_deref() {
         None | Some("sqlite") => {}
         Some("parquet") => return export_parquet(&app, &q).await,
-        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite or format=parquet"))),
+        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite, parquet, jsonl, csv or arrow"))),
     }
     let opts = chloedb::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
@@ -2878,6 +3063,14 @@ fn source_json(s: chloedb::db::Source) -> Json {
     json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)})
 }
 
+/// Whether a statement would run on this deployment, without running it
+/// ([`crate::sql_check`]): `{runs, deployment, kind, error?, notes}`.
+async fn sql_check(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let sql = body_str(&b, "sql")?;
+    let params = app.svc.params(None, b.get("params")).await?;
+    Ok(AxJson(crate::sql_check::check(&app.svc, sql, &params)))
+}
+
 /// A schema validated, in both JSON forms and as the `CREATE TABLE`
 /// statement that makes it.
 async fn schema_check(AxJson(b): AxJson<Json>) -> Res {
@@ -2894,11 +3087,13 @@ async fn schema_check(AxJson(b): AxJson<Json>) -> Res {
 /// The models a field may name ([`chloedb::embed::catalog`]), each with
 /// how it makes its vectors ([`chloedb::embed::describe`]), the fields
 /// that name it, and a fetch or conversion asked for here.
-async fn models(State(app): State<App>) -> Res {
+async fn models(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> Res {
+    let who = who(w);
     let dir = app.svc.models_dir();
     let d = dir.clone();
     let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d).into_iter().map(|m| { let x = chloedb::embed::describe(&m.name, &d); (m, x) }).collect::<Vec<_>>()).await.map_err(ApiError::internal)?;
-    let fields = app.svc.models();
+    // A key limited to tables sees the fields of the tables it reads alone.
+    let fields: Vec<crate::service::FieldModel> = app.svc.models().iter().filter(|f| who.table_scope(&f.table).is_some_and(|s| s >= Scope::Read)).cloned().collect();
     let mut jobs = app.svc.model_jobs();
     let mut models: Vec<Json> = list
         .iter()
@@ -2957,8 +3152,10 @@ async fn embed(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         None | Some(Json::Null) => Ok(None),
         Some(f) => f.as_str().map(Some).ok_or_else(|| ApiError::bad(format!("{k} is a name"))),
     };
-    let (table, field, _) = app.svc.model_for(Some(&who), name("table")?, name("field")?)?;
-    let p = app.svc.params(Some(&who), Some(&json!({ "v": { "embed": what, "field": field, "table": table } }))).await?;
+    // The table whose model embeds it, which the caller reads: the first
+    // such it may, when none is named ([`Service::embed_target`]).
+    let (table, field) = app.svc.embed_target(name("table")?, name("field")?, &[], &who)?;
+    let p = app.svc.params_for(Some(&json!({ "v": { "embed": what, "field": field, "table": table } })), None, &who).await?;
     match p.0.get("v") {
         Some(chloedb::value::Value::Vector(v)) => Ok(AxJson(json!({ "table": table, "field": field, "vector": &v[..] }))),
         // A multi-vector field's model: a vector a token of the text.
@@ -3011,7 +3208,7 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let sql = body_str(&b, "sql")?;
     let who = who(w);
     reads_ok(&app, &who, sql).await?;
-    let params = app.svc.params(Some(&who), b.get("params")).await?;
+    let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
@@ -3034,19 +3231,33 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
     // `hits`: the top rows with the values they were ranked by, for a
     // query that ranks them (another has no values to show).
+    // A query the hits cannot be shown for (one that orders groups, or by
+    // a column it computes) is explained without them, and says why.
+    let mut no_hits = None;
     let hits = match body_u64(&b, "hits") {
         0 => None,
         _ if !chloedb::query::sql::ranks(sql) => None,
         n => {
-            let sql = chloedb::query::sql::with_features(sql)?;
-            let h = app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms"), ..Default::default() }).await?;
-            let j = js::result(&h.rs, h.took_ms);
-            let names = j["columns"].as_array().cloned().unwrap_or_default();
-            let rows = j["rows"].as_array().cloned().unwrap_or_default();
-            Some(rows.iter().take(n as usize).map(|r| names.iter().zip(r.as_array().into_iter().flatten()).map(|(c, v)| (c.as_str().unwrap_or("").to_string(), v.clone())).collect::<serde_json::Map<_, _>>()).collect::<Vec<_>>())
+            let asked = match chloedb::query::sql::with_features(sql) {
+                Ok(sql) => app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms"), ..Default::default() }).await,
+                Err(e) => Err(ApiError::from(e)),
+            };
+            match asked {
+                Ok(h) => {
+                    let j = js::result(&h.rs, h.took_ms);
+                    let names = j["columns"].as_array().cloned().unwrap_or_default();
+                    let rows = j["rows"].as_array().cloned().unwrap_or_default();
+                    Some(rows.iter().take(n as usize).map(|r| names.iter().zip(r.as_array().into_iter().flatten()).map(|(c, v)| (c.as_str().unwrap_or("").to_string(), v.clone())).collect::<serde_json::Map<_, _>>()).collect::<Vec<_>>())
+                }
+                Err(e) => {
+                    no_hits = Some(e.message);
+                    None
+                }
+            }
         }
     };
-    let a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms: body_u64(&b, "timeout_ms"), profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true), ..Default::default() }).await?;
+    let mut a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms: body_u64(&b, "timeout_ms"), profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),         ..Default::default() }).await?;
+    hide_hosts(&who, &mut a.rs.stats.steps);
     let mut out = json!({
         "kind": a.kind,
         "logical": logical,
@@ -3061,6 +3272,9 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     });
     if let Some(h) = hits {
         out["hits"] = json!(h);
+    }
+    if let Some(why) = no_hits {
+        out["hits_skipped"] = json!(why);
     }
     Ok(AxJson(out))
 }
@@ -5976,6 +6190,8 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     }
     j["may"] = may;
     j["caller"] = json!(caller);
+    // The presets a key limited to tables can be made from.
+    j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
     AxJson(j)
 }
 
@@ -6012,10 +6228,26 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     // `"tables": {"crawl_*": "admin", "*": "read"}`: a key limited to
     // those ([`keys::Grant`]), whose scope is the most they give (and no
     // more than `scope`, when given).
-    let tables = match b.get("tables") {
+    let mut tables = match b.get("tables") {
         None | Some(Json::Null) => None,
         Some(t) => Some(keys::grants_of(t)?),
     };
+    // `"routes": ["fleet"]`, `"apps": ["sheets"]`: what a key limited to
+    // tables reaches beyond its tables ([`keys::Allow`]); `"preset":
+    // "oncall", "prefix": "netops_*"`: the grants and allowance of a job
+    // ([`keys::preset`]), kept as those, so that a server that knows no
+    // presets reads the key as it would one given them by hand.
+    let mut allow = keys::Allow::of(b.get("routes"), b.get("apps"))?;
+    if let Some(p) = b.get("preset").filter(|p| !p.is_null()) {
+        let p = p.as_str().ok_or_else(|| ApiError::bad("preset is a preset's name"))?;
+        if tables.is_some() || !allow.routes.is_empty() || !allow.apps.is_empty() {
+            return Err(ApiError::bad("a preset gives the key its tables, routes and apps: leave them out, or give them without a preset"));
+        }
+        let prefix = b.get("prefix").and_then(Json::as_str).ok_or_else(|| ApiError::bad("a preset needs a prefix, the tables it is for, as \"prefix\": \"team_*\""))?;
+        let (g, a) = keys::preset(p, prefix)?;
+        tables = Some(g);
+        allow = a;
+    }
     let asked = b.get("scope").and_then(|v| v.as_str()).unwrap_or(if tables.is_some() { "admin" } else { "read" });
     // ops: `ops` and `propose` are roles over a read key ([`keys::Role`]).
     let role = keys::Role::parse(asked);
@@ -6038,18 +6270,18 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     // A shard, or a copy in replication, whose callers send no credential.
     let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
-    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of") };
+    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow) };
     let (key, secret) = app.svc.keys.create_full(name, scope, tables, expires, text("owner"), text("note"), more, app.guarded(), in_cluster)?;
     let scope = key.scope_name();
     let limits = key.tables.as_deref().map(keys::grants_json);
     keys::note_change(keys::Change {
         object: Some(format!("key {}", key.name)),
-        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of})),
+        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of})),
         ..Default::default()
     });
     tracing::info!(key = %key.id, name = %key.name, scope, limited = key.tables.is_some(), agent = key.agent, "API key created");
     let detail = match &key.tables {
-        Some(t) => format!("created key {} ({}, limited to {})", key.name, key.id, keys::grants_text(t)),
+        Some(t) => format!("created key {} ({}, limited to {}{})", key.name, key.id, keys::grants_text(t), key.allow.as_ref().map_or(String::new(), |a| format!("{}{}{}", a.preset.as_ref().map_or(String::new(), |p| format!("; preset {p}")), if a.routes.is_empty() { String::new() } else { format!("; routes {}", a.routes.join(", ")) }, if a.apps.is_empty() { String::new() } else { format!("; apps {}", a.apps.join(", ")) }))),
         None => format!("created key {} ({}, {}{})", key.name, key.id, scope, if key.agent { ", an agent's" } else { "" }),
     };
     Ok(audited(json!({"key": key.json(), "secret": secret, "closed": open}), detail))
@@ -6388,6 +6620,23 @@ async fn alert_backtest(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res 
 mod tests {
     use super::*;
     use chloedb::value::Value;
+
+    #[test]
+    fn shard_addresses_are_the_admins() {
+        use chloedb::query::steps::Step;
+        let steps = || vec![Step { op: "shard".into(), detail: "shard 0 query, http://s0-0.svc:7701".into(), ..Step::default() }, Step { op: "bm25".into(), detail: "title, a, b".into(), ..Step::default() }];
+        let mut admin = steps();
+        hide_hosts(&Principal::open(), &mut admin);
+        assert_eq!(admin, steps());
+        let reader = Principal { name: "r".into(), key: Some("k".into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
+        let mut seen = steps();
+        hide_hosts(&reader, &mut seen);
+        assert_eq!((seen[0].detail.as_str(), seen[1].detail.as_str()), ("shard 0 query", "title, a, b"));
+        let limited = Principal { scope: Scope::Admin, tables: Some(vec![keys::Grant::parse("x_*=admin").unwrap()].into()), ..reader };
+        let mut seen = steps();
+        hide_hosts(&limited, &mut seen);
+        assert_eq!(seen[0].detail, "shard 0 query");
+    }
 
     /// Mining synonyms is an admin's; the routes that only read a search's
     /// understanding stay a reader's.

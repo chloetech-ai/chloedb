@@ -213,7 +213,7 @@ fn errors_say_where_why_and_what_to_write() {
     // Statements Strata does not run, and what does what they do.
     has("SHOW TABLES", &["/v1/tables", "products"]);
     has("SELECT * FROM products, brands WHERE products.brand = brands.name", &["JOIN", "ON products.brand = brands.name"]);
-    has("SELECT * FROM products RIGHT JOIN brands ON products.brand = brands.name", &["LEFT JOIN"]);
+    has("SELECT * FROM products CROSS JOIN brands", &["CROSS JOIN is not supported", "JOIN ... ON"]);
     // A parameter without a value, and a key taken.
     has("SELECT id FROM products WHERE brand = :b", &["unbound parameter :b", "params"]);
     has("INSERT INTO products (id, title) VALUES ('p0001', 'x')", &["duplicate primary key", "'p0001'", "INSERT OR REPLACE"]);

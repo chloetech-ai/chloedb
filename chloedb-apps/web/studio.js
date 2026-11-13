@@ -33,7 +33,7 @@ function h(tag, props, ...children) {
 const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.getItem(k) || (sessionStorage.setItem(k, Math.random().toString(36).slice(2, 12)), sessionStorage.getItem(k)); } catch { return Math.random().toString(36).slice(2, 12); } })();
 
 async function api(method, url, body, more) {
-  const headers = { 'x-sa-session': SESSION, ...(more || {}) };
+  const headers = { 'x-sa-session': SESSION, ...AS_STRANGER, ...(more || {}) };
   if (body) headers['content-type'] = 'application/json';
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
@@ -68,6 +68,21 @@ const EXAMPLES = [
 // engine names the app in a meta tag): its views, without the studio around them.
 const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || document.querySelector('meta[name="sa-app"]')?.content || null;
 if (BARE) document.body.classList.add('bare');
+// "See it as a stranger" (the app creator's Publish tab): the app's own page,
+// every call made as a visitor would make it (x-sa-as), with the access the
+// owner is weighing, whatever this browser's studio session.
+const STRANGER = BARE ? (new URLSearchParams(location.search).get('stranger') || null) : null;
+const AS_STRANGER = STRANGER ? { 'x-sa-as': 'visitor', 'x-sa-access': STRANGER } : {};
+if (STRANGER) {
+  addEventListener('DOMContentLoaded', () => {
+    const said = { look: 'visitors can only look', add: 'visitors can look and add, and change only what they added', change: 'anyone can change anything' }[STRANGER] || '';
+    const bar = document.createElement('div');
+    bar.setAttribute('role', 'note');
+    bar.style.cssText = 'position:sticky;top:0;z-index:50;padding:8px 14px;font:13px/1.4 system-ui,sans-serif;background:#fff4d6;color:#4a3500;border-bottom:1px solid #e8d38f';
+    bar.textContent = `Seen as a stranger: no account, ${said}. What you do here changes the app's real data.`;
+    document.body.prepend(bar);
+  });
+}
 
 const S = {
   status: null,
@@ -1593,7 +1608,7 @@ function showEmail(o) {
 async function upload(base, file) {
   if (!(file instanceof Blob)) throw new Error('app.upload takes a File (from an <input type="file"> or a drop)');
   const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
-  const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
+  const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
   return { ...data.file, url: location.origin + data.file.url };

@@ -104,9 +104,15 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           maturin-version: "1.16.0"
           args: --release --locked --out dist
+      # The tag the docs promise (glibc 2.28 and later): a wheel built on a
+      # newer glibc would be tagged for it, and pip on RHEL 8 or Ubuntu 20.04
+      # would pass it over for PyPI's placeholder.
       - name: The wheel
         if: ${{ matrix.manylinux }}
-        run: ls -la chloedb-py/dist
+        run: |
+          ls -la chloedb-py/dist
+          ls chloedb-py/dist/*manylinux_${{ matrix.manylinux }}_*.whl
+          ! ls chloedb-py/dist/*.whl | grep -v "manylinux_${{ matrix.manylinux }}_"
       # The wheel installs into an empty virtualenv, with no Rust to build
       # anything with, and the embedded tests run against it there.
       - name: Install the wheel and test it

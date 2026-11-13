@@ -33,8 +33,10 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod recommend;
 mod rollup;
 mod writes;
+pub use recommend::{RecommendSql, Recommended};
 pub use rollup::RefreshStats;
 pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
@@ -142,7 +144,7 @@ pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
     match (&f.ty, key) {
         (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(key.clone()),
         (FieldType::Int, Value::Str(s)) => s.trim().parse::<i64>().map(Value::Int).map_err(|_| Error::Query(format!("{s:?} is not a key of {}: its key {} is an INT", schema.table, f.name))),
-        _ => Err(Error::Query(format!("{key:?} is not a key of {}: its key {} is {}", schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
+        _ => Err(Error::Query(format!("{} is not a key of {}: its key {} is {}", crate::query::hint::sql_value(key), schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
     }
 }
 
@@ -284,6 +286,7 @@ impl Db {
         let db = Db::wrap(Database::open(path, with_source(opts))?);
         db.open_codebooks(&crate::embed::models_dir());
         db.open_content_models();
+        db.refresh_feeds();
         Ok(db)
     }
 
@@ -452,6 +455,9 @@ impl Db {
                 t.commit()?;
             }
         }
+        if !matches!(change, function::Change::Nothing) {
+            self.refresh_feeds();
+        }
         Ok(change)
     }
 
@@ -601,6 +607,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.apply_shipped(prev, txns);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -611,6 +618,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.install_copy(copy);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -1442,6 +1450,13 @@ impl Db {
     /// looked at for the features it may call), as a step of another reads
     /// it ([`crate::query::pack`]): without printing it and parsing it again.
     fn query_parsed_at(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
+        // `recommend(...)`: the items a recommender ranks for a user, as
+        // `ranked(...)` of their keys, or `FROM recommend(...)`'s rows.
+        if crate::query::recommend::may_recommend(sql) {
+            if let Some(rs) = self.recommend_query(snap, &q.query, params, opts)? {
+                return Ok(rs);
+            }
+        }
         // Understood words (`bm25(.., understand => 'boost')`): the
         // dictionaries of the table's keyword fields, then the query with
         // the conditions the words name.
@@ -1887,6 +1902,9 @@ impl Db {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
         }
+        if let Some(st) = crate::query::recommend::parse_statement(sql)? {
+            return self.recommender_statement(&st, opts);
+        }
         // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`.
         if let Some(st) = crate::query::rollup::parse_statement(sql)? {
             return self.rollup_statement(st, opts);
@@ -2317,7 +2335,7 @@ impl Db {
                         let pk = pk()?;
                         let mut seen = HashSet::new();
                         if let Some(d) = docs.iter().find(|d| !seen.insert(Part::of(&d[pk]))) {
-                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {:?} comes twice; a statement updates a row once", d[pk])));
+                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {} comes twice; a statement updates a row once", crate::query::hint::sql_value(&d[pk]))));
                         }
                         let (live, mut new): (Vec<Document>, Vec<Document>) = docs.into_iter().partition(|d| snap.find(&d[pk]).is_some());
                         derive_known(&derivers, schema, &mut new, &p.derived, &files)?;

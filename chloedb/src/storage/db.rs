@@ -416,6 +416,9 @@ pub struct Database {
     /// Told the term and number of each numbered transaction once it is
     /// committed ([`Database::on_commit`]).
     commit_hook: RwLock<Option<CommitHook>>,
+    /// The recommenders whose counts each transaction's new events feed
+    /// at commit ([`Database::set_feeds`]).
+    feeds: RwLock<Arc<Vec<crate::query::recommend::Def>>>,
     /// The codebooks of semantic-ID fields ([`Database::set_codebook`]).
     codebooks: RwLock<Vec<Coded>>,
     /// The cold tier, with [`DbOptions::cold`].
@@ -1118,6 +1121,7 @@ impl Database {
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold: None,
             offloading: Mutex::new(HashSet::new()),
@@ -1481,6 +1485,7 @@ impl Database {
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold,
             offloading: Mutex::new(HashSet::new()),
@@ -1922,6 +1927,15 @@ impl Database {
     /// Ends hold `id` ([`Database::hold_log`]).
     pub fn release_log(&self, id: u64) {
         lock(&self.state).ship.release(id);
+    }
+
+    /// The recommenders whose counts every transaction of this database
+    /// updates at commit from the rows it inserts into their events
+    /// tables ([`crate::query::recommend::feed`]), in place of any before.
+    /// A replica's replay of a primary's transactions feeds none: they
+    /// carry the counts their primary wrote.
+    pub fn set_feeds(&self, feeds: Vec<crate::query::recommend::Def>) {
+        *self.feeds.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(feeds);
     }
 
     /// Has `f` told the term and number of each numbered transaction once
@@ -2903,9 +2917,10 @@ impl Database {
             conform(schema, &mut doc)?;
             self.fill_sids(&t, &mut doc, &mut ties, &[])?;
             if let Some(pk) = pk {
-                let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
-                    || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
-                if dup {
+                if !seen.insert(Key::of(&doc[pk]).expect("validated key")) {
+                    return Err(Error::Schema(crate::query::hint::repeated_key(schema, &doc[pk])));
+                }
+                if check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some() {
                     return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
@@ -3019,7 +3034,7 @@ impl Database {
                 for d in 0..file.n_docs() as DocId {
                     let k = keys.key(d);
                     if !seen.insert(Key::of(&k).ok_or_else(|| corrupt("bad key"))?) || st.find_live(0, &k).is_some() {
-                        return Err(Error::Schema(format!("{}: duplicate primary key {k:?}", path.display())));
+                        return Err(Error::Schema(format!("{}: duplicate primary key {}", path.display(), crate::query::hint::sql_value(&k))));
                     }
                 }
             }
@@ -4950,7 +4965,7 @@ impl TableRef {
         let pk = self.primary_key()?;
         match (&self.schema.fields[pk].ty, key) {
             (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(Key::of(key).unwrap()),
-            _ => Err(Error::Schema(format!("{key:?} is not a value of primary key {}", self.schema.fields[pk].name))),
+            _ => Err(Error::Schema(format!("{} is not a value of primary key {}", crate::query::hint::sql_value(key), self.schema.fields[pk].name))),
         }
     }
 }
@@ -5157,7 +5172,12 @@ impl<'a> WriteTxn<'a> {
             let key = Key::of(&doc[pk]).expect("validated key");
             self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
+                // A key this transaction inserted, which no row had before.
+                let repeated = self.keys.iter().find(|(id, _)| *id == t.id).is_some_and(|(_, k)| k.written.contains_key(&key)) && lock(&self.db.state).find_live(t.pos, &doc[pk]).is_none();
+                return Err(Error::Schema(match repeated {
+                    true => crate::query::hint::repeated_key(&t.schema, &doc[pk]),
+                    false => crate::query::hint::duplicate_key(&t.schema, &doc[pk]),
+                }));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -5375,12 +5395,50 @@ impl<'a> WriteTxn<'a> {
     /// Commits, and returns the transaction's sequence number when the
     /// database numbers its writes ([`Database::start_seq_no`]); `None`
     /// then only for a transaction that wrote nothing.
-    pub fn commit_seq(self) -> Result<Option<u64>> {
+    pub fn commit_seq(mut self) -> Result<Option<u64>> {
+        // A replay (`now` none) carries the counts its primary fed.
+        if self.now.is_some() {
+            let feeds = self.db.feeds.read().unwrap_or_else(|e| e.into_inner()).clone();
+            for d in feeds.iter() {
+                crate::query::recommend::feed(&mut self, d)?;
+            }
+        }
         let WriteTxn { db, mut wal, ops, .. } = self;
         db.commit_ops(&mut wal, ops)
     }
 
     pub fn rollback(self) {}
+
+    /// The schema of table `name` and the rows this transaction inserted
+    /// into it that no row of their key had before it (an upsert that
+    /// replaced a row, or an insert after this transaction deleted its
+    /// key, is left out); `None` when there is no such table.
+    pub(crate) fn fresh_rows(&self, name: &str) -> Option<(Arc<Schema>, Vec<Arc<Document>>)> {
+        let t = self.db.table_ref(Some(name)).ok()?;
+        let pk = t.schema.primary_key;
+        let mut deleted: HashSet<Key> = HashSet::new();
+        let mut out = Vec::new();
+        for (id, op) in &self.ops {
+            if *id != t.id {
+                continue;
+            }
+            match op {
+                Op::Delete(k) => {
+                    if let Some(k) = Key::of(k) {
+                        deleted.insert(k);
+                    }
+                }
+                Op::Insert(doc) => {
+                    if pk.and_then(|p| Key::of(&doc[p])).is_some_and(|k| deleted.contains(&k)) {
+                        continue;
+                    }
+                    out.push(doc.clone());
+                }
+                _ => {}
+            }
+        }
+        Some((t.schema, out))
+    }
 
     /// Writes a primary's logged operations, which must apply here as they
     /// did there ([`Database::apply_shipped`]).
@@ -5393,13 +5451,13 @@ impl<'a> WriteTxn<'a> {
                 Op::Insert(doc) => self.insert_as(&t, Arc::unwrap_or_clone(doc), Pooling::None).map_err(|e| differs(format!("inserts a row it cannot ({e})")))?,
                 Op::Delete(key) => {
                     if !self.delete_in(&t, &key)? {
-                        return Err(differs(format!("deletes {key:?}, which no row here has")));
+                        return Err(differs(format!("deletes {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 Op::Set { key, field, value } => {
                     let name = t.schema.fields.get(field as usize).map(|f| f.name.clone()).ok_or_else(|| differs(format!("sets field #{field}")))?;
                     if !self.set_in(&t, &key, &name, value)? {
-                        return Err(differs(format!("sets {name} of {key:?}, which no row here has")));
+                        return Err(differs(format!("sets {name} of {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 op @ Op::Profile { .. } => self.ops.push((t.id, op)),

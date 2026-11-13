@@ -94,14 +94,15 @@ export class Login {
   }
 
   // POST /api/handoff, through chloedb-server (an admin key): a link that
-  // signs this browser in once, within two minutes.
+  // signs this browser in once, within two minutes, and opens the studio at
+  // next (#/...), or an app as a stranger sees it (a/<id>?stranger=<access>).
   handoff(req, next = '') {
     if (!this.fromServer(req)) throw Object.assign(new Error('a login link is made only for the command center, through chloedb-server'), { status: 403 });
     if (!this.publicUrl) throw Object.assign(new Error('the studio has no address browsers reach: set STRATA_APPS_PUBLIC_URL (spec.apps.publicUrl)'), { status: 409 });
     const now = Date.now();
     for (const [k, c] of this.codes) if (c.expires < now) this.codes.delete(k);
     const code = randomBytes(24).toString('base64url');
-    this.codes.set(hex(code), { expires: now + CODE_MS, next: /^#[A-Za-z0-9=&/_-]{0,200}$/.test(next) ? next : '' });
+    this.codes.set(hex(code), { expires: now + CODE_MS, next: /^#[A-Za-z0-9=&/_-]{0,200}$/.test(next) || /^a\/[a-z0-9]{1,20}\?stranger=(look|add|change)$/.test(next) ? next : '' });
     return { url: `${this.publicUrl}/login?code=${code}`, expires: new Date(now + CODE_MS).toISOString() };
   }
 

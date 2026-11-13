@@ -12,6 +12,80 @@ import { rowLabel, tablesOf } from './activity.mjs';
 
 const MAX_ROWS = 1000;
 const MAX_DEPTH = 3;
+// What a visitor of a published app may write (checkVisitorWrite): a field
+// of at most 10 KB, a row of at most 64 KB, a list of at most 100 items.
+export const VISITOR_LIMITS = {
+  field: Number(process.env.STRATA_APPS_PUBLIC_FIELD_MAX) || 10 * 1024,
+  row: Number(process.env.STRATA_APPS_PUBLIC_ROW_MAX) || 64 * 1024,
+  items: 100,
+};
+const bad = (message) => Object.assign(new Error(message), { status: 400 });
+const kb = (n) => (n < 1024 ? `${n} bytes` : `${Math.round(n / 1024)} KB`);
+
+// The values each column of a table may take when its screens offer only a
+// fixed list: the options of the select fields of every form on the table,
+// with the values the app's own code writes to that column (a row action's
+// {status: 'done'}). A column any form takes as free text, or whose options
+// come from data, has no list. Map column -> Set of values.
+const choiceCache = new WeakMap();
+export function choicesOf(view, table) {
+  let byTable = choiceCache.get(view);
+  if (!byTable) { byTable = new Map(); choiceCache.set(view, byTable); }
+  if (byTable.has(table)) return byTable.get(table);
+  const lists = new Map();
+  const free = new Set();
+  const walk = (v) => {
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (!v || typeof v !== 'object') return;
+    if (v.form === table && Array.isArray(v.fields)) {
+      for (const f of v.fields) {
+        const field = typeof f === 'string' ? { name: f } : f;
+        if (!field || !field.name) continue;
+        const opts = field.options;
+        if ((field.type === 'select' || field.type === 'radio' || field.type === 'segmented') && Array.isArray(opts) && opts.length) {
+          const set = lists.get(field.name) || new Set();
+          for (const o of opts) set.add(String(o && typeof o === 'object' ? o.value : o));
+          lists.set(field.name, set);
+        } else free.add(field.name);
+      }
+    }
+    for (const x of Object.values(v)) walk(x);
+  };
+  for (const c of view.views || []) {
+    if (!c.spec?.screen) continue;
+    try { walk(JSON.parse(c.code)); } catch { /* a screen that is not JSON offers no list */ }
+  }
+  for (const k of free) lists.delete(k);
+  // What the app's own code writes to a listed column counts as a choice.
+  const code = [...(view.views || []), ...(view.functions || [])].map((c) => String(c.code || '')).join('\n');
+  for (const [col, set] of lists) {
+    const re = new RegExp(`(?:^|[^A-Za-z0-9_])\\\\?["']?${col}\\\\?["']?\\s*[:=]\\s*\\\\?["']([^"'\\\\\\n]{1,80})\\\\?["']`, 'g');
+    for (const m of code.matchAll(re)) set.add(m[1]);
+  }
+  byTable.set(table, lists);
+  return lists;
+}
+
+// A visitor's write (a published app's public, not its owner): every value
+// within the size limits, and a column whose screens offer a fixed list
+// takes only a value of it. Throws a 400 that says what is wrong.
+export function checkVisitorWrite(view, spec, fields, limits = VISITOR_LIMITS) {
+  const size = (x) => Buffer.byteLength(typeof x === 'string' ? x : JSON.stringify(x ?? null));
+  const whole = size(fields || {});
+  if (whole > limits.row) throw bad(`a row is at most ${kb(limits.row)} (this one is ${kb(whole)})`);
+  if (fields?.id !== undefined && (typeof fields.id !== 'string' || fields.id.length > 80)) throw bad('id is text of at most 80 characters');
+  const choices = choicesOf(view, spec.name);
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v === null || v === undefined || v === '') continue;
+    if (Array.isArray(v) && v.length > limits.items) throw bad(`${k} takes at most ${limits.items} items`);
+    const n = size(v);
+    if (n > limits.field) throw bad(`${k} is at most ${kb(limits.field)} (this is ${kb(n)})`);
+    const allowed = choices.get(k);
+    if (allowed && ![].concat(v).every((x) => allowed.has(String(x)))) {
+      throw bad(`${k} must be one of ${[...allowed].join(', ')}`);
+    }
+  }
+}
 
 function coerce(type, v, col) {
   if (v === null || v === undefined || v === '') return null;
@@ -173,6 +247,7 @@ export class Engine extends EventEmitter {
 
   async insert(appId, table, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
     const doc = this.makeDoc(spec, fields);
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
     doc.id = fields?.id ? String(fields.id) : newId(10);
@@ -190,6 +265,8 @@ export class Engine extends EventEmitter {
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
     if (!old) throw new Error(`no row ${id} in ${table}`);
+    if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
+    if (ctx.ownRows) await this.ownedBy(appId, table, old.id, ctx.who);
     const changes = this.makeDoc(spec, fields, { partial: true });
     const doc = { ...old, ...changes, id: old.id };
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
@@ -203,6 +280,7 @@ export class Engine extends EventEmitter {
     const spec = await this.tableSpec(appId, table);
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
+    if (ctx.ownRows) await this.ownedBy(appId, table, String(id), ctx.who);
     await db.write([{ op: 'delete', table: physical(appId, table), key: String(id) }]);
     this.announce('data', { app: appId, tables: [table] });
     if (old) await this.after(appId, table, 'delete', old, ctx);
@@ -225,7 +303,9 @@ export class Engine extends EventEmitter {
     const user = ctx.user || null;
     // A build's tests (checks.mjs) reach no model and no web: app.ask and
     // app.fetch answer empty there.
-    const inner = { depth, by: fn.id, user, test: !!ctx.test, pub: !!ctx.pub };
+    // A visitor's call (a published app's public) stays one all the way
+    // down: its writes are checked as theirs, its errors only recorded.
+    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -267,14 +347,11 @@ export class Engine extends EventEmitter {
       if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
       else if (fn.spec.rule) out = await rule();
       else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
-      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms, taps: ctx.taps }).catch(() => {});
+      if (!ctx.depth && !ctx.test) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms, taps: ctx.taps }).catch(() => {});
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
-      // Nor is a failure a published app's visitor set off (ctx.pub): its
-      // text holds what they sent, and a repair becomes the live version.
-      if (!e.refused && !ctx.pub) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call');
-      else if (!e.refused) this.log(`${fn.id} failed for a visitor (no repair): ${String(e.message).slice(0, 200)}`);
+      if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call', { visitor: !!(ctx.visitor || ctx.pub) });
       throw e;
     }
   }
@@ -353,14 +430,27 @@ export class Engine extends EventEmitter {
     };
   }
 
+  // A visitor of an app that lets them add (publish.mjs, access "add") edits
+  // and deletes only the rows they added: the insert recorded with them as
+  // its person. Throws a 403 otherwise.
+  async ownedBy(appId, table, rid, who) {
+    const rows = who ? await this.db.query("SELECT person FROM sa_events WHERE app = :a AND kind = 'insert' AND tbl = :t AND rid = :r LIMIT 1", { a: appId, t: table, r: String(rid) }).catch(() => []) : [];
+    if (!rows.length || rows[0].person !== String(who).slice(0, 40)) {
+      throw Object.assign(new Error('You can change only what you added yourself'), { status: 403 });
+    }
+  }
+
   // Tracks the write and runs the functions that wait for it.
   async after(appId, table, event, row, ctx) {
     const view = await this.view(appId);
-    if (!ctx.depth) {
+    // A build's own checks (checks.mjs, ctx.test) are not anyone's use of the app.
+    if (!ctx.depth && !ctx.test) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
       const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null, taps: ctx.taps };
-      Promise.resolve(this.dbOf(appId)).then((db) => rowLabel(db, appId, table, row, tablesOf(view))).catch(() => null)
+      const tracked = Promise.resolve(this.dbOf(appId)).then((db) => rowLabel(db, appId, table, row, tablesOf(view))).catch(() => null)
         .then((label) => this.store.track(appId, event, '', detail, { ...where, label })).catch(() => {});
+      // A visitor's insert is how their own rows are told (ownedBy): kept before the answer.
+      if (ctx.visitor && event === 'insert') await tracked;
     }
     if ((ctx.depth || 0) >= MAX_DEPTH) return;
     for (const fn of view.functions) {
@@ -368,7 +458,7 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, pub: !!ctx.pub })
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor) })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
       this.pending.add(run);
       run.finally(() => this.pending.delete(run));
@@ -381,8 +471,21 @@ export class Engine extends EventEmitter {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
   }
 
-  reportError(appId, capId, message, where) {
-    this.store.track(appId, 'error', capId, `${where}: ${message}`).catch(() => {});
-    this.emit('error', { app: appId, cap: capId, message, where });
+  // A piece that failed: recorded, and sent on to the server, which may ask
+  // the forge to repair it. A failure a visitor of a published app caused
+  // (visitor) is only recorded: what a stranger sends never starts a build
+  // or reaches the model's prompt.
+  reportError(appId, capId, message, where, { visitor = false } = {}) {
+    this.store.track(appId, 'error', capId, `${visitor ? 'for a visitor, ' : ''}${where}: ${message}`).catch(() => {});
+    if (!visitor) this.emit('error', { app: appId, cap: capId, message, where });
+  }
+
+  // An error a view's frame reports (POST /api/apps/<id>/error). From code
+  // the app no longer runs it is stale; from a visitor it is only recorded.
+  async browserError(appId, capId, message, { visitor = false } = {}) {
+    const live = await this.store.resolve(appId).catch(() => null);
+    if (!live?.comp.caps.includes(capId)) return { stale: true };
+    this.reportError(appId, capId, String(message || '').slice(0, 1500), 'in the browser', { visitor });
+    return { stale: false, sent: !visitor };
   }
 }

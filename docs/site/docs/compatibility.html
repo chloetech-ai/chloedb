@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/compatibility.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,6 +81,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -249,6 +251,16 @@ advance.</p>
 <td><code>STRATA_*</code></td>
 </tr>
 <tr>
+<td>the server an app writes to</td>
+<td><code>chloedb-crawl --server URL</code>, <code>chloedb-sheets --server URL</code> (0.3.1)</td>
+<td><code>--strata URL</code></td>
+</tr>
+<tr>
+<td>models folder</td>
+<td><code>~/.local/share/chloedb/models</code> (0.3.1)</td>
+<td><code>~/.local/share/strata/models</code>, used where it exists and the new folder does not</td>
+</tr>
+<tr>
 <td>HTTP headers and gRPC metadata</td>
 <td><code>x-chloedb-*</code></td>
 <td><code>x-strata-*</code></td>
@@ -306,9 +318,11 @@ rather than <code>[strata FIRING ...]</code>.</p>
 format (<code>STRATADB</code> magic, ChloeCtx's <code>memory.strata</code> and <code>engram.sock</code>), the
 gRPC services, the Kubernetes operator's resources (the <code>StrataCluster</code>
 kind, the <code>strata.chloetech.ai</code> API group, the <code>strata-system</code> namespace),
-the app engine in <code>chloedb-apps/</code>, and the default models directory
-(<code>~/.local/share/strata/models</code>). A machine that already has ChloeCtx's
-old folder, <code>~/.local/share/engram</code>, keeps using it.</p>
+and the app engine in <code>chloedb-apps/</code>. The default models directory is
+<code>~/.local/share/chloedb/models</code> from 0.3.1 (<code>~/.local/share/strata/models</code>
+before); a machine that has the old folder and no <code>~/.local/share/chloedb</code>
+keeps using it, as a machine that already has ChloeCtx's old folder,
+<code>~/.local/share/engram</code>, does.</p>
 <h2 id="not-promised-yet">Not promised yet<a class="anchor" href="#not-promised-yet" aria-label="Link to this section">#</a></h2>
 <ul>
 <li>Semantic versioning, or any version bump rule.</li>

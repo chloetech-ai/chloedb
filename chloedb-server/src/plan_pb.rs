@@ -129,6 +129,7 @@ fn node(n: &Node) -> pb::Node {
             kind: match kind {
                 JoinKind::Inner => pb::JoinKind::Inner,
                 JoinKind::Left => pb::JoinKind::Left,
+                JoinKind::Full => pb::JoinKind::Full,
                 JoinKind::AsOf => pb::JoinKind::AsOf,
             } as i32,
             keys: keys.iter().map(|k| pb::JoinKey { left: Some(ex(&k.left)), right: Some(ex(&k.right)), left_links: k.left_links, right_links: k.right_links }).collect(),
@@ -580,6 +581,7 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
             let kind = match en::<pb::JoinKind>(j.kind, "join kind")? {
                 pb::JoinKind::Inner => JoinKind::Inner,
                 pb::JoinKind::Left => JoinKind::Left,
+                pb::JoinKind::Full => JoinKind::Full,
                 pb::JoinKind::AsOf => JoinKind::AsOf,
             };
             let keys = j

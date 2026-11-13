@@ -139,3 +139,45 @@ fn a_bad_row_names_its_line_and_a_bulk_load_writes_nothing() {
     let rows: Vec<_> = Rows::new(&schema, std::io::Cursor::new(b"id,title\nx,hello\n".to_vec()), Format::Csv).unwrap().collect::<Result<_, _>>().unwrap();
     assert_eq!(rows[0][1], Value::Str("hello".into()));
 }
+
+/// The CSV rows of `text` for `schema`, or the first error.
+fn csv_rows(schema: &Schema, text: &str, empty: ingest::EmptyCell) -> Result<Vec<Vec<Value>>, String> {
+    Rows::new(schema, std::io::Cursor::new(text.as_bytes().to_vec()), Format::Csv).unwrap().empty_cells(empty).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[test]
+fn csv_lines_empty_cells_and_whole_floats() {
+    let schema = Schema::from_json(
+        r#"{"table": "t", "key": "id", "fields": [
+            {"name": "id", "type": "int"},
+            {"name": "n", "type": "int", "not_null": true, "default": 0},
+            {"name": "name", "type": "keyword"},
+            {"name": "x", "type": "float"}]}"#,
+    )
+    .unwrap();
+    use ingest::EmptyCell;
+    // A bad value names its line, with LF and with CRLF line endings, and
+    // after a quoted cell that holds a newline.
+    for text in ["id,n\n100,1\n101,2\n102,3\n103,bad\n", "id,n\r\n100,1\r\n101,2\r\n102,3\r\n103,bad\r\n", "id,name\r\n1,\"two\r\nlines\"\r\n2,b\r\nx,d\r\n"] {
+        let e = csv_rows(&schema, text, EmptyCell::Default).unwrap_err();
+        assert!(e.contains("line 5"), "{text:?}: {e}");
+    }
+    // An empty cell of a column with a DEFAULT takes it; of another, NULL.
+    let rows = csv_rows(&schema, "id,n,name,x\n1,,,\n2,5,a,1.5\n", EmptyCell::Default).unwrap();
+    assert_eq!(rows[0], vec![Value::Int(1), Value::Int(0), Value::Null, Value::Null]);
+    assert_eq!(rows[1], vec![Value::Int(2), Value::Int(5), Value::Str("a".into()), Value::Float(1.5)]);
+    // As NULL, which NOT NULL refuses; as the empty string in text.
+    assert!(csv_rows(&schema, "id,n\n1,\n", EmptyCell::Null).unwrap_err().contains("NOT NULL"));
+    assert_eq!(csv_rows(&schema, "id,n,name,x\n1,,\"\",\n", EmptyCell::Text).unwrap()[0], vec![Value::Int(1), Value::Int(0), Value::Str(String::new()), Value::Null]);
+    assert_eq!(EmptyCell::parse("NULL"), Some(EmptyCell::Null));
+    // 2.0 is a whole number for an INT, from CSV, JSON and SQL; 2.5 is not.
+    assert_eq!(csv_rows(&schema, "id,n\n1,2.0\n", EmptyCell::Default).unwrap()[0][1], Value::Int(2));
+    assert!(csv_rows(&schema, "id,n\n1,2.5\n", EmptyCell::Default).unwrap_err().contains("not a whole number"));
+    assert_eq!(ingest::value(&schema, 1, &serde_json::json!(3.0)).unwrap(), Value::Int(3));
+    assert!(ingest::value(&schema, 1, &serde_json::json!(3.5)).unwrap_err().to_string().contains("not a whole number"));
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("t.strata"), schema.clone(), DbOptions::default()).unwrap();
+    db.sql("INSERT INTO t (id, n) VALUES (1, 4.0)", &Params::new()).unwrap();
+    assert_eq!(db.query("SELECT n FROM t WHERE n = 4.0", &Params::new()).unwrap().rows, vec![vec![Value::Int(4)]]);
+    assert!(db.sql("INSERT INTO t (id, n) VALUES (2, 4.5)", &Params::new()).unwrap_err().to_string().contains("whole number"));
+}

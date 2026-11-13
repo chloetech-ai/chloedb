@@ -34,7 +34,7 @@ CHLOEDB_APP_TOKEN="$APP_TOKEN" chloedb-server --shards ... --app chloectx=http:/
 
 Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when `ANTHROPIC_API_KEY` is set (model `CHLOECTX_APP_MODEL`, by default Haiku), else to the `claude` CLI when it is on the PATH (`CHLOECTX_DISTILL_MODEL`). `CHLOECTX_APP_MODEL=off` turns them off. Everything else, asking included, works without a model. At most four conversations are distilled at once and 256 wait; past that an exchange is stored without notes (its answer says `skipped`, and `/v1/info` counts it under `distill.skipped`). The app serves 64 requests at once and answers one more with 503.
 
-The app refuses requests that carry an `Origin` header: a browser reaches it only through chloedb-server, which checks the signed-in key (reads need a read key, writes an admin key) and forwards with the app's token.
+The app refuses requests that carry an `Origin` header: a browser reaches it only through chloedb-server, which checks the signed-in key and forwards with the app's token and who called (`x-chloedb-scope`, and `x-chloedb-tables` for a key limited to tables). The app's manifest says `"checks_callers": true`, and it refuses what the caller's key may not do itself: reading a space or asking it needs read on its table (`ctx_<space>`), adding or retiring notes and exchanges write there, making a space admin there (it makes the table), the incidents are the space `incidents`'s (`ctx_incidents`), and what is not a space's (building apps, handing an alert to the on-call agent, this machine's stores) needs an admin key of every table to change and a key of every table to read. So a write key records notes, and a key limited to `ctx_ops_*=write` writes the spaces `ops_*` and nothing else (`GET /v1/spaces` lists the spaces it reads). A request with none of those headers (a program calling the app itself with its token) may do anything, as before.
 
 ### On Kubernetes
 
@@ -72,16 +72,18 @@ JSON over HTTP; through chloedb-server, the same paths under `/v1/apps/chloectx`
 
 | call | body | answer |
 |---|---|---|
-| `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?}` | the spaces with their counts (`by_kind`, every record; `live_by_kind`, the notes not replaced, retired or done); the new space (one that exists is left as it is) |
-| `POST /v1/spaces/:s/notes` | `{kind, text, replaces?, entities?, session?, ts?}` | the note (`kind`: `decision`, `rule`, `fact`, `todo` or `note`) |
+| `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?, kind?}` | the spaces with their counts (`by_kind`, every record; `live_by_kind`, the notes not replaced, retired or done); the new space (one that exists is left as it is); `kind` is `notes` (the default) or `incidents`, a team's own incidents for Seen before |
+| `DELETE /v1/spaces/:s` | | the space, deleted by an admin of its table: its table `ctx_<space>` dropped and its row of `ctx_spaces` removed, `{deleted, table, kind}`; it cannot be undone |
+| `POST /v1/spaces/:s/notes` | `{kind, text, replaces?, entities?, session?, when?}` | the note (`kind`: `decision`, `rule`, `fact`, `todo` or `note`); `when` (or `ts`) is when it happened, for a note written down after the fact: seconds since 1970, or ISO 8601 text (`2026-09-14`, `2026-09-14T03:10:00Z`); by default, now |
 | `GET /v1/spaces/:s/notes?kind=&limit=&all=1` | | the notes, newest first; the current ones unless `all=1` |
 | `GET /v1/spaces/:s/notes/:id` | | the note, the versions it replaced and those that replaced it |
 | `DELETE /v1/spaces/:s/notes/:id` | | the note, retired: kept, but in no context again |
 | `POST /v1/spaces/:s/exchanges` | `{user, assistant, distill?}` | the two messages; with a model, their decisions, rules and facts follow as notes in a few seconds (`GET /v1/info` counts them) |
 | `POST /v1/spaces/:s/ask` (or `GET ?q=&budget=`) | `{question, budget?}` | `{context, tokens, ms, items, left_out}` |
-| `GET /v1/incidents`, `POST /v1/incidents` | `{title, symptom, cause, fix, alert?, replaces?}` | the incidents, each with the fixes it replaced; the new one |
-| `GET /v1/incidents/firing` | | the cluster's firing and pending alerts, each with its closest incidents and the context the on-call agent would get |
-| `GET /v1/incidents/match?q=&alert=` | | the incidents closest to a description |
+| `GET /v1/incidents?space=`, `POST /v1/incidents` | `{title, symptom, cause, fix, alert?, replaces?, when?, space?}` | the incidents of every incidents space the key reads (or of `space`), each with its space and the fixes it replaced; the new one, in `incidents` or the team's `space`, dated `when` (the incident's own date) |
+| `GET /v1/incidents/firing?space=` | | the cluster's firing and pending alerts, each with its closest incidents and the context the on-call agent would get |
+| `GET /v1/incidents/match?q=&alert=&space=` | | the incidents closest to a description |
+| `POST /v1/incidents/match` | `{lines \| text, space?, alert?, n?}` | the incidents closest to log lines pasted from an outage (redacted as notes are, at most 4,000 characters) |
 | `POST /v1/incidents/draft` | `{text}` or `{run}` | incidents a model drafted from a postmortem or an on-call run's report; nothing is kept |
 | `POST /v1/incidents/handoff` | `{alert}` | the on-call agent's run, started with the closest incidents |
 | `POST /v1/spaces/:s/apps/suggest` | `{n?}` (2 or 3) | apps a model suggests from the space's notes: `{apps:[{title, pitch, why, kinds, description}]}`; nothing is built |
@@ -124,7 +126,7 @@ The Inspector reads the table `chloectx_memory`, which `chloectx sync` fills fro
 
 *Seen before on a two-shard cluster in the cloud container (the alerts are real: its disk was over 90% full, and a test load raised the p99). "Disk full within 12 hours" finds the incident recorded for the same alert first, and the p99 alert the merge incident, whose first fix (a restart) was replaced by a better one.*
 
-An incident is a note in the space `incidents`: a title, the symptom, the cause, the fix, and the alert rule it fired, if one did. For each firing alert, Seen before searches the incidents with what the alert says (its name, metric, description and the copies it fires on). The incidents recorded for the same rule come first; another must be close in meaning (cosine 0.3, or 0.2 when it shares a word) and at least half as close as the closest. A match shows the fixes it replaced struck through, so an agent does not repeat one that was given up.
+An incident is a note in the space `incidents`, or in a team's own space of kind `incidents` (`POST /v1/spaces {name, kind: "incidents"}`): a title, the symptom, the cause, the fix, and the alert rule it fired, if one did. Seen before reads every incidents space the signed-in key may read, so a team that keeps its own sees its incidents beside the shared ones, and log lines pasted from an outage find the incidents that look like them as an alert does. For each firing alert, it searches the incidents with what the alert says (its name, metric, description and the copies it fires on). The incidents recorded for the same rule come first; another must be close in meaning (cosine 0.3, or 0.2 when it shares a word) and at least half as close as the closest. A match shows the fixes it replaced struck through, so an agent does not repeat one that was given up.
 
 **Hand to the on-call agent** starts the cluster's on-call agent (`POST /v1/admin/oncall`) on the alert with the closest incidents and the incident space's rules in its question; the server needs a Claude key for it. When the run ends, **keep what it found** drafts an incident from its report for a person to check and record. A postmortem pasted into **Record an incident** is drafted the same way.
 

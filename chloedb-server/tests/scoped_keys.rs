@@ -144,10 +144,10 @@ async fn a_key_limited_to_tables_touches_those_alone() {
         ("GET", "/v1/export", None),
         ("GET", "/v1/feed?copy=true", None),
         ("GET", "/v1/queries/recent", None),
-        ("POST", "/v1/plan", Some(json!({}))),
+        ("POST", "/v1/plan", Some(json!({"plan": {"version": 1, "root": {"node": "search", "table": "secrets"}}}))),
         ("POST", "/v1/mcp", Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))),
         ("GET", "/v1/functions", None),
-        ("POST", "/v1/query", Some(json!({"sql": "SELECT * FROM crawl_docs", "log": {"table": "crawl_log"}}))),
+        ("POST", "/v1/query", Some(json!({"sql": "SELECT * FROM crawl_docs", "log": {"table": "secrets_log"}}))),
     ] {
         let (s, j) = call(&base, m, path, key, body).await;
         assert_eq!(s, 403, "{m} {path}: {j}");

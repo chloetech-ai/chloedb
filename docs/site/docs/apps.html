@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/guide/apps.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,13 +81,16 @@
       <span class="eyebrow">Apps</span>
       <h1>Apps on a cluster</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#how-an-app-attaches">How an app attaches</a></li><li><a href="#start-a-server-and-two-apps">Start a server and two apps</a></li><li><a href="#sheets-a-workbook-with-a-formula-and-a-query">Sheets: a workbook with a formula and a query</a></li><li><a href="#chloectx-a-memory-space-and-its-context">ChloeCtx: a memory space and its context</a></li><li><a href="#the-crawler">The crawler</a></li><li><a href="#on-kubernetes">On Kubernetes</a></li></ol></details>
     <div class="doc-body">
 
 <p>Some programs built on ChloeDB run beside chloedb-server and show in its command center under <strong>Apps</strong>: the <a href="crawler.html">crawler</a>, which turns a site into a table, <a href="sheets.html">Sheets</a>, spreadsheets whose cells are rows of ChloeDB, and <a href="chloectx-app.html">ChloeCtx</a>, memory spaces that agents write to and ask for context. Each is a program of its own that talks to the server over HTTP and serves a small API and a view; the server lists it and forwards to it.</p>
 <p>This page starts a server with Sheets and ChloeCtx beside it and uses both through the server, the way the command center does.</p>
-<p>You need <code>chloedb-server</code>, <code>chloedb-sheets</code> and <code>chloectx</code> on your <code>PATH</code>. From a checkout of the repository, build each in its directory (<code>cargo build --release</code>) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
+<p>You need <code>chloedb-server</code>, <code>chloedb-sheets</code> and <code>chloectx</code> on your <code>PATH</code>. <span class="since">since 0.3.1</span> From release 0.3.1, the installer puts the three there prebuilt, with nothing to compile:</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx</pre>
+<p>Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (<code>cargo build --release</code>; Rust and a C compiler, several minutes) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
 <h2 id="how-an-app-attaches">How an app attaches<a class="anchor" href="#how-an-app-attaches" aria-label="Link to this section">#</a></h2>
 <p>The server learns of an app from <code>--app name=URL</code>, and sends each request under <code>/v1/apps/&lt;name&gt;/</code> on to it with a token of its own, <code>CHLOEDB_APP_TOKEN</code>, in place of the caller's key. Callers never reach an app directly: the server checks their key first (read scope to read, admin to change anything), and an app refuses requests that do not carry the token.</p>
 <pre class="mermaid">flowchart LR
@@ -105,7 +109,7 @@ chloedb-server --db ./apps.chloedb --listen 127.0.0.1:7700 --grpc off \
   --app sheets=http://127.0.0.1:7820 --app chloectx=http://127.0.0.1:7760 &gt; server.log 2&gt;&amp;1 &amp;
 until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; done
 
-chloedb-sheets serve --strata http://127.0.0.1:7700 --token &quot;$CHLOEDB_APP_TOKEN&quot; &gt; sheets.log 2&gt;&amp;1 &amp;
+chloedb-sheets serve --server http://127.0.0.1:7700 --token &quot;$CHLOEDB_APP_TOKEN&quot; &gt; sheets.log 2&gt;&amp;1 &amp;
 chloectx app --server http://127.0.0.1:7700 --token &quot;$CHLOEDB_APP_TOKEN&quot; --embedder hash:64 &gt; chloectx.log 2&gt;&amp;1 &amp;</pre>
 <p><code>--embedder hash:64</code> makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (<code>chloectx fetch-model</code> fetches it once). Without <code>--token</code> the server listens on loopback only and anything on this machine that reaches <code>127.0.0.1:7700</code> can change it; give it a token, and its clients keys, before it serves anyone else (<a href="server.html#security">security</a>).</p>
 <p>The server lists the apps once they answer, which is what the command center's <strong>Apps</strong> menu shows:</p>

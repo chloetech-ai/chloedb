@@ -439,7 +439,7 @@ async fn grouped_writes_fail_alone() {
         statuses.push(r.await.unwrap());
     }
     assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
-    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 409).count(), 8, "{statuses:?}");
     assert_eq!(sold(&post(&c, &format!("{base}/v1/query"), count).await.1), sold0 + 56);
 }
 
@@ -498,7 +498,7 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
         statuses.push(r.await.unwrap());
     }
     assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
-    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 409).count(), 8, "{statuses:?}");
     assert_eq!(sold("p0000004".into()).await, hot0 + 16);
     for i in (1..64).step_by(4) {
         assert_eq!(sold(key(i)).await, before[i] + 1, "{}", key(i));
@@ -550,7 +550,7 @@ async fn retries_apply_once_and_adds_read_earlier_ops() {
     assert_eq!(status, 422);
     // A request that failed is not remembered, so its retry runs.
     let bad = json!([{"op": "insert", "doc": {"id": "n9", "title": "again"}}]);
-    assert_eq!(post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await.0, 400);
+    assert_eq!(post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await.0, 409);
     let (status, _) = post(&c, &url, json!({"ops": [{"op": "delete", "key": "n9"}], "idempotency_key": "req-4"})).await;
     assert_eq!(status, 200);
     let (status, r) = post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await;

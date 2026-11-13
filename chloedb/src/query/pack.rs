@@ -826,13 +826,18 @@ impl Packer {
         let counts: Vec<usize> = self.text_cols.iter().map(|&j| count_tokens(&text_of(&row, j))).collect();
         let full: usize = counts.iter().sum();
         let left = self.spec.budget - self.used;
-        let room = left.min(self.spec.row_cap());
+        // A query may name no text column (its rows spend nothing).
+        let (longest, most) = counts.iter().copied().enumerate().max_by_key(|&(_, n)| n).unwrap_or((0, 0));
+        let rest = full - most;
+        // A row's share of the budget leaves its longest text column an
+        // excerpt of MIN_EXCERPT tokens at least, after its other text
+        // columns: a row of a title and a description is not skipped while
+        // the budget has room for both and an excerpt.
+        let room = left.min(self.spec.row_cap().max(rest + MIN_EXCERPT));
         // Whole, or an excerpt of the longest text column.
         let (tokens, excerpted) = if full <= room {
             (full, false)
         } else {
-            let (longest, &most) = counts.iter().enumerate().max_by_key(|(_, n)| **n).expect("a text column");
-            let rest = full - most;
             if rest + MIN_EXCERPT > room || room < MIN_EXCERPT {
                 (0, false)
             } else {

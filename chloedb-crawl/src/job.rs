@@ -828,7 +828,9 @@ impl Job {
                 Ok(fresh)
             }
             Some(fields) => {
-                let known: Vec<String> = stats.fields.keys().cloned().collect();
+                // The most pages' first: a column named alike by two
+                // sources is the one more pages have.
+                let known: Vec<String> = stats.top(usize::MAX).into_iter().map(|t| t.0).collect();
                 let mut plan = Plan::from_existing(&self.table, &fields, &self.spec.rules, self.spec.embed.clone(), &known);
                 if !plan.columns.iter().any(|c| c.name == "url") {
                     return Err(format!("table {} is there, without a url column: name another table", self.table));

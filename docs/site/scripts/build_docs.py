@@ -19,13 +19,31 @@ after editing any of the sources, and commit what it writes:
 Links between the pages' Markdown files become links between the site's
 pages; a link to another file of the repository goes to it on GitHub, and an
 image under docs/ is linked where Pages serves it.
+
+Versions. Each page says which version it describes, in a line under its
+title: the docs' version is chloedb-server/Cargo.toml's, and the latest
+release is docs/site/versions.json's "latest" (the release workflow's
+snapshot step moves it). Docs ahead of the latest release say so and link
+to that release's snapshot when docs/site/docs/v<version>/ has one. A
+feature newer than the latest release carries a marker in its Markdown,
+
+    <!-- since 0.2.1 -->
+
+which GitHub does not show and the site shows as a badge, "since 0.2.1
+(unreleased)", at that place (a marker in a heading goes under it, so the
+heading's anchor stays GitHub's).
+
+    python3 docs/site/scripts/build_docs.py --snapshot chloedb-server-v0.2.0
+        # renders the docs of that tag (git archive) into docs/site/docs/v0.2.0/
 """
 import argparse
 import hashlib
 import html
+import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import unicodedata
@@ -38,6 +56,74 @@ SITE = DOCS / "site"
 OUT = SITE / "docs"
 GITHUB = "https://github.com/chloetech-ai/chloedb"
 BRANCH = "main"
+# Where the site is served from (this checkout's docs/site/docs/); a
+# snapshot is built from another tree into a folder of it.
+SERVED_DOCS = DOCS
+SERVED_OUT = OUT
+# The path from a page up to docs/site/ ("../"; "../../" in a snapshot).
+UP = "../"
+# "main", or "snapshot" for an earlier release's pages.
+EDITION = "main"
+SINCE = re.compile(r"<!--\s*since\s+v?([0-9][0-9.]*)\s*-->")
+
+
+def version_key(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def docs_version():
+    """The version these sources describe: chloedb-server's."""
+    m = re.search(r'^version = "([^"]+)"', (ROOT / "chloedb-server" / "Cargo.toml").read_text(), re.M) if (ROOT / "chloedb-server" / "Cargo.toml").exists() else None
+    return m.group(1) if m else ""
+
+
+def latest_release():
+    """The newest version released (docs/site/versions.json of this checkout)."""
+    f = SERVED_DOCS / "site" / "versions.json"
+    return json.loads(f.read_text()).get("latest", "") if f.exists() else ""
+
+
+def unreleased(v):
+    latest = latest_release()
+    return bool(latest) and version_key(v) > version_key(latest)
+
+
+def since_badge(v, block=False):
+    text = f"since {v}" + (" (unreleased)" if unreleased(v) else "")
+    cls = "since unreleased" if unreleased(v) else "since"
+    return f'<p class="{cls}">{text}</p>' if block else f'<span class="{cls}">{text}</span>'
+
+
+def since_markers(text):
+    """The `<!-- since X -->` markers as badges: under a heading for one in
+    it (its anchor unchanged), in place elsewhere."""
+    out = []
+    for line in text.split("\n"):
+        m = SINCE.search(line)
+        if m and re.match(r"^#{1,6} ", line):
+            out.append(SINCE.sub("", line).rstrip())
+            out.append("")
+            out.append(since_badge(m.group(1), block=True))
+            out.append("")
+        else:
+            out.append(SINCE.sub(lambda m: since_badge(m.group(1)), line))
+    return "\n".join(out)
+
+
+def version_line():
+    """The line under each page's title saying which version it describes."""
+    v, latest = docs_version(), latest_release()
+    if not v:
+        return ""
+    if EDITION == "snapshot":
+        return (f'<p class="doc-version">These docs describe release {html.escape(v)}. '
+                f'<a href="{UP}docs/index.html">The docs of main</a> describe the code as it is now.</p>')
+    if latest and version_key(v) > version_key(latest):
+        snap = SERVED_OUT / f"v{latest}" / "index.html"
+        link = f' (<a href="v{html.escape(latest)}/index.html">its docs</a>)' if snap.exists() else ""
+        return (f'<p class="doc-version">These docs follow main ({html.escape(v)}, unreleased). '
+                f'The latest release is {html.escape(latest)}{link}; what is newer is marked "since {html.escape(v)}".</p>')
+    return f'<p class="doc-version">These docs describe release {html.escape(v)}.</p>'
 
 # The sidebar, in order: (section, [(page, title, source, kind)]). A guide
 # page's examples are run by docs/guide/run.py; a reference page is
@@ -62,6 +148,7 @@ NAV = [
         ("rag", "Retrieval for RAG", "docs/guide/rag.md", "guide"),
         ("agent-memory", "Memory for an agent", "docs/guide/agent-memory.md", "guide"),
         ("crawl-to-search", "Crawl a site into search", "docs/guide/crawl-to-search.md", "guide"),
+        ("logs", "Search your logs", "docs/guide/logs.md", "guide"),
     ]),
     ("Clients", [
         ("python", "Python", "docs/chloedb/python.md", "reference"),
@@ -191,8 +278,9 @@ def rewrite_links(body, page, by_source):
         frag = "#" + frag if frag else ""
         if target in by_source:
             new = by_source[target].page + ".html" + frag
-        elif target.is_relative_to(DOCS) and target.exists() and target.suffix != ".md":
-            new = os.path.relpath(target, OUT).replace(os.sep, "/") + frag
+        elif target.is_relative_to(DOCS) and target.exists() and target.suffix != ".md" and (SERVED_DOCS / target.relative_to(DOCS)).exists():
+            # Where Pages serves it (a snapshot links this checkout's copy).
+            new = os.path.relpath(SERVED_DOCS / target.relative_to(DOCS), OUT).replace(os.sep, "/") + frag
         elif target.is_relative_to(ROOT):
             kind = "tree" if target.is_dir() or not target.suffix else "blob"
             new = f"{GITHUB}/{kind}/{BRANCH}/{target.relative_to(ROOT).as_posix()}{frag}"
@@ -219,6 +307,7 @@ def convert(page, by_source):
     text = FENCE.sub(stash, text)
     # Comments that steer the example runner are not for readers.
     text = re.sub(r"^<!--\s*run:.*?-->\n?", "", text, flags=re.M)
+    text = since_markers(text)
     seen = {}
     md = markdown.Markdown(extensions=["tables", "sane_lists", "toc", "md_in_html"],
                            extension_configs={"toc": {"slugify": lambda value, sep: github_slug(value, seen), "toc_depth": "2-3"}})
@@ -290,19 +379,19 @@ TEMPLATE = """<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v={h_site_css}">
-<link rel="stylesheet" href="../assets/docs.css?v={h_docs_css}">
+<link rel="stylesheet" href="{up}assets/site.css?v={h_site_css}">
+<link rel="stylesheet" href="{up}assets/docs.css?v={h_docs_css}">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from {source}: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
+  <a class="mark" href="{up}index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
-    <a href="../features.html">Features</a>
-    <a href="../scale.html">Laptop to cloud</a>
-    <a href="../command-center.html">Command center</a>
-    <a href="../benchmarks.html">Benchmarks</a>
-    <a href="../use-cases.html">Use cases</a>
+    <a href="{up}features.html">Features</a>
+    <a href="{up}scale.html">Laptop to cloud</a>
+    <a href="{up}command-center.html">Command center</a>
+    <a href="{up}benchmarks.html">Benchmarks</a>
+    <a href="{up}use-cases.html">Use cases</a>
   </nav>
   <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="{github}">GitHub</a><a class="btn primary" href="{start}">Get started</a></div>
 </div></header>
@@ -319,6 +408,7 @@ TEMPLATE = """<!doctype html>
       <span class="eyebrow">{section}</span>
       <h1>{h1}</h1>
       {badge}
+      {version}
     </div>
     {toc}
     <div class="doc-body">
@@ -332,12 +422,12 @@ TEMPLATE = """<!doctype html>
 </div></main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="{up}index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Start</h4><ul><li><a href="{start}">{start_label}</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="{github}">GitHub</a></li><li><a href="{github}/blob/{branch}/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="../assets/site.js?v={h_site_js}"></script>
+<script src="{up}assets/site.js?v={h_site_js}"></script>
 <script>if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;</script>
 {mermaid}
 </body>
@@ -378,7 +468,7 @@ def render_page(p, all_pages, by_source, hashes):
         h_site_css=hashes.get("site.css", ""), h_docs_css=hashes.get("docs.css", ""), h_site_js=hashes.get("site.js", ""),
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
-        mermaid=MERMAID if has_mermaid else "",
+        mermaid=MERMAID if has_mermaid else "", up=UP, version=version_line(),
         start=start, start_label="Quickstart" if start == "quickstart.html" else "Overview")
 
 
@@ -391,7 +481,7 @@ def check_links(out, written):
     for name in sorted(written):
         for url in re.findall(r'href="([^"]+)"', (out / name).read_text()):
             url = html.unescape(url)
-            if re.match(r"^[a-z][a-z0-9+.-]*:", url) or url.startswith("../"):
+            if re.match(r"^[a-z][a-z0-9+.-]*:", url) or url.startswith("../") or re.match(r"^v[0-9][0-9.]*/", url):
                 continue
             page, _, frag = url.partition("#")
             page = page or name
@@ -411,15 +501,43 @@ def build(out):
     for p in all_pages:
         (out / f"{p.page}.html").write_text(render_page(p, all_pages, by_source, hashes))
         written.add(f"{p.page}.html")
+    if EDITION == "snapshot":
+        # A page the release did not have yet (the template's footer names
+        # some): the one of main.
+        for name in written:
+            f = out / name
+            f.write_text(re.sub(r'href="([a-z0-9-]+\.html)(#[^"]*)?"', lambda m: m.group(0) if m.group(1) in written else f'href="../{m.group(1)}{m.group(2) or ""}"', f.read_text()))
     for line in check_links(out, written):
         print(f"broken link: {line}", file=sys.stderr)
     return written
 
 
+def snapshot(ref):
+    """Renders the docs of `ref` (a release's tag) into docs/site/docs/v<its
+    version>/, from `git archive` of the tag, with this checkout's sidebar,
+    template and assets."""
+    global ROOT, DOCS, OUT, BRANCH, UP, EDITION
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = pathlib.Path(tmp)
+        archive = subprocess.run(["git", "-C", str(ROOT), "archive", ref, "docs", "chloedb-server/Cargo.toml", "chloedb-py/python"], check=True, capture_output=True).stdout
+        subprocess.run(["tar", "-x", "-C", str(tree)], input=archive, check=True)
+        ROOT, DOCS, BRANCH, UP, EDITION = tree, tree / "docs", ref, "../../", "snapshot"
+        version = docs_version()
+        if not version:
+            sys.exit(f"{ref} has no chloedb-server/Cargo.toml version")
+        OUT = SERVED_OUT / f"v{version}"
+        written = build(OUT)
+    print(f"wrote {len(written)} pages of {ref} to docs/site/docs/v{version}/")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true", help="fail if docs/site/docs/ differs from what the sources make")
+    ap.add_argument("--snapshot", metavar="TAG", help="render the docs of a release's tag into docs/site/docs/v<version>/")
     args = ap.parse_args()
+    if args.snapshot:
+        snapshot(args.snapshot)
+        return
     if args.check:
         with tempfile.TemporaryDirectory() as tmp:
             written = build(pathlib.Path(tmp))

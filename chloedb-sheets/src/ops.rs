@@ -3,6 +3,7 @@
 //! sheets, undo. Each is one of IronCalc's actions (one step to undo), and
 //! `sheet` is a sheet's index, as the view lists them.
 
+use crate::book::Shown;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -491,7 +492,7 @@ fn filter(e: &mut Engine, sheet: u32, area: Rect, criteria: &[Crit], header: boo
     for row in r0..=r1 {
         let mut h = false;
         for (col, vals) in &keep {
-            let shown = e.get_formatted_cell_value(sheet, row, *col)?;
+            let shown = e.shown(sheet, row, *col)?;
             if !vals.contains(shown.as_str()) {
                 h = true;
                 break;
@@ -585,7 +586,7 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
     let first = r0 + header as i32;
     let name_of = |c: i32| -> String {
         if header {
-            let n = m.get_formatted_cell_value(sheet, r0, c).unwrap_or_default();
+            let n = m.shown(sheet, r0, c).unwrap_or_default();
             if !n.is_empty() {
                 return n;
             }
@@ -603,8 +604,8 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
     let mut groups: Vec<(Vec<String>, Vec<Acc>)> = Vec::new();
     let mut index: HashMap<Vec<String>, usize> = HashMap::new();
     for r in first..=last {
-        let key: Vec<String> = by.iter().map(|c| m.get_formatted_cell_value(sheet, r, *c).unwrap_or_default()).collect();
-        let all_empty = key.iter().all(String::is_empty) && values.iter().all(|a| m.get_formatted_cell_value(sheet, r, a.col).unwrap_or_default().is_empty());
+        let key: Vec<String> = by.iter().map(|c| m.shown(sheet, r, *c).unwrap_or_default()).collect();
+        let all_empty = key.iter().all(String::is_empty) && values.iter().all(|a| m.shown(sheet, r, a.col).unwrap_or_default().is_empty());
         if all_empty {
             continue;
         }
@@ -614,7 +615,7 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
         });
         for (ai, a) in values.iter().enumerate() {
             let acc = &mut groups[gi].1[ai];
-            let shown = m.get_formatted_cell_value(sheet, r, a.col).unwrap_or_default();
+            let shown = m.shown(sheet, r, a.col).unwrap_or_default();
             if !shown.is_empty() {
                 acc.count += 1;
                 acc.distinct.insert(shown);
@@ -717,7 +718,7 @@ mod tests {
     }
 
     fn shown(b: &Book, s: u32, r: i32, c: i32) -> String {
-        b.engine.get_formatted_cell_value(s, r, c).unwrap()
+        b.engine.shown(s, r, c).unwrap()
     }
 
     fn run(b: &mut Book, j: Value) -> Done {

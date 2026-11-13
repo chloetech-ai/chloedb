@@ -41,8 +41,10 @@ skips it.
 The programs come from each crate's target/{ci,release,debug} (the newest
 build), or from the directory CHLOEDB_DOCS_BIN names. Python is this
 interpreter, so run it from the virtualenv chloedb-py is installed in.
-Models are kept between runs in CHLOEDB_MODELS (default
-~/.cache/chloedb-docs/models).
+Each page starts with an empty models folder of its own (CHLOEDB_MODELS in
+its directory), as a reader who opens it first has, so a page that uses a
+model must fetch it itself. --shared-models DIR keeps the models in DIR
+between pages and runs instead, which is quicker and hides a missing fetch.
 """
 import argparse
 import os
@@ -229,7 +231,10 @@ def run_page(page, source, programs, args):
         (bindir / name).symlink_to(path)
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(bindir), str(pathlib.Path(sys.executable).parent), env.get("PATH", "")])
-    env.setdefault("CHLOEDB_MODELS", str(pathlib.Path.home() / ".cache" / "chloedb-docs" / "models"))
+    # A models folder of the page's own, empty, unless --shared-models: a page
+    # that uses a model fetches it, as a reader who starts there must.
+    env["CHLOEDB_MODELS"] = str(pathlib.Path(args.shared_models).expanduser() if args.shared_models else work / ".models")
+    env.pop("STRATA_MODELS", None)
     pathlib.Path(env["CHLOEDB_MODELS"]).mkdir(parents=True, exist_ok=True)
     env["CHLOEDB_DOCS_RUN"] = "1"
     env.pop("ANTHROPIC_API_KEY", None)  # pages print the prompt they would send, not a model's answer
@@ -314,6 +319,7 @@ def main():
     ap.add_argument("--allow-missing", action="store_true", help="skip pages whose programs are not built")
     ap.add_argument("--update", action="store_true", help="write what each block printed into the page's output blocks that differ (review the diff)")
     ap.add_argument("--timeout", type=int, default=900, help="seconds a page may take (default 900)")
+    ap.add_argument("--shared-models", metavar="DIR", help="keep the models in DIR between pages (quicker; hides a page that does not fetch its model)")
     args = ap.parse_args()
     pages = list(guide_pages())
     if args.pages:

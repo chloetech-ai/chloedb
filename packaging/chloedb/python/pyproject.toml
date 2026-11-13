@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chloedb"
-version = "0.0.2"
-description = "Placeholder: holds the name for ChloeDB. Install releases from https://github.com/chloetech-ai/chloedb/releases"
+version = "0.0.3"
+description = "Placeholder, not ChloeDB: holds the name for ChloeDB, an embedded search database with SQL. Install ChloeDB: pip install --upgrade chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.1"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ classifiers = ["Development Status :: 1 - Planning", "Programming Language :: Py
 
 [project.urls]
 Homepage = "https://github.com/chloetech-ai/chloedb"
+Documentation = "https://chloetech-ai.github.io/chloedb/site/docs/python.html"
 Releases = "https://github.com/chloetech-ai/chloedb/releases"
 
 [tool.hatch.build.targets.wheel]

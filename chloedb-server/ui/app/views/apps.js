@@ -27,11 +27,13 @@ let asked = null;
 /** The server's apps, asked once (again with `again`). */
 export function loadApps(again = false) {
   if (!asked || again) {
-    asked = core.api("/v1/apps", { timeout: 8000 }).then((j) => { apps = j.apps || []; bus.emit("apps"); return apps; }).catch(() => { apps = apps || []; return apps; });
+    asked = core.api("/v1/apps", { timeout: 8000 }).then((j) => { apps = j.apps || []; appsError = null; bus.emit("apps"); return apps; }).catch((e) => { apps = apps || []; appsError = e; return apps; });
   }
   return asked;
 }
 export const listApps = () => apps || [];
+// Why the listing failed (a refusal is not "no apps").
+let appsError = null;
 
 const ALLOWED = { path: ["d"], circle: ["cx", "cy", "r"], ellipse: ["cx", "cy", "rx", "ry"], rect: ["x", "y", "width", "height", "rx", "ry"], line: ["x1", "y1", "x2", "y2"], polyline: ["points"], polygon: ["points"] };
 
@@ -85,11 +87,13 @@ function render(page, route) {
     if (!name) {
       page.append(h("div", { class: "page-head" }, h("h1", {}, "Apps")),
         list.length ? h("div", { class: "grid g3" }, list.map((a) => h("a", { class: "card", href: "#/app/" + a.name, style: { padding: "16px", display: "flex", gap: "12px", alignItems: "flex-start" } },
-          appIcon(a, "lg"), h("div", {}, h("b", {}, a.title), h("div", { class: "small dim" }, a.up ? a.description || "" : `not answering: ${a.error}`)))))
-          : empty("box", "No apps", "An app is a program of its own that this server forwards to. The server starts the crawler (chloedb-crawl), Sheets (chloedb-sheets) and ChloeCtx (chloectx) itself when they are installed beside it (--start-apps); others it reaches with --app name=url."));
+          appIcon(a, "lg"), h("div", {}, h("b", {}, a.title), h("div", { class: "small dim" }, a.up ? a.description || "" : `not answering: ${a.error}`),
+            core.limited() && !a.checks_callers ? h("div", { class: "small muted" }, "takes a key of every table") : null))))
+          : appsError ? empty("warn", "Can't list the apps", core.cannotSee(appsError, "the apps")) : empty("box", "No apps", "An app is a program of its own that this server forwards to. The server starts the crawler (chloedb-crawl), Sheets (chloedb-sheets) and ChloeCtx (chloectx) itself when they are installed beside it (--start-apps); others it reaches with --app name=url."));
       return;
     }
     const a = list.find((x) => x.name === name);
+    if (!a && appsError) { page.append(empty("warn", `Can't list the apps`, core.cannotSee(appsError, "the apps"))); return; }
     if (!a) { page.append(empty("box", `No app ${name}`, list.length ? `This server's apps: ${list.map((x) => x.name).join(", ")}.` : "This server has no apps (--app name=url).")); return; }
     if (!a.up) {
       const p = a.process;
@@ -99,6 +103,8 @@ function render(page, route) {
       return;
     }
     if (!a.view) { page.append(empty("box", `${a.title} has no view`, "Its manifest names none.")); return; }
+    // An app that does not check a key limited to tables itself takes a key of every table.
+    if (core.limited() && !a.checks_callers) { page.append(empty("lock", `This key can't open ${a.title}`, `${a.title} acts on the cluster with its own token and does not check a key limited to tables, so it takes a key of every table. This key is limited to ${core.grantsText(data.state.whoami?.tables)}.`)); return; }
     load(a).then((m) => {
       if (gone) return;
       const view = m.default || m;

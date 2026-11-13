@@ -7,8 +7,8 @@ ChloeCtx runs next to your own Claude Code: hooks record each session into a loc
 | | why | check |
 |---|---|---|
 | macOS or Linux (Windows through WSL 2) | the daemon talks to the hooks over a Unix socket | `uname -s` |
-| Rust, stable | ChloeCtx is built from source | `cargo --version` (install from [rustup.rs](https://rustup.rs)) |
-| a C compiler | the tokenizer's regex library is C | `cc --version` (`xcode-select --install` on macOS, `build-essential` on Debian/Ubuntu) |
+| Rust, stable | to build ChloeCtx from source (not for [the prebuilt binary](#prebuilt)) | `cargo --version` (install from [rustup.rs](https://rustup.rs)) |
+| a C compiler | to build from source: the tokenizer's regex library is C | `cc --version` (`xcode-select --install` on macOS, `build-essential` on Debian/Ubuntu) |
 | `curl` | downloads the 129 MB embedding model once | `curl --version` |
 | [Claude Code](https://claude.com/claude-code) CLI, **logged in** | the hooks and the MCP server plug into it, and the distiller calls `claude -p` after each turn | `claude auth status` shows `"loggedIn": true` |
 
@@ -16,7 +16,20 @@ Python 3 is only needed for the scripted demo and the evaluation harnesses, not 
 
 The CLI login matters more than it looks. The distiller runs `claude -p` in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. `chloectx doctor` checks for it.
 
-## Install in one command
+## Prebuilt
+
+<!-- since 0.3.1 --> From release 0.3.1, the ChloeDB installer fetches `chloectx` prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:
+
+```bash
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
+~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
+~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session
+~/.local/bin/chloectx doctor
+```
+
+Release 0.3.0 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which builds ChloeCtx from a checkout.
+
+## Install in one command, from source
 
 ```bash
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh
@@ -98,7 +111,7 @@ chloectx sql "SELECT kind, tag, text FROM memory WHERE kind IN ('decision', 'pre
 ```bash
 chloectx ui                      # opens the inspector at http://127.0.0.1:8765/?token=...
 chloectx ui --no-open --port 9000
-chloectx ui --home ~/engram-demo/engram     # stores kept elsewhere (here: the scripted demo's)
+chloectx ui --home ~/chloectx-demo/chloectx  # stores kept elsewhere (here: the scripted demo's)
 ```
 
 ![chloectx ui: a session rebuilt from its records on the left, with the briefing, recall decisions and what the distiller kept; the store's knowledge on the right](../assets/img/inspector-ui-conversation.png)

@@ -77,7 +77,7 @@ pub fn field_value(field: &Field, key: bool, j: &Json) -> Result<Value> {
         let one = |x: &Json| match (&field.ty, x) {
             (FieldType::Keyword, Json::String(s)) => Ok(Value::Str(s.clone())),
             (FieldType::Keyword, Json::Number(n)) => Ok(Value::Str(n.to_string())),
-            (FieldType::Int, Json::Number(n)) => n.as_i64().map(Value::Int).ok_or_else(bad),
+            (FieldType::Int, Json::Number(n)) => whole_number(field, n).map(Value::Int),
             (FieldType::Int, Json::String(s)) => s.trim().parse().map(Value::Int).map_err(|_| bad()),
             _ => Err(bad()),
         };
@@ -85,7 +85,7 @@ pub fn field_value(field: &Field, key: bool, j: &Json) -> Result<Value> {
     }
     Ok(match (&field.ty, j) {
         (FieldType::Vector { .. }, Json::Array(xs)) => Value::Vector(xs.iter().map(|x| x.as_f64().map(|v| v as f32).ok_or_else(bad)).collect::<Result<Vec<_>>>()?.into()),
-        (FieldType::Int, Json::Number(n)) => Value::Int(n.as_i64().ok_or_else(bad)?),
+        (FieldType::Int, Json::Number(n)) => Value::Int(whole_number(field, n)?),
         (FieldType::Int, Json::Bool(b)) => Value::Int(*b as i64),
         (FieldType::Float, Json::Number(n)) => Value::Float(n.as_f64().ok_or_else(bad)?),
         (FieldType::Keyword, Json::Number(n)) if key => Value::Str(n.to_string()),
@@ -164,6 +164,27 @@ fn fields_of(schema: &Schema, j: &Json, now: i64, unknown: &mut Option<&mut BTre
     Ok(doc)
 }
 
+/// A JSON number for INT field `field`: an integer, or a float with no
+/// fraction (`2.0`, as pandas writes a column of whole numbers with gaps).
+fn whole_number(field: &Field, n: &serde_json::Number) -> Result<i64> {
+    match n.as_i64() {
+        Some(i) => Ok(i),
+        None => whole(field, n.as_f64().unwrap_or(f64::NAN)),
+    }
+}
+
+/// `x` as a whole number for INT field `field`, or why it is not one.
+pub(crate) fn whole(field: &Field, x: f64) -> Result<i64> {
+    // 2^63, the first float past i64::MAX. -2^63 is refused too: a float
+    // that equals it may be a rounded literal past i64::MIN
+    // (-9223372036854775809 reads as -2^63).
+    const END: f64 = 9_223_372_036_854_775_808.0;
+    match x.fract() == 0.0 && x > -END && x < END {
+        true => Ok(x as i64),
+        false => Err(Error::Schema(format!("{} is an INT column: {x} is not a whole number from {} to {} (a FLOAT column holds fractions)", field.name, i64::MIN, i64::MAX))),
+    }
+}
+
 /// `doc` with its generated fields, checked for missing values.
 fn finish(schema: &Schema, mut doc: Document) -> Result<Document> {
     schema.fill_generated(&mut doc);
@@ -211,7 +232,14 @@ pub fn cell(schema: &Schema, f: usize, s: &str) -> Result<Value> {
         return value(schema, f, &Json::String(t.to_string()));
     }
     Ok(match &field.ty {
-        FieldType::Int => Value::Int(t.parse().map_err(|_| bad())?),
+        FieldType::Int => Value::Int(match t.parse::<i64>() {
+            Ok(n) => n,
+            // `2.0`, as pandas writes a column of whole numbers with gaps.
+            Err(_) => match t.parse::<f64>() {
+                Ok(x) => whole(field, x)?,
+                Err(_) => return Err(bad()),
+            },
+        }),
         FieldType::Float => Value::Float(t.parse().map_err(|_| bad())?),
         FieldType::Vector { .. } => value(schema, f, &json(t)?)?,
         FieldType::Sparse | FieldType::Json => value(schema, f, &json(t)?)?,
@@ -258,14 +286,97 @@ pub struct Rows<'a> {
     schema: &'a Schema,
     inner: Inner,
     now: i64,
+    /// What an empty CSV cell means.
+    empty: EmptyCell,
     /// Columns or keys the schema has no field for (skipped).
     pub unknown: BTreeSet<String>,
+}
+
+/// What an empty cell of a CSV or TSV file means (all spaces, or nothing,
+/// quoted or not: the CSV reader does not tell them apart).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmptyCell {
+    /// The column's `DEFAULT` when it has one, else NULL: a `NOT NULL
+    /// DEFAULT 0` column takes 0 from a gap in the file.
+    #[default]
+    Default,
+    /// NULL always, whatever the column's default.
+    Null,
+    /// The empty string in a TEXT or KEYWORD column (of one value), and as
+    /// `Default` in the others.
+    Text,
+}
+
+impl EmptyCell {
+    /// `default`, `null` or `text` (`empty` too).
+    pub fn parse(s: &str) -> Option<EmptyCell> {
+        match s.to_ascii_lowercase().as_str() {
+            "default" => Some(EmptyCell::Default),
+            "null" => Some(EmptyCell::Null),
+            "text" | "empty" | "string" => Some(EmptyCell::Text),
+            _ => None,
+        }
+    }
 }
 
 enum Inner {
     Lines(std::io::Lines<BufReader<Box<dyn Read + Send>>>, u64),
     Array(std::vec::IntoIter<Json>, u64),
-    Csv(csv::StringRecordsIntoIter<Box<dyn Read + Send>>, Vec<Option<usize>>),
+    Csv(csv::StringRecordsIntoIter<Box<dyn Read + Send>>, Vec<Option<usize>>, Newlines),
+}
+
+/// Where the newlines of a CSV file are, for the line a record starts on:
+/// the CSV reader counts a line ended by `\r\n` from its `\n`, which it
+/// reads as the start of the next record, so with CRLF line endings every
+/// record but the first would be one line early. The newlines the reader
+/// has read past and no record has yet started after are kept; the rest
+/// are counted.
+#[derive(Clone, Default)]
+struct Newlines(std::sync::Arc<std::sync::Mutex<NewlineState>>);
+
+#[derive(Default)]
+struct NewlineState {
+    /// Bytes read so far.
+    read: u64,
+    /// Newlines before `kept`'s first.
+    counted: u64,
+    /// Offsets of the newlines not yet counted.
+    kept: std::collections::VecDeque<u64>,
+}
+
+impl Newlines {
+    /// The line (from 1) of the record that starts at byte `start`: one
+    /// more than the newlines before its first byte that is not a line's
+    /// end.
+    fn line(&self, start: u64) -> u64 {
+        let mut st = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        while st.kept.front().is_some_and(|&b| b <= start) {
+            st.kept.pop_front();
+            st.counted += 1;
+        }
+        st.counted + 1
+    }
+}
+
+/// A reader that notes the newlines in [`Newlines`].
+struct Counting<R> {
+    inner: R,
+    newlines: Newlines,
+}
+
+impl<R: Read> Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let mut st = self.newlines.0.lock().unwrap_or_else(|e| e.into_inner());
+        let at = st.read;
+        for (i, b) in buf[..n].iter().enumerate() {
+            if *b == b'\n' {
+                st.kept.push_back(at + i as u64);
+            }
+        }
+        st.read += n as u64;
+        Ok(n)
+    }
 }
 
 impl<'a> Rows<'a> {
@@ -284,6 +395,8 @@ impl<'a> Rows<'a> {
                 Inner::Array(rows.into_iter(), 0)
             }
             Format::Csv | Format::Tsv => {
+                let newlines = Newlines::default();
+                let reader: Box<dyn Read + Send> = Box::new(Counting { inner: reader, newlines: newlines.clone() });
                 let mut r = csv::ReaderBuilder::new().delimiter(if format == Format::Tsv { b'\t' } else { b',' }).flexible(true).from_reader(reader);
                 let header = r.headers().map_err(|e| Error::Schema(format!("CSV header: {e}")))?.clone();
                 let columns = header
@@ -297,10 +410,17 @@ impl<'a> Rows<'a> {
                         f
                     })
                     .collect();
-                Inner::Csv(r.into_records(), columns)
+                Inner::Csv(r.into_records(), columns, newlines)
             }
         };
-        Ok(Rows { schema, inner, now: crate::timestamp::now(), unknown })
+        Ok(Rows { schema, inner, now: crate::timestamp::now(), empty: EmptyCell::Default, unknown })
+    }
+
+    /// These rows with `empty` the meaning of an empty CSV cell
+    /// ([`EmptyCell::Default`] unless set).
+    pub fn empty_cells(mut self, empty: EmptyCell) -> Self {
+        self.empty = empty;
+        self
     }
 
     /// Opens `path`, in `format` or the one its extension names.
@@ -334,18 +454,29 @@ impl Iterator for Rows<'_> {
                 let at = *n;
                 rows.next().map(|j| document_with(schema, &j, now, unknown).map_err(|e| at_row("row", at, e)))
             }
-            Inner::Csv(records, columns) => {
+            Inner::Csv(records, columns, newlines) => {
                 let rec = match records.next()? {
                     Ok(r) => r,
                     Err(e) => return Some(Err(Error::Schema(format!("CSV: {e}")))),
                 };
-                let line = rec.position().map_or(0, |p| p.line());
+                let line = rec.position().map_or(0, |p| newlines.line(p.byte()));
                 let mut doc = match start(schema, now) {
                     Ok(d) => d,
                     Err(e) => return Some(Err(e)),
                 };
                 for (cellv, f) in rec.iter().zip(columns.iter()) {
                     if let Some(f) = *f {
+                        if cellv.trim().is_empty() {
+                            let field = &schema.fields[f];
+                            match self.empty {
+                                EmptyCell::Text if !field.multi && matches!(field.ty, FieldType::Text { .. } | FieldType::Keyword) && field.logical.is_none() && field.media.is_none() => {
+                                    doc[f] = Value::Str(String::new())
+                                }
+                                EmptyCell::Default | EmptyCell::Text if field.default.is_some() => {}
+                                _ => doc[f] = Value::Null,
+                            }
+                            continue;
+                        }
                         match cell(schema, f, cellv) {
                             Ok(v) => doc[f] = v,
                             Err(e) => return Some(Err(at_row("line", line, e))),

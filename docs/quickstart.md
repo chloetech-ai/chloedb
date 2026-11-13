@@ -142,7 +142,7 @@ kill $server $demo
 
 ## ChloeDB from Python, with no server
 
-The Python package runs a database inside your process, the way `sqlite3` runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server, plus Linux with glibc 2.28 or later.
+The Python package runs a database inside your process, the way `sqlite3` runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server: macOS 11 or later, and Linux with glibc 2.28 or later (release 0.2.0's wheels need 2.35). Install it from PyPI:
 
 ```sh
 # install

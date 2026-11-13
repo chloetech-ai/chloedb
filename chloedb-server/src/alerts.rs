@@ -743,6 +743,10 @@ pub struct Event {
     /// coordinator that sent its FIRING message chose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dedup_key: Option<String>,
+    /// The rule's `vs`: `before` when the value is a ratio to the window
+    /// before, not the metric's own.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub vs: String,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -788,6 +792,7 @@ impl Event {
                 _ => (st.state == "firing").then_some(st.since_ms),
             },
             dedup_key: (if state == "resolved" { st.paged.as_ref().or(st.paged_before.as_ref()) } else { st.paged.as_ref() }).map(|p| p.key.clone()).filter(|k| !k.is_empty()),
+            vs: r.vs.clone(),
         }
     }
 
@@ -3407,7 +3412,26 @@ pub fn event_of(e: &Event) -> crate::events::Event {
     // Enough digits to differ from the threshold (NEW-13).
     let value = e.value.map_or_else(|| "no data".to_string(), |v| number_vs(v, e.threshold));
     let text = e.text.as_ref().map(|t| format!(": {t}")).unwrap_or_default();
+    // A rule against the window before has a ratio, not the metric's
+    // own value: "p99 4.3x its baseline", never "p99_ms = 4.3".
+    let ratio = e.vs == "before";
+    let short = e.metric.strip_suffix("_ms").unwrap_or(&e.metric);
     let title = match e.state {
+        "firing" if ratio => format!(
+            "{} fires{place}: {short} {}x its baseline ({} {}x, {} over {} against the {} before)",
+            e.name,
+            e.value.map_or_else(|| "no data".to_string(), |v| number_vs(v, e.threshold)),
+            e.op,
+            number(e.threshold),
+            e.eval,
+            duration(e.window_s * 1000),
+            duration(e.window_s * 1000)
+        ),
+        "resolved" if ratio => {
+            let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
+            let why = e.why.as_ref().map(|w| format!(" ({w}{})", e.by.as_ref().map(|b| format!(" by {b}")).unwrap_or_default())).unwrap_or_default();
+            format!("{} resolved{place}{after}: {short} {}x its baseline{why}", e.name, e.value.map_or_else(|| "no data".to_string(), |v| number_vs(v, e.threshold)))
+        }
         "firing" => format!("{} fires{place}: {} = {value} ({} {}, {} over {})", e.name, e.metric, e.op, number(e.threshold), e.eval, duration(e.window_s * 1000)),
         "resolved" => {
             let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
@@ -3479,7 +3503,15 @@ pub const LOAD_METRICS: [&str; 14] = ["qps", "cpu", "busy", "p99_ms", "p50_ms", 
 /// server's points: memory's when it holds `from`, else a point a minute
 /// from the log store's `load` table.
 pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Json, ApiError> {
-    let mut r = b.get("rule").cloned().filter(Json::is_object).ok_or_else(|| ApiError::bad("the body needs \"rule\""))?;
+    // A rule, or the id of one of this server's rules.
+    let mut r = match &b["rule"] {
+        Json::String(id) => {
+            let rule = svc.alerts.rules().into_iter().find(|r| &r.id == id).ok_or_else(|| ApiError::bad(format!("no rule {id:?}: \"rule\" is a rule's id (GET /v1/alerts/rules lists them) or a rule")))?;
+            serde_json::to_value(rule).map_err(|e| ApiError::bad(e.to_string()))?
+        }
+        r if r.is_object() => r.clone(),
+        _ => return Err(ApiError::bad("the body needs \"rule\": a rule, or the id of one")),
+    };
     for k in ["id", "name"] {
         if r[k].is_null() {
             r[k] = json!("backtest");
@@ -3488,8 +3520,9 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     let rule: Rule = serde_json::from_value(r).map_err(|e| ApiError::bad(format!("bad rule: {e}")))?;
     rule.check()?;
     let now = now_ms();
-    let to = b["to"].as_u64().unwrap_or(now).min(now);
-    let from = b["from"].as_u64().unwrap_or(to.saturating_sub(86_400_000)).max(to.saturating_sub(KEEP_DAYS * 86_400_000));
+    let to = time_ms(&b["to"], "to")?.unwrap_or(now).min(now);
+    let asked = time_ms(&b["from"], "from")?;
+    let mut from = asked.unwrap_or(to.saturating_sub(86_400_000)).max(to.saturating_sub(KEEP_DAYS * 86_400_000));
     if from >= to {
         return Err(ApiError::bad("from comes before to"));
     }
@@ -3504,15 +3537,32 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     if svc.alerts.is_coordinator() && rule.copies() {
         return backtest_copies(svc, &rule, from, to).await;
     }
-    let lead = from.saturating_sub(rule.window_s * 1000 + rule.for_s * 1000);
     let memory = svc.series.since(0);
     let held = memory.first().and_then(|p| p["t"].as_u64());
+    // With no log store, memory is all there is: the backtest covers what
+    // it holds, and says so, rather than refusing the default day.
+    let mut note = None;
+    if svc.log_store.is_none() {
+        let start = held.unwrap_or(to);
+        if start > from {
+            note = Some(format!(
+                "this server keeps no log store, and memory holds points from {} on: the backtest covers {} rather than the {} asked{}",
+                chloedb::timestamp::format(start as i64 * 1000),
+                duration(to.saturating_sub(start)),
+                duration(to.saturating_sub(from)),
+                if asked.is_none() { " by default" } else { "" }
+            ));
+            from = start.min(to.saturating_sub(1));
+        }
+    }
+    let lead = from.saturating_sub(rule.window_s * 1000 + rule.for_s * 1000);
     // Memory when it holds the time asked, or the time asked is within
     // the last hour (a server up a few minutes holds what there is), or
     // the load table does not keep the metric: the answer's covered_from
     // says from when.
     let in_memory = |h: u64| h <= from || from.saturating_add(3_600_000) >= now || !LOAD_METRICS.contains(&rule.metric.as_str());
     let (points, source) = match held {
+        _ if svc.log_store.is_none() => (memory.into_iter().filter(|p| p["t"].as_u64().is_some_and(|t| t >= lead && t <= to)).collect::<Vec<_>>(), "memory"),
         Some(h) if in_memory(h) => (memory.into_iter().filter(|p| p["t"].as_u64().is_some_and(|t| t >= lead && t <= to)).collect::<Vec<_>>(), "memory"),
         _ => {
             let store = svc.log_store.clone().ok_or_else(|| ApiError { code: None, status: 409, message: "memory holds the last hour, and this server keeps no log store for older points".into() })?;
@@ -3560,7 +3610,25 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     j["from"] = json!(from);
     j["to"] = json!(to);
     j["metric"] = json!(rule.metric);
+    if let Some(n) = note {
+        j["note"] = json!(n);
+    }
     Ok(j)
+}
+
+/// A backtest's `from` or `to`: epoch milliseconds (seconds when under
+/// 10^11, which as milliseconds is 1973), as a number or digits, or ISO
+/// 8601 text (`2026-11-13T00:30:00Z`); anything else is refused.
+fn time_ms(v: &Json, k: &str) -> Result<Option<u64>, ApiError> {
+    let ms = |n: u64| if n < 100_000_000_000 { n * 1000 } else { n };
+    let bad = || ApiError::bad(format!("\"{k}\" is epoch milliseconds or ISO 8601 time (\"2026-11-13T00:30:00Z\"), not {v}"));
+    match v {
+        Json::Null => Ok(None),
+        Json::Number(n) => n.as_u64().or_else(|| n.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64)).map(|n| Some(ms(n))).ok_or_else(bad),
+        Json::String(s) if !s.trim().is_empty() && s.trim().bytes().all(|c| c.is_ascii_digit()) => s.trim().parse::<u64>().map(|n| Some(ms(n))).map_err(|_| bad()),
+        Json::String(s) => chloedb::timestamp::parse(s).filter(|us| *us >= 0).map(|us| Some(us as u64 / 1000)).ok_or_else(bad),
+        _ => Err(bad()),
+    }
 }
 
 /// How many points of each copy a coordinator's backtest answers.
@@ -4010,6 +4078,23 @@ mod tests {
         let one = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "firing")]}, {"shard": 1, "replicas": [copy("http://b", "ok")]}]});
         let fired = a.check_cluster(&one, 40_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
         assert_eq!(event_of(&fired).where_, json!({"rule": "disk-full", "shard": 0, "copy": "http://a"}));
+    }
+
+    /// A rule against the window before is titled with a ratio, never
+    /// as the metric's own value (p99_ms = 4.3 read as milliseconds).
+    #[test]
+    fn a_ratio_rule_is_titled_as_a_ratio() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        let disk = defaults().into_iter().find(|r| r.id == "disk-full").unwrap();
+        let copy = json!({"url": "http://a", "status": "ok", "role": "primary", "takes_writes": true, "detail": {"load": {"t": 1_000}, "alerts": {"rules": {"disk-full": {"state": "firing", "value": 0.95, "since_ms": 500, "sig": disk.sig()}}}}});
+        let mut e = (*a.check_cluster(&json!({"shards": [{"shard": 0, "replicas": [copy]}]}), 1_000).into_iter().find(|e| e.rule == "disk-full").unwrap()).clone();
+        (e.name, e.metric, e.value, e.threshold, e.op, e.eval, e.window_s, e.vs) = ("Query p99 doubled".into(), "p99_ms".into(), Some(4.343), 2.0, ">".into(), "mean".into(), 300, "before".into());
+        let title = event_of(&e).title;
+        assert!(title.contains("p99 4.343x its baseline (> 2x, mean over 5 min against the 5 min before)"), "{title}");
+        assert!(!title.contains("p99_ms ="), "{title}");
+        e.vs = String::new();
+        assert!(event_of(&e).title.contains("p99_ms = 4.343 (> 2, mean over 5 min)"), "{}", event_of(&e).title);
     }
 
     #[test]

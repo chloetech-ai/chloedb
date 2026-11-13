@@ -100,7 +100,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 | **Ranking** | Any expression of scores and columns, rerank phases, rank profiles, LightGBM and XGBoost models, cross-encoders, and `PACK n TOKENS` to fill a model's context budget. |
 | **Recommendations** | Sequence models, counted next items and bought-together walks, mixed with business rules in the same query. |
 | **Data in and out** | [SQLite](docs/chloedb/sqlite.md) and [Parquet](docs/chloedb/parquet.md) in and out (local files or S3), and [following a Postgres database](docs/chloedb/postgres.md) by logical replication. |
-| **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents. |
+| **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents (table-limited keys: see [server.md](docs/chloedb/server.md#security), which says which routes take them). |
 | **A cluster** | Shards behind a coordinator, replicas with automatic failover, and a [Kubernetes operator](docs/chloedb/server.md#on-kubernetes). |
 | **Operations** | A command center in every server, Prometheus metrics, query profiles, and an on-call agent that proposes fixes for an admin to approve. |
 

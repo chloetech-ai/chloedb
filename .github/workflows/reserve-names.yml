@@ -1,8 +1,8 @@
 name: reserve names
 
-# Publishes the placeholders in packaging/chloedb/ (`chloedb` 0.0.1 on npm
-# and crates.io, 0.0.2 on PyPI, whose import says where the releases are),
-# which hold the name until releases go out under it. Run by hand (Actions, "reserve names", Run workflow),
+# Publishes the placeholders in packaging/chloedb/, version 0.0.3 of
+# `chloedb` on PyPI, npm and crates.io, which hold the name until releases
+# go out under it. Run by hand (Actions, "reserve names", Run workflow),
 # naming the registries; each is its own job and needs its own setup first:
 #
 # * PyPI: a trusted publisher for the project chloedb (pypi.org, Publishing:

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/crawler.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,6 +81,7 @@
       <span class="eyebrow">Apps</span>
       <h1>chloedb-crawl: a site into a table</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/crawler.md">docs/chloedb/crawler.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#what-it-does-with-a-page">What it does with a page</a></li><li><a href="#the-command-centers-view">The command center's view</a></li><li><a href="#options">Options</a></li><li><a href="#api">API</a></li><li><a href="#limits">Limits</a></li></ol></details>
     <div class="doc-body">
@@ -101,8 +103,9 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
 <p>At the default pace, a page a second for one site (<a href="#what-it-does-with-a-page">below</a>), 600 pages take about ten minutes. books.toscrape.com is a sandbox made for crawlers, so <code>--per-host 4 --delay-ms 100</code> is fine there; keep the defaults for sites you don't run.</p>
 <h3 id="against-a-cluster-that-runs-elsewhere">Against a cluster that runs elsewhere<a class="anchor" href="#against-a-cluster-that-runs-elsewhere" aria-label="Link to this section">#</a></h3>
 <p>The crawler writes to any chloedb-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):</p>
-<pre data-lang="sh">chloedb-crawl serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$CRAWL_TOKEN&quot; \
+<pre data-lang="sh">chloedb-crawl serve --server http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$CRAWL_TOKEN&quot; \
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000</pre>
+<p><code>--server</code> was <code>--strata</code> before 0.3.1; the old name still works.</p>
 <p>and the coordinator shows it as an app when told where it is, with the crawler's token:</p>
 <pre data-lang="sh">CHLOEDB_APP_TOKEN=&quot;$CRAWL_TOKEN&quot; chloedb-server --shards ... --app crawler=http://crawler-host:7800</pre>
 <p><code>--grow</code> says how the cluster gets a shard: <code>kube</code> asks the Kubernetes operator for one more (<code>POST /v1/admin/kube</code>, the coordinator must run under the operator), <code>servers=URL,URL</code> adds empty servers started for it, by their gRPC URLs, one at a time, and <code>off</code> never grows. Each new shard gets its share of the slots by a rebalance (<code>POST /v1/admin/rebalance</code>) while the crawl keeps writing.</p>
@@ -352,6 +355,7 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
 </tr>
 </tbody>
 </table></div>
+<p>Through chloedb-server the crawler checks its callers (<code>"checks_callers": true</code> in its manifest): a key that may write starts crawls, which are its own, and pauses, resumes, stops and forgets only those (an admin of every table steers any); a key limited to tables lists only its own crawls. A crawl writes its table as the key that started it: the crawler sends its token narrowed to that key's grants (<code>x-chloedb-as-tables</code>, <a href="server.html#apps">server</a>), so a key limited to <code>crawl_*</code> crawls into <code>crawl_*</code> tables only, and a table it may not write is the server's 403. Called directly with its token, it answers as before.</p>
 <h2 id="limits">Limits<a class="anchor" href="#limits" aria-label="Link to this section">#</a></h2>
 <ul>
 <li>Pages are read as their HTML arrives: a page built by JavaScript in the browser shows only what its HTML holds (JSON-LD and meta tags often carry its fields anyway).</li>

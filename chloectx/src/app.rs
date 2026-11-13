@@ -205,6 +205,7 @@ pub struct App {
 }
 
 /// An error with the HTTP status it answers with.
+#[derive(Debug)]
 pub struct Fail(pub u16, pub String);
 
 impl From<crate::Error> for Fail {
@@ -222,6 +223,28 @@ fn bad(m: impl Into<String>) -> Fail {
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
+
+/// When a note or an incident happened, as a caller gives it (`when`, or
+/// `ts`): Unix seconds (milliseconds when over 10^11), as a number or
+/// digits, or ISO 8601 text (`2026-09-14`, `2026-09-14T03:10:00Z`);
+/// `None` when not given (now). Anything else is refused.
+pub fn when_of(b: &Json) -> std::result::Result<Option<i64>, Fail> {
+    let v = if b["when"].is_null() { &b["ts"] } else { &b["when"] };
+    let secs = |n: i64| if n > 100_000_000_000 { n / 1000 } else { n };
+    let bad_when = || bad(format!("\"when\" is Unix seconds or ISO 8601 time (\"2026-09-14\", \"2026-09-14T03:10:00Z\"), not {v}"));
+    match v {
+        Json::Null => Ok(None),
+        Json::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).filter(|n| *n > 0).map(|n| Some(secs(n))).ok_or_else(bad_when),
+        Json::String(t) if t.trim().is_empty() => Ok(None),
+        Json::String(t) if t.trim().bytes().all(|c| c.is_ascii_digit()) => t.trim().parse::<i64>().ok().filter(|n| *n > 0).map(|n| Some(secs(n))).ok_or_else(bad_when),
+        Json::String(t) => chloedb::timestamp::parse(t).filter(|us| *us > 0).map(|us| Some(us / 1_000_000)).ok_or_else(bad_when),
+        _ => Err(bad_when()),
+    }
+}
+
+/// The kinds of space: notes (a team's memory) or incidents (what Seen
+/// before matches alerts and log lines against).
+pub const SPACE_KINDS: [&str; 2] = ["notes", "incidents"];
 
 /// The table a space's records are in.
 pub fn table_of(space: &str) -> String {
@@ -435,10 +458,23 @@ impl App {
         Ok(record_json(&r))
     }
 
-    fn append(&self, store: &Store, b: &Json, drafts: Vec<Draft>) -> Result<Vec<Record>> {
+    fn append(&self, store: &Store, b: &Json, drafts: Vec<Draft>) -> std::result::Result<Vec<Record>, Fail> {
         let session = b["session"].as_str().filter(|s| !s.is_empty()).unwrap_or("api");
-        let ts = b["ts"].as_i64().filter(|t| *t > 0).unwrap_or_else(now);
-        store.append(session, store.last_seq() + 1, ts, drafts)
+        let ts = when_of(b)?.unwrap_or_else(now);
+        Ok(store.append(session, store.last_seq() + 1, ts, drafts)?)
+    }
+
+    /// Deletes a space: its table and its row of the spaces. Its notes go
+    /// with it.
+    pub fn delete_space(&self, name: &str) -> Answer {
+        if !cluster::valid_name(name) || name == "spaces" {
+            return Err(Fail(404, format!("no space {name:?}")));
+        }
+        let row = self.space_row(name)?.ok_or_else(|| Fail(404, format!("no space {name:?}")))?;
+        self.stores.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
+        self.cluster.sql(&format!("DROP TABLE IF EXISTS {}", table_of(name)))?;
+        self.cluster.write(vec![json!({"op": "delete", "table": SPACES, "key": name})])?;
+        Ok(json!({"deleted": name, "table": table_of(name), "kind": row["kind"]}))
     }
 
     /// Retires a note: superseded by nothing.
@@ -653,10 +689,33 @@ impl App {
         self.store(INCIDENTS)
     }
 
-    fn incident_json(&self, store: &Store, r: &Record) -> Result<Json> {
+    /// The store of incidents space `space`: the shared `incidents` (made
+    /// when first used), or a team's space of kind incidents.
+    fn incidents_of(&self, space: &str) -> std::result::Result<Arc<Store>, Fail> {
+        if space == INCIDENTS {
+            return Ok(self.incidents_store()?);
+        }
+        match self.space_row(space)? {
+            None => Err(Fail(404, format!("no space {space:?}"))),
+            Some(r) if r["kind"] != "incidents" => Err(bad(format!("space {space} keeps notes, not incidents: make a space with \"kind\": \"incidents\" for a team's incidents"))),
+            Some(_) => Ok(self.store(space)?),
+        }
+    }
+
+    /// The incidents spaces: `incidents`, then each space of kind
+    /// incidents (a team's), by name.
+    pub fn incident_spaces(&self) -> Result<Vec<String>> {
+        let rs = self.cluster.query(&format!("SELECT name FROM {SPACES} WHERE kind = 'incidents' ORDER BY name ASC LIMIT 1000"), &Default::default())?;
+        let mut out = vec![INCIDENTS.to_string()];
+        out.extend(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(str::to_string)).filter(|n| n != INCIDENTS));
+        Ok(out)
+    }
+
+    fn incident_json(&self, space: &str, store: &Store, r: &Record) -> Result<Json> {
         let i = Incident::parse(&r.text);
         let mut j = i.json();
         j["id"] = json!(r.id);
+        j["space"] = json!(space);
         j["ts"] = json!(r.ts);
         j["live"] = json!(r.tag != "superseded");
         // The fixes it replaced, newest first.
@@ -680,21 +739,24 @@ impl App {
         Ok(j)
     }
 
-    /// The live incidents, the newest first.
-    pub fn incidents(&self) -> Answer {
-        let store = self.incidents_store()?;
-        let got = store.latest(&[Kind::Note], 1000, &Filter::default())?;
+    /// The live incidents of `spaces`, the newest first.
+    pub fn incidents(&self, spaces: &[String]) -> Answer {
         let mut out = Vec::new();
-        for r in got.iter().filter(|r| r.tag == "incident") {
-            out.push(self.incident_json(&store, r)?);
+        for space in spaces {
+            let store = self.incidents_of(space)?;
+            let got = store.latest(&[Kind::Note], 1000, &Filter::default())?;
+            for r in got.iter().filter(|r| r.tag == "incident") {
+                out.push(self.incident_json(space, &store, r)?);
+            }
         }
-        Ok(json!({"incidents": out}))
+        out.sort_by_key(|j| std::cmp::Reverse(j["ts"].as_i64().unwrap_or(0)));
+        Ok(json!({"incidents": out, "spaces": spaces}))
     }
 
     /// Stores an incident; `replaces` marks an older one superseded (a
     /// better fix for the same thing).
-    pub fn record_incident(&self, b: &Json) -> Answer {
-        let store = self.incidents_store()?;
+    pub fn record_incident(&self, space: &str, b: &Json) -> Answer {
+        let store = self.incidents_of(space)?;
         let i = Incident::of_json(b);
         if i.title.is_empty() || (i.symptom.is_empty() && i.cause.is_empty() && i.fix.is_empty()) {
             return Err(bad("an incident needs a title and a symptom, cause or fix"));
@@ -710,14 +772,14 @@ impl App {
         if let Some(o) = &old {
             d = d.link("supersedes", o.id.clone());
         }
-        let when = json!({"session": "incidents", "ts": b["when"].as_i64().unwrap_or(0)});
+        let when = json!({"session": "incidents", "when": b["when"]});
         let r = self.append(&store, &when, vec![d])?.pop().ok_or_else(|| Fail(500, "the incident was not stored".into()))?;
         if let Some(mut o) = old {
             o.tag = "superseded".into();
             o.links.push(Link::new("superseded_by", r.id.clone()));
             store.insert(&[o])?;
         }
-        Ok(self.incident_json(&store, &r)?)
+        Ok(self.incident_json(space, &store, &r)?)
     }
 
     /// The incidents closest to `text`: by the same hybrid search as
@@ -725,13 +787,25 @@ impl App {
     /// that shares no word with it must be close in meaning
     /// ([`MIN_MATCH`]). With `rule`, the incidents recorded for that alert
     /// rule come first (`same_alert`).
-    pub fn matches(&self, text: &str, rule: Option<&str>, n: usize) -> Result<Vec<Json>> {
-        let store = self.incidents_store()?;
+    /// Over several incidents spaces, the closest of each space's matches,
+    /// those for the same alert first.
+    pub fn matches(&self, spaces: &[String], text: &str, rule: Option<&str>, n: usize) -> std::result::Result<Vec<Json>, Fail> {
+        let mut out = Vec::new();
+        for space in spaces {
+            let store = self.incidents_of(space)?;
+            out.extend(self.matches_in(space, &store, text, rule, n)?);
+        }
+        out.sort_by(|a, b| b["same_alert"].as_bool().cmp(&a["same_alert"].as_bool()).then(b["match"].as_f64().unwrap_or(0.0).total_cmp(&a["match"].as_f64().unwrap_or(0.0))));
+        out.truncate(n);
+        Ok(out)
+    }
+
+    fn matches_in(&self, space: &str, store: &Store, text: &str, rule: Option<&str>, n: usize) -> Result<Vec<Json>> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
         let notes = Filter { kinds: vec![Kind::Note], ..Default::default() };
-        let hits = recall::search(&store, text, &notes, &RankParams { n: 30, ..Default::default() })?.0;
+        let hits = recall::search(store, text, &notes, &RankParams { n: 30, ..Default::default() })?.0;
         // Every incident's similarity, from one vector search.
         let qv = self.embedder.embed_query(text)?;
         let cos: HashMap<String, f64> = store.vector_top(&qv, 200, &notes)?.into_iter().map(|(r, c)| (r.id, c)).collect();
@@ -767,7 +841,7 @@ impl App {
         }
         let mut out = Vec::new();
         for (r, c, bm25, same) in picked {
-            let mut j = self.incident_json(&store, &r)?;
+            let mut j = self.incident_json(space, store, &r)?;
             j["match"] = json!((c * 100.0).round() / 100.0);
             j["bm25"] = json!(bm25);
             j["same_alert"] = json!(same);
@@ -794,7 +868,7 @@ impl App {
     /// The context Seen before hands the on-call agent for an alert: the
     /// closest incidents with their fixes (and the fixes they replaced),
     /// and the incidents space's rules that bear on it.
-    fn handoff_context(&self, alert: &Json, matches: &[Json]) -> Result<(String, Vec<Json>)> {
+    fn handoff_context(&self, spaces: &[String], alert: &Json, matches: &[Json]) -> std::result::Result<(String, Vec<Json>), Fail> {
         let mut text = String::new();
         let mut parts = Vec::new();
         if !matches.is_empty() {
@@ -808,9 +882,14 @@ impl App {
                 text += &block;
             }
         }
-        let store = self.incidents_store()?;
-        let rules = store.vector_top(&self.embedder.embed_query(&Self::alert_text(alert))?, 20, &Filter { kinds: vec![Kind::Preference], ..Default::default() })?;
-        let rules: Vec<Record> = rules.into_iter().filter(|(r, c)| *c >= 0.3 && r.tag != "superseded").map(|(r, _)| r).take(3).collect();
+        let qv = self.embedder.embed_query(&Self::alert_text(alert)).map_err(crate::Error::from)?;
+        let mut rules: Vec<(Record, f64)> = Vec::new();
+        for space in spaces {
+            let store = self.incidents_of(space)?;
+            rules.extend(store.vector_top(&qv, 20, &Filter { kinds: vec![Kind::Preference], ..Default::default() })?.into_iter().filter(|(r, c)| *c >= 0.3 && r.tag != "superseded"));
+        }
+        rules.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let rules: Vec<Record> = rules.into_iter().map(|(r, _)| r).take(3).collect();
         if !rules.is_empty() {
             text += "Rules the team keeps for incidents like this:\n";
             for r in &rules {
@@ -824,20 +903,20 @@ impl App {
 
     /// The cluster's firing and pending alerts, each with the closest past
     /// incidents and the context the on-call agent would get.
-    pub fn firing(&self) -> Answer {
+    pub fn firing(&self, spaces: &[String]) -> Answer {
         let t0 = std::time::Instant::now();
         let alerts = self.cluster.get("/v1/alerts").map_err(|f| Fail(502, format!("the cluster's alerts: {f}")))?;
         let mut out = Vec::new();
         for a in alerts["states"].as_array().into_iter().flatten().filter(|a| matches!(a["state"].as_str(), Some("firing") | Some("pending"))) {
-            let matches = self.matches(&Self::alert_text(a), a["rule"].as_str(), 3)?;
-            let (context, parts) = self.handoff_context(a, &matches)?;
+            let matches = self.matches(spaces, &Self::alert_text(a), a["rule"].as_str(), 3)?;
+            let (context, parts) = self.handoff_context(spaces, a, &matches)?;
             out.push(json!({
                 "rule": a["rule"], "name": a["name"], "severity": a["severity"], "state": a["state"], "since_ms": a["since_ms"], "value": a["value"],
                 "threshold": a["threshold"], "op": a["op"], "metric": a["metric"], "description": a["description"], "where": a["where"],
                 "matches": matches, "context": context, "context_parts": parts, "context_tokens": tokens(context.len()),
             }));
         }
-        Ok(json!({"alerts": out, "ms": (t0.elapsed().as_secs_f64() * 1e5).round() / 100.0}))
+        Ok(json!({"alerts": out, "spaces": spaces, "ms": (t0.elapsed().as_secs_f64() * 1e5).round() / 100.0}))
     }
 
     /// Starts the on-call agent on an alert, with the closest incidents.
@@ -845,8 +924,9 @@ impl App {
         let rule = b["alert"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| bad("handoff needs \"alert\" (a rule)"))?;
         let alerts = self.cluster.get("/v1/alerts").map_err(|f| Fail(502, format!("the cluster's alerts: {f}")))?;
         let a = alerts["states"].as_array().into_iter().flatten().find(|a| a["rule"].as_str() == Some(rule)).cloned().ok_or_else(|| Fail(404, format!("no alert rule {rule}")))?;
-        let matches = self.matches(&Self::alert_text(&a), Some(rule), 3)?;
-        let (context, _) = self.handoff_context(&a, &matches)?;
+        let spaces = self.incident_spaces()?;
+        let matches = self.matches(&spaces, &Self::alert_text(&a), Some(rule), 3)?;
+        let (context, _) = self.handoff_context(&spaces, &a, &matches)?;
         let question = if context.is_empty() {
             format!("Alert {rule} is firing. Find out why, how bad it is, and what to do. ChloeCtx found no past incident like it.")
         } else {
@@ -946,8 +1026,11 @@ fn manifest() -> Json {
         "name": "chloectx", "title": "ChloeCtx",
         "description": "Memory spaces any agent writes to and asks for context, by search alone; and Seen before: the cluster's firing alerts beside the past incidents they look like",
         "icon_svg": ICON, "view": "ui/view.js", "version": env!("CARGO_PKG_VERSION"),
-        // It holds a key limited to tables to its grants ([`agents`]), so
-        // chloedb-server lets such keys call it: an agent's key for a space.
+        // It refuses what the caller's key may not do ([`Caller`]), so the
+        // server forwards a key limited to tables, and a write key's notes;
+        // it holds such a key to its grants ([`agents`]): an agent's key for
+        // a space. `limited_keys` says so to servers that read that flag.
+        "checks_callers": true,
         "limited_keys": true,
     })
 }
@@ -966,15 +1049,150 @@ fn body_json(req: &Request) -> std::result::Result<Json, Fail> {
     serde_json::from_slice(&req.body).map_err(|e| bad(format!("the body is not JSON: {e}")))
 }
 
+/// Who called, as chloedb-server says in the headers it sets on what it
+/// forwards (`x-chloedb-scope`, and for a key limited to tables
+/// `x-chloedb-tables`, `ctx_*=write,*=read`), which come with the app's
+/// token. A request without them (a program calling the app itself) may do
+/// anything, as before the server sent them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Caller {
+    /// The key's scope: 0 feed, 1 read, 2 write, 3 admin; `None`: not said.
+    scope: Option<u8>,
+    /// A key limited to tables: each grant's table (a name, or a prefix and
+    /// `*`) and scope.
+    tables: Option<Vec<(String, u8)>>,
+}
+
+fn level(scope: &str) -> u8 {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "admin" => 3,
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    }
+}
+
+const SCOPES: [&str; 4] = ["feed", "read", "write", "admin"];
+
+impl Caller {
+    pub(crate) fn of(req: &Request) -> Caller {
+        let scope = req.header("x-chloedb-scope").map(level);
+        let tables = req.header("x-chloedb-tables").map(|t| {
+            t.split(',')
+                .filter(|g| !g.trim().is_empty())
+                .map(|g| {
+                    let (t, s) = g.split_once('=').unwrap_or((g, "read"));
+                    (t.trim().to_ascii_lowercase(), level(s))
+                })
+                .collect()
+        });
+        Caller { scope, tables }
+    }
+
+    /// What it may do to table `table`.
+    fn on(&self, table: &str) -> u8 {
+        let table = table.to_ascii_lowercase();
+        match &self.tables {
+            Some(g) => g.iter().filter(|(t, _)| t.strip_suffix('*').map_or(*t == table, |p| table.starts_with(p))).map(|(_, s)| *s).max().unwrap_or(0),
+            None => self.scope.unwrap_or(3),
+        }
+    }
+
+    /// What it may do beyond tables (the app's own work: builds, the
+    /// on-call agent, this machine's stores): nothing for a key limited to
+    /// tables.
+    fn server(&self) -> u8 {
+        match &self.tables {
+            Some(_) => 0,
+            None => self.scope.unwrap_or(3),
+        }
+    }
+
+    /// Refuses (403) what needs `need` on table `table` (`None`: the
+    /// app's own work).
+    fn may(&self, need: u8, table: Option<&str>, what: &str) -> std::result::Result<(), Fail> {
+        let (has, on) = match table {
+            Some(t) => (self.on(t), format!(" on table {t}")),
+            None => (self.server(), String::new()),
+        };
+        if has >= need {
+            return Ok(());
+        }
+        let limited = match (&self.tables, table) {
+            (Some(_), None) => ", which is not for a key limited to tables".to_string(),
+            (Some(g), Some(_)) => format!("; the key is limited to {}", g.iter().map(|(t, s)| format!("{t} ({})", SCOPES[*s as usize])).collect::<Vec<_>>().join(", ")),
+            (None, _) => String::new(),
+        };
+        Err(Fail(403, format!("{what} needs the {} scope{on}{limited}", SCOPES[need as usize])))
+    }
+
+    /// Whether it may read space `name`'s table.
+    fn reads(&self, name: &str) -> bool {
+        self.on(&table_of(name)) >= 1
+    }
+}
+
+/// Refuses a request `caller` may not make: read on a space's table to read
+/// it or ask it, write to add or retire notes, admin to make a space (its
+/// table); the incidents are the space `incidents`'s; and what is not a
+/// space's (apps built, the on-call agent, this machine's stores) needs the
+/// admin scope to change, read to look, and a key of every table.
+fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::Result<(), Fail> {
+    // The incidents space a call names (`space`, in its query or body),
+    // else the shared one.
+    let named = || -> std::result::Result<Option<String>, Fail> {
+        Ok(match req.param("space").filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None if m == "POST" => body_json(req)?["space"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            None => None,
+        })
+    };
+    let incidents = table_of(&named()?.unwrap_or_else(|| INCIDENTS.to_string()));
+    let (need, table): (u8, Option<String>) = match (m, p) {
+        ("GET", ["v1", "info"]) | ("GET", ["v1", "spaces"]) => return Ok(()),
+        // Each incidents space the caller reads, when it names none.
+        ("GET", ["v1", "incidents"]) | ("GET", ["v1", "incidents", "firing" | "match"]) | ("POST", ["v1", "incidents", "match"]) if named()?.is_none() => return Ok(()),
+        ("POST", ["v1", "incidents", "match"]) => (1, Some(incidents)),
+        ("POST", ["v1", "spaces"]) => (3, Some(table_of(body_json(req)?["name"].as_str().unwrap_or("").trim()))),
+        ("DELETE", ["v1", "spaces", s]) => (3, Some(table_of(s))),
+        ("GET", ["v1", "spaces", s, "notes", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
+        ("POST", ["v1", "spaces", s, "notes"]) | ("DELETE", ["v1", "spaces", s, "notes", _]) | ("POST", ["v1", "spaces", s, "exchanges"]) => (2, Some(table_of(s))),
+        ("GET", ["v1", "incidents", ..]) => (1, Some(incidents)),
+        ("GET", ["v1", "memory", ..]) => (1, Some("chloectx_memory".to_string())),
+        ("POST", ["v1", "incidents"]) | ("POST", ["v1", "incidents", "draft"]) => (2, Some(incidents)),
+        ("GET", _) => (1, None),
+        _ => (3, None),
+    };
+    caller.may(need, table.as_deref(), &format!("{m} {}", req.path))
+}
+
+/// The incidents spaces a call reads: the one it names, else each the
+/// caller may read.
+fn incident_spaces(app: &App, caller: &Caller, named: Option<&str>) -> std::result::Result<Vec<String>, Fail> {
+    Ok(match named.filter(|s| !s.is_empty()) {
+        Some(s) => vec![s.to_string()],
+        None => app.incident_spaces()?.into_iter().filter(|s| caller.reads(s)).collect(),
+    })
+}
+
 /// Answers one request (the path split on `/`).
 fn route(app: &Arc<App>, req: &Request) -> Answer {
     let parts: Vec<String> = req.path.trim_matches('/').split('/').map(crate::ui::percent_decode).collect();
     let p: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
     let m = req.method.as_str();
     let num = |k: &str, d: usize| req.param(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    let caller = Caller::of(req);
+    allowed(&caller, m, &p, req)?;
     match (m, p.as_slice()) {
         ("GET", ["v1", "info"]) => Ok(app.info()),
-        ("GET", ["v1", "spaces"]) => Ok(app.spaces()?),
+        ("GET", ["v1", "spaces"]) => {
+            // The spaces whose tables the caller reads.
+            let mut j = app.spaces()?;
+            if let Some(list) = j["spaces"].as_array_mut() {
+                list.retain(|s| caller.reads(s["name"].as_str().unwrap_or("")));
+            }
+            Ok(j)
+        }
         ("GET", ["v1", "memory"]) => app.memory(),
         ("GET", ["v1", "memory", "sessions"]) => app.memory_sessions(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "records"]) => app.memory_records(
@@ -991,8 +1209,13 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
             if !cluster::valid_name(name) || name == "spaces" {
                 return Err(bad("a space's name is lowercase letters, digits and _, starting with a letter (at most 48), and not \"spaces\""));
             }
-            Ok(app.create_space(name, b["title"].as_str().unwrap_or(""), b["description"].as_str().unwrap_or(""), "notes")?)
+            let kind = b["kind"].as_str().filter(|k| !k.is_empty()).unwrap_or("notes");
+            if !SPACE_KINDS.contains(&kind) {
+                return Err(bad("a space's kind is notes or incidents"));
+            }
+            Ok(app.create_space(name, b["title"].as_str().unwrap_or(""), b["description"].as_str().unwrap_or(""), kind)?)
         }
+        ("DELETE", ["v1", "spaces", s]) => app.delete_space(s),
         ("GET", ["v1", "spaces", s, "notes"]) => app.notes(s, req.param("kind"), num("limit", 100), req.param("all").is_some_and(|v| v == "1" || v == "true")),
         ("POST", ["v1", "spaces", s, "notes"]) => app.remember(s, &body_json(req)?),
         ("GET", ["v1", "spaces", s, "notes", id]) => app.history(s, id),
@@ -1003,10 +1226,31 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
             let b = body_json(req)?;
             app.ask(s, b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), b["budget"].as_u64().map_or(4000, |n| n as usize))
         }
-        ("GET", ["v1", "incidents"]) => app.incidents(),
-        ("POST", ["v1", "incidents"]) => app.record_incident(&body_json(req)?),
-        ("GET", ["v1", "incidents", "firing"]) => app.firing(),
-        ("GET", ["v1", "incidents", "match"]) => Ok(json!({"matches": app.matches(req.param("q").unwrap_or(""), req.param("alert"), num("n", 3).clamp(1, 20))?})),
+        ("GET", ["v1", "incidents"]) => app.incidents(&incident_spaces(app, &caller, req.param("space"))?),
+        ("POST", ["v1", "incidents"]) => {
+            let b = body_json(req)?;
+            app.record_incident(b["space"].as_str().filter(|s| !s.is_empty()).unwrap_or(INCIDENTS), &b)
+        }
+        ("GET", ["v1", "incidents", "firing"]) => app.firing(&incident_spaces(app, &caller, req.param("space"))?),
+        ("GET", ["v1", "incidents", "match"]) => {
+            let spaces = incident_spaces(app, &caller, req.param("space"))?;
+            Ok(json!({"matches": app.matches(&spaces, req.param("q").unwrap_or(""), req.param("alert"), num("n", 3).clamp(1, 20))?, "spaces": spaces}))
+        }
+        // A selection of log lines (or any text) against past incidents.
+        ("POST", ["v1", "incidents", "match"]) => {
+            let b = body_json(req)?;
+            let spaces = incident_spaces(app, &caller, b["space"].as_str())?;
+            let text = match b["lines"].as_array() {
+                Some(lines) => lines.iter().filter_map(|l| l.as_str()).take(200).collect::<Vec<_>>().join("\n"),
+                None => b["text"].as_str().or(b["q"].as_str()).unwrap_or("").to_string(),
+            };
+            if text.trim().is_empty() {
+                return Err(bad("match needs \"lines\" (log lines) or \"text\""));
+            }
+            let text: String = one_line(&crate::redact::redact(&text)).chars().take(4000).collect();
+            let n = b["n"].as_u64().map_or(3, |n| (n as usize).clamp(1, 20));
+            Ok(json!({"matches": app.matches(&spaces, &text, b["alert"].as_str(), n)?, "spaces": spaces}))
+        }
         ("POST", ["v1", "incidents", "draft"]) => app.draft(&body_json(req)?),
         ("POST", ["v1", "incidents", "handoff"]) => app.handoff(&body_json(req)?),
         ("GET", ["v1", "spaces", s, "apps"]) => app.builds(s),
@@ -1232,6 +1476,87 @@ mod tests {
         assert_eq!(params_for(2000).budget, d.budget / 2);
         assert_eq!(params_for(500).replies, 1);
         assert_eq!(tokens(4001), 1001);
+    }
+
+    fn request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> Request {
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        let query = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Request { method: method.into(), path: path.into(), query, headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: body.as_bytes().to_vec() }
+    }
+
+    fn check(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> std::result::Result<(), u16> {
+        let req = request(method, path, headers, body);
+        let parts: Vec<String> = req.path.trim_matches('/').split('/').map(crate::ui::percent_decode).collect();
+        let p: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+        allowed(&Caller::of(&req), &req.method, &p, &req).map_err(|f| f.0)
+    }
+
+    #[test]
+    fn callers_by_their_keys() {
+        // A key limited to its own space's table.
+        let own = [("x-chloedb-scope", "write"), ("x-chloedb-tables", "ctx_ops_*=write,ctx_incidents=read")];
+        assert!(check("POST", "/v1/spaces/ops_a/notes", &own, "{}").is_ok());
+        assert!(check("GET", "/v1/spaces/ops_a/ask?q=x", &own, "").is_ok());
+        assert!(check("POST", "/v1/spaces/ops_a/ask", &own, "{}").is_ok());
+        assert!(check("DELETE", "/v1/spaces/ops_a/notes/n1", &own, "").is_ok());
+        assert!(check("GET", "/v1/incidents/firing", &own, "").is_ok());
+        assert_eq!(check("POST", "/v1/incidents", &own, "{}"), Err(403));
+        assert_eq!(check("POST", "/v1/spaces/other/notes", &own, "{}"), Err(403));
+        assert_eq!(check("GET", "/v1/spaces/other/notes", &own, ""), Err(403));
+        // Making a space is making its table: admin there.
+        assert_eq!(check("POST", "/v1/spaces", &own, r#"{"name": "ops_b"}"#), Err(403));
+        let admin_own = [("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ctx_ops_*=admin")];
+        assert!(check("POST", "/v1/spaces", &admin_own, r#"{"name": "ops_b"}"#).is_ok());
+        assert_eq!(check("POST", "/v1/spaces", &admin_own, r#"{"name": "other"}"#), Err(403));
+        // What is not a space's is not for a key limited to tables.
+        for (m, p) in [("POST", "/v1/incidents/handoff"), ("POST", "/v1/spaces/ops_a/apps"), ("GET", "/v1/local"), ("POST", "/v1/local/x/snapshots")] {
+            assert_eq!(check(m, p, &admin_own, "{}"), Err(403), "{m} {p}");
+        }
+        // A key of every table: by its scope.
+        let writer = [("x-chloedb-scope", "write")];
+        assert!(check("POST", "/v1/spaces/any/notes", &writer, "{}").is_ok());
+        assert!(check("POST", "/v1/incidents", &writer, "{}").is_ok());
+        assert_eq!(check("POST", "/v1/spaces", &writer, r#"{"name": "x"}"#), Err(403));
+        assert_eq!(check("POST", "/v1/incidents/handoff", &writer, "{}"), Err(403));
+        assert!(check("GET", "/v1/local", &writer, "").is_ok());
+        let reader = [("x-chloedb-scope", "read")];
+        assert_eq!(check("POST", "/v1/spaces/any/notes", &reader, "{}"), Err(403));
+        assert!(check("GET", "/v1/spaces/any/ask?q=x", &reader, "").is_ok());
+        // A program calling the app itself, with its token: anything.
+        assert!(check("POST", "/v1/incidents/handoff", &[], "{}").is_ok());
+        assert!(check("POST", "/v1/spaces", &[], r#"{"name": "x"}"#).is_ok());
+        let c = Caller::of(&request("GET", "/v1/spaces", &own, ""));
+        assert!(c.reads("ops_a") && !c.reads("other"));
+    }
+
+    #[test]
+    fn a_space_is_deleted_by_its_admin_and_incidents_spaces_by_their_readers() {
+        let admin_own = [("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ctx_ops_*=admin")];
+        let own = [("x-chloedb-scope", "write"), ("x-chloedb-tables", "ctx_ops_*=write")];
+        assert!(check("DELETE", "/v1/spaces/ops_a", &admin_own, "").is_ok());
+        assert_eq!(check("DELETE", "/v1/spaces/ops_a", &own, ""), Err(403), "write is not enough to drop a table");
+        assert_eq!(check("DELETE", "/v1/spaces/other", &admin_own, ""), Err(403));
+        // A team's incidents: its own space, by name.
+        assert!(check("POST", "/v1/incidents", &own, r#"{"space": "ops_incidents", "title": "x"}"#).is_ok());
+        assert_eq!(check("POST", "/v1/incidents", &own, r#"{"title": "x"}"#), Err(403), "the shared space is not the key's");
+        assert!(check("POST", "/v1/incidents/match", &own, r#"{"space": "ops_incidents", "lines": ["x"]}"#).is_ok());
+        assert_eq!(check("POST", "/v1/incidents/match", &own, r#"{"space": "other", "lines": ["x"]}"#), Err(403));
+        assert!(check("GET", "/v1/incidents/match?q=x&space=ops_incidents", &own, "").is_ok());
+        assert_eq!(check("GET", "/v1/incidents?space=other", &own, ""), Err(403));
+        // Naming none: each space the key reads (filtered by the route).
+        assert!(check("POST", "/v1/incidents/match", &own, r#"{"lines": ["x"]}"#).is_ok());
+        assert!(check("GET", "/v1/incidents", &own, "").is_ok());
+    }
+
+    #[test]
+    fn a_note_carries_its_own_date() {
+        assert_eq!(when_of(&json!({})).unwrap(), None);
+        assert_eq!(when_of(&json!({"when": "2026-09-14"})).unwrap(), Some(1_789_344_000));
+        assert_eq!(when_of(&json!({"when": "2026-09-14T03:10:00Z"})).unwrap(), Some(1_789_344_000 + 3 * 3600 + 600));
+        assert_eq!(when_of(&json!({"when": 1_789_344_000})).unwrap(), Some(1_789_344_000));
+        assert_eq!(when_of(&json!({"when": 1_789_344_000_000i64})).unwrap(), Some(1_789_344_000), "milliseconds");
+        assert_eq!(when_of(&json!({"ts": 1_789_344_000})).unwrap(), Some(1_789_344_000));
+        assert_eq!(when_of(&json!({"when": "last September"})).map_err(|f| f.0), Err(400));
     }
 
     #[test]

@@ -11,7 +11,7 @@ inspector reads the store through the project's ChloeCtx daemon (`engram
 rpc`), the same process the hooks talk to.
 
     python3 demo/server.py                 # http://127.0.0.1:8765
-    python3 demo/server.py --model <model> --distill-model <small model> --data ~/engram-demo
+    python3 demo/server.py --model <model> --distill-model <small model> --data ~/chloectx-demo
 
 Standard library only.
 """
@@ -49,7 +49,10 @@ class Demo:
         self.args = args
         self.data = os.path.abspath(os.path.expanduser(args.data))
         self.project = os.path.join(self.data, "project")
-        self.home = os.path.join(self.data, "engram")
+        # The store: <data>/chloectx, or <data>/engram in a demo folder made
+        # before the rename.
+        old = os.path.join(self.data, "engram")
+        self.home = old if os.path.isdir(old) and not os.path.exists(os.path.join(self.data, "chloectx")) else os.path.join(self.data, "chloectx")
         self.engram = os.path.abspath(args.engram)
         self.sessions_path = os.path.join(self.data, "sessions.json")
         self.sessions = json.load(open(self.sessions_path)) if os.path.exists(self.sessions_path) else []
@@ -380,7 +383,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--data", default="~/engram-demo", help="demo project and its ChloeCtx store (default ~/engram-demo)")
+    # ~/chloectx-demo, or ~/engram-demo on a machine that has that one from before the rename.
+    old_data = os.path.expanduser("~/engram-demo")
+    data = "~/engram-demo" if os.path.isdir(old_data) and not os.path.exists(os.path.expanduser("~/chloectx-demo")) else "~/chloectx-demo"
+    ap.add_argument("--data", default=data, help="demo project and its ChloeCtx store (default ~/chloectx-demo)")
     ap.add_argument("--model", default=os.environ.get("CHLOECTX_DEMO_MODEL"), help="model for the chat (default: the claude CLI's)")
     ap.add_argument("--distill-model", default=os.environ.get("CHLOECTX_DISTILL_MODEL"), help="model ChloeCtx distills turns with (default: --model)")
     ap.add_argument("--embedder", default=None, help="ChloeCtx embedder spec (default static; hash:256 needs no model files)")

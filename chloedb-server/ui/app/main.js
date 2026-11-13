@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
+import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
@@ -303,7 +303,7 @@ function moreSheet() {
       row("feedback", "Send feedback", "mark up a picture of this view", () => setTimeout(() => openFeedback(), 250)),
       h("hr"),
       row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),
-      row("user", w ? `Signed in as ${w.name}` : hasToken() ? "The key was refused" : "Signed out", w ? `${w.scope} key · use another one` : "use a key or the server's token", askToken),
+      row("user", w ? `Signed in as ${w.name}` : hasToken() ? "The key was refused" : "Signed out", w ? `${w.tables ? "limited to " + keyLabel(w) : w.scope + " key"} · use another one` : "use a key or the server's token", askToken),
     ],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Close")],
   });
@@ -358,7 +358,9 @@ setInterval(() => { drawLive(); drawDown(); }, 1000);
 
 function drawWho() {
   const w = state.whoami;
-  whoBtn.querySelector("span").textContent = w ? `${w.name} · ${w.scope}` : hasToken() ? "key refused" : "signed out";
+  whoBtn.querySelector("span").textContent = w ? `${w.name} · ${w.tables ? (w.preset || "tables") : w.scope}` : hasToken() ? "key refused" : "signed out";
+  // A key limited to tables: its grants, which its widest scope alone would misstate.
+  whoBtn.title = w?.tables ? `${w.name}: limited to ${keyLabel(w)}` : w ? `${w.name}: ${w.scope} key` : "";
 }
 /**
  * The crumb: the view's title (a view without a heading of its own), and

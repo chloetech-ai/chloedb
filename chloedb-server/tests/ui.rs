@@ -91,7 +91,7 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     // Each served file is used, and each view is among them.
     let served: BTreeSet<String> = ui::FILES.iter().map(|(p, ..)| p.to_string()).filter(|p| p.ends_with(".js")).collect();
     assert_eq!(seen, served, "the modules main.js reaches, and those the server serves");
-    for v in ["overview", "timeline", "querypath", "tables", "statement", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "oncall", "queries", "logs", "sql", "builder", "schema", "inspector", "import", "relevance", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
+    for v in ["overview", "timeline", "querypath", "tables", "statement", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "oncall", "queries", "logs", "explorer", "sql", "builder", "schema", "inspector", "import", "relevance", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
         assert!(seen.contains(&format!("views/{v}.js")), "{v}");
     }
 
@@ -114,4 +114,20 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     }
     let plain = c.get(format!("{base}/ui/main.js")).send().await.unwrap();
     assert!(plain.headers().get("content-encoding").is_none() && plain.text().await.unwrap().contains("import"));
+}
+
+/// The number format, big answers and column health (`ui_numbers.mjs`), in
+/// Node when it is on the PATH: one format for the grid, charts and Sheets,
+/// round chart ticks, the window's refusal read, and a column's flags.
+#[test]
+fn the_number_format_big_answers_and_column_health() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ui_numbers.mjs");
+    let out = match std::process::Command::new("node").arg(&script).output() {
+        Ok(o) => o,
+        Err(_) => {
+            eprintln!("node is not on the PATH: skipped");
+            return;
+        }
+    };
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }

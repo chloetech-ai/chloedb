@@ -34,8 +34,9 @@ enum Cmd {
 #[derive(Args)]
 struct Target {
     /// The chloedb-server (one server, or a cluster's coordinator) to write to.
-    #[arg(long, env = "CHLOEDB_URL")]
-    strata: Option<String>,
+    /// `--strata`, its name before the rename, works too.
+    #[arg(long, alias = "strata", env = "CHLOEDB_URL")]
+    server: Option<String>,
     /// Its API key (write scope; admin to grow a cluster).
     #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
     key: Option<String>,
@@ -253,8 +254,8 @@ fn random_token() -> String {
 
 /// ChloeDB to write to, the local cluster (started) if any, and the grower.
 async fn connect(t: &Target, app: Option<(String, Option<String>)>) -> (Strata, Option<Arc<Local>>, Arc<Grower>) {
-    let (url, local) = match (&t.local, &t.strata) {
-        (Some(_), Some(_)) => fail("give --strata or --local, not both"),
+    let (url, local) = match (&t.local, &t.server) {
+        (Some(_), Some(_)) => fail("give --server or --local, not both"),
         (Some(dir), None) => {
             let l = Local::new(dir.clone(), server_bin(&t.server_bin), t.local_listen.clone(), t.port_base, app);
             let url = l.start().await.unwrap_or_else(|e| fail(e));
@@ -285,15 +286,26 @@ async fn connect(t: &Target, app: Option<(String, Option<String>)>) -> (Strata, 
     (strata, local, grower)
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
+/// Resolves on SIGINT or SIGTERM. The handlers are installed when it is
+/// called, not when it is first awaited: called before a local cluster
+/// starts, a signal that comes while the cluster is starting (its
+/// coordinator already answers /v1/health then) is kept, and the cluster is
+/// stopped, rather than the process dying of the signal's default action
+/// and leaving its chloedb-servers running.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> + Send + 'static {
     #[cfg(unix)]
     {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a signal handler");
-        tokio::select! { _ = ctrl_c => {}, _ = term.recv() => {} }
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("a signal handler");
+        let mut int = signal(SignalKind::interrupt()).expect("a signal handler");
+        async move {
+            tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+        }
     }
     #[cfg(not(unix))]
-    let _ = ctrl_c.await;
+    async {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn main() {
@@ -326,6 +338,8 @@ async fn run() {
                 None => tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen))),
             };
             let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
+            // Before the cluster starts: see shutdown_signal.
+            let stop = shutdown_signal();
             let (strata, local, grower) = connect(&a.target, Some((me.clone(), token.clone()))).await;
             if let Some(c) = a.contact.as_deref().filter(|c| !chloedb_crawl::fetch::header_text(c)) {
                 fail(format!("--contact {c:?}: printable ASCII, at most 300 characters"));
@@ -341,7 +355,7 @@ async fn run() {
             }
             let svc2 = svc.clone();
             let server = axum::serve(listener, api::router(svc)).with_graceful_shutdown(async move {
-                shutdown_signal().await;
+                stop.await;
                 eprintln!("chloedb-crawl: stopping: the crawls write what they read");
                 svc2.stop_all(30).await;
             });
@@ -355,10 +369,10 @@ async fn run() {
         Cmd::Crawl(a) => {
             a.reach.set();
             let spec = a.spec.spec().unwrap_or_else(|e| fail(e));
+            let mut stop = Box::pin(shutdown_signal());
             let (strata, local, grower) = connect(&a.target, None).await;
             let svc = Service::new(strata, grower.clone(), None, local.is_some());
             let job = svc.start(spec).unwrap_or_else(|e| fail(e));
-            let mut stop = Box::pin(shutdown_signal());
             let mut stopping = false;
             loop {
                 tokio::select! {

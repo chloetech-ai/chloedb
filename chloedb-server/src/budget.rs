@@ -114,7 +114,7 @@ mod tests {
     use crate::keys::Scope;
 
     fn key(id: &str) -> Principal {
-        Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None }
+        Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None }
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn the_operators_credentials_and_no_limit_are_not_counted() {
         let b = ModelBudget::new(1);
-        for who in [Principal::open(), Principal::cluster(), Principal { name: "token".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None }] {
+        for who in [Principal::open(), Principal::cluster(), Principal { name: "token".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None }] {
             b.take(Some(&who), 100, "llm()").unwrap();
         }
         b.take(None, 100, "llm()").unwrap();

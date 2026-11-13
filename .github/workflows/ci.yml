@@ -1048,6 +1048,15 @@ jobs:
         run: |
           pip install -r docs/site/scripts/requirements.txt
           python docs/site/scripts/build_docs.py --check
+      # The pages a newcomer follows use the new names (Strata and Engram are
+      # the old ones), and the Python modules and extras the docs name exist,
+      # marked "since" where the latest release lacks them (its tag, fetched).
+      - name: Old names, and the documented Python modules
+        run: |
+          python scripts/check-old-names.py
+          v=$(python -c 'import json; print(json.load(open("docs/site/versions.json"))["latest"])')
+          git fetch --no-tags --depth 1 origin "refs/tags/chloedb-py-v$v:refs/tags/chloedb-py-v$v" || echo "::warning::no tag chloedb-py-v$v"
+          python scripts/check-documented-python.py
 
   # Every code block of the guide's pages (docs/guide/*.md,
   # docs/quickstart.md) runs, in order, against this commit's programs, and

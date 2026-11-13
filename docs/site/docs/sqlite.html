@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/sqlite.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,6 +81,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>SQLite in and out</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/sqlite.md">docs/chloedb/sqlite.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#import">Import</a></li><li><a href="#over-http-and-in-the-ui">Over HTTP and in the UI</a></li><li><a href="#export">Export</a></li></ol></details>
     <div class="doc-body">
@@ -189,8 +191,8 @@ chloedb-server import --db shop.chloedb --schema plan.json shop.sqlite  # with t
 <pre data-lang="sh">curl -s -X POST &#x27;localhost:7700/v1/import?format=sqlite&amp;plan=true&#x27; -H &#x27;content-type: application/vnd.sqlite3&#x27; --data-binary @shop.sqlite
 curl -s -X POST &#x27;localhost:7700/v1/import?format=sqlite&amp;tables=orders,customers&#x27; -H &#x27;content-type: application/vnd.sqlite3&#x27; --data-binary @shop.sqlite
 # {&quot;tables&quot;: [{&quot;source&quot;: &quot;customers&quot;, &quot;table&quot;: &quot;customers&quot;, &quot;rows&quot;: 91, &quot;created&quot;: true, &quot;bulk&quot;: false, &quot;notes&quot;: []}, ...], &quot;skipped&quot;: {...}, &quot;written&quot;: 921, &quot;took_ms&quot;: 48.2}</pre>
-<p><code>?plan=true</code> answers the plan and writes nothing, <code>?tables=</code> picks tables and <code>?blobs_base64=true</code> keeps BLOB columns. The server makes the plan and reads every row once before it writes, so that a value that does not fit writes nothing; then it creates each table it lacks, as <code>CREATE TABLE</code> does, and upserts the rows through its writer 1,000 at a time, as an import of rows does (the rows before a failed write stay written). A table the server has keeps its schema, so to import with schemas of your own, create the tables first with <code>CREATE TABLE</code> and import into them. A coordinator imports into the tables its shards have and creates none; a primary of <a href="server.html#replication-a-primary-and-its-replicas">replicas</a> ships the tables it creates to them with the rows.</p>
-<p><code>GET /v1/export</code> sends the database as a new SQLite file, written from one snapshot to a temporary file and streamed from it: <code>?tables=a,b</code> for some tables, <code>?fts=false</code>, <code>?indexes=false</code> and <code>?schemas=false</code> as <code>--no-fts</code>, <code>--no-indexes</code> and <code>--no-schemas</code> below. A coordinator holds no rows, so it exports nothing; export each shard's server.</p>
+<p><code>?plan=true</code> answers the plan and writes nothing, <code>?tables=</code> picks tables and <code>?blobs_base64=true</code> keeps BLOB columns. The server makes the plan and reads every row once before it writes, so that a value that does not fit writes nothing; then it creates each table it lacks, as <code>CREATE TABLE</code> does, and upserts the rows through its writer 1,000 at a time, as an import of rows does (the rows before a failed write stay written). A table the server has keeps its schema, so to import with schemas of your own, create the tables first with <code>CREATE TABLE</code> and import into them. A coordinator creates a table it lacks on every shard, as <code>CREATE TABLE</code> through it does, and imports into it; a primary of <a href="server.html#replication-a-primary-and-its-replicas">replicas</a> ships the tables it creates to them with the rows.</p>
+<p><code>GET /v1/export</code> sends the database as a new SQLite file, written from one snapshot to a temporary file and streamed from it: <code>?tables=a,b</code> for some tables, <code>?fts=false</code>, <code>?indexes=false</code> and <code>?schemas=false</code> as <code>--no-fts</code>, <code>--no-indexes</code> and <code>--no-schemas</code> below. A coordinator holds no files, so it exports no SQLite file; it exports one table's rows as JSON lines, CSV, Arrow or Parquet (<code>?format=jsonl</code>, <code>csv</code>, <code>arrow</code>, <code>parquet</code> with <code>?tables=T</code>, read by a scroll over its shards, with read on the table: <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/cluster-limits.md">cluster limits</a>).</p>
 <pre data-lang="sh">curl -s &#x27;localhost:7700/v1/export?tables=orders&#x27; -o orders.sqlite</pre>
 <p>In the query console (<code>/classic</code>), the <strong>Schema and import</strong> tab has both: a SQLite file to preview (the plan, table by table) and import, and a button that downloads the database as SQLite. The Python <code>Client</code> has <code>import_sqlite</code>, <code>plan_sqlite</code> and <code>export_sqlite</code> (<a href="python.html#a-server-from-python">Python</a>).</p>
 <h2 id="export">Export<a class="anchor" href="#export" aria-label="Link to this section">#</a></h2>

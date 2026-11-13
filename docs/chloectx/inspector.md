@@ -37,7 +37,7 @@ demo/run.sh --model <model> --distill-model <small model>     # opens http://127
 | `--model` | the model for the chat (default: the `claude` CLI's) |
 | `--distill-model` | the model ChloeCtx distills each turn with (default: `--model`) |
 | `--embedder hash:256` | a model-free hash embedder, so nothing needs downloading |
-| `--data DIR` | where the scratch project and its store live (default `~/engram-demo`) |
+| `--data DIR` | where the scratch project and its store live (default `~/chloectx-demo`; `~/engram-demo` on a machine that has that one from before the rename) |
 | `--budget USD` | maximum spend per chat turn (default 2.0) |
 
 The server is standard-library Python (`chloectx/demo/server.py`) and the page is one HTML file (`chloectx/demo/index.html`). Chat turns run with `--setting-sources project,local`, so your own plugins and hooks stay out of the demo. The browser can only call the daemon's read-only operations.

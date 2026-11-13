@@ -149,6 +149,8 @@ advance.
 | programs | `chloedb-server`, `chloedb-crawl`, `chloedb-sheets` | `strata-server`, `strata-crawl`, `strata-sheets`, in the image and the release archives |
 | container image | `ghcr.io/chloetech-ai/chloedb-server` | `ghcr.io/chloetech-ai/strata-server` |
 | settings | `CHLOEDB_*` | `STRATA_*` |
+| the server an app writes to | `chloedb-crawl --server URL`, `chloedb-sheets --server URL` (0.3.1) | `--strata URL` |
+| models folder | `~/.local/share/chloedb/models` (0.3.1) | `~/.local/share/strata/models`, used where it exists and the new folder does not |
 | HTTP headers and gRPC metadata | `x-chloedb-*` | `x-strata-*` |
 | Python package | `import chloedb`, `ChloeDBError` | `import strata`, `StrataError` (with a `DeprecationWarning`) |
 | JavaScript errors | `ChloeDBError` | `StrataError` |
@@ -176,9 +178,11 @@ Some names have not been renamed yet and keep the old spelling: the file
 format (`STRATADB` magic, ChloeCtx's `memory.strata` and `engram.sock`), the
 gRPC services, the Kubernetes operator's resources (the `StrataCluster`
 kind, the `strata.chloetech.ai` API group, the `strata-system` namespace),
-the app engine in `chloedb-apps/`, and the default models directory
-(`~/.local/share/strata/models`). A machine that already has ChloeCtx's
-old folder, `~/.local/share/engram`, keeps using it.
+and the app engine in `chloedb-apps/`. The default models directory is
+`~/.local/share/chloedb/models` from 0.3.1 (`~/.local/share/strata/models`
+before); a machine that has the old folder and no `~/.local/share/chloedb`
+keeps using it, as a machine that already has ChloeCtx's old folder,
+`~/.local/share/engram`, does.
 
 ## Not promised yet
 

@@ -645,7 +645,8 @@ fn coerce(field: &Field, v: Value) -> Result<Value> {
         (FieldType::Int, Value::Int(x)) => Ok(Value::Int(x)),
         (FieldType::Int, Value::Bool(b)) => Ok(Value::Int(b as i64)),
         (FieldType::Float, v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_))) => Ok(Value::Float(v.as_f64().unwrap())),
-        (FieldType::Int, Value::Float(x)) => Err(err(format!("{} is an INT field: give it a whole number from {} to {}, not {x}", field.name, i64::MIN, i64::MAX))),
+        // `2.0` is the whole number 2; `2.5` is refused.
+        (FieldType::Int, Value::Float(x)) => crate::ingest::whole(field, x).map(Value::Int).map_err(|_| err(format!("{} is an INT field: give it a whole number from {} to {}, not {x}", field.name, i64::MIN, i64::MAX))),
         (FieldType::Int | FieldType::Float, v) => Err(err(format!("{} is {} {} field: give it a number, not {} {}", field.name, a_or_an(&hint::type_of(field)), hint::type_of(field), hint::kind_of(&v), hint::sql_value(&v)))),
         (_, v) => Err(err(format!("{} is {} {} field, which does not take {} {}", field.name, a_or_an(&hint::type_of(field)), hint::type_of(field), hint::kind_of(&v), hint::sql_value(&v)))),
     }
@@ -933,17 +934,21 @@ pub fn with_features(sql_text: &str) -> Result<String> {
     Ok(q.to_string())
 }
 
-/// Whether `sql_text` is one SELECT ranked by an ORDER BY, whose top rows
-/// [`with_features`] explains.
+/// Whether `sql_text` is one SELECT whose ORDER BY ranks rows, whose top
+/// rows [`with_features`] explains: a column or a ranking (`bm25(..)`,
+/// `similarity(..)`, a rank profile) orders the rows of one table. A query
+/// that groups, aggregates, or sorts by a value it computes (`ORDER BY
+/// price * sold`, `ORDER BY revenue` naming `SUM(..) AS revenue`) has no
+/// ranking values to show, and its `hits` are only its first rows.
 pub fn ranks(sql_text: &str) -> bool {
     ranked_query(sql_text).is_some()
 }
 
-/// `sql_text` when it is one SELECT ranked by an ORDER BY.
+/// `sql_text` when it is one SELECT ranked by an ORDER BY ([`ranks`]).
 pub(crate) fn ranked_query(sql_text: &str) -> Option<sql::Query> {
     let mut stmts = super::parse::parse(sql_text).ok()?;
     let [sql::Statement::Query(q)] = stmts.as_mut_slice() else { return None };
-    (matches!(q.body.as_ref(), sql::SetExpr::Select(_)) && q.order_by.is_some()).then(|| (**q).clone())
+    super::compound::ranks_rows(q).then(|| (**q).clone())
 }
 
 /// Adds `score()` and `features()` to the columns of a query from
@@ -2089,16 +2094,30 @@ impl<'a> Binder<'a> {
         let vector = match self.literal(v) {
             Ok(Value::Str(s)) if serde_json::from_str::<Vec<f32>>(&s).is_err() => {
                 let fld = &self.schema.fields[field];
-                let embedded = match &fld.embed {
-                    Some(e) => format!("{} holds {}'s embeddings of {}; ", fld.name, e.model, e.from.join(" and ")),
-                    None => String::new(),
-                };
-                return Err(err(format!(
-                    "similarity({}, ...) takes a vector, and {} is text. {embedded}give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
-                    fld.name,
-                    self.described(v),
-                    fld.name
-                )));
+                // Text is embedded only by a field's own model: a field of
+                // none takes a vector, which no other table's model makes
+                // with its dimensions.
+                return Err(err(match &fld.embed {
+                    Some(e) => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        e.model,
+                        e.from.join(" and "),
+                        self.schema.table,
+                        fld.name,
+                        fld.name
+                    ),
+                    None => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"q\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :q) by a model of {dim} dimensions",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        self.schema.table,
+                        fld.name
+                    ),
+                }));
             }
             _ => self.vector(v)?,
         };
@@ -2890,8 +2909,35 @@ impl<'a> Binder<'a> {
         match e {
             Expr::Nested(x) => self.literal(x),
             Expr::Cast { expr, data_type, format: None, .. } => cast_value(self.literal(expr)?, CastTo::of(data_type)?),
+            // `TIMESTAMP '2026-10-01'`, `DATE '2026-10-01'`.
+            Expr::TypedString(sql::TypedString { data_type, value, .. }) => match &value.value {
+                sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => cast_value(Value::Str(s.clone()), CastTo::of(data_type)?),
+                _ => Err(err(format!("{e} is not a value here"))),
+            },
             // The statement's time, as text a TIMESTAMP takes.
             e if is_now(e) => Ok(Value::Str(crate::timestamp::format(self.now))),
+            // A time moved by an interval (`now() - INTERVAL '2 hours'`), a
+            // value the statement computes once: an index's range still
+            // serves `at > now() - INTERVAL '15 minutes'`.
+            e if interval_shift(e).is_some() => {
+                let (t, iv) = interval_shift(e).expect("an interval")?;
+                let base = time_of(&self.literal(t)?, &|| e.to_string())?;
+                let at = iv.add_to(base).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?;
+                Ok(Value::Str(crate::timestamp::format(at)))
+            }
+            e if time_plus_number(e).is_some() => Err(time_plus_number(e).expect("an error")),
+            Expr::Interval(_) => Err(err(format!("{e} is a length of time: add it to a time or subtract it from one (now() - {e})"))),
+            // `date_trunc('day', now())`: the start of a time's day, a value.
+            Expr::Function(f) if fname(f) == "date_trunc" && func_args(f).len() == 2 => {
+                let args = func_args(f);
+                let unit = match self.literal(args[0])? {
+                    Value::Str(u) => crate::timestamp::Unit::parse(&u).ok_or_else(|| err(format!("{e}: {u:?} is not a unit of date_trunc")))?,
+                    _ => return Err(err(format!("{e}: date_trunc's unit is text, such as 'day'"))),
+                };
+                let t = time_of(&self.literal(args[1])?, &|| e.to_string())?;
+                let at = crate::timestamp::trunc(t, unit).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?;
+                Ok(Value::Str(crate::timestamp::format(at)))
+            }
             Expr::Value(v) => match &v.value {
                 sql::Value::Number(s, _) => {
                     Ok(s.parse::<i64>().map(Value::Int).or_else(|_| s.parse::<f64>().map(Value::Float)).map_err(|_| err("bad number"))?)
@@ -3340,6 +3386,73 @@ pub(crate) fn is_now(e: &Expr) -> bool {
         }
         Expr::Identifier(id) => id.quote_style.is_none() && now(&id.value),
         _ => false,
+    }
+}
+
+/// The interval `e` writes (`INTERVAL '15 minutes'`, `INTERVAL '15'
+/// MINUTE`), if it is one.
+pub(crate) fn interval(e: &Expr) -> Option<Result<crate::timestamp::Interval>> {
+    let Expr::Interval(iv) = strip_nested(e) else { return None };
+    let text = match iv.value.as_ref() {
+        Expr::Value(v) => match &v.value {
+            sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => s.clone(),
+            sql::Value::Number(n, _) => n.clone(),
+            _ => return Some(Err(err(format!("{e}: an interval is written as text, INTERVAL '15 minutes'")))),
+        },
+        _ => return Some(Err(err(format!("{e}: an interval is written as text, INTERVAL '15 minutes'")))),
+    };
+    if iv.last_field.is_some() {
+        return Some(Err(err(format!("{e}: write the interval with its units, INTERVAL '1 day 2 hours'"))));
+    }
+    let leading = iv.leading_field.as_ref().map(|f| f.to_string().to_ascii_lowercase());
+    Some(crate::timestamp::Interval::parse(&text, leading.as_deref()).map_err(err))
+}
+
+/// `time ± INTERVAL '...'` (or `INTERVAL '...' + time`): the time and the
+/// interval it is moved by, negated for a minus.
+pub(crate) fn interval_shift(e: &Expr) -> Option<Result<(&Expr, crate::timestamp::Interval)>> {
+    let Expr::BinaryOp { left, op, right } = strip_nested(e) else { return None };
+    let (time, iv, minus) = match (op, interval(left), interval(right)) {
+        (BinaryOperator::Plus | BinaryOperator::Minus, None, Some(iv)) => (left.as_ref(), iv, *op == BinaryOperator::Minus),
+        (BinaryOperator::Plus, Some(iv), None) => (right.as_ref(), iv, false),
+        (_, Some(_), Some(_)) => return Some(Err(err(format!("{e}: an interval moves a time (now() - INTERVAL '1 hour'); intervals are not added to each other")))),
+        (_, Some(_), _) | (_, _, Some(_)) => return Some(Err(err(format!("{e}: an interval is added to a time or subtracted from it (now() - INTERVAL '1 hour', at + INTERVAL '2 days')")))),
+        _ => return None,
+    };
+    Some(iv.map(|iv| (time, if minus { iv.negated() } else { iv })))
+}
+
+/// Whether `e` writes a time as a value: `now()`, a `TIMESTAMP '...'` or
+/// `CAST('...' AS TIMESTAMP)`, `date_trunc` of one, or one moved by an
+/// interval.
+pub(crate) fn is_time_value(e: &Expr) -> bool {
+    match strip_nested(e) {
+        e if is_now(e) => true,
+        Expr::TypedString(sql::TypedString { data_type, .. }) | Expr::Cast { data_type, .. } => matches!(CastTo::of(data_type), Ok(CastTo::Timestamp)),
+        Expr::Function(f) if fname(f) == "date_trunc" => true,
+        e => interval_shift(e).is_some(),
+    }
+}
+
+/// Why `now() - 3600` is refused: a number added to a time could count
+/// seconds or microseconds.
+pub(crate) fn time_plus_number(e: &Expr) -> Option<Error> {
+    let Expr::BinaryOp { left, op: op @ (BinaryOperator::Plus | BinaryOperator::Minus), right } = strip_nested(e) else { return None };
+    let number = |x: &Expr| matches!(strip_nested(x), Expr::Value(v) if matches!(v.value, sql::Value::Number(..)));
+    let (time, n) = match (is_time_value(left) && number(right), is_time_value(right) && number(left)) {
+        (true, _) => (left, right),
+        (_, true) => (right, left),
+        _ => return None,
+    };
+    Some(err(format!("{e}: a number added to a time could be seconds or microseconds; write the unit with INTERVAL: {time} {op} INTERVAL '{n} seconds'")))
+}
+
+/// The microseconds of a time a value holds: a TIMESTAMP, or ISO 8601 text.
+pub(crate) fn time_of(v: &Value, what: &dyn Fn() -> String) -> Result<i64> {
+    match v {
+        Value::Timestamp(t) => Ok(*t),
+        Value::Str(s) => crate::timestamp::parse(s).ok_or_else(|| err(format!("{}: {s:?} is not a time (ISO 8601: '2026-10-01', '2026-10-01T12:30:00Z')", what()))),
+        v => Err(err(format!("{}: {v:?} is not a time", what()))),
     }
 }
 

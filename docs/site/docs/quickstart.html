@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/quickstart.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,6 +81,7 @@
       <span class="eyebrow">Start</span>
       <h1>Quickstart: a first search in five minutes</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -155,7 +157,7 @@ curl -sS http://127.0.0.1:7710/v1/sql -H &#x27;content-type: application/json&#x
 <p>When you are done, stop the servers (the databases stay in their files, and the next start opens them as they were):</p>
 <pre data-lang="sh">kill $server $demo</pre>
 <h2 id="chloedb-from-python-with-no-server">ChloeDB from Python, with no server<a class="anchor" href="#chloedb-from-python-with-no-server" aria-label="Link to this section">#</a></h2>
-<p>The Python package runs a database inside your process, the way <code>sqlite3</code> runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server, plus Linux with glibc 2.28 or later.</p>
+<p>The Python package runs a database inside your process, the way <code>sqlite3</code> runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server: macOS 11 or later, and Linux with glibc 2.28 or later (release 0.2.0's wheels need 2.35). Install it from PyPI:</p>
 <pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
 pip install chloedb</pre>
 <pre data-lang="sh">python3 - &lt;&lt;&#x27;EOF&#x27;

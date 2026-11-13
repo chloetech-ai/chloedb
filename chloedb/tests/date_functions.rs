@@ -60,7 +60,7 @@ fn fill(db: &Db, rng: &mut StdRng, from: usize, to: usize, flush: usize) {
     }
 }
 
-const KEYS: [&str; 11] = [
+const KEYS: [&str; 13] = [
     "date_trunc('day', at)",
     "date_bin('6 hours', at)",
     "date_bin('90 minutes', at, '2026-08-01T00:17:00Z')",
@@ -72,6 +72,8 @@ const KEYS: [&str; 11] = [
     "date_part('hour', at)",
     "EXTRACT(SECOND FROM at)",
     "strftime('%Y-%m', at)",
+    "time_bucket('6 hours', at)",
+    "time_bucket(INTERVAL '90 minutes', at)",
 ];
 
 fn queries() -> Vec<String> {
@@ -101,7 +103,7 @@ fn check(db: &Db, stage: &str) {
         let got = db.query(&q, &Params::new()).unwrap_or_else(|e| panic!("{stage}: {q}: {e}"));
         let plan = db.explain(&q, &Params::new()).unwrap();
         assert!(plan.features.iter().any(|f| f == "dates"), "{stage}: {q}: {:?}", plan.features);
-        assert_eq!(plan.features.iter().any(|f| f == "date_bin"), q.contains("date_bin"), "{stage}: {q}: {:?}", plan.features);
+        assert_eq!(plan.features.iter().any(|f| f == "date_bin"), q.contains("date_bin") || q.contains("time_bucket"), "{stage}: {q}: {:?}", plan.features);
         assert!(got.stats.plan.iter().any(|l| l.contains("aggregate") && l.contains("rows into groups")), "{stage}: {q}: {:?}", got.stats.plan);
         // A part that is a number is grouped by from the columns; text
         // (strftime) row by row.
@@ -176,6 +178,8 @@ fn values_of_rows() {
         ]
     );
     assert_eq!(sql(&db, "SELECT id FROM snaps WHERE date_bin('1 hour', at) = '2026-11-05T07:00:00Z'"), vec![vec![Value::Int(1)]]);
+    // time_bucket is date_bin's other name, and takes the width as an INTERVAL too.
+    assert_eq!(sql(&db, "SELECT time_bucket('5 minutes', at) = date_bin(INTERVAL '5 minutes', at) FROM snaps WHERE id = 1"), vec![vec![Value::Bool(true)]]);
 
     // What is wrong, said.
     for (q, says) in [
@@ -192,7 +196,6 @@ fn values_of_rows() {
         ("SELECT date_bin('5 minutes', at, 'yesterday') FROM snaps", "not a time"),
         ("SELECT date_bin('5 minutes', total) FROM snaps", "takes a TIMESTAMP"),
         ("SELECT date_bin('5 minutes') FROM snaps", "two or three arguments"),
-        ("SELECT time_bucket('5 minutes', at) FROM snaps", "date_bin"),
     ] {
         let e = db.query(q, &Params::new()).err().unwrap_or_else(|| panic!("{q} is an error")).to_string();
         assert!(e.contains(says), "{q}: {e}");

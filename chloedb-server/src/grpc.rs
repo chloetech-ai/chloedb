@@ -112,9 +112,10 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// and keeps promotions ([`HOLD_PROTOCOL`]), 18 scrolls a shard's rows
 /// for a coordinator ([`SCROLL_PROTOCOL`]), 19 checks a write without
 /// applying it ([`VALIDATE_PROTOCOL`]), and 20 compares the transaction a
-/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]).
+/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]), and 21
+/// answers what a write's operations found ([`RECEIPT_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 20;
+pub const PROTOCOL: u32 = 21;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -198,6 +199,15 @@ pub const VALIDATE_PROTOCOL: u32 = 19;
 /// alone, as before. Nothing gates on the number; it names the change.
 pub const SAME_TERM_PROTOCOL: u32 = 20;
 
+/// The protocol whose write answers say what the operations found
+/// (`WriteResponse.receipt` and its counts, [`crate::service::Receipt`]),
+/// and whose shards take an operation's `"if_missing"` and `"strict"`: a
+/// `set`, `add` or `delete` refused when no row has its key, an operation
+/// refused when it would replace a row or write a key twice. An older
+/// shard ignores both fields, and answers no counts, so a coordinator
+/// sends a strict write only to shards of this protocol.
+pub const RECEIPT_PROTOCOL: u32 = 21;
+
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
 
@@ -231,7 +241,21 @@ pub fn rows_from_pb(r: pb::GetResponse) -> Vec<Option<(Vec<Value>, u64)>> {
 
 /// A write's answer ([`crate::service::Written`]).
 pub fn write_response(w: crate::service::Written) -> pb::WriteResponse {
-    pb::WriteResponse { written: w.rows, seq_no: w.seq_no, seq_nos: w.seq_nos, skipped: w.skipped, ..Default::default() }
+    let r = w.receipt.unwrap_or_default();
+    pb::WriteResponse {
+        written: w.rows,
+        seq_no: w.seq_no,
+        seq_nos: w.seq_nos,
+        skipped: w.skipped,
+        receipt: w.receipt.is_some(),
+        inserted: r.inserted,
+        replaced: r.replaced,
+        updated: r.updated,
+        deleted: r.deleted,
+        collapsed: r.collapsed,
+        not_found: r.not_found,
+        ..Default::default()
+    }
 }
 
 /// What [`pb::strata_server::Strata::hello`] answers, but what is the

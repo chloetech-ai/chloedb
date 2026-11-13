@@ -18,7 +18,21 @@
 // to the app's own model calls a day too (reach.mjs), as it is for anyone.
 //
 // The choice is a row of sa_settings (the app, "publish"):
-// {"on": true, "name": "kids-reading", "hosts": ["books.example.org"]}.
+// {"on": true, "name": "kids-reading", "hosts": ["books.example.org"], "access": "look"}.
+//
+// What visitors may do with its data (access), from the safest:
+// - look: read what its screens show, sign up and in, ask and fetch under
+//   Reach; no writes;
+// - add: also add rows, upload files and run its functions, and edit or
+//   delete the rows they added themselves (as told by sa_events), never
+//   anyone else's;
+// - change: edit and delete any row (what every published app could do
+//   before the choice existed, so a row without "access" means change).
+// Not publishing at all ("only me") stays the default; a publish that names
+// no access starts at look. Whatever the choice, a visitor's writes are
+// checked on the server (engine.mjs, checkVisitorWrite), a visitor's errors
+// are only recorded (never sent to the forge as a repair), and the app's
+// people are listed only to its signed-in members.
 
 const NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -32,19 +46,46 @@ export function nameFor(title) {
   return n && !RESERVED.has(n) ? n : `app-${n || 'x'}`.slice(0, 40).replace(/-+$/, '');
 }
 
+// What visitors may do, from the safest (see above).
+export const ACCESS = ['look', 'add', 'change'];
+const accessOf = (p) => (ACCESS.includes(p?.access) ? p.access : 'change');
 // The routes a published app's page uses, and only those (method, path
-// after /api/apps/<id>). GET /api/apps/<id> itself answers publicState.
+// after /api/apps/<id>), each with the access it needs. GET /api/apps/<id>
+// itself answers publicState. /error only records what a visitor's browser
+// hit and /people answers only the app's signed-in members (server.mjs).
 const APP_CALLS = [
-  ['GET', ''], ['GET', '/me'], ['GET', '/people'],
-  ['POST', '/sql'], ['POST', '/insert'], ['POST', '/update'], ['POST', '/remove'], ['POST', '/call'],
-  ['POST', '/signup'], ['POST', '/signin'], ['POST', '/files'], ['POST', '/files/info'],
-  ['POST', '/track'], ['POST', '/error'], ['POST', '/email'], ['POST', '/ask'], ['POST', '/fetch'],
+  ['GET', '', 'look'], ['GET', '/me', 'look'], ['GET', '/people', 'look'],
+  ['POST', '/sql', 'look'], ['POST', '/insert', 'add'], ['POST', '/update', 'add'], ['POST', '/remove', 'add'], ['POST', '/call', 'add'],
+  ['POST', '/signup', 'look'], ['POST', '/signin', 'look'], ['POST', '/files', 'add'], ['POST', '/files/info', 'look'],
+  ['POST', '/track', 'look'], ['POST', '/error', 'look'], ['POST', '/email', 'add'], ['POST', '/ask', 'look'], ['POST', '/fetch', 'look'],
 ];
+const DENIED = {
+  add: 'This app lets visitors only look: its owner has not let the public add to it',
+};
+// The access a request asks to be seen with (x-sa-as: visitor, from the
+// studio's "See it as a stranger"), or null. Only ever less than the
+// studio's own: the routes treat it as a visitor's.
+export function strangerOf(req) {
+  if (String(req.headers['x-sa-as'] || '') !== 'visitor') return null;
+  const a = String(req.headers['x-sa-access'] || '');
+  return { access: ACCESS.includes(a) ? a : null };
+}
 // Calls that cost something (the model, the network, mail, a new account):
 // a lower rate per visitor.
 const DEAR = new Set(['/ask', '/fetch', '/email', '/signup', '/signin', '/files']);
 // The runtime's files, the same for every app and nothing private.
 const FILES = new Set(['/studio.js', '/studio.css', '/activity.css', '/frame.js', '/screen.js', '/front.js', '/front.css', '/graph.js', '/kit.css', '/design.js', '/policy.js', '/activity.js']);
+
+// What a visitor of a published app is told when a call fails: the engine's
+// own checks as they are, but nothing of how it runs (shards, physical
+// tables, the database's hints).
+export function forVisitor(status, message) {
+  const m = String(message || '');
+  if (status >= 500) return 'Something went wrong; try again in a moment';
+  if (/duplicate primary key|already has a row with id/i.test(m)) return 'There is already a row with that id';
+  if (m.startsWith('strata')) return 'The app could not do that: its data refused it';
+  return m.replace(/\bapp_[a-z0-9]{6}_/g, '');
+}
 
 export class Publish {
   constructor({ store, domain, scheme, log = () => {}, rate = {} }) {
@@ -93,20 +134,30 @@ export class Publish {
 
   // What the studio and the app creator show: the switch and the addresses.
   of(appId) {
-    const p = this.apps.get(appId) || { on: false, name: null, hosts: [] };
+    const had = this.apps.get(appId);
+    const p = had || { on: false, name: null, hosts: [] };
     return {
       on: !!p.on, name: p.name || null, hosts: p.hosts || [], domain: this.domain,
+      // An app never published starts at look; one published before the choice existed keeps change.
+      access: had ? accessOf(had) : 'look', choices: ACCESS,
       urls: p.on ? [...(this.domain && p.name ? [`${this.scheme}://${p.name}.${this.domain}/`] : []), ...(p.hosts || []).map((h) => `https://${h}/`)] : [],
     };
   }
 
   // POST /api/apps/<id>/publish {on, name, hosts}: only from the studio or
   // the command center (the login checks that first).
-  async set(appId, title, { on, name, hosts } = {}) {
+  async set(appId, title, { on, name, hosts, access } = {}) {
     await this.load(true);
-    const cur = this.apps.get(appId) || { on: false, name: null, hosts: [] };
+    const had = this.apps.get(appId);
+    const cur = had || { on: false, name: null, hosts: [] };
     const next = { ...cur };
     if (on !== undefined) next.on = !!on;
+    if (access !== undefined) {
+      if (!ACCESS.includes(access)) throw Object.assign(new Error(`access is ${ACCESS.join(', ')}`), { status: 400 });
+      next.access = access;
+    }
+    // Kept as it was for an app published before the choice (change), the safest for a new one.
+    if (!next.access) next.access = had ? accessOf(had) : 'look';
     if (name !== undefined) {
       const n = String(name || '').trim().toLowerCase();
       if (!NAME.test(n)) throw Object.assign(new Error('a name is 1 to 40 letters, digits and dashes, starting and ending with a letter or a digit'), { status: 400 });
@@ -148,10 +199,26 @@ export class Publish {
 
   published(appId) { return !!this.apps.get(appId)?.on; }
 
+  // An app deleted: its name and hosts are free again.
+  forget(appId) { this.apps.delete(appId); this.index(); }
+
   // Whether a request someone not signed in to the studio made is one the
   // public may make: {app, page} (page: the app's page itself), or null.
-  async allows(req, url) {
+  //
+  // preview: {access} for the studio's own "See it as a stranger": the same
+  // calls, as the access given (or the app's), published or not yet.
+  async allows(req, url, preview = null) {
     await this.load();
+    if (preview) {
+      const m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)(\/[a-z/]*)?$/);
+      if (!m) return null;
+      const rest = m[2] || '';
+      const call = APP_CALLS.find(([meth, r]) => meth === req.method && r === rest);
+      const access = preview.access || this.of(m[1]).access;
+      if (!call) return { app: m[1], call: rest, access, denied: 'A visitor cannot do this' };
+      const denied = ACCESS.indexOf(call[2]) > ACCESS.indexOf(access) ? DENIED[call[2]] : null;
+      return { app: m[1], call: rest, access, ...(denied ? { denied } : {}) };
+    }
     const p = url.pathname;
     const hostApp = this.appForHost(req);
     if (req.method === 'GET' && FILES.has(p)) return { app: hostApp, file: true };
@@ -167,8 +234,13 @@ export class Publish {
     // On an app's own host, only that app.
     if (hostApp && hostApp !== m[1]) return null;
     const rest = m[2] || '';
-    if (!APP_CALLS.some(([meth, r]) => meth === req.method && r === rest)) return null;
-    return { app: m[1], call: rest, dear: DEAR.has(rest) };
+    const call = APP_CALLS.find(([meth, r]) => meth === req.method && r === rest);
+    if (!call) return null;
+    // A call the owner's choice does not allow is refused with why (403), not sent to the login.
+    const need = call[2];
+    const access = accessOf(this.apps.get(m[1]));
+    const denied = ACCESS.indexOf(need) > ACCESS.indexOf(access) ? DENIED[need] : null;
+    return { app: m[1], call: rest, dear: DEAR.has(rest), access, ...(denied ? { denied } : {}) };
   }
 
   // A visitor's rate: calls a minute, and fewer of the dear ones. null when

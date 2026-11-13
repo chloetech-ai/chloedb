@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloectx/inspector.md: edit that file and run the script, not this page. -->
@@ -45,6 +45,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -80,6 +81,7 @@
       <span class="eyebrow">Apps</span>
       <h1>The live inspector</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/inspector.md">docs/chloectx/inspector.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#on-your-own-stores-chloectx-ui">On your own stores: chloectx ui</a></li><li><a href="#the-demo-chat-in-a-scratch-project">The demo: chat in a scratch project</a></li><li><a href="#a-walkthrough">A walkthrough</a></li><li><a href="#the-panels">The panels</a></li></ol></details>
     <div class="doc-body">
@@ -124,7 +126,7 @@ demo/run.sh --model &lt;model&gt; --distill-model &lt;small model&gt;     # open
 </tr>
 <tr>
 <td><code>--data DIR</code></td>
-<td>where the scratch project and its store live (default <code>~/engram-demo</code>)</td>
+<td>where the scratch project and its store live (default <code>~/chloectx-demo</code>; <code>~/engram-demo</code> on a machine that has that one from before the rename)</td>
 </tr>
 <tr>
 <td><code>--budget USD</code></td>

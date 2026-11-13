@@ -403,6 +403,37 @@ fn app_in_a_cluster() {
     let m = app.get("/v1/incidents/match?q=write+rejects+on+shard+2+queue+full");
     assert_eq!(m["matches"][0]["title"], "Writes refused after a replica fell behind", "{m}");
 
+    // A team's own incidents space, dated by when the incident happened,
+    // matched from a selection of log lines; then deleted with its table.
+    assert_eq!(app.try_post("/v1/spaces", json!({"name": "netops", "kind": "graph"})).0, 400);
+    let team = app.post("/v1/spaces", json!({"name": "netops", "title": "Network incidents", "kind": "incidents"}));
+    assert_eq!(team["kind"], "incidents", "{team}");
+    let flap = app.post("/v1/incidents", json!({"space": "netops", "title": "Gi0/1 on core-rtr-02 flapped and BGP to 10.0.12.2 dropped", "symptom": "LINK-3-UPDOWN on GigabitEthernet0/1 every few seconds, BGP hold time expired, CRC errors climbing", "cause": "a dirty fibre connector", "fix": "cleaned and reseated the connector", "when": "2026-09-14T03:10:00Z"}));
+    assert_eq!((flap["space"].as_str(), flap["ts"].as_i64()), (Some("netops"), Some(1_789_344_000 + 3 * 3600 + 600)), "{flap}");
+    assert_eq!(app.try_post("/v1/incidents", json!({"space": "billing", "title": "x", "fix": "y"})).0, 400, "a notes space keeps no incidents");
+    assert_eq!(app.try_post("/v1/spaces/billing/notes", json!({"text": "x", "when": "someday"})).0, 400);
+    let dated = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "The September invoice run was late by a day.", "when": "2026-09-30"}));
+    assert_eq!(dated["ts"], 1_790_726_400, "{dated}");
+    let lines = ["%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down", "%BGP-5-ADJCHANGE: neighbor 10.0.12.2 Down BGP Notification sent (hold time expired)", "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up"];
+    let m = app.post("/v1/incidents/match", json!({"lines": lines}));
+    assert_eq!((m["matches"][0]["id"].as_str(), m["matches"][0]["space"].as_str()), (flap["id"].as_str(), Some("netops")), "{m}");
+    assert!(m["spaces"].as_array().unwrap().iter().any(|s| s == "netops") && m["spaces"].as_array().unwrap().iter().any(|s| s == "incidents"), "{m}");
+    let only = app.post("/v1/incidents/match", json!({"lines": lines, "space": "incidents"}));
+    assert!(only["matches"].as_array().unwrap().iter().all(|i| i["space"] == "incidents"), "{only}");
+    assert_eq!(app.get("/v1/incidents?space=netops")["incidents"].as_array().unwrap().len(), 1);
+    assert_eq!(app.get("/v1/incidents")["incidents"].as_array().unwrap().len(), 4, "every incidents space");
+    let (s, j) = http.call("DELETE", &format!("{app_url}/v1/spaces/netops"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(j["table"], "ctx_netops", "{j}");
+    let (_, tables) = http.call("GET", &format!("{coord}/v1/tables"), None, &[]);
+    assert!(!tables.to_string().contains("\"ctx_netops\""), "the table is dropped: {tables}");
+    assert!(app.get("/v1/spaces")["spaces"].as_array().unwrap().iter().all(|s| s["name"] != "netops"));
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/netops"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404);
+    // The billing note dated in September stays where it was written.
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", dated["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200);
+
     // A model drafts an incident from a postmortem; nothing is kept.
     let d = app.post("/v1/incidents/draft", json!({"text": "Postmortem: on Tuesday shard 2 ran out of disk while we re-embedded..."}));
     assert_eq!(d["drafts"][0]["title"], "Shard 2 ran out of disk during a backfill", "{d}");
@@ -492,7 +523,7 @@ fn app_in_a_cluster() {
     let again = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "Chargebacks arrive as webhooks and are matched by the invoice number."}));
     let all = app.get("/v1/spaces/billing/notes?all=1");
     assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
-    assert_eq!(texts(&all).len(), 7, "the agent's retired fact too: {all}");
+    assert_eq!(texts(&all).len(), 8, "the agent's retired fact and the dated note too: {all}");
     drop(procs);
 }
 
