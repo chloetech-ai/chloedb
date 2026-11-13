@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/server.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -55,6 +58,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -78,7 +82,7 @@
     <div class="doc-body">
 
 <p><code>chloedb-server</code> serves a ChloeDB database over HTTP JSON and gRPC. Every server has a command center in the browser, with a query console and an agent that answers questions by writing SQL. Run several servers as shards behind one more as a coordinator, and the coordinator answers like one database.</p>
-<p>New to it? <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a> goes from an empty server to search, stock, holds, events counted once and a cluster in one page. This page is the reference:</p>
+<p>New to it? <a href="build-an-app.html">Build an app</a> goes from an empty server to search, stock, holds, events counted once and a cluster in one page. This page is the reference:</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -113,7 +117,7 @@
 </tr>
 </tbody>
 </table></div>
-<p><strong>Old names.</strong> ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (<code>strata-server</code>, <code>STRATA_*</code> settings, <code>x-strata-*</code> headers) still work for a release: <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md#old-names">Compatibility</a> lists them.</p>
+<p><strong>Old names.</strong> ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (<code>strata-server</code>, <code>STRATA_*</code> settings, <code>x-strata-*</code> headers) still work for a release: <a href="compatibility.html#old-names">Compatibility</a> lists them.</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> (tagged <code>chloedb-server-v&lt;version&gt;</code>) has one archive a platform: <code>linux-x86_64</code> and <code>linux-aarch64</code> (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), <code>macos-arm64</code> and <code>macos-x86_64</code> (macOS 11 or later), each with its <code>.sha256</code> beside it.</p>
 <pre data-lang="sh">v=0.3.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
@@ -821,7 +825,7 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 </tr>
 <tr>
 <td><code>hash:N</code></td>
-<td>hashed bag of words, <em>N</em> dimensions (on a multi-vector field, a vector a word)</td>
+<td>hashed bag of words, <em>N</em> dimensions, 1 to 65,536 (on a multi-vector field, a vector a word)</td>
 <td>no files; tests and the demo</td>
 </tr>
 <tr>
@@ -1190,6 +1194,9 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <p>The source is a stored <code>TEXT</code> or <code>KEYWORD</code> field of one value (not generated, derived or multi-valued). The text is made as captions are: before the write queues for the writer, for <code>/v1/write</code>, SQL <code>INSERT</code> and imports, kept as given when a write gives it, made again by an <code>UPDATE</code> of the source, stored and logged with the row so that merges and replicas never call the model. Each distinct text of a write is one request (the prompt as the system prompt, the text as the user's message, at most 1,024 tokens back, temperature 0 for Claude), eight at once (<code>concurrency</code> in <code>endpoint.json</code>), each tried again on a rate limit or a server's error; one that keeps failing fails the write. An empty text makes an empty one, with no request. The answer is the field's text, without its surrounding spaces.</p>
 <p>A request costs a model call a row, so a table loaded with a million rows makes a million requests: load rows in batches and watch the provider's rate limits, or make the text elsewhere and write it with the rows. The table needs the <code>derive_text</code> feature, which a version of ChloeDB without it refuses to open.</p>
 <h3 id="keywords-made-of-text-languages-keyphrases-near-duplicates-entities">Keywords made of text: languages, keyphrases, near duplicates, entities<a class="anchor" href="#keywords-made-of-text-languages-keyphrases-near-duplicates-entities" aria-label="Link to this section">#</a></h3>
+<blockquote>
+<p><strong>Experimental, and a format change.</strong> A <code>KEYWORD</code> field with <code>derive</code> makes the database declare the format feature <code>derive_keyword</code>, which ChloeDB 0.2.x refuses by name, so a database that has one cannot go back to 0.2.x; a database without one opens there as before. The model names (<code>builtin:lang</code>, <code>builtin:keyphrases</code>, <code>builtin:minhash</code>, <code>dict:&lt;table&gt;.&lt;field&gt;</code>, <code>classifier:&lt;name&gt;</code>) are kept in the schema, so what each built-in model makes of a text is part of the format too: a later version keeps those names meaning what they do now, and a changed model gets a new name.</p>
+</blockquote>
 <p>A <code>keyword</code> field can hold values that a built-in model makes of a text, which need no model files and cost microseconds a row:</p>
 <pre data-lang="sql">CREATE TABLE news (
   id KEYWORD PRIMARY KEY,
@@ -1361,7 +1368,7 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <tr>
 <td><code>POST /v1/admin/slices</code>, <code>GET /v1/slices/TABLE/...</code></td>
 <td><code>{text, lat, lon, lat0, lon0, tile_m?}</code> (geo), <code>{vector, clusters?, codes?}</code> (vector), or <code>{table}</code> to rebuild</td>
-<td>a table's <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">slice</a> for devices to search near their user or their user's taste, built into <code>--slices DIR</code> and served with its status (fresh or stale) and the devices' counts; <code>--slices-rebuild-s N</code> rebuilds stale slices</td>
+<td>a table's <a href="slices.html">slice</a> for devices to search near their user or their user's taste, built into <code>--slices DIR</code> and served with its status (fresh or stale) and the devices' counts; <code>--slices-rebuild-s N</code> rebuilds stale slices</td>
 </tr>
 <tr>
 <td><code>GET /v1/media/&lt;sha256&gt;</code></td>
@@ -1451,7 +1458,7 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <tr>
 <td><code>POST /v1/synonyms/mine</code></td>
 <td><code>{table, field, vector?</code> or <code>log?, min_cos?, per_word?, max_words?, min_df?, window?, min_support?}</code></td>
-<td>synonyms of a text field mined from the vectors of its words (by the model of vector field <code>vector</code>) or from a table of searches (<code>log</code>: <code>context</code>, <code>ts</code>, <code>text</code>): <code>{proposals: [{from, to, rule, score, from_count, to_count}], rules, rows, words, took_ms}</code>, proposed, never applied (<a href="sql.html#typos-and-synonyms">mined synonyms</a>); on a server of its own, not a coordinator</td>
+<td>synonyms of a text field mined from the vectors of its words (by the model of vector field <code>vector</code>) or from a table of searches (<code>log</code>: <code>context</code>, <code>ts</code>, <code>text</code>): <code>{proposals: [{from, to, rule, score, from_count, to_count}], rules, rows, words, took_ms}</code>, proposed, never applied (<a href="sql.html#typos-and-synonyms">mined synonyms</a>); experimental; an admin's, within bounds whoever asks (<code>max_rows</code> 200,000, <code>max_words</code> 5,000, <code>min_cos</code> 0.3 or more, <code>per_word</code> 10); on a server of its own, not a coordinator</td>
 </tr>
 <tr>
 <td><code>GET /v1/schema?table=T</code></td>
@@ -2944,7 +2951,7 @@ claude mcp add chloedb --env CHLOEDB_KEY=$CHLOEDB_KEY -- chloedb-server mcp --ur
 </tr>
 <tr>
 <td><code>search_docs</code></td>
-<td>sections of the <a href="sql.html">query language</a> and <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a> that match some words</td>
+<td>sections of the <a href="sql.html">query language</a> and <a href="build-an-app.html">Build an app</a> that match some words</td>
 <td>none: the documents are compiled in</td>
 </tr>
 <tr>

@@ -2193,7 +2193,7 @@ impl Service {
     /// parameters with their vectors; `None` when it has none.
     async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
         use chloedb::query::embed_sql::{self, Request};
-        if !embed_sql::may_embed(sql) {
+        if !embed_sql::may_embed_with(sql, params) {
             return Ok(None);
         }
         let catalog = self.readable();
@@ -2719,13 +2719,23 @@ impl Service {
         if req.plan.is_none() && !req.shard {
             if let Some(c) = chloedb::query::chunks::of_sql(&req.sql, &req.params)? {
                 let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", c.table)))?;
-                let mut source = req.clone();
-                (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql(&schema)?, None, false, true);
-                let mut a = Box::pin(self.query(source)).await?;
-                let t0 = Instant::now();
-                a.rs = c.finish(&a.rs);
-                a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
-                return Ok(a);
+                // As many of the table's rows as fill the LIMIT, read again
+                // with more when rows without text leave it unfilled.
+                let mut rows = c.source_rows();
+                loop {
+                    let mut source = req.clone();
+                    (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql_of(&schema, rows)?, None, false, true);
+                    let mut a = Box::pin(self.query(source)).await?;
+                    let t0 = Instant::now();
+                    let chunks = c.finish(&a.rs);
+                    if let Some(more) = c.more_rows(rows, &a.rs, &chunks) {
+                        rows = more;
+                        continue;
+                    }
+                    a.rs = chunks;
+                    a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
+                    return Ok(a);
+                }
             }
         }
         // Understood words (`bm25(.., understand => 'boost')`,
@@ -2760,7 +2770,7 @@ impl Service {
                 let mut rows = Vec::new();
                 let catalog = self.catalog();
                 let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
-                for f in x.feedback(&schemas) {
+                for f in x.feedback(&schemas)? {
                     let mut fr = req.clone();
                     (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
                     rows.push(Box::pin(self.query(fr)).await?.rs);
@@ -3058,7 +3068,9 @@ impl Service {
                         // as many rows as a compound query's leaf may hold.
                         max_rows: if req.own_read { None } else if req.shard { self.max_rows.map(|m| m.max(compound::MAX_ROWS + 1)) } else { self.max_rows },
                         max_groups: self.max_groups,
-                        memory: self.query_memory.clone(),
+                        // The server's own read is held to a budget of its
+                        // own rather than to --max-rows.
+                        memory: if req.own_read { chloedb::query::memory::own_read_budget(self.query_memory.as_ref()) } else { self.query_memory.clone() },
                         profile: req.profile,
                         boost_inputs: db.exec.boost_inputs && !req.boosts_alone,
                         ..db.exec.clone()
@@ -3723,9 +3735,17 @@ impl Service {
             who.may(Scope::Write, "a write statement")?;
             let t0 = Instant::now();
             let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&ins.query.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", ins.query.table)))?;
-            let a = self.query(QueryReq { sql: ins.query.source_sql(&schema)?, params: params.clone(), timeout_ms, after, own_read: true, ..Default::default() }).await?;
+            let mut rows = ins.query.source_rows();
+            let chunks = loop {
+                let a = self.query(QueryReq { sql: ins.query.source_sql_of(&schema, rows)?, params: params.clone(), timeout_ms, after: after.clone(), own_read: true, ..Default::default() }).await?;
+                let chunks = ins.query.finish(&a.rs);
+                match ins.query.more_rows(rows, &a.rs, &chunks) {
+                    Some(more) => rows = more,
+                    None => break chunks,
+                }
+            };
             let mut total = Written::default();
-            for (statement, p) in ins.inserts(&ins.query.finish(&a.rs)) {
+            for (statement, p) in ins.inserts(&chunks) {
                 if let SqlAnswer::Written { w, .. } = Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await? {
                     total.rows += w.rows;
                     total.skipped += w.skipped;

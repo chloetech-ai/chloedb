@@ -60,6 +60,36 @@ pub fn relative(project: &str, path: &str) -> String {
     }
 }
 
+/// The most bytes of a file blame reads for its line.
+pub const MAX_FILE_BYTES: u64 = 8 << 20;
+
+/// The text of file `rel` of the project: a regular file inside it once
+/// links and `..` are resolved, of at most [`MAX_FILE_BYTES`]. Blame is
+/// asked for from the command center and over the daemon's socket, so it
+/// must not read a key under `~/.ssh`, nor `/dev/zero` until memory ends.
+pub fn read_project_file(project: &str, rel: &str) -> Result<String> {
+    use std::io::Read;
+    let proj = Path::new(project).canonicalize().map_err(|e| err(format!("project {project}: {e}")))?;
+    let path = proj.join(rel).canonicalize().map_err(|e| err(format!("read {rel}: {e}")))?;
+    if !path.starts_with(&proj) {
+        return Err(err(format!("{rel} is not a file of the project {}", proj.display())));
+    }
+    let file = std::fs::File::open(&path).map_err(|e| err(format!("read {rel}: {e}")))?;
+    let meta = file.metadata().map_err(|e| err(format!("read {rel}: {e}")))?;
+    if !meta.is_file() {
+        return Err(err(format!("{rel} is not a regular file")));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(err(format!("{rel} is {} bytes; blame reads files of at most {MAX_FILE_BYTES}", meta.len())));
+    }
+    let mut body = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut body).map_err(|e| err(format!("read {rel}: {e}")))?;
+    if body.len() as u64 > MAX_FILE_BYTES {
+        return Err(err(format!("{rel} is over {MAX_FILE_BYTES} bytes; blame reads files of at most that")));
+    }
+    String::from_utf8(body).map_err(|_| err(format!("read {rel}: not UTF-8 text")))
+}
+
 /// `path:line` or `path`.
 pub fn parse_target(t: &str) -> (String, Option<usize>) {
     match t.rsplit_once(':') {
@@ -104,7 +134,7 @@ pub fn blame(store: &Store, book: Option<&Book>, snaps: &Snapshots, project: &st
     let rel = relative(project, &path);
     let line_text = match line {
         Some(n) => {
-            let body = std::fs::read_to_string(Path::new(project).join(&rel)).map_err(|e| err(format!("read {rel}: {e}")))?;
+            let body = read_project_file(project, &rel)?;
             Some(body.lines().nth(n - 1).ok_or_else(|| err(format!("{rel} has {} lines", body.lines().count())))?.trim().to_string())
         }
         None => None,
@@ -291,4 +321,40 @@ pub fn fmt_replays(rs: &[Replayed]) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blame_reads_only_regular_files_of_the_project_under_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join("secret"), "key\n").unwrap();
+        let p = project.to_str().unwrap();
+        assert_eq!(read_project_file(p, "src/a.rs").unwrap(), "fn a() {}\n");
+        assert_eq!(read_project_file(p, "./src/../src/a.rs").unwrap(), "fn a() {}\n");
+        // Out of the project: by `..`, by an absolute path, by a link.
+        for rel in ["../secret", dir.path().join("secret").to_str().unwrap(), "/etc/hostname"] {
+            let e = read_project_file(p, rel).unwrap_err().to_string();
+            assert!(e.contains("not a file of the project") || e.contains("No such file"), "{rel}: {e}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("secret"), project.join("link")).unwrap();
+            let e = read_project_file(p, "link").unwrap_err().to_string();
+            assert!(e.contains("not a file of the project"), "{e}");
+            std::os::unix::fs::symlink("/dev/zero", project.join("zero")).unwrap();
+            assert!(read_project_file(p, "zero").is_err());
+        }
+        assert!(read_project_file(p, "/dev/zero").is_err());
+        // A directory, and a file past the cap.
+        assert!(read_project_file(p, "src").unwrap_err().to_string().contains("not a regular file"));
+        let big = std::fs::File::create(project.join("big")).unwrap();
+        big.set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert!(read_project_file(p, "big").unwrap_err().to_string().contains("at most"));
+    }
 }

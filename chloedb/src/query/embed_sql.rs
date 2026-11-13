@@ -49,8 +49,11 @@ pub trait Embeds {
 /// (`openai/...`, an `endpoint.json`) is used only through a field it
 /// embeds, so that a query does not spend a key no table was given.
 pub fn refuse_model(name: &str, models: &std::path::Path) -> Option<&'static str> {
-    if name.strip_prefix("hash:").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
-        return None;
+    if let Some(n) = name.strip_prefix("hash:") {
+        return match n.parse::<usize>() {
+            Ok(d) if (1..=crate::schema::MAX_VECTOR_DIM).contains(&d) => None,
+            _ => Some(HASH_DIMS),
+        };
     }
     if name.is_empty() || name.starts_with('.') || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)) {
         return Some("a model is named by its directory under the models directory, such as 'potion-base-8M', or is the model of an embedded field");
@@ -61,6 +64,9 @@ pub fn refuse_model(name: &str, models: &std::path::Path) -> Option<&'static str
     None
 }
 
+/// Why `hash:N` is refused: N out of range.
+const HASH_DIMS: &str = "hash:N makes vectors of N dimensions, from 1 to 65536 (schema::MAX_VECTOR_DIM)";
+
 /// The prefix of the parameters this writes.
 pub const PARAM: &str = "__embed_";
 
@@ -70,6 +76,22 @@ pub fn may_embed(sql_text: &str) -> bool {
     let t = sql_text.as_bytes();
     let has = |w: &[u8]| t.windows(w.len()).any(|x| x.eq_ignore_ascii_case(w));
     has(b"embed") || ((has(b"similarity") || has(b"distance") || has(b"maxsim")) && (t.contains(&b'\'') || t.contains(&b':') || t.contains(&b'$') || t.contains(&b'?')))
+}
+
+/// [`may_embed`], knowing the query's parameters: without `embed(..)` a
+/// text stands where a vector goes only as a string (a literal, `'..'` or
+/// `$$..$$`) or as a parameter of text, so a query whose parameters hold
+/// vectors and numbers only has nothing to embed. Checked before
+/// [`rewrite`] copies the query and its parameters: a vector search with
+/// its vector as a parameter, the common case, then costs nothing more
+/// (before this check the server parsed such a query again and copied it
+/// twice, 0.1 ms of a 0.5 ms vector query on SciFact).
+pub fn may_embed_with(sql_text: &str, params: &Params) -> bool {
+    if !may_embed(sql_text) {
+        return false;
+    }
+    let t = sql_text.as_bytes();
+    t.windows(5).any(|x| x.eq_ignore_ascii_case(b"embed")) || t.contains(&b'\'') || t.contains(&b'$') || params.0.values().any(|v| matches!(v, Value::Str(_)))
 }
 
 /// `q` with its texts embedded, and `params` with their vectors; `None`
@@ -110,7 +132,7 @@ pub enum Request {
 /// own way (a server, on its embedding cores) before [`written`]: empty
 /// when there are none.
 pub fn requests(sql_text: &str, catalog: &[&Schema], params: &Params) -> Result<Vec<Request>> {
-    if !may_embed(sql_text) {
+    if !may_embed_with(sql_text, params) {
         return Ok(Vec::new());
     }
     struct Recorder(std::cell::RefCell<Vec<Request>>);
@@ -125,7 +147,7 @@ pub fn requests(sql_text: &str, catalog: &[&Schema], params: &Params) -> Result<
         }
     }
     let r = Recorder(Default::default());
-    rewrite(&*super::sql::parse_query(sql_text)?, catalog, params, &r)?;
+    rewrite(&super::sql::parse_query_cached(sql_text)?.query, catalog, params, &r)?;
     Ok(r.0.into_inner())
 }
 
@@ -133,7 +155,7 @@ pub fn requests(sql_text: &str, catalog: &[&Schema], params: &Params) -> Result<
 /// value of each of its [`requests`]), as text, and its parameters with
 /// their vectors; `None` when it has nothing to embed.
 pub fn written(sql_text: &str, catalog: &[&Schema], params: &Params, given: &HashMap<Request, Value>) -> Result<Option<(String, Params)>> {
-    if !may_embed(sql_text) {
+    if !may_embed_with(sql_text, params) {
         return Ok(None);
     }
     struct Given<'a>(&'a HashMap<Request, Value>);
@@ -148,7 +170,7 @@ pub fn written(sql_text: &str, catalog: &[&Schema], params: &Params, given: &Has
             }
         }
     }
-    Ok(rewrite(&*super::sql::parse_query(sql_text)?, catalog, params, &Given(given))?.map(|(q, p)| (q.to_string(), p)))
+    Ok(rewrite(&super::sql::parse_query_cached(sql_text)?.query, catalog, params, &Given(given))?.map(|(q, p)| (q.to_string(), p)))
 }
 
 struct Writer<'a> {
@@ -233,7 +255,11 @@ impl Writer<'_> {
         let text = match &**v {
             Expr::Function(g) if fname(g) == "embed" && matches!(&g.args, FunctionArguments::List(l) if l.args.len() == 1) => {
                 let mut g = g.clone();
-                let [t] = args_mut(&mut g).into_iter().map(|t| t.clone()).collect::<Vec<_>>().try_into().unwrap_or_else(|_| unreachable!("one argument"));
+                // `embed(*)` and `embed(name => ..)` have no expression to embed.
+                let t = match args_mut(&mut g).as_slice() {
+                    [t] => (**t).clone(),
+                    _ => return Err(err(format!("embed(..) takes text, a value or a parameter, not {}: the model runs once a query. To embed a column, declare its vector field OPTIONS(embed = 'column', model = '..')", g.args))),
+                };
                 match self.text(&t)? {
                     Some(t) => t,
                     None => return Err(err(format!("embed(..) takes text, a value or a parameter, not {t}: the model runs once a query. To embed a column, declare its vector field OPTIONS(embed = 'column', model = '..')"))),
@@ -381,6 +407,21 @@ mod tests {
         let s = schema();
         let q = parse_query(sql_text)?;
         Ok(rewrite(&q, &[&s], &params, &Fake)?.map(|(q, p)| (q.to_string(), p)))
+    }
+
+    #[test]
+    fn a_query_with_only_vectors_as_parameters_is_not_rewritten() {
+        let sql = "SELECT id FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 3";
+        let vector = Params::new().set("v", Value::Vector(vec![1.0, 0.0, 0.0].into()));
+        assert!(may_embed(sql) && !may_embed_with(sql, &vector));
+        assert!(requests(sql, &[], &vector).unwrap().is_empty());
+        // a parameter of text, a literal, or embed(..) may be embedded
+        assert!(may_embed_with(sql, &Params::new().set("v", Value::Str("reset password".into()))));
+        assert!(may_embed_with("SELECT id FROM docs ORDER BY similarity(emb, 'reset') DESC", &Params::new()));
+        assert!(may_embed_with("SELECT id FROM docs ORDER BY similarity(emb, $$reset$$) DESC", &Params::new()));
+        assert!(may_embed_with("SELECT id FROM docs ORDER BY similarity(emb, embed('m', :t)) DESC", &vector));
+        // as before, with the vector parameter rewrite finds nothing to do
+        assert!(run(sql, vector).unwrap().is_none());
     }
 
     #[test]
