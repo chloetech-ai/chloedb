@@ -2829,6 +2829,14 @@ impl Service {
                 return Ok(a);
             }
         }
+        // `recommend(...)` ([`chloedb::query::recommend`]): the items a
+        // recommender ranks, computed on this database, then the query with
+        // each call as `ranked(...)` of their keys.
+        if req.plan.is_none() && !req.shard && chloedb::query::recommend::may_recommend(&req.sql) {
+            if let Some(a) = self.recommend_query(&req).await? {
+                return Ok(a);
+            }
+        }
         if req.plan.is_none() && !req.shard {
             if let Some(mut split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
                 // The calls read no more rows than a query answers.
@@ -2863,6 +2871,39 @@ impl Service {
             }
         }
         self.query_admitted(req).await
+    }
+
+    /// A query that calls `recommend(...)`, or `None` for one that calls
+    /// none. A coordinator refuses it: each shard holds the counts of the
+    /// events it holds, not a user's whole history.
+    async fn recommend_query(self: &Arc<Self>, req: &QueryReq) -> Result<Option<Answer>, ApiError> {
+        let t0 = Instant::now();
+        let db = match &self.backend {
+            Backend::Local(db) => db.clone(),
+            Backend::Cluster(_) => {
+                if !chloedb::query::recommend::calls_sql(&req.sql, &req.params)? {
+                    return Ok(None);
+                }
+                return Err(ApiError::bad("recommend() does not run through a coordinator: a recommender counts the events of one database (run it on a server that holds the events table, or keep the counts in tables of your own; see cluster-limits)"));
+            }
+        };
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a query that calls recommend() is not scrolled: page it with LIMIT and OFFSET"));
+        }
+        let (sql, params) = (req.sql.clone(), req.params.clone());
+        let done = tokio::task::spawn_blocking(move || db.recommend_sql(&sql, &params)).await.map_err(ApiError::internal)??;
+        match done {
+            None => Ok(None),
+            Some(chloedb::db::RecommendSql::Rows(rs)) => Ok(Some(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "recommend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None })),
+            Some(chloedb::db::RecommendSql::Query { sql, lines }) => {
+                let mut second = req.clone();
+                second.sql = sql;
+                let mut a = Box::pin(self.query(second)).await?;
+                a.rs.stats.plan.splice(0..0, lines);
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                Ok(Some(a))
+            }
+        }
     }
 
     /// [`Self::query`] of a query admitted, which calls no language model.
@@ -3733,6 +3774,24 @@ impl Service {
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
+        }
+        // `CREATE RECOMMENDER`, `DROP RECOMMENDER`: on this database, whose
+        // writes then feed the counts ([`chloedb::query::recommend`]).
+        if chloedb::query::recommend::parse_statement(sql)?.is_some() {
+            who.may(Scope::Admin, "a recommender statement")?;
+            let Backend::Local(db) = &self.backend else {
+                return Err(ApiError::bad("CREATE RECOMMENDER does not run through a coordinator: a recommender counts the events of one database, and a user's events are on several shards (see cluster-limits)"));
+            };
+            keys::note(obs::truncate(sql, 500).into_owned());
+            let t0 = Instant::now();
+            let (db, text) = (db.clone(), sql.to_string());
+            let r = tokio::task::spawn_blocking(move || db.sql(&text, &Params::new())).await.map_err(ApiError::internal)??;
+            self.learn_tables(true).await;
+            let took_ms = t0.elapsed().as_secs_f64() * 1e3;
+            return Ok(match r {
+                chloedb::db::SqlResult::Rows(rs) => SqlAnswer::Rows(Answer { rs, took_ms, kind: "recommender", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }),
+                chloedb::db::SqlResult::Written(_) => SqlAnswer::Written { w: Written::default(), took_ms },
+            });
         }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function ([`chloedb::query::table_synonyms`]).

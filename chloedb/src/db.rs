@@ -33,7 +33,9 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod recommend;
 mod writes;
+pub use recommend::{RecommendSql, Recommended};
 pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
@@ -282,6 +284,7 @@ impl Db {
         let db = Db::wrap(Database::open(path, with_source(opts))?);
         db.open_codebooks(&crate::embed::models_dir());
         db.open_content_models();
+        db.refresh_feeds();
         Ok(db)
     }
 
@@ -450,6 +453,9 @@ impl Db {
                 t.commit()?;
             }
         }
+        if !matches!(change, function::Change::Nothing) {
+            self.refresh_feeds();
+        }
         Ok(change)
     }
 
@@ -599,6 +605,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.apply_shipped(prev, txns);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -609,6 +616,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.install_copy(copy);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -1424,6 +1432,13 @@ impl Db {
             }
         }
         let q = qsql::parse_query_cached(sql)?;
+        // `recommend(...)`: the items a recommender ranks for a user, as
+        // `ranked(...)` of their keys, or `FROM recommend(...)`'s rows.
+        if crate::query::recommend::may_recommend(sql) {
+            if let Some(rs) = self.recommend_query(snap, &q.query, params, opts)? {
+                return Ok(rs);
+            }
+        }
         // Understood words (`bm25(.., understand => 'boost')`): the
         // dictionaries of the table's keyword fields, then the query with
         // the conditions the words name.
@@ -1842,6 +1857,9 @@ impl Db {
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
+        }
+        if let Some(st) = crate::query::recommend::parse_statement(sql)? {
+            return self.recommender_statement(&st, opts);
         }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function.

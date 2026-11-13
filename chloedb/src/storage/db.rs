@@ -411,6 +411,9 @@ pub struct Database {
     /// Told the term and number of each numbered transaction once it is
     /// committed ([`Database::on_commit`]).
     commit_hook: RwLock<Option<CommitHook>>,
+    /// The recommenders whose counts each transaction's new events feed
+    /// at commit ([`Database::set_feeds`]).
+    feeds: RwLock<Arc<Vec<crate::query::recommend::Def>>>,
     /// The codebooks of semantic-ID fields ([`Database::set_codebook`]).
     codebooks: RwLock<Vec<Coded>>,
     /// The cold tier, with [`DbOptions::cold`].
@@ -1099,6 +1102,7 @@ impl Database {
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold: None,
             offloading: Mutex::new(HashSet::new()),
@@ -1462,6 +1466,7 @@ impl Database {
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold,
             offloading: Mutex::new(HashSet::new()),
@@ -1903,6 +1908,15 @@ impl Database {
     /// Ends hold `id` ([`Database::hold_log`]).
     pub fn release_log(&self, id: u64) {
         lock(&self.state).ship.release(id);
+    }
+
+    /// The recommenders whose counts every transaction of this database
+    /// updates at commit from the rows it inserts into their events
+    /// tables ([`crate::query::recommend::feed`]), in place of any before.
+    /// A replica's replay of a primary's transactions feeds none: they
+    /// carry the counts their primary wrote.
+    pub fn set_feeds(&self, feeds: Vec<crate::query::recommend::Def>) {
+        *self.feeds.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(feeds);
     }
 
     /// Has `f` told the term and number of each numbered transaction once
@@ -5320,12 +5334,50 @@ impl<'a> WriteTxn<'a> {
     /// Commits, and returns the transaction's sequence number when the
     /// database numbers its writes ([`Database::start_seq_no`]); `None`
     /// then only for a transaction that wrote nothing.
-    pub fn commit_seq(self) -> Result<Option<u64>> {
+    pub fn commit_seq(mut self) -> Result<Option<u64>> {
+        // A replay (`now` none) carries the counts its primary fed.
+        if self.now.is_some() {
+            let feeds = self.db.feeds.read().unwrap_or_else(|e| e.into_inner()).clone();
+            for d in feeds.iter() {
+                crate::query::recommend::feed(&mut self, d)?;
+            }
+        }
         let WriteTxn { db, mut wal, ops, .. } = self;
         db.commit_ops(&mut wal, ops)
     }
 
     pub fn rollback(self) {}
+
+    /// The schema of table `name` and the rows this transaction inserted
+    /// into it that no row of their key had before it (an upsert that
+    /// replaced a row, or an insert after this transaction deleted its
+    /// key, is left out); `None` when there is no such table.
+    pub(crate) fn fresh_rows(&self, name: &str) -> Option<(Arc<Schema>, Vec<Arc<Document>>)> {
+        let t = self.db.table_ref(Some(name)).ok()?;
+        let pk = t.schema.primary_key;
+        let mut deleted: HashSet<Key> = HashSet::new();
+        let mut out = Vec::new();
+        for (id, op) in &self.ops {
+            if *id != t.id {
+                continue;
+            }
+            match op {
+                Op::Delete(k) => {
+                    if let Some(k) = Key::of(k) {
+                        deleted.insert(k);
+                    }
+                }
+                Op::Insert(doc) => {
+                    if pk.and_then(|p| Key::of(&doc[p])).is_some_and(|k| deleted.contains(&k)) {
+                        continue;
+                    }
+                    out.push(doc.clone());
+                }
+                _ => {}
+            }
+        }
+        Some((t.schema, out))
+    }
 
     /// Writes a primary's logged operations, which must apply here as they
     /// did there ([`Database::apply_shipped`]).
