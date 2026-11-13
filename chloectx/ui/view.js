@@ -228,6 +228,33 @@ a.cx-kpi:hover { border-color: var(--line-2); box-shadow: var(--shadow-2); }
 .cx-wrote .cx-list > li { padding: 5px 0; }
 .cx-caps { display: grid; gap: 10px; }
 .cx-cap { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; background: var(--surface-2); display: grid; gap: 6px; }
+.cx-graph { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.cx-gbar { gap: 10px; align-items: center; }
+.cx-gopts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--text-2); }
+.cx-gopts label { display: inline-flex; gap: 5px; align-items: center; }
+.cx-gwrap { position: relative; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); overflow: hidden; }
+.cx-gsvg { display: block; width: 100%; height: min(72vh, 700px); touch-action: none; cursor: grab; user-select: none; }
+.cx-gsvg .e { stroke: var(--line-2); stroke-width: 1.1; }
+.cx-gsvg .e.from { stroke-dasharray: 1 3; }
+.cx-gsvg .e.sup { stroke: var(--muted); stroke-dasharray: 5 3; stroke-width: 1.4; }
+.cx-gsvg .e.hl { stroke: var(--accent); stroke-width: 2; stroke-dasharray: none; }
+.cx-gsvg .n { cursor: pointer; stroke-width: 1.5; }
+.cx-gsvg .n.hl { stroke: var(--accent); stroke-width: 3; }
+.cx-gsvg .dim { opacity: .14; }
+.cx-gsvg text { font-size: 10.5px; fill: var(--text-2); paint-order: stroke; stroke: var(--surface-2); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.cx-gsvg text.big { font-size: 12.5px; font-weight: 600; fill: var(--text); }
+.cx-gsvg text.minor { display: none; }
+.cx-gsvg.near text.minor, .cx-gsvg text.minor.on { display: inline; }
+.cx-glegend { position: absolute; left: 8px; bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-2); background: var(--surface-2); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
+.cx-gdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; flex: none; }
+.cx-gside { max-height: min(72vh, 700px); overflow: auto; font-size: 13px; }
+.cx-gtitle { font-size: 14px; line-height: 1.45; margin-top: 6px; color: var(--text); overflow-wrap: anywhere; }
+.cx-gtitle.old { text-decoration: line-through; color: var(--muted); }
+.cx-gnear { margin-top: 10px; }
+.cx-gnear a.cx-gold { text-decoration: line-through; color: var(--muted); }
+.cx-gh { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 4px; }
+.cx-gnear ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cx-gnear li { display: flex; align-items: baseline; line-height: 1.35; }
 @media (max-width: 900px) {
   .cx-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .cx-ov { grid-template-columns: minmax(0, 1fr); }
@@ -235,6 +262,9 @@ a.cx-kpi:hover { border-color: var(--line-2); box-shadow: var(--shadow-2); }
   .cx-tools, .cx-tool.err { margin-left: 0; }
   .cx-msg, .cx-wrote { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .cx-insp { grid-template-columns: minmax(0, 1fr); }
+  .cx-graph { grid-template-columns: minmax(0, 1fr); }
+  .cx-gsvg { height: 62vh; }
+  .cx-gside { max-height: none; }
   .cx-split, .cx-alert { grid-template-columns: minmax(0, 1fr); }
   .cx-form .cx-two { grid-template-columns: minmax(0, 1fr); }
 }`;
@@ -339,8 +369,9 @@ function sourceOf(ctx, type, id) {
       history: (n) => api(`${b}/notes/${encodeURIComponent(n)}`),
       sessions: () => api(`${b}/sessions`),
       records: (qs) => api(`${b}/records?${qs}`),
+      graph: () => api(`${b}/graph`),
       ask: (question, budget) => api(`${b}/ask`, { body: { question, budget } }),
-      tabs: ["overview", "ask", "memories", "sessions", "connect"],
+      tabs: ["overview", "ask", "memories", "sessions", "graph", "connect"],
     };
   }
   if (type === "store") {
@@ -352,8 +383,9 @@ function sourceOf(ctx, type, id) {
       history: (n) => api(`${b}/notes/${encodeURIComponent(n)}`),
       sessions: () => api(`${b}/sessions`),
       records: (qs) => api(`${b}/records?${qs}`),
+      graph: () => api(`${b}/graph`, { timeout: 60000 }),
       ask: (question, budget) => api(`${b}/ask`, { body: { question, budget } }),
-      tabs: ["overview", "ask", "memories", "sessions", "receipts", "blame", "keep", "connect"],
+      tabs: ["overview", "ask", "memories", "sessions", "graph", "receipts", "blame", "keep", "connect"],
     };
   }
   const p = `project=${e}`;
@@ -374,6 +406,7 @@ function sourceOf(ctx, type, id) {
     },
     sessions: () => api(`/v1/memory/sessions?${p}`),
     records: (qs) => api(`/v1/memory/records?${p}&${qs}`),
+    graph: () => api(`/v1/memory/graph?${p}`),
     // No store to build a context from: the synced rows, ranked by BM25.
     ask: async (question) => {
       const t0 = performance.now();
@@ -385,7 +418,7 @@ function sourceOf(ctx, type, id) {
       const items = keep.slice(0, 14).map((r, i) => ({ ...r, kind: r.kind === "prompt" ? "user" : r.kind === "answer" ? "assistant" : kindOf(r.kind), section: r.kind === "preference" ? "rule" : r.kind === "prompt" || r.kind === "answer" ? "excerpt" : "note", rank: i, tokens: Math.ceil((r.text || "").length / 4) }));
       return { question, items, left_out: [], tokens: items.reduce((a, x) => a + x.tokens, 0), budget: null, ms: performance.now() - t0, words_only: true, context: items.map((x) => x.text).join("\n\n"), chars: items.reduce((a, x) => a + x.text.length, 0) };
     },
-    tabs: ["overview", "ask", "memories", "sessions", "connect"],
+    tabs: ["overview", "ask", "memories", "sessions", "graph", "connect"],
   };
 }
 
@@ -394,6 +427,7 @@ const TABS = {
   ask: ["Ask", "A question, answered from its memory"],
   memories: ["Memories", "Every rule, decision, fact and to-do, with its history"],
   sessions: ["Sessions", "Each session read as the conversation it recorded"],
+  graph: ["Graph", "How its notes, subjects, files and sessions are connected"],
   receipts: ["Receipts", "What each recall showed and why, replayed"],
   blame: ["Blame", "From a line of code to the memory behind it"],
   keep: ["Snapshots and capsules", "Copies of the store, and capsules cut from it"],
@@ -586,6 +620,7 @@ function spacePage(root, ctx, src, rest) {
     ask: () => askTab(page, ctx, src, arg),
     memories: () => memoriesTab(page, ctx, src, arg),
     sessions: () => sessionsTab(page, ctx, src, arg),
+    graph: () => graphTab(page, ctx, src, arg),
     receipts: () => (arg ? receiptPage(page, ctx, src, arg) : receiptsTab(page, ctx, src)),
     blame: () => blameTab(page, ctx, src, arg),
     keep: () => keepTab(page, ctx, src),
@@ -827,6 +862,271 @@ const REC = {
   preference: ["var(--s7)", "Rule"], fact: ["var(--s5)", "Fact"], todo: ["var(--s6)", "To do"], note: ["var(--s5)", "Note"], entity: ["var(--muted)", "Entity"],
 };
 const when = (secs) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–");
+
+// ---------------------------------------------------------------- graph
+
+const G_COLOR = { decision: "#3b6fd8", rule: "#8b5cf6", fact: "#16a34a", todo: "#e08a0b", note: "#64748b", entity: "#0d9488", file: "#8a94a6", session: "#b45309" };
+const G_KINDS = [["decision", "Decision"], ["rule", "Rule"], ["fact", "Fact"], ["todo", "To do"], ["entity", "Subject"], ["file", "File"], ["session", "Session"]];
+const G_EDGE = { about: "about", touches: "touched", from: "came from", supersedes: "replaced" };
+
+/**
+ * How a space's memory is connected: each note (a circle, by kind), the
+ * subjects it is about (entities, sized by how many notes name them), the
+ * files it touched, the session it came from and the note it replaced.
+ * A click lights up a node's neighbours and lists them; `focusId` (the
+ * link's last part) selects one when the page opens.
+ */
+function graphTab(page, ctx, src, focusId) {
+  const { h, card, failure, empty } = ctx.core;
+  const NS = "http://www.w3.org/2000/svg";
+  const S = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); return e; };
+  const show = { entity: true, file: true, session: false, replaced: true };
+  const find = h("input", { class: "input", type: "search", placeholder: "Find a subject, file or note", "aria-label": "Find a node", style: { maxWidth: "280px" } });
+  const opts = h("div", { class: "cx-gopts" }, [["entity", "Subjects"], ["file", "Files"], ["session", "Sessions"], ["replaced", "Replaced notes"]].map(([k, l]) => {
+    const b = h("input", { type: "checkbox", checked: show[k] });
+    b.onchange = () => { show[k] = b.checked; build(); };
+    return h("label", {}, b, l);
+  }));
+  const fitBtn = h("button", { class: "btn sm" }, "Fit");
+  const info = h("span", { class: "muted small" }, "Loading…");
+  const svg = S("svg", { class: "cx-gsvg", role: "img", "aria-label": "How the space's notes, subjects, files and sessions are connected" });
+  const side = h("div", { class: "cx-gside" });
+  const hint = () => side.replaceChildren(h("div", { class: "muted small" }, "Click a node to see what it is connected to. Drag the background to move, scroll or pinch to zoom, drag a node to place it."));
+  hint();
+  const legend = h("div", { class: "cx-glegend" }, G_KINDS.map(([k, l]) => h("span", {}, h("i", { class: "cx-gdot", style: { background: G_COLOR[k], borderRadius: k === "file" ? "1px" : k === "session" ? "1px" : "50%", transform: k === "session" ? "rotate(45deg)" : "" } }), l)));
+  const body = h("div", { class: "cx-graph" }, h("div", { class: "cx-gwrap" }, svg, legend), side);
+  page.append(card({ body: h("div", { class: "stack", style: { gap: "8px" } },
+    h("div", { class: "row wrap cx-gbar" }, find, opts, h("span", { class: "grow" }), info, fitBtn), body) }));
+
+  let data = null, nodes = [], edges = [], byId = new Map(), raf = 0, alpha = 0, gone = false, sel = null;
+  const view = { x: 0, y: 0, k: 1 };
+  const pos = new Map();
+  const gView = S("g"), gE = S("g"), gN = S("g"), gL = S("g");
+  gView.append(gE, gN, gL);
+  svg.append(gView);
+
+  const size = () => [svg.clientWidth || 800, svg.clientHeight || 600];
+  const build = () => {
+    if (!data) return;
+    const keep = (n) => n.type === "note" ? (n.current || show.replaced) : show[n.type];
+    nodes = data.nodes.filter(keep).map((n) => ({ ...n }));
+    byId = new Map(nodes.map((n) => [n.id, n]));
+    edges = data.edges.filter((e) => byId.has(e.s) && byId.has(e.t)).map((e) => ({ ...e, a: byId.get(e.s), b: byId.get(e.t) }));
+    // A subject or file no shown note names is left out.
+    const deg = new Map();
+    for (const e of edges) { deg.set(e.s, (deg.get(e.s) || 0) + 1); deg.set(e.t, (deg.get(e.t) || 0) + 1); }
+    nodes = nodes.filter((n) => n.type === "note" || deg.get(n.id));
+    byId = new Map(nodes.map((n) => [n.id, n]));
+    const [W, H] = size();
+    nodes.forEach((n, i) => {
+      const p = pos.get(n.id);
+      n.x = p ? p.x : W / 2 + Math.cos(i * 2.4) * (40 + (i * 7) % 260);
+      n.y = p ? p.y : H / 2 + Math.sin(i * 2.4) * (40 + (i * 11) % 220);
+      n.vx = n.vy = 0;
+      n.deg = deg.get(n.id) || 0;
+      n.r = n.type === "entity" ? 5 + Math.min(13, n.deg * 1.3) : n.type === "note" ? (n.kind === "rule" ? 6 : 5) : 5.5;
+    });
+    gE.replaceChildren(...edges.map((e) => (e.el = S("line", { class: "e" + (e.label === "supersedes" ? " sup" : e.label === "from" ? " from" : "") }))));
+    gN.replaceChildren(...nodes.map((n) => {
+      const c = G_COLOR[n.type === "note" ? n.kind : n.type] || G_COLOR.note;
+      const el = n.type === "note" ? S("circle", { r: n.r, fill: n.current ? c : "var(--surface)", stroke: n.current ? "var(--surface)" : c, "stroke-dasharray": n.current ? "" : "2 2" })
+        : n.type === "entity" ? S("circle", { r: n.r, fill: c, "fill-opacity": "0.85" })
+        : S("rect", { width: n.r * 2, height: n.r * 2, rx: 1.5, fill: c, transform: "" });
+      el.classList.add("n");
+      const t = S("title"); t.textContent = (n.type === "note" ? `${KIND_LABEL[n.kind] || n.kind}${n.current ? "" : " (replaced)"}: ` : n.type === "entity" ? "Subject: " : n.type === "file" ? "File: " : "Session: ") + n.label;
+      el.append(t);
+      el.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); grab = { n, moved: false, x: ev.clientX, y: ev.clientY }; svg.setPointerCapture?.(ev.pointerId); });
+      n.el = el;
+      return el;
+    }));
+    // Subjects, files and sessions carry their names; a note shows its text on hover and on a click.
+    gL.replaceChildren(...nodes.filter((n) => n.type !== "note").map((n) => {
+      const t = S("text", { class: n.type === "entity" && n.deg >= 3 ? "big" : n.type === "entity" && n.deg < 2 || n.type === "session" ? "minor" : "" });
+      t.textContent = n.label.length > 34 ? n.label.slice(0, 33) + "…" : n.label;
+      n.tl = t;
+      return t;
+    }));
+    const notes = nodes.filter((n) => n.type === "note").length;
+    info.textContent = `${notes} notes · ${nodes.length - notes} ${show.session ? "subjects, files and sessions" : "subjects and files"} · ${edges.length} links`;
+    // Laid out before it is shown (new nodes from where they start, the
+    // others from where they were), then fitted to the view.
+    alpha = pos.size ? 0.3 : 1;
+    for (let i = 0; i < 400 && alpha > 0.01; i++) step();
+    alpha = 0;
+    if (!fit()) requestAnimationFrame(() => fit());
+    if (sel && byId.has(sel)) select(sel, false); else { sel = null; mark(null); }
+  };
+
+  // One step of the layout: nodes push each other apart (on a coarse grid,
+  // so a few thousand stay quick), links pull their ends together, and a
+  // weak pull keeps the whole near the middle.
+  const step = () => {
+    const [W, H] = size();
+    const cell = 150, grid = new Map();
+    for (const n of nodes) { const k = Math.floor(n.x / cell) + "," + Math.floor(n.y / cell); (grid.get(k) || grid.set(k, []).get(k)).push(n); }
+    for (const n of nodes) {
+      const cx = Math.floor(n.x / cell), cy = Math.floor(n.y / cell);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const m of grid.get((cx + dx) + "," + (cy + dy)) || []) {
+        if (m === n) continue;
+        const x = n.x - m.x, y = n.y - m.y, d2 = x * x + y * y + 0.01;
+        if (d2 > cell * cell) continue;
+        const d = Math.sqrt(d2), f = (2600 + 80 * (n.r + m.r)) / d2 * alpha;
+        n.vx += x / d * f; n.vy += y / d * f;
+      }
+    }
+    for (const e of edges) {
+      const x = e.b.x - e.a.x, y = e.b.y - e.a.y, d = Math.sqrt(x * x + y * y) + 0.01;
+      const want = e.label === "from" ? 110 : 60 + e.a.r + e.b.r;
+      const f = (d - want) * 0.03 * alpha;
+      e.a.vx += x / d * f; e.a.vy += y / d * f; e.b.vx -= x / d * f; e.b.vy -= y / d * f;
+    }
+    for (const n of nodes) {
+      n.vx += (W / 2 - n.x) * 0.004 * alpha; n.vy += (H / 2 - n.y) * 0.004 * alpha;
+      if (grab && grab.n === n) { n.vx = n.vy = 0; continue; }
+      n.vx = Math.max(-25, Math.min(25, n.vx)); n.vy = Math.max(-25, Math.min(25, n.vy));
+      n.x += n.vx; n.y += n.vy; n.vx *= 0.6; n.vy *= 0.6;
+      pos.set(n.id, { x: n.x, y: n.y });
+    }
+    alpha *= 0.985;
+  };
+  // While a node is dragged, the others make room.
+  const tick = () => {
+    raf = 0;
+    if (gone) return;
+    if (alpha > 0.004 && nodes.length) { step(); draw(); }
+    if (alpha > 0.004) raf = requestAnimationFrame(tick);
+  };
+
+  const draw = () => {
+    gView.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+    svg.classList.toggle("near", view.k >= 1.4);
+    for (const e of edges) { e.el.setAttribute("x1", e.a.x); e.el.setAttribute("y1", e.a.y); e.el.setAttribute("x2", e.b.x); e.el.setAttribute("y2", e.b.y); }
+    for (const n of nodes) {
+      if (n.el.tagName === "circle") { n.el.setAttribute("cx", n.x); n.el.setAttribute("cy", n.y); }
+      else { n.el.setAttribute("x", n.x - n.r); n.el.setAttribute("y", n.y - n.r); if (n.type === "session") n.el.setAttribute("transform", `rotate(45 ${n.x} ${n.y})`); }
+      if (n.tl) { n.tl.setAttribute("x", n.x + n.r + 3); n.tl.setAttribute("y", n.y + 4); }
+    }
+  };
+
+  const fit = () => {
+    const [W, H] = size();
+    if (!nodes.length || !svg.clientWidth) return false;
+    const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y);
+    const [x0, x1, y0, y1] = [Math.min(...xs) - 20, Math.max(...xs) + 90, Math.min(...ys) - 20, Math.max(...ys) + 20];
+    const k = Math.min(1.6, 0.92 * Math.min(W / (x1 - x0), H / (y1 - y0)));
+    Object.assign(view, { k, x: W / 2 - k * (x0 + x1) / 2, y: H / 2 - k * (y0 + y1) / 2 });
+    draw();
+    return true;
+  };
+  const center = (n) => {
+    if (!n) return;
+    const [W, H] = size();
+    const k = Math.max(view.k, 1);
+    Object.assign(view, { k, x: W / 2 - k * n.x, y: H / 2 - k * n.y });
+    draw();
+  };
+  fitBtn.onclick = () => { fit(); };
+
+  // Lights up a set of nodes (and the links between them), dims the rest.
+  const mark = (ids) => {
+    const on = ids ? new Set(ids) : null;
+    for (const n of nodes) { n.el.classList.toggle("hl", !!on && n.id === sel); n.el.classList.toggle("dim", !!on && !on.has(n.id)); n.tl?.classList.toggle("dim", !!on && !on.has(n.id)); n.tl?.classList.toggle("on", !!on && on.has(n.id)); }
+    for (const e of edges) { const lit = !!on && on.has(e.s) && on.has(e.t) && (e.s === sel || e.t === sel || !sel); e.el.classList.toggle("hl", lit); e.el.classList.toggle("dim", !!on && !lit); }
+  };
+
+  const select = (id, move = true) => {
+    const n = byId.get(id);
+    if (!n) return;
+    sel = id;
+    history.replaceState(null, "", ctx.href(src.type, src.id, "graph", id));
+    const near = edges.filter((e) => e.s === id || e.t === id);
+    mark([id, ...near.map((e) => (e.s === id ? e.t : e.s))]);
+    if (move) center(n);
+    const kind = n.type === "note" ? kindBadge(ctx, n.kind) : h("span", { class: "badge" }, n.type === "entity" ? "Subject" : n.type === "file" ? "File" : "Session");
+    const link = (m) => h("a", { href: "#", class: m.type === "note" && !m.current ? "cx-gold" : "", title: m.type === "note" && !m.current ? "replaced" : null, onclick: (ev) => { ev.preventDefault(); select(m.id); } }, m.label.length > 120 ? m.label.slice(0, 119) + "…" : m.label);
+    // Its neighbours, by what links them: the notes about a subject, a note's subjects and files...
+    const groups = new Map();
+    for (const e of near) {
+      const m = e.s === id ? e.b : e.a;
+      const name = e.label === "supersedes" ? (e.s === id ? "Replaced" : "Replaced by") : e.s === id ? ({ about: "About", touches: "Touched", from: "From the session" }[e.label] || e.label) : m.type === "note" ? "Notes" : e.label;
+      (groups.get(name) || groups.set(name, []).get(name)).push(m);
+    }
+    const acts = [];
+    if (n.type === "note") acts.push(h("button", { class: "btn sm", onclick: () => historyDrawer(ctx, src, n.id) }, "Its history"));
+    if (n.type === "note" && n.session && n.session !== "-") acts.push(h("a", { class: "btn sm", href: ctx.href(src.type, src.id, "sessions", n.session) }, "Its session"));
+    if (n.type === "session") acts.push(h("a", { class: "btn sm", href: ctx.href(src.type, src.id, "sessions", n.session) }, "Read the session"));
+    if (n.type === "entity") acts.push(h("a", { class: "btn sm", href: ctx.href(src.type, src.id, "ask", `What do we know about ${n.label}?`) }, "Ask about it"));
+    if (n.type === "file" && src.tabs.includes("blame")) acts.push(h("a", { class: "btn sm", href: ctx.href(src.type, src.id, "blame", n.label) }, "Blame it"));
+    side.replaceChildren(
+      h("div", { class: "cx-why" }, kind, n.type === "note" && !n.current ? h("span", {}, "replaced") : null, n.ts ? h("span", {}, day(n.ts)) : null),
+      h("div", { class: "cx-gtitle" + (n.type === "note" && !n.current ? " old" : "") }, n.type === "note" ? n.text : n.label),
+      acts.length ? h("div", { class: "row wrap", style: { gap: "6px", margin: "8px 0" } }, acts) : null,
+      ...[...groups].map(([name, ms]) => h("div", { class: "cx-gnear" }, h("div", { class: "cx-gh" }, `${name} · ${ms.length}`),
+        h("ul", {}, ms.slice(0, 40).map((m) => h("li", {}, m.type === "note" ? h("i", { class: "cx-gdot", style: { background: G_COLOR[m.kind] || G_COLOR.note } }) : null, link(m)))))),
+      h("button", { class: "btn ghost sm", style: { marginTop: "8px" }, onclick: () => { sel = null; mark(null); hint(); history.replaceState(null, "", ctx.href(src.type, src.id, "graph")); } }, "Clear"));
+  };
+
+  // Finding: the nodes whose names hold the words light up; Enter picks the first.
+  const matches = () => { const q = find.value.trim().toLowerCase(); return q ? nodes.filter((n) => (n.label || "").toLowerCase().includes(q) || (n.text || "").toLowerCase().includes(q)) : []; };
+  find.oninput = () => { const m = matches(); sel = null; mark(find.value.trim() ? m.map((n) => n.id) : null); };
+  find.onkeydown = (e) => { if (e.key === "Enter") { const m = matches().sort((a, b) => (a.type === "note") - (b.type === "note") || b.deg - a.deg); if (m[0]) select(m[0].id); } };
+
+  // Pan, zoom and drag, with a mouse, a pen or fingers.
+  let grab = null, pan = null;
+  const pts = new Map();
+  svg.addEventListener("pointerdown", (ev) => { pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY }); if (!grab) pan = { x: ev.clientX - view.x, y: ev.clientY - view.y, moved: false }; svg.setPointerCapture?.(ev.pointerId); });
+  svg.addEventListener("pointermove", (ev) => {
+    const prev = pts.get(ev.pointerId);
+    if (prev && pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      const d0 = Math.hypot(a.x - b.x, a.y - b.y);
+      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      const [c, d] = [...pts.values()];
+      const d1 = Math.hypot(c.x - d.x, c.y - d.y);
+      if (d0 > 0) zoomAt((c.x + d.x) / 2, (c.y + d.y) / 2, d1 / d0);
+      return;
+    }
+    if (prev) pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (grab) {
+      const b = svg.getBoundingClientRect();
+      if (Math.abs(ev.clientX - grab.x) + Math.abs(ev.clientY - grab.y) > 3) grab.moved = true;
+      grab.n.x = (ev.clientX - b.left - view.x) / view.k; grab.n.y = (ev.clientY - b.top - view.y) / view.k;
+      pos.set(grab.n.id, { x: grab.n.x, y: grab.n.y });
+      if (grab.moved) { alpha = Math.max(alpha, 0.15); if (!raf) raf = requestAnimationFrame(tick); draw(); }
+    } else if (pan) {
+      if (Math.abs(ev.clientX - view.x - pan.x) + Math.abs(ev.clientY - view.y - pan.y) > 3) pan.moved = true;
+      view.x = ev.clientX - pan.x; view.y = ev.clientY - pan.y; draw();
+    }
+  });
+  const up = (ev) => {
+    pts.delete(ev.pointerId);
+    if (grab && !grab.moved) select(grab.n.id, false);
+    else if (pan && !pan.moved && !grab && sel) { sel = null; mark(null); hint(); history.replaceState(null, "", ctx.href(src.type, src.id, "graph")); }
+    grab = null; pan = null;
+  };
+  svg.addEventListener("pointerup", up);
+  svg.addEventListener("pointercancel", up);
+  const zoomAt = (cx, cy, f) => {
+    const b = svg.getBoundingClientRect(), mx = cx - b.left, my = cy - b.top;
+    const k = Math.min(6, Math.max(0.15, view.k * f));
+    view.x = mx - (mx - view.x) * k / view.k; view.y = my - (my - view.y) * k / view.k; view.k = k;
+    draw();
+  };
+  svg.addEventListener("wheel", (ev) => { ev.preventDefault(); zoomAt(ev.clientX, ev.clientY, Math.exp(-ev.deltaY * 0.0015)); }, { passive: false });
+
+  src.graph().then((j) => {
+    if (gone) return;
+    if (!j.nodes?.length) { body.replaceWith(empty("note", "Nothing to draw yet", "The graph links the space's notes to what they are about: it fills as decisions, rules and facts are written down.")); info.textContent = ""; return; }
+    data = j;
+    // A link to a session, file or replaced note shows it, whatever the boxes say.
+    const f = focusId && j.nodes.find((n) => n.id === focusId);
+    if (f?.type === "session") { show.session = true; opts.querySelectorAll("input")[2].checked = true; }
+    build();
+    if (f) select(f.id, false);
+  }).catch((e) => { if (!gone) { body.replaceWith(failure(e, "The graph")); info.textContent = ""; } });
+
+  return () => { gone = true; cancelAnimationFrame(raf); };
+}
 
 /**
  * Sessions: the list, the latest first, each titled by its first prompt;

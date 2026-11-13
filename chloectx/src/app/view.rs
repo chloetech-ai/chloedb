@@ -283,6 +283,91 @@ pub fn ask(store: &Store, question: &str, budget: usize) -> Result<Json> {
     }))
 }
 
+/// A note as the graph draws it: from a store's records, or from the rows
+/// `chloectx sync` copied (`memory.rs`).
+pub struct GraphNote {
+    pub id: String,
+    /// As callers name it: `rule` for a preference.
+    pub kind: String,
+    pub tag: String,
+    pub text: String,
+    pub ts: i64,
+    pub session: String,
+    /// `(label, to)`: `about` an entity (`e:…`), `touches` a file (`f:…`),
+    /// `supersedes` an older note.
+    pub links: Vec<(String, String)>,
+}
+
+/// The most notes the graph draws, the newest first.
+pub const GRAPH_NOTES: usize = 1500;
+
+/// How a space's memory is connected: its notes, the subjects (entities)
+/// and files they are about, the sessions they came from, and which note
+/// replaced which. `names` are the entities' own names, `titles` each
+/// session's first prompt. Every node and edge is answered: the page picks
+/// what to draw (replaced notes, files, sessions).
+pub fn graph_of(notes: &[GraphNote], names: &HashMap<String, String>, titles: &HashMap<String, String>) -> Json {
+    let notes = &notes[..notes.len().min(GRAPH_NOTES)];
+    let ids: HashSet<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+    // A copy synced before its note was replaced may not say so: the note
+    // that replaced it does.
+    let replaced: HashSet<&str> = notes.iter().flat_map(|n| n.links.iter().filter(|(l, _)| l == "supersedes").map(|(_, t)| t.as_str())).collect();
+    let mut nodes: Vec<Json> = Vec::new();
+    let mut edges: Vec<Json> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut add = |id: &str, node: Json, nodes: &mut Vec<Json>| {
+        if seen.insert(id.to_string()) {
+            nodes.push(node);
+        }
+    };
+    for n in notes {
+        let current = n.tag != "superseded" && n.tag != "done" && !replaced.contains(n.id.as_str());
+        add(&n.id, json!({"id": n.id, "type": "note", "kind": n.kind, "label": clip(&n.text, 140).0, "text": clip(&n.text, 600).0, "tag": n.tag, "current": current, "ts": n.ts, "session": n.session}), &mut nodes);
+        for (label, to) in &n.links {
+            match label.as_str() {
+                "about" if to.starts_with("e:") => {
+                    let name = names.get(to).cloned().unwrap_or_else(|| to[2..].to_string());
+                    add(to, json!({"id": to, "type": "entity", "label": name}), &mut nodes);
+                }
+                "touches" if to.starts_with("f:") => add(to, json!({"id": to, "type": "file", "label": &to[2..]}), &mut nodes),
+                "supersedes" if ids.contains(to.as_str()) => {}
+                _ => continue,
+            }
+            edges.push(json!({"s": n.id, "t": to, "label": label}));
+        }
+        if !n.session.is_empty() && n.session != "-" {
+            let sid = format!("s:{}", n.session);
+            let title = titles.get(&n.session).cloned().unwrap_or_else(|| format!("Session {}", n.session.chars().take(8).collect::<String>()));
+            add(&sid, json!({"id": sid, "type": "session", "label": title, "session": n.session}), &mut nodes);
+            edges.push(json!({"s": n.id, "t": sid, "label": "from"}));
+        }
+    }
+    json!({"nodes": nodes, "edges": edges})
+}
+
+/// A store's graph, as [`graph_of`] draws it.
+pub fn graph(store: &Store) -> Result<Json> {
+    let got = store.latest(&NOTE_KINDS, GRAPH_NOTES, &Filter::default())?;
+    let notes: Vec<GraphNote> = got
+        .iter()
+        .map(|r| GraphNote {
+            id: r.id.clone(),
+            kind: super::kind_name(r).to_string(),
+            tag: r.tag.clone(),
+            text: r.text.clone(),
+            ts: r.ts,
+            session: r.session.clone(),
+            links: r.links.iter().map(|l| (l.label.clone(), l.to.clone())).collect(),
+        })
+        .collect();
+    let mut want: Vec<String> = notes.iter().flat_map(|n| n.links.iter().filter(|(l, t)| l == "about" && t.starts_with("e:")).map(|(_, t)| t.clone())).collect();
+    want.sort();
+    want.dedup();
+    let names: HashMap<String, String> = store.get(&want)?.into_iter().map(|r| (r.id, r.text)).collect();
+    let titles: HashMap<String, String> = titles(store)?.into_iter().map(|(s, (t, _))| (s, t)).collect();
+    Ok(graph_of(&notes, &names, &titles))
+}
+
 /// One of the answers above, by name, with its arguments in a JSON object:
 /// the daemon's `view` op, which `chloectx app --local-stores` calls to
 /// read a store on its machine.
@@ -302,7 +387,8 @@ pub fn by_name(store: &Store, req: &Json) -> Result<Json> {
         }
         "history" => history(store, s("id").unwrap_or(""))?.ok_or_else(|| err(format!("no note {}", s("id").unwrap_or("")))),
         "ask" => ask(store, s("question").unwrap_or(""), n("budget", 4000)),
-        w => Err(err(format!("no view {w:?}: overview, sessions, records, notes, history or ask"))),
+        "graph" => graph(store),
+        w => Err(err(format!("no view {w:?}: overview, sessions, records, notes, history, ask or graph"))),
     }
 }
 
@@ -359,6 +445,15 @@ mod tests {
         let items = a["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["text"].as_str().unwrap().contains("1000 EUR")), "{a}");
         assert!(!items.iter().any(|i| i["id"] == json!(old[0].id)), "a replaced decision is left out: {a}");
+        // The graph: the notes, the session each came from, and which replaced which.
+        let g = view(json!({"what": "graph"}));
+        let node = |id: &str| g["nodes"].as_array().unwrap().iter().find(|n| n["id"] == id).cloned();
+        let old_node = node(&old[0].id).unwrap_or_else(|| panic!("{g}"));
+        assert_eq!(old_node["current"], false, "{g}");
+        assert_eq!(node("s:s1").unwrap()["label"], "Who approves large refunds?", "{g}");
+        let edges = g["edges"].as_array().unwrap();
+        assert!(edges.iter().any(|e| e["label"] == "supersedes" && e["t"] == json!(old[0].id)), "{g}");
+        assert!(edges.iter().any(|e| e["label"] == "from" && e["t"] == "s:s2"), "{g}");
         assert!(by_name(&s, &json!({"what": "nothing"})).is_err());
     }
 }

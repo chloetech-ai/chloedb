@@ -119,6 +119,7 @@ chloedb-server lets a key limited to tables call the app, because the app's mani
 - **Ask**: a question, answered as an agent would be: the note that answers it first, the rules that apply, what else bears on it and what past conversations said, then the scores behind each (BM25, cosine, section, tokens), what was left out and why, and the context as the agent gets it. A link carries the question (`…/ask/<question>`). A synced project, which has no store to build a context from, answers with its records ranked by BM25.
 - **Memories**: every note, by kind, current or with its history; a note opens on the versions it replaced and those that replaced it. A team space's notes can be replaced or retired here.
 - **Sessions**: each session titled by its first prompt, read as the conversation it recorded: turn by turn, the prompt, the tool calls (folded), the answer and the notes written down from the turn. *Every record* searches all of them (BM25) and filters by kind. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id.
+- **Graph**: how its memory is connected: each note (a circle, by kind; a replaced one hollow), the subjects it is about (entities, larger the more notes name them), the files it touched, the session it came from (off by default) and the note it replaced (a dashed link). A click lights up a node's neighbours and lists them, with its history, its session, *Ask about it* or *Blame it*; a search finds a subject, file or note; the link carries the selected node (`…/graph/e:refund`).
 - **Connect**: how to use the space. A team space: the `claude mcp add` line with a key limited to its table, the HTTP calls and the SQL that read it, and apps built from it. A Claude Code project: its MCP tools, its CLI, and how to sync it here.
 - **Receipts**, **Blame**, **Snapshots and capsules**: a store of this machine only ([Receipts and blame](receipts.md#in-the-command-center)).
 
@@ -133,8 +134,9 @@ What the tabs read, beside the space calls above:
 | `GET /v1/spaces/:s/overview` | `{records, sessions, first, last, by_kind, live, rules, decisions, facts, todos, changes, recent_sessions}`: `live` counts the current notes by kind, each list holds the newest 12, `changes` the notes that replaced another with `was` (the older texts) |
 | `GET /v1/spaces/:s/sessions` | `{sessions: [{session, records, first, last, turns, title}], by_kind}`: the latest first; `title` is the first prompt's first line, `turns` its prompts |
 | `GET /v1/spaces/:s/records?session=&kind=&q=&limit=&before=` | `{records, more}`: a session's in order, else the latest first (`before`, a `seq`, pages back), or the best matches for `q` (BM25); at most 500 |
+| `GET /v1/spaces/:s/graph` | `{nodes, edges}`: nodes `{id, type, label}` of type `note` (with `kind`, `text`, `tag`, `current`, `ts`, `session`), `entity`, `file` (`f:<path>`) and `session` (`s:<id>`, its title); edges `{s, t, label}`: `about`, `touches`, `from` (the session) and `supersedes`; the newest 1,500 notes |
 | `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}], create}` (`create`: the table's `CREATE TABLE`) |
-| `GET /v1/memory/overview?project=`, `/v1/memory/notes?project=&kind=&all=1` | a synced project's overview and notes, as a space's |
+| `GET /v1/memory/overview?project=`, `/v1/memory/notes?project=&kind=&all=1`, `/v1/memory/graph?project=` | a synced project's overview, notes and graph, as a space's |
 | `GET /v1/memory/sessions?project=`, `/v1/memory/records?project=&…` | its sessions and records, as a space's |
 
 A store of this machine answers the same calls under `/v1/local/:store/` ([the list](receipts.md#in-the-command-center)).

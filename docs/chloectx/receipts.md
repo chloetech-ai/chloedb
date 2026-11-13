@@ -155,7 +155,7 @@ the person reading its transcript) can ask why a record ranked where it did.
 ChloeCtx's page in ChloeDB's command center (`chloedb-server --app
 chloectx=URL`, then Apps → ChloeCtx) lists every space it can read; a
 Claude Code store of the machine the app runs on opens with three more
-tabs (Receipts, Blame, Snapshots and capsules) beside Overview, Ask, Memories, Sessions and Connect
+tabs (Receipts, Blame, Snapshots and capsules) beside Overview, Ask, Memories, Sessions, Graph and Connect
 (`#/app/chloectx/store/<store>/receipts`, `…/blame/<path:line>`):
 
 - **Receipts**: the store's newest receipts (when, which recall, what it
@@ -187,7 +187,7 @@ behind them, under the app's prefix (`/v1/apps/chloectx`):
 | `GET /v1/local/:store/blame?target=path:line` | blame, as `chloectx blame --json` |
 | `GET`, `POST {name}` `/v1/local/:store/snapshots`, `DELETE /v1/local/:store/snapshots/:name` | the kept snapshots; keep one; drop one |
 | `GET`, `POST {title?, kinds?, since_days?}` `/v1/local/:store/capsules` | the capsules cut from the store, newest first; one cut, its manifest and folder |
-| `GET /v1/local/:store/overview`, `/sessions`, `/records`, `/notes[/:id]`, `POST /v1/local/:store/ask` | what the other tabs read, as a team space's calls of the same names answer ([the app](app.md#spaces-and-what-each-shows)) |
+| `GET /v1/local/:store/overview`, `/sessions`, `/records`, `/notes[/:id]`, `/graph`, `POST /v1/local/:store/ask` | what the other tabs read, as a team space's calls of the same names answer ([the app](app.md#spaces-and-what-each-shows)) |
 | `GET /v1/local/:store/stats` | `chloectx stats --json` |
 
 ## How blame finds the edit

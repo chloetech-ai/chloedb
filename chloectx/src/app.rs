@@ -1101,7 +1101,7 @@ fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::
         ("POST", ["v1", "incidents", "match"]) => (1, Some(incidents)),
         ("POST", ["v1", "spaces"]) => (3, Some(table_of(body_json(req)?["name"].as_str().unwrap_or("").trim()))),
         ("DELETE", ["v1", "spaces", s]) => (3, Some(table_of(s))),
-        ("GET", ["v1", "spaces", s, "notes" | "overview" | "sessions" | "records", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
+        ("GET", ["v1", "spaces", s, "notes" | "overview" | "sessions" | "records" | "graph", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
         ("POST", ["v1", "spaces", s, "notes"]) | ("DELETE", ["v1", "spaces", s, "notes", _]) | ("POST", ["v1", "spaces", s, "exchanges"]) => (2, Some(table_of(s))),
         ("GET", ["v1", "incidents", ..]) => (1, Some(incidents)),
         ("GET", ["v1", "memory", ..]) => (1, Some("chloectx_memory".to_string())),
@@ -1170,6 +1170,7 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "memory", "sessions"]) => app.memory_sessions(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "notes"]) => app.memory_notes(req.param("project").unwrap_or(""), req.param("kind"), req.param("all").is_some_and(|v| v == "1" || v == "true")),
         ("GET", ["v1", "memory", "overview"]) => app.memory_overview(req.param("project").unwrap_or("")),
+        ("GET", ["v1", "memory", "graph"]) => app.memory_graph(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "records"]) => app.memory_records(
             req.param("project").unwrap_or(""),
             req.param("session"),
@@ -1197,6 +1198,7 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("DELETE", ["v1", "spaces", s, "notes", id]) => app.retire(s, id),
         ("POST", ["v1", "spaces", s, "exchanges"]) => app.exchange(s, &body_json(req)?),
         ("GET", ["v1", "spaces", s, "overview"]) => app.space_view(s, &json!({"what": "overview"})),
+        ("GET", ["v1", "spaces", s, "graph"]) => app.space_view(s, &json!({"what": "graph"})),
         ("GET", ["v1", "spaces", s, "sessions"]) => app.space_view(s, &json!({"what": "sessions"})),
         ("GET", ["v1", "spaces", s, "records"]) => app.space_view(s, &view_args(req, "records")),
         ("GET", ["v1", "spaces", s, "ask"]) => app.ask(s, req.param("q").unwrap_or(""), num("budget", 4000)),
@@ -1239,6 +1241,7 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("POST", ["v1", "spaces", s, "apps", id, "open"]) => app.open_build(s, id),
         ("GET", ["v1", "local"]) => app.local_stores(),
         ("GET", ["v1", "local", st, "overview"]) => app.local_rpc(st, &json!({"op": "view", "what": "overview"}), 60),
+        ("GET", ["v1", "local", st, "graph"]) => app.local_rpc(st, &json!({"op": "view", "what": "graph"}), 60),
         ("GET", ["v1", "local", st, "sessions"]) => app.local_rpc(st, &json!({"op": "view", "what": "sessions"}), 60),
         ("GET", ["v1", "local", st, "records"]) => app.local_rpc(st, &local_view(view_args(req, "records")), 60),
         ("GET", ["v1", "local", st, "notes"]) => app.local_rpc(st, &local_view(view_args(req, "notes")), 60),
@@ -1496,7 +1499,7 @@ mod tests {
         assert_eq!(check("POST", "/v1/incidents", &own, "{}"), Err(403));
         assert_eq!(check("POST", "/v1/spaces/other/notes", &own, "{}"), Err(403));
         assert_eq!(check("GET", "/v1/spaces/other/notes", &own, ""), Err(403));
-        for view in ["overview", "sessions", "records?session=s1"] {
+        for view in ["overview", "sessions", "records?session=s1", "graph"] {
             assert!(check("GET", &format!("/v1/spaces/ops_a/{view}"), &own, "").is_ok(), "{view}");
             assert_eq!(check("GET", &format!("/v1/spaces/other/{view}"), &own, ""), Err(403), "{view}");
         }

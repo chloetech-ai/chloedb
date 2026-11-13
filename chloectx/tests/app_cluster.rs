@@ -405,6 +405,11 @@ fn app_in_a_cluster() {
     let rs = app.get(&format!("/v1/spaces/billing/records?session={session}"));
     let kinds: Vec<&str> = rs["records"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"prompt") && kinds.contains(&"answer"), "{rs}");
+    let g = app.get("/v1/spaces/billing/graph");
+    let gn = g["nodes"].as_array().unwrap();
+    assert!(gn.iter().any(|n| n["id"] == new["id"] && n["current"] == true) && gn.iter().any(|n| n["id"] == old["id"] && n["current"] == false), "{g}");
+    assert!(gn.iter().any(|n| n["type"] == "entity" && n["label"] == "refunds"), "{g}");
+    assert!(g["edges"].as_array().unwrap().iter().any(|e| e["s"] == new["id"] && e["t"] == old["id"] && e["label"] == "supersedes"), "{g}");
     let found = app.get("/v1/spaces/billing/records?q=dunning");
     assert!(!found["records"].as_array().unwrap().is_empty(), "{found}");
 
@@ -638,6 +643,8 @@ fn local_stores_through_the_app() {
     assert_eq!(app.get(&format!("/v1/local/proj-test/notes/{id}"))["note"]["id"], json!(id));
     let a = app.post("/v1/local/proj-test/ask", json!({"question": "how do payment retries back off?", "budget": 1000}));
     assert!(a["items"].as_array().unwrap().iter().any(|i| i["id"] == json!(id)), "{a}");
+    let g = app.get("/v1/local/proj-test/graph");
+    assert!(g["nodes"].as_array().unwrap().iter().any(|n| n["id"] == json!(id) && n["type"] == "note"), "{g}");
     // A capsule cut from it, then listed.
     let cut = app.post("/v1/local/proj-test/capsules", json!({"title": "Retries"}));
     assert!(cut["records"].as_i64().unwrap() >= 1 && cut["title"] == "Retries", "{cut}");

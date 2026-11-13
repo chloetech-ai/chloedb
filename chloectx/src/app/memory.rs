@@ -257,6 +257,58 @@ impl App {
     }
 }
 
+impl App {
+    /// `GET /v1/memory/graph?project=`: how a synced project's memory is
+    /// connected, as [`super::view::graph_of`] answers a space's.
+    pub fn memory_graph(&self, project: &str) -> Answer {
+        if project.is_empty() {
+            return Err(bad("which project? (?project=owner/name)"));
+        }
+        if !self.memory_exists()? {
+            return Ok(json!({"nodes": [], "edges": []}));
+        }
+        let p = || Params::new().set("p", Value::Str(project.to_string()));
+        let rs = self.cluster.query(
+            &format!("SELECT {COLUMNS} FROM {TABLE} WHERE project = :p AND kind IN ('decision', 'preference', 'fact', 'todo', 'note') ORDER BY seq DESC LIMIT {}", super::view::GRAPH_NOTES),
+            &p(),
+        )?;
+        let notes: Vec<super::view::GraphNote> = rs
+            .rows
+            .iter()
+            .map(|r| {
+                let links: Vec<Json> = serde_json::from_str(&str_of(r.get(11))).unwrap_or_default();
+                super::view::GraphNote {
+                    id: str_of(r.first()),
+                    kind: match str_of(r.get(2)).as_str() {
+                        "preference" => "rule".to_string(),
+                        k => k.to_string(),
+                    },
+                    tag: str_of(r.get(3)),
+                    text: str_of(r.get(9)),
+                    ts: int_of(r.get(6)),
+                    session: str_of(r.get(1)),
+                    links: links.iter().filter_map(|l| Some((l["label"].as_str()?.to_string(), l["to"].as_str()?.to_string()))).collect(),
+                }
+            })
+            .collect();
+        let names: HashMap<String, String> = self
+            .cluster
+            .query(&format!("SELECT rid, content FROM {TABLE} WHERE project = :p AND kind = 'entity' LIMIT 10000"), &p())?
+            .rows
+            .iter()
+            .map(|r| (str_of(r.first()), str_of(r.get(1))))
+            .collect();
+        let ss = self.memory_sessions(project)?;
+        let titles: HashMap<String, String> = ss["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| Some((s["session"].as_str()?.to_string(), s["title"].as_str()?.to_string())))
+            .collect();
+        Ok(super::view::graph_of(&notes, &names, &titles))
+    }
+}
+
 /// A synced note as a space's notes are answered (`kind` as callers name
 /// it: `rule` for a preference), with the notes it replaced and that
 /// replaced it from its links.
