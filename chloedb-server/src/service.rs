@@ -184,6 +184,10 @@ pub enum Backend {
     Cluster(Arc<Coordinator>),
 }
 
+/// How long a coordinator keeps the gazetteers of query understanding
+/// before it reads them from its shards again.
+pub const GAZETTEER_TTL: Duration = Duration::from_secs(60);
+
 /// The most expired rows one transaction of the expirer deletes
 /// ([`Service::expire_due`]).
 pub const EXPIRE_BATCH: usize = 10_000;
@@ -233,6 +237,11 @@ pub struct QueryReq {
     /// statistics: a run of a CPU profile's query ([`crate::profiler`]),
     /// which runs it thousands of times. Still counted in the metrics.
     pub quiet: bool,
+    /// A read of the server's own, not a client's: the rows a classifier
+    /// trains on, `chunks_of` splits or mining reads. Not held to
+    /// `--max-rows` (through a coordinator, a shard still holds a leaf to
+    /// [`compound::MAX_ROWS`]).
+    pub own_read: bool,
     /// A leaf of a compound query that DataFusion runs: its rows as Arrow
     /// columns when there are more than this many ([`Leaf`]), which a
     /// coordinator asks its shards for (protocol 10,
@@ -466,6 +475,9 @@ pub struct Service {
     /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
     /// reaches ([`crate::apps`]).
     pub apps: crate::apps::Apps,
+    /// The tenants this server opens from an object store (`--tenants`;
+    /// experimental, [`crate::tenants`]).
+    pub tenants: Option<Arc<crate::tenants::Tenants>>,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
     /// The coordinators this server knows ([`crate::peers`]).
@@ -618,6 +630,9 @@ pub struct Service {
     idempotency: Arc<idem::Keys>,
     /// The synonym list `synonyms => 1` searches use, and its file.
     synonyms: RwLock<Option<Arc<Synonyms>>>,
+    /// A coordinator's gazetteers for query understanding
+    /// ([`Service::gazetteers`]), with when they were read.
+    gazetteers: std::sync::Mutex<HashMap<(String, String, chloedb::text::Analyzer), (Instant, Arc<chloedb::query::understand::Gazetteer>)>>,
     synonyms_file: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     backup_dir: Option<PathBuf>,
@@ -711,6 +726,7 @@ impl Service {
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
             apps: Default::default(),
+            tenants: None,
             fleet: Default::default(),
             peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
@@ -773,6 +789,7 @@ impl Service {
             writer_state,
             idempotency,
             synonyms: RwLock::new(None),
+            gazetteers: std::sync::Mutex::new(HashMap::new()),
             synonyms_file: None,
             backup_dir: None,
             slices: None,
@@ -2547,6 +2564,56 @@ impl Service {
         Err(ApiError { status: 404, message: format!("no row names a file of sha256 {sha256}") })
     }
 
+    /// The gazetteers of keyword fields that query understanding reads: a
+    /// server's from its database, read once per version of the table; a
+    /// coordinator's by a query of its shards, kept for
+    /// [`GAZETTEER_TTL`].
+    pub async fn gazetteers(self: &Arc<Self>, needs: &[(String, String, chloedb::text::Analyzer)], like: Option<&QueryReq>) -> Result<chloedb::query::understand::Gazetteers, ApiError> {
+        if let Backend::Local(db) = &self.backend {
+            let (db, needs) = (db.clone(), needs.to_vec());
+            return Ok(tokio::task::spawn_blocking(move || db.gazetteers(&needs)).await.map_err(ApiError::internal)??);
+        }
+        let mut out = chloedb::query::understand::Gazetteers::new();
+        for key in needs {
+            if let Some((at, g)) = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+                if at.elapsed() < GAZETTEER_TTL {
+                    out.insert(key.clone(), g.clone());
+                    continue;
+                }
+            }
+            let mut r = like.cloned().unwrap_or_default();
+            (r.sql, r.params, r.scroll, r.hold) = (chloedb::query::understand::dictionary_sql(&key.0, &key.1), Params::new(), None, false);
+            let rs = Box::pin(self.query(r)).await?.rs;
+            let g = Arc::new(chloedb::query::understand::Gazetteer::build(&key.1, &rs, key.2));
+            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (Instant::now(), g.clone()));
+            out.insert(key.clone(), g);
+        }
+        Ok(out)
+    }
+
+    /// What the words of `text` say for `field` of `table`
+    /// ([`chloedb::db::Db::understand`]), on a server or a coordinator.
+    pub async fn understand(self: &Arc<Self>, table: &str, field: &str, text: &str, opts: &chloedb::query::understand::Options) -> Result<chloedb::query::understand::Understood, ApiError> {
+        let catalog = self.catalog();
+        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(table)).ok_or_else(|| ApiError::bad(format!("no table {table}")))?;
+        let gaz = self.gazetteers(&chloedb::query::understand::needs_of(schema, field, opts)?, None).await?;
+        let mut u = chloedb::query::understand::understand_in(schema, field, text, opts, &gaz)?;
+        let counts = self.understanding_counts(&u, None).await?;
+        u.confirm(&counts);
+        Ok(u)
+    }
+
+    /// The answers of [`chloedb::query::understand::Understood::checks`]'s queries.
+    async fn understanding_counts(self: &Arc<Self>, u: &chloedb::query::understand::Understood, like: Option<&QueryReq>) -> Result<Vec<u64>, ApiError> {
+        let mut out = Vec::new();
+        for c in u.checks() {
+            let mut r = like.cloned().unwrap_or_default();
+            (r.sql, r.params, r.scroll, r.hold) = (c, Params::new(), None, false);
+            out.push(chloedb::query::understand::count_of(&Box::pin(self.query(r)).await?.rs));
+        }
+        Ok(out)
+    }
+
     /// Runs a query, or its plan when it has one. A coordinator plans a
     /// query by a rank profile with the profile its shards held when it
     /// last asked; when a shard refuses the plan because its profile has
@@ -2586,14 +2653,109 @@ impl Service {
                 return Ok(a);
             }
         }
+        // The chunks of a table's text (`FROM chunks_of(table, field)`,
+        // [`chloedb::query::chunks`]): its rows as any query finds them,
+        // split here.
         if req.plan.is_none() && !req.shard {
-            if let Some(split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+            if let Some(c) = chloedb::query::chunks::of_sql(&req.sql, &req.params)? {
+                let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", c.table)))?;
+                // As many of the table's rows as fill the LIMIT, read again
+                // with more when rows without text leave it unfilled.
+                let mut rows = c.source_rows();
+                loop {
+                    let mut source = req.clone();
+                    (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql_of(&schema, rows)?, None, false, true);
+                    let mut a = Box::pin(self.query(source)).await?;
+                    let t0 = Instant::now();
+                    let chunks = c.finish(&a.rs);
+                    if let Some(more) = c.more_rows(rows, &a.rs, &chunks) {
+                        rows = more;
+                        continue;
+                    }
+                    a.rs = chunks;
+                    a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
+                    return Ok(a);
+                }
+            }
+        }
+        // Understood words (`bm25(.., understand => 'boost')`,
+        // [`chloedb::query::understand`]): the table's keyword values the
+        // words name become conditions, then the query runs as any does
+        // (and may still expand).
+        if req.plan.is_none() && !req.shard {
+            if let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? {
+                let t0 = Instant::now();
+                let catalog = self.catalog();
+                let gaz = self.gazetteers(&u.needs(&catalog)?, Some(&req)).await?;
+                let mut made = u.understood(&catalog, &gaz, &req.params)?;
+                for m in &mut made {
+                    let counts = self.understanding_counts(m, Some(&req)).await?;
+                    m.confirm(&counts);
+                }
+                let mut second = req.clone();
+                second.sql = u.rewrite(&made)?.to_string();
+                let mut a = Box::pin(self.query(second)).await?;
+                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
+        // Expanded ranking (`bm25(.., expand => n)`, [`chloedb::query::prf`]):
+        // the rows of each expanded call first, as any query finds them (a
+        // coordinator's from its shards, merged), then the query rewritten
+        // to the terms they hold, which every shard ranks by alike.
+        if req.plan.is_none() && !req.shard {
+            if let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? {
+                let t0 = Instant::now();
+                let mut rows = Vec::new();
+                let catalog = self.catalog();
+                let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
+                for f in x.feedback(&schemas)? {
+                    let mut fr = req.clone();
+                    (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                    rows.push(Box::pin(self.query(fr)).await?.rs);
+                }
+                let analyzers = x
+                    .fields()
+                    .iter()
+                    .map(|(t, f)| {
+                        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
+                        Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
+                    })
+                    .collect::<Result<Vec<_>, ApiError>>()?;
+                let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+                let mut second = req.clone();
+                second.sql = rewritten.to_string();
+                let mut a = Box::pin(self.query(second)).await?;
+                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
+        if req.plan.is_none() && !req.shard {
+            if let Some(mut split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+                // The calls read no more rows than a query answers.
+                if let Some(m) = self.max_rows {
+                    split.cap_rows(m);
+                }
+                // Calls of a classifier on a parameter, computed: the query
+                // runs as any does.
+                if split.is_folded() {
+                    let mut folded = req.clone();
+                    folded.sql = split.first.to_string();
+                    let mut a = self.query_admitted(folded).await?;
+                    a.rs.stats.plan.insert(0, split.folded_line());
+                    return Ok(a);
+                }
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that calls llm() is not scrolled: page it with LIMIT and OFFSET"));
                 }
                 let mut first = req.clone();
                 // As text that reads back as the very first step.
                 first.sql = split.first_sql()?;
+                // It reads one row past what the calls take, to say there
+                // are more: the second step answers within --max-rows.
+                first.own_read = true;
                 let mut a = self.query_admitted(first).await?;
                 let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
                 let (params, models) = (req.params.clone(), self.models_dir());
@@ -2824,9 +2986,11 @@ impl Service {
                         synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()),
                         // A coordinator's compound queries ask a shard for
                         // as many rows as a compound query's leaf may hold.
-                        max_rows: if req.shard { self.max_rows.map(|m| m.max(compound::MAX_ROWS + 1)) } else { self.max_rows },
+                        max_rows: if req.own_read { None } else if req.shard { self.max_rows.map(|m| m.max(compound::MAX_ROWS + 1)) } else { self.max_rows },
                         max_groups: self.max_groups,
-                        memory: self.query_memory.clone(),
+                        // The server's own read is held to a budget of its
+                        // own rather than to --max-rows.
+                        memory: if req.own_read { chloedb::query::memory::own_read_budget(self.query_memory.as_ref()) } else { self.query_memory.clone() },
                         profile: req.profile,
                         boost_inputs: db.exec.boost_inputs && !req.boosts_alone,
                         ..db.exec.clone()
@@ -2884,7 +3048,7 @@ impl Service {
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
-                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m)) {
+                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m && !req.own_read)) {
                         // The shards' scrolls, their pages merged as they come.
                         (Some(ask), _) if chloedb::cluster::streams(&select) => {
                             let keep_alive = self.keep_alive(ask.keep_alive, false) + crate::coord::SHARD_KEEP_ALIVE_MARGIN;
@@ -2943,7 +3107,7 @@ impl Service {
             }
         }
         // A shard's answer to a coordinator is not a client's.
-        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), &meta, res);
+        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard && !req.own_read), req.shard, (profiled, req.quiet), &meta, res);
         // A lease made for a query that failed holds nothing to fetch.
         let made = (lease != req.snapshot).then_some(lease).filter(|_| a.is_err());
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
@@ -3456,6 +3620,49 @@ impl Service {
     /// is kept under the key ([`Coordinator::sql`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
+        if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
+            return self.classifier_statement(who, &st, timeout_ms).await;
+        }
+        // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
+        // as a function ([`chloedb::query::table_synonyms`]).
+        if let Some(st) = chloedb::query::table_synonyms::parse_statement(sql)? {
+            if !self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(st.table())) {
+                return Err(ApiError::bad(format!("query error: no table {}", st.table())));
+            }
+            return Box::pin(self.sql_in(who, &st.function_sql()?, &Params::new(), after, timeout_ms, None, None)).await;
+        }
+        // `SELECT ... FROM chunks_of(...)`, a query; `INSERT INTO t (...)
+        // SELECT ... FROM chunks_of(...)`, the chunks found, then their
+        // INSERTs.
+        if chloedb::query::chunks::of_sql(sql, params)?.is_some() {
+            who.may(Scope::Read, "a query")?;
+            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+            return Ok(SqlAnswer::Rows(a));
+        }
+        if let Some(ins) = chloedb::query::chunks::insert_of_sql(sql, params)? {
+            who.may(Scope::Write, "a write statement")?;
+            let t0 = Instant::now();
+            let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&ins.query.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", ins.query.table)))?;
+            let mut rows = ins.query.source_rows();
+            let chunks = loop {
+                let a = self.query(QueryReq { sql: ins.query.source_sql_of(&schema, rows)?, params: params.clone(), timeout_ms, after: after.clone(), own_read: true, ..Default::default() }).await?;
+                let chunks = ins.query.finish(&a.rs);
+                match ins.query.more_rows(rows, &a.rs, &chunks) {
+                    Some(more) => rows = more,
+                    None => break chunks,
+                }
+            };
+            let mut total = Written::default();
+            for (statement, p) in ins.inserts(&chunks) {
+                if let SqlAnswer::Written { w, .. } = Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await? {
+                    total.rows += w.rows;
+                    total.skipped += w.skipped;
+                    total.seq_no = w.seq_no.or(total.seq_no);
+                    total.seq_nos.extend(w.seq_nos);
+                }
+            }
+            return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -3521,6 +3728,82 @@ impl Service {
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// `CREATE CLASSIFIER`: the rows it trains on read as a query reads
+    /// them (a coordinator's from every shard), the classifier trained
+    /// here and kept as a stored function ([`Self::ddl`]), answered with
+    /// what the training measured; `DROP CLASSIFIER`, the function's drop
+    /// ([`chloedb::query::classify`]).
+    async fn classifier_statement(self: &Arc<Self>, who: &Principal, st: &chloedb::query::classify::Statement, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::classify::Statement;
+        who.may(Scope::Admin, "a classifier statement")?;
+        let t0 = Instant::now();
+        let c = match st {
+            Statement::Drop { .. } => {
+                let sql = st.drop_sql().expect("a drop");
+                keys::note(sql.clone());
+                let w = self.ddl(&sql, &Params::new(), timeout_ms, &who.name).await?;
+                return Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+            }
+            Statement::Create(c) => c,
+        };
+        let schema = self.table(&c.table).await?;
+        c.check(&schema)?;
+        if !c.replace && self.functions().current(&c.name).is_some() {
+            return Err(ApiError::bad(format!("query error: function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
+        }
+        let read = self.query(QueryReq { sql: c.training_sql(), timeout_ms, own_read: true, ..Default::default() }).await?;
+        let (c2, schema2) = (c.clone(), schema.clone());
+        let trained = tokio::task::spawn_blocking(move || c2.train(&schema2, &read.rs)).await.map_err(ApiError::internal)??;
+        let sql = trained.function_sql(c);
+        keys::note(format!("CREATE CLASSIFIER {} ON {}({}) LABELS {}", c.name, c.table, c.field, c.labels));
+        self.ddl(&sql, &Params::new(), timeout_ms, &who.name).await?;
+        Ok(SqlAnswer::Rows(Answer { rs: trained.result_set(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "classifier", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
+    /// The classes of `text` by the classifier `name`, its `k` best: the
+    /// text embedded by the model of the field the classifier was trained
+    /// on (through a coordinator, as a query's `{"embed": ...}` parameter
+    /// is).
+    pub async fn classify(self: &Arc<Self>, name: &str, text: &str, k: usize) -> Result<chloedb::query::classify::Classified, ApiError> {
+        // A database of its own embeds with the models it was given.
+        if let Backend::Local(db) = &self.backend {
+            let (db, name, text) = (db.clone(), name.to_string(), text.to_string());
+            return Ok(tokio::task::spawn_blocking(move || db.classify(&name, &text, k)).await.map_err(ApiError::internal)??);
+        }
+        let functions = self.functions();
+        let f = functions.current(name).ok_or_else(|| ApiError::bad(format!("no classifier named {name}")))?;
+        let c = chloedb::query::classify::of_function(f)?.ok_or_else(|| ApiError::bad(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
+        let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
+        let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
+        Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
+    }
+
+    /// Synonyms mined from a table ([`chloedb::query::mine`]): on a
+    /// database of its own, which holds the rows and the models.
+    pub async fn mine_synonyms(self: &Arc<Self>, req: chloedb::query::mine::Request) -> Result<chloedb::query::mine::Mined, ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("synonyms are mined on a server of its own (a shard holds the rows and models of a part); run CREATE SYNONYMS here with what it proposes"));
+        };
+        let db = db.clone();
+        Ok(tokio::task::spawn_blocking(move || db.mine_synonyms(&req)).await.map_err(ApiError::internal)??)
+    }
+
+    /// The synonym lists of the tables that have one
+    /// ([`chloedb::query::table_synonyms`]): table, rules, version.
+    pub fn table_synonyms(&self) -> Vec<(String, String, i64)> {
+        let functions = self.functions();
+        let mut out: Vec<(String, String, i64)> = self
+            .catalog()
+            .iter()
+            .filter_map(|s| {
+                let f = functions.current(&chloedb::query::table_synonyms::function_name(&s.table))?;
+                Some((s.table.clone(), chloedb::query::table_synonyms::rules_of(f)?, f.version))
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// `CREATE TABLE`, `ALTER TABLE` or `DROP TABLE`, `CREATE RANK PROFILE`

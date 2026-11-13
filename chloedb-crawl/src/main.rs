@@ -181,6 +181,9 @@ struct ServeArgs {
     /// The contact of crawls that give none: whom a site's owner reaches (an email address or a URL), sent in the user agent.
     #[arg(long, env = "CHLOEDB_CRAWL_CONTACT")]
     contact: Option<String>,
+    /// What the name of every table a crawl fills starts with (crawl_: a crawl of books.toscrape.com fills crawl_books_toscrape_com).
+    #[arg(long, env = "CHLOEDB_CRAWL_TABLE_PREFIX")]
+    table_prefix: Option<String>,
     #[command(flatten)]
     reach: ReachArgs,
     #[command(flatten)]
@@ -323,9 +326,13 @@ async fn run() {
             if let Some(c) = a.contact.as_deref().filter(|c| !chloedb_crawl::fetch::header_text(c)) {
                 fail(format!("--contact {c:?}: printable ASCII, at most 300 characters"));
             }
-            let svc = Service::with_contact(strata.clone(), grower, token.clone(), local.is_some(), a.contact.clone());
+            if let Some(p) = a.table_prefix.as_deref().filter(|p| !p.is_empty() && !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || !p.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')) {
+                fail(format!("--table-prefix {p:?}: letters, digits and _, starting with a letter"));
+            }
+            let svc = Service::with_prefix(strata.clone(), grower, token.clone(), local.is_some(), a.contact.clone(), a.table_prefix.clone());
             eprintln!("chloedb-crawl: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the coordinator)" } else { "" });
-            if local.is_none() {
+            // A chloedb-server that started it (CHLOEDB_APP_OF) shows it already.
+            if local.is_none() && std::env::var_os("CHLOEDB_APP_OF").is_none() {
                 eprintln!("chloedb-crawl: to see it in the command center, start the coordinator with --app crawler={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to the crawler's token" } else { "" });
             }
             let svc2 = svc.clone();

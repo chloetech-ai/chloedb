@@ -49,8 +49,11 @@ pub trait Embeds {
 /// (`openai/...`, an `endpoint.json`) is used only through a field it
 /// embeds, so that a query does not spend a key no table was given.
 pub fn refuse_model(name: &str, models: &std::path::Path) -> Option<&'static str> {
-    if name.strip_prefix("hash:").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
-        return None;
+    if let Some(n) = name.strip_prefix("hash:") {
+        return match n.parse::<usize>() {
+            Ok(d) if (1..=crate::schema::MAX_VECTOR_DIM).contains(&d) => None,
+            _ => Some(HASH_DIMS),
+        };
     }
     if name.is_empty() || name.starts_with('.') || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)) {
         return Some("a model is named by its directory under the models directory, such as 'potion-base-8M', or is the model of an embedded field");
@@ -60,6 +63,9 @@ pub fn refuse_model(name: &str, models: &std::path::Path) -> Option<&'static str
     }
     None
 }
+
+/// Why `hash:N` is refused: N out of range.
+const HASH_DIMS: &str = "hash:N makes vectors of N dimensions, from 1 to 65536 (schema::MAX_VECTOR_DIM)";
 
 /// The prefix of the parameters this writes.
 pub const PARAM: &str = "__embed_";
@@ -233,7 +239,11 @@ impl Writer<'_> {
         let text = match &**v {
             Expr::Function(g) if fname(g) == "embed" && matches!(&g.args, FunctionArguments::List(l) if l.args.len() == 1) => {
                 let mut g = g.clone();
-                let [t] = args_mut(&mut g).into_iter().map(|t| t.clone()).collect::<Vec<_>>().try_into().unwrap_or_else(|_| unreachable!("one argument"));
+                // `embed(*)` and `embed(name => ..)` have no expression to embed.
+                let t = match args_mut(&mut g).as_slice() {
+                    [t] => (**t).clone(),
+                    _ => return Err(err(format!("embed(..) takes text, a value or a parameter, not {}: the model runs once a query. To embed a column, declare its vector field OPTIONS(embed = 'column', model = '..')", g.args))),
+                };
                 match self.text(&t)? {
                     Some(t) => t,
                     None => return Err(err(format!("embed(..) takes text, a value or a parameter, not {t}: the model runs once a query. To embed a column, declare its vector field OPTIONS(embed = 'column', model = '..')"))),

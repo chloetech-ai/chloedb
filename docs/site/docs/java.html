@@ -87,14 +87,14 @@
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-java"><code>chloedb-java/</code></a>: Java classes (<code>src/main/java</code>) and the Rust crate of their native library (<code>src/*.rs</code>). Building it needs Rust (stable), a C compiler, a JDK (11 or later) and Maven.</p>
 <pre data-lang="sh">cd chloedb-java
 mvn package          # cargo builds the library, Maven the classes; tests run against both
-mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.2.0</pre>
-<p>The jar (<code>target/java/chloedb-0.2.0.jar</code>) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:</p>
+mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.3.0</pre>
+<p>The jar (<code>target/java/chloedb-0.3.0.jar</code>) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:</p>
 <pre data-lang="xml">&lt;dependency&gt;
   &lt;groupId&gt;ai.chloetech&lt;/groupId&gt;
   &lt;artifactId&gt;chloedb&lt;/artifactId&gt;
-  &lt;version&gt;0.2.0&lt;/version&gt;
+  &lt;version&gt;0.3.0&lt;/version&gt;
 &lt;/dependency&gt;</pre>
-<p>or, with Gradle, <code>implementation("ai.chloetech:chloedb:0.2.0")</code> with <code>mavenLocal()</code> among the repositories.</p>
+<p>or, with Gradle, <code>implementation("ai.chloetech:chloedb:0.3.0")</code> with <code>mavenLocal()</code> among the repositories.</p>
 <p><code>-Dcargo.profile=ci</code> builds the library without link-time optimisation, much faster, for a build that only runs the tests. <code>-Dcargo.features=bert</code> (comma-separated) turns on Cargo features as the Python package has them: <code>bert</code> for BERT embedding models (<code>accelerate</code> on a Mac), <code>onnx</code>, <code>vision</code>, <code>audio</code>. The library already includes DataFusion, Parquet and <code>s3://</code> URLs. <code>-Dcargo.skip=true</code> packages the library cargo built before.</p>
 <h2 id="a-database-in-your-process">A database in your process<a class="anchor" href="#a-database-in-your-process" aria-label="Link to this section">#</a></h2>
 <pre data-lang="java" data-title="Java">import ai.chloetech.chloedb.Database;

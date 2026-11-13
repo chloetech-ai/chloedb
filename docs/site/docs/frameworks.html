@@ -93,7 +93,7 @@ file, <code>support.chloedb</code>. Nothing on it needs an API key: ChloeDB embe
 texts itself with a model it runs in the process. The full list of arguments,
 methods and filter operators is in <a href="frameworks-reference.html">the reference</a>.</p>
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
-<pre data-lang="sh">pip install &quot;chloedb[langchain,langgraph,llama-index]&quot; pandas</pre>
+<pre data-lang="sh">pip install &quot;chloedb[langchain,langgraph,llama-index]&quot; pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
 <p>Each extra pulls in its framework's core package only (<code>langchain-core</code>,
 <code>langgraph</code>, <code>llama-index-core</code>). The examples embed with
 <code>potion-retrieval-32M</code>, a 129 MB static model that runs on a CPU in a few

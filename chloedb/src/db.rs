@@ -194,6 +194,12 @@ pub struct Db {
     embed_later: std::sync::atomic::AtomicBool,
     /// Models of derived TEXT fields ([`Db::set_deriver_in`]).
     derivers: RwLock<Vec<Deriving>>,
+    /// The dictionaries among them ([`crate::content::DictEntities`]), by
+    /// table and field, given their values before each write derives.
+    dicts: RwLock<Vec<(String, String, Arc<crate::content::DictEntities>)>>,
+    /// The classifiers among them ([`crate::content::ClassifierTags`]),
+    /// by table and field.
+    classifiers: RwLock<Vec<(String, String, Arc<crate::content::ClassifierTags>)>>,
     /// Where [`Db::open_embedders`] found models, for the tables created
     /// after it, and where ranking models are ([`Db::open_ranking_models`]).
     models: RwLock<Option<PathBuf>>,
@@ -209,6 +215,10 @@ pub struct Db {
     /// Held while a `CREATE FUNCTION` or `DROP FUNCTION` reads the
     /// versions and writes the next one.
     function_ddl: std::sync::Mutex<()>,
+    /// The gazetteers of keyword fields query understanding read
+    /// ([`crate::query::understand`]), by table, field and analyzer, with
+    /// the stamp of the table's snapshot they were read from.
+    gazetteers: std::sync::Mutex<HashMap<(String, String, crate::text::Analyzer), (u64, Arc<crate::query::understand::Gazetteer>)>>,
 }
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
@@ -247,6 +257,7 @@ impl Db {
         crate::embed::stamp_fingerprints(&mut schema, models);
         let db = Db::wrap(Database::create(path, schema, with_source(opts))?);
         db.open_codebooks(models);
+        db.open_content_models();
         Ok(db)
     }
 
@@ -270,6 +281,7 @@ impl Db {
     pub fn open(path: &Path, opts: DbOptions) -> Result<Db> {
         let db = Db::wrap(Database::open(path, with_source(opts))?);
         db.open_codebooks(&crate::embed::models_dir());
+        db.open_content_models();
         Ok(db)
     }
 
@@ -287,12 +299,15 @@ impl Db {
             named_models: RwLock::new(HashMap::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
+            dicts: RwLock::new(Vec::new()),
+            classifiers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
             writes: writes::Writes::default(),
             functions: std::sync::Mutex::new(None),
             function_ddl: std::sync::Mutex::new(()),
+            gazetteers: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -501,6 +516,7 @@ impl Db {
             self.open_embedders_of(&name, &dir);
         }
         self.open_codebooks_of(&name, &models);
+        self.open_content_models_of(&name);
         Ok(())
     }
 
@@ -560,6 +576,7 @@ impl Db {
             let new = |f: &crate::schema::Field| before.fields.iter().find(|b| b.id == f.id).is_none_or(|b| model(b) != model(f));
             self.open_models_of(&after.table, &dir, new);
         }
+        self.open_content_models_of(&after.table);
     }
 
     /// Drops a table other than the first ([`Database::drop_table`]).
@@ -989,6 +1006,8 @@ impl Db {
     /// The models of the derived fields of the table `schema` describes, by
     /// field.
     fn derivers_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Deriver>>> {
+        self.refresh_dicts(schema);
+        self.refresh_classifiers(schema);
         let all = self.derivers.read().unwrap_or_else(|e| e.into_inner());
         schema
             .fields
@@ -998,6 +1017,102 @@ impl Db {
                 all.iter().find(serves).map(|m| m.model.clone())
             })
             .collect()
+    }
+
+    /// Gives the dictionaries of the table `schema` describes the values
+    /// their tables hold now (read once per version of those tables); a
+    /// dictionary whose table or field is gone keeps the values it had.
+    fn refresh_dicts(&self, schema: &Schema) {
+        let dicts: Vec<Arc<crate::content::DictEntities>> = self
+            .dicts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(t, _, _)| t.eq_ignore_ascii_case(&schema.table))
+            .map(|(_, _, d)| d.clone())
+            .collect();
+        if dicts.is_empty() {
+            return;
+        }
+        let snap = self.snapshot();
+        for d in dicts {
+            let Some(t) = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&d.table)).map(|s| s.table.clone()) else { continue };
+            if let Ok(g) = self.gazetteers_at(&snap, &[(t.clone(), d.field.clone(), d.analyzer)], &self.exec) {
+                if let Some(g) = g.get(&(t, d.field.clone(), d.analyzer)) {
+                    d.set(g.clone());
+                }
+            }
+        }
+    }
+
+    /// Gives the classifiers of the derived fields of the table `schema`
+    /// describes their current versions (decoded once a version), and the
+    /// models of the fields they were trained on.
+    fn refresh_classifiers(&self, schema: &Schema) {
+        let mine: Vec<Arc<crate::content::ClassifierTags>> = self
+            .classifiers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(t, _, _)| t.eq_ignore_ascii_case(&schema.table))
+            .map(|(_, _, c)| c.clone())
+            .collect();
+        if mine.is_empty() {
+            return;
+        }
+        let Ok(functions) = self.functions() else { return };
+        for tags in mine {
+            match functions.current(&tags.name) {
+                Some(f) if tags.version() != Some(f.version) => {
+                    if let Ok(Some(c)) = crate::query::classify::of_function(f) {
+                        let e = self.embedder_in(&c.table, &c.field);
+                        tags.set(f.version, c, e);
+                    }
+                }
+                Some(_) => {}
+                None => tags.clear(),
+            }
+        }
+    }
+
+    /// Opens the built-in models and dictionaries of the derived fields of
+    /// table `table` ([`crate::content`]), which need no model files.
+    fn open_content_models_of(&self, table: &str) {
+        let Some(schema) = self.storage.table(table) else { return };
+        for f in &schema.fields {
+            let Some(d) = &f.derive else { continue };
+            let model: Arc<dyn Deriver> = if d.model.starts_with(crate::content::BUILTIN) {
+                match crate::content::open(&d.model) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                }
+            } else if d.model.starts_with(crate::content::DICT) {
+                let a = schema.field(&d.from).map(|s| s.text_analyzer()).unwrap_or_default();
+                let Ok(dict) = crate::content::DictEntities::new(&d.model, a) else { continue };
+                let dict = Arc::new(dict);
+                let mut all = self.dicts.write().unwrap_or_else(|e| e.into_inner());
+                all.retain(|(t, n, _)| !(t.eq_ignore_ascii_case(&schema.table) && n.eq_ignore_ascii_case(&f.name)));
+                all.push((schema.table.clone(), f.name.clone(), dict.clone()));
+                dict
+            } else if d.model.starts_with(crate::content::CLASSIFIER) {
+                let Ok(tags) = crate::content::ClassifierTags::new(&d.model, f.multi) else { continue };
+                let tags = Arc::new(tags);
+                let mut all = self.classifiers.write().unwrap_or_else(|e| e.into_inner());
+                all.retain(|(t, n, _)| !(t.eq_ignore_ascii_case(&schema.table) && n.eq_ignore_ascii_case(&f.name)));
+                all.push((schema.table.clone(), f.name.clone(), tags.clone()));
+                tags
+            } else {
+                continue;
+            };
+            let _ = self.set_deriver_in(table, &f.name, model);
+        }
+    }
+
+    /// [`Db::open_content_models_of`] for every table.
+    fn open_content_models(&self) {
+        for t in self.catalog() {
+            self.open_content_models_of(&t.table);
+        }
     }
 
     /// Opens the model of every embedded field of every table from `models`
@@ -1056,6 +1171,9 @@ impl Db {
         let Some(schema) = self.storage.table(table) else { return Vec::new() };
         let mut failed = Vec::new();
         for f in schema.fields.iter().filter(|f| which(f)) {
+            if f.derive.as_ref().is_some_and(|d| crate::content::is_content_model(&d.model)) {
+                continue;
+            }
             let opened = match (&f.embed, &f.derive) {
                 (Some(spec), _) => crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models)
                     .and_then(|_| crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models))
@@ -1292,18 +1410,63 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
+        // The chunks of a table's text (`FROM chunks_of(table, field)`):
+        // the rows it reads, split.
+        if let Some(c) = crate::query::chunks::of_sql(sql, params)? {
+            let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| Error::Query(format!("no table {}", c.table)))?.clone();
+            // Its own read: not held to the answer's `max_rows`, but to a
+            // budget of its own, and of as many rows as the LIMIT needs.
+            let own = ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() };
+            return c.run(&schema, |source| self.query_at(snap, source, params, &own));
+        }
         if crate::query::pack::may_pack(sql) {
             if let Some(p) = self.pack_at(snap, sql, params, opts)? {
                 return Ok(p.rs);
             }
         }
         let q = qsql::parse_query_cached(sql)?;
+        // Understood words (`bm25(.., understand => 'boost')`): the
+        // dictionaries of the table's keyword fields, then the query with
+        // the conditions the words name.
+        if crate::query::understand::may_understand(sql) {
+            if let Some(u) = crate::query::understand::plan(&q.query, params)? {
+                let catalog: Vec<Arc<Schema>> = snap.schemas().map(|s| Arc::new(s.clone())).collect();
+                let gaz = self.gazetteers_at(snap, &u.needs(&catalog)?, opts)?;
+                let (rewritten, made) = u.finish(&catalog, &gaz, params, |c| Ok(crate::query::understand::count_of(&self.query_at(snap, c, &Params::new(), opts)?)))?;
+                let mut rs = self.query_at(snap, &rewritten.to_string(), params, opts)?;
+                rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                return Ok(rs);
+            }
+        }
+        // Expanded ranking (`bm25(.., expand => n)`): its rows first, then
+        // the query with the terms they hold.
+        if crate::query::prf::may_expand(sql) {
+            if let Some(x) = crate::query::prf::plan(&q.query, params)? {
+                let mut rows = Vec::new();
+                let schemas: Vec<&Schema> = snap.schemas().collect();
+                for f in x.feedback(&schemas)? {
+                    rows.push(self.query_at(snap, &f.to_string(), params, opts)?);
+                }
+                let analyzers = x.fields().iter().map(|(t, f)| {
+                    let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| Error::Query(format!("no table {t}")))?;
+                    Ok(schema.field(f).ok_or_else(|| Error::Query(format!("{t} has no field {f}")))?.text_analyzer())
+                }).collect::<Result<Vec<_>>>()?;
+                let (rewritten, made) = x.finish(&rows, &analyzers, params)?;
+                let mut rs = self.query_at(snap, &rewritten.to_string(), params, opts)?;
+                let lines: Vec<String> = made.iter().map(|m| m.line()).collect();
+                rs.stats.plan.splice(0..0, lines);
+                return Ok(rs);
+            }
+        }
         let (q, embedded) = self.embed_texts(snap, sql, q, params)?;
         let params = embedded.as_ref().unwrap_or(params);
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
-            if let Some(split) = crate::query::llm::split(&q.query, &functions, params)? {
+            if let Some(mut split) = crate::query::llm::split(&q.query, &functions, params)? {
+                if let Some(m) = opts.max_rows {
+                    split.cap_rows(m);
+                }
                 let plan = plan_of(snap, &split.first, params, &functions)?;
                 let rs = self.run_on(snap, &plan, opts)?;
                 return split.finish(rs, params, &self.models_dir());
@@ -1311,6 +1474,49 @@ impl Db {
         }
         let plan = plan_of_parsed(snap, &q, params, &functions)?;
         self.run_on(snap, &plan, opts)
+    }
+
+    /// The gazetteers `needs` names ([`crate::query::understand`]), read
+    /// once per version of their table.
+    fn gazetteers_at(&self, snap: &Snapshot, needs: &[(String, String, crate::text::Analyzer)], opts: &ExecOptions) -> Result<crate::query::understand::Gazetteers> {
+        let mut out = crate::query::understand::Gazetteers::new();
+        for key in needs {
+            let stamp = snap.table(&key.0).map_or(0, |t| t.stamp());
+            if let Some((s, g)) = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+                if *s == stamp {
+                    out.insert(key.clone(), g.clone());
+                    continue;
+                }
+            }
+            let sql = crate::query::understand::dictionary_sql(&key.0, &key.1);
+            let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
+            let g = Arc::new(crate::query::understand::Gazetteer::build(&key.1, &rs, key.2));
+            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (stamp, g.clone()));
+            out.insert(key.clone(), g);
+        }
+        Ok(out)
+    }
+
+    /// The gazetteers `needs` names, as of now: what a server that runs
+    /// plans rather than SQL passes [`crate::query::understand::Understanding::finish`].
+    pub fn gazetteers(&self, needs: &[(String, String, crate::text::Analyzer)]) -> Result<crate::query::understand::Gazetteers> {
+        self.gazetteers_at(&self.snapshot(), needs, &self.exec)
+    }
+
+    /// What the words of `text` say for `field` (a TEXT field) of `table`:
+    /// the values of its keyword fields they name and the ranges of numbers
+    /// ([`crate::query::understand`]), as `bm25(field, text, understand =>
+    /// ..)` would take them. For previews and for applications that show
+    /// the filters a search took.
+    pub fn understand(&self, table: &str, field: &str, text: &str, opts: &crate::query::understand::Options) -> Result<crate::query::understand::Understood> {
+        let snap = self.snapshot();
+        let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(table)).cloned().ok_or_else(|| Error::Query(format!("no table {table}")))?;
+        let needs = crate::query::understand::needs_of(&schema, field, opts)?;
+        let gaz = self.gazetteers_at(&snap, &needs, &self.exec)?;
+        let mut u = crate::query::understand::understand_in(&schema, field, text, opts, &gaz)?;
+        let counts = u.checks().iter().map(|c| Ok(crate::query::understand::count_of(&self.query_at(&snap, c, &Params::new(), &self.exec)?))).collect::<Result<Vec<_>>>()?;
+        u.confirm(&counts);
+        Ok(u)
     }
 
     /// Runs a query that ends in `PACK n TOKENS` ([`crate::query::pack`]):
@@ -1373,7 +1579,12 @@ impl Db {
         if !m.single() {
             return Err(Error::Schema(format!("model {name} embeds a text into a vector a token, not one vector: embed('{name}', ..) needs a model of one vector a text")));
         }
-        self.named_models.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), m.clone());
+        let mut kept = self.named_models.write().unwrap_or_else(|e| e.into_inner());
+        // A few, as the server keeps: each is a model's tokenizer and table.
+        if kept.len() >= 16 {
+            kept.clear();
+        }
+        kept.insert(name.to_string(), m.clone());
         Ok(m)
     }
 
@@ -1635,6 +1846,29 @@ impl Db {
     /// [`Db::sql`], a SELECT run with `opts` (its deadline, cancel flag and
     /// memory budget); any other statement runs as [`Db::sql`] runs it.
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        if let Some(st) = crate::query::classify::parse_statement(sql)? {
+            return self.classifier_statement(&st, opts);
+        }
+        // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
+        // as a function.
+        if let Some(st) = crate::query::table_synonyms::parse_statement(sql)? {
+            self.table(st.table())?;
+            return self.sql_with(&st.function_sql()?, &Params::new(), opts);
+        }
+        // `INSERT INTO t (...) SELECT ... FROM chunks_of(...)`: the chunks,
+        // then their INSERTs.
+        if let Some(ins) = crate::query::chunks::insert_of_sql(sql, params)? {
+            let schema = self.table(&ins.query.table)?;
+            let own = ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() };
+            let chunks = ins.query.run(&schema, |source| self.query_with(source, params, &own))?;
+            let mut n = 0;
+            for (statement, p) in ins.inserts(&chunks) {
+                if let SqlResult::Written(w) = self.sql_with(&statement, &p, opts)? {
+                    n += w;
+                }
+            }
+            return Ok(SqlResult::Written(n));
+        }
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         match bind_command(sql, &tables, params)? {
@@ -1723,6 +1957,101 @@ impl Db {
     /// operators over single-table queries ([`crate::query::compound`]).
     pub fn explain(&self, sql: &str, params: &Params) -> Result<Plan> {
         self.explain_statement(&qsql::parse_one(sql)?, params)
+    }
+
+    /// `CREATE CLASSIFIER`, which trains on the table's rows and keeps the
+    /// classifier as a stored function, answering what the training
+    /// measured; or `DROP CLASSIFIER`, that function's drop
+    /// ([`crate::query::classify`]).
+    fn classifier_statement(&self, st: &crate::query::classify::Statement, opts: &ExecOptions) -> Result<SqlResult> {
+        use crate::query::classify::Statement;
+        match st {
+            Statement::Drop { .. } => self.sql_with(&st.drop_sql().expect("a drop"), &Params::new(), opts),
+            Statement::Create(c) => {
+                let schema = self.table(&c.table)?;
+                c.check(&schema)?;
+                if !c.replace && self.functions()?.current(&c.name).is_some() {
+                    return Err(Error::Query(format!("function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
+                }
+                let rs = self.query_with(&c.training_sql(), &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
+                let trained = c.train(&schema, &rs)?;
+                self.sql_with(&trained.function_sql(c), &Params::new(), opts)?;
+                Ok(SqlResult::Rows(trained.result_set()))
+            }
+        }
+    }
+
+    /// Synonyms mined from table `req.table` ([`crate::query::mine`]):
+    /// proposals for its synonym list, which nothing applies until a
+    /// `CREATE SYNONYMS` takes them.
+    pub fn mine_synonyms(&self, req: &crate::query::mine::Request) -> Result<crate::query::mine::Mined> {
+        use crate::query::mine;
+        let t0 = std::time::Instant::now();
+        let schema = self.table(&req.table)?;
+        let f = schema.field(&req.field).ok_or_else(|| Error::Query(format!("{} has no field {}", req.table, req.field)))?;
+        if !matches!(f.ty, FieldType::Text { .. }) {
+            return Err(Error::Query(format!("{}.{} is not a TEXT field: synonyms are of a text's words", req.table, req.field)));
+        }
+        // Within the bounds a mining keeps to, whoever asks.
+        let bounded = req.options.bounded();
+        let (analyzer, opts) = (f.text_analyzer(), &bounded);
+        let (source, rows, words, proposals, header) = match &req.source {
+            mine::Source::Vectors { vector } => {
+                if !f.stored {
+                    return Err(Error::Query(format!("{}.{} is not stored: its words are read from the stored text", req.table, req.field)));
+                }
+                let e = self.embedder_in(&req.table, vector).ok_or_else(|| Error::Query(format!("{}.{vector} has no model here to embed words with", req.table)))?;
+                let sql = format!("SELECT {} FROM {} LIMIT {}", qsql::ident(&f.name), qsql::ident(&schema.table), opts.max_rows);
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(self.exec.memory.as_ref()), ..self.exec.clone() })?;
+                let (rows, words) = mine::vocabulary(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str())), analyzer, opts);
+                let vectors = words.iter().map(|w| e.embed_query(&w.word)).collect::<Result<Vec<_>>>()?;
+                let ps = mine::by_vectors(&words, &vectors, opts);
+                let header = format!("mined from the words of {}.{}, embedded by the model of {vector}: cosine {} or more", req.table, req.field, opts.min_cos);
+                ("vectors", rows, words.len(), ps, header)
+            }
+            mine::Source::Log { log } => {
+                let sql = format!("SELECT context, ts, text FROM {} LIMIT {}", qsql::ident(log), opts.max_rows);
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(self.exec.memory.as_ref()), ..self.exec.clone() })?;
+                let searches: Vec<mine::Search> = rs
+                    .rows
+                    .iter()
+                    .filter_map(|r| {
+                        let ctx = match &r[0] {
+                            Value::Null => return None,
+                            Value::Str(s) => s.clone(),
+                            v => crate::query::hint::sql_value(v),
+                        };
+                        Some((ctx, r[1].as_i64()?, r[2].as_str()?.to_string()))
+                    })
+                    .collect();
+                let (words, ps) = mine::by_log(&searches, analyzer, opts);
+                let header = format!("mined from the searches of {log}: one-word rewrites within {} seconds, by {} contexts or more", opts.window, opts.min_support);
+                ("log", searches.len(), words, ps, header)
+            }
+        };
+        Ok(mine::Mined {
+            source: source.into(),
+            table: req.table.clone(),
+            field: req.field.clone(),
+            rows,
+            words,
+            rules: mine::rules(&header, &proposals),
+            proposals,
+            took_ms: t0.elapsed().as_secs_f64() * 1e3,
+        })
+    }
+
+    /// The classes of `text` by the classifier `name` (a stored function
+    /// `CREATE CLASSIFIER` made), its `k` best labels: the text embedded by
+    /// the model of the field the classifier was trained on.
+    pub fn classify(&self, name: &str, text: &str, k: usize) -> Result<crate::query::classify::Classified> {
+        let functions = self.functions()?;
+        let f = functions.current(name).ok_or_else(|| Error::Query(format!("no classifier named {name}")))?;
+        let c = crate::query::classify::of_function(f)?.ok_or_else(|| Error::Query(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
+        let Value::Vector(x) = self.embed_query_in(&c.table, &c.field, text)? else {
+            return Err(Error::Query(format!("{}.{} holds several vectors a row", c.table, c.field)));
+        };
+        crate::query::classify::Classified::of(name, f.version, &c, &x, k)
     }
 
     fn explain_statement(&self, stmt: &sqlparser::ast::Statement, params: &Params) -> Result<Plan> {
@@ -2229,6 +2558,22 @@ impl Db {
         Ok(total)
     }
 
+    /// `opts` for a query of the table `snap` looks at: with the table's
+    /// own synonym list after the server's, when it has one
+    /// ([`crate::query::table_synonyms`]).
+    fn table_options<'a>(&self, snap: &Snapshot, opts: &'a ExecOptions) -> Result<std::borrow::Cow<'a, ExecOptions>> {
+        let table = &snap.shared_schema().table;
+        // The system tables have none, and reading the functions reads one.
+        if table.starts_with('_') {
+            return Ok(std::borrow::Cow::Borrowed(opts));
+        }
+        let functions = self.functions_at(snap)?;
+        Ok(match crate::query::table_synonyms::for_table(&functions, table, opts.synonyms.as_ref())? {
+            Some(s) => std::borrow::Cow::Owned(ExecOptions { synonyms: Some(s), ..opts.clone() }),
+            None => std::borrow::Cow::Borrowed(opts),
+        })
+    }
+
     /// The answer of query `select` on snapshot `snap`, of the table it
     /// looks at, with options `opts`: by the executor, or by key when its
     /// filter only names keys ([`Db::by_key`]).
@@ -2241,7 +2586,8 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
-        let mut rs = Executor::new(snap, &readers, opts).execute(select)?;
+        let opts = self.table_options(snap, opts)?;
+        let mut rs = Executor::new(snap, &readers, &opts).execute(select)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok(rs)
     }
@@ -2262,6 +2608,7 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
+        let opts = self.table_options(snap, &opts)?;
         let (mut rs, s) = Executor::new(snap, &readers, &opts).scroll(select, page, hold)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok((rs, s))
@@ -2279,6 +2626,7 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
+        let opts = self.table_options(snap, &opts)?;
         let mut rs = Executor::new(snap, &readers, &opts).scroll_next(scroll, page)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok(rs)
@@ -2305,7 +2653,8 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
-        let mut leaf = Executor::new(snap, &readers, opts).execute_arrow(select, over)?;
+        let opts = self.table_options(snap, opts)?;
+        let mut leaf = Executor::new(snap, &readers, &opts).execute_arrow(select, over)?;
         let stats = match &mut leaf {
             Leaf::Rows(rs) => &mut rs.stats,
             Leaf::Arrow(c) => &mut c.stats,
@@ -2324,7 +2673,23 @@ impl Db {
     /// [`Db::term_stats`] with options (their synonyms widen the terms).
     pub fn term_stats_with(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions) -> Result<TermStats> {
         let readers = self.readers(snap)?;
-        Executor::new(snap, &readers, opts).term_stats(select)
+        Executor::new(snap, &readers, &*self.table_options(snap, opts)?).term_stats(select)
+    }
+
+    /// The words of `text` that look like typos of the terms of TEXT field
+    /// `field` of `table`, and the text with each replaced by the word it
+    /// most likely meant: "did you mean" ([`Executor::corrections`]).
+    pub fn correct(&self, table: &str, field: &str, text: &str) -> Result<Corrected> {
+        let all = self.snapshot();
+        let snap = all.table(table).ok_or_else(|| Error::Query(format!("no table {table}")))?;
+        let schema = snap.shared_schema().clone();
+        let f = schema.field_index(field).ok_or_else(|| Error::Query(format!("{table} has no field {field}")))?;
+        if !matches!(schema.fields[f].ty, FieldType::Text { .. }) {
+            return Err(Error::Query(format!("{table}.{field} is not a TEXT field: only text is corrected")));
+        }
+        let readers = self.readers(&snap)?;
+        let words = Executor::new(&snap, &readers, &self.exec).corrections(f, text)?;
+        Ok(Corrected { text: crate::query::exec::corrected_text(text, &words), changed: !words.is_empty(), words })
     }
 
     /// The loosest level of `select`'s guard (`min_rows`, `max_rows`) and
@@ -2336,7 +2701,7 @@ impl Db {
             return Err(Error::Query("the query has no guard (min_rows, max_rows) to count the levels of".into()));
         }
         let readers = self.readers(snap)?;
-        Executor::new(snap, &readers, opts).guard_counts(select)
+        Executor::new(snap, &readers, &*self.table_options(snap, opts)?).guard_counts(select)
     }
 
     /// The codes that can follow each of `prefixes` in semantic-ID field
@@ -2695,7 +3060,7 @@ fn derive_known(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &m
             }
             changed[j] = true;
             match ahead.and_then(|a| a.get(v)) {
-                Some(t) => doc[f] = Value::Str(t.clone()),
+                Some(t) => doc[f] = derived_value(&schema.fields[f], t),
                 None => {
                     todo.push(j);
                     values.push(v.clone());
@@ -2703,13 +3068,27 @@ fn derive_known(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &m
             }
         }
         for (j, t) in todo.into_iter().zip(derive_sources(d.as_ref(), schema, m, &values, files)?) {
-            docs[j][f] = Value::Str(t);
+            docs[j][f] = derived_value(&schema.fields[f], &t);
         }
     }
     if schema.fields.iter().any(|f| !f.generated_from.is_empty()) {
         docs.iter_mut().zip(changed).filter(|(_, c)| *c).for_each(|(d, _)| schema.fill_generated(d));
     }
     Ok(())
+}
+
+/// A derived field's value of the text its model made: a multi-valued
+/// field's values one a line ([`crate::content::SEP`]).
+fn derived_value(f: &crate::schema::Field, t: &str) -> Value {
+    if f.multi {
+        let vs: Vec<Value> = t.split(crate::content::SEP).filter(|v| !v.is_empty()).map(|v| Value::Str(v.to_string())).collect();
+        return if vs.is_empty() { Value::Null } else { Value::List(vs) };
+    }
+    // A keyword a model made none of (a classifier not trained yet).
+    if f.ty == crate::schema::FieldType::Keyword && t.is_empty() {
+        return Value::Null;
+    }
+    Value::Str(t.to_string())
 }
 
 /// The text `docs` leave out (null) of their derived fields, each file
@@ -3208,4 +3587,14 @@ fn opened_step(stats: &mut crate::query::exec::ExecStats, t0: std::time::Instant
 /// tables, if any.
 pub fn default_table(catalog: &[Arc<Schema>]) -> Option<Arc<Schema>> {
     catalog.iter().find(|t| !t.is_placeholder()).cloned()
+}
+
+/// A text corrected by [`Db::correct`].
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Corrected {
+    /// The text with its typos replaced.
+    pub text: String,
+    /// Whether any word was replaced.
+    pub changed: bool,
+    pub words: Vec<crate::query::exec::Correction>,
 }
