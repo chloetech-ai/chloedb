@@ -852,7 +852,10 @@ impl Fleet {
                 // and when it fills, which change every look.
                 let line = if critical { "95%" } else { "85%" };
                 let headline = match over.len() {
-                    0 => format!("{name}'s disk fills within 3 days at the last hour's rate"),
+                    // The estimate, as the problem's title says it: a
+                    // headline of "within 3 days" (the line) read as days
+                    // while the disk filled in hours.
+                    0 => format!("{name}'s disk fills in about {} at the last hour's rate", days.map_or_else(|| "3 days".to_string(), fills_in)),
                     1 => format!("{name}'s disk is over {line} full"),
                     n => format!("{n} copies' disks are over {} full", if over.iter().all(|d| d.0 >= 0.95) { "95%" } else { "85%" }),
                 };
@@ -1379,6 +1382,24 @@ mod tests {
             let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
             assert_eq!((dc["where"].as_str(), dc["over"].clone()), (Some("s0-0"), json!(["s0-0", "s0-1"])));
         }
+    }
+
+    /// A disk under the line that fills within 3 days: the headline says
+    /// the estimate, in the problem's unit (it said "within 3 days" while
+    /// the problem said about 1 h).
+    #[test]
+    fn a_filling_disks_headline_says_when_it_fills() {
+        let disk = |v: f64| json!({"shards": [{"shard": 0, "state": "ok", "replicas": [{"short": "s1-0", "url": "http://s1-0", "status": "ok", "detail": {"load": {"disk_used_ratio": v}}}]}]});
+        let f = Fleet::default();
+        let c = disk(0.70);
+        f.judge(inputs(&c, &[]));
+        let c = disk(0.74);
+        let mut i = inputs(&c, &[]);
+        i.now_ms = 10_000 + 600_000;
+        let j = f.judge(i);
+        let pr = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "disk").expect("a disk problem").clone();
+        assert_eq!(pr["title"], "s1-0's disk is 74% full and fills in about 1 h at the last hour's rate");
+        assert_eq!(j["headline"], "s1-0's disk fills in about 1 h at the last hour's rate");
     }
 
     #[test]
