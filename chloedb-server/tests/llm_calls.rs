@@ -200,3 +200,60 @@ async fn a_coordinator_asks_about_the_merged_rows_only() {
     let grades: Vec<f64> = got.rows.iter().map(|r| r[1].as_f64().unwrap()).collect();
     assert!(grades.windows(2).all(|w| w[0] >= w[1]), "{grades:?}");
 }
+
+/// D-B13: each API key's model calls a day are counted where they are
+/// sent: a query's llm() questions (answers from memory free), and the
+/// agent's steps with the server's own Anthropic key; past the budget the
+/// call is refused before anything is asked, while another key, the
+/// operator's credentials and a caller's own API key are not held to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_key_has_a_budget_of_model_calls_a_day() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let db = create_keeping(dir.path(), "one.strata", |_| true);
+    let schema = (*db.schema()).clone();
+    let config = AgentConfig { api_key: Some("server-key".into()), model: "claude-mock".into(), base_url: mock.url.clone() };
+    let mut svc = Service::new(Backend::Local(db), schema, config, 16, Duration::from_secs(10));
+    svc.open_models(&mock.models(dir.path()));
+    let svc = Arc::new(svc);
+    svc.model_budget.set_per_day(6);
+    sql(&svc, "CREATE FUNCTION gist(t TEXT) RETURNS TEXT AS llm('mock-claude', 'Say what the product is about, for the budget.', :t)").await;
+    let key = |id: &str| Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None };
+    let ask = |who: Principal, limit: usize, offset: usize| {
+        let svc = svc.clone();
+        async move {
+            let q = format!("SELECT id, gist(title) FROM products ORDER BY id LIMIT {limit} OFFSET {offset}");
+            svc.query(QueryReq { sql: q, who: Some(who), ..Default::default() }).await
+        }
+    };
+    ask(key("a"), 4, 0).await.unwrap();
+    assert_eq!(mock.requests(), 4);
+    // The same rows again: from memory, and free.
+    ask(key("a"), 4, 0).await.unwrap();
+    assert_eq!(mock.requests(), 4);
+    // Four new questions with two calls left: refused, nothing asked.
+    let e = ask(key("a"), 4, 4).await.err().expect("past the budget");
+    assert_eq!(e.status, 429, "{}", e.message);
+    assert!(e.message.contains("--model-calls-per-key-day"), "{}", e.message);
+    assert_eq!(mock.requests(), 4);
+    // Another key has its own budget; the operator's credential none.
+    ask(key("b"), 4, 4).await.unwrap();
+    ask(Principal::open(), 4, 8).await.unwrap();
+    assert_eq!(mock.requests(), 12);
+    let used = svc.model_budget.json();
+    assert_eq!((used["used"]["a"].as_u64(), used["used"]["b"].as_u64()), (Some(4), Some(4)), "{used}");
+
+    // The agent: a model call a step, with the server's key.
+    let agent = |who: Principal, api_key: Option<&str>| {
+        let svc = svc.clone();
+        let req = chloedb_server::agent::AgentReq { question: "How many products?".into(), model: None, effort: None, api_key: api_key.map(String::from), max_steps: 2, who: Some(who) };
+        async move { chloedb_server::agent::run(&svc, req).await }
+    };
+    agent(key("a"), None).await.unwrap();
+    agent(key("a"), None).await.unwrap();
+    let e = agent(key("a"), None).await.err().expect("the agent past the budget");
+    assert_eq!(e.status, 429, "{}", e.message);
+    // A caller's own API key spends its own.
+    agent(key("a"), Some("their-key")).await.unwrap();
+    assert_eq!(mock.requests(), 15);
+}

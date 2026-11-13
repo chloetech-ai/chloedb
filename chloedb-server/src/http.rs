@@ -89,6 +89,7 @@
 //! | `GET /v1/whoami` | | `{name, key, scope, root, cluster, caller}`: who the request's credential is ([`crate::keys`]) |
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
 //! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
+//! | `GET /v1/admin/model-budget` | | the model calls each API key made today with the server's credentials, by key id, and how many it may (`per_day`, [`crate::budget`]) |
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/keys/clients?hours=24` | | which clients sent each key over the last `hours` (1 to 168): by key id, each client's app, client, address, calls, failed calls, first and last; every query counts, not a sample; on a coordinator every coordinator's summed, each client naming the `coordinators` it went through (`coordinators` says which answered; `local=1` for this one's); `since_ms`: from when every coordinator counted |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit`; on a coordinator every coordinator's, each entry naming its `coordinator` (`coordinators` says which answered; `local=1` for this one's) |
@@ -385,6 +386,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
+        .route("/v1/admin/model-budget", get(model_budget))
         .route("/v1/admin/keys/clients", get(key_clients))
         .route("/v1/admin/keys/:id", axum::routing::delete(revoke_key))
         .route("/v1/admin/audit", get(audit_log))
@@ -1397,6 +1399,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         after: after(&b)?,
         profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
+        who: Some(who.clone()),
         ..Default::default()
     };
     if let Some(log) = b.get("log") {
@@ -1671,7 +1674,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         return Err(w.may_server("a logged query").unwrap_err());
     }
     if let Some(log) = b.get("log") {
-        let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, ..Default::default() };
+        let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, who: Some(w.clone()), ..Default::default() };
         return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     let statement = body_str(&b, "sql")?;
@@ -3385,13 +3388,14 @@ async fn finish_move(State(app): State<App>) -> Result<Response, ApiError> {
 /// default.
 const VERIFY_WAIT: Duration = Duration::from_secs(60);
 
-async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn agent_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let req = agent::AgentReq {
         question: body_str(&b, "question")?.to_string(),
         model: b.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
         effort: b.get("effort").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
         api_key: b.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
         max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| n.clamp(1, 20) as usize).unwrap_or(8),
+        who: Some(who(w)),
     };
     app.svc.metrics.agent_run();
     Ok(AxJson(agent::run(&app.svc, req).await?))
@@ -3417,7 +3421,8 @@ async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>
         api_key: opt("api_key"),
         max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| (n as usize).clamp(1, crate::oncall::MAX_STEPS)).unwrap_or(crate::oncall::STEPS),
         note: b.get("note").and_then(Json::as_bool).unwrap_or(false),
-        by: by(&who(w)),
+        by: by(&who(w.clone())),
+        who: Some(who(w)),
     };
     app.svc.metrics.agent_run();
     Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
@@ -3487,16 +3492,22 @@ async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Princip
     Ok(AxJson(p))
 }
 
+/// `GET /v1/admin/model-budget`: the model calls each API key made today,
+/// by key id, and how many it may ([`crate::budget`]).
+async fn model_budget(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.model_budget.json()))
+}
+
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
 /// ([`crate::judge`]).
-async fn judge(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn judge(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let opt = |k: &str| b.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
     let keys = b.get("keys").and_then(|v| v.as_array()).cloned().ok_or_else(|| ApiError::bad("the body needs \"keys\", the rows' keys"))?;
     let fields = match b.get("fields") {
         None | Some(Json::Null) => Vec::new(),
         Some(v) => v.as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).ok_or_else(|| ApiError::bad("fields is a list of field names"))?,
     };
-    let req = judge::JudgeReq { table: opt("table"), query: body_str(&b, "query")?.to_string(), keys, fields, model: opt("model"), api_key: opt("api_key") };
+    let req = judge::JudgeReq { table: opt("table"), query: body_str(&b, "query")?.to_string(), keys, fields, model: opt("model"), api_key: opt("api_key"), who: Some(who(w)) };
     Ok(AxJson(judge::run(&app.svc, req).await?))
 }
 

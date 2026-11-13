@@ -761,6 +761,11 @@ fn cache() -> &'static Mutex<Cache> {
     C.get_or_init(|| Mutex::new(Cache { answers: HashMap::new(), order: VecDeque::new() }))
 }
 
+/// A caller's own count of the questions a query asks of models
+/// ([`Split::finish_within`]): given how many are about to be asked, an
+/// error refuses them.
+pub type Budget<'a> = &'a (dyn Fn(u64) -> Result<()> + Sync);
+
 /// Requests made in the last minute, for [`Limits::per_minute`].
 fn spent() -> &'static Mutex<VecDeque<(Instant, u64)>> {
     static S: OnceLock<Mutex<VecDeque<(Instant, u64)>>> = OnceLock::new();
@@ -807,7 +812,7 @@ impl Question {
 
 /// The answers to `questions`, in order: from memory, or asked of their
 /// models, each model's `concurrency` at once; and how many were asked.
-fn answer(questions: &[Question], models: &Path) -> Result<(Vec<String>, u64)> {
+fn answer(questions: &[Question], models: &Path, budget: Option<Budget<'_>>) -> Result<(Vec<String>, u64)> {
     let keys: Vec<[u8; 32]> = questions.iter().map(Question::key).collect();
     let mut out: Vec<Option<String>> = {
         let c = cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -823,6 +828,9 @@ fn answer(questions: &[Question], models: &Path) -> Result<(Vec<String>, u64)> {
     CACHED.fetch_add((questions.len() - ask.len()) as u64, Ordering::Relaxed);
     if !ask.is_empty() {
         take_budget(ask.len() as u64, limits().per_minute)?;
+        if let Some(b) = budget {
+            b(ask.len() as u64)?;
+        }
         let asked = ask_models(&ask.iter().map(|&i| &questions[i]).collect::<Vec<_>>(), models)?;
         let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
         for (&i, a) in ask.iter().zip(asked) {
@@ -942,6 +950,13 @@ impl Split {
     /// query says when its calls order the rows. `models` is the directory
     /// of the models' `endpoint.json` files.
     pub fn finish(&self, rs: ResultSet, params: &Params, models: &Path) -> Result<ResultSet> {
+        self.finish_within(rs, params, models, None)
+    }
+
+    /// [`Self::finish`], each batch of questions asked of models (answers
+    /// from memory not among them) first taken from `budget`: its error
+    /// ends the query, and nothing more is asked.
+    pub fn finish_within(&self, rs: ResultSet, params: &Params, models: &Path, budget: Option<Budget<'_>>) -> Result<ResultSet> {
         if self.calls.is_empty() {
             let mut rs = rs;
             rs.stats.plan.insert(0, self.folded_line());
@@ -1057,7 +1072,7 @@ impl Split {
                 break round.into_iter().collect::<Result<_>>()?;
             }
             let qs: Vec<Question> = needed.iter().map(|&(r, k)| questions[r][k].clone().expect("a question")).collect();
-            let (texts, n) = answer(&qs, models)?;
+            let (texts, n) = answer(&qs, models, budget)?;
             asked += n;
             from_memory += qs.len() as u64 - n;
             for (&(r, k), t) in needed.iter().zip(texts) {
