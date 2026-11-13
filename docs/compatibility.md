@@ -119,6 +119,10 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   0.3.0 added the plan feature `terms_syntax`, which only a search with
   query expansion (`bm25(.., expand => n)`) uses: a 0.2.x shard refuses
   such a search by name, so upgrade the shards before using it.
+  0.3.1 added the plan features `asof_join` (`ASOF JOIN`), `date_bin` (a
+  `GROUP BY` of `date_bin` or `date_trunc` run on the columns) and
+  `approx_percentiles` (`approx_percentile`): a 0.3.0 shard refuses a
+  query that uses one by name, so upgrade the shards first here too.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
