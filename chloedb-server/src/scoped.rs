@@ -56,6 +56,10 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // Embeddings of text, and the models that make them: no table.
         "/v1/embed" => method == Method::POST,
         "/v1/models" => get,
+        // The command center's feedback, by its table ([`crate::feedback::may`]).
+        "/v1/feedback" => get || method == Method::POST,
+        "/v1/feedback/:id" => get || method == Method::PATCH || method == Method::DELETE,
+        "/v1/feedback/:id/shot" | "/v1/feedback/:id/thumb" => get,
         _ => false,
     }
 }

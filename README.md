@@ -65,8 +65,8 @@ More in [the server guide](docs/chloedb/server.md).
 
 | language | install | guide |
 |---|---|---|
-| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md) |
-| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.2.0` release | [JavaScript](docs/chloedb/javascript.md) |
+| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md) |
+| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.0` release | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
 | Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
 

@@ -48,6 +48,7 @@
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/relevance/autopilot` | the autopilot's options, `judge?`, `keep?` | `{report, proposal, judged}`: logged queries replayed on one snapshot with the rank profile and with the numbers the search finds, measured on held-out queries ([`crate::autopilot`]) |
 //! | `GET /v1/relevance/proposals`, `GET /v1/relevance/proposals/:id`, `POST .../:id/apply` `{force?}`, `POST .../:id/dismiss` | | the proposals kept, one with its proof, applied or dismissed |
+//! | `POST /v1/feedback`, `GET /v1/feedback?status=&kind=&q=&limit=`, `GET`/`PATCH`/`DELETE /v1/feedback/:id`, `GET /v1/feedback/:id/shot` | `{note, kind?, shot?, marks?, ...}`; triage `{status?, priority?, assignee?, resolution?, if_status?}` | the command center's feedback, kept in table `cc_feedback` ([`crate::feedback`]): sent and triaged with a write key, read with a read key, deleted by an admin |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
 //! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
 //! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
@@ -296,6 +297,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/relevance/proposals/:id", get(autopilot_get))
         .route("/v1/relevance/proposals/:id/apply", post(autopilot_apply))
         .route("/v1/relevance/proposals/:id/dismiss", post(autopilot_dismiss))
+        // The command center's feedback ([`crate::feedback`]).
+        .route("/v1/feedback", get(feedback_list).post(feedback_submit))
+        .route("/v1/feedback/:id", get(feedback_get).patch(feedback_update).delete(feedback_delete))
+        .route("/v1/feedback/:id/shot", get(feedback_shot))
+        .route("/v1/feedback/:id/thumb", get(feedback_thumb))
         .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
         .route("/v1/admin/oncall/runs", get(oncall_runs))
         .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
@@ -951,6 +957,10 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // feedback: sending and triaging write; deleting is an admin's.
+        "/v1/feedback" if method == Method::POST => Scope::Write,
+        "/v1/feedback/:id" if method == Method::PATCH => Scope::Write,
+        "/v1/feedback/:id" if method == Method::DELETE => Scope::Admin,
         // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
         "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
@@ -3498,6 +3508,44 @@ async fn judge(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// `POST /v1/relevance/autopilot` ([`crate::autopilot`]).
 async fn autopilot_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(crate::autopilot::run(&app.svc, &who(w), b).await?))
+}
+
+async fn feedback_submit(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::feedback::submit(&app.svc, &who(w), b).await?))
+}
+
+async fn feedback_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    Ok(AxJson(crate::feedback::list(&app.svc, &who(w), &q).await?))
+}
+
+async fn feedback_get(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    let shot = q.get("shot").is_some_and(|s| s == "1" || s == "true");
+    Ok(AxJson(crate::feedback::get(&app.svc, &who(w), &id, shot).await?))
+}
+
+async fn feedback_update(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::feedback::update(&app.svc, &who(w), &id, b).await?))
+}
+
+async fn feedback_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::feedback::delete(&app.svc, &who(w), &id).await?))
+}
+
+/// A feedback's picture, served inert as media files are ([`media_headers`]).
+async fn feedback_picture(app: App, w: Option<axum::Extension<Principal>>, id: String, thumb: bool) -> Result<Response, ApiError> {
+    let (mime, bytes) = crate::feedback::image(&app.svc, &who(w), &id, thumb).await?;
+    let mut h = media_headers(&mime, "");
+    // A triage changes the row, never its pictures; still, a private cache.
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("private, max-age=3600"));
+    Ok((h, bytes).into_response())
+}
+
+async fn feedback_shot(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    feedback_picture(app, w, id, false).await
+}
+
+async fn feedback_thumb(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    feedback_picture(app, w, id, true).await
 }
 
 async fn autopilot_list(State(app): State<App>) -> Res {
