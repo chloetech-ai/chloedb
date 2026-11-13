@@ -46,6 +46,9 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import workflows as wfm  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = "0.1.0"
 
@@ -362,6 +365,8 @@ class App:
         self.last_trend = 0
         self.last_snap = 0
         self.stop = threading.Event()
+        self.wf = wfm.Runner(db)
+        self.wf_status = "starting"
 
     # -- setup
 
@@ -373,6 +378,8 @@ class App:
             ops = [{"op": "upsert", "table": "fs_items", "doc": {k: it[k] for k in ("id", "title", "category", "price")}} for it in self.world.items]
             ops += [{"op": "upsert", "table": "fs_users", "doc": {"id": u["id"], "name": u["name"]}} for u in self.world.users]
             self.db.write(ops)
+        self.db.sql("ALTER TABLE fs_models ADD COLUMN IF NOT EXISTS spec TEXT")
+        self.wf.setup()
         m = self.db.rows("SELECT id FROM fs_models WHERE deployed = 1 ORDER BY created DESC LIMIT 1")
         if m:
             self.model = self.load_model(m[0]["id"])
@@ -411,6 +418,20 @@ class App:
             self.write(pending, now)
         self.snapshot(now)
 
+    def seed_workflows(self, minutes=10):
+        """The shop's workflows, on a new database: made and backfilled."""
+        try:
+            if not self.wf.specs:
+                self.wf_status = "making the shop's workflows"
+                for spec in wfm.SEEDS:
+                    self.wf.save(spec)
+                self.wf_status = f"backfilling {minutes} minutes of history"
+                for spec in wfm.SEEDS:
+                    self.wf.backfill(spec["name"], minutes, step_s=30)
+            self.wf_status = "live"
+        except Exception as e:  # noqa: BLE001
+            self.wf_status = f"failed: {e}"
+
     # -- sessions
 
     def rank(self, user_id, model=None, explain=False):
@@ -422,6 +443,8 @@ class App:
         if model is None:
             ids = random.sample([it["id"] for it in items], K)
             return {"items": [{"id": i, "score": None} for i in ids], "model": "random", "ms": {"fetch": 0, "transform": 0, "score": 0, "total": (time.perf_counter() - t0) * 1000}}
+        if model.get("spec"):
+            return self.rank_workflows(user_id, model, explain, t0)
         keys = [it["id"] for it in items]
         ucs = [f"{user_id}|{c}" for c in self.world.cats]
         t1 = time.perf_counter()
@@ -453,6 +476,53 @@ class App:
             out.append(e)
         ms = {"fetch": (t2 - t1) * 1000, "transform": (t3 - t2) * 1000, "score": (t4 - t3) * 1000, "total": (t4 - t0) * 1000}
         return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items)}
+
+    def context(self, user_id, it):
+        """What the shop knows of a request for each product: the columns of
+        an impression, before it is written."""
+        return {"usr": user_id, "item": it["id"], "category": it["category"], "uc": f"{user_id}|{it['category']}", "price": it["price"], "pos": 0}
+
+    def rank_workflows(self, user_id, model, explain, t0):
+        spec = json.loads(model["spec"])
+        feats = json.loads(model["features"])
+        items = self.world.items
+        ctxs = [self.context(user_id, it) for it in items]
+        t1 = time.perf_counter()
+        got = {}
+        for j in spec["joins"]:
+            cols = [f.split(".", 1)[1] for f in feats if f.split(".", 1)[0] == j["workflow"]]
+            if not cols:
+                continue
+            if j["on"] not in ctxs[0]:
+                raise ValueError(f"the shop does not know {j['on']} before an impression")
+            keys = sorted({str(c[j["on"]]) for c in ctxs})
+            got[j["workflow"]] = (j["on"], dict(zip(keys, self.db.get(wfm.target(j["workflow"]), keys, cols))))
+        t2 = time.perf_counter()
+        X = []
+        for c in ctxs:
+            x = []
+            for f in feats:
+                w, col = f.split(".", 1)
+                if w == "shop":
+                    v = c.get(col)
+                else:
+                    on, rows = got[w]
+                    v = (rows.get(str(c[on])) or {}).get(col)
+                x.append(float(v) if isinstance(v, (int, float)) else 0.0)
+            X.append(x)
+        t3 = time.perf_counter()
+        m = json.loads(model["weights"]) if "m" not in model else model["m"]
+        scored = sorted(((score(m, x), it, x) for it, x in zip(items, X)), key=lambda r: -r[0])[:K]
+        t4 = time.perf_counter()
+        out = []
+        for sc, it, x in scored:
+            e = {"id": it["id"], "score": sc}
+            if explain:
+                e.update({"title": it["title"], "category": it["category"], "price": it["price"],
+                          "features": dict(zip(feats, x)), "contrib": dict(zip(feats, contributions(m, x)))})
+            out.append(e)
+        ms = {"fetch": (t2 - t1) * 1000, "transform": (t3 - t2) * 1000, "score": (t4 - t3) * 1000, "total": (t4 - t0) * 1000}
+        return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items), "reads": len(got)}
 
     def session_ops(self, now, ranked, user=None):
         w = self.world
@@ -595,6 +665,8 @@ class App:
                     self.trend(now)
                 if now - self.last_snap >= 2000:
                     self.snapshot(now)
+                if self.wf_status == "live":
+                    self.wf.tick(now)
             except Exception as e:
                 self.error = f"jobs: {e}"
             time.sleep(0.25)
@@ -635,6 +707,119 @@ class App:
                "auc_holdout": a_hold, "auc_true": a_true, "build_ms": build_ms, "train_ms": train_ms, "sql": sql, "deployed": 0}
         self.db.write([{"op": "upsert", "table": "fs_models", "doc": row}])
         return self.model_view(row)
+
+    WF_SPINE_COLS = ("usr", "item", "category", "uc", "price", "pos")
+
+    def wf_training_sql(self, spec, leaky):
+        """The training set of a model over workflows: each impression (the
+        spine) and the chosen features of each workflow it joins, as of its
+        time (or, leaky, as they are now)."""
+        if spec.get("spine", "fs_impressions") != "fs_impressions":
+            raise ValueError("the shop trains on fs_impressions")
+        feats = spec["features"]
+        cols = ["s.id AS id", "s.ts AS ts", "s.clicked AS label"]
+        joins = []
+        for i, j in enumerate(spec["joins"]):
+            w = j["workflow"]
+            if w not in self.wf.specs:
+                raise ValueError(f"no workflow {w}")
+            if j["on"] not in self.WF_SPINE_COLS:
+                raise ValueError(f"join on one of {', '.join(self.WF_SPINE_COLS)}")
+            names = {f["name"] for f in self.wf.specs[w]["features"]}
+            use = [f.split(".", 1)[1] for f in feats if f.split(".", 1)[0] == w]
+            for c in use:
+                if c not in names:
+                    raise ValueError(f"{w} has no feature {c}")
+                cols.append(f"j{i}.{c} AS {w}__{c}")
+            if leaky:
+                joins.append(f"LEFT JOIN {wfm.target(w)} j{i} ON s.{j['on']} = j{i}.id")
+            else:
+                joins.append(f"ASOF JOIN {wfm.target(w)}_hist j{i} MATCH_CONDITION (s.ts > j{i}.ts) ON s.{j['on']} = j{i}.entity")
+        for f in feats:
+            w, c = f.split(".", 1)
+            if w == "shop":
+                if c not in ("price", "pos"):
+                    raise ValueError("the impression's own features: price, pos")
+                cols.append(f"s.{c} AS shop__{c}")
+        return "SELECT " + ",\n  ".join(cols) + "\nFROM fs_impressions s\n" + "\n".join(joins) + "\nWHERE s.ts >= :since AND s.ts < :until"
+
+    def train_workflows(self, spec, leaky=False):
+        feats = spec.get("features") or []
+        if not feats:
+            raise ValueError("pick at least one feature")
+        sql = self.wf_training_sql(spec, leaky)
+        true_sql = self.wf_training_sql(spec, False)
+        now = int(time.time() * 1000)
+        cut = now - 60_000
+        # Only impressions every joined workflow has history for.
+        since = 0
+        for j in spec["joins"]:
+            r = self.db.rows(f"SELECT MIN(ts) AS t FROM {wfm.target(j['workflow'])}_hist")[0]
+            since = max(since, r["t"] or now)
+        vec = lambda r: [float(r.get(f.replace(".", "__"))) if isinstance(r.get(f.replace(".", "__")), (int, float)) else 0.0 for f in feats]
+        t0 = time.perf_counter()
+        rows = self.db.rows(sql, {"since": since, "until": cut})
+        build_ms = (time.perf_counter() - t0) * 1000
+        if len(rows) < 200:
+            raise ValueError(f"only {len(rows)} impressions to train on")
+        X, y = [vec(r) for r in rows], [int(r["label"]) for r in rows]
+        t0 = time.perf_counter()
+        m = train_lr(X, y)
+        train_ms = (time.perf_counter() - t0) * 1000
+        hold_own = self.db.rows(sql, {"since": cut, "until": now})
+        hold_true = self.db.rows(true_sql, {"since": cut, "until": now})
+        n = 1 + self.db.rows("SELECT COUNT(*) AS n FROM fs_models")[0]["n"]
+        row = {"id": f"m{now}", "created": now, "name": f"{'wf-leaky' if leaky else 'wf'}-v{n}", "join_kind": "latest (leaks)" if leaky else "asof",
+               "features": json.dumps(feats), "weights": json.dumps(m), "train_rows": len(rows),
+               "auc_train": auc([score(m, x) for x in X[:20000]], y[:20000]),
+               "auc_holdout": auc([score(m, vec(r)) for r in hold_own], [int(r["label"]) for r in hold_own]),
+               "auc_true": auc([score(m, vec(r)) for r in hold_true], [int(r["label"]) for r in hold_true]),
+               "build_ms": build_ms, "train_ms": train_ms, "sql": sql, "deployed": 0,
+               "spec": json.dumps({"joins": spec["joins"], "features": feats})}
+        self.db.write([{"op": "upsert", "table": "fs_models", "doc": row}])
+        return self.model_view(row)
+
+    # -- the workflows' map
+
+    def graph(self):
+        now = int(time.time() * 1000)
+        specs = dict(self.wf.specs)
+        nodes, edges = [], []
+        tables = set()
+        for n, s in specs.items():
+            for i, inp in enumerate(s["inputs"]):
+                if inp.get("table"):
+                    tables.add(inp["table"])
+                    edges.append({"from": "t:" + inp["table"], "to": "w:" + n, "primary": i == 0, "on": inp.get("on")})
+                else:
+                    edges.append({"from": "w:" + inp["workflow"], "to": "w:" + n, "primary": i == 0, "on": inp.get("on")})
+        counts = {}
+        for t in tables:
+            try:
+                counts[t] = self.db.rows(f"SELECT COUNT(*) AS n FROM {t}")[0]["n"]
+            except ChloeError:
+                counts[t] = None
+        for t in sorted(tables):
+            nodes.append({"id": "t:" + t, "kind": "table", "name": t, "rows": counts[t]})
+        stats = {}
+        for r in self.db.rows("SELECT wf, feature, rows, null_share, min, max, mean, distinct_values, zeros, ts, run_ms FROM fs_workflow_stats LIMIT 10000"):
+            stats.setdefault(r["wf"], {})[r["feature"]] = r
+        for n, s in specs.items():
+            runs = self.wf.runs.get(n, [])
+            live = [r for r in runs if not r["backfill"]]
+            last = live[-1] if live else (runs[-1] if runs else None)
+            nodes.append({"id": "w:" + n, "kind": "workflow", "name": n, "title": s.get("title", ""), "target": wfm.target(n), "every": s["every"],
+                          "mode": s["mode"], "features": [f["name"] for f in s["features"]], "last": last, "age_ms": now - self.wf.last.get(n, 0) if self.wf.last.get(n) else None,
+                          "runs": [{"t": r["t"], "ms": r["ms"], "rows": r["rows"], "changed": r["changed"]} for r in live[-30:]], "stats": stats.get(n, {}),
+                          "errors": sum(1 for r in runs if r["error"])})
+        for r in self.db.rows("SELECT id, name, features, deployed, auc_true, spec FROM fs_models ORDER BY created DESC LIMIT 50"):
+            if not r.get("spec"):
+                continue
+            used = sorted({f.split(".", 1)[0] for f in json.loads(r["features"])} - {"shop"})
+            nodes.append({"id": "m:" + r["id"], "kind": "model", "name": r["name"], "deployed": bool(r["deployed"]), "auc": r["auc_true"]})
+            for w in used:
+                edges.append({"from": "w:" + w, "to": "m:" + r["id"], "primary": True})
+        return {"nodes": nodes, "edges": edges, "status": self.wf_status, "now": now}
 
     def load_model(self, mid):
         r = self.db.get("fs_models", [mid])[0]
@@ -927,7 +1112,7 @@ def handler(app, token):
                     r["model_name"] = app.model["name"] if app.model and r["model"] != "random" else "random"
                     r["online"] = app.db.get("fs_user_online", [uid])[0]
                     r["usercat"] = dict(zip(app.world.cats, app.db.get("fs_usercat_online", [f"{uid}|{c}" for c in app.world.cats], ["views", "clicks"])))
-                    r["features"] = FEATURES
+                    r["features"] = json.loads(app.model["features"]) if app.model else FEATURES
                     return self.send(200, r)
                 if p == "/api/click":
                     return self.send(200, app.click(b["user"], b["shown"], b["item"], b.get("model", "random")))
@@ -951,12 +1136,50 @@ def handler(app, token):
                     return self.send(200, app.bench_serve(int(b.get("clients", 4)), float(b.get("seconds", 4))))
                 if p == "/api/bench/train":
                     return self.send(200, app.bench_train())
+                if p == "/api/wf/graph":
+                    return self.send(200, app.graph())
+                if p == "/api/wf/spec":
+                    n = q.get("name", "")
+                    if n not in app.wf.specs:
+                        raise KeyError(f"no workflow {n}")
+                    sql, names = wfm.build_sql(app.wf.specs[n], app.wf.specs)
+                    return self.send(200, {"spec": app.wf.specs[n], "sql": sql, "target": wfm.target(n), "runs": app.wf.runs.get(n, [])[-60:],
+                                           "upstream": sorted(app.wf.upstream(n)), "downstream": sorted(app.wf.downstream(n))})
+                if p == "/api/wf/preview":
+                    return self.send(200, app.wf.preview(b["spec"]))
+                if p == "/api/wf/save":
+                    s = app.wf.save(b["spec"], int(b.get("backfill") or 0))
+                    return self.send(200, {"saved": s["name"], "run": app.wf.runs.get(s["name"], [None])[-1]})
+                if p == "/api/wf/delete":
+                    app.wf.delete(b["name"])
+                    return self.send(200, {"deleted": b["name"]})
+                if p == "/api/wf/run":
+                    return self.send(200, app.wf.run(b["name"], int(time.time() * 1000)))
+                if p == "/api/wf/backfill":
+                    app.wf.backfill(b["name"], int(b.get("minutes", 10)))
+                    return self.send(200, {"backfilled": b["name"]})
+                if p == "/api/wf/search":
+                    return self.send(200, app.wf.search(b.get("where", ""), int(time.time() * 1000)))
+                if p == "/api/wf/lookup":
+                    n = b["name"]
+                    t0 = time.perf_counter()
+                    rows = app.db.get(wfm.target(n), [str(k) for k in b["keys"]][:100])
+                    return self.send(200, {"rows": rows, "ms": (time.perf_counter() - t0) * 1000, "table": wfm.target(n)})
+                if p == "/api/wf/tables":
+                    ts = app.db.call("GET", "/v1/tables")["tables"]
+                    out = [{"table": t["schema"]["table"], "columns": [{"name": f["name"], "type": f["type"]} for f in t["short"]["fields"]]} for t in ts]
+                    return self.send(200, {"tables": out, "workflows": {n: {"target": wfm.target(n), "features": [f["name"] for f in s["features"]]} for n, s in app.wf.specs.items()},
+                                           "windows": [w for w in wfm.WINDOWS if w], "fns": list(wfm.FNS)})
+                if p == "/api/wf/train":
+                    return self.send(200, app.train_workflows(b, bool(b.get("leaky"))))
+                if p == "/api/wf/training_sql":
+                    return self.send(200, {"sql": app.wf_training_sql(b, bool(b.get("leaky")))})
                 if p == "/api/measured":
                     return self.send(200, measured())
                 return self.send(404, {"error": f"no {p}"})
             except ChloeError as e:
                 return self.send(502, {"error": str(e)})
-            except (KeyError, ValueError) as e:
+            except (KeyError, ValueError, wfm.SpecError) as e:
                 return self.send(400, {"error": str(e)})
             except Exception as e:  # noqa: BLE001
                 return self.send(500, {"error": f"{type(e).__name__}: {e}"})
@@ -1066,6 +1289,7 @@ def main(argv=None):
     t0 = time.time()
     app.setup()
     print(f"ready in {time.time() - t0:.1f}s: {app.counts['impressions']} impressions", flush=True)
+    threading.Thread(target=app.seed_workflows, daemon=True).start()
     threading.Thread(target=app.jobs_loop, daemon=True).start()
     for i in range(SHOPPER_THREADS):
         threading.Thread(target=app.shoppers, args=(i == 0,), daemon=True).start()

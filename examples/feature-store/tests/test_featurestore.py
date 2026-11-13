@@ -121,3 +121,66 @@ def test_features_and_browse(demo):
     assert b["rows"] and b["rows"][0]["clicks"] >= b["rows"][-1]["clicks"]
     with pytest.raises(urllib.error.HTTPError):
         demo("/api/browse", {"table": "_strata_keys", "where": "", "order": ""})
+
+
+# ------------------------------------------------------------------ workflows
+
+import workflows as wfm  # noqa: E402
+
+
+def test_workflow_checks_order_and_sql():
+    specs = {s["name"]: wfm.check(s, {x["name"] for x in wfm.SEEDS}) for s in wfm.SEEDS}
+    order = wfm.topo(specs)
+    assert order.index("user_category") < order.index("user_category_share") > order.index("user_activity")
+    assert order.index("item_popularity") < order.index("item_signals")
+    # A windowed aggregate reads a window's own parameter, never :now - N.
+    sql, _ = wfm.build_sql(specs["user_activity"], specs)
+    assert ":since_300" in sql and ":now -" not in sql
+    # A workflow input is read as of the run, from its history.
+    sql, _ = wfm.build_sql(specs["user_category_share"], specs)
+    assert "fv_user_category_hist" in sql and "fv_user_activity_hist" in sql and "<= :now" in sql
+    cyc = dict(specs, user_activity=dict(specs["user_activity"], inputs=[{"workflow": "user_category_share", "alias": "a"}]))
+    with pytest.raises(wfm.SpecError, match="cycle"):
+        wfm.topo(cyc)
+    for bad in ({"name": "X"}, dict(wfm.SEEDS[0], features=[{"name": "n", "fn": "median"}]),
+                dict(wfm.SEEDS[3], features=[{"name": "n", "fn": "count"}]),
+                dict(wfm.SEEDS[1], inputs=[wfm.SEEDS[1]["inputs"][0], {"table": "fs_items", "alias": "p"}])):
+        with pytest.raises(wfm.SpecError):
+            wfm.check(bad, set())
+
+
+def test_workflows_chain_search_train_and_serve(demo):
+    end = time.time() + 120
+    while demo("/api/wf/graph")["status"] != "live" and time.time() < end:
+        time.sleep(1)
+    g = demo("/api/wf/graph")
+    assert {n["name"] for n in g["nodes"] if n["kind"] == "workflow"} >= {s["name"] for s in wfm.SEEDS}
+    # A workflow on two others: chained, joined, backfilled, served by key.
+    spec = {"name": "t_chain", "inputs": [{"workflow": "user_category_share", "alias": "s"},
+                                          {"workflow": "user_activity", "alias": "u", "on": ["s.entity", "entity"]}],
+            "mode": "map", "key": "s.entity", "features": [{"name": "lift2", "expr": "s.lift * 2"}], "every": 10}
+    pv = demo("/api/wf/preview", {"spec": spec})
+    assert pv["rows"]
+    demo("/api/wf/save", {"spec": spec, "backfill": 1})
+    sp = demo("/api/wf/spec?name=user_category_share")
+    assert "t_chain" in sp["downstream"]
+    with pytest.raises(urllib.error.HTTPError):  # it feeds t_chain
+        demo("/api/wf/delete", {"name": "user_category_share"})
+    with pytest.raises(urllib.error.HTTPError):  # a cycle
+        demo("/api/wf/save", {"spec": dict(spec, name="user_activity", inputs=[{"workflow": "t_chain", "alias": "s"}], key="s.entity")})
+    # Search the statistics: the steps that match, what they feed, what feeds them.
+    hits = demo("/api/wf/search", {"where": "feature = 'views' AND max > 0"})
+    assert "user_activity" in hits["workflows"] and "t_chain" in hits["downstream"]
+    hits = demo("/api/wf/search", {"where": "wf = 't_chain'"})
+    assert hits["workflows"] == ["t_chain"] and "user_category" in hits["upstream"]
+    with pytest.raises(urllib.error.HTTPError):
+        demo("/api/wf/search", {"where": "1 = 1 UNION SELECT * FROM _strata_keys"})
+    # A model on the workflows, trained as of each impression, then serving.
+    m = demo("/api/wf/train", {"joins": [{"workflow": "user_activity", "on": "usr"}, {"workflow": "item_signals", "on": "item"},
+                                         {"workflow": "user_category_share", "on": "uc"}],
+                               "features": ["user_activity.ctr", "item_signals.hot", "user_category_share.affinity", "shop.price"]})
+    assert m["train_rows"] > 500 and m["auc_true"] > 0.6
+    demo("/api/deploy", {"id": m["id"]})
+    r = demo("/api/shop?user=u010")
+    assert r["model"] == m["id"] and len(r["items"]) == fs.K
+    demo("/api/wf/delete", {"name": "t_chain"})

@@ -104,7 +104,7 @@ const CSS = `
 @media (max-width: 560px) { .fs-grid { grid-template-columns: minmax(0, 1fr); } }
 `;
 
-const TABS = [["", "Pipeline"], ["shop", "Shop"], ["features", "Features"], ["training", "Training"], ["speed", "Speed"]];
+const TABS = [["", "Pipeline"], ["builder", "Builder"], ["shop", "Shop"], ["features", "Features"], ["training", "Training"], ["speed", "Speed"]];
 const FEAT_COLORS = { u_ctr: "var(--s1)", i_ctr: "var(--s2)", i_trend: "var(--s4)", uc_ctr: "var(--s3)", uc_share: "var(--s5)", log_views: "var(--s6)", price_ratio: "var(--s7)" };
 
 function render(el, ctx) {
@@ -146,7 +146,7 @@ function render(el, ctx) {
     try { stopPage?.(); } catch (e) { console.warn(e); }
     listeners = [drawHead];
     body.replaceChildren();
-    const page = { "": pipelinePage, shop: shopPage, features: featuresPage, training: trainingPage, speed: speedPage }[tab] || pipelinePage;
+    const page = { "": pipelinePage, builder: builderPage, shop: shopPage, features: featuresPage, training: trainingPage, speed: speedPage }[tab] || pipelinePage;
     stopPage = page(body, ctx, onState, poll);
   };
   for (const [id, label] of TABS) {
@@ -578,6 +578,10 @@ function trainingPage(root, ctx, onState) {
   root.append(h("div", { class: "grid g2" }, card({ title: "Offline AUC against the truth", sub: "on the last minute, held out", body: aucHost }), card({ title: "Weights", sub: "standardized features, the selected model", body: wHost })));
   root.append(h("div", { style: { height: "14px" } }));
   root.append(card({ title: "Models", sub: "rows of fs_models: weights, the SQL of the training set, timings, AUCs", body: modelsHost, flush: true }));
+  root.append(h("div", { style: { height: "14px" } }));
+  const wfHost = h("div", { class: "muted" }, "…");
+  root.append(card({ title: "Train on the Builder's workflows", sub: "any features, from any workflow", body: wfHost }));
+  trainOnWorkflows(ctx, wfHost, (m) => { selected = m.id; loadModels(); });
 
   let selected = null, models = [], deployed = null;
   const trainBtn = (leaky) => {
@@ -726,4 +730,402 @@ function speedPage(root, ctx, onState) {
     vsHost.replaceChildren(...(parts.length > 1 ? parts : [h("div", { class: "muted" }, "The measured results are not in this checkout.")]));
   });
   return () => {};
+}
+
+// ------------------------------------------------------------- builder
+
+const BCSS = `
+.fb-map { width: 100%; height: auto; display: block; }
+.fb-map .n rect { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.2; cursor: pointer; }
+.fb-map .n.table rect { fill: var(--surface-2); }
+.fb-map .n.workflow rect { stroke: var(--s1); }
+.fb-map .n.model rect { stroke: var(--s3); }
+.fb-map .n.model.live rect { stroke-width: 2.4; }
+.fb-map .n.sel rect { stroke: var(--accent); stroke-width: 2.6; }
+.fb-map .n.hit rect { stroke: var(--crit); stroke-width: 2.6; fill: var(--crit-soft); }
+.fb-map .n.down rect { stroke: var(--s2); stroke-width: 2; fill: var(--serious-soft); }
+.fb-map .n.up rect { stroke: var(--s4); stroke-width: 2; }
+.fb-map.searching .n:not(.hit):not(.down):not(.up) { opacity: .35; }
+.fb-map.searching .e:not(.lit) { opacity: .2; }
+.fb-map .t { font-size: 12.5px; font-weight: 650; fill: var(--text); pointer-events: none; }
+.fb-map .k { font-size: 9.5px; fill: var(--muted); text-transform: uppercase; letter-spacing: .05em; pointer-events: none; }
+.fb-map .m { font-size: 10.5px; fill: var(--text-2); font-family: var(--mono); pointer-events: none; }
+.fb-map .e { fill: none; stroke: var(--axis); stroke-width: 1.5; }
+.fb-map .e.join { stroke-dasharray: 5 4; }
+.fb-map .e.lit { stroke: var(--crit); stroke-width: 2; }
+.fb-map .fl { fill: none; stroke: var(--s1); stroke-width: 2.4; stroke-dasharray: 3 11; stroke-linecap: round; animation: fs-flow 1s linear infinite; opacity: 0; transition: opacity .4s; }
+.fb-map .fl.on { opacity: 1; }
+.fb-map .bad { fill: var(--crit); }
+.fb-search { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; margin-bottom: 8px; }
+.fb-search .input { font-family: var(--mono); font-size: 12.5px; }
+.fb-ex { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
+.fb-ex button { font-family: var(--mono); }
+.fb-two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.fb-ed .lab { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin: 12px 0 4px; }
+.fb-ed .lab:first-child { margin-top: 0; }
+.fb-ed .input, .fb-ed .select { font-family: var(--mono); font-size: 12.5px; }
+.fb-row { display: grid; gap: 6px; margin-bottom: 6px; align-items: center; }
+.fb-in { grid-template-columns: 26px minmax(0, 1.2fr) 60px minmax(0, 1fr) minmax(0, .8fr) 28px; }
+.fb-ag { grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1.2fr) 92px minmax(0, 1fr) 28px; }
+.fb-ex2 { grid-template-columns: minmax(0, 1fr) minmax(0, 2.6fr) 28px; }
+.fb-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 2px; }
+.fb-chips button { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); cursor: pointer; color: var(--text-2); }
+.fb-chips button:hover { border-color: var(--accent); color: var(--text); }
+.fb-stats td.bar { width: 90px; }
+.fb-stats td.bar i { display: block; height: 8px; border-radius: 3px; background: var(--crit); }
+.fb-stats tr.hit td { background: var(--crit-soft); }
+.fb-pre { font-size: 11.5px; white-space: pre-wrap; max-height: 300px; overflow: auto; margin: 6px 0; }
+.fb-tw { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.fb-tw > div { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; }
+.fb-tw label { display: flex; gap: 6px; align-items: center; font-size: 12.5px; font-family: var(--mono); }
+@media (max-width: 1100px) { .fb-two { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 700px) { .fb-in, .fb-ag, .fb-ex2 { grid-template-columns: minmax(0, 1fr); } }
+`;
+
+/** Layers left to right: tables, then each workflow after its inputs, then models. */
+function layout(g) {
+  const byId = new Map(g.nodes.map((n) => [n.id, { ...n }]));
+  const parents = new Map();
+  for (const e of g.edges) { if (!parents.has(e.to)) parents.set(e.to, []); parents.get(e.to).push(e.from); }
+  const layer = (id, seen = new Set()) => {
+    const n = byId.get(id);
+    if (!n) return 0;
+    if (n.layer != null) return n.layer;
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const ps = parents.get(id) || [];
+    n.layer = n.kind === "table" ? 0 : 1 + Math.max(0, ...ps.map((p) => layer(p, seen)));
+    return n.layer;
+  };
+  for (const id of byId.keys()) layer(id);
+  const maxL = Math.max(0, ...[...byId.values()].filter((n) => n.kind !== "model").map((n) => n.layer));
+  for (const n of byId.values()) if (n.kind === "model") n.layer = maxL + 1;
+  const cols = [];
+  for (const n of byId.values()) (cols[n.layer] ||= []).push(n);
+  const CW = 236, RH = 96;
+  const NW = { table: 180, workflow: 200, model: 170 }, NH = { table: 52, workflow: 74, model: 52 };
+  let height = 0;
+  cols.forEach((col, L) => {
+    if (!col) return;
+    // Order by the parents' places, to keep the lines short.
+    col.sort((a, b) => {
+      const ya = (parents.get(a.id) || []).map((p) => byId.get(p)?.y ?? 0), yb = (parents.get(b.id) || []).map((p) => byId.get(p)?.y ?? 0);
+      const ma = ya.length ? ya.reduce((s, v) => s + v, 0) / ya.length : 0, mb = yb.length ? yb.reduce((s, v) => s + v, 0) / yb.length : 0;
+      return ma - mb || a.name.localeCompare(b.name);
+    });
+    col.forEach((n, i) => { n.x = 16 + L * CW; n.y = 18 + i * RH; n.w = NW[n.kind]; n.h = NH[n.kind]; });
+    height = Math.max(height, 18 + col.length * RH);
+  });
+  return { nodes: byId, width: 16 + cols.length * CW, height: Math.max(height, 140), parents };
+}
+
+function builderPage(root, ctx) {
+  const { h, s, card, fmt, toast, sqlBlock, table } = ctx.core;
+  root.append(h("style", {}, BCSS));
+  const intro = h("div", { class: "fs-note" }, "Workflows turn tables into features: each reads one or more inputs (tables, or other workflows' output), groups by an entity key, aggregates over time windows and transforms. It writes ",
+    h("code", {}, "fv_<name>"), ", served by key, and ", h("code", {}, "fv_<name>_hist"), ", which training sets join as of each event. Every run records each feature's statistics in ", h("code", {}, "fs_workflow_stats"), "; search them below.");
+  const where = h("input", { class: "input", placeholder: "search the features' statistics: null_share > 0.2, rows < 100, max > 1000, age_s > 30 …" });
+  const go = h("button", { class: "btn primary" }, "Search");
+  const clear = h("button", { class: "btn" }, "Clear");
+  const found = h("div", { class: "small muted" });
+  const ex = h("div", { class: "fb-ex" }, h("span", { class: "muted" }, "try:"),
+    ...["zeros > rows / 3", "distinct_values < 20", "max > 1000", "null_share > 0", "run_ms > 150", "age_s > 20"].map((q) => h("button", { class: "btn xs", onclick: () => { where.value = q; search(); } }, q)));
+  const mapHost = h("div", { style: { overflowX: "auto" } });
+  const newBtn = h("button", { class: "btn sm primary", onclick: () => edit(null) }, "New workflow");
+  const detail = h("div"), editor = h("div");
+  const closeEditor = () => { editor.replaceChildren(); detail.hidden = false; };
+  root.append(intro, card({ title: "The map", sub: "tables → workflows → models; dashed: a joined input", tools: [newBtn], body: [h("div", { class: "fb-search" }, where, go, clear), ex, found, mapHost] }));
+  root.append(h("div", { style: { height: "14px" } }), editor, detail);
+
+  let g = null, L = null, sel = null, hits = null, tables = null;
+  const svgNodes = new Map(), flows = new Map(), edgeEls = [];
+
+  const draw = () => {
+    L = layout(g);
+    svgNodes.clear(); flows.clear(); edgeEls.length = 0;
+    const svg = s("svg", { class: "fb-map", viewBox: `0 0 ${L.width} ${L.height}`, style: `width: ${L.width}px; max-width: 100%` });
+    for (const e of g.edges) {
+      const a = L.nodes.get(e.from), b = L.nodes.get(e.to);
+      if (!a || !b) continue;
+      const x0 = a.x + a.w, y0 = a.y + a.h / 2, x1 = b.x, y1 = b.y + b.h / 2, mx = (x0 + x1) / 2;
+      const d = `M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1}`;
+      const p = s("path", { class: "e" + (e.primary ? "" : " join"), d });
+      if (e.on) p.append(s("title", {}, `joined on ${e.on[0]} = ${e.on[1]}`));
+      edgeEls.push([e, p]);
+      const f = s("path", { class: "fl", d });
+      flows.set(e.to + "|" + e.from, [b, f]);
+      svg.append(p, f);
+    }
+    for (const n of L.nodes.values()) {
+      const gN = s("g", { class: `n ${n.kind}` + (n.deployed ? " live" : "") });
+      gN.append(s("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 8 }));
+      if (n.kind === "table") {
+        gN.append(s("text", { class: "k", x: n.x + 10, y: n.y + 15 }, "table"), s("text", { class: "t", x: n.x + 10, y: n.y + 31 }, n.name), s("text", { class: "m", x: n.x + 10, y: n.y + 45 }, `${fmt.si(n.rows)} rows`));
+      } else if (n.kind === "workflow") {
+        const last = n.last;
+        gN.append(s("text", { class: "k", x: n.x + 10, y: n.y + 15 }, `${n.mode} · every ${n.every} s`), s("text", { class: "t", x: n.x + 10, y: n.y + 31 }, n.name),
+          s("text", { class: "m", x: n.x + 10, y: n.y + 46 }, `→ ${n.target}`),
+          s("text", { class: "m", x: n.x + 10, y: n.y + 62 }, last ? `${fmt.ms(last.ms)} · ${fmt.si(last.rows)} rows · ${fmt.si(last.changed)} new` : "not run"));
+        if (n.errors) gN.append(s("circle", { class: "bad", cx: n.x + n.w - 12, cy: n.y + 12, r: 5 }));
+      } else {
+        gN.append(s("text", { class: "k", x: n.x + 10, y: n.y + 15 }, n.deployed ? "model · serving" : "model"), s("text", { class: "t", x: n.x + 10, y: n.y + 31 }, n.name),
+          s("text", { class: "m", x: n.x + 10, y: n.y + 45 }, `AUC ${n.auc?.toFixed(3) ?? "–"}`));
+      }
+      gN.onclick = () => { sel = n.id; mark(); closeEditor(); showDetail(); };
+      svgNodes.set(n.id, gN);
+      svg.append(gN);
+    }
+    mapHost.replaceChildren(svg);
+    mark();
+  };
+  const mark = () => {
+    if (!L) return;
+    const svg = mapHost.firstChild;
+    svg?.classList.toggle("searching", !!hits);
+    const hw = new Set((hits?.workflows || []).map((w) => "w:" + w)), dw = new Set((hits?.downstream || []).map((w) => "w:" + w)), uw = new Set((hits?.upstream || []).map((w) => "w:" + w));
+    // Models fed by a hit or what it feeds are downstream too.
+    for (const e of g.edges) if (e.to.startsWith("m:") && (hw.has(e.from) || dw.has(e.from))) dw.add(e.to);
+    for (const [id, el] of svgNodes) {
+      el.classList.toggle("sel", id === sel);
+      el.classList.toggle("hit", hw.has(id)); el.classList.toggle("down", dw.has(id)); el.classList.toggle("up", uw.has(id));
+    }
+    for (const [e, p] of edgeEls) p.classList.toggle("lit", !!hits && (hw.has(e.from) || dw.has(e.from)) && (dw.has(e.to) || hw.has(e.to)));
+  };
+  const pulse = () => {
+    if (!g) return;
+    for (const [, [b, f]] of flows) {
+      const n = g.nodes.find((x) => x.id === b.id);
+      f.classList.toggle("on", !!(n && n.kind === "workflow" && n.age_ms != null && n.age_ms < 2500));
+    }
+  };
+  const load = async (redraw) => {
+    const ng = await ctx.api("/api/wf/graph");
+    const shape = (x) => JSON.stringify([x.nodes.map((n) => n.id).sort(), x.edges.map((e) => e.from + e.to).sort()]);
+    const changed = !g || shape(g) !== shape(ng);
+    g = ng;
+    if (changed || redraw) draw();
+    else {
+      // Update the numbers in place.
+      for (const n of g.nodes) {
+        const el = svgNodes.get(n.id);
+        if (!el) continue;
+        const ms = el.querySelectorAll(".m");
+        if (n.kind === "workflow" && ms[1]) ms[1].textContent = n.last ? `${fmt.ms(n.last.ms)} · ${fmt.si(n.last.rows)} rows · ${fmt.si(n.last.changed)} new` : "not run";
+        if (n.kind === "table" && ms[0]) ms[0].textContent = `${fmt.si(n.rows)} rows`;
+      }
+      pulse();
+    }
+    found.textContent = g.status !== "live" ? `Workflows: ${g.status}…` : found.textContent;
+  };
+
+  async function search() {
+    const q = where.value.trim();
+    if (!q) { hits = null; found.textContent = ""; mark(); showDetail(); return; }
+    try {
+      hits = await ctx.api("/api/wf/search", { method: "POST", body: { where: q } });
+      found.replaceChildren(hits.features.length
+        ? h("span", {}, h("b", { style: { color: "var(--crit)" } }, `${hits.features.length} feature${hits.features.length > 1 ? "s" : ""} in ${hits.workflows.length} workflow${hits.workflows.length > 1 ? "s" : ""}`),
+          `: ${hits.features.slice(0, 8).map((f) => `${f.wf}.${f.feature}`).join(", ")}${hits.features.length > 8 ? ", …" : ""}. `,
+          hits.downstream.length ? h("span", {}, "They feed ", h("b", { style: { color: "var(--s2)" } }, hits.downstream.join(", ")), " and the models after them. ") : null,
+          hits.upstream.length ? h("span", {}, "They read ", h("b", { style: { color: "var(--s4)" } }, hits.upstream.join(", ")), ".") : null)
+        : "No feature matches.");
+      if (hits.workflows.length && !hits.workflows.includes((sel || "").slice(2))) sel = "w:" + hits.workflows[0];
+      mark(); showDetail();
+    } catch (e) { found.textContent = String(e.message || e); }
+  }
+  go.onclick = search;
+  where.onkeydown = (e) => { if (e.key === "Enter") search(); };
+  clear.onclick = () => { where.value = ""; search(); };
+
+  async function showDetail() {
+    if (!sel) { detail.replaceChildren(); return; }
+    const n = g.nodes.find((x) => x.id === sel);
+    if (!n) { detail.replaceChildren(); return; }
+    if (n.kind === "table") {
+      tables = tables || await ctx.api("/api/wf/tables");
+      const t = tables.tables.find((x) => x.table === n.name);
+      detail.replaceChildren(card({ title: n.name, sub: `a table · ${fmt.n(n.rows)} rows`, body: h("div", { class: "fb-chips" }, (t?.columns || []).map((c) => h("button", {}, `${c.name} ${c.type}`))) }));
+      return;
+    }
+    if (n.kind === "model") {
+      detail.replaceChildren(card({ title: n.name, sub: n.deployed ? "serving the shop" : "a model", body: h("div", {}, `AUC as served ${n.auc?.toFixed(3)}. `, h("a", { href: ctx.href("training") }, "Training"), " lists it, with its weights and the SQL of its training set.") }));
+      return;
+    }
+    const d = await ctx.api(`/api/wf/spec?name=${encodeURIComponent(n.name)}`);
+    const hitF = new Set((hits?.features || []).filter((f) => f.wf === n.name).map((f) => f.feature));
+    const runs = d.runs.filter((r) => !r.backfill);
+    const runChart = ctx.charts.xyChart({ height: 150, yfmt: (v) => fmt.ms(v), xfmt: (x) => fmt.time(x), min: 0,
+      series: [{ name: "run time", color: "var(--s1)", points: runs.map((r) => [r.t, r.ms]) }, { name: "query", color: "var(--s4)", points: runs.map((r) => [r.t, r.query_ms]) }] });
+    const keyIn = h("input", { class: "input sm", placeholder: "an entity key, e.g. " + (n.name.includes("user_category") ? "u005|sport" : n.name.startsWith("user") ? "u005" : "p010") });
+    const look = h("div", { class: "small" });
+    keyIn.onkeydown = async (e) => {
+      if (e.key !== "Enter") return;
+      const r = await ctx.api("/api/wf/lookup", { method: "POST", body: { name: n.name, keys: [keyIn.value.trim()] } });
+      look.replaceChildren(h("code", {}, JSON.stringify(r.rows[0])), h("span", { class: "muted" }, `  · POST /v1/kv/get on ${r.table}: ${fmt.ms(r.ms)}`));
+    };
+    const statsRows = d.spec.features.map((f) => ({ name: f.name, def: f.expr ? f.expr : `${f.fn}(${f.arg || "*"})${f.window ? ` over ${f.window} s` : ""}${f.where ? ` where ${f.where}` : ""}`, ...(n.stats[f.name] || {}) }));
+    const act = (label, f, cls = "btn sm") => { const b = h("button", { class: cls }, label); b.onclick = async () => { b.disabled = true; try { await f(); } catch (e) { toast(String(e.message || e), "bad"); } b.disabled = false; }; return b; };
+    detail.replaceChildren(card({ title: n.name, sub: `${d.spec.title || ""} → ${d.target}, every ${d.spec.every} s`,
+      tools: [act("Edit", () => edit(d.spec)), act("Run now", async () => { const r = await ctx.api("/api/wf/run", { method: "POST", body: { name: n.name } }); toast(`${n.name}: ${fmt.ms(r.ms)}, ${r.rows} rows`, r.error ? "bad" : "ok"); load(); }),
+        act("Backfill 10 min", async () => { await ctx.api("/api/wf/backfill", { method: "POST", body: { name: n.name, minutes: 10 }, timeout: 300000 }); toast(`${n.name}: history for the last 10 minutes`, "ok"); }),
+        act("Delete", async () => { await ctx.api("/api/wf/delete", { method: "POST", body: { name: n.name } }); sel = null; toast(`${n.name} deleted`, "ok"); load(true); detail.replaceChildren(); }, "btn sm danger")],
+      body: [
+        h("div", { class: "small muted", style: { marginBottom: "6px" } }, `reads ${d.upstream.length ? d.upstream.join(", ") + " and " : ""}${d.spec.inputs.filter((i) => i.table).map((i) => i.table).join(", ") || "only workflows"}; ${d.downstream.length ? "feeds " + d.downstream.join(", ") : "feeds no workflow"}`),
+        h("div", { class: "fb-two" },
+          h("div", {}, table([
+            { key: "name", label: "feature", render: (r) => h("code", {}, r.name) },
+            { key: "def", label: "definition", render: (r) => h("span", { class: "small" }, r.def) },
+            { key: "null_share", label: "missing", num: true, render: (r) => r.null_share == null ? "–" : h("span", {}, fmt.pct(r.null_share)) },
+            { key: "min", label: "min", num: true, render: (r) => r.min == null ? "–" : fmt.si(r.min, 3) },
+            { key: "mean", label: "mean", num: true, render: (r) => r.mean == null ? "–" : fmt.si(r.mean, 3) },
+            { key: "max", label: "max", num: true, render: (r) => r.max == null ? "–" : fmt.si(r.max, 3) },
+            { key: "distinct_values", label: "distinct", num: true },
+          ], { rows: statsRows, compact: true, rowClass: (r) => hitF.has(r.name) ? "hit" : "" }),
+          h("div", { class: "row", style: { marginTop: "10px" } }, h("span", { class: "small muted" }, "Serve:"), keyIn), look),
+          h("div", {}, runChart, h("div", { class: "lab small muted", style: { marginTop: "8px" } }, "The SQL of a run (:now is the run's time)"), sqlBlock(d.sql, { class: "code fb-pre" })))] }));
+    runChart.update?.([{ name: "run time", color: "var(--s1)", points: runs.map((r) => [r.t, r.ms]) }, { name: "query", color: "var(--s4)", points: runs.map((r) => [r.t, r.query_ms]) }]);
+    detail.classList.add("fs-flash"); setTimeout(() => detail.classList.remove("fs-flash"), 1600);
+  }
+
+  // ------------------------------------------------------------- editor
+  async function edit(spec) {
+    detail.hidden = true;
+    tables = await ctx.api("/api/wf/tables");
+    const sp = JSON.parse(JSON.stringify(spec || { name: "", title: "", inputs: [{ table: "fs_impressions", alias: "a" }], mode: "aggregate", key: "a.usr", time: "a.ts", where: "", features: [{ name: "views", fn: "count" }], every: 10 }));
+    const isNew = !spec;
+    let focused = null;
+    const inp = (v, on, ph, cls = "input sm") => { const e = h("input", { class: cls, value: v ?? "", placeholder: ph || "" }); e.oninput = () => { on(e.value); changed(); }; e.onfocus = () => { focused = e; }; return e; };
+    const sel_ = (opts, v, on, cls = "select sm") => { const e = h("select", { class: cls }, opts.map((o) => h("option", { value: o[0] }, o[1]))); e.value = v ?? ""; e.onchange = () => { on(e.value); changed(); }; return e; };
+    const colsOf = (i) => i.workflow ? ["entity", "ts", ...(tables.workflows[i.workflow]?.features || [])] : (tables.tables.find((t) => t.table === i.table)?.columns || []).map((c) => c.name);
+    const sources = [...tables.tables.filter((t) => !t.table.startsWith("fv_") && !t.table.startsWith("fs_workflow")).map((t) => ["t:" + t.table, t.table]), ...Object.keys(tables.workflows).filter((w) => w !== sp.name).map((w) => ["w:" + w, `workflow ${w}`])];
+    const body = h("div", { class: "fb-ed" });
+    const out = h("div");
+    const insert = (txt) => { if (!focused) return; const st = focused.selectionStart ?? focused.value.length; focused.value = focused.value.slice(0, st) + txt + focused.value.slice(focused.selectionEnd ?? st); focused.dispatchEvent(new Event("input")); focused.focus(); };
+    const render = () => {
+      const ins = h("div");
+      sp.inputs.forEach((i, k) => {
+        const src = sel_(sources, i.workflow ? "w:" + i.workflow : "t:" + i.table, (v) => { delete i.table; delete i.workflow; if (v.startsWith("w:")) i.workflow = v.slice(2); else i.table = v.slice(2); render(); });
+        const own = colsOf(i);
+        ins.append(h("div", { class: "fb-row fb-in" }, h("span", { class: "small muted" }, k ? "join" : "from"), src, inp(i.alias, (v) => { i.alias = v; }, "alias"),
+          k ? inp(i.on?.[0], (v) => { i.on = [v, i.on?.[1] || ""]; }, "a.item  (from the inputs before)") : h("span", { class: "small muted" }, "grouped by the key below"),
+          k ? sel_([["", "= its column…"], ...own.map((c) => [c, "= " + i.alias + "." + c])], i.on?.[1], (v) => { i.on = [i.on?.[0] || "", v]; }) : h("span"),
+          k ? h("button", { class: "btn xs ghost", title: "remove", onclick: () => { sp.inputs.splice(k, 1); render(); changed(); } }, "✕") : h("span")),
+          h("div", { class: "fb-chips" }, own.map((c) => h("button", { type: "button", title: "insert", onclick: () => insert(`${i.alias}.${c}`) }, `${i.alias}.${c}`))));
+      });
+      const aggs = h("div"), exprs = h("div");
+      sp.features.forEach((f, k) => {
+        const rm = h("button", { class: "btn xs ghost", title: "remove", onclick: () => { sp.features.splice(k, 1); render(); changed(); } }, "✕");
+        if (f.expr != null) exprs.append(h("div", { class: "fb-row fb-ex2" }, inp(f.name, (v) => { f.name = v; }, "name"), inp(f.expr, (v) => { f.expr = v; }, "(clicks + 1.0) / (views + 10), clamp(x, 0, 1), ln(1 + x) …"), rm));
+        else aggs.append(h("div", { class: "fb-row fb-ag" }, inp(f.name, (v) => { f.name = v; }, "name"), sel_(tables.fns.map((x) => [x, x]), f.fn, (v) => { f.fn = v; }),
+          inp(f.arg, (v) => { f.arg = v; }, f.fn === "count" ? "*" : "a.clicked"), sel_([["", "all time"], ...tables.windows.map((w) => [String(w), w < 3600 ? `last ${w / 60} min` : w < 86400 ? `last ${w / 3600} h` : "last day"])], f.window ? String(f.window) : "", (v) => { f.window = v ? Number(v) : null; }),
+          inp(f.where, (v) => { f.where = v; }, "only where …"), rm));
+      });
+      body.replaceChildren(
+        h("div", { class: "lab" }, "Name and title"), h("div", { class: "fb-row", style: { gridTemplateColumns: "minmax(0,1fr) minmax(0,2fr) 120px" } },
+          isNew ? inp(sp.name, (v) => { sp.name = v; }, "user_recent") : h("code", {}, sp.name), inp(sp.title, (v) => { sp.title = v; }, "what it is for"),
+          sel_([["5", "every 5 s"], ["10", "every 10 s"], ["30", "every 30 s"], ["60", "every minute"], ["300", "every 5 min"]], String(sp.every), (v) => { sp.every = Number(v); })),
+        h("div", { class: "lab" }, "Inputs: tables, or other workflows (read as of each run)"), ins,
+        h("button", { class: "btn xs", onclick: () => { sp.inputs.push({ table: "fs_items", alias: "abcdefgh"[sp.inputs.length] || "x", on: ["", ""] }); render(); } }, "+ join an input"),
+        h("div", { class: "lab" }, "Rows"), h("div", { class: "fb-row", style: { gridTemplateColumns: "150px minmax(0,1fr) minmax(0,1fr)" } },
+          sel_([["aggregate", "grouped by key"], ["map", "one per input row"]], sp.mode, (v) => { sp.mode = v; if (v === "map") sp.features = sp.features.filter((f) => f.expr != null); render(); }),
+          inp(sp.key, (v) => { sp.key = v; }, "key: a.usr, a.usr || '|' || p.category"), inp(sp.time, (v) => { sp.time = v; }, "time (epoch ms): a.ts")),
+        inp(sp.where, (v) => { sp.where = v; }, "WHERE … (optional)", "input sm"),
+        sp.mode === "aggregate" ? h("div", {}, h("div", { class: "lab" }, "Aggregates"), aggs, h("button", { class: "btn xs", onclick: () => { sp.features.push({ name: "", fn: "count" }); render(); } }, "+ aggregate")) : "",
+        h("div", { class: "lab" }, sp.mode === "aggregate" ? "Transformations, over the aggregates" : "Transformations, over the inputs' columns"), exprs,
+        h("button", { class: "btn xs", onclick: () => { sp.features.push({ name: "", expr: "" }); render(); } }, "+ transformation"));
+    };
+    const backfill = h("select", { class: "select sm" }, h("option", { value: "0" }, "no history"), h("option", { value: "10" }, "backfill 10 min"), h("option", { value: "30" }, "backfill 30 min"));
+    backfill.value = "10";
+    const save = h("button", { class: "btn primary" }, isNew ? "Create" : "Save");
+    save.onclick = async () => {
+      save.disabled = true; save.textContent = "Saving…";
+      try {
+        const r = await ctx.api("/api/wf/save", { method: "POST", body: { spec: clean(), backfill: Number(backfill.value) }, timeout: 600000 });
+        toast(`${r.saved} saved: ${r.run ? `${fmt.ms(r.run.ms)}, ${r.run.rows} rows` : ""}`, "ok");
+        sel = "w:" + r.saved; editor.replaceChildren(); detail.hidden = false; await load(true); showDetail();
+      } catch (e) { toast(String(e.message || e), "bad"); }
+      save.disabled = false; save.textContent = isNew ? "Create" : "Save";
+    };
+    const clean = () => {
+      const c = JSON.parse(JSON.stringify(sp));
+      for (const f of c.features) { for (const k of ["arg", "where"]) if (!f[k]) delete f[k]; if (!f.window) delete f.window; if (f.expr != null) { delete f.fn; delete f.window; } }
+      return c;
+    };
+    let timer = null, seq = 0;
+    const changed = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const my = ++seq;
+        const c = clean();
+        if (!c.name) c.name = "preview";
+        try {
+          const r = await ctx.api("/api/wf/preview", { method: "POST", body: { spec: c } });
+          if (my !== seq) return;
+          out.replaceChildren(h("div", { class: "row between small" }, h("b", {}, `${fmt.n(r.count)} rows`), h("span", { class: "muted" }, `the query took ${fmt.ms(r.ms)}`)),
+            sqlBlock(r.sql, { class: "code fb-pre" }),
+            table(r.columns.map((col) => ({ key: col, label: col, num: typeof r.rows[0]?.[col] === "number", render: (x) => x[col] == null ? h("span", { style: { color: "var(--crit)" } }, "null") : typeof x[col] === "number" ? fmt.si(x[col], 3) : String(x[col]) })), { rows: r.rows, compact: true, maxHeight: "260px" }),
+            h("div", { class: "small muted", style: { marginTop: "6px" } }, Object.entries(r.stats).map(([k, v]) => `${k}: ${fmt.pct(v.null_share)} missing`).join(" · ")));
+        } catch (e) { if (my === seq) out.replaceChildren(h("div", { class: "fs-note warn" }, String(e.message || e))); }
+      }, 500);
+    };
+    render();
+    editor.replaceChildren(card({ title: isNew ? "New workflow" : `Edit ${sp.name}`, sub: "the preview runs as you type", tools: [backfill, save, h("button", { class: "btn sm ghost", onclick: () => { editor.replaceChildren(); detail.hidden = false; } }, "Close")],
+      body: h("div", { class: "fb-two" }, body, h("div", {}, h("div", { class: "lab small muted" }, "Preview: what the next run writes"), out)) }), h("div", { style: { height: "14px" } }));
+    changed();
+    editor.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  load(true).then(() => { if (!sel) { sel = g.nodes.find((n) => n.kind === "workflow") ? "w:" + g.nodes.find((n) => n.kind === "workflow").name : null; mark(); showDetail(); } });
+  const t = setInterval(() => load().catch(() => {}), 2000);
+  return () => clearInterval(t);
+}
+
+/** In the Training tab: a model over the workflows' features. */
+function trainOnWorkflows(ctx, host, onTrained) {
+  const { h, fmt, toast, sqlBlock } = ctx.core;
+  const ON = ["usr", "item", "uc", "category"];
+  const guess = (name, specs) => {
+    const s = specs[name];
+    if (!s) return "usr";
+    const k = s.key || "";
+    for (const c of ON) if (k.endsWith("." + c)) return c;
+    const up = s.inputs?.[0]?.workflow;
+    return up ? guess(up, specs) : "usr";
+  };
+  ctx.api("/api/wf/graph").then(async (g) => {
+    const specs = {};
+    for (const n of g.nodes.filter((x) => x.kind === "workflow")) specs[n.name] = (await ctx.api(`/api/wf/spec?name=${encodeURIComponent(n.name)}`)).spec;
+    const pick = {};
+    const boxes = h("div", { class: "fb-tw" });
+    for (const n of g.nodes.filter((x) => x.kind === "workflow")) {
+      const numeric = n.features.filter((f) => n.stats[f] && n.stats[f].min != null);
+      pick[n.name] = { on: guess(n.name, specs), feats: new Set() };
+      const on = h("select", { class: "select sm" }, ON.map((c) => h("option", { value: c }, `on ${c}`)));
+      on.value = pick[n.name].on; on.onchange = () => { pick[n.name].on = on.value; };
+      boxes.append(h("div", {}, h("div", { class: "row between", style: { marginBottom: "4px" } }, h("b", {}, n.name), on),
+        ...numeric.map((f) => { const c = h("input", { type: "checkbox" }); c.onchange = () => { if (c.checked) pick[n.name].feats.add(f); else pick[n.name].feats.delete(f); }; return h("label", {}, c, f); })));
+    }
+    const shop = {};
+    boxes.append(h("div", {}, h("b", {}, "the impression"), ...["price", "pos"].map((f) => { const c = h("input", { type: "checkbox" }); c.onchange = () => { shop[f] = c.checked; }; return h("label", {}, c, f); })));
+    // A good start: one or two features of each.
+    const preset = { user_activity: ["ctr"], item_popularity: ["ctr", "trend_ctr"], item_signals: ["hot", "log_views"], user_category_share: ["affinity", "share", "lift"] };
+    for (const [w, fs] of Object.entries(preset)) for (const f of fs) { pick[w]?.feats.add(f); }
+    for (const lab of boxes.querySelectorAll("label")) { const w = lab.closest("div").querySelector("b").textContent; if (pick[w]?.feats.has(lab.textContent)) lab.querySelector("input").checked = true; }
+    const body = () => {
+      const joins = [], features = [];
+      for (const [w, p] of Object.entries(pick)) if (p.feats.size) { joins.push({ workflow: w, on: p.on }); for (const f of p.feats) features.push(`${w}.${f}`); }
+      for (const [f, v] of Object.entries(shop)) if (v) features.push(`shop.${f}`);
+      return { joins, features };
+    };
+    const sqlOut = h("div");
+    const show = h("button", { class: "btn sm" }, "Show the SQL");
+    show.onclick = async () => { try { const r = await ctx.api("/api/wf/training_sql", { method: "POST", body: body() }); sqlOut.replaceChildren(sqlBlock(r.sql, { class: "code fb-pre" })); } catch (e) { toast(String(e.message || e), "bad"); } };
+    const train = (leaky) => { const b = h("button", { class: "btn sm " + (leaky ? "" : "primary") }, leaky ? "Train on the latest rows (leaks)" : "Train as of each impression"); b.onclick = async () => {
+      b.disabled = true; const t = b.textContent; b.textContent = "Training…";
+      try { const m = await ctx.api("/api/wf/train", { method: "POST", body: { ...body(), leaky }, timeout: 600000 }); toast(`${m.name}: ${fmt.n(m.train_rows)} rows, AUC as served ${m.auc_true?.toFixed(3)}`, "ok"); onTrained(m); }
+      catch (e) { toast(String(e.message || e), "bad"); }
+      b.disabled = false; b.textContent = t; }; return b; };
+    host.replaceChildren(h("div", { class: "small muted", style: { marginBottom: "8px" } }, "Pick features from any workflow in the Builder, and the impression column each joins on. The training set joins each workflow's history as of each impression; serving reads each workflow's table by key."),
+      boxes, h("div", { class: "row", style: { marginTop: "10px" } }, train(false), train(true), show), sqlOut);
+  });
 }

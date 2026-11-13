@@ -28,9 +28,10 @@ server built from branch `claude/project-thread-481x6x` or later.
 | tab | what you see |
 |---|---|
 | Pipeline | Every box, live: impressions per second, the latency of a write, the time from a click until it is in the features, the batch job, the snapshots, the deployed model and its AUC, and the latency of serving. Also the click rate of each model over time, from the impressions table, against the random ranking. |
+| Builder | The feature workflows as a map, and an editor for them. Search their statistics with a SQL condition: the steps that match turn red, what they feed turns orange, and what feeds them is outlined in yellow. |
 | Shop | The sample application. It shows one shopper's ranking and how much each feature pushed each product up or down. Beside it are the simulator's hidden truth (the categories the shopper likes) and what the features have learned. **Click** writes the 8 impressions and the click in one transaction, reads the shopper's features back, and shows them changed. |
 | Features | The feature tables, and how each is kept. Each of the 7 features the model reads, with its definition, its spread over 3,000 (shopper, product) pairs as serving sees them now, its weight in the model, and its cleaning. Any table can be viewed and filtered with a `WHERE`. |
-| Training | The two ways to build a training set, side by side: the ASOF JOIN and a join to the latest rows. One shopper's history shows the step from one to the other: their clicks over time, each impression at the value the ASOF JOIN gave it, and the one value the latest rows give them all. Train a model on either, compare their AUCs, and deploy one. |
+| Training | The two ways to build a training set, side by side: the ASOF JOIN and a join to the latest rows. One shopper's history shows the step from one to the other: their clicks over time, each impression at the value the ASOF JOIN gave it, and the one value the latest rows give them all. Train a model on either, compare their AUCs, and deploy one. Below them, train on any features from the Builder's workflows. |
 | Speed | Serving under 1, 4 or 16 clients, and the time to build the training set. Beside them, the benchmark against Feast, read from `chloedb/results/feature-store`. |
 
 ![Training](screenshots/training.png)
@@ -59,6 +60,41 @@ server built from branch `claude/project-thread-481x6x` or later.
 - **Serving.** The shop reads the shopper's row, the 240 products' two rows each and the shopper's 8 category rows, which is 489 rows in 4 calls to `/v1/kv/get`. It then applies the transformations, scores with the model and keeps the top 8. This takes about 4 to 5 ms here.
 
 On a run on the cloud container (4 cores), the model trained on the ASOF JOIN had an AUC of 0.755. The model trained on the latest rows reported 0.811 on its own held-out rows, but scored 0.727 on what serving actually sees. With the ASOF model deployed, shoppers clicked 23% of what they were shown, against 4.6% for the random ranking.
+
+## Feature workflows (the Builder tab)
+
+The hand-written features above are one way. The Builder makes features
+from definitions instead, kept as rows of `fs_workflows`:
+
+- **A workflow** reads one or more inputs, each a table or another
+  workflow, joined on a column (`LEFT JOIN p ON a.item = p.id`). It either
+  groups by an entity key and aggregates (`count`, `sum`, `avg`, `min`, `max`,
+  `count_distinct`), each over all time or the last 1 to 60 minutes, with an
+  optional `WHERE`, or it maps each input row. Then it computes expressions
+  over those (`(clicks + 1.0) / (views + 10)`, `clamp(...)`, `ln(...)`).
+- **Each run** turns the definition into one SQL query, run as of a time
+  (`:now`). It writes `fv_<name>`, one row per entity, which serving reads by
+  key. It also adds the values that changed to `fv_<name>_hist`, which
+  training sets join as of each impression.
+- **Chaining.** A workflow that reads another workflow reads its history as of
+  the run, so a backfill gives the same values as a live run would have.
+  Runs go in dependency order, and a cycle is refused.
+- **Statistics.** Each run records each feature's rows, nulls, zeros,
+  distinct values, min, max, mean and run time in `fs_workflow_stats`.
+  The search box is a `WHERE` over those, plus `age_s`, the seconds since the
+  last run. For example, `zeros > rows / 3` finds `user_category.clicks` and
+  `user_category_share.share`, then shows what they feed: `wf-v1`.
+- **Models.** The Training tab trains on any features of any workflow
+  (`ASOF JOIN fv_<name>_hist ... ON s.usr = j.entity`), and the shop serves
+  those models with `/v1/kv/get` on `fv_<name>`.
+
+On first start, five workflows are made and backfilled 10 minutes:
+`user_activity`, `item_popularity` (impressions joined to the catalog),
+`user_category`, `item_signals` (from `item_popularity`) and
+`user_category_share` (from `user_category` and `user_activity`). A model on
+four of their features had an AUC of 0.762 as served on the cloud container.
+
+![The Builder](screenshots/builder.png)
 
 ## Tests
 
