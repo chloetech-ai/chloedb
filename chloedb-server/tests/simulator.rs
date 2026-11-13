@@ -78,9 +78,12 @@ fn check_report(r: &Json) {
         assert!(checks.iter().any(|c| c["id"] == id), "no {id} check: {checks:?}");
     }
     let advice = r["advice"].as_array().unwrap();
-    for id in ["cheapest", "copy_more", "machine_up"] {
+    for id in ["cheapest", "copy_more"] {
         assert!(advice.iter().any(|a| a["id"] == id), "no {id} advice: {advice:?}");
     }
+    // A bigger machine, or a smaller one on a machine with no bigger in the
+    // list (the 16-CPU CI runner): which depends on where the test runs.
+    assert!(advice.iter().any(|a| a["id"] == "machine_up" || a["id"] == "machine_down"), "no machine advice: {advice:?}");
     // The mix's main search, timed right after an insert: what it waits
     // over one alone is the model's rebuild after a write.
     assert!(r["write"]["after_insert"]["p50"].as_f64().is_some_and(|p| p > 0.0), "{}", r["write"]);
