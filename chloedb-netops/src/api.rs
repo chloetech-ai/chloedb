@@ -493,7 +493,11 @@ async fn rule_test(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
         Ok(rows) => {
             let ok = rows.is_empty() || (rows[0].contains_key("entity") && rows[0].contains_key("v"));
             let n = rows.len();
-            q.done(json!({"rows": rows.into_iter().take(50).collect::<Vec<_>>(), "count": n, "ok": ok, "note": if ok { "" } else { "A rule returns two columns: entity (what is wrong) and v (the reading)." }}))
+            // What would fire: the rows whose reading passes the comparison.
+            let cmp = b["cmp"].as_str().unwrap_or(">");
+            let threshold = b["threshold"].as_f64().unwrap_or(0.0);
+            let firing = rows.iter().filter(|r| !r.s("entity").is_empty() && crate::sim::fires(cmp, threshold, r)).count();
+            q.done(json!({"rows": rows.into_iter().take(50).collect::<Vec<_>>(), "count": n, "firing": firing, "cmp": cmp, "threshold": threshold, "ok": ok, "note": if ok { "" } else { "A rule returns two columns: entity (what is wrong) and v (the reading)." }}))
         }
         Err(e) => q.done(json!({"error": e.message, "ok": false})),
     }
@@ -516,12 +520,17 @@ async fn rule_save(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
     if !["link", "device", "service", "site"].contains(&kind) {
         return Err(bad("entity_kind is link, device, service or site"));
     }
+    let cmp = b["cmp"].as_str().unwrap_or(">").trim();
+    if !crate::sim::COMPARATORS.contains(&cmp) {
+        return Err(bad(format!("cmp is how v is compared with the threshold: one of {}", crate::sim::COMPARATORS.join(" "))));
+    }
+    let Some(threshold) = b.get("threshold").map_or(Some(0.0), |t| t.as_f64().or_else(|| t.as_str().and_then(|s| s.trim().parse().ok()))) else { return Err(bad("threshold is a number")) };
     let severity = b["severity"].as_str().unwrap_or("minor");
     if !["critical", "major", "minor"].contains(&severity) {
         return Err(bad("severity is critical, major or minor"));
     }
     let _guard = e.lock.lock().await;
-    e.db.upsert("netops_alert_rules", vec![json!({"id": id, "name": name, "description": b["description"].as_str().unwrap_or(""), "sql_text": sql, "cmp": b["cmp"].as_str().unwrap_or(">"), "threshold": b["threshold"].as_f64().unwrap_or(0.0),
+    e.db.upsert("netops_alert_rules", vec![json!({"id": id, "name": name, "description": b["description"].as_str().unwrap_or(""), "sql_text": sql, "cmp": cmp, "threshold": threshold,
         "unit": b["unit"].as_str().unwrap_or(""), "severity": severity, "entity_kind": kind, "window_s": b["window_s"].as_i64().unwrap_or(180).clamp(60, 86400), "clear_after": 2, "enabled": true,
         "runbook": b["runbook"].as_str().unwrap_or(""), "firing": 0, "builtin": false})]).await?;
     Ok(Json(json!({"id": id})))

@@ -791,9 +791,12 @@ impl Engine {
                 }
             };
             let n = rows.len();
+            let (cmp, threshold) = (r.s("cmp"), r.f("threshold"));
             for row in rows.into_iter().take(300) {
                 let entity = row.s("entity");
-                if entity.is_empty() {
+                // The rule fires on a row only when its reading passes the
+                // rule's comparison with its threshold.
+                if entity.is_empty() || !fires(&cmp, threshold, &row) {
                     continue;
                 }
                 let v = telemetry::round(row.f("v"), 3);
@@ -1275,6 +1278,26 @@ impl Engine {
     }
 }
 
+/// The comparisons a rule may make of its reading `v` with its threshold.
+pub const COMPARATORS: &[&str] = &[">", ">=", "<", "<=", "=", "!="];
+
+/// Whether a row a rule's query returned fires: its `v` compared with the
+/// rule's threshold by the rule's comparator. A row without a number in
+/// `v`, or a rule without a comparator, fires as every row did before
+/// rules had one.
+pub fn fires(cmp: &str, threshold: f64, row: &Row) -> bool {
+    let Some(v) = row.get("v").and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) else { return true };
+    match cmp.trim() {
+        ">" => v > threshold,
+        ">=" => v >= threshold,
+        "<" => v < threshold,
+        "<=" => v <= threshold,
+        "=" | "==" => v == threshold,
+        "!=" | "<>" => v != threshold,
+        _ => true,
+    }
+}
+
 fn fmt_num(v: f64) -> String {
     if v.abs() >= 1000.0 {
         format!("{:.0}", v)
@@ -1289,4 +1312,37 @@ fn fmt_num(v: f64) -> String {
 pub fn fault_row(f: &Fault, at: i64) -> Value {
     json!({"id": f.id, "scenario": f.scenario, "started": iso(f.started), "ended": f.ended.map(iso), "phase": f.phase(at), "truth_kind": f.truth_kind, "truth_entity": f.truth_entity,
         "category": f.category, "incident": f.incident.clone().unwrap_or_default(), "origin": f.origin, "detail": serde_json::to_string(f).unwrap_or_default()})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(v: Value) -> Row {
+        json!({"entity": "cr1-lon", "v": v}).as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn a_rule_fires_only_where_its_reading_passes_its_threshold() {
+        // The auditor's rule: v is 1, and "< 0" must not fire.
+        assert!(!fires("<", 0.0, &row(json!(1))));
+        assert!(fires(">", 0.0, &row(json!(1))));
+        assert!(fires(">=", 1.0, &row(json!(1))) && !fires(">", 1.0, &row(json!(1))));
+        assert!(fires("<=", 1.0, &row(json!(1))) && fires("=", 1.0, &row(json!(1.0))) && !fires("!=", 1.0, &row(json!(1))));
+        // The built-in rules' readings pass their own thresholds.
+        assert!(fires("<", 1.0, &row(json!(0))), "link-down: MIN(up) = 0");
+        assert!(fires(">", 92.0, &row(json!(95.5))), "link-saturated");
+        assert!(fires("<", -10.0, &row(json!(-14.2))), "optic-rx-low");
+        // A row without a number in v, or a rule without a comparator, fires as before.
+        assert!(fires("<", 0.0, &json!({"entity": "x"}).as_object().cloned().unwrap()));
+        assert!(fires("", 100.0, &row(json!(1))));
+        assert!(fires(">", 1.0, &row(json!("2.5"))), "a number the server sent as text");
+    }
+
+    #[test]
+    fn every_built_in_rule_has_a_comparator_the_evaluator_knows() {
+        for r in seed::rule_rows() {
+            assert!(COMPARATORS.contains(&r["cmp"].as_str().unwrap()), "{}", r["id"]);
+        }
+    }
 }

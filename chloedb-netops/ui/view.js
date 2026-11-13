@@ -1210,7 +1210,7 @@ function ruleDrawer(app, rule, after) {
   const inp = (v, attrs = {}) => h("input", { class: "input", value: v ?? "", disabled: ro || null, ...attrs });
   const sel = (v, options) => { const s = h("select", { class: "select", disabled: ro || null }, options.map((o) => h("option", { value: o }, o))); s.value = v; return s; };
   const name = inp(rule?.name, { placeholder: "Chassis running hot" }), desc = inp(rule?.description, { placeholder: "What it means when this fires" });
-  const sev = sel(rule?.severity || "minor", ["critical", "major", "minor"]), kind = sel(rule?.entity_kind || "device", ["device", "link", "service", "site"]), cmp = sel(rule?.cmp || ">", [">", "<", ">=", "<="]);
+  const sev = sel(rule?.severity || "minor", ["critical", "major", "minor"]), kind = sel(rule?.entity_kind || "device", ["device", "link", "service", "site"]), cmp = sel(rule?.cmp || ">", [">", ">=", "<", "<=", "=", "!="]);
   const thr = inp(rule?.threshold ?? 60, { type: "number", step: "any" }), unit = inp(rule?.unit ?? "°C"), win = inp(rule?.window_s ?? 180, { type: "number", min: 60, step: 60 });
   const sql = h("textarea", { class: "input mono", rows: 9, spellcheck: "false", style: { width: "100%", fontSize: "12.5px", resize: "vertical" }, readOnly: ro || null }, rule?.sql_text || RULE_EXAMPLE);
   const out = h("div");
@@ -1218,9 +1218,11 @@ function ruleDrawer(app, rule, after) {
   test.onclick = async () => {
     test.disabled = true;
     try {
-      const r = await app.ctx.api("/v1/rules/test", { body: { sql: sql.value, window_s: +win.value }, timeout: 60000 });
+      const r = await app.ctx.api("/v1/rules/test", { body: { sql: sql.value, window_s: +win.value, cmp: cmp.value, threshold: +thr.value }, timeout: 60000 });
       const q = (r.queries || [])[0];
-      put(out, r.error ? h("div", { class: "error" }, r.error) : h("div", {}, h("div", { class: "small", style: { margin: "8px 0" } }, h("b", {}, r.count === 0 ? "Nothing would fire right now." : `${r.count} ${r.count === 1 ? "alert" : "alerts"} would fire right now.`), q ? h("span", { class: "muted" }, ` ${C.fmt.ms(q.ms)}`) : null, r.note ? h("div", { style: { color: "var(--crit-ink)" } }, r.note) : null),
+      const n = r.firing ?? r.count;
+      const kept = r.count > n ? ` (${r.count} ${r.count === 1 ? "row" : "rows"} returned; ${r.count - n} with v not ${cmp.value} ${C.fmt.n(+thr.value)})` : "";
+      put(out, r.error ? h("div", { class: "error" }, r.error) : h("div", {}, h("div", { class: "small", style: { margin: "8px 0" } }, h("b", {}, n === 0 ? "Nothing would fire right now." : `${n} ${n === 1 ? "alert" : "alerts"} would fire right now.`), kept, q ? h("span", { class: "muted" }, ` ${C.fmt.ms(q.ms)}`) : null, r.note ? h("div", { style: { color: "var(--crit-ink)" } }, r.note) : null),
         r.rows.length ? C.table(Object.keys(r.rows[0]).map((k) => ({ key: k, label: k, num: typeof r.rows[0][k] === "number", render: (x) => (typeof x[k] === "number" ? C.fmt.n(Math.round(x[k] * 100) / 100) : String(x[k])) })), { rows: r.rows, compact: true, maxHeight: "220px" }) : null));
     } catch (e) { put(out, h("div", { class: "error" }, e.message)); }
     test.disabled = false;
@@ -1228,7 +1230,7 @@ function ruleDrawer(app, rule, after) {
   const save = h("button", { class: "btn primary" }, "Save the rule");
   const del = !isNew && !ro ? h("button", { class: "btn danger", onclick: async () => { try { await app.ctx.api(`/v1/rules/${rule.id}/delete`, { body: {} }); d.close(); after(); } catch (e) { C.toast(e.message, "bad"); } } }, C.icon("trash"), "Delete") : null;
   const d = C.drawer({ title: isNew ? "New alert rule" : rule.name, sub: ro ? "A built-in rule: it can be switched off, and copied into a rule of your own." : "A SELECT that returns entity and v. :since is the start of the window.", wide: true,
-    body: h("div", { class: "stack" }, h("div", { class: "grid g2" }, f("Name", name), f("What it means", desc)), h("div", { class: "grid g3" }, f("Severity", sev), f("About a", kind), f("Window, seconds", win)), h("div", { class: "grid g3" }, f("Fires when v is", cmp), f("Threshold (shown on the alert)", thr), f("Unit", unit)), f("SQL", sql),
+    body: h("div", { class: "stack" }, h("div", { class: "grid g2" }, f("Name", name), f("What it means", desc)), h("div", { class: "grid g3" }, f("Severity", sev), f("About a", kind), f("Window, seconds", win)), h("div", { class: "grid g3" }, f("Fires when v is", cmp), f("Threshold: each row fires when its v passes it", thr), f("Unit", unit)), f("SQL", sql),
       rule ? facts(app, [["last run", C.fmt.ms(rule.last_ms)], ["rows", String(rule.last_rows)], ["firing", String(rule.firing)], rule.runbook ? ["runbook", rule.runbook] : null]) : null, out),
     foot: [test, ro ? null : save, del] });
   save.onclick = async () => {
