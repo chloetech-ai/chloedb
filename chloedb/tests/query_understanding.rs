@@ -480,10 +480,56 @@ fn synonyms_are_mined_from_a_query_log_and_from_vectors() {
     let req = Request { table: "products".into(), field: "name".into(), source: Source::Vectors { vector: "emb".into() }, options: Options { min_cos: -1.0, per_word: 1, ..Options::default() } };
     let m = db.mine_synonyms(&req).unwrap();
     assert_eq!(m.rows, 74);
-    assert!(m.words > 15 && !m.proposals.is_empty() && m.proposals.len() <= m.words / 2, "{m:?}");
+    // A cosine below the floor is taken as the floor: below it nearly every pair passes.
+    assert!(m.rules.contains("cosine 0.3 or more"), "{}", m.rules);
+    assert!(m.words > 15 && m.proposals.len() <= m.words / 2 && m.proposals.iter().all(|p| p.score >= 0.3), "{m:?}");
     assert!(m.proposals.iter().all(|p| p.rule.contains(", ")));
     let e = db.mine_synonyms(&Request { source: Source::Vectors { vector: "nope".into() }, ..req.clone() }).unwrap_err().to_string();
     assert!(e.contains("no model"), "{e}");
     let e = db.mine_synonyms(&Request { field: "label".into(), ..req }).unwrap_err().to_string();
     assert!(e.contains("not a TEXT field"), "{e}");
+}
+
+#[test]
+fn chunks_of_reads_only_the_rows_its_limit_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(&dir);
+    // Rows without text give no chunk, so a LIMIT they leave unfilled is
+    // read again with more rows.
+    for i in 0..40 {
+        db.sql("INSERT INTO papers (id, year) VALUES (:id, 2040)", &Params::new().set("id", Value::Str(format!("e{i}")))).unwrap();
+    }
+    for i in 0..40 {
+        db.sql("INSERT INTO papers (id, body, year) VALUES (:id, 'A short text about chunks.', 2040)", &Params::new().set("id", Value::Str(format!("t{i}")))).unwrap();
+    }
+    let read = |r: &chloedb::query::exec::ResultSet| -> usize {
+        let line = r.stats.plan.iter().find(|l| l.starts_with("chunks_of: ")).unwrap_or_else(|| panic!("{:?}", r.stats.plan));
+        line["chunks_of: ".len()..].split(' ').next().unwrap().parse().unwrap()
+    };
+    // Every row has text: the LIMIT's rows alone.
+    let r = db.query("SELECT id FROM chunks_of(papers, body) LIMIT 3", &Params::new()).unwrap();
+    assert_eq!((r.rows.len(), read(&r)), (3, 3), "{:?}", r.stats.plan);
+    // Half of them have none: still 3 chunks, from fewer rows than the table's 80.
+    let r = db.query("SELECT id FROM chunks_of(papers, body) WHERE year = 2040 LIMIT 3", &Params::new()).unwrap();
+    assert_eq!(r.rows.len(), 3, "{:?}", r.rows);
+    assert!(read(&r) < 80 && read(&r) >= 3, "{:?}", r.stats.plan);
+    // More than the rows hold: every row is read, once the reads come back short.
+    let r = db.query("SELECT id FROM chunks_of(papers, body) WHERE year = 2040 LIMIT 1000", &Params::new()).unwrap();
+    assert_eq!((r.rows.len(), read(&r)), (40, 80), "{:?}", r.stats.plan);
+}
+
+#[test]
+fn expand_reads_a_field_or_table_whose_name_is_a_keyword() {
+    // Its first step's query is written as text: a name such as `from`,
+    // written bare there, did not read back, and the query panicked.
+    for (table, field) in [("t", "from"), ("order", "body"), ("t", "select")] {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = Schema::new(table, vec![Field::new("id", FieldType::Keyword), Field::new(field, FieldType::Text { positions: false })], Some("id")).unwrap();
+        let db = Db::create(&dir.path().join("db.strata"), schema, DbOptions::default()).unwrap();
+        db.load((0..10).map(|i| vec![Value::Str(format!("r{i}")), Value::Str(format!("mRNA vaccines raise antibodies, trial {i}"))]).collect::<Vec<_>>()).unwrap();
+        let sql = format!("SELECT id FROM \"{table}\" ORDER BY bm25(\"{field}\", 'vaccines', expand => 3) DESC LIMIT 3");
+        let r = db.query(&sql, &Params::new()).unwrap_or_else(|e| panic!("{table}.{field}: {e}"));
+        assert_eq!(r.rows.len(), 3, "{table}.{field}");
+        assert!(r.stats.plan.iter().any(|l| l.contains("expanded from")), "{table}.{field}: {:?}", r.stats.plan);
+    }
 }
