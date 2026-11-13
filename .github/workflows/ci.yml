@@ -488,7 +488,7 @@ jobs:
         working-directory: chloedb
         run: |
           f=datafusion,sqlite,parquet,s3
-          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations
+          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations --test pack
           CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features $f --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
           cargo test --locked --profile ci --features $f --test parquet

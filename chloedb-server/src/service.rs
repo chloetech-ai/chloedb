@@ -2626,6 +2626,15 @@ impl Service {
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
+        self.dispatch(req).await
+    }
+
+    /// [`Self::query`] of a query the Contain rules admitted: a query that
+    /// runs as steps runs each step here, under the turn its statement
+    /// took, rather than asking for another (a rule that lets one query of
+    /// a key run at a time would otherwise refuse the statement's second
+    /// step while its first holds the turn).
+    async fn dispatch(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // A query that asks a language model about its rows
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
@@ -2636,23 +2645,65 @@ impl Service {
         // from its shards), and the choice here.
         if req.plan.is_none() && !req.shard && chloedb::query::pack::may_pack(&req.sql) {
             let catalog = self.catalog();
-            let key_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).and_then(|s| s.primary_key.map(|k| s.fields[k].name.clone()));
-            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &key_of)? {
+            let table_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).cloned();
+            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &table_of)? {
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that packs its rows is not scrolled: PACK n TOKENS reads what fills the budget"));
                 }
                 let t0 = Instant::now();
-                let mut last = None;
-                while let Some(sql) = p.next_query()? {
-                    let mut sub = req.clone();
-                    sub.sql = sql;
-                    let mut a = Box::pin(self.query(sub)).await?;
-                    p.feed(std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }))?;
-                    last = Some(a);
+                let deadline = t0 + self.timeout_of(req.timeout_ms);
+                // Every read of one version: on a server, the client's
+                // lease, or one held for the pack and released after it
+                // (kept for the client with `hold`). A coordinator's shards
+                // each read their latest.
+                let local = matches!(self.backend, Backend::Local(_));
+                let mut lease = req.snapshot;
+                let (mut last, mut failed) = (None, None);
+                loop {
+                    let step: Result<Option<Answer>, ApiError> = async {
+                        let Some(next) = p.next_query()? else { return Ok(None) };
+                        let mut sub = req.clone();
+                        // As text that reads back as the very query.
+                        sub.sql = next.sql()?;
+                        sub.params = next.params;
+                        (sub.snapshot, sub.hold, sub.release) = (lease, local && lease == 0, false);
+                        // What is left of the statement's time, not a
+                        // deadline of each read's own.
+                        sub.timeout_ms = (deadline.saturating_duration_since(Instant::now()).as_millis() as u64).max(1);
+                        let mut a = Box::pin(self.dispatch(sub)).await?;
+                        p.feed(std::mem::replace(&mut a.rs, no_rows()))?;
+                        Ok(Some(a))
+                    }
+                    .await;
+                    match step {
+                        Ok(Some(a)) => {
+                            if lease == 0 {
+                                lease = a.lease;
+                            }
+                            last = Some(a);
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            failed = Some(e);
+                            break;
+                        }
+                    }
                 }
-                let packed = p.finish(None, None)?;
+                let read = match (local, lease) {
+                    (true, l) if l != 0 => self.leased(l).ok().map(|s| (s.txn(), s.seq_no())),
+                    _ => None,
+                };
+                let made = lease != req.snapshot && lease != 0;
+                if (made && (!req.hold || failed.is_some())) || (req.release && req.snapshot != 0) {
+                    self.release(&[lease]);
+                }
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+                let packed = p.finish(read.map(|r| r.0), read.and_then(|r| r.1))?;
                 let Some(mut a) = last else { return Err(ApiError::bad("PACK: the query read no rows")) };
                 a.rs = packed.rs;
+                a.lease = if req.hold { lease } else { 0 };
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -2669,7 +2720,7 @@ impl Service {
                 loop {
                     let mut source = req.clone();
                     (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql_of(&schema, rows)?, None, false, true);
-                    let mut a = Box::pin(self.query(source)).await?;
+                    let mut a = Box::pin(self.dispatch(source)).await?;
                     let t0 = Instant::now();
                     let chunks = c.finish(&a.rs);
                     if let Some(more) = c.more_rows(rows, &a.rs, &chunks) {
@@ -2698,7 +2749,7 @@ impl Service {
                 }
                 let mut second = req.clone();
                 second.sql = u.rewrite(&made)?.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
@@ -2717,7 +2768,7 @@ impl Service {
                 for f in x.feedback(&schemas)? {
                     let mut fr = req.clone();
                     (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
-                    rows.push(Box::pin(self.query(fr)).await?.rs);
+                    rows.push(Box::pin(self.dispatch(fr)).await?.rs);
                 }
                 let analyzers = x
                     .fields()
@@ -2730,7 +2781,7 @@ impl Service {
                 let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
                 let mut second = req.clone();
                 second.sql = rewritten.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
