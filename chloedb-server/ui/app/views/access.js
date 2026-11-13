@@ -64,6 +64,7 @@ function until(ms) {
 const days = (ms) => Math.floor(ms / DAY);
 
 // ---------------------------------------------------------------- entries
+const AGENTS = "@agents";
 const AUTO = { operator: "the operator", autoscaler: "the autoscaler", upgrader: "the upgrader" };
 const isToken = (w) => w === "token" || w === "root token";
 const auto = (e) => !!(e.actor && AUTO[e.actor]);
@@ -77,12 +78,18 @@ function whoName(e) {
   return e.who;
 }
 const clientName = (c) => (!c ? null : c === "command-center" ? "UI" : c);
-/** How: "admin key · UI · 10.0.0.4", "automatic". */
+// Each key's role (ops, propose) by its id, from the keys listed: an
+// audit entry says the scope a role key is kept as (read), not its role.
+const roles = new Map();
+/** An agent's entry, in words: "agent (ops) for dana". */
+const agentText = (e) => `agent${roles.get(e.key) ? ` (${roles.get(e.key)})` : ""}${e.on_behalf_of ? ` for ${e.on_behalf_of}` : ""}`;
+/** How: "admin key · UI · 10.0.0.4", "agent (ops) for dana · curl", "automatic". */
 function whoSub(e) {
   if (auto(e)) return "automatic";
   const parts = [];
-  if (isToken(e.who)) parts.push("shared, --token");
+  if (isToken(e.who)) parts.push(e.actor === "agent" ? `${agentText(e)}, shared --token` : "shared, --token");
   else if (e.who === "cluster") parts.push("the cluster's token");
+  else if (e.actor === "agent") parts.push(agentText(e));
   else if (e.who && e.who !== "unknown" && e.who !== "open") parts.push(e.scope ? `${e.scope} key` : "key");
   const c = clientName(e.client);
   if (c) parts.push(c);
@@ -212,6 +219,13 @@ const SCOPES = [
   ["write", "Write", "also writes, imports, streams, the agent, INSERT, UPDATE and DELETE"],
   ["admin", "Admin", "also DDL, keys, the audit log, alert rules, checkpoints, vacuum, export, others' queries and the logs"],
 ];
+// Keys for agents (#482): a role, or another scope marked as an agent's.
+const AGENT_SCOPES = [
+  ["propose", "Propose", "reads, the server's views and the audit log; files change requests for a person to approve"],
+  ["ops", "Ops", "also acts alone on bounded actions, with a reason: acknowledge, silence and note alerts, cancel a query, contain a key, checkpoint, scrub, verify"],
+  ["read", "Read", "reads the tables, marked as an agent's"],
+  ["admin", "Admin", "every scope, marked as an agent's: it still says why, and takes no tier 3 action alone"],
+];
 const MATRIX = [
   ["Read the feed (a cluster following this one)", 1, 1, 1, 1],
   ["Run queries, search, explain", 0, 1, 1, 1],
@@ -307,7 +321,7 @@ function render(page, r) {
     if (tab === "all") drawList();
   }
   async function loadKeys() {
-    try { keysJ = await api("/v1/admin/keys"); keysErr = null; }
+    try { keysJ = await api("/v1/admin/keys"); keysErr = null; for (const k of keysJ.keys || []) if (k.scope === "ops" || k.scope === "propose") roles.set(k.id, k.scope); }
     catch (e) { keysErr = e; }
   }
   // The clients that send each key (AC-4): every query of the last 24 h
@@ -401,7 +415,8 @@ function render(page, r) {
     return out;
   }
   const unusedAdmin = (k) => k.scope === "admin" && !k.revoked_ms && ((k.last_used_ms && now() - k.last_used_ms > 30 * DAY) || (!k.last_used_ms && now() - k.created_ms > 7 * DAY));
-  const expiringSoon = (k) => !k.revoked_ms && k.expires_ms && k.expires_ms - now() < 14 * DAY;
+  // An agent's key lasts one task by design: its short life is no warning.
+  const expiringSoon = (k) => !k.revoked_ms && !k.agent && k.expires_ms && k.expires_ms - now() < 14 * DAY;
   const tokenUsed = () => Math.max(0, ...[...(audit?.all || audit?.changes || []), ...(audit?.refusals || [])].filter((e) => isToken(e.who) && e.status < 400).map((e) => e.ts_ms));
 
   // ---------------------------------------------------------- drawing
@@ -459,10 +474,11 @@ function render(page, r) {
     // Who and what, from what is loaded.
     const es = [...(audit?.changes || []), ...(audit?.refusals || [])];
     const whos = [...new Set(es.map(whoName))].sort((x, y) => (x.startsWith("the ") ? 1 : 0) - (y.startsWith("the ") ? 1 : 0) || x.localeCompare(y));
-    if (f.who && !whos.includes(f.who)) whos.push(f.who);
+    if (f.who && f.who !== AGENTS && !whos.includes(f.who)) whos.push(f.who);
+    const agents = es.some((e) => e.actor === "agent") || f.who === AGENTS;
     // A list being picked from is left as it is.
     if (document.activeElement !== whoSel) {
-      clear(whoSel, h("option", { value: "" }, "anyone"), whos.map((w) => h("option", { value: w }, w)));
+      clear(whoSel, h("option", { value: "" }, "anyone"), agents ? h("option", { value: AGENTS }, "agents") : null, whos.map((w) => h("option", { value: w }, w)));
       whoSel.value = f.who;
     }
     const present = new Set(es.map(area));
@@ -511,7 +527,9 @@ function render(page, r) {
     const revoked = revokedKeys().find(keyOf(e));
     const expired = !revoked && (/\bexpired\b/.test(e.detail || "") || liveKeys().find(keyOf(e))?.expires_ms < e.ts_ms);
     const what = revoked || expired ? [`${top.n} requests refused with the ${revoked ? "revoked" : "expired"} key `, h("b", {}, e.who), ` since ${at(top.first)}`]
+      : e.status === 403 && e.actor === "agent" ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` (${agentText(e)}) refused since ${at(top.first)}: beyond what the agent may do alone; it files a change request for a person to approve`]
       : e.status === 403 ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` refused since ${at(top.first)}: they need a wider scope`]
+      : e.status !== 401 && e.after?.error ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` refused since ${at(top.first)}: ${/x-chloedb-reason|says why/.test(e.after.error) ? "they did not say why (an agent's change needs a reason)" : /at most/.test(e.after.error) ? "they asked past an agent's limit" : e.after.error}`]
         : [`${top.n} requests refused since ${at(top.first)}: no key, or a wrong, expired or revoked one`];
     clear(bannerBox, h("div", { class: "ac-banner" },
       h("span", { class: "ac-dot" }),
@@ -521,7 +539,7 @@ function render(page, r) {
 
   function filtered(list) {
     const q = f.q.toLowerCase();
-    return list.filter((e) => (!f.who || whoName(e) === f.who) && (!f.area || area(e) === f.area) &&
+    return list.filter((e) => (!f.who || (f.who === AGENTS ? e.actor === "agent" : whoName(e) === f.who)) && (!f.area || area(e) === f.area) &&
       (!q || [titleText(e), e.object, e.detail, e.addr, e.client, e.who, e.route, e.reason, e.request_id, whoName(e)].some((x) => x && String(x).toLowerCase().includes(q))))
       .sort((a, b) => b.ts_ms - a.ts_ms);
   }
@@ -913,10 +931,27 @@ function render(page, r) {
     const owner = h("input", { class: "input", placeholder: "search-web team, or a person", style: { width: "100%" } });
     const note = h("input", { class: "input", placeholder: "the frontend's servers in eu-west", style: { width: "100%" } });
     const scopeCards = h("div", { class: "ac-scopecards" });
-    const drawScopes = () => clear(scopeCards, SCOPES.map(([v, t, sub]) => h("button", { type: "button", class: "ac-scopecard" + (scope === v ? " on" : ""), "aria-pressed": String(scope === v), onclick: () => { scope = v; drawScopes(); } }, h("b", {}, t), h("div", { class: "small muted" }, sub))));
+    let kind = "person", minutes = 60;
+    const drawScopes = () => clear(scopeCards, (kind === "agent" ? AGENT_SCOPES : SCOPES).map(([v, t, sub]) => h("button", { type: "button", class: "ac-scopecard" + (scope === v ? " on" : ""), "aria-pressed": String(scope === v), onclick: () => { scope = v; drawScopes(); } }, h("b", {}, t), h("div", { class: "small muted" }, sub))));
     drawScopes();
     const scopeBox = h("div", { class: "f" }, h("span", { class: "small muted" }, "Scope: the least it needs"), scopeCards);
     const exp = seg([[30, "30 days"], [90, "90 days"], [365, "a year"], [null, "never"]], daysN, (v) => (daysN = v));
+    const expMin = seg([[60, "an hour"], [240, "4 hours"], [1440, "a day"], [10080, "a week"]], minutes, (v) => (minutes = v));
+    const forWhom = h("input", { class: "input", placeholder: "dana: the person it acts for, kept in the audit log", style: { width: "100%" } });
+    const agentBox = h("div", { class: "stack", style: { gap: "10px", display: "none" } },
+      h("label", { class: "f" }, "Acts for (optional)", forWhom),
+      h("div", { class: "f" }, h("span", { class: "small muted" }, "Lasts"), expMin, h("div", { class: "small muted" }, "As long as one task: an agent's key that outlives its task is a key nobody watches.")));
+    const personExp = h("div", { class: "f" }, h("span", { class: "small muted" }, "Expires"), exp, h("div", { class: "small muted" }, "A key that expires is rotated on a schedule; one that never expires is flagged when nobody uses it."));
+    const presetRow = presetSeg ? h("div", { class: "f" }, h("span", { class: "small muted" }, "A job's key (limited to its tables), or a key of every table"), presetSeg) : null;
+    const kindSeg = seg([["person", "A person or an app"], ["agent", "An agent"]], kind, (v) => {
+      kind = v;
+      scope = v === "agent" ? "propose" : "read";
+      if (v === "agent" && preset) { preset = ""; presetBox.style.display = "none"; scopeBox.style.display = ""; }
+      if (presetRow) presetRow.style.display = v === "agent" ? "none" : "";
+      agentBox.style.display = v === "agent" ? "" : "none";
+      personExp.style.display = v === "agent" ? "none" : "";
+      drawScopes();
+    }, { "aria-label": "Who uses it" });
     const go = h("button", { class: "btn primary" }, icon("plus"), "Create");
     const m = modal({
       title: "Create an API key", wide: true,
@@ -925,10 +960,12 @@ function render(page, r) {
           h("label", { class: "f grow" }, "Name: what uses it", name),
           h("label", { class: "f grow" }, "Owner: who answers for it", owner)),
         h("label", { class: "f" }, "Note (optional)", note),
-        presetSeg ? h("div", { class: "f" }, h("span", { class: "small muted" }, "A job's key (limited to its tables), or a key of every table"), presetSeg) : null,
+        h("div", { class: "f" }, h("span", { class: "small muted" }, "Who uses it"), kindSeg),
+        presetRow,
         presetBox,
         scopeBox,
-        h("div", { class: "f" }, h("span", { class: "small muted" }, "Expires"), exp, h("div", { class: "small muted" }, "A key that expires is rotated on a schedule; one that never expires is flagged when nobody uses it.")),
+        agentBox,
+        personExp,
       ],
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go],
     });
@@ -938,7 +975,8 @@ function render(page, r) {
       try {
         if (preset && !prefix.value.trim()) { go.disabled = false; prefix.focus(); return; }
         const limits = preset ? { preset, prefix: prefix.value.trim() } : { scope };
-        const j = await api("/v1/admin/keys", { body: { name: name.value.trim(), ...limits, expires_days: daysN, owner: owner.value.trim() || undefined, note: note.value.trim() || undefined } });
+        const life = kind === "agent" ? { expires_minutes: minutes, agent: scope === "ops" || scope === "propose" ? undefined : true, on_behalf_of: forWhom.value.trim() || undefined } : { expires_days: daysN };
+        const j = await api("/v1/admin/keys", { body: { name: name.value.trim(), ...limits, ...life, owner: owner.value.trim() || undefined, note: note.value.trim() || undefined } });
         m.close();
         showSecret(j);
         after();
