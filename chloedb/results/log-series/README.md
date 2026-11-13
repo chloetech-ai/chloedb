@@ -19,6 +19,9 @@ log_series_bench rollup DB 7                          # a rollup of a loaded tab
 | `step1-windows.jsonl` | merges within windows of time for tables with `retain` (this branch) |
 | `step6-rollups.jsonl` | ingest with 1, 2 and 4 writers; rollups (this branch, on a91f4601 with the rollup changes uncommitted) |
 | `rollups-build-space.jsonl` | a rollup's first fold, refreshes and bytes on 20M lines, main at c08fd630 beside a day of buckets per query and integer keys (on c08fd630 with the change uncommitted), measured 2026-11-14 |
+| `mac-chloedb.jsonl` | the query set on a MacBook Air, ChloeDB at 13bb25bd, with `"cores"` 8 and 4 (see below) |
+| `mac-others.jsonl` | the same on ClickHouse, VictoriaLogs and OpenSearch, with `"store"` (`compare/`) |
+| `chloedb-values.jsonl` | what ChloeDB's queries returned, to check the other stores against |
 
 All measured on 2026-11-13 on a cloud container: 4-core Intel Xeon @
 2.10GHz, 15 GB of RAM, release builds.
@@ -164,3 +167,154 @@ Of the 36 MB saved, most is the stored copy of each row; the rest is the
 text key (the bucket's microseconds and the group's values joined, now one integer).
 Compressing the rollup with zstd saved little more once rows were not
 stored. Rollups made before keep their text keys.
+
+## On a MacBook Air
+
+The query set again, on a MacBook Air (Mac14,2): Apple M2, 8 cores (4
+performance, 4 efficiency), 24 GB of RAM, macOS 26.0.1, measured on
+2026-11-13. ChloeDB at 13bb25bd, release build, run natively. ClickHouse
+25.8.33.6, VictoriaLogs v1.53.0 and OpenSearch 3.3.0 ran in Docker Desktop
+(engine 24.0.5), whose VM has 4 CPUs and 8.7 GB, one store at a time,
+with nothing else in the VM (a kind cluster there was stopped for the runs).
+Scripts are in `compare/`: `chloedb.sh`, then `others.sh` (it starts each
+container, runs `clickhouse.py`, `victorialogs.py`, `opensearch.py`, and
+removes it), then `chloedb_values.py` and `check.py`, which prints the
+tables below.
+
+The data are the 4.75M lines of BGL, the 11.2M of HDFS and a synthetic log of
+20M lines over 30 days (`log_series_bench gen syn20m.jsonl 20000000 30`;
+20M rather than 100M so that every store fits in this laptop's memory).
+Every store holds the same rows at the same times: each file's `ts` is
+moved as `load` moved it for ChloeDB (by ChloeDB's newest row minus the
+file's newest `ts`), so the windows, the hours and the minutes are the
+same in all four.
+
+- **ClickHouse**: the table the OpenTelemetry Collector's exporter creates
+  (as in `../log-bytes/clickhouse.sh`: `ORDER BY (ServiceName,
+  TimestampTime, Timestamp)`, partitioned by day, host in
+  `ResourceAttributes`, pid and latency in `LogAttributes`, the token Bloom
+  filter on `Body`), loaded with one `INSERT ... SELECT FROM file()`, then
+  left as its background merges left it. Windows filter on `TimestampTime`
+  and `Timestamp`, as the exporter's readers do. The newest lines with
+  `error` use `hasTokenCaseInsensitive`.
+- **VictoriaLogs**: a fresh store per file, the body as `_msg`, host and
+  service as the stream, sent to `/insert/jsonline`, flushed and
+  force-merged. Queries in LogsQL (`_time:>=T | stats count()`, `stats by
+  (_time:1h)`, `i(error)`, `quantile`).
+- **OpenSearch**: the full image with its security plugin off
+  (`opensearch-min` is not on Docker Hub), a 4 GB heap, one shard, no
+  replicas, `ts` a `date_nanos` so microseconds are kept. Bulk-loaded 5,000
+  lines a request on 4 threads, then refreshed and force-merged to one
+  segment. Queries use `range`, `date_histogram` (`min_doc_count` 1),
+  `terms` and `percentiles`, with the request cache off.
+
+Times are as the harness takes them: 7 runs, the median, and the 95th
+percentile, which with 7 runs is the slowest (most often the first, cold
+run; `ms_cold` in `mac-others.jsonl`). ChloeDB's are in process. The
+others' are each request's wall time from a Python client on the Mac to
+the container, so they include an HTTP round trip into the VM, about a
+millisecond. A sub-millisecond time on their side cannot show for that
+reason. Load is the time to write the file (ChloeDB: `load`, its merges
+included; ClickHouse: the `INSERT`; VictoriaLogs: the POST and the flush;
+OpenSearch: the bulk requests and a refresh). The others' force merges are
+not counted. Bytes on disk are ChloeDB's database file, ClickHouse's active
+parts, VictoriaLogs' data directory and OpenSearch's store once merged.
+
+The tables compare ChloeDB limited to **4 cores**, the cores Docker's VM
+gives the other three. ChloeDB sizes its threads from
+`std::thread::available_parallelism` and reads no setting that overrides it
+(and macOS has no CPU affinity), so the 4-core run loads `compare/ncpu.c`,
+which makes `sysconf` report 4 cores. On all 8 cores (`"cores": 8` in
+`mac-chloedb.jsonl`), every median of a millisecond or more is within 4% of the
+4-core one, and the others within 0.04 ms. On this machine the queries gain
+nothing from the other 4 cores (4 of the 8 are efficiency cores).
+
+BGL 4.75M, ms (median / p95):
+
+| query | rows | ChloeDB | ClickHouse | VictoriaLogs | OpenSearch |
+|---|---|---|---|---|---|
+| `COUNT(*)` last hour | 1 | 0.01 / 0.18 | 2.6 / 8.86 | 1.49 / 5.02 | 3.32 / 21.95 |
+| `COUNT(*)` last day | 1 | 0.02 / 0.12 | 2.73 / 5.19 | 1.58 / 2.26 | 2.45 / 3.03 |
+| `COUNT(*)` all | 1 | 0.01 / 0.02 | 1.49 / 1.9 | 114.72 / 133.1 | 1.93 / 2.86 |
+| counts per hour, 7 days | 80 | 0.28 / 0.54 | 3.05 / 5.26 | 2.31 / 5.04 | 3.75 / 22.53 |
+| counts per minute by severity, 24 h | 74 | 0.17 / 0.45 | 2.79 / 4.24 | 1.62 / 2.12 | 4.79 / 9.85 |
+| top 10 hosts by errors, 24 h | 0 | 0.21 / 3.6 | 2.56 / 5.17 | 0.97 / 1.47 | 4.54 / 17.96 |
+| newest 100 with `error`, last hour | 36 | 0.07 / 3.35 | 2.26 / 3.29 | 1.18 / 2.55 | 4.8 / 19.31 |
+| load, bytes on disk | | 40.6 s, 188 MB | 4.9 s, 42 MB | 10.6 s, 316 MB | 31.7 s, 311 MB |
+
+HDFS 11.2M, ms (median / p95):
+
+| query | rows | ChloeDB | ClickHouse | VictoriaLogs | OpenSearch |
+|---|---|---|---|---|---|
+| `COUNT(*)` last hour | 1 | 0.02 / 0.32 | 5.24 / 7.39 | 2.3 / 7.89 | 4.37 / 12.52 |
+| `COUNT(*)` last day | 1 | 0.03 / 0.16 | 16.31 / 19.52 | 2.37 / 3.98 | 2.8 / 3.21 |
+| `COUNT(*)` all | 1 | 0.01 / 0.08 | 1.47 / 3.51 | 1.58 / 2.17 | 2.12 / 2.29 |
+| counts per hour, 7 days | 39 | 271.11 / 274.85 | 32.51 / 40.1 | 27.1 / 69.65 | 3.24 / 15.27 |
+| counts per minute by severity, 24 h | 2392 | 241.91 / 246.98 | 59.39 / 69.32 | 76.65 / 91.64 | 511.03 / 519.6 |
+| top 10 hosts by errors, 24 h | 0 | 0.03 / 0.57 | 3.02 / 7.15 | 1.05 / 1.37 | 2.18 / 3.43 |
+| newest 100 with `error`, last hour | 21 | 0.17 / 18.49 | 12.71 / 22.04 | 104.19 / 112.65 | 3.67 / 8.6 |
+| load, bytes on disk | | 122.7 s, 600 MB | 11.2 s, 143 MB | 17.8 s, 146 MB | 69.9 s, 923 MB |
+
+synthetic 20M, ms (median / p95):
+
+| query | rows | ChloeDB | ClickHouse | VictoriaLogs | OpenSearch |
+|---|---|---|---|---|---|
+| `COUNT(*)` last hour | 1 | 0.02 / 0.42 | 5.66 / 11.19 | 6.86 / 12.27 | 2.92 / 28.51 |
+| `COUNT(*)` last day | 1 | 0.02 / 0.12 | 9.19 / 11.55 | 8.9 / 13.35 | 2.4 / 2.67 |
+| `COUNT(*)` all | 1 | 0.01 / 0.03 | 1.35 / 2.03 | 34.41 / 40.24 | 2.08 / 2.35 |
+| counts per hour, 7 days | 169 | 107.4 / 111.48 | 31.63 / 40.33 | 105.83 / 125.49 | 98.06 / 211.4 |
+| counts per minute by severity, 24 h | 7010 | 26.02 / 28.33 | 22.78 / 27.01 | 43.79 / 61.07 | 74.24 / 277.56 |
+| top 10 hosts by errors, 24 h | 10 | 0.41 / 7.34 | 17.16 / 20.62 | 8.66 / 10.42 | 4.95 / 23.72 |
+| newest 100 with `error`, last hour | 100 | 0.13 / 17.48 | 19.46 / 21.44 | 4.22 / 6.83 | 10.44 / 46.01 |
+| p99 latency per hour and service, 24 h | 500 | 28.71 / 33.11 | 29.5 / 33.33 | 93.57 / 137.09 | 146.63 / 203.49 |
+| p50, p95, p99 latency, 24 h | 1 | 33.24 / 34.54 | 25.65 / 26.65 | 119.2 / 136.05 | 94.47 / 95.77 |
+| load, bytes on disk | | 168.9 s, 1497 MB | 28.9 s, 551 MB | 44.2 s, 647 MB | 130.7 s, 2408 MB |
+
+**Counts.** Every count matches ChloeDB's exactly, in all three stores and
+on all three files: the window counts, every hour and every minute-by-severity
+bucket (compared as a hash of the sorted buckets), the top 10 hosts' error
+counts, and the newest and oldest of the 100 newest lines with `error`,
+along with how many lines in the hour have it. BGL and HDFS have no
+`ERROR` lines in their last 24 hours (BGL's errors are `FATAL`, HDFS has
+`INFO` and `WARN`), so their top-hosts query returns no rows in any store.
+
+**Percentiles** (synthetic log only). ChloeDB's `PERCENTILE_CONT` is exact.
+Each store used its own function:
+
+| store | function | exact? |
+|---|---|---|
+| ClickHouse | `quantileExactInclusive` / `quantilesExactInclusive` (interpolated as `PERCENTILE_CONT`) | yes |
+| VictoriaLogs | `quantile()`, its only percentile function | no |
+| OpenSearch | `percentiles` aggregation, default t-digest (compression 100) | no |
+
+ClickHouse's equal ChloeDB's to 1e-14 (the last bits of the interpolation).
+The approximate ones, as relative error against the exact values over the
+500 hour-and-service groups and over the three percentiles of the day:
+
+- ClickHouse `p50_p95_p99_24h`: median 0.000%, largest 0.000%
+- ClickHouse `p99_hourly_by_service_24h`: median 0.000%, largest 0.000%
+- OpenSearch `p50_p95_p99_24h`: median 0.057%, largest 0.079%
+- OpenSearch `p99_hourly_by_service_24h`: median 1.454%, largest 35.815%
+- VictoriaLogs `p50_p95_p99_24h`: median 0.729%, largest 1.284%
+- VictoriaLogs `p99_hourly_by_service_24h`: median 0.954%, largest 35.815%
+
+The largest error is the same for both. It is the first, partial hour of
+the window for `svc-14`: about 300 lines, whose p99 falls in a sparse tail.
+p50, p95, p99 over the day: exact 1997, 14401, 32509.32; VictoriaLogs 1992,
+14296, 32092; OpenSearch 1997.6, 14409.2, 32535.0.
+
+On this laptop, ChloeDB answers the time-window counts and the top-hosts
+and newest-match queries in well under a millisecond, from the range index
+and the newest segments, where the others take a few milliseconds plus a
+round trip. Time buckets that read every row of a large window are where
+it is slowest. On HDFS, 11.2M lines with most of them in the last day,
+counts per hour over 7 days take ChloeDB 271 ms against ClickHouse's 33,
+VictoriaLogs' 27 and OpenSearch's 3.2, and counts per minute by severity
+take 242 ms against 59, 77 and 511. On the synthetic log ChloeDB's hourly
+counts (107 ms) are about VictoriaLogs' and OpenSearch's and three times
+ClickHouse's. Its exact percentiles cost about what ClickHouse's exact ones
+do (29 and 33 ms against 30 and 26), and a third to a fifth of what the
+approximate ones cost in the other two stores. ChloeDB's load is the slowest of the four here (40 to 169 s,
+against 5 to 29 s for ClickHouse). The harness writes in one thread, in
+batches of 5,000, merging as it goes. Its database is 2.7 to 4.5 times
+ClickHouse's on disk.
