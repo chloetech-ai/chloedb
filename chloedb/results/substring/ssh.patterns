@@ -1,0 +1,18 @@
+LIKE	%Accepted password%
+LIKE	%port 2191 ssh2
+LIKE	%173.234.31.186%
+LIKE	%183.62.140.253%
+LIKE	%BREAK-IN ATTEMPT%
+ILIKE	%break-in attempt%
+LIKE	%Failed password for root%
+LIKE	%preauth%
+LIKE	reverse mapping checking%
+LIKE	%Failed password%from 119.4.203.64%
+LIKE	%invalid user ad_in from%
+ILIKE	%Invalid User ADMIN%
+LIKE	%no such text anywhere%
+LIKE	%ssh2
+LIKE	%e%
+WHERE	pid = 24200 AND body LIKE '%e%'
+WHERE	ts >= '2017-12-10T06:55:00Z' AND ts < '2017-12-10T07:00:00Z' AND body LIKE '%Failed password%'
+WHERE	pid > 2 AND body LIKE '%173.234.31.186%'

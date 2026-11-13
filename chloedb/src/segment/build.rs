@@ -212,6 +212,13 @@ impl<'a> SegmentBuild<'a> {
                 fields.push(i);
                 slots.push(Mutex::new(Some(slot)));
             }
+            // A substring index, beside whatever else indexes the field.
+            if f.substring {
+                if let Some(b) = crate::substring::field_builder(f, opts)? {
+                    fields.push(i);
+                    slots.push(Mutex::new(Some(Slot::Index(b))));
+                }
+            }
         }
         let part_keys = fields.iter().map(|&i| schema.fields[i].partition.as_ref().and_then(|p| schema.field_index(&p.by))).chain(std::iter::repeat(None)).take(fields.len() + 1).collect();
         if let (Some(b), Some((src, ..))) = (crate::graph::edge_table::builder(schema), schema.edge_fields()) {
@@ -354,8 +361,11 @@ impl<'a> SegmentBuild<'a> {
                             _ => unreachable!("taken once"),
                         }
                     }
+                    // A field's substring index is the last of its slots.
+                    let substring = schema.fields[i].substring && !fields[j + 1..].contains(&i);
                     match edges {
                         true => "edge table".to_string(),
+                        false if substring => format!("{} (substring)", schema.fields[i].name),
                         false => format!("{} ({})", schema.fields[i].name, kind(&schema.fields[i].ty)),
                     }
                 }
@@ -461,6 +471,15 @@ pub fn build_missing(schema: &Schema, fields: &[usize], n_docs: usize, opts: &Bu
     let mut out = SegmentWriter::new(n_docs);
     for &i in fields {
         let f = &schema.fields[i];
+        if f.substring {
+            if let Some(mut b) = crate::substring::field_builder(f, opts)? {
+                let fill = f.fill_value()?;
+                for d in 0..n_docs {
+                    b.add(d as DocId, &fill)?;
+                }
+                b.finish(&mut out)?;
+            }
+        }
         let builder = match &f.ty {
             FieldType::Text { .. } if f.indexed => crate::text::field_builder(f, opts)?,
             FieldType::Sparse if f.indexed => crate::text::sparse::field_builder(f, opts)?,

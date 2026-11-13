@@ -580,6 +580,12 @@ fn needs_rows(c: &Expr, schema: &Schema) -> bool {
         // binder says what is wrong.
         Expr::Like { escape_char: Some(_), .. } | Expr::ILike { escape_char: Some(_), .. } => false,
         Expr::Like { expr, .. } | Expr::ILike { expr, .. } if plain(expr).is_some_and(|f| !matches!(f.ty, FieldType::Keyword | FieldType::Text { .. })) => false,
+        // A field with a substring index: the scan answers any pattern.
+        Expr::Like { any: false, expr, pattern, .. } | Expr::ILike { any: false, expr, pattern, .. }
+            if plain(expr).is_some_and(|f| f.substring) && matches!(pattern.as_ref(), Expr::Value(_)) =>
+        {
+            false
+        }
         Expr::ILike { any: false, .. } => true,
         Expr::Like { any: false, expr, pattern, escape_char, .. } => {
             let prefix_or_value = match pattern.as_ref() {

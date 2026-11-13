@@ -635,6 +635,12 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td>keep word positions, for phrase searches</td>
 </tr>
 <tr>
+<td><code>substring</code></td>
+<td><code>text</code>, <code>keyword</code> (one value, stored)</td>
+<td>false</td>
+<td>a substring index of the values, from which <code>LIKE</code> and <code>ILIKE</code> with any pattern are answered (<a href="sql.html#substrings-like-and-ilike-anywhere-in-a-value">substrings</a>)</td>
+</tr>
+<tr>
 <td><code>analyzer</code></td>
 <td><code>text</code></td>
 <td><code>"english"</code></td>

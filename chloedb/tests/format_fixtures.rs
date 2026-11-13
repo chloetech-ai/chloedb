@@ -628,16 +628,99 @@ fn same_bytes(old: &Path, new: &Path) {
     );
 }
 
+/// Whether `text` matches LIKE `pattern`: `%` any run of characters, `_`
+/// one.
+fn like(text: &[char], pattern: &[char]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some(('%', rest)) => (0..=text.len()).any(|i| like(&text[i..], rest)),
+        Some(('_', rest)) => !text.is_empty() && like(&text[1..], rest),
+        Some((c, rest)) => text.first() == Some(c) && like(&text[1..], rest),
+    }
+}
+
+/// The set with substring indexes (`substring/`): its flushed segments'
+/// indexes of `host` and `line` open as this version reads them, in
+/// several parts, and `LIKE` and `ILIKE` select the rows a test of the
+/// values written selects, from the two segments and the WAL's rows, and
+/// again after more writes, a flush, a merge and opening again.
+#[test]
+fn substring_fixture_answers_like_from_its_indexes() {
+    let set = fixtures().join("substring");
+    let dir = tempfile::tempdir().unwrap();
+    for path in copies(&set, dir.path()) {
+        let what = path.display().to_string();
+        assert_eq!(format_on_disk(&path), 3, "{what}");
+        if path.is_dir() {
+            let (_, m) = chloedb::storage::dir::read_current(&path).unwrap();
+            assert_eq!(m.features(), ["compact_keys", "field_ids", "substring:1"], "{what}");
+        }
+        let mut written: BTreeMap<u64, Vec<Value>> = (0..175).filter(|&i| !writer::line_deleted(i)).map(|i| (i, writer::line(i))).collect();
+        let check = |db: &Db, written: &BTreeMap<u64, Vec<Value>>, at: &str| {
+            for (field, col, patterns) in [
+                ("line", 2, &["%/api/v1/%", "GET %", "%#17", "%10.0.3.%", "%İstanbul%", "%istanbul%", "%東京 from%", "%é%é%", "%v_/users%", "", "%", "%nothing%", "%#1__", "%ERROR%10.0.4.1%"][..]),
+                ("host", 1, &["web-%", "%.eu", "WEB-03.us", "%b-0_.%", "%", "%-00.%", "db%"][..]),
+            ] {
+                for pattern in patterns {
+                    for (op, ci, negated) in [("LIKE", false, false), ("NOT LIKE", false, true), ("ILIKE", true, false), ("NOT ILIKE", true, true)] {
+                        let holds = |v: &Value| {
+                            let Value::Str(v) = v else { return false };
+                            let (t, p): (Vec<char>, Vec<char>) = if ci { (v.to_lowercase().chars().collect(), pattern.to_lowercase().chars().collect()) } else { (v.chars().collect(), pattern.chars().collect()) };
+                            like(&t, &p) != negated
+                        };
+                        let want: Vec<String> = written.iter().filter(|(_, d)| holds(&d[col])).map(|(_, d)| d[0].as_str().unwrap().to_string()).collect();
+                        let sql = format!("SELECT id FROM lines WHERE {field} {op} '{pattern}' LIMIT 1000");
+                        assert_eq!(firsts(db, &sql), want, "{what}, {at}: {sql}");
+                    }
+                }
+            }
+        };
+        let db = open(&path, Era::Ids);
+        // The indexes as written: both fields in each flushed segment,
+        // the first segment's of `line` in several parts.
+        let schema = db.catalog().into_iter().find(|s| s.table == "lines").unwrap();
+        let snap = db.snapshot().table("lines").unwrap();
+        let readers = db.readers(&snap).unwrap();
+        for field in ["host", "line"] {
+            let f = schema.field_index(field).unwrap();
+            let parts: Vec<usize> = readers.iter().filter_map(|r| r.substring(f).unwrap().map(|ix| ix.parts().len())).collect();
+            assert_eq!(parts.len(), 2, "{what}: {field} has an index in each flushed segment");
+            assert!(field == "host" || parts[0] > 1, "{what}: {field} in {parts:?} parts");
+        }
+        // Some rows have no line: a part's ordinals then skip docIDs.
+        assert!(snap.segments().iter().any(|v| v.file.section_sizes().iter().any(|(name, _)| name.starts_with("sub.") && name.ends_with(".docs"))), "{what}: no docs section");
+        drop((readers, snap));
+        check(&db, &written, "as written");
+        run(&db, "INSERT INTO lines (id, host, line, n) VALUES ('k000900', 'web-09.eu', 'GET /api/v1/users from 10.0.3.9 İstanbul été #900', 900), ('k000901', NULL, NULL, 901)");
+        run(&db, "UPDATE lines SET line = 'rewritten ERROR line #17' WHERE id = 'k000017'");
+        run(&db, "DELETE FROM lines WHERE line LIKE '%#16_'");
+        written.insert(900, vec![Value::Str(key(900)), Value::Str("web-09.eu".into()), Value::Str("GET /api/v1/users from 10.0.3.9 İstanbul été #900".into()), Value::Int(900)]);
+        written.insert(901, vec![Value::Str(key(901)), Value::Null, Value::Null, Value::Int(901)]);
+        written.get_mut(&17).unwrap()[2] = Value::Str("rewritten ERROR line #17".into());
+        written.retain(|_, d| !matches!(&d[2], Value::Str(l) if l.len() > 5 && l[..l.len() - 1].ends_with("#16")));
+        check(&db, &written, "after writes");
+        db.storage().flush().unwrap();
+        merge(&db);
+        db.storage().check().unwrap();
+        check(&db, &written, "merged");
+        drop(db);
+        let db = open(&path, Era::Ids);
+        check(&db, &written, "opened again");
+        assert_eq!(format_on_disk(&path), 3, "{what}");
+    }
+}
+
 /// The sets this version writes, by the writes in `writer.rs`, are those in
-/// `fieldids/` and `functions/`.
+/// `fieldids/`, `functions/` and `substring/`.
 #[test]
 fn this_version_writes_the_fixtures_byte_for_byte() {
     let dir = tempfile::tempdir().unwrap();
     writer::write_all(dir.path());
     writer::write_functions(dir.path());
-    for set in ["format2", "format3", "seqno", "profiles", "functions"] {
+    writer::write_substring(dir.path());
+    for set in ["format2", "format3", "seqno", "profiles", "functions", "substring"] {
         let old = match set {
-            "functions" => fixtures().join(set),
+            "functions" | "substring" => fixtures().join(set),
             _ => fixtures().join("fieldids").join(set),
         };
         let new = dir.path().join(set);

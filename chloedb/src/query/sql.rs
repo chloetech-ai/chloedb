@@ -2328,6 +2328,13 @@ impl<'a> Binder<'a> {
                 self.guard(&mut opts, || GuardSite::AtLeast(items), Some(crate::text::query::Need::Count(need)), Some(&p), "AT_LEAST")?;
                 p
             }
+            // A field with a substring index: any pattern, and ILIKE.
+            Expr::Like { negated, any: false, expr, pattern, escape_char } | Expr::ILike { negated, any: false, expr, pattern, escape_char }
+                if self.substring_like(expr, pattern, escape_char.is_some(), matches!(e, Expr::ILike { .. }))?.is_some() =>
+            {
+                let p = self.substring_like(expr, pattern, false, matches!(e, Expr::ILike { .. }))?.expect("checked by the guard");
+                if *negated { Pred::Not(Box::new(p)) } else { p }
+            }
             Expr::Like { negated, any: false, expr, pattern, escape_char } => {
                 let f = self.prefix_field(expr)?;
                 let escape = match escape_char {
@@ -2834,6 +2841,30 @@ impl<'a> Binder<'a> {
             return Err(err(format!("{} is not indexed", self.schema.fields[f].name)));
         }
         Ok(f)
+    }
+
+    /// `expr LIKE pattern` (`ILIKE` with `ci`) as a search of the field's
+    /// substring index ([`crate::substring`]); `None` when `expr` is not a
+    /// field with one, or when a KEYWORD field's terms answer the pattern
+    /// (a value or a prefix), which is faster.
+    fn substring_like(&self, expr: &Expr, pattern: &Expr, escape: bool, ci: bool) -> Result<Option<Pred>> {
+        let Ok(f) = self.field_of(expr) else { return Ok(None) };
+        let fld = &self.schema.fields[f];
+        if !fld.substring {
+            return Ok(None);
+        }
+        let terms = !ci && fld.ty == FieldType::Keyword && fld.indexed;
+        if escape {
+            // The KEYWORD field's own LIKE takes ESCAPE, for a prefix.
+            return if terms { Ok(None) } else { Err(err(format!("LIKE on {}'s substring index does not take ESCAPE", fld.name))) };
+        }
+        let what = if ci { "ILIKE" } else { "LIKE" };
+        let pattern = self.literal(pattern)?;
+        let pattern = pattern.as_str().ok_or_else(|| err(format!("{what}'s pattern must be text")))?;
+        if terms && like_prefix(pattern, None).is_ok() {
+            return Ok(None);
+        }
+        Ok(Some(Pred::Like { field: f, pattern: pattern.to_string(), ci, negated: false }))
     }
 
     fn numeric_field(&self, e: &Expr) -> Result<usize> {
