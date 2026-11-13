@@ -30,7 +30,7 @@
 //! |---|---|---|
 //! | `GET /app.json`, `GET /ui/view.js` | | the manifest and the page, for the command center |
 //! | `GET /v1/info` | | the server, the embedder, the model, the spaces' count |
-//! | `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?}` | `{spaces}` with their counts; the new space |
+//! | `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?}` | `{spaces}` with their counts (`by_kind`, and `live_by_kind`: the ones not replaced, retired or done); the new space |
 //! | `POST /v1/spaces/:s/notes` | `{kind, text, replaces?, entities?, session?, ts?}` | the note; `replaces` marks the older one superseded |
 //! | `GET /v1/spaces/:s/notes?kind=&limit=&all=` | | `{notes}`, the newest first (live ones unless `all=1`) |
 //! | `GET /v1/spaces/:s/notes/:id` | | the note and its history: what it replaced and what replaced it |
@@ -47,7 +47,10 @@
 //! | `POST /v1/spaces/:s/apps/items` | `{kinds}` | the notes a build of those kinds would be loaded with |
 //! | `POST /v1/spaces/:s/apps`, `GET` | `{title, description, kinds, exclude?, confirm}` | a build by the app engine, loaded with the approved notes; the builds |
 //! | `POST /v1/spaces/:s/apps/:build/open` | | a one-time link into the studio, at the built app |
+//! | `POST /v1/spaces/:s/mcp` | JSON-RPC | the space as an MCP server: tools `ask`, `remember`, `notes` ([`agents`]) |
 //! | `GET /v1/memory`, `/v1/memory/sessions`, `/v1/memory/records` | | the Inspector: Claude Code's memory as `chloectx sync` copies it (`chloectx_memory`), by project, session, kind and search ([`memory`]) |
+//!
+//! A key limited to tables (chloedb-server's `x-chloedb-tables`) reaches only the spaces its grants name ([`agents`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpListener;
@@ -67,6 +70,7 @@ use crate::store::{Filter, Store};
 use crate::ui::{read_request, respond, respond_json, same, Request};
 use crate::{distill, err, Result};
 
+mod agents;
 mod from_context;
 mod memory;
 
@@ -417,7 +421,10 @@ impl App {
                     by.insert(k.to_string(), json!(n));
                 }
             }
-            out.push(json!({"name": name, "title": s(1), "description": s(2), "kind": s(3), "created": r.get(4).and_then(|v| v.as_i64()).unwrap_or(0), "table": table_of(&name), "records": total, "by_kind": by}));
+            // The notes a context still shows: not replaced, retired or done.
+            let live = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {} WHERE tag NOT IN ('superseded', 'done') GROUP BY kind LIMIT 50", table_of(&name)), &Default::default()).map(|c| c.rows).unwrap_or_default();
+            let live: serde_json::Map<String, Json> = live.iter().filter_map(|c| Some((c.first()?.as_str()?.to_string(), json!(c.get(1)?.as_i64()?)))).collect();
+            out.push(json!({"name": name, "title": s(1), "description": s(2), "kind": s(3), "created": r.get(4).and_then(|v| v.as_i64()).unwrap_or(0), "table": table_of(&name), "records": total, "by_kind": by, "live_by_kind": live}));
         }
         Ok(json!({"spaces": out}))
     }
@@ -1020,8 +1027,11 @@ fn manifest() -> Json {
         "description": "Memory spaces any agent writes to and asks for context, by search alone; and Seen before: the cluster's firing alerts beside the past incidents they look like",
         "icon_svg": ICON, "view": "ui/view.js", "version": env!("CARGO_PKG_VERSION"),
         // It refuses what the caller's key may not do ([`Caller`]), so the
-        // server forwards a key limited to tables, and a write key's notes.
+        // server forwards a key limited to tables, and a write key's notes;
+        // it holds such a key to its grants ([`agents`]): an agent's key for
+        // a space. `limited_keys` says so to servers that read that flag.
         "checks_callers": true,
+        "limited_keys": true,
     })
 }
 
@@ -1267,6 +1277,7 @@ fn status_line(code: u16) -> &'static str {
         400 => "400 Bad Request",
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
+        405 => "405 Method Not Allowed",
         402 => "402 Payment Required",
         404 => "404 Not Found",
         409 => "409 Conflict",
@@ -1298,7 +1309,36 @@ fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
         ("GET", "/ui/view.js") => return respond(&mut stream, "200 OK", "text/javascript; charset=utf-8", &[], view().as_bytes()),
         _ => {}
     }
+    // A key limited to tables reaches what its grants name ([`agents`]).
+    let grants = agents::grants_of(&req);
+    let parts: Vec<String> = req.path.trim_matches('/').split('/').map(crate::ui::percent_decode).collect();
+    let p: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+    if let Some(g) = &grants {
+        if let Err(Fail(code, m)) = agents::check(g, &req.method, &p) {
+            return respond_json(&mut stream, status_line(code), &json!({"error": m}));
+        }
+    }
+    // A space as an MCP server: JSON-RPC in, JSON out, 202 for notifications.
+    if let ("POST", ["v1", "spaces", space, "mcp"]) = (req.method.as_str(), p.as_slice()) {
+        let r = body_json(&req).and_then(|b| app.mcp(space, grants.as_ref(), &b));
+        return match r {
+            Ok(Some(j)) => respond_json(&mut stream, "200 OK", &j),
+            Ok(None) => respond(&mut stream, "202 Accepted", "application/json", &[], b""),
+            Err(Fail(code, m)) => respond_json(&mut stream, status_line(code), &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": m}})),
+        };
+    }
+    if let ("GET", ["v1", "spaces", _, "mcp"]) = (req.method.as_str(), p.as_slice()) {
+        return respond_json(&mut stream, "405 Method Not Allowed", &json!({"error": "this MCP server streams nothing: POST its messages"}));
+    }
     match route(app, &req) {
+        // A limited key lists the spaces it may read.
+        Ok(mut j) if grants.is_some() && req.method == "GET" && p == ["v1", "spaces"] => {
+            let g = grants.as_ref().unwrap();
+            if let Some(ss) = j["spaces"].as_array_mut() {
+                ss.retain(|s| g.on(s["table"].as_str().unwrap_or("")).is_some_and(|x| x >= agents::Scope::Read));
+            }
+            respond_json(&mut stream, "200 OK", &j)
+        }
         Ok(j) => respond_json(&mut stream, "200 OK", &j),
         Err(Fail(code, m)) => respond_json(&mut stream, status_line(code), &json!({"error": m})),
     }

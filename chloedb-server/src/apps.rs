@@ -23,7 +23,10 @@
 //! name, `token` or `open`), `x-chloedb-key` (its id), `x-chloedb-scope`
 //! and, for a key limited to tables, `x-chloedb-tables`
 //! (`crawl_*=admin,*=read`). A caller's own headers of those names are
-//! never passed on.
+//! never passed on. A key limited to tables calls an app only when the
+//! app's manifest says `"limited_keys": true`, that it holds such a key to
+//! the grants of that header ([`Apps::holds_grants`]); it then needs only
+//! a grant that reads, and the app decides the rest.
 //!
 //! The path is the app's own: `<path>` is joined to the app's URL segment
 //! by segment, each encoded again, so no `..` (written `%2e%2e`, once or
@@ -174,7 +177,7 @@ impl Apps {
                     "name": a.name, "url": a.url, "up": true,
                     "title": m["title"].as_str().unwrap_or(&a.name), "description": m["description"], "icon_svg": m["icon_svg"],
                     "view": m["view"].as_str().map(|v| format!("/v1/apps/{}/{}", a.name, v.trim_start_matches('/'))), "version": m["version"],
-                    "checks_callers": m["checks_callers"] == json!(true),
+                    "checks_callers": m["checks_callers"] == json!(true) || m["limited_keys"] == json!(true),
                 }),
                 Err(e) => json!({"name": a.name, "url": a.url, "up": false, "title": a.name, "error": e}),
             };
@@ -195,6 +198,15 @@ impl Apps {
         let m = self.read_manifest(a).await;
         self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
         m
+    }
+
+    /// Whether app `name` holds a key limited to tables to its grants
+    /// (`"limited_keys": true` in its manifest): it is then called by such
+    /// keys too, as it reads `x-chloedb-tables` and refuses what they do
+    /// not grant. Other apps are not called by them at all.
+    pub async fn holds_grants(&self, name: &str) -> bool {
+        let Some(a) = self.find(name) else { return false };
+        checks_callers(&self.manifest(a).await)
     }
 
     async fn read_manifest(&self, a: &App) -> Result<Json, String> {
@@ -290,7 +302,7 @@ impl Apps {
 /// spaces). Such an app is forwarded a key limited to tables, and a change
 /// (not `GET`) from a key of write scope; any other is not.
 pub fn checks_callers(manifest: &Result<Json, String>) -> bool {
-    manifest.as_ref().is_ok_and(|m| m["checks_callers"] == json!(true))
+    manifest.as_ref().is_ok_and(|m| m["checks_callers"] == json!(true) || m["limited_keys"] == json!(true))
 }
 
 /// Whether a path segment (as the router decoded it) is a dot segment, or

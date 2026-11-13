@@ -5,7 +5,7 @@
 - **Context.** Memory *spaces* that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
 - **Inspector.** What Claude Code sessions remembered, as `chloectx sync` copies each machine's memory into the cluster (table `chloectx_memory`): by project, each session read as the conversation it recorded (prompts, answers, tool calls, and the decisions, rules and facts the distiller wrote down), filtered by kind and searched with BM25, as `chloectx ui` shows a local store. It only reads. ([below](#inspector))
 - **Seen before.** The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
-- **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts.
+- **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts, and without `--local-stores` their tabs are not shown.
 
 ![A space's page: a question asked within a 2,000-token budget, the notes that went into the context with their scores, the decision that replaced an older one with what changed, and the note that was left out](../assets/img/chloectx-app-context.png)
 
@@ -72,7 +72,7 @@ JSON over HTTP; through chloedb-server, the same paths under `/v1/apps/chloectx`
 
 | call | body | answer |
 |---|---|---|
-| `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?, kind?}` | the spaces with their counts; the new space (one that exists is left as it is); `kind` is `notes` (the default) or `incidents`, a team's own incidents for Seen before |
+| `GET /v1/spaces`, `POST /v1/spaces` | `{name, title?, description?, kind?}` | the spaces with their counts (`by_kind`, every record; `live_by_kind`, the notes not replaced, retired or done); the new space (one that exists is left as it is); `kind` is `notes` (the default) or `incidents`, a team's own incidents for Seen before |
 | `DELETE /v1/spaces/:s` | | the space, deleted by an admin of its table: its table `ctx_<space>` dropped and its row of `ctx_spaces` removed, `{deleted, table, kind}`; it cannot be undone |
 | `POST /v1/spaces/:s/notes` | `{kind, text, replaces?, entities?, session?, when?}` | the note (`kind`: `decision`, `rule`, `fact`, `todo` or `note`); `when` (or `ts`) is when it happened, for a note written down after the fact: seconds since 1970, or ISO 8601 text (`2026-09-14`, `2026-09-14T03:10:00Z`); by default, now |
 | `GET /v1/spaces/:s/notes?kind=&limit=&all=1` | | the notes, newest first; the current ones unless `all=1` |
@@ -95,13 +95,28 @@ JSON over HTTP; through chloedb-server, the same paths under `/v1/apps/chloectx`
 
 An answer of `ask` has, for each record in the context, its `section` (`rule`, `note`, `timeline` for a question about the whole history, `reply` and `excerpt` for past conversations), its `tokens` (about four characters each), its scores (`bm25` for the question's words, `cos` for its meaning) and, for a note that replaced another, `replaced`: what it changed. `left_out` names what the searches found and the context leaves out, and why: `superseded`, `uncertain`, or `budget`. The context is built as ChloeCtx's own `memory_ask` builds it for Claude Code ([how](index.md)), with its sizes scaled to the budget.
 
+### A space as an MCP server
+
+`POST /v1/spaces/:s/mcp` speaks the Model Context Protocol (streamable HTTP, JSON answers; a `GET` gets 405) with three tools on that space: `ask` (`question`, `budget`: the context, as `ask` above, with the ids of its notes), `remember` (`kind`, `text`, `replaces?`, `entities?`: a note, session `mcp`) and `notes` (`kind?`, `limit?`: the current ones with their ids). A space that does not exist is 404, not a new space. To connect Claude Code, through chloedb-server:
+
+```bash
+claude mcp add --transport http ctx-billing https://chloedb.example.com/v1/apps/chloectx/v1/spaces/billing/mcp \
+  --header "Authorization: Bearer $KEY"
+```
+
+A space's page in the command center has a **Connect Claude Code** card that makes the key and shows this line with it filled in: a key limited to the space's table, `ctx_billing=write`, which may read and write that space and nothing else (below).
+
+### Keys limited to tables
+
+chloedb-server lets a key limited to tables call the app, because the app's manifest says `"limited_keys": true`: it tells the app the key's grants (`x-chloedb-tables`), and the app, which writes with a key of its own, holds the caller to them: a space is its table `ctx_<space>` (read to read and ask it, MCP included, write to add, replace or retire notes and hand over exchanges), the incidents are `ctx_incidents` (read, write to record or draft), the Inspector reads `chloectx_memory`. Creating a space and building apps from one take an unlimited admin's key, and no limited key reads the machine's local stores (Receipts, Blame). `GET /v1/spaces` lists the spaces the key may read. A caller with no such header (an admin's key, the server's token) is not limited.
+
 ## Inspector
 
-The Inspector reads the table `chloectx_memory`, which `chloectx sync` fills from each machine's local store ([keep the memory on a ChloeDB server](setup.md#keep-the-memory-on-a-chloedb-server); a project is its git repository, so every checkout shares one memory). Its first page lists the projects, with their sessions and records; a project's page lists its sessions, the latest first, and its records, the latest first, with a chip per kind; a session's page shows its records in the order they were recorded, turn by turn; a search ranks the project's records by BM25 over their text. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id. Nothing on the page writes.
+The Inspector reads the table `chloectx_memory`, which `chloectx sync` fills from each machine's local store ([keep the memory on a ChloeDB server](setup.md#keep-the-memory-on-a-chloedb-server); a project is its git repository, so every checkout shares one memory). Its first page lists the projects, with their sessions and records; a project's page lists its sessions, the latest first, and its records, the latest first, with a chip per kind; a session's page shows its records in the order they were recorded, turn by turn; a search ranks the project's records by BM25 over their text. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id. Nothing on the page writes. Until a project is synced, the page is a setup instead: a button (for an admin) makes the table and a key that may write only it, and shows the `chloectx sync setup` command with the key filled in; `sync` needs ChloeCtx 0.2.0 or later.
 
 | call | answer |
 |---|---|
-| `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}]}` |
+| `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}], create}` (`create`: the table's `CREATE TABLE`) |
 | `GET /v1/memory/sessions?project=` | `{sessions: [{session, records, first, last, turns}], by_kind}` |
 | `GET /v1/memory/records?project=&session=&kind=&q=&limit=&before=` | `{records, more}`: a session's in order, else the latest first (`before`, a `seq`, pages back), or the best matches for `q`; at most 500 |
 

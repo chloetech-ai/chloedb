@@ -966,7 +966,7 @@ ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'class, colo
 - A word is corrected only when no row holds it: a word some document uses is a word of the collection. Words with digits or capitals inside (`p150n`, `dLNs`) are names and codes, and stay.
 - Its neighbours are the field's terms one edit away (up to 5 letters) or two (longer), as `fuzzy => 'auto'` finds them, and it takes the one most likely meant if that chance is at least 0.5: the noisy channel of [typos](#typos-and-synonyms), with an unseen word counted as in 0.05 documents, so that a neighbour one edit away must be in 5 or more documents. The word shown keeps the typed word's ending on the corrected term (`ifnlammation` gives `inflammation`).
 - On BEIR's queries with a typo typed in (two letters of the longest word swapped), it corrected 0.73, 0.66 and 0.85 of them back to the words as written on SciFact, NFCorpus and ArguAna; of the queries it changed, 0.91, 0.90 and 0.98 were corrected back; and it changed 4.0%, 2.8% and 0% of the queries as written (`chloedb/results/text/bm25_did_you_mean.json`, variant `typed_corrected`). For ranking, `fuzzy => 'auto'` stays better than ranking the corrected text: nDCG@10 0.692 against 0.675 on SciFact, as it widens each word with its likely neighbours rather than choosing one.
-- A coordinator does not correct yet: ask one of its shards.
+- A coordinator corrects as one server does, by its shards' document counts summed: the words' own, then, for a word in none, those of its neighbours (each shard's nearest 50 within the edits allowed).
 
 ### Times later and earlier: `INTERVAL`
 
