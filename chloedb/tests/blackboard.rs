@@ -135,6 +135,13 @@ fn a_call_sent_again_with_its_key_is_applied_once() {
     let hers = ann.claim(1, 60, Some("c1")).unwrap();
     assert_eq!(ann.claim(1, 60, Some("c1")).unwrap(), hers);
     assert_eq!(ann.status().unwrap().tasks[CLAIMED], 1);
+    // Another agent's key of the same name is another key: it is given
+    // a task of its own, not told of hers.
+    let bob = Board::new(&t, "bob").unwrap().at(0);
+    let his = bob.claim(1, 60, Some("c1")).unwrap();
+    assert_eq!((his.len(), his[0].owner.as_deref(), his[0].id != hers[0].id), (1, Some("bob"), true), "{his:?}");
+    assert_eq!(bob.claim(1, 60, Some("c1")).unwrap(), his);
+    assert_eq!(ann.status().unwrap().tasks[CLAIMED], 2);
     // The same key under another call is another key.
     let done = ann.complete("t1", "ok", Some("c1")).unwrap();
     assert_eq!(ann.complete("t1", "ok", Some("c1")).unwrap(), done);
