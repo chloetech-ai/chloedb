@@ -545,7 +545,8 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     assert!(st["sim"]["simulate"] == false && st["network"]["devices"] == 64 && st["network"]["sites"] == 10, "the network from the tables: {}", st["network"]);
     let r = api.http.post(format!("{}/v1/sim/inject", api.url)).bearer_auth(TOKEN).json(&json!({"scenario": "fiber_cut"})).send().await.unwrap();
     assert!(!r.status().is_success(), "nothing to inject into a real network");
-    let before = api.get("/v1/incidents").await["incidents"].as_array().unwrap().iter().filter(|i| i["status"] != "resolved").count();
+    // An outage the simulator left in the estate's tables may still be open: only the backbone's count here.
+    let before = api.get("/v1/incidents").await["incidents"].as_array().unwrap().iter().filter(|i| i["status"] != "resolved" && i["category"] != "estate").count();
     assert_eq!(before, 0);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 / 60 * 60;
     let stamp = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap().format("%Y-%m-%dT%H:%M:%SZ").to_string();
