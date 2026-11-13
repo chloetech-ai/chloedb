@@ -681,8 +681,10 @@ function render(page, r0) {
   function drawReady() {
     const w = state.whoami, a = state.alerts, env = environment();
     const rules = (a?.rules || []).filter((r) => r.enabled !== false);
-    const told = rules.filter((r) => r.owner && r.runbook).length;
-    const routes = (a?.routes || []).length + (a?.webhook ? 1 : 0);
+    // CCW-13: a rule shipped with the server has its runbook compiled in
+    // (runbook_docs); `webhook` is true when there are routes, not one more.
+    const told = rules.filter((r) => (r.owner && r.runbook) || r.runbook_docs).length;
+    const routes = (a?.routes || []).length || (a?.webhook ? 1 : 0);
     const shards = state.cluster?.shards || [];
     const single = !isCoordinator();
     const items = [

@@ -2050,6 +2050,13 @@ impl Alerts {
             .iter()
             .map(|r| {
                 let mut j = json!(r);
+                // A rule without a runbook of its own whose id has one compiled
+                // in (every default and built-in rule): where it is (CCW-6, CCW-13).
+                if r.runbook.is_empty() {
+                    if let Some(b) = crate::runbooks::for_id(&r.id) {
+                        j["runbook_docs"] = json!(format!("{}#{}", crate::runbooks::PAGE, b.anchor));
+                    }
+                }
                 let s = out.iter().find(|s| s["rule"] == r.id.as_str()).cloned().unwrap_or(Json::Null);
                 j["status"] = json!({"state": s["state"], "since_ms": s["since_ms"], "value": s["value"]});
                 if let Some(run) = (!r.sql.is_empty()).then(|| lock(&self.sql_runs).get(&r.id).cloned()).flatten() {
