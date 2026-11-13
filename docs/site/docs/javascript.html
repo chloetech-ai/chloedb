@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/javascript.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -343,7 +347,7 @@ await client.get(&quot;u2&quot;, { minSeqNo: w.seqNo, minSeqNos: w.seqNos });</p
 <p>The numbers go with reads only: a server refuses them on a write, so a session leaves them off an <code>INSERT</code>, <code>UPDATE</code> or <code>DELETE</code> by <code>sql</code>, judging a statement by its first word. A <code>Database</code> in the process ignores them: it reads every write it committed.</p>
 <p>In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): chloedb-server sends no CORS headers, and refuses writes from pages of other sites (<a href="server.html#security">security</a>).</p>
 <h2 id="search-on-the-device">Search on the device<a class="anchor" href="#search-on-the-device" aria-label="Link to this section">#</a></h2>
-<p><code>openNearby(url, table, dir)</code> holds a <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">slice</a> of a chloedb-server's table near a user: the rows of the tiles around them in a database in <code>dir</code>, searched with the server's statistics. <code>moveTo(lat, lon)</code> fetches the tiles it lacks, and <code>search(q, { k, d0 })</code> answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's <code>where</code> is <code>"device"</code> or <code>"server"</code> and <code>why</code> the reason. For a <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md#vector-slices-more-like-this-on-the-device">vector slice</a>, <code>focus(taste, { rows })</code> holds the clusters nearest a taste vector and <code>similar(vector, { k })</code> answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.</p>
+<p><code>openNearby(url, table, dir)</code> holds a <a href="slices.html">slice</a> of a chloedb-server's table near a user: the rows of the tiles around them in a database in <code>dir</code>, searched with the server's statistics. <code>moveTo(lat, lon)</code> fetches the tiles it lacks, and <code>search(q, { k, d0 })</code> answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's <code>where</code> is <code>"device"</code> or <code>"server"</code> and <code>why</code> the reason. For a <a href="slices.html#vector-slices-more-like-this-on-the-device">vector slice</a>, <code>focus(taste, { rows })</code> holds the clusters nearest a taste vector and <code>similar(vector, { k })</code> answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.</p>
 <pre data-lang="js" data-title="JavaScript">import { openNearby } from &quot;chloedb&quot;;
 
 const near = await openNearby(&quot;http://127.0.0.1:7700&quot;, &quot;places&quot;, &quot;./slice&quot;);

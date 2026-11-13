@@ -39,8 +39,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use chloedb::db::SqlResult;
-use chloedb::query::Params;
+use chloedb::db::{Db, SqlResult};
+use chloedb::query::{bind_command, Command, Params};
 use chloedb::storage::ObjectStore;
 use chloedb::tenant::{Tenant, TenantError, TenantOptions};
 use serde_json::{json, Value as Json};
@@ -100,10 +100,56 @@ impl From<TenantError> for ApiError {
     }
 }
 
-/// Whether `sql` only reads, by its first word.
-fn reads(sql: &str) -> bool {
+/// Whether `sql` starts as a statement that reads does. Only a guess
+/// ([`Kind::of`] asks the engine), for a statement the engine does not
+/// bind.
+fn starts_as_read(sql: &str) -> bool {
     let first = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or_default().to_ascii_uppercase();
     matches!(first.as_str(), "SELECT" | "WITH" | "EXPLAIN" | "SHOW" | "DESCRIBE" | "VALUES")
+}
+
+/// What a statement does to a tenant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// It reads: a query or an EXPLAIN. Run by [`read_only`].
+    Read,
+    /// Anything else: run as a write, and committed to the store.
+    Write,
+}
+
+impl Kind {
+    /// What `sql` is, as the engine binds it on `db`, not by its words: a
+    /// query that begins with a parenthesis or a comment reads (and does
+    /// not make this server the tenant's writer), and nothing that writes
+    /// is taken for a read by how it begins. A statement that does not
+    /// bind here (it is wrong, or it names a table this copy has not
+    /// seen yet) goes where it would report its error best: where reads
+    /// run when it starts as one, else to the write, which looks at the
+    /// store first.
+    fn of(db: &Db, sql: &str, params: &Params) -> Kind {
+        let catalog = db.catalog();
+        let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+        match bind_command(sql, &tables, params) {
+            Ok(Command::Query | Command::Explain { .. }) => Kind::Read,
+            Ok(_) => Kind::Write,
+            Err(_) if starts_as_read(sql) => Kind::Read,
+            Err(_) => Kind::Write,
+        }
+    }
+}
+
+/// Runs a statement that reads, through what cannot write: a query runs
+/// on a snapshot ([`Db::query`]), and an EXPLAIN shows a plan and runs
+/// nothing. So a read never leaves in this server's copy what the store
+/// does not have, whatever the statement turns out to say.
+fn read_only(db: &Db, sql: &str, params: &Params) -> chloedb::Result<SqlResult> {
+    let catalog = db.catalog();
+    let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+    match bind_command(sql, &tables, params)? {
+        Command::Query => db.query(sql, params).map(SqlResult::Rows),
+        Command::Explain { .. } => db.sql(sql, params),
+        _ => Err(chloedb::Error::Query("this statement writes: send it again".into())),
+    }
 }
 
 impl Tenants {
@@ -263,11 +309,11 @@ impl Tenants {
     pub fn sql(&self, id: &str, sql: &str, params: &Params, latest: bool) -> Result<Json, TenantError> {
         let t0 = Instant::now();
         let r = self.tenant(id).and_then(|t| {
-            let run = |db: &chloedb::db::Db| db.sql(sql, params);
-            let r = match (reads(sql), latest) {
-                (true, true) => t.read_latest(run)?,
-                (true, false) => t.read(run)?,
-                (false, _) => t.write(run)?,
+            let read = |db: &Db| read_only(db, sql, params);
+            let r = match (t.read(|db| Ok(Kind::of(db, sql, params)))?, latest) {
+                (Kind::Read, true) => t.read_latest(read)?,
+                (Kind::Read, false) => t.read(read)?,
+                (Kind::Write, _) => t.write(|db| db.sql(sql, params))?,
             };
             let took_ms = t0.elapsed().as_secs_f64() * 1e3;
             Ok(match r {
@@ -323,6 +369,7 @@ mod tests {
 
     #[test]
     fn statements_that_read() {
+        let reads = starts_as_read;
         assert!(reads("select 1") && reads("  WITH a AS (SELECT 1) SELECT * FROM a") && reads("EXPLAIN SELECT 1") && reads("SELECT(1)"));
         assert!(!reads("INSERT INTO t VALUES (1)") && !reads("create table t (id INT)") && !reads("") && !reads("DELETE FROM t"));
     }
