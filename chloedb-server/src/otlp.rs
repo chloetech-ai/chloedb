@@ -250,6 +250,8 @@ async fn table(svc: &Arc<Service>, name: &str) -> Result<Arc<Schema>, ApiError> 
 pub async fn export(svc: &Arc<Service>, who: &Principal, name: Option<&str>, req: ExportLogsServiceRequest) -> Result<Exported, ApiError> {
     who.may(Scope::Write, "writing logs")?;
     let name = table_name(name.unwrap_or(TABLE))?;
+    // A key limited to tables writes logs into a table it may write.
+    who.may_table(Scope::Write, name, "OTLP logs")?;
     let schema = table(svc, name).await?;
     let batch: i64 = rand::random::<u32>() as i64 >> 1;
     let now = crate::telemetry::now_ms() as i64 * 1000;

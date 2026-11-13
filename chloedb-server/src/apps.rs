@@ -15,7 +15,9 @@
 //! as `_`), else the server's `CHLOEDB_APP_TOKEN`, so that each app can
 //! hold a token of its own and none can call another as the server. So an
 //! app needs no address that browsers reach: the server checks the
-//! caller's key (read scope for `GET`, admin for the rest), and tells the
+//! caller's key (read scope for `GET`, admin for the rest; write for the
+//! rest of an app that checks its callers itself, [`checks_callers`],
+//! which alone takes a key limited to tables), and tells the
 //! app who it was in headers it sets itself, which the app may trust
 //! because they come with its token: `x-chloedb-principal` (the key's
 //! name, `token` or `open`), `x-chloedb-key` (its id), `x-chloedb-scope`
@@ -136,6 +138,7 @@ impl Apps {
                     "name": a.name, "url": a.url, "up": true,
                     "title": m["title"].as_str().unwrap_or(&a.name), "description": m["description"], "icon_svg": m["icon_svg"],
                     "view": m["view"].as_str().map(|v| format!("/v1/apps/{}/{}", a.name, v.trim_start_matches('/'))), "version": m["version"],
+                    "checks_callers": m["checks_callers"] == json!(true),
                 }),
                 Err(e) => json!({"name": a.name, "url": a.url, "up": false, "title": a.name, "error": e}),
             });
@@ -180,6 +183,28 @@ impl Apps {
             Err(m) => return err(StatusCode::BAD_REQUEST, m),
         };
         let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
+        // An app that checks its callers itself ([`checks_callers`]) takes a
+        // key limited to tables, and a change from a key of write scope; any
+        // other takes a key of every table, and changes from an admin's.
+        let get = method == Method::GET || method == Method::HEAD;
+        let unchecked = who.tables.is_some() || (!get && who.scope < crate::keys::Scope::Admin);
+        if unchecked && !checks_callers(&self.manifest(a).await) {
+            // A key limited to tables that was given the app reads through
+            // it, and only if it reads every table: the app reads as its own
+            // token may, which is no more than the key may then.
+            let given = who.allow.as_ref().is_some_and(|x| x.apps.iter().any(|n| n == name));
+            if let Some(g) = who.tables.as_ref().filter(|_| !(given && get && who.reads_all())) {
+                let why = match (given, get) {
+                    (true, true) => "it was given the app, which reads as its own token may, but does not read every table (*=read)".to_string(),
+                    (true, false) => "it was given the app to read through, and a change is the app's own token's".to_string(),
+                    (false, _) => "it takes a key of every table".to_string(),
+                };
+                return err(StatusCode::FORBIDDEN, format!("the app {name} does not check a key limited to tables, so {why}: the key {:?} may touch only {}", who.name, crate::keys::grants_text(g)));
+            }
+            if !get && who.scope < crate::keys::Scope::Admin {
+                return err(StatusCode::FORBIDDEN, format!("{method} /v1/apps/{name}/... needs a key with the admin scope; {:?} has {}", who.name, who.scope.name()));
+            }
+        }
         let mut req = http.request(method, url).timeout(Duration::from_secs(120));
         for h in [header::CONTENT_TYPE, header::ACCEPT] {
             if let Some(v) = headers.get(&h) {
@@ -207,6 +232,15 @@ impl Apps {
             Err(e) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer was cut off: {e}")),
         }
     }
+}
+
+/// Whether an app's manifest says that it checks who called it itself:
+/// `"checks_callers": true` in its `app.json`, for an app that refuses what
+/// `x-chloedb-scope` and `x-chloedb-tables` do not allow (ChloeCtx's
+/// spaces). Such an app is forwarded a key limited to tables, and a change
+/// (not `GET`) from a key of write scope; any other is not.
+pub fn checks_callers(manifest: &Result<Json, String>) -> bool {
+    manifest.as_ref().is_ok_and(|m| m["checks_callers"] == json!(true))
 }
 
 /// Whether a path segment (as the router decoded it) is a dot segment, or
@@ -330,7 +364,7 @@ mod caller_tests {
 
     #[test]
     fn an_app_is_told_who_called() {
-        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()) };
+        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()), allow: None };
         let h = caller_headers(&p);
         assert!(h.contains(&("x-chloedb-principal", "ana?x".into())));
         assert!(h.contains(&("x-chloedb-scope", "write".into())) && h.contains(&("x-chloedb-key", "0a1b".into())));

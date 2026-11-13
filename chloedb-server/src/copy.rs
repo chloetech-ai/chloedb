@@ -194,7 +194,7 @@ pub fn bring_when_ready(svc: Arc<Service>, id: String) {
         };
         // As the person who asked for the cluster, with what a key of
         // theirs here could do (they made a cluster: an admin's).
-        let who = Principal { name: format!("{} (bringing tables)", m.by), key: None, scope: Scope::Admin, root: false, tables: None };
+        let who = Principal { name: format!("{} (bringing tables)", m.by), key: None, scope: Scope::Admin, root: false, tables: None, allow: None };
         let mut last = String::new();
         for i in 0..BRING_TRIES {
             if i > 0 {

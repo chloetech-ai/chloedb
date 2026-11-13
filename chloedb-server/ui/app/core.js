@@ -250,7 +250,22 @@ const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7
  * the command center (`x-strata-client`), so the server leaves the UI's own
  * calls out of the routes and queries it shows.
  */
+// A GET a key limited to tables was refused ("... is not for a key limited
+// to tables"): its path (without the query) is not asked again for that key,
+// so that a page polling it does not send a refused request a poll. The
+// refusal is thrown again, as the server gave it.
+const refusedFor = { token: null, paths: new Map() };
+const routeOf = (path) => String(path).split("?")[0];
+/** The refusal of a route this key was refused as a key limited to tables, or null. */
+export function refusedRoute(path) {
+  if (refusedFor.token !== token) return null;
+  return refusedFor.paths.get(routeOf(path)) || null;
+}
+
 export async function api(path, opts = {}) {
+  const get = !opts.method && opts.body === undefined;
+  const held = get && !opts.hub ? refusedRoute(path) : null;
+  if (held) throw new ApiError(403, held, { error: held, limited: true });
   const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
@@ -303,6 +318,11 @@ export async function api(path, opts = {}) {
   }
   answered();
   if (r.status === 401) bus.emit("unauthorized", path);
+  if (r.status === 403 && get && typeof j?.error === "string" && j.error.includes("not for a key limited to tables")) {
+    if (refusedFor.token !== token) { refusedFor.token = token; refusedFor.paths = new Map(); }
+    refusedFor.paths.set(routeOf(path), j.error);
+    j.limited = true;
+  }
   if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;
 }
@@ -329,10 +349,28 @@ export function can(scope) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
+  // A key limited to tables is never the server's admin: its admin is its
+  // tables' (CREATE, ALTER, DROP).
+  if (w.tables && (RANK[scope] || RANK.admin) >= RANK.admin) return false;
   return (RANK[w.scope] || 0) >= (RANK[scope] || RANK.admin);
 }
 /** The tooltip of an action the key cannot take: "needs an admin key". */
-export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+export const needs = (scope) => ctx.whoami?.tables && scope === "admin" ? "needs an admin key of the server (this key is limited to tables)" : `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Whether the signed-in key is limited to tables (whoami's `tables`). */
+export const limited = () => !!ctx.whoami?.tables;
+/** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
+export const grantsText = (tables) => Object.entries(tables || {}).map(([t, s]) => `${t} ${s}`).join(", ");
+/** What the header says of a key: its scope, or for a key limited to tables its grants (and its preset). */
+export function keyLabel(w) {
+  if (!w) return "";
+  if (!w.tables) return w.scope;
+  return (w.preset ? w.preset + ": " : "") + grantsText(w.tables);
+}
+/** Why a page shows nothing for an error `e`: "this key can't see …" for a key limited to tables, else the error. */
+export function cannotSee(e, what) {
+  if (e?.status === 403 && (e.body?.limited || limited())) return `This key can't see ${what}: it is limited to tables (${grantsText(ctx.whoami?.tables)}).`;
+  return e?.message || String(e);
+}
 /** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
 export function gate(btn, scope) {
   if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
@@ -779,6 +817,7 @@ export function every(ms, f, now = true, opts = {}) {
 
 /** What an error says, for a view that could not load. */
 export function failure(e, what) {
+  if (e instanceof ApiError && e.status === 403 && (e.body?.limited || limited())) return empty("lock", `This key can't see ${what.toLowerCase()}`, cannotSee(e, what.toLowerCase()), h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 403) return empty("lock", `${what} needs an admin key`, e.message, h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 401) return empty("lock", "Sign in to see " + what.toLowerCase(), "This server needs a token or an API key.", h("button", { class: "btn sm primary", onclick: () => bus.emit("unauthorized") }, "Enter a key"));
   return h("div", { class: "error" }, `${what}: ${e.message}`);

@@ -53,9 +53,19 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // Rows, by their tables.
         "/v1/write" | "/v1/kv/get" | "/v1/import" => method == Method::POST,
         "/v1/kv/:table/:key" => get || method == Method::PUT || method == Method::DELETE,
-        // Embeddings of text, and the models that make them: no table.
+        // Embeddings of text by a table's model, and the models that make
+        // them (the fields of tables it reads).
         "/v1/embed" => method == Method::POST,
         "/v1/models" => get,
+        // A schema checked (no table is touched), and a plan, by its tables
+        // ([`check_plan`]).
+        "/v1/schema/check" | "/v1/plan" => method == Method::POST,
+        // OTLP logs into a table it writes; a rank log it reads, exported.
+        "/v1/logs" | "/v1/rank_log/export" | "/v1/rank_log/interleaving" => method == Method::POST,
+        // Apps: the listing, and the apps that check a caller's tables
+        // themselves ([`crate::apps`]; the others refuse it there).
+        "/v1/apps" => get,
+        "/v1/apps/:name/*rest" => true,
         _ => false,
     }
 }
@@ -111,11 +121,7 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
         return Ok(());
     }
     let refuse = |m: String| ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
-    let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
-    let mut walk = Walk::default();
-    for s in &statements {
-        let _ = s.visit(&mut walk);
-    }
+    let walk = walk(text)?;
     if let Some(m) = walk.refused {
         return Err(refuse(m));
     }
@@ -154,6 +160,87 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
         }
     }
     Ok(())
+}
+
+/// Refuses (403) plan `plan` ([`chloedb::query::ir`], `POST /v1/plan`) if
+/// `who` (a key limited to tables) may not run it: write on the table each
+/// of its writes writes, and read on every table it reads, in subqueries
+/// too, and on an edge table a walk follows. A sequence model's `encode`
+/// reads its own table, and is refused as `encode()` is in SQL.
+pub fn check_plan(who: &Principal, plan: &chloedb::query::ir::Plan) -> Result<(), ApiError> {
+    use chloedb::query::ir::{Expr, Node};
+    if !who.limited() {
+        return Ok(());
+    }
+    #[derive(Default)]
+    struct Seen {
+        reads: BTreeSet<String>,
+        writes: BTreeSet<String>,
+        refused: Option<String>,
+    }
+    fn nodes(n: &Node, seen: &mut Seen) {
+        match n {
+            Node::Search(s) => drop(seen.reads.insert(s.table.to_ascii_lowercase())),
+            Node::Insert { table, .. } | Node::Update { table, .. } | Node::Delete { table, .. } => drop(seen.writes.insert(table.to_ascii_lowercase())),
+            _ => {}
+        }
+        for i in n.inputs() {
+            nodes(i, seen);
+        }
+    }
+    let mut seen = Seen::default();
+    nodes(&plan.root, &mut seen);
+    // The plans of subqueries, at any depth: their expressions are visited
+    // with the plan's.
+    let mut inner: Vec<Node> = Vec::new();
+    plan.root.visit_exprs(&mut |e| match e {
+        Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) => inner.push((**n).clone()),
+        Expr::Graph(g) | Expr::Ppr(g) => {
+            if let Some(t) = &g.edges {
+                seen.reads.insert(t.to_ascii_lowercase());
+            }
+        }
+        Expr::Encode { .. } => seen.refused = Some("a plan's encode reads a sequence model's own table".into()),
+        _ => {}
+    });
+    for n in &inner {
+        nodes(n, &mut seen);
+    }
+    if let Some(m) = seen.refused {
+        return Err(ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) });
+    }
+    for t in &seen.writes {
+        who.may_table(Scope::Write, t, "a write plan")?;
+    }
+    for t in &seen.reads {
+        who.may_table(Scope::Read, t, "a plan")?;
+    }
+    Ok(())
+}
+
+/// What statement `text` names. A `PACK n TOKENS` clause, which ChloeDB's
+/// parser does not take ([`chloedb::query::pack::split`]), is read without:
+/// it names no table (its `DEDUPE ... ON` names a field of the query's).
+fn walk(text: &str) -> Result<Walk, ApiError> {
+    let packed = chloedb::query::pack::split(text).map_err(|e| ApiError::bad(e.to_string()))?;
+    let text = packed.as_ref().map_or(text, |(rest, _)| rest.as_str());
+    let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
+    let mut walk = Walk::default();
+    for s in &statements {
+        let _ = s.visit(&mut walk);
+    }
+    Ok(walk)
+}
+
+/// The tables statement `text` reads or writes by name (`FROM`, `JOIN`,
+/// subqueries, the table of a write), in lowercase and without its `WITH`
+/// tables; none when it does not parse. What a parameter with no table
+/// (`{"embed": ..}`, `{"vector_of": ..}`) resolves against.
+pub fn named_tables(text: &str) -> Vec<String> {
+    match walk(text) {
+        Ok(w) => w.relations.iter().filter(|r| !w.ctes.contains(*r)).cloned().collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// What a statement names, as [`check_reads`] needs it.
@@ -232,11 +319,12 @@ impl Visitor for Walk {
 mod tests {
     use super::*;
     use crate::keys::Grant;
+    use serde_json::{json, Value as Json};
 
     fn key(grants: &[&str]) -> Principal {
         let g: Vec<Grant> = grants.iter().map(|g| Grant::parse(g).unwrap()).collect();
         let scope = g.iter().map(|g| g.scope).max().unwrap();
-        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()) }
+        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()), allow: None }
     }
 
     fn tables() -> Vec<String> {
@@ -291,7 +379,7 @@ mod tests {
         // Not a table at all: refused too (it might be a function).
         assert_eq!(reads(&k, "SELECT * FROM nothing_here").unwrap_err().status, 403);
         // A key of every table is not checked here.
-        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None };
+        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None };
         assert!(reads(&all, "SELECT * FROM secrets").is_ok());
     }
 
@@ -340,11 +428,46 @@ mod tests {
     }
 
     #[test]
+    fn pack_is_read_without_its_clause() {
+        let k = key(&["crawl_*=admin"]);
+        assert!(reads(&k, "SELECT id FROM crawl_docs ORDER BY bm25(body, 'x') DESC PACK 200 TOKENS").is_ok());
+        assert!(reads(&k, "SELECT id FROM crawl_docs ORDER BY bm25(body, 'x') DESC PACK 200 TOKENS DEDUPE 0.95 ON emb WITH RECEIPT LIMIT 5").is_ok());
+        assert_eq!(reads(&k, "SELECT id FROM secrets ORDER BY bm25(body, 'x') DESC PACK 200 TOKENS").unwrap_err().status, 403);
+        assert_eq!(reads(&k, "SELECT id FROM crawl_docs WHERE id IN (SELECT id FROM secrets) PACK 20 TOKENS").unwrap_err().status, 403);
+        assert_eq!(named_tables("SELECT id FROM crawl_docs ORDER BY bm25(body, 'x') DESC PACK 200 TOKENS"), vec!["crawl_docs".to_string()]);
+        assert_eq!(named_tables("WITH x AS (SELECT * FROM a) SELECT * FROM x JOIN B ON true"), vec!["a".to_string(), "b".to_string()]);
+        assert!(named_tables("not sql").is_empty());
+    }
+
+    #[test]
+    fn plans_by_their_tables() {
+        use chloedb::query::ir::Plan;
+        let k = key(&["crawl_*=write", "public=read"]);
+        let plan = |j: Json| Plan::from_json(&j).unwrap();
+        let search = |t: &str| json!({"node": "search", "table": t});
+        assert!(check_plan(&k, &plan(json!({"version": 1, "root": search("crawl_docs")}))).is_ok());
+        assert!(check_plan(&k, &plan(json!({"version": 1, "root": search("public")}))).is_ok());
+        assert_eq!(check_plan(&k, &plan(json!({"version": 1, "root": search("secrets")}))).unwrap_err().status, 403);
+        // A write of a table it may only read.
+        assert_eq!(check_plan(&k, &plan(json!({"version": 1, "root": {"node": "delete", "table": "public", "input": search("public")}}))).unwrap_err().status, 403);
+        assert!(check_plan(&k, &plan(json!({"version": 1, "root": {"node": "delete", "table": "crawl_docs", "input": search("crawl_docs")}}))).is_ok());
+        // A table read in a subquery.
+        let sub = plan(json!({"version": 1, "root": {"node": "filter", "input": search("crawl_docs"), "cond": {"exists": search("secrets")}}}));
+        assert_eq!(check_plan(&k, &sub).unwrap_err().status, 403);
+        // Not checked for a key of every table.
+        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None };
+        assert!(check_plan(&all, &plan(json!({"version": 1, "root": search("secrets")}))).is_ok());
+    }
+
+    #[test]
     fn routes_of_a_limited_key() {
         assert!(route_ok(&Method::POST, "/v1/sql"));
         assert!(route_ok(&Method::GET, "/v1/tables"));
         assert!(route_ok(&Method::PUT, "/v1/kv/:table/:key"));
-        for (m, r) in [(Method::POST, "/v1/admin/keys"), (Method::POST, "/v1/admin/shards"), (Method::GET, "/v1/export"), (Method::GET, "/v1/feed"), (Method::POST, "/v1/mcp"), (Method::POST, "/v1/plan"), (Method::GET, "/v1/apps/:name/*rest"), (Method::GET, "/v1/queries/recent"), (Method::POST, "/v1/alerts/:rule/ack"), (Method::GET, "/metrics")] {
+        for (m, r) in [(Method::POST, "/v1/plan"), (Method::POST, "/v1/schema/check"), (Method::POST, "/v1/logs"), (Method::GET, "/v1/apps"), (Method::GET, "/v1/apps/:name/*rest"), (Method::POST, "/v1/apps/:name/*rest")] {
+            assert!(route_ok(&m, r), "{m} {r}");
+        }
+        for (m, r) in [(Method::POST, "/v1/admin/keys"), (Method::POST, "/v1/admin/shards"), (Method::GET, "/v1/export"), (Method::GET, "/v1/feed"), (Method::GET, "/v1/logs"), (Method::GET, "/v1/events"), (Method::GET, "/v1/health/fleet"), (Method::GET, "/v1/stats"), (Method::GET, "/v1/queries/recent"), (Method::POST, "/v1/alerts/:rule/ack"), (Method::GET, "/metrics")] {
             assert!(!route_ok(&m, r), "{m} {r}");
         }
     }

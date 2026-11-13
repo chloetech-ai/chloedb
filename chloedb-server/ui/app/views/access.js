@@ -745,7 +745,8 @@ function render(page, r) {
     return h("tr", { "data-key": k.id, class: asNew ? "ac-succ" : "" },
       h("td", { class: "ac-kname" }, h("b", { title: [`${k.prefix || `sk_${k.id}_`}…`, `made ${whenT(k.created_ms)}`, k.note].filter(Boolean).join(" · ") }, k.name),
         sub || asOld ? h("div", { class: "small muted" }, sub, sub && asOld ? " · " : "", asOld ? h("span", { class: "ac-rotating" }, "rotating") : null) : null),
-      h("td", {}, h("span", { class: "ac-scope " + k.scope }, k.scope)),
+      h("td", {}, h("span", { class: "ac-scope " + k.scope, title: k.tables ? `limited to ${core.keyLabel(k)}` : null }, k.tables ? (k.preset || "tables") : k.scope),
+        k.tables ? h("div", { class: "small muted" }, core.grantsText(k.tables), k.allow?.routes?.length ? ` · routes ${k.allow.routes.join(", ")}` : "", k.allow?.apps?.length ? ` · apps ${k.allow.apps.join(", ")}` : "") : null),
       h("td", { class: "num" }, used, (() => {
         const cs = clientsOf(k.id);
         const title = `Who sent this key: ${callersFrom()}, and the audit log.\n` + cs.map(clientSaid).join("\n");
@@ -820,7 +821,7 @@ function render(page, r) {
       body: [
         h("p", {}, "Requests with ", h("span", { class: "mono" }, `${k.prefix || `sk_${k.id}_`}…`), " are refused from now on. This cannot be undone: a client needs a new key."),
         facts([
-          ["scope", k.scope],
+          ["scope", k.tables ? `limited to ${core.keyLabel(k)}` : k.scope],
           ["last used", k.last_used_ms ? `${ago(k.last_used_ms)}${k.last_addr ? ` from ${k.last_addr}` : ""}` : "never"],
           k.owner ? ["owner", k.owner] : null,
           clientsOf(k.id).length ? ["sent by", h("div", { class: "stack", style: { gap: "2px" } }, clientsOf(k.id).slice(0, 6).map((x) => h("div", {}, clientSaid(x))),
@@ -866,7 +867,7 @@ function render(page, r) {
         const ym = new Date().toISOString().slice(0, 7);
         let name = `${k.name}-${ym}`, i = 2;
         while (taken.has(name)) name = `${k.name}-${ym}-${i++}`;
-        try { j = await api("/v1/admin/keys", { body: { name, scope: k.scope, expires_days: lifetime, owner: k.owner || undefined, note: `successor of ${k.name}` }, reason: ok.reason || `rotating ${k.name}` }); }
+        try { j = await api("/v1/admin/keys", { body: { name, scope: k.scope, tables: k.tables || undefined, routes: k.tables && !k.preset ? k.allow?.routes : undefined, apps: k.tables && !k.preset ? k.allow?.apps : undefined, preset: k.preset || undefined, prefix: k.preset ? presetPrefix(k) : undefined, expires_days: lifetime, owner: k.owner || undefined, note: `successor of ${k.name}` }, reason: ok.reason || `rotating ${k.name}` }); }
         catch (e2) { toast(e2.message, "bad"); return; }
       }
       showSecret(j, {
@@ -885,7 +886,7 @@ function render(page, r) {
       title, wide: true, body: [
         h("div", { class: "notice" }, "Copy it now: the server keeps only its hash, so this is the only time it is shown."),
         h("div", { class: "row nw" }, h("div", { class: "secret grow" }, j.secret), h("button", { class: "btn primary", onclick: () => copy(j.secret, "Key copied") }, icon("copy"), "Copy")),
-        h("dl", { class: "kv" }, [["name", j.key?.name], ["scope", j.key?.scope], j.key?.owner ? ["owner", j.key.owner] : null, ["expires", j.key?.expires_ms ? `${full(j.key.expires_ms)} (${until(j.key.expires_ms)})` : "never"]].filter(Boolean).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v ?? "–")])),
+        h("dl", { class: "kv" }, [["name", j.key?.name], ["scope", j.key?.tables ? `limited to ${core.keyLabel(j.key)}` : j.key?.scope], j.key?.owner ? ["owner", j.key.owner] : null, ["expires", j.key?.expires_ms ? `${full(j.key.expires_ms)} (${until(j.key.expires_ms)})` : "never"]].filter(Boolean).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v ?? "–")])),
         h("div", { class: "small muted" }, "Try it:"), h("div", { class: "row nw" }, h("pre", { class: "code grow" }, curl), h("button", { class: "btn icon sm", onclick: () => copy(curl) }, icon("copy"))),
         note ? h("div", { class: "notice" }, note) : null,
         j.closed ? h("div", { class: "notice" }, "This server was open; it now needs a key for every request. This page keeps working: it signed in with the new key.") : null,
@@ -896,13 +897,25 @@ function render(page, r) {
 
   function create() {
     if (!can("admin")) { toast(`Creating a key ${needs("admin")}`, "bad"); return; }
-    let scope = "read", daysN = 90;
+    let scope = "read", daysN = 90, preset = "";
+    // A job's key: limited to the tables a prefix names (POST /v1/admin/keys {preset, prefix}).
+    const presets = state.whoami?.presets || [];
+    const prefix = h("input", { class: "input", placeholder: "team_*", style: { width: "100%" }, maxLength: 128 });
+    const presetWhat = h("div", { class: "small muted" });
+    const presetBox = h("div", { class: "f", style: { display: "none" } }, h("label", { class: "f" }, "Its tables: a prefix and *", prefix), presetWhat);
+    const presetSeg = presets.length ? seg([["", "any job"], ...presets.map((p) => [p.name, p.name])], preset, (v) => {
+      preset = v;
+      presetBox.style.display = v ? "" : "none";
+      scopeBox.style.display = v ? "none" : "";
+      presetWhat.textContent = v ? `A key limited to tables that ${presets.find((p) => p.name === v)?.what || ""}.` : "";
+    }) : null;
     const name = h("input", { class: "input", placeholder: "search-frontend", style: { width: "100%" }, maxLength: 64 });
     const owner = h("input", { class: "input", placeholder: "search-web team, or a person", style: { width: "100%" } });
     const note = h("input", { class: "input", placeholder: "the frontend's servers in eu-west", style: { width: "100%" } });
     const scopeCards = h("div", { class: "ac-scopecards" });
     const drawScopes = () => clear(scopeCards, SCOPES.map(([v, t, sub]) => h("button", { type: "button", class: "ac-scopecard" + (scope === v ? " on" : ""), "aria-pressed": String(scope === v), onclick: () => { scope = v; drawScopes(); } }, h("b", {}, t), h("div", { class: "small muted" }, sub))));
     drawScopes();
+    const scopeBox = h("div", { class: "f" }, h("span", { class: "small muted" }, "Scope: the least it needs"), scopeCards);
     const exp = seg([[30, "30 days"], [90, "90 days"], [365, "a year"], [null, "never"]], daysN, (v) => (daysN = v));
     const go = h("button", { class: "btn primary" }, icon("plus"), "Create");
     const m = modal({
@@ -912,7 +925,9 @@ function render(page, r) {
           h("label", { class: "f grow" }, "Name: what uses it", name),
           h("label", { class: "f grow" }, "Owner: who answers for it", owner)),
         h("label", { class: "f" }, "Note (optional)", note),
-        h("div", { class: "f" }, h("span", { class: "small muted" }, "Scope: the least it needs"), scopeCards),
+        presetSeg ? h("div", { class: "f" }, h("span", { class: "small muted" }, "A job's key (limited to its tables), or a key of every table"), presetSeg) : null,
+        presetBox,
+        scopeBox,
         h("div", { class: "f" }, h("span", { class: "small muted" }, "Expires"), exp, h("div", { class: "small muted" }, "A key that expires is rotated on a schedule; one that never expires is flagged when nobody uses it.")),
       ],
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go],
@@ -921,7 +936,9 @@ function render(page, r) {
       if (!name.value.trim()) { name.focus(); return; }
       go.disabled = true;
       try {
-        const j = await api("/v1/admin/keys", { body: { name: name.value.trim(), scope, expires_days: daysN, owner: owner.value.trim() || undefined, note: note.value.trim() || undefined } });
+        if (preset && !prefix.value.trim()) { go.disabled = false; prefix.focus(); return; }
+        const limits = preset ? { preset, prefix: prefix.value.trim() } : { scope };
+        const j = await api("/v1/admin/keys", { body: { name: name.value.trim(), ...limits, expires_days: daysN, owner: owner.value.trim() || undefined, note: note.value.trim() || undefined } });
         m.close();
         showSecret(j);
         after();
@@ -959,4 +976,10 @@ function render(page, r) {
   }, false);
   const offWho = bus.on("whoami", () => { drawHead(); drawChips(); drawKeys(); });
   return () => { stop(); offWho?.(); onChange = null; };
+}
+
+/** The prefix a preset key was made for: its grant of admin or write that ends in * and is not *. */
+function presetPrefix(k) {
+  const own = Object.entries(k.tables || {}).filter(([t, sc]) => t !== "*" && t.endsWith("*") && !t.startsWith("ctx_") && (sc === "admin" || sc === "write"));
+  return own[0]?.[0];
 }
