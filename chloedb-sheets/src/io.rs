@@ -1,6 +1,7 @@
 //! Files in and out: xlsx (IronCalc reads and writes Excel's format), CSV,
 //! and SQLite databases, each of whose tables becomes a sheet.
 
+use crate::book::Shown;
 use std::io::{Cursor, Read};
 
 use ironcalc::base::types::Workbook;
@@ -225,7 +226,7 @@ pub fn to_csv(model: &Model, sheet: u32) -> Result<String, String> {
     if !ws.sheet_data.is_empty() {
         let d = ws.dimension();
         for r in 1..=d.max_row {
-            let rec: Vec<String> = (1..=d.max_column).map(|c| model.get_formatted_cell_value(sheet, r, c).unwrap_or_default()).collect();
+            let rec: Vec<String> = (1..=d.max_column).map(|c| model.shown(sheet, r, c).unwrap_or_default()).collect();
             w.write_record(&rec).map_err(|e| e.to_string())?;
         }
     }
@@ -385,8 +386,8 @@ mod tests {
         assert_eq!(delimiter("a,b\n1,2\n"), b',');
         let (e, r) = from_csv(b"name,qty,price\npear,3,1.5\n\"fig, dried\",10,0.25\n", "fruit.csv", None).unwrap();
         assert_eq!(r["header"], true);
-        assert_eq!(e.get_formatted_cell_value(0, 3, 1).unwrap(), "fig, dried");
-        assert_eq!(e.get_formatted_cell_value(0, 2, 2).unwrap(), "3");
+        assert_eq!(e.shown(0, 3, 1).unwrap(), "fig, dried");
+        assert_eq!(e.shown(0, 2, 2).unwrap(), "3");
         assert_eq!(e.get_worksheets_properties()[0].name, "fruit");
         let csv = to_csv(e.get_model(), 0).unwrap();
         assert!(csv.starts_with("name,qty,price\npear,3,1.5\n\"fig, dried\""), "{csv}");
@@ -412,15 +413,15 @@ mod tests {
         let (e, r) = from_sqlite(&bytes, "shop.db", None).unwrap();
         let props = e.get_worksheets_properties();
         assert_eq!(props.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["orders", "people"]);
-        assert_eq!(e.get_formatted_cell_value(0, 1, 2).unwrap(), "item");
-        assert_eq!(e.get_formatted_cell_value(0, 3, 2).unwrap(), "007");
-        assert_eq!(e.get_formatted_cell_value(0, 2, 4).unwrap(), "1.5");
-        assert_eq!(e.get_formatted_cell_value(0, 2, 5).unwrap(), "(2 bytes)");
+        assert_eq!(e.shown(0, 1, 2).unwrap(), "item");
+        assert_eq!(e.shown(0, 3, 2).unwrap(), "007");
+        assert_eq!(e.shown(0, 2, 4).unwrap(), "1.5");
+        assert_eq!(e.shown(0, 2, 5).unwrap(), "(2 bytes)");
         assert_eq!(r["tables"][0]["rows"], 2);
         let x = to_xlsx(e.get_model()).unwrap();
         let back = from_xlsx(&x, "shop").unwrap();
-        assert_eq!(back.get_formatted_cell_value(0, 3, 2).unwrap(), "007");
-        assert_eq!(back.get_formatted_cell_value(0, 2, 3).unwrap(), "3");
+        assert_eq!(back.shown(0, 3, 2).unwrap(), "007");
+        assert_eq!(back.shown(0, 2, 3).unwrap(), "3");
     }
 
     /// A SQLite file whose view never ends: `forever`, over a recursive CTE.

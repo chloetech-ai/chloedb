@@ -101,10 +101,11 @@ pub async fn ensure_tables(strata: &Strata) -> Result<(), String> {
     Ok(())
 }
 
-/// The workbooks, the last changed first.
-pub async fn list(strata: &Strata) -> Result<Vec<Value>, String> {
+/// The workbooks, the last changed first, each with its owner and
+/// whether it is shared (of its `ext`), and the `ext` itself.
+pub async fn list(strata: &Strata) -> Result<Vec<(Value, Ext)>, String> {
     let j = strata
-        .query(&format!("SELECT id, name, created, updated, source, sheets, cells, sheet_names FROM {BOOKS} ORDER BY updated DESC LIMIT 1000"), json!({}))
+        .query(&format!("SELECT id, name, created, updated, source, sheets, cells, sheet_names, ext FROM {BOOKS} ORDER BY updated DESC LIMIT 1000"), json!({}))
         .await
         .map_err(|e| e.to_string())?;
     let cols: Vec<String> = j["columns"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
@@ -114,12 +115,19 @@ pub async fn list(strata: &Strata) -> Result<Vec<Value>, String> {
         .flatten()
         .map(|r| {
             let mut o = serde_json::Map::new();
+            let mut ext = Ext::default();
             for (i, c) in cols.iter().enumerate() {
+                if c == "ext" {
+                    ext = r[i].as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+                    continue;
+                }
                 o.insert(c.clone(), r[i].clone());
             }
             o.insert("updated_ms".into(), json!(parse_ms(&r[3])));
             o.insert("created_ms".into(), json!(parse_ms(&r[2])));
-            Value::Object(o)
+            o.insert("owner".into(), json!(ext.owner));
+            o.insert("shared".into(), json!(ext.shared));
+            (Value::Object(o), ext)
         })
         .collect())
 }
