@@ -9,6 +9,10 @@
 import { h, icon, clear, api, toast, card, empty, failure, seg, can, needs, store, drawer, modal, confirm, copy, fmt, timeEl, sqlBlock, debounce, link } from "../core.js";
 import { openFeedback } from "../feedback.js";
 
+// A route of the command center, as the server accepts it: only such a route
+// becomes a link (rows written before that check, or around it, stay text).
+const isRoute = (r) => typeof r === "string" && /^#\/[^\s\x00-\x1f]*$/.test(r);
+
 const STATUS = [["new", "New"], ["triaged", "Triaged"], ["planned", "Planned"], ["doing", "Doing"], ["done", "Done"], ["wontfix", "Won't do"]];
 const OPEN = ["new", "triaged", "planned", "doing"];
 const FILTERS = [["open", "Open"], ["new", "New"], ["planned", "Planned"], ["doing", "Doing"], ["done,wontfix", "Closed"], ["all", "All"]];
@@ -140,7 +144,7 @@ function render(page, r) {
     const ctx = f.context || {};
     const facts = [
       ["Kind", f.kind], ["Sent", [timeEl(Date.parse(f.ts)), " by ", f.author || "someone"]],
-      ["View", f.route ? h("a", { href: f.route, onclick: () => drawerRef?.close() }, `${ctx.title || f.page || "the view"} (${f.route})`) : f.page],
+      ["View", isRoute(f.route) ? h("a", { href: f.route, onclick: () => drawerRef?.close() }, `${ctx.title || f.page || "the view"} (${f.route})`) : (f.page || f.route)],
       ["Window", ctx.viewport ? `${ctx.viewport.w} × ${ctx.viewport.h} at ${ctx.viewport.dpr}x, ${ctx.theme || ""}${ctx.capture ? `, taken ${ctx.capture === "page" ? "from the page" : ctx.capture === "screen" ? "from the screen" : "without a picture"}` : ""}` : null],
       ["Server", [f.cluster_name, f.server_version ? ` · ${f.server_version}` : "", ctx.backend ? ` · ${ctx.backend}` : ""]],
       f.updated ? ["Changed", [timeEl(Date.parse(f.updated)), " by ", f.updated_by || "someone"]] : null,

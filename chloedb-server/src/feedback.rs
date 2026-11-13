@@ -16,13 +16,16 @@
 //! | `GET /v1/feedback?status=new,planned&kind=bug&q=words&limit=100` | | `{feedback: [...], counts, statuses, kinds, table}`: the newest first, without screenshots |
 //! | `GET /v1/feedback/:id?shot=1` | | one row in full; with `shot`, the screenshot as a `data:` URL |
 //! | `GET /v1/feedback/:id/shot`, `.../thumb` | | the screenshot or its thumbnail, as an image |
-//! | `PATCH /v1/feedback/:id` | `{status?, priority?, assignee?, resolution?, kind?, title?, if_status?}` | the row (write scope); `if_status` refuses (409) when the row's status is another, so that two agents do not take one item |
+//! | `PATCH /v1/feedback/:id` | `{status?, priority?, assignee?, resolution?, kind?, title?, if_status?}` | the row (write scope); `if_status` refuses (409) when the row's status is another, so that two agents do not take one item (triage through one server or coordinator is one at a time) |
 //! | `DELETE /v1/feedback/:id` | | `{deleted}` (admin scope) |
 //!
 //! A key limited to tables calls these when it is granted the table:
 //! reading at `read`, submitting and triaging at `write`.
 
 use std::sync::Arc;
+
+/// Held while an item is triaged: see [`update`].
+static TRIAGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use base64::Engine as _;
 use chloedb::query::Params;
@@ -118,6 +121,29 @@ fn text(v: Option<&Json>, what: &str, max: usize) -> Result<Option<String>, ApiE
             Ok((!s.is_empty()).then(|| s.to_string()))
         }
         Some(_) => Err(ApiError::bad(format!("{what} is a string"))),
+    }
+}
+
+/// The command center route an item was sent from: `#/` and a path, nothing
+/// that a link could run (the triage view makes it a link).
+pub fn route(v: Option<&Json>) -> Result<Option<String>, ApiError> {
+    let r = text(v, "route", 2000)?;
+    match &r {
+        Some(r) if !r.starts_with("#/") || r.chars().any(|c| c.is_control() || c.is_whitespace()) => {
+            Err(ApiError::bad("route is the command center's route: #/ and a path, as in #/cluster"))
+        }
+        _ => Ok(r),
+    }
+}
+
+/// The address of the page, kept as text: an http(s) URL or nothing.
+fn page_url(v: Option<&Json>) -> Result<Option<String>, ApiError> {
+    let u = text(v, "url", 4000)?;
+    match &u {
+        Some(u) if !(u.starts_with("https://") || u.starts_with("http://")) || u.chars().any(|c| c.is_control()) => {
+            Err(ApiError::bad("url is the page's http or https address"))
+        }
+        _ => Ok(u),
     }
 }
 
@@ -261,7 +287,7 @@ pub async fn submit(svc: &Arc<Service>, who: &Principal, b: Json) -> Result<Json
     let mut doc = json!({
         "id": id, "ts": chloedb::timestamp::format(now), "author": who.name, "author_key": who.key,
         "kind": kind, "status": "new", "title": title, "note": note,
-        "page": text(o.get("page").or(o.get("view")), "page", 200)?, "route": text(o.get("route"), "route", 2000)?, "url": text(o.get("url"), "url", 4000)?,
+        "page": text(o.get("page").or(o.get("view")), "page", 200)?, "route": route(o.get("route"))?, "url": page_url(o.get("url"))?,
         "cluster_name": svc.identity.json().get("name").cloned().unwrap_or(Json::Null), "server_version": env!("CARGO_PKG_VERSION"),
         "marks_text": (!mt.is_empty()).then_some(mt), "marks": (!marks.is_empty()).then_some(marks_json),
     });
@@ -405,13 +431,7 @@ pub async fn update(svc: &Arc<Service>, who: &Principal, id: &str, b: Json) -> R
             return Err(ApiError::bad(format!("{k:?} is not set here: status, priority, assignee, resolution, kind and title are")));
         }
     }
-    let now = row(svc, id, "status").await?;
-    if let Some(want) = one_of(o.get("if_status"), "if_status", STATUSES)? {
-        let is = now.get("status").and_then(|s| s.as_str()).unwrap_or("");
-        if is != want {
-            return Err(ApiError { status: 409, message: format!("feedback {id} is {is}, not {want}: someone changed it first") });
-        }
-    }
+    let if_status = one_of(o.get("if_status"), "if_status", STATUSES)?;
     let mut sets: Vec<(&str, Json)> = Vec::new();
     if o.contains_key("status") {
         sets.push(("status", json!(one_of(o.get("status"), "status", STATUSES)?.ok_or_else(|| ApiError::bad("status cannot be emptied"))?)));
@@ -437,7 +457,22 @@ pub async fn update(svc: &Arc<Service>, who: &Principal, id: &str, b: Json) -> R
     sets.push(("updated", json!(chloedb::timestamp::format(chloedb::timestamp::now()))));
     sets.push(("updated_by", json!(who.name)));
     let ops = sets.into_iter().map(|(f, v)| json!({"op": "set", "table": TABLE, "key": id, "field": f, "value": v})).collect();
-    svc.write_ops(ops, None).await?;
+    {
+        // Triage on this server is one at a time, so the status that
+        // `if_status` compares is the one the write replaces: of two agents
+        // taking one item, the second gets 409. It holds for the writes that
+        // go through this server (one server, or one coordinator), not across
+        // coordinators.
+        let _one = TRIAGE.lock().await;
+        let now = row(svc, id, "status").await?;
+        if let Some(want) = &if_status {
+            let is = now.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if is != want {
+                return Err(ApiError { status: 409, message: format!("feedback {id} is {is}, not {want}: someone changed it first") });
+            }
+        }
+        svc.write_ops(ops, None).await?;
+    }
     get(svc, who, id, false).await
 }
 

@@ -181,9 +181,35 @@ function selectorOf(el) {
 }
 const tidy = (t, n = 120) => String(t || "").replace(/\s+/g, " ").trim().slice(0, n) || undefined;
 const NAMED = "button,a,input,select,textarea,th,td,li,label,h1,h2,h3,h4,[role],.kpi,.pill,.chip,.badge";
+// Elements whose own words are their label. Anything else (a cell, a row, a
+// card, a field) is named by its label alone, never by what it holds: a mark
+// says where it points, and what is there stays in the picture, where the
+// sender can black it out.
+const WORDED = "button,a,th,label,h1,h2,h3,h4,.pill,.chip,.badge,[role=tab],[role=button],[role=menuitem]";
+const FIELD = "input,select,textarea";
 const under = (x, y) => document.elementsFromPoint(x, y).find((e) => !e.closest(".fb-ui"));
-/** What is under a point, or (for a box) the smallest element that holds the whole box. */
-function targetAt(x, y, box) {
+const rectOf = (m) => ({ left: Math.min(m.x, m.x + m.w), top: Math.min(m.y, m.y + m.h), right: Math.max(m.x, m.x + m.w), bottom: Math.max(m.y, m.y + m.h) });
+const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+/** What an element is called, from its own attributes and words, never a field's value. */
+function labelOf(e) {
+  const own = e.getAttribute("aria-label") || e.getAttribute("title");
+  if (own) return tidy(own, 80);
+  if (e.matches(FIELD)) {
+    const l = e.labels?.[0]?.textContent || e.getAttribute("placeholder") || e.getAttribute("name");
+    return tidy(l ? `${l} (${e.type === "password" ? "a secret field" : e.localName})` : e.type === "password" ? "a secret field" : e.localName, 80);
+  }
+  if (e.matches("td")) {
+    const th = e.closest("table")?.querySelectorAll("thead th")[e.cellIndex];
+    return th ? tidy(`a ${th.textContent.trim()} cell`, 80) : "a table cell";
+  }
+  if (e.matches(WORDED) && !e.querySelector(FIELD)) return tidy(e.innerText || e.textContent, 80);
+  return undefined;
+}
+/**
+ * What is under a point, or (for a box) the smallest element that holds the
+ * whole box. Nothing that meets a blacked-out area is named.
+ */
+function targetAt(x, y, box, hidden = []) {
   const el = under(x, y);
   if (!el || el === document.documentElement || el === document.body) return undefined;
   let hit = el.closest(NAMED) || el;
@@ -193,19 +219,21 @@ function targetAt(x, y, box) {
     while (e && e !== document.body && !holds(e)) e = e.parentElement;
     if (e && e !== document.body) hit = e;
   }
+  const seen = (e) => { const r = e.getBoundingClientRect(); return !hidden.some((h) => meets(r, h)); };
+  // Where it points, and no words, when what it points at is partly blacked out.
+  if (!seen(hit)) return { selector: selectorOf(hit), role: hit.getAttribute("role") || hit.localName };
   const over = hit.closest(".drawer,.modal");
   const t = {
     selector: selectorOf(hit),
-    text: tidy(hit.value || hit.innerText || hit.textContent, box ? 160 : 120),
-    label: tidy(hit.getAttribute("aria-label") || hit.getAttribute("title"), 160),
+    text: labelOf(hit),
     card: tidy(hit.closest(".card")?.querySelector(".hd h3")?.textContent, 80),
     heading: tidy(over?.querySelector(".hd h2")?.textContent || document.querySelector("#content .page-head h1")?.textContent, 80),
     role: hit.getAttribute("role") || hit.localName,
   };
-  // A box: the controls and headings inside it, by what they say.
+  // A box: the controls and headings inside it, by what they are called.
   if (box) {
-    const inside = [...hit.querySelectorAll(NAMED)].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.left >= box.x - 2 && r.top >= box.y - 2 && r.right <= box.x + box.w + 2 && r.bottom <= box.y + box.h + 2; });
-    const said = [...new Set(inside.map((e) => tidy(e.getAttribute("aria-label") || e.value || e.innerText || e.title, 40)).filter(Boolean))].slice(0, 8);
+    const inside = [...hit.querySelectorAll(NAMED)].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.left >= box.x - 2 && r.top >= box.y - 2 && r.right <= box.x + box.w + 2 && r.bottom <= box.y + box.h + 2 && seen(e); });
+    const said = [...new Set(inside.map((e) => tidy(labelOf(e), 40)).filter(Boolean))].slice(0, 8);
     if (said.length) t.label = tidy(said.join(" · "), 160);
   }
   return t;
@@ -471,12 +499,13 @@ function editor(shot, view) {
     if (!text && !marks.some((m) => (m.text || "").trim())) { toast("Say what is wrong or what you want: in the note, or on a mark", "bad"); note.focus(); return; }
     sending = true; sendBtn.disabled = true; sendBtn.lastChild.textContent = "Sending…";
     try {
+      const hidden = marks.filter((m) => m.tool === "redact").map(rectOf);
       const out = marks.map((m) => {
         const o = { n: m.n, tool: m.tool, color: m.color };
         for (const k of ["x", "y", "w", "h", "x2", "y2"]) if (m[k] != null) o[k] = Math.round(m[k] * 10) / 10;
         if (m.points) o.points = m.points;
         if ((m.text || "").trim()) o.text = m.text.trim();
-        if (m.tool !== "redact" && shot?.mapped) { const [x, y] = pointOf(m); o.target = targetAt(x, y, m.tool === "box" ? m : null); }
+        if (m.tool !== "redact" && shot?.mapped) { const [x, y] = pointOf(m); o.target = targetAt(x, y, m.tool === "box" ? m : null, hidden); }
         return o;
       });
       const body = {

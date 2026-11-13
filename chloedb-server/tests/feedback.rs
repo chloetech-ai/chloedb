@@ -109,6 +109,11 @@ async fn feedback_is_sent_listed_triaged_and_read_by_agents() {
         (json!({"note": "x", "shot": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(PNG))}), "does not hold"),
         (json!({"note": "x", "kind": "rant"}), "kind is one of"),
         (json!({"note": "x", "marks": [{"tool": "laser"}]}), "tool"),
+        // The triage view links the route: only a route of the command center is kept.
+        (json!({"note": "x", "route": "javascript:alert(document.domain)"}), "route is"),
+        (json!({"note": "x", "route": "https://elsewhere.example/#/cluster"}), "route is"),
+        (json!({"note": "x", "route": "#/cluster\njavascript:x"}), "route is"),
+        (json!({"note": "x", "url": "javascript:alert(1)"}), "url is"),
     ] {
         let (s, j) = call(&base, "POST", "/v1/feedback", Some(&write), Some(body.clone())).await;
         assert_eq!(s, 400, "{body}: {j}");
@@ -174,6 +179,22 @@ async fn feedback_is_sent_listed_triaged_and_read_by_agents() {
     assert_eq!((s, &t["status"], &t["assignee"]), (200, &json!("doing"), &json!("thread: fix the button")), "{t}");
     let (s, j) = call(&base, "PATCH", &format!("/v1/feedback/{id}"), Some(&write), Some(take)).await;
     assert_eq!(s, 409, "{j}");
+    // Agents taking one item at the same moment: one gets it, the others 409.
+    let (_, fresh) = call(&base, "POST", "/v1/feedback", Some(&write), Some(json!({"note": "raced for"}))).await;
+    let fresh = fresh["id"].as_str().unwrap().to_string();
+    let takers = (0..8).map(|i| {
+        let (base, key, path) = (base.clone(), granted.clone(), format!("/v1/feedback/{fresh}"));
+        tokio::spawn(async move { call(&base, "PATCH", &path, Some(&key), Some(json!({"status": "doing", "assignee": format!("agent {i}"), "if_status": "new"}))).await })
+    });
+    let mut got = Vec::new();
+    for t in takers {
+        got.push(t.await.unwrap());
+    }
+    let won: Vec<&Json> = got.iter().filter(|(s, _)| *s == 200).map(|(_, j)| j).collect();
+    assert_eq!((won.len(), got.iter().filter(|(s, _)| *s == 409).count()), (1, 7), "{got:?}");
+    let (_, now) = call(&base, "GET", &format!("/v1/feedback/{fresh}"), Some(&read), None).await;
+    assert_eq!(now["assignee"], won[0]["assignee"], "{now}");
+    assert_eq!(call(&base, "DELETE", &format!("/v1/feedback/{fresh}"), Some(root), None).await.0, 200);
     // And reads it with SQL, as any row.
     let (s, j) = call(&base, "POST", "/v1/query", Some(&granted), Some(json!({"sql": "SELECT id, status, assignee FROM cc_feedback WHERE status = 'doing'"}))).await;
     assert_eq!((s, j["rows"].as_array().map(Vec::len)), (200, Some(1)), "{j}");
