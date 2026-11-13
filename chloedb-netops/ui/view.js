@@ -1648,6 +1648,8 @@ function openThing(app, kind, id) {
   if (kind === "maintenance") return app.go("carriers");
   if (kind === "site") return app.go("topology");
   if (kind === "logs") return app.go("explore", "logs");
+  if (kind === "object") { if (app.map) app.map.open(id); else { app.pending = { open: id }; app.go("map", id); } return null; }
+  if (kind === "estate-customer") { const asked = `${id} customer routers`; if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } return null; }
   return null;
 }
 
@@ -1700,6 +1702,9 @@ async function lookupDrawer(app, q) {
   const d = C.drawer({ title: q, sub: "Looked up in the inventory, the customers, the sessions and the logs", body });
   try {
     const j = await app.call("/v1/lookup?q=" + encodeURIComponent(q));
+    // An id pasted from a ticket names one object of the estate: open it where it is.
+    const exact = j.hits.filter((x) => x.exact);
+    if (exact.length === 1 && j.hits.length === 1) { d.close?.(); openThing(app, "object", exact[0].id); return; }
     const state = (x) => !x ? null : C.pill(x.state === "bad" ? "bad" : x.state === "warn" ? "warn" : "ok", x.state === "bad" ? (x.incident || "incident") : x.state === "warn" ? `${x.alerts} alert${x.alerts === 1 ? "" : "s"}` : "healthy");
     put(body, j.hits.length ? j.hits.map((x) => h("div", { class: "no-hit", style: { cursor: "pointer" }, onclick: () => { d.close?.(); openThing(app, x.kind, x.id); } },
       h("div", { class: "row between nw" }, h("span", {}, h("span", { class: "chip", style: { marginRight: "8px" } }, x.kind), h("b", {}, x.title)), state(x.health)), h("div", { class: "x" }, x.sub)))
@@ -2837,7 +2842,7 @@ function whereState(app) {
  */
 function cmdBar(app, opts = {}) {
   const { h, C } = app;
-  let mode = opts.mode || "search", items = [], at = -1, seq = 0, timer = 0, lastQ = null, open = false;
+  let mode = opts.mode || "search", items = [], itemsFor = null, at = -1, seq = 0, timer = 0, lastQ = null, open = false;
   const scopeEl = h("button", { class: "no-scope", type: "button", title: "Where the search looks: the place in view, or the object picked. Click to search everywhere." });
   const input = h("input", { class: "no-cmd-in", type: "search", autocomplete: "off", spellcheck: "false", role: "combobox", "aria-autocomplete": "list", "aria-expanded": "false", "aria-label": "Search the network, or ask" });
   const modeSeg = h("div", { class: "no-cmd-mode", role: "tablist" });
@@ -2896,6 +2901,7 @@ function cmdBar(app, opts = {}) {
     try { j = await app.ctx.api(`/v1/suggest?${params}`); } catch (e) { console.warn(e); return; }
     if (my !== seq || document.activeElement !== input) return;
     items = j.items || [];
+    itemsFor = q;
     at = items.length && q.trim() ? 0 : -1;
     drawList(j);
     show(true);
@@ -2934,7 +2940,10 @@ function cmdBar(app, opts = {}) {
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const it = open && at >= 0 ? items[at] : null;
+      // Completions of something else than what is in the box now (it was
+      // pasted, or typed faster than they came) are not what Enter means.
+      const it = open && at >= 0 && itemsFor === input.value ? items[at] : null;
+      if (itemsFor !== input.value) { clearTimeout(timer); seq++; }
       if (it && it.partial) { pick(at, false); return; }
       if (it) { pick(at, true); return; }
       submit(null);
@@ -2957,7 +2966,8 @@ function run(app, text, it) {
   }
   const page = (app.ctx.path() || [])[0] || "";
   const sentence = text.split(/\s+/).length >= 2 || /:/.test(text) || (it && it.kind !== "history");
-  if (!sentence && page !== "map") { lookupDrawer(app, text); return; }
+  // One word is looked up (an id from a ticket opens what it names); on the map, a word that is not an id is searched for.
+  if (!sentence && (page !== "map" || /[a-z].*-.*\d|\d.*-.*[a-z]/i.test(text))) { lookupDrawer(app, text); return; }
   // A kind: or state: filter reads as words the map's reader knows; the place in view narrows it.
   const s = app.scope();
   let asked = text.replace(/\bkind:([\w-]+)/g, (_, k) => KIND_NAME[k] ? KIND_NAME[k].toLowerCase() + "s" : k).replace(/\bstate:not-?ok\b/g, "that are not ok").replace(/\bstate:(\w+)/g, "that are $1").replace(/\bvendor:(\S+)/g, "$1").replace(/\bin:(\S+)/g, (_, m) => "in " + m.replace(/-/g, " "));

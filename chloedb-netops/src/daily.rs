@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use crate::agents::quoted;
 use crate::api::{bad, Answer, ApiError, Shared, Q};
+use crate::estate::NODES;
 use crate::seed;
 use crate::sim::Engine;
 use crate::strata::{Result, Row, RowExt};
@@ -898,6 +899,33 @@ async fn lookup(State(svc): State<Shared>, Query(p): Query<HashMap<String, Strin
     }
     for s in w.services.iter().filter(|s| s.id == low || s.name.to_lowercase() == low) {
         hits.push(json!({"kind": "service", "id": s.id, "title": s.name, "sub": format!("tier {}, owned by {}", s.tier, s.owner)}));
+    }
+    // The estate behind the backbone: an object by its id (exactly, else by
+    // the start of it), and a customer of a business park by name.
+    if low.len() >= 3 && !is_ip && !hits.iter().any(|h| h["kind"] == "device" && h["id"] == low.as_str()) {
+        let cols = "id, kind, layer, name, state, reason, hub, metro";
+        let mut found = q.soft("An object of the estate by its id", &format!("SELECT {cols} FROM {NODES}\nWHERE id = :q LIMIT 1"), json!({"q": low})).await;
+        if found.is_empty() && low.contains('-') {
+            found = q.soft("Objects of the estate by the start of their id (PREFIX)", &format!("SELECT {cols} FROM {NODES}\nWHERE PREFIX(id, :q) AND layer != 'container'\nORDER BY tier, id LIMIT 6"), json!({"q": low})).await;
+        }
+        for r in found.iter().filter(|r| r.s("layer") != "core") {
+            let id = r.s("id");
+            let inc = open.iter().find(|i| i.s("root_entity") == id || firing.iter().any(|a| a.s("entity") == id && a.s("incident") == i.s("id")));
+            let n = firing.iter().filter(|a| a.s("entity") == id).count();
+            let st = r.s("state");
+            let state = if inc.is_some() || st == "down" { "bad" } else if st != "ok" || n > 0 { "warn" } else { "ok" };
+            let what = if r.s("layer") == "container" { format!("{} {}", r.s("kind"), r.s("name")) } else { format!("{} in {}, {}", r.s("kind"), r.s("hub"), r.s("metro").trim_start_matches("m-").to_uppercase()) };
+            hits.push(json!({"kind": "object", "id": id, "title": if r.s("name") == id { id.clone() } else { format!("{id}: {}", r.s("name")) }, "sub": if st == "ok" { what } else { format!("{what} · {st}: {}", r.s("reason")) },
+                "health": {"state": state, "alerts": n, "incident": inc.map(|i| i.s("id"))}, "exact": id == low}));
+        }
+        if found.is_empty() && !low.contains('-') {
+            let names = q.soft("Customers of the estate by name (substring index)", &format!("SELECT customer, COUNT(*) AS n, SUM(CASE WHEN state != 'ok' THEN 1 ELSE 0 END) AS hurt FROM {NODES}\nWHERE customer ILIKE :q\nGROUP BY customer ORDER BY customer LIMIT 6"), json!({"q": format!("%{}%", t.replace(['%', '_', '\\'], ""))})).await;
+            for c in names {
+                let hurt = c.i("hurt");
+                hits.push(json!({"kind": "estate-customer", "id": c.s("customer"), "title": c.s("customer"), "sub": format!("a customer behind the estate's business parks: {} site{}{}", c.i("n"), if c.i("n") == 1 { "" } else { "s" }, if hurt > 0 { format!(", {hurt} not ok now") } else { String::new() }),
+                    "health": {"state": if hurt > 0 { "warn" } else { "ok" }, "alerts": hurt}}));
+            }
+        }
     }
     q.done(json!({"q": t, "hits": hits}))
 }
