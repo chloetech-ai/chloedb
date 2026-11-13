@@ -41,7 +41,10 @@ concurrency:
 env:
   # The Rust every job builds with, so that a new stable release on the
   # runners cannot turn main red (clippy 1.100 did, on 12 Nov 2026). Bump it
-  # by hand, after `cargo +<new> clippy` passes in each crate.
+  # by hand, after `cargo +<new> clippy` passes in each crate. A new
+  # version changes every rust-cache key, so the first runs after a bump
+  # build cold: the kernels, the BEIR gate and the smoke test have 45
+  # minutes rather than 30 for that.
   RUST_TOOLCHAIN: "1.100.0"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -173,7 +176,7 @@ jobs:
     needs: [changes, runner]
     if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).server }}
     runs-on: ${{ needs.runner.outputs.label || 'ubuntu-latest' }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Source key
@@ -346,7 +349,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RUSTFLAGS: -C target-cpu=x86-64
     steps:
@@ -519,7 +522,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -636,7 +639,7 @@ jobs:
     needs: [changes, server-bin]
     if: ${{ !cancelled() && needs.server-bin.result == 'success' && fromJSON(needs.changes.outputs.run).smoke }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
