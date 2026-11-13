@@ -524,8 +524,8 @@ fn column_type(t: &DataType) -> std::result::Result<(&'static str, bool, Option<
             ("media", []) => Ok(("media", false, None)),
             ("vector", []) => Ok(("vector", false, None)),
             ("vector", [d]) => match d.parse::<u64>() {
-                Ok(d) if d > 0 => Ok(("vector", false, Some(d))),
-                _ => Err(format!("VECTOR({d}): the dimensions are a positive number")),
+                Ok(d) if d > 0 && d <= crate::schema::MAX_VECTOR_DIM as u64 => Ok(("vector", false, Some(d))),
+                _ => Err(format!("VECTOR({d}): the dimensions are a number from 1 to {}", crate::schema::MAX_VECTOR_DIM)),
             },
             _ => Err(format!("{t} is not a type here: {TYPES}")),
         };

@@ -2106,7 +2106,9 @@ impl<'a> Executor<'a> {
         let Some(store) = s.r.store()? else { return Ok(DocSet::empty(s.r.n_docs)) };
         let mut cache = forward::StoreCache::default();
         let mut out = Vec::new();
+        let mut tick = Ticker::new(self.opts, Ticker::DOCS);
         for d in among.iter() {
+            tick.tick()?;
             if let Some(Value::Str(v)) = store.get_fields_cached(d, &[field], &mut cache)?.pop() {
                 if like.matches(&v) != negated {
                     out.push(d);
@@ -2138,7 +2140,9 @@ impl<'a> Executor<'a> {
         let Some(index) = s.r.substring(field)? else {
             // Each value once: whether it is one, and whether it matches.
             let (mut hits, mut others) = (Vec::new(), Vec::new());
+            let mut tick = Ticker::new(self.opts, Ticker::DOCS);
             for d in 0..n {
+                tick.tick()?;
                 if let Some(v) = value(d)? {
                     if like.matches(&v) { &mut hits } else { &mut others }.push(d);
                 }
@@ -2146,11 +2150,15 @@ impl<'a> Executor<'a> {
             return Ok(DocSet::from_sorted(if negated { others } else { hits }, n));
         };
         let mut stats = substring::like::Stats::default();
-        let hits = substring::like::eval(index, &like, n, &mut value, substring::like::LOCATE_BYTES, &mut stats)?;
+        // The deadline and cancel flag, a few thousand rows apart inside a
+        // part too: a scan of a large segment's values runs for minutes.
+        let mut ticker = Ticker::new(self.opts, Ticker::DOCS);
+        let mut tick = || ticker.tick();
+        let hits = substring::like::eval_with(index, &like, n, &mut value, substring::like::LOCATE_BYTES, &mut stats, &mut tick)?;
         if !negated {
             return Ok(hits);
         }
-        let valued = substring::like::eval(index, &Like::new("%", false), n, &mut value, substring::like::LOCATE_BYTES, &mut stats)?;
+        let valued = substring::like::eval_with(index, &Like::new("%", false), n, &mut value, substring::like::LOCATE_BYTES, &mut stats, &mut tick)?;
         Ok(valued.difference(&hits))
     }
 

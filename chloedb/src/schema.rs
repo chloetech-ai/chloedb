@@ -139,6 +139,11 @@ pub const VECTOR_PARTITION: &str = "vector_partition";
 /// schema, so they refuse the database by name.
 pub const SPARSE_EMBED: &str = "sparse_embed";
 
+/// The most dimensions a vector of a model named `hash:N` or a new
+/// `VECTOR(N)` field may have: more than any embedding model makes, and
+/// few enough that one vector (4 bytes a dimension) is 256 KB.
+pub const MAX_VECTOR_DIM: usize = 65_536;
+
 /// The most partitions a segment builds for a KEYWORD partition key
 /// ([`VectorPartition`]): the most frequent values get one each, and a
 /// filter on another value searches the field's own graph.
