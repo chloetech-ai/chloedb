@@ -1227,6 +1227,19 @@ export function cleanArt(a) {
 }
 // The brief to keep for a version: the plan's (or the app's, when the plan
 // restates only the art), with the art the plan gives or the one it had.
+// The app's name from the plan's, keeping what the owner asked for: a first
+// line "Name: Pawsome Grooming" (or "Title:") is the name as it is, and a
+// leading label like "acme-shop" or "team_42" stays in front of it.
+export function appTitle(planned, app) {
+  const name = String(planned || '').trim().slice(0, 32);
+  const first = String(app?.description || '').trim().split('\n')[0];
+  const given = first.match(/^(?:app\s+)?(?:name|title|called)\s*[:=]\s*["“']?([^"”'.\n]{1,60})/i);
+  if (given) return given[1].trim();
+  const label = first.match(/^([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)(?=[\s:,.]|$)/);
+  if (!label || name.toLowerCase().includes(label[1].toLowerCase())) return name;
+  return `${label[1]} ${name}`.slice(0, 60).trim();
+}
+
 export function briefToKeep(plan, app) {
   const had = briefOf(app);
   const art = cleanArt(plan?.art) || had?.art || null;
@@ -1725,10 +1738,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '', { head: !candidate });
   // The live version's name and brief are the app's.
   if (!candidate) {
-    const named = typeof plan.name === 'string' && plan.name.trim() ? { name: plan.name.trim().slice(0, 32) } : {};
+    const named = typeof plan.name === 'string' && plan.name.trim() && !(await store.setting(appId, 'named')) ? { name: appTitle(plan.name, view.app) } : {};
     const brief = briefToKeep(plan, view.app);
     const ux = brief ? { ux: JSON.stringify(brief) } : {};
     if (named.name || ux.ux) await store.updateApp(appId, { ...named, ...ux });
+    // What was suggested for the version before (the build's and the drawn
+    // check's) may be done now: new ones follow this version.
+    await retireSuggestions(engine, appId, ['forge', 'look']).catch(() => {});
   }
   tr.end(storing, { written: written.length });
   tr.decisions.push(...planDecisions({ plan, view, library, shared, pinned, written: writtenShared, code, at: decidedAt }));
@@ -1861,9 +1877,9 @@ export async function useSharedVersion(engine, appId, capId, progress = () => {}
 }
 export const useComponentVersion = useSharedVersion;
 
-async function retireSuggestions(engine, appId) {
+async function retireSuggestions(engine, appId, sources = ['forge']) {
   const open = await engine.store.suggestions(appId);
-  const ops = open.filter((s) => s.source === 'forge').map((s) => ({ op: 'set', table: 'sa_suggestions', key: s.id, field: 'status', value: 'stale' }));
+  const ops = open.filter((s) => sources.includes(s.source)).map((s) => ({ op: 'set', table: 'sa_suggestions', key: s.id, field: 'status', value: 'stale' }));
   if (ops.length) await engine.db.write(ops);
 }
 

@@ -244,6 +244,100 @@ export class Store {
     await this.syncAppGraph(id);
   }
 
+  // Deletes an app: its own tables (app_<id>_*, and no other app's), and
+  // every row the engine keeps of it (its pieces, versions, requests,
+  // timelines, use, suggestions, settings, members, files, mail and graph).
+  // The shared library and other apps' pieces stay. Returns {tables, rows}.
+  async deleteApp(id) {
+    if (!/^[a-z0-9]{6}$/.test(String(id))) throw new Error(`no app ${id}`);
+    const prefix = `app_${id}_`;
+    const tables = (await this.db.tables()).map(tableName).filter((t) => t && t.startsWith(prefix));
+    // A links table refers to the table it links: dropped first.
+    const dropped = [];
+    for (let pass = 0; pass < 3 && dropped.length < tables.length; pass++) {
+      for (const t of tables) {
+        if (dropped.includes(t)) continue;
+        try { await this.db.sql(`DROP TABLE ${t}`); dropped.push(t); } catch (e) { if (pass === 2) throw e; }
+      }
+    }
+    let rows = 0;
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_files', 'sa_outbox']) {
+      for (;;) {
+        let ids;
+        try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }
+        if (!ids.length) break;
+        await this.db.write(ids.map((r) => ({ op: 'delete', table, key: r.id })));
+        rows += ids.length;
+        if (ids.length < 1000) break;
+      }
+    }
+    await this.db.write([{ op: 'delete', table: 'sa_designs', key: id }, { op: 'delete', table: 'sa_apps', key: id }]);
+    this.resolved.delete(id);
+    this.resolvedAt.clear();
+    this.capCache.clear();
+    this.made.clear();
+    this.walkers?.clear();
+    return { tables: dropped, rows };
+  }
+
+  // A copy of an app's live version as a new app: its own pieces copied as
+  // they are stored (the same SQL, under the new app), the shared ones it
+  // pins pinned again, its tables made, its look kept, and (rows) its rows
+  // copied, up to 10000 a table. Returns the new app's id.
+  async duplicateApp(id, { name, rows = true } = {}) {
+    const view = await this.resolve(id);
+    const copy = await this.createApp({ name: String(name || `${view.app.name} (copy)`).slice(0, 60), description: view.app.description || '' });
+    if (view.app.ux) await this.updateApp(copy, { ux: view.app.ux });
+    const stored = await this.db.get('sa_capabilities', view.comp.caps);
+    const ops = [];
+    const caps = [];
+    for (const r of stored) {
+      if (!r) continue;
+      if (r.app !== id) { caps.push(r.id); continue; }
+      const { meaning, score, created, ...doc } = r;
+      const cid = `${copy}/${r.kind}/${r.slug}@1`;
+      ops.push({ op: 'insert', table: 'sa_capabilities', doc: { ...doc, id: cid, app: copy, version: 1 } });
+      caps.push(cid);
+    }
+    for (let i = 0; i < ops.length; i += 200) await this.db.write(ops.slice(i, i + 200));
+    // A links table refers to the table it links: made after it.
+    const existing = new Set(await this.tableNames());
+    const tables = [...view.tables].sort((x, y) => Number(!!x.spec.links) - Number(!!y.spec.links));
+    for (const t of tables) await this.ensureTable(copy, t.spec, existing);
+    if (rows) {
+      for (const t of tables) {
+        const vec = new Set((t.spec.columns || []).filter((c) => c.type === 'meaning').map((c) => c.name));
+        const got = await this.db.query(`SELECT * FROM ${physical(id, t.spec.name)} LIMIT 10000`).catch(() => []);
+        const docs = got.map((r) => Object.fromEntries(Object.entries(r).filter(([k, v]) => !vec.has(k) && k !== 'score' && v !== null)));
+        for (let i = 0; i < docs.length; i += 500) await this.db.write(docs.slice(i, i + 500).map((doc) => ({ op: 'insert', table: physical(copy, t.spec.name), doc })));
+      }
+    }
+    const designs = await this.designs(id);
+    if (designs) await this.putDesigns(copy, designs);
+    await this.writeComposition(copy, caps, `A copy of ${view.app.name}`, `A copy of ${view.app.name} (version ${view.comp.n})`);
+    return copy;
+  }
+
+  // An app's rows, every table (up to 10000 rows each), for its owner to
+  // keep: {app, exported, tables: {name: [rows]}}.
+  async exportApp(id) {
+    const view = await this.resolve(id);
+    const tables = {};
+    for (const t of view.tables) {
+      const vec = new Set((t.spec.columns || []).filter((c) => c.type === 'meaning').map((c) => c.name));
+      const got = await this.db.query(`SELECT * FROM ${physical(id, t.spec.name)} ORDER BY created LIMIT 10000`).catch(() => []);
+      tables[t.spec.name] = got.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !vec.has(k) && k !== 'score')));
+    }
+    return { app: { id, name: view.app.name, version: view.comp.n }, exported: new Date().toISOString(), tables };
+  }
+
+  // What each app's builds cost (the model, as sa_requests records it):
+  // Map app -> {usd, builds}; for one app with app.
+  async costs(app = null) {
+    const rows = await this.db.query(`SELECT app, SUM(cost) AS usd, COUNT(*) AS n FROM sa_requests${app ? ' WHERE app = :a' : ''} GROUP BY app LIMIT 5000`, app ? { a: app } : {}).catch(() => []);
+    return new Map(rows.map((r) => [r.app, { usd: Math.round((Number(r.usd) || 0) * 100) / 100, builds: Number(r.n) || 0 }]));
+  }
+
   // ---- designs: three per app, by the app's id
 
   async designs(app) {
