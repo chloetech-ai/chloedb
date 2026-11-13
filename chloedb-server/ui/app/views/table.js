@@ -195,7 +195,7 @@ function render(page, r) {
     }
     inp.oninput = debounce(go, 250);
     inp.onkeydown = (e) => { if (e.key === "Enter") go(); };
-    pane.append(h("section", { class: "card" }, h("div", { class: "bd stack", style: { gap: "10px" } }, h("div", { class: "row nw", style: { gap: "8px" } }, icon("search"), inp, modeBox), fieldsBox)), meaningBox, out, tail);
+    pane.append(h("section", { class: "card" }, h("div", { class: "bd stack", style: { gap: "10px" } }, h("div", { class: "row nw search-row", style: { gap: "8px" } }, icon("search"), inp, modeBox), fieldsBox)), meaningBox, out, tail);
     drawControls();
     go();
     setTimeout(() => inp.focus(), 30);
@@ -226,7 +226,7 @@ function render(page, r) {
       const from = at > 80 ? at - 60 : 0;
       return (from ? "…" : "") + s.slice(from, from + 260) + (s.length > from + 260 ? "…" : "");
     };
-    return h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, fmt.plural(rows.length, "row")), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`))),
+    return h("section", { class: "card hits-card" }, h("div", { class: "hd" }, h("h3", {}, fmt.plural(rows.length, "row")), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`))),
       h("div", { class: "bd flush" }, h("ol", { class: "hits" }, rows.map((r) => h("li", {},
         h("div", { class: "row nw" }, h("b", { class: "grow" }, ti >= 0 ? marked(r[ti]) : ki >= 0 ? String(r[ki]) : "row"), si >= 0 ? h("span", { class: "small muted mono", title: "score" }, Number(r[si]).toFixed(3)) : null),
         bi >= 0 ? h("div", { class: "small dim" }, marked(snip(r[bi]))) : null,

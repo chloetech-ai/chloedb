@@ -1166,7 +1166,15 @@ function editRule(rule, opts = {}) {
   // A query in place of a metric: its first number, every 30 s, with :since and :now the window's ends.
   const sqlIn = h("textarea", { class: "input mono", rows: 3, placeholder: "Or watch a query: SELECT COUNT(*) FROM orders WHERE status = 'failed' AND ts > :since", disabled: dis("metric"), style: { fontSize: "12.5px" } });
   sqlIn.value = x.sql || "";
-  const syncSql = () => { metric.disabled = dis("metric") || !!sqlIn.value.trim(); };
+  // A rule on a query watches no metric: say so where the metric was.
+  const sqlOpt = h("option", { value: "", hidden: true }, "the query below");
+  metric.prepend(sqlOpt);
+  const syncSql = () => {
+    const on = !!sqlIn.value.trim();
+    metric.disabled = dis("metric") || on;
+    if (on) sqlOpt.selected = true;
+    else if (sqlOpt.selected) metric.value = metrics.includes(x.metric) && !/^sql_/.test(x.metric) ? x.metric : metrics.find((k) => !/^sql_/.test(k)) || "";
+  };
   sqlIn.addEventListener("input", syncSql);
   setTimeout(syncSql, 0);
   const hintMetric = () => { const d = METRICS[x.metric]; metricHint.textContent = d ? `${d[0]}${d[2] === "copy" ? " (copies only)" : ""} · unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : "a value of the server's points"; };

@@ -3634,3 +3634,10 @@ details.card-ish[open] > summary { margin-bottom: 8px; }
 .ask-step { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
 .ask-step:first-of-type { border-top: 0; }
 @media (max-width: 900px) { .top .ask-open .lbl { display: none; } }
+@media (max-width: 600px) {
+  .row.nw.search-row { flex-wrap: wrap; }
+  .search-row .search-big { flex: 1 1 calc(100% - 32px); }
+  .search-row > div:last-child { flex: 1 1 100%; overflow-x: auto; }
+  .hits-card > .hd { flex-wrap: wrap; }
+  .hits-card > .hd .sub { display: none; }
+}
