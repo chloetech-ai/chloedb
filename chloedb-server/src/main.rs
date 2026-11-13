@@ -314,6 +314,12 @@ struct Args {
     /// requests take up to 16 MiB).
     #[arg(long, default_value_t = 256)]
     max_body_mb: usize,
+    /// How long the tables OpenTelemetry logs make (`otel_logs`) keep
+    /// their rows, as `30 days` or `12h`: older rows are dropped, a window
+    /// of segments at a time (default: kept for ever). Tables already
+    /// there keep their own retention.
+    #[arg(long, value_parser = |s: &str| chloedb::schema::Retain::parse_period(s).map_err(|e| e.to_string()))]
+    otlp_retain: Option<i64>,
     /// The agent's default model.
     #[arg(long, default_value = chloedb_server::agent::DEFAULT_MODEL)]
     model: String,
@@ -1278,6 +1284,7 @@ async fn run() {
         filter_cache_mb: a.filter_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
+        otlp_retain: a.otlp_retain,
         model: a.model,
         api_key: std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()),
         api_base: a.api_base,

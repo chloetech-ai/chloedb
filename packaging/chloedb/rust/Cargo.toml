@@ -1,6 +1,6 @@
 [package]
 name = "chloedb"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 description = "Placeholder, not ChloeDB: holds the crate name for ChloeDB, an embedded search database with SQL. Use ChloeDB from https://github.com/chloetech-ai/chloedb"
 license = "Apache-2.0"

@@ -1,6 +1,6 @@
 # chloedb placeholders
 
-Version 0.0.2 of `chloedb` on PyPI, npm and crates.io holds the name for
+Version 0.0.3 of `chloedb` on PyPI, npm and crates.io holds the name for
 [ChloeDB](https://github.com/chloetech-ai/chloedb), an embedded search
 database with SQL, until releases go out under it. The packages contain no
 code: each says how to install ChloeDB instead. The real packages' versions

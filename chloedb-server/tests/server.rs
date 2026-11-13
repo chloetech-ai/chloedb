@@ -249,6 +249,49 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!(status, 400, "{e}");
 }
 
+/// Rollups over HTTP: made, written to, refreshed by SQL and by the
+/// server's refresher, read by name, dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn rollups_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = chloedb::Schema::from_json(r#"{"table": "logs", "fields": [{"name": "ts", "type": "timestamp"}, {"name": "service", "type": "keyword"}, {"name": "latency", "type": "int"}]}"#).unwrap();
+    let db = Arc::new(Db::create(&dir.path().join("r.strata"), schema, DbOptions::default()).unwrap());
+    let svc = service_with(db.clone(), |_| {});
+    let base = http(svc.clone(), None).await;
+    let c = reqwest::Client::new();
+    let sql = |q: &str| json!({"sql": q});
+    let insert = "INSERT INTO logs (ts, service, latency) VALUES ('2026-11-01T10:00:01Z', 'a', 10), ('2026-11-01T10:04:59Z', 'a', 30), ('2026-11-01T10:05:00Z', 'b', 5)";
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql(insert)).await;
+    assert_eq!(status, 200, "{r}");
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5 minutes', ts), service, COUNT(*), SUM(latency)")).await;
+    assert_eq!(status, 200, "{r}");
+    // Folded by the refresher, not by the statement.
+    let s = svc.clone();
+    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap(), 2);
+    let read = "SELECT bucket, service, count, sum_latency FROM logs_5m ORDER BY bucket, service";
+    let (status, r) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
+    assert_eq!((status, r["rows"].as_array().map(Vec::len)), (200, Some(2)), "{r}");
+    assert_eq!((r["rows"][0][2].as_i64(), r["rows"][0][3].as_i64()), (Some(2), Some(40)), "{r}");
+    // A late row, then a refresh by SQL.
+    let (status, _) = post(&c, &format!("{base}/v1/sql"), sql("INSERT INTO logs (ts, service, latency) VALUES ('2026-11-01T10:02:00Z', 'a', 60)")).await;
+    assert_eq!(status, 200);
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("REFRESH ROLLUP logs_5m FULL")).await;
+    assert_eq!((status, r["rows"][0][1].as_i64()), (200, Some(1)), "{r}");
+    let (_, r) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
+    assert_eq!((r["rows"][0][2].as_i64(), r["rows"][0][3].as_i64()), (Some(3), Some(100)), "{r}");
+    // And by the server's refresher.
+    let (status, _) = post(&c, &format!("{base}/v1/sql"), sql("INSERT INTO logs (ts, service, latency) VALUES ('2026-11-01T10:06:00Z', 'b', 1)")).await;
+    assert_eq!(status, 200);
+    let s = svc.clone();
+    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap(), 1);
+    let (_, r) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
+    assert_eq!(r["rows"][1][2].as_i64(), Some(2), "{r}");
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("DROP ROLLUP logs_5m")).await;
+    assert_eq!(status, 200, "{r}");
+    let (status, _) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
+    assert_eq!(status, 400);
+}
+
 const CHUNKS: &str = "SELECT chunk_id, chunk, tokens FROM chunks_of(products, description, max_tokens => 16) WHERE id = 'p0000042'";
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.

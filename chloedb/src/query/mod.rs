@@ -52,6 +52,7 @@ pub(crate) mod rewrite;
 pub mod pool;
 pub mod rank;
 pub mod recommend;
+pub mod rollup;
 pub mod sequence;
 pub mod sql;
 pub mod stats;

@@ -137,6 +137,13 @@ export class Engine extends EventEmitter {
     this.at = new AsyncLocalStorage();
     this.services = null; // set by the server: people, files, email, places
     this.reach = null; // set by the server: a model and the web for apps (reach.mjs)
+    this.keys = null; // set by the server: each app's own key (appkeys.mjs)
+  }
+
+  // The client app `appId`'s code reads and writes with: its own key's,
+  // which the server holds to the app's tables, or the engine's.
+  dbOf(appId) {
+    return this.keys ? this.keys.client(appId) : this.db;
   }
 
   async init() {
@@ -214,8 +221,11 @@ export class Engine extends EventEmitter {
     const view = await this.view(appId);
     const names = view.tables.map((t) => t.spec.name);
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
-    await checkReads(this.db, phys, params, names.map((t) => physical(appId, t)));
-    let rows = await this.db.query(phys, params || {});
+    const db = await this.dbOf(appId);
+    // With the app's own key the server refuses any other table itself;
+    // with the engine's, its plan is checked first.
+    if (!db.own) await checkReads(db, phys, params, names.map((t) => physical(appId, t)));
+    let rows = await db.query(phys, params || {});
     if (rows.length > MAX_ROWS) rows = rows.slice(0, MAX_ROWS);
     // Strata names a qualified column as written (`t.title`); code expects `title`.
     return rows.map((r) => {
@@ -242,8 +252,9 @@ export class Engine extends EventEmitter {
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
     doc.id = fields?.id ? String(fields.id) : newId(10);
     if (fields?.created) doc.created = coerce('timestamp', fields.created, 'created');
-    await this.db.write([{ op: 'insert', table: physical(appId, table), doc }]);
-    const [row] = await this.db.get(physical(appId, table), [doc.id]);
+    const db = await this.dbOf(appId);
+    await db.write([{ op: 'insert', table: physical(appId, table), doc }]);
+    const [row] = await db.get(physical(appId, table), [doc.id]);
     this.announce('data', { app: appId, tables: [table] });
     await this.after(appId, table, 'insert', row || doc, ctx);
     return row || doc;
@@ -251,14 +262,15 @@ export class Engine extends EventEmitter {
 
   async update(appId, table, id, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
-    const [old] = await this.db.get(physical(appId, table), [String(id)]);
+    const db = await this.dbOf(appId);
+    const [old] = await db.get(physical(appId, table), [String(id)]);
     if (!old) throw new Error(`no row ${id} in ${table}`);
     if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
     if (ctx.ownRows) await this.ownedBy(appId, table, old.id, ctx.who);
     const changes = this.makeDoc(spec, fields, { partial: true });
     const doc = { ...old, ...changes, id: old.id };
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
-    await this.db.write([{ op: 'upsert', table: physical(appId, table), doc }]);
+    await db.write([{ op: 'upsert', table: physical(appId, table), doc }]);
     this.announce('data', { app: appId, tables: [table] });
     await this.after(appId, table, 'update', doc, { ...ctx, changed: Object.keys(changes) });
     return doc;
@@ -266,9 +278,10 @@ export class Engine extends EventEmitter {
 
   async remove(appId, table, id, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
-    const [old] = await this.db.get(physical(appId, table), [String(id)]);
+    const db = await this.dbOf(appId);
+    const [old] = await db.get(physical(appId, table), [String(id)]);
     if (ctx.ownRows) await this.ownedBy(appId, table, String(id), ctx.who);
-    await this.db.write([{ op: 'delete', table: physical(appId, table), key: String(id) }]);
+    await db.write([{ op: 'delete', table: physical(appId, table), key: String(id) }]);
     this.announce('data', { app: appId, tables: [table] });
     if (old) await this.after(appId, table, 'delete', old, ctx);
     // The row as it was, in a form app.insert takes back: the frame's Undo.
@@ -369,7 +382,7 @@ export class Engine extends EventEmitter {
     const key = (table, id) => `${table}\u0000${id}`;
     const current = async (table, id) => {
       if (rows.has(key(table, id))) return rows.get(key(table, id));
-      const [old] = await this.db.get(physical(appId, table), [String(id)]);
+      const [old] = await (await this.dbOf(appId)).get(physical(appId, table), [String(id)]);
       return old || null;
     };
     return {
@@ -407,7 +420,7 @@ export class Engine extends EventEmitter {
       later: (fn) => { afterwards.push(fn); },
       commit: async () => {
         if (ops.length) {
-          await this.db.write(ops.splice(0));
+          await (await this.dbOf(appId)).write(ops.splice(0));
           this.announce('data', { app: appId, tables: [...new Set(events.map((e) => e[0]))] });
           // The taps that led to the writes go with the first of them.
           for (const [i, [table, event, row, changed]] of events.splice(0).entries()) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed, taps: i ? null : ctx.taps });
@@ -434,7 +447,7 @@ export class Engine extends EventEmitter {
     if (!ctx.depth && !ctx.test) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
       const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null, taps: ctx.taps };
-      const tracked = rowLabel(this.db, appId, table, row, tablesOf(view)).catch(() => null)
+      const tracked = Promise.resolve(this.dbOf(appId)).then((db) => rowLabel(db, appId, table, row, tablesOf(view))).catch(() => null)
         .then((label) => this.store.track(appId, event, '', detail, { ...where, label })).catch(() => {});
       // A visitor's insert is how their own rows are told (ownedBy): kept before the answer.
       if (ctx.visitor && event === 'insert') await tracked;

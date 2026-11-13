@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/python.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -468,7 +472,7 @@ r[&quot;levels&quot;][2]   # {&quot;used&quot;: 256, &quot;fullest&quot;: 630, &
 <p><code>shared_rows</code> are the rows whose code another row has too: only the tie number tells them apart, so a decoder that writes codes cannot. A level's <code>perplexity</code> is how many of its numbers the rows are spread over when weighed by use (<code>k</code> when every number has as many rows as any other), and <code>residual</code> the share of the vectors' squared length the code so far leaves unsaid.</p>
 <p>Plain k-means uses the later levels' numbers unevenly, as above: what a level leaves of the vectors points every way alike, and there most centroids end on one far vector each while a few near the middle take the rest. <code>balanced=True</code> trains each level with every centroid given the same number of the training vectors. On the 12,101 items of Amazon Beauty (text vectors of 384 dimensions, 3 levels of 256) the third level's perplexity goes from 57 to 251 and the rows sharing a code from 3,288 to 2,601; training takes 17 s, not 6 (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/generative#balanced-codebooks">results</a>). It holds a distance for every training vector and centroid (8 bytes each: 52 MB at the default <code>sample</code>). Rows are coded by their nearest centroid either way.</p>
 <h2 id="next-items">Next items<a class="anchor" href="#next-items" aria-label="Link to this section">#</a></h2>
-<p><code>chloedb.ngrams</code> keeps counts of what came after the last one or two items in a table, and <code>chloedb.next_items(db, history, k=10)</code> reads them with backoff (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/next-items.md">Next items</a>):</p>
+<p><code>chloedb.ngrams</code> keeps counts of what came after the last one or two items in a table, and <code>chloedb.next_items(db, history, k=10)</code> reads them with backoff (<a href="next-items.html">Next items</a>):</p>
 <pre data-lang="python">from chloedb import ngrams
 
 db = chloedb.open(&quot;next.chloedb&quot;, ngrams.schema())
@@ -499,7 +503,7 @@ client.search(&quot;letters&quot;, limit=3).dicts()</pre>
 <p>A server answers at most <code>--max-result-window</code> rows a query (10,000 by default). <code>scroll(sql, params, page_size=10_000, arrow=False, keep_alive_ms=None)</code> reads past it: it yields the answer a page at a time, <code>Result</code>s or with <code>arrow=True</code> pyarrow Tables, each page at most <code>page_size</code> rows and at most the window, every page from the version of the database the first read (<a href="server.html#reading-past-the-window-scrolls">scrolls</a>). Leaving the loop early ends the scroll on the server. A <code>Database</code> has <code>scroll</code> too, whose pages are slices of one answer, since a database in your process has no window.</p>
 <pre data-lang="python">for page in client.scroll(&quot;SELECT id, title FROM books WHERE year &gt;= :y&quot;, y=1950, page_size=5000):
     handle(page.dicts())</pre>
-<p>The server embeds <code>{"embed": text}</code> parameters and the rows it is sent with its own models. Errors the server reports raise <code>chloedb.ChloeDBError</code> (or a subclass of it, <a href="#errors">below</a>), with the HTTP status as <code>.status</code>, the JSON answer as <code>.answer</code> and a stable <code>.code</code>; a server that cannot be reached raises <code>urllib.error.URLError</code>. A request the server refuses for its load (429: <a href="server.html#streams">behind on flushing</a> its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the <code>Retry-After</code> the server gives, for up to <code>retry_for</code> seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with <code>"partial": true</code>) is not sent again, since the shards that took it keep it, unless it has an idempotency key.</p>
+<p>The server embeds <code>{"embed": text}</code> parameters and the rows it is sent with its own models. Errors the server reports raise <code>chloedb.ChloeDBError</code> (or a subclass of it, <a href="#errors">below</a>), with the HTTP status as <code>.status</code>, the JSON answer as <code>.answer</code> and a stable <code>.code</code>; a server that cannot be reached raises <code>urllib.error.URLError</code>. Each thread keeps one connection to the server open between its requests (a new one after 4 seconds idle, or when the server closed it), so a checkpointer's steps over <code>https</code> do not pay a TLS handshake each; through a proxy (<code>$HTTPS_PROXY</code>, <code>$HTTP_PROXY</code>) each request goes by <code>urllib</code> as before. A float that is not a number (NaN, infinity) is sent as <code>null</code>, as a database in your process stores it. A request the server refuses for its load (429: <a href="server.html#streams">behind on flushing</a> its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the <code>Retry-After</code> the server gives, for up to <code>retry_for</code> seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with <code>"partial": true</code>) is not sent again, since the shards that took it keep it, unless it has an idempotency key.</p>
 <p><code>write(ops, idempotency_key=k)</code> and <code>sql(statement, idempotency_key=k)</code> send a write with an <a href="server.html#when-a-write-fails">idempotency key</a>, so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:</p>
 <pre data-lang="python">try:
     client.write(ops)
@@ -689,7 +693,7 @@ def click(e):                                   # an ingest.Event: topic, partit
 ingest.kafka(chloedb.connect(&quot;http://127.0.0.1:7700&quot;), &quot;clicks&quot;, click, brokers=&quot;127.0.0.1:9092&quot;, group=&quot;chloedb&quot;)</pre>
 <p>The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or <code>{"ops": [...]}</code>. The consumer runs until interrupted, or until <code>max_events=</code> events were read or none came for <code>idle=</code> seconds, and returns counts (<code>events</code>, <code>written</code>, <code>skipped</code>, <code>streams</code>, <code>retries</code>). It keeps a stream open for <code>seconds_per_stream=</code> (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to <code>retry_for=</code> seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. <code>config=</code> adds librdkafka settings, and consumers of one <code>group</code> share the partitions. <code>ingest.consume(client, log, to_ops)</code> runs the same loop over another log, through the small <code>ingest.Log</code> interface.</p>
 <h2 id="search-on-the-device">Search on the device<a class="anchor" href="#search-on-the-device" aria-label="Link to this section">#</a></h2>
-<p><code>chloedb.nearby(url, table, dir)</code> holds a <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">slice</a> of a chloedb-server's table near a user: the rows of the tiles around them in a database in <code>dir</code>, searched with the server's statistics. <code>move_to(lat, lon)</code> fetches the tiles it lacks, and <code>search(q, k=10, d0=1000)</code> answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's <code>where</code> is <code>"device"</code> or <code>"server"</code> and <code>why</code> the reason. For a <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md#vector-slices-more-like-this-on-the-device">vector slice</a>, <code>focus(taste, rows=20_000)</code> holds the clusters nearest a taste vector and <code>similar(vector, k=10)</code> answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.</p>
+<p><code>chloedb.nearby(url, table, dir)</code> holds a <a href="slices.html">slice</a> of a chloedb-server's table near a user: the rows of the tiles around them in a database in <code>dir</code>, searched with the server's statistics. <code>move_to(lat, lon)</code> fetches the tiles it lacks, and <code>search(q, k=10, d0=1000)</code> answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's <code>where</code> is <code>"device"</code> or <code>"server"</code> and <code>why</code> the reason. For a <a href="slices.html#vector-slices-more-like-this-on-the-device">vector slice</a>, <code>focus(taste, rows=20_000)</code> holds the clusters nearest a taste vector and <code>similar(vector, k=10)</code> answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.</p>
 <pre data-lang="python">near = chloedb.nearby(&quot;http://127.0.0.1:7700&quot;, &quot;places&quot;, &quot;./slice&quot;)
 near.move_to(40.7484, -73.9857)
 r = near.search(&quot;pizza&quot;, k=10)

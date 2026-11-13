@@ -10,6 +10,14 @@ export class Strata {
   constructor(url, token) {
     this.url = url.replace(/\/$/, '');
     this.token = token || null;
+    // The credential the feed is read with (follow): the one given, when
+    // the engine trades it for a key of its own (appkeys.mjs).
+    this.feedToken = this.token;
+  }
+
+  // Sends `token` from now on, but for the feed.
+  useToken(token) {
+    this.token = token || null;
   }
 
   async req(method, route, body) {
@@ -59,7 +67,7 @@ export class Strata {
     let from = null;
     const open = async (start) => {
       const headers = {};
-      if (this.token) headers.authorization = `Bearer ${this.token}`;
+      if (this.feedToken) headers.authorization = `Bearer ${this.feedToken}`;
       const res = await fetch(`${this.url}/v1/feed?from=${start}`, { headers });
       if (!res.ok || !res.body) throw new Error(`feed: ${res.status} ${await res.text().catch(() => '')}`);
       return res.body.getReader();
@@ -97,7 +105,9 @@ export class Strata {
         } catch (e) {
           log(`feed: ${e.message}; reconnecting`);
         }
-        await new Promise((r) => setTimeout(r, 500));
+        // Unref'd: a feed that is gone keeps no process alive by itself (a
+        // test's, once its server stopped).
+        await new Promise((r) => setTimeout(r, 500).unref());
       }
     })();
     return true;
@@ -146,9 +156,13 @@ export function findServerBinary(repoRoot) {
 // (or $STRATA_APPS_TEST_SHARDS, for the tests), a cluster instead: that many
 // shard servers next to `db` and a coordinator over them on `listen`, as the
 // engine finds it beside a cluster; `child.kill()` stops them all.
-export async function startServer({ bin, db, listen, log, shards = Number(process.env.STRATA_APPS_TEST_SHARDS) || 0 }) {
-  if (shards > 0) return startCluster({ bin, db, listen, log, shards });
-  return startOne({ bin, args: ['--db', db, '--seq-no', '--listen', listen, '--grpc', 'off'], listen, log, db });
+// With `token`, one server that takes it (`--token`; the tests' servers
+// with keys), its client sending it.
+export async function startServer({ bin, db, listen, log, token, shards = Number(process.env.STRATA_APPS_TEST_SHARDS) || 0 }) {
+  if (shards > 0 && !token) return startCluster({ bin, db, listen, log, shards });
+  const auth = token ? ['--token', token] : [];
+  const started = await startOne({ bin, args: ['--db', db, '--seq-no', '--listen', listen, '--grpc', 'off', ...auth], listen, log, db, token });
+  return started;
 }
 
 // A port of 127.0.0.1 that nothing listens on now, as the system hands one out.
@@ -197,7 +211,7 @@ async function startCluster({ bin, db, listen, log, shards }) {
   }
 }
 
-async function startOne({ bin, args, listen, log, db }) {
+async function startOne({ bin, args, listen, log, db, token }) {
   mkdirSync(path.dirname(db), { recursive: true });
   log(`starting ${bin} ${args.join(' ')}`);
   const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -207,7 +221,7 @@ async function startOne({ bin, args, listen, log, db }) {
   child.stderr.on('data', keep);
   let exited = null;
   child.on('exit', (code) => { exited = code; });
-  const client = new Strata(`http://${listen}`);
+  const client = new Strata(`http://${listen}`, token);
   for (let i = 0; i < 300; i++) {
     if (exited !== null) throw new Error(`chloedb-server exited (${exited}):\n${tail.join('\n')}`);
     try { await client.health(); return { child, client }; } catch { /* not yet */ }

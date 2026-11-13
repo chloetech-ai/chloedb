@@ -659,6 +659,20 @@ fn expired(retention: Option<(usize, i64)>, d: &Document) -> bool {
     retention.is_some_and(|(f, cutoff)| matches!(d[f], Value::Timestamp(t) | Value::Int(t) if t < cutoff))
 }
 
+/// The width of the windows of time a table kept for `retain_seconds`
+/// merges in ([`SegmentInfo::window`]): a thirtieth of the retention, from
+/// a second to a day, so that about one window's rows are past it at once
+/// and a table kept for 30 days merges within days.
+fn merge_window(retain_seconds: i64) -> i64 {
+    (retain_seconds.saturating_mul(1_000_000) / 30).clamp(1_000_000, 86_400_000_000)
+}
+
+/// The newest time in segment `v`'s TIMESTAMP column `key`, from the
+/// column's greatest value.
+fn newest_time(v: &SegmentView, key: &str) -> Option<i64> {
+    crate::forward::NumericColumn::open(&v.file, key).ok()?.max().map(|t| t as i64)
+}
+
 /// A row's place in a segment ordered by its cluster_by field: rows
 /// without a value first.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -2129,9 +2143,27 @@ impl Database {
     /// the same columns ([`Schema::same_columns`]: a replica made to join a
     /// shard after the table was altered), and
     /// the copy's term must not be older than this database's: a copy of a
-    /// replaced primary is refused. Durable on return. Returns the copy's
-    /// last transaction.
+    /// replaced primary is refused, and so is a copy that ends before this
+    /// database's last transaction when that one is of the copy's term: a
+    /// copy taken before transactions of its primary that this database
+    /// holds since (one delivered late, after a newer copy or the
+    /// transactions that follow it), which would drop them
+    /// ([`Database::install_copy_over`] installs it). Durable on return.
+    /// Returns the copy's last transaction.
     pub fn install_copy(&self, copy: &Database) -> Result<SeqNo> {
+        self.install(copy, false)
+    }
+
+    /// [`Database::install_copy`], also when the copy ends before this
+    /// database's last transaction of the copy's term, dropping the later
+    /// ones: for a replica that holds another transaction than its
+    /// primary's under one term and number, whose own are then not the
+    /// primary's however far they reach.
+    pub fn install_copy_over(&self, copy: &Database) -> Result<SeqNo> {
+        self.install(copy, true)
+    }
+
+    fn install(&self, copy: &Database, over: bool) -> Result<SeqNo> {
         if std::ptr::eq(self, copy) {
             return Err(Error::Schema("a database is not a copy of itself".into()));
         }
@@ -2169,11 +2201,22 @@ impl Database {
                 first.table
             )));
         }
-        for (id, _) in &system {
-            self.add_system(&mut wal, *id)?;
-        }
+        // Before anything here changes.
         if theirs.term < ours.term {
             return Err(Error::Schema(format!("the copy is of term {}, older than this database's ({}): it is a copy of a replaced primary", theirs.term, ours.term)));
+        }
+        // Transactions the copy's primary gave after the copy are of its
+        // term: this database's last, when of that term and later than the
+        // copy's, is one of them.
+        let own = ours.last();
+        if !over && own.term == theirs.term && own.seq > theirs.seq {
+            return Err(Error::Schema(format!(
+                "the copy ends at transaction {}, before this database's last ({} of term {}, the copy's term): it was taken before transactions of its primary that this database holds since, and would drop them",
+                theirs.seq, own.seq, own.term
+            )));
+        }
+        for (id, _) in &system {
+            self.add_system(&mut wal, *id)?;
         }
         // What the memtables and pending deletes hold goes into segments,
         // which the commit below drops with the others, and the log they
@@ -3158,12 +3201,19 @@ impl Database {
         // Rows past the table's retention count as deleted: a segment of
         // them only is dropped, and one with many is rewritten without them.
         let retention = snap.schema().retention(crate::timestamp::now());
+        let width = snap.schema().retain.as_ref().map(|r| merge_window(r.seconds));
         let infos: Vec<SegmentInfo> = snap
             .segments()
             .iter()
             .map(|v| {
-                let expired = retention.map_or(0, |(f, cutoff)| self.expired_in(v, &snap.schema().fields[f].key(), cutoff));
-                SegmentInfo { id: v.id, n_docs: v.file.n_docs() as u32, n_live: v.n_live.saturating_sub(expired), bytes: bytes.get(&v.id).copied().unwrap_or(0), spilled: v.file.section_bytes(crate::segment::spill::streams) }
+                let (expired, window) = match retention {
+                    Some((f, cutoff)) => {
+                        let key = snap.schema().fields[f].key();
+                        (self.expired_in(v, &key, cutoff), width.and_then(|w| newest_time(v, &key).map(|t| t.div_euclid(w))))
+                    }
+                    None => (0, None),
+                };
+                SegmentInfo { id: v.id, n_docs: v.file.n_docs() as u32, n_live: v.n_live.saturating_sub(expired), bytes: bytes.get(&v.id).copied().unwrap_or(0), spilled: v.file.section_bytes(crate::segment::spill::streams), window }
             })
             .collect();
         let cap = |g: &[u64]| match (m.record.cap(g), budget) {
@@ -3241,7 +3291,6 @@ impl Database {
             // The merged segment gets a checksum of its own, so a damaged
             // input must fail here rather than become a valid segment.
             let h = lock(&self.state).handle(id).cloned().ok_or_else(|| corrupt("merge input vanished"))?;
-            h.verify(self.dir.as_deref())?;
             let n = v.file.n_docs() as DocId;
             let mut live: Vec<DocId> = (0..n).filter(|&d| v.live.as_ref().is_none_or(|l| l.contains(d))).collect();
             stats.docs_dropped += (n as usize - live.len()) as u64;
@@ -3252,6 +3301,11 @@ impl Database {
                 let before = live.len();
                 live.retain(|&d| times.get_i64(d).is_none_or(|t| t >= cutoff));
                 stats.docs_expired += (before - live.len()) as u64;
+            }
+            // An input none of whose rows are kept is dropped unread, so it
+            // need not be read whole to be checked (nor fetched, if cold).
+            if !live.is_empty() {
+                h.verify(self.dir.as_deref())?;
             }
             views.push(v);
             inputs.push((id, live));

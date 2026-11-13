@@ -21,8 +21,11 @@ _JSON_DEPTH = 16
 _JSON_VALUES = 1000
 _JSON_PATH_BYTES = 256
 
-# The databases adapters opened by path, while something holds them.
+# The databases adapters opened by path, while something holds them, and
+# how many adapters and connections opened each (`release_store` closes a
+# database when the last lets it go).
 _opened: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
+_holders: "weakref.WeakKeyDictionary[Any, int]" = weakref.WeakKeyDictionary()
 _opened_lock = threading.Lock()
 
 # Rows a write sends at once.
@@ -30,16 +33,23 @@ BATCH = 1000
 
 
 def open_store(db: Any, *, models: str | os.PathLike | None = None, token: str | None = None) -> Any:
-    """A `Database` or `Client` from what an adapter was given: one of
-    those (used as it is), an `http(s)://` URL (a `Client` of that
-    server), or a path (the database there, made when its first table
-    is)."""
+    """A `Database` or `Client` from what an adapter was given: a
+    `Database` (used as it is), a `Client` (its `Session`), an
+    `http(s)://` URL (a `Session` of that server), or a path (the database
+    there, made when its first table is).
+
+    A client is a `Session` so that the adapter's reads see its own
+    writes on a coordinator or a replica: a LangGraph thread resumes from
+    the checkpoint it just wrote, whichever copy answers (the servers must
+    number their writes, --seq-no). A database opened by path is shared by
+    every adapter given that path in this process; each opening counts,
+    and `release_store` undoes one."""
     if isinstance(db, (str, os.PathLike)):
         from . import connect
 
         target = os.fspath(db)
         if target.startswith(("http://", "https://")):
-            return connect(target, token=token)
+            return connect(target, token=token).session()
         # One process opens a database once to write it: adapters given the
         # same path (a checkpointer and a store, say) share one Database.
         key = os.path.realpath(target[len("file:"):] if target.startswith("file:") else target)
@@ -48,10 +58,33 @@ def open_store(db: Any, *, models: str | os.PathLike | None = None, token: str |
             if store is None or store.closed:
                 store = connect(target, models=models)
                 _opened[key] = store
+                _holders[store] = 0
+            _holders[store] = _holders.get(store, 0) + 1
             return store
     if not (hasattr(db, "query") and hasattr(db, "tables") and hasattr(db, "upsert")):
         raise TypeError(f"expected a chloedb.Database, a chloedb.Client, a path or an http(s):// URL, not {type(db).__name__}")
+    session = getattr(db, "session", None)
+    if callable(session) and hasattr(db, "url"):
+        return session()
     return db
+
+
+def release_store(store: Any) -> None:
+    """Lets go of a database `open_store` opened by path: it is closed
+    when nothing else that opened it holds it. A store given as an object
+    (a `Database`, a `Client`) is the caller's, and stays open."""
+    with _opened_lock:
+        n = _holders.get(store)
+        if n is None:
+            return
+        if n > 1:
+            _holders[store] = n - 1
+            return
+        del _holders[store]
+        for k, v in list(_opened.items()):
+            if v is store:
+                del _opened[k]
+    store.close()
 
 
 def _pending(store: Any) -> bool:
@@ -147,6 +180,68 @@ def json_fits(obj: Any) -> bool:
         return True
 
     return walk(obj, 1, 0)
+
+
+def json_pruned(obj: Any) -> dict | None:
+    """What a JSON field takes of `obj`, for filters on it: `obj` itself
+    when it fits, else a copy that keeps what fits and leaves out the
+    rest (the top level's scalars first, then each object or list whole
+    when it fits, an object that does not fit pruned the same way, a list
+    that does not fit left out). None for nothing to index."""
+    if not isinstance(obj, dict):
+        return None
+    if json_fits(obj):
+        return obj or None
+    budget = [_JSON_VALUES - 1]  # the object itself is one value
+
+    def cost(v: Any, depth: int, path_bytes: int) -> int | None:
+        """The values `v` adds, or None when it cannot go in whole."""
+        if depth > _JSON_DEPTH or path_bytes > _JSON_PATH_BYTES:
+            return None
+        n = 1
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if not isinstance(k, str) or k == "":
+                    return None
+                c = cost(x, depth + 1, path_bytes + len(k.encode()) + 1)
+                if c is None:
+                    return None
+                n += c
+                if n > _JSON_VALUES:
+                    return None
+        elif isinstance(v, list):
+            for x in v:
+                c = cost(x, depth + (1 if isinstance(x, (dict, list)) else 0), path_bytes)
+                if c is None:
+                    return None
+                n += c
+                if n > _JSON_VALUES:
+                    return None
+        return n
+
+    def prune(d: dict, depth: int, path_bytes: int) -> dict:
+        out: dict = {}
+        keys = [k for k in d if isinstance(k, str) and k and path_bytes + len(k.encode()) + 1 <= _JSON_PATH_BYTES]
+        # Scalars first: they are what a filter usually names.
+        for k in sorted(keys, key=lambda k: isinstance(d[k], (dict, list))):
+            v, at = d[k], path_bytes + len(k.encode()) + 1
+            if budget[0] <= 0:
+                break
+            c = cost(v, depth + 1, at)
+            if c is not None and c <= budget[0]:
+                out[k] = v
+                budget[0] -= c
+            elif isinstance(v, dict) and depth + 1 <= _JSON_DEPTH:
+                budget[0] -= 1
+                inner = prune(v, depth + 1, at)
+                if inner:
+                    out[k] = inner
+                else:
+                    budget[0] += 1
+        return out
+
+    kept = prune(obj, 1, 0)
+    return kept or None
 
 
 def literal(s: str) -> str:

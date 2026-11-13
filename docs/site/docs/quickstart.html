@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=e6ca13219a">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/quickstart.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html" aria-current="page">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -56,6 +59,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -76,7 +80,7 @@
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
       <p class="doc-version">These docs describe release 0.3.0.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">1. Install the server</a></li><li><a href="#2-start-it">2. Start it</a></li><li><a href="#3-make-a-table-and-fill-it">3. Make a table and fill it</a></li><li><a href="#4-search">4. Search</a></li><li><a href="#5-open-the-query-console">5. Open the query console</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-query-console">Open the query console</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p>This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the query console in a browser. The last section does the same from Python, with the database inside your process and no server at all.</p>
@@ -154,6 +158,7 @@ curl -sS http://127.0.0.1:7710/v1/sql -H &#x27;content-type: application/json&#x
 <pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
 pip install --upgrade chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
 <p>The <code>chloedb</code> on PyPI is still a placeholder that only holds the name, so a bare <code>pip install chloedb</code> installs that, not ChloeDB. <code>-f</code> points pip at the release's wheels, and <code>--upgrade</code> replaces the placeholder if you installed it already. Once the releases are published to PyPI, <code>pip install chloedb</code> is all it takes. If <code>import chloedb</code> says it is a placeholder, the release has no wheel for your machine: see <a href="python.html#prebuilt">the Python page</a>.</p>
+<p>The wheels come from the release: <code>chloedb</code> on PyPI is still a placeholder of version 0.0.1 that holds the name, and <code>pip install chloedb</code> alone installs that, which fails at <code>import chloedb</code>.</p>
 <pre data-lang="sh">python3 - &lt;&lt;&#x27;EOF&#x27;
 import chloedb
 

@@ -1307,7 +1307,12 @@ async fn replicas_are_compared_while_writes_go_on() {
     }
     // And every 100 ms without asking.
     let asked = [follower(&p, 0).await["verifications"].as_u64().unwrap(), follower(&p, 1).await["verifications"].as_u64().unwrap()];
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Three rounds are due in 300 ms; a loaded runner can take longer, so
+    // wait for them (while the writes go on) rather than for a fixed time.
+    until("three rounds without asking", || async {
+        follower(&p, 0).await["verifications"].as_u64().unwrap() >= asked[0] + 3 && follower(&p, 1).await["verifications"].as_u64().unwrap() >= asked[1] + 3
+    })
+    .await;
     writing.store(false, std::sync::atomic::Ordering::Relaxed);
     for w in writers {
         w.await.unwrap();

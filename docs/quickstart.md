@@ -152,6 +152,8 @@ pip install --upgrade chloedb -f https://github.com/chloetech-ai/chloedb/release
 
 The `chloedb` on PyPI is still a placeholder that only holds the name, so a bare `pip install chloedb` installs that, not ChloeDB. `-f` points pip at the release's wheels, and `--upgrade` replaces the placeholder if you installed it already. Once the releases are published to PyPI, `pip install chloedb` is all it takes. If `import chloedb` says it is a placeholder, the release has no wheel for your machine: see [the Python page](chloedb/python.md#prebuilt).
 
+The wheels come from the release: `chloedb` on PyPI is still a placeholder of version 0.0.1 that holds the name, and `pip install chloedb` alone installs that, which fails at `import chloedb`.
+
 ```sh
 python3 - <<'EOF'
 import chloedb

@@ -88,12 +88,14 @@ pub const TABLE: &str = "otel_logs";
 /// The header (and HTTP query parameter `table`) that names the table.
 pub const TABLE_HEADER: &str = "x-strata-table";
 
-/// The statement that makes table `table` for logs, if it is not there.
-pub fn create_sql(table: &str) -> String {
+/// The statement that makes table `table` for logs, if it is not there,
+/// keeping its rows `retain` seconds after their time (`None`: for ever).
+pub fn create_sql(table: &str, retain: Option<i64>) -> String {
+    let retain = retain.map_or(String::new(), |s| format!(", retain = '{}', retain_by = 'ts'", chloedb::schema::Retain { by: "ts".into(), seconds: s }.period()));
     format!(
         "CREATE TABLE IF NOT EXISTS {table} (ts TIMESTAMP NOT NULL, observed_ts TIMESTAMP, severity KEYWORD, severity_number INT, \
          service KEYWORD, host KEYWORD, body TEXT, trace_id KEYWORD, span_id KEYWORD, scope KEYWORD, attributes JSON, resource JSON, \
-         batch INT NOT NULL) OPTIONS(shard_by = 'batch', compression = 'zstd')"
+         batch INT NOT NULL) OPTIONS(shard_by = 'batch', compression = 'zstd'{retain})"
     )
 }
 
@@ -241,7 +243,7 @@ async fn table(svc: &Arc<Service>, name: &str) -> Result<Arc<Schema>, ApiError> 
     }
     // The server makes it, whoever writes the first logs: a key that may
     // write may not make tables, but this one is the logs' own.
-    svc.sql(&Principal::open(), &create_sql(name), &chloedb::query::Params::new(), After::Any, 0).await?;
+    svc.sql(&Principal::open(), &create_sql(name, svc.otlp_retain), &chloedb::query::Params::new(), After::Any, 0).await?;
     svc.table(name).await
 }
 
@@ -513,9 +515,19 @@ mod tests {
     fn schema() -> Schema {
         let dir = tempfile::tempdir().unwrap();
         let db = chloedb::db::Db::create_empty(&dir.path().join("logs.strata"), Default::default()).unwrap();
-        db.sql(&create_sql("otel_logs"), &chloedb::query::Params::new()).unwrap();
+        db.sql(&create_sql("otel_logs", None), &chloedb::query::Params::new()).unwrap();
         let s = db.catalog().into_iter().find(|t| t.table == "otel_logs").unwrap().as_ref().clone();
         s
+    }
+
+    #[test]
+    fn logs_keep_their_rows_as_long_as_the_server_says() {
+        assert!(schema().retain.is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let db = chloedb::db::Db::create_empty(&dir.path().join("kept.strata"), Default::default()).unwrap();
+        db.sql(&create_sql("otel_logs", Some(30 * 86_400)), &chloedb::query::Params::new()).unwrap();
+        let s = db.catalog().into_iter().find(|t| t.table == "otel_logs").unwrap();
+        assert_eq!(s.retain.as_ref().map(|r| (r.by.as_str(), r.seconds)), Some(("ts", 30 * 86_400)));
     }
 
     fn request() -> ExportLogsServiceRequest {
