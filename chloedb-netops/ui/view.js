@@ -15,6 +15,11 @@
 //   #/app/netops/devices          the fleet; a device opens in a drawer
 //   #/app/netops/agents           the agents, their runs and what they found
 //   #/app/netops/data             the tables, where their rows come from, the simulator
+//   #/app/netops/dash             dashboards: the backbone's telemetry and the estate
+//
+// Above every page, one box searches (and completes, from /v1/suggest) in
+// the place in view, and an assistant answers questions about the object
+// picked, each answer with the SQL it ran.
 //
 // Every answer of the app's API carries the SQL it ran; the "SQL" button
 // shows the queries behind the page in view.
@@ -137,6 +142,93 @@ const CSS = `
 .no-hit { padding: 8px 0; border-top: 1px solid var(--line); }
 .no-hit:first-child { border-top: 0; }
 .no-hit .x { color: var(--text-2); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* ---- the box above every page, its completions, the assistant (assist.rs, cmdBar, assistant) */
+.no-cmdrow { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; position: relative; z-index: 6; }
+.no-cmd { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; gap: 0; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-1); height: 40px; }
+.no-cmd:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.no-cmd.compact { height: 38px; box-shadow: none; }
+.no-cmd-mode { display: flex; gap: 2px; padding: 3px; margin-left: 3px; background: var(--surface-2); border-radius: 7px; flex: none; }
+.no-cmd-mode button { border: 0; background: none; color: var(--text-2); font: inherit; font-size: 12.5px; padding: 4px 9px; border-radius: 5px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.no-cmd-mode button svg { width: 14px; height: 14px; }
+.no-cmd-mode button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-1); font-weight: 600; }
+.no-scope { flex: none; display: inline-flex; align-items: center; gap: 5px; margin: 0 2px 0 8px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer; max-width: 230px; }
+.no-scope span:not(.x) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.no-scope svg { width: 13px; height: 13px; flex: none; }
+.no-scope.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
+.no-scope .x { opacity: .7; margin-left: 2px; }
+.no-cmd-in { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; padding: 0 12px 0 8px; height: 100%; }
+.no-sug { position: absolute; left: 0; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow-3); overflow: hidden; z-index: 70; max-height: min(460px, 70vh); display: flex; flex-direction: column; }
+.no-sug[hidden] { display: none; }
+.no-sug-i { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 7px 12px; cursor: pointer; border-top: 1px solid var(--line); }
+.no-sug-i:first-child { border-top: 0; }
+.no-sug-i.on, .no-sug-i:hover { background: var(--accent-soft); }
+.no-sug-i .k { width: 26px; height: 26px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2); color: var(--text-2); }
+.no-sug-i .k svg { width: 14px; height: 14px; }
+.no-sug-i .k.object, .no-sug-i .k.circuit { color: var(--s1); } .no-sug-i .k.question { color: var(--accent); } .no-sug-i .k.history { color: var(--muted); } .no-sug-i .k.customer { color: var(--s5); } .no-sug-i .k.place { color: var(--s3); }
+.no-sug-i .t { display: flex; flex-direction: column; min-width: 0; }
+.no-sug-i .l { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+.no-sug-i .l b { font-weight: 700; }
+.no-sug-i .s:empty { display: none; }
+.no-sug-i .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.no-sug-i kbd, .no-sug-ft kbd { font: 10.5px var(--mono); padding: 1px 5px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; color: var(--text-2); background: var(--surface-2); }
+.no-sug-none { padding: 10px 12px; color: var(--muted); font-size: 12.5px; }
+.no-sug-ft { display: flex; gap: 10px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--line); background: var(--surface-2); font-size: 11.5px; color: var(--muted); }
+.no-sug-ft .grow { flex: 1; }
+.no-ag-btn { height: 40px; flex: none; }
+.no-root.no-ag-open { padding-right: min(420px, 40vw); }
+.no-ag { position: fixed; top: 52px; right: 0; bottom: 0; width: min(420px, 40vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-3); z-index: 30; display: flex; flex-direction: column; animation: slide .2s cubic-bezier(.2, .8, .2, 1); }
+.no-ag[hidden] { display: none; }
+.no-ag > .hd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.no-ag > .hd > svg { width: 18px; height: 18px; color: var(--accent); }
+.no-ag > .hd h2 { margin: 0; font-size: 15px; }
+.no-ag-ctx { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; background: var(--surface-2); }
+.no-ag-tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.no-ag-tabs button { border: 0; background: none; padding: 8px 10px; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; border-bottom: 2px solid transparent; }
+.no-ag-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.no-ag-bd { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.no-ag-log { display: flex; flex-direction: column; gap: 10px; }
+.no-ag-q { align-self: flex-end; max-width: 88%; display: flex; gap: 6px; align-items: flex-start; padding: 7px 10px; border-radius: 10px 10px 2px 10px; background: var(--accent-soft); color: var(--text); font-weight: 550; font-size: 13px; }
+.no-ag-q svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--accent); }
+.no-ag-a { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px 10px 10px 2px; background: var(--surface); font-size: 13px; line-height: 1.5; }
+.no-ag-a .txt p { margin: 0 0 6px; } .no-ag-a .txt p:last-child { margin-bottom: 0; }
+.no-ag-ul { margin: 0 0 6px; padding-left: 18px; } .no-ag-ul li { margin: 2px 0; overflow-wrap: anywhere; }
+.no-ag-sug { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.no-ag-sug .chip { white-space: normal; text-align: left; }
+.no-ag-w { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; }
+.no-ag > .ft { padding: 10px 12px; border-top: 1px solid var(--line); }
+.no-ag > .ft .no-sug { top: auto; bottom: calc(100% + 6px); }
+@media (max-width: 900px) { .no-root.no-ag-open { padding-right: 0; } .no-ag { width: 100vw; top: 52px; } .no-cmd-mode button span, .no-ag-btn .lbl { display: none; } .no-scope { max-width: 96px; margin-left: 4px; } .no-sug-ft .keys { display: none; } .no-cmd-mode button { padding: 4px 7px; } }
+/* ---- the map's inspector */
+.no-map .btn svg, .no-map .chip svg { display: inline-block; width: 14px; height: 14px; }
+.no-days60 .cols { display: flex; align-items: flex-end; gap: 1px; height: 64px; border-bottom: 1px solid var(--line); }
+.no-days60 .cols > span { flex: 1; display: flex; flex-direction: column-reverse; height: 100%; justify-content: flex-start; }
+.no-days60 .cols i { display: block; min-height: 2px; }
+.no-days60 .cols i.f { background: var(--crit); } .no-days60 .cols i.c { background: var(--s1); }
+.no-days60 .ax { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+.no-days60 .no-legend { padding-top: 4px; }
+.no-otabs { margin: 0; padding: 0 8px; position: sticky; top: 0; background: var(--surface); z-index: 2; }
+.no-otabs button { padding: 8px 7px; font-size: 12px; }
+.no-otabs .n { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); }
+.no-chain { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 2px solid var(--line-2); font-size: 12.5px; }
+.no-chain li { position: relative; padding: 3px 0 3px 10px; }
+.no-chain li::before { content: ""; position: absolute; left: -18px; top: 8px; width: 9px; height: 9px; border-radius: 50%; background: var(--surface); border: 2px solid var(--muted); }
+.no-chain li.bad::before { border-color: var(--crit); background: var(--crit); }
+.no-chain li.me::before { border-color: var(--accent); background: var(--accent); }
+.no-chain li.below { color: var(--text-2); }
+.no-chain li.below::before { border-style: dashed; }
+.no-cust { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 10px; font-size: 12.5px; }
+.no-cust > div { display: contents; }
+.no-meter { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; margin-top: 8px; }
+.no-meter i { display: block; height: 100%; border-radius: 4px; }
+/* ---- dashboards */
+.no-dash-head { margin: 0 0 12px; }
+.no-dash { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
+.no-dash .card { margin: 0; min-width: 0; }
+.no-dash .card.wide { grid-column: 1 / -1; }
+.no-heat { display: grid; gap: 2px; font-size: 11px; align-items: center; }
+.no-heat .d { color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.no-heat .c { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.no-heat .cell { height: 18px; border-radius: 3px; }
 .no-sec { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
 .no-sec:first-child { margin-top: 0; }
 .no-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
@@ -269,7 +361,7 @@ const T = (x) => (x ? Date.parse(x) : null);
 const SEV = { critical: "bad", major: "serious", minor: "warn", sev1: "bad", sev2: "serious", sev3: "warn" };
 const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", "Cause identified"], mitigated: ["ok", "Mitigated"], resolved: ["good", "Resolved"] };
 const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity" };
-const PAGES = [["", "My shift"], ["map", "Map"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
+const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
 const mins = (m) => (m == null ? "–" : m >= 90 ? (m / 60).toFixed(1) + " h" : Math.round(m) + " min");
@@ -284,14 +376,19 @@ function render(el, ctx) {
   const simEl = h("span", { class: "no-sim" });
   const injectBtn = h("button", { class: "btn sm", onclick: () => injectMenu(app, injectBtn) }, C.icon("bolt"), "Inject a fault");
   const sub = h("span", { class: "sub" });
-  const find = h("input", { class: "input no-find", type: "search", placeholder: "Paste anything: an address, a circuit id, a customer, a device, an interface", "aria-label": "Look anything up", onkeydown: (e) => { if (e.key === "Enter" && find.value.trim()) { lookupDrawer(app, find.value.trim()); find.select(); } } });
+  whereState(app);
+  const cmd = cmdBar(app);
+  app.bar = cmd;
+  const agentBtn = h("button", { class: "btn sm no-ag-btn", title: "The assistant: questions about what you are looking at, answered from the tables", onclick: () => app.agent.toggle() }, C.icon("sparkle"), h("span", { class: "lbl" }, "Assistant"));
   const alt = h("span");
   const drawAlt = (page) => alt.replaceChildren(C.seg([["eng", "Engineer", "The shift: what waits, what is planned, what is broken"], ["lead", "Leadership", "The same tables from further away: reliability, risk, carriers, the team"]], page === "leadership" ? "lead" : "eng", (v) => app.go(...(v === "lead" ? ["leadership"] : []))));
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
   const synth = h("span", { class: "no-synth", title: "Everything on these pages is made up: a simulated carrier network, written into ChloeDB tables every minute" }, "synthetic data");
   el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth,
-    h("div", { class: "tools" }, find, alt, simEl, injectBtn, sqlBtn)), tabs, body);
+    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
+  el.classList.add("no-root");
+  assistant(app, el);
 
   /** The app's API, keeping the queries each answer says it ran. */
   app.call = async (path, opts) => {
@@ -323,7 +420,8 @@ function render(el, ctx) {
     tabs.style.display = page === "leadership" ? "none" : "";
     drawAlt(page);
     if (!ready) return;
-    const f = { "": shiftPage, map: mapPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
+    if (page !== "map") app.map = null;
+    const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
   };
   const drawTabs = (st) => {
@@ -359,7 +457,7 @@ function render(el, ctx) {
   const stopPoll = C.every(5000, poll, true, { always: true });
   current = ctx.path();
   ctx.onPath(show);
-  return () => { stopPoll(); try { stop?.(); } catch (e) { console.warn(e); } };
+  return () => { stopPoll(); app.agent?.stop(); try { stop?.(); } catch (e) { console.warn(e); } };
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -2070,15 +2168,15 @@ function mapPage(body, app, path) {
   const stage = h("div", { class: "no-map-stage" }, canvas, crumbs, shapes,
     h("div", { class: "no-map-zoom" }, zoomBtn("+", "Zoom in", () => zoomBy(1.8)), zoomBtn("−", "Zoom out", () => zoomBy(1 / 1.8)), zoomBtn("Fit", "The whole network", () => fit(true))), legend, stats, tip);
   body.append(h("div", { class: "no-map" },
-    h("div", { class: "no-map-bar" }, input, askBtn),
-    h("div", { class: "no-map-eg" }, h("span", { class: "muted small" }, "Try:"), MAP_EXAMPLES.map((q) => h("button", { class: "chip", onclick: () => { input.value = q; ask(q); } }, q))),
+    h("div", { class: "no-map-bar", style: { display: "none" } }, input, askBtn),
+    h("div", { class: "no-map-eg" }, h("span", { class: "muted small" }, "Try:"), MAP_EXAMPLES.map((q) => h("button", { class: "chip", onclick: () => { input.value = q; app.bar?.set(q, "search"); ask(q); } }, q))),
     h("div", { class: "no-map-main" }, stage, side)));
 
   const g = canvas.getContext("2d");
   let W = 0, H = 0, dpr = 1;
   const view = { k: 1, tx: 0, ty: 0 };
   let base = null, hot = { faults: [], places: {}, incidents: [], devices: {} }, shown = { nodes: [], edges: [], t: 0, box: null, ms: 0, cut: false };
-  let found = null, sel = null, hover = null, dead = false, anim = null, loadSeq = 0, loadTimer = null, fitK = 1;
+  let found = null, sel = null, hover = null, dead = false, anim = null, loadSeq = 0, loadTimer = null, fitK = 1, lit = null;
   const cont = new Map();
 
   const sx = (x) => x * view.k + view.tx, sy = (y) => y * view.k + view.ty;
@@ -2306,7 +2404,8 @@ function mapPage(body, app, path) {
       g.lineWidth = 1;
       for (const e of shown.edges) {
         if (e.kind === "backbone") continue;
-        g.strokeStyle = line; g.globalAlpha = e.kind === "drop" ? 0.7 : e.kind === "uplink" ? 0.35 : 1;
+        const on = lit && lit.has(e.src) && lit.has(e.dst);
+        g.strokeStyle = on ? accent : line; g.globalAlpha = lit && !on ? 0.12 : on ? 0.7 : e.kind === "drop" ? 0.7 : e.kind === "uplink" ? 0.35 : 1;
         g.beginPath(); g.moveTo(sx(e.x1), sy(e.y1)); g.lineTo(sx(e.x2), sy(e.y2)); g.stroke();
       }
       g.globalAlpha = 1;
@@ -2323,6 +2422,8 @@ function mapPage(body, app, path) {
         const sc = stateColor(v, n);
         const s = n.layer === "premises" ? Math.max(2.2, Math.min(6, base.site_r * k * 0.045)) : n.layer === "access" ? Math.max(3.5, Math.min(8, base.site_r * k * 0.16)) : Math.max(3.5, Math.min(9, base.hub_r * k * 0.035));
         g.fillStyle = sc || (n.layer === "core" ? text : n.layer === "aggregation" ? text2 : n.layer === "power" ? v("--seq-5") : n.layer === "access" ? text2 : muted);
+        // Lit: what the object picked hangs from and what depends on it; the rest fades.
+        g.globalAlpha = lit && !lit.has(n.id) ? 0.14 : 1;
         g.beginPath();
         const kd = n.kind;
         if (kd === "hub-router" || kd === "agg") { g.moveTo(x, y - s * 1.3); g.lineTo(x + s * 1.3, y); g.lineTo(x, y + s * 1.3); g.lineTo(x - s * 1.3, y); g.closePath(); }
@@ -2333,6 +2434,8 @@ function mapPage(body, app, path) {
         else g.arc(x, y, s, 0, Math.PI * 2);
         g.fill();
         if (sc && n.state !== "impacted") { g.strokeStyle = sc; g.globalAlpha = 0.35; g.lineWidth = 4; g.beginPath(); g.arc(x, y, s + 5, 0, Math.PI * 2); g.stroke(); g.globalAlpha = 1; }
+        g.globalAlpha = 1;
+        if (lit && lit.has(n.id) && !sc && n.layer !== "core") { g.strokeStyle = accent; g.globalAlpha = 0.55; g.lineWidth = 1.2; g.beginPath(); g.arc(x, y, s + 2.5, 0, Math.PI * 2); g.stroke(); g.globalAlpha = 1; }
         if (matched && matched.has(n.id)) { g.strokeStyle = accent; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, s + 4, 0, Math.PI * 2); g.stroke(); }
         n._s = s;
       }
@@ -2387,6 +2490,8 @@ function mapPage(body, app, path) {
       for (const c of cont.values()) if (c.kind === kind && inside(c, cx, cy) && c.w * view.k > W * 0.5) best = c;
       if (best) trail.push(best);
     }
+    const deep = trail[trail.length - 1];
+    app.setWhere({ place: deep ? { id: deep.id, name: deep.name, kind: deep.kind } : null });
     put(crumbs, h("a", { onclick: () => fit(true) }, "Whole network"), trail.map((c) => [h("span", { class: "muted" }, "›"), h("a", { onclick: () => flyToPlace(c) }, c.name)]));
   };
 
@@ -2468,6 +2573,9 @@ function mapPage(body, app, path) {
     try { j = await app.call(`/v1/map/node?id=${encodeURIComponent(id)}`); } catch (e) { put(side, backBtn(), C.failure(e, "This object")); return; }
     if (dead || !sel || sel.id !== id) return;
     sel.j = j;
+    app.setWhere({ sel: { id: j.node.id, name: j.node.name, kind: j.node.kind, state: j.node.state } });
+    const detailP = app.call(`/v1/map/detail?id=${encodeURIComponent(id)}`);
+    detailP.then((d) => { if (!dead && sel && sel.id === id && app.autoLight !== false) { light(id, d.below, true); } }).catch(() => {});
     draw();
     const n = j.node, qms = (i) => (j.queries[i] ? C.fmt.ms(j.queries[i].ms) : "");
     const cause = j.cause && j.cause.id ? j.cause : null;
@@ -2500,8 +2608,21 @@ function mapPage(body, app, path) {
         ended.length ? h("div", { class: "small" }, `On ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s, faults cleared in: `, ended.map((e) => `${mins(e.minutes)} (${e.cause}, ${C.fmt.n(e.n)} times)`).join(", ")) : null,
         (j.before.like || []).map((e) => h("a", { class: "no-map-row", onclick: () => goto({ id: e.node, x: e.x, y: e.y }) }, dot("ok"), h("span", { class: "t" }, h("b", {}, e.node), h("span", {}, `${C.fmt.ago(T(e.ts))} · ${e.text}`))))) : null,
       j.engine !== "sql" ? h("div", { class: "muted small" }, "The walks ran in the app: a coordinator does not walk graphs yet.") : null);
+    // The panel becomes tabs: the walk above is the overview.
+    const kids = [...side.children];
+    const tabsEls = inspectorTabs(app, j, detailP, kids.slice(2), {
+      lit: () => (lit ? lit.size : 0),
+      toggleLight: () => { if (lit) { lit = null; app.autoLight = false; draw(); } else { app.autoLight = true; detailP.then((d) => light(id, d.below, true)); } },
+      go: (o) => goto(o),
+    });
+    side.replaceChildren(kids[0], kids[1], ...tabsEls);
   };
-  const backBtn = () => h("button", { class: "btn xs ghost", onclick: () => { sel = null; draw(); if (found) drawFound(); else drawTrouble(); } }, "‹ ", found ? "Back to the matches" : "Back to what is red");
+  const light = (id, below, quiet) => {
+    lit = new Set([id, ...(below || []), ...((sel && sel.j && sel.j.upstream) || []).map((u) => u.id)]);
+    draw();
+    if (!quiet) C.toast(`${C.fmt.n(lit.size)} objects lit: what ${id} hangs from and what depends on it`, "ok");
+  };
+  const backBtn = () => h("button", { class: "btn xs ghost", onclick: () => { sel = null; lit = null; app.setWhere({ sel: null }); draw(); if (found) drawFound(); else drawTrouble(); } }, "‹ ", found ? "Back to the matches" : "Back to what is red");
 
   // ---- the search
   const ask = async (text) => {
@@ -2540,6 +2661,12 @@ function mapPage(body, app, path) {
 
   // ---- start
   canvas.__map = { fly, select, ask, zoomBy, cont, view, flyToPlace, flyToNode };
+  const open = async (id) => {
+    const c = cont.get(id);
+    if (c) { sel = null; lit = null; app.setWhere({ sel: null }); draw(); drawTrouble(); flyToPlace(c); return; }
+    try { const j = await app.call(`/v1/map/node?id=${encodeURIComponent(id)}`); flyToNode(j.node); select(id); } catch (e) { C.toast(e.message, "bad"); }
+  };
+  app.map = { open, ask: (t) => { input.value = t; ask(t); }, light: (id, below) => { if (!sel || sel.id !== id) { open(id).then(() => light(id, below)); } else light(id, below); }, flyToPlace };
   const ro = new ResizeObserver(resize);
   ro.observe(stage);
   let stopHot = null;
@@ -2550,7 +2677,593 @@ function mapPage(body, app, path) {
     resize();
     fit(false);
     stopHot = live(app, side, "/v1/map/hot", (j) => { hot = j; draw(); drawTrouble(); if (tier() >= 3) load(true); }, 10000);
-    if (path[1]) { try { const j = await app.call(`/v1/map/node?id=${encodeURIComponent(path[1])}`); flyToNode(j.node); select(path[1]); } catch (e) { console.warn(e); } }
+    const pend = app.pending; app.pending = null;
+    if (pend?.ask) ask((input.value = pend.ask));
+    else if (pend?.open || path[1]) open(pend?.open || path[1]);
   })();
-  return () => { dead = true; ro.disconnect(); cancelAnimationFrame(anim); clearTimeout(loadTimer); stopHot?.(); };
+  return () => { dead = true; app.map = null; ro.disconnect(); cancelAnimationFrame(anim); clearTimeout(loadTimer); stopHot?.(); };
+}
+
+// ---------------------------------------------------------------- the map's inspector
+
+const OTABS = [["over", "Overview"], ["metrics", "Metrics"], ["events", "Events"], ["logs", "Logs"], ["rel", "Related"], ["inc", "Incidents"], ["cfg", "Config"]];
+
+/**
+ * The tabs of one object on the map: its overview (the walk the side panel
+ * always showed), and what /v1/map/detail reads of it: its readings, its
+ * events, its log, what it hangs from and what depends on it, its
+ * incidents and its configuration.
+ */
+function inspectorTabs(app, j, detailP, overview, hooks) {
+  const { h, C, charts } = app;
+  const n = j.node;
+  let tab = app.inspectorTab || "over", d = null;
+  const bar = h("div", { class: "tabs no-otabs", role: "tablist" });
+  const body = h("div", { class: "no-otab" });
+  const drawBar = () => bar.replaceChildren(...OTABS.map(([t, label]) => h("button", { role: "tab", dataset: { t }, "aria-selected": String(tab === t), onclick: () => { tab = t; app.inspectorTab = t; drawBar(); drawBody(); } }, label,
+    t === "events" && d ? h("span", { class: "n" }, String(d.events.length)) : t === "inc" && (j.incident || (d?.incidents || []).length) ? h("span", { class: "n", style: { background: "var(--crit-soft)", color: "var(--crit-ink)" } }, String(j.incident ? 1 : d.incidents.length)) : null)));
+  const sec = (title, how, ...kids) => h("section", { class: "no-map-sec" }, h("header", {}, h("b", {}, title), how ? h("span", { class: "how" }, how) : null), kids);
+  const wait = () => h("div", { class: "no-map-sec muted small" }, "Reading…");
+  const day = (s) => Date.parse(s + "T00:00:00Z");
+  const metrics = () => {
+    if (d.core) {
+      const m = pts(d.metrics || []);
+      const cpu = charts.timeChart({ height: 120, fmt: (v) => v.toFixed(0) + "%", max: 100, series: [{ name: "CPU", color: "var(--s1)", get: (p) => p.cpu }, { name: "Memory", color: "var(--s2)", get: (p) => p.mem }] });
+      const temp = charts.timeChart({ height: 90, fmt: (v) => v.toFixed(0) + " °C", series: [{ name: "Temperature", color: "var(--s4)", area: true, get: (p) => p.temp_c }] });
+      const lm = by(pts(d.link_metrics || []), "link");
+      const names = Object.keys(lm).slice(0, 6);
+      const merged = new Map();
+      for (const k of names) for (const p of lm[k]) { const o = merged.get(p.t) || { t: p.t }; o[k + ":u"] = p.util; o[k + ":l"] = p.loss; o[k + ":r"] = p.rx_dbm; merged.set(p.t, o); }
+      const lp = [...merged.values()].sort((a, b) => a.t - b.t);
+      const short = (k) => k.replace(n.id, "").replace(/^--|--$/g, "") || k;
+      const util = charts.timeChart({ height: 130, fmt: (v) => pct(v), max: 1, series: names.map((k, i) => ({ name: short(k), color: `var(--s${(i % 6) + 1})`, get: (p) => p[k + ":u"] })) });
+      const rxv = lp.flatMap((p) => names.map((k) => p[k + ":r"])).filter((v) => v != null);
+      const rx = charts.timeChart({ height: 110, fmt: (v) => v.toFixed(1) + " dBm", min: rxv.length ? Math.floor(Math.min(...rxv)) - 1 : undefined, max: rxv.length ? Math.ceil(Math.max(...rxv)) + 1 : undefined, series: names.map((k, i) => ({ name: short(k), color: `var(--s${(i % 6) + 1})`, get: (p) => p[k + ":r"] })) });
+      const loss = charts.timeChart({ height: 100, fmt: (v) => v.toFixed(2) + "%", series: names.map((k, i) => ({ name: short(k), color: `var(--s${(i % 6) + 1})`, get: (p) => p[k + ":l"] })) });
+      requestAnimationFrame(() => { cpu.update(m); temp.update(m); util.update(lp); rx.update(lp); loss.update(lp); });
+      return [sec("CPU and memory", "netops_device_metrics, six hours", cpu), sec("Temperature", null, temp), names.length ? [sec("Its links' utilisation", "netops_link_metrics, three hours", util), sec("Received optical power", "a falling level is a dirty or failing optic", rx), sec("Packet loss", null, loss)] : null];
+    }
+    // Sixty days as columns, a day each: faults red below, changes blue above.
+    const got = Object.fromEntries((d.days || []).map((x) => [x.day, x]));
+    const end = Date.parse((app.status?.last_minute || new Date().toISOString()).slice(0, 10) + "T00:00:00Z");
+    const days = Array.from({ length: 60 }, (_, i) => { const k = new Date(end - (59 - i) * 864e5).toISOString().slice(0, 10); return { day: k, faults: got[k]?.faults || 0, changes: got[k]?.changes || 0 }; });
+    const top = Math.max(1, ...days.map((x) => x.faults + x.changes));
+    const ch = h("div", { class: "no-days60" }, h("div", { class: "cols" }, days.map((x) => h("span", { title: `${x.day}: ${x.faults} faults, ${x.changes} changes` }, x.changes ? h("i", { class: "c", style: { height: (x.changes / top) * 100 + "%" } }) : null, x.faults ? h("i", { class: "f", style: { height: (x.faults / top) * 100 + "%" } }) : null))),
+      h("div", { class: "ax" }, h("span", {}, days[0].day.slice(5)), h("span", {}, "today")), h("div", { class: "no-legend" }, h("span", {}, h("i", { style: { background: "var(--crit)" } }), "faults"), h("span", {}, h("i", { style: { background: "var(--s1)" } }), "changes")));
+    void day;
+    return [sec("Its readings now", "the latest probe, kept on the row", facts(app, [["latency", n.state === "down" ? `no answer (usually ${fms(n.base_ms)})` : `${fms(n.latency_ms)} (usually ${fms(n.base_ms)})`], ["loss", (n.loss || 0).toFixed(1) + "%"], ["state", n.state]]),
+      n.base_ms ? h("div", { class: "no-meter", title: "latency against its usual" }, h("i", { style: { width: Math.min(100, ((n.latency_ms || n.base_ms) / (n.base_ms * 4)) * 100) + "%", background: (n.latency_ms || 0) > n.base_ms * 2 ? "var(--warn)" : "var(--s3)" } })) : null),
+      sec("Faults and changes a day", `netops_estate_events, sixty days · ${d.events.length} events`, (d.days || []).length ? ch : h("div", { class: "muted small" }, "Nothing happened to it in sixty days.")),
+      h("div", { class: "no-map-sec muted small" }, "The estate keeps one reading an object, on its row; series a minute are kept for the backbone's devices and links (pick a core, border or aggregation router to see them).")];
+  };
+  let evFilter = "all";
+  const events = () => {
+    const list = d.events.filter((e) => evFilter === "all" || e.event === evFilter);
+    const f = h("div", { class: "row", style: { gap: "4px", flexWrap: "wrap" } }, [["all", "All"], ["fault", "Faults"], ["clear", "Cleared"], ["change", "Changes"]].map(([k, l]) => h("button", { class: "chip", "aria-pressed": String(evFilter === k), onclick: () => { evFilter = k; drawBody(); } }, l, " ", h("span", { class: "muted" }, String(k === "all" ? d.events.length : d.events.filter((e) => e.event === k).length)))));
+    return [sec("What happened to it", "netops_estate_events, sixty days, newest first", f), h("div", { class: "no-map-hist", style: { padding: "0 14px" } }, list.length ? list.slice(0, 120).map((e) => h("div", { class: e.event }, h("span", { class: "when" }, C.fmt.ago(T(e.ts))), h("span", {}, h("b", {}, e.event === "change" ? "Change" : e.event === "clear" ? "Cleared" : "Fault"), " ", e.text, h("span", { class: "muted" }, [e.author ? ` · ${e.author}` : "", e.ticket ? ` · ${e.ticket}` : "", e.minutes ? ` · lasted ${mins(e.minutes)}` : "", e.cause ? ` · ${e.cause}` : ""].join(""))))) : h("div", { class: "muted small" }, "Nothing."))];
+  };
+  const logs = () => {
+    if (d.core) return [sec("Its log", "netops_syslog, newest first", logLines(app, (d.logs || []).map((l) => ({ ...l, sev: { emerg: 0, alert: 1, crit: 2, err: 3, warning: 4, notice: 5 }[l.severity] ?? 6 })), null))];
+    const lines = d.events.slice(0, 80).map((e) => ({ ts: e.ts, severity: e.event === "fault" ? e.severity || "major" : e.event === "change" ? "change" : "clear", message: `${n.id} ${e.event}: ${e.text}${e.author ? " (" + e.author + ")" : ""}`, sev: e.event === "fault" ? 3 : 6 }));
+    return [sec("Its log", "its events as lines: the estate keeps no syslog of its own", logLines(app, lines, null))];
+  };
+  const rel = () => {
+    const ups = j.upstream || [];
+    const byKind = {};
+    for (const r of j.downstream.rows) { const b = (byKind[r.kind] ||= { n: 0, bad: 0 }); b.n += r.n; if (r.state && r.state !== "ok") b.bad += r.n; }
+    const lit = hooks.lit();
+    const chain = h("ol", { class: "no-chain" }, [...ups].reverse().map((u) => h("li", { class: u.state !== "ok" ? "bad" : "" }, h("a", { class: "no-link", onclick: () => hooks.go(u) }, u.id), h("span", { class: "muted" }, ` · ${KIND_NAME[u.kind] || u.kind}${u.state !== "ok" ? " · " + u.state : ""}`))),
+      h("li", { class: "me" }, h("b", {}, n.id), h("span", { class: "muted" }, ` · ${KIND_NAME[n.kind] || n.kind}`)),
+      j.downstream.total ? h("li", { class: "below" }, `${C.fmt.n(j.downstream.total)} below it`, j.downstream.not_ok ? h("span", { style: { color: "var(--crit-ink)" } }, ` · ${C.fmt.n(j.downstream.not_ok)} not ok`) : null) : null);
+    return [sec("How it is connected", "REACHABLE against the edges and along them", chain,
+      h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } }, h("button", { class: "btn xs" + (lit ? " primary" : ""), onclick: () => { hooks.toggleLight(); drawBody(); } }, C.icon("layers"), lit ? "Lit on the map: clear" : "Light it on the map"), h("span", { class: "muted small" }, lit ? `${C.fmt.n(lit)} objects lit, the rest dimmed` : ""))),
+      Object.keys(byKind).length ? sec("What depends on it", null, h("div", {}, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { margin: "0 4px 4px 0" } }, `${C.fmt.n(b.n)} ${(KIND_NAME[kd] || kd).toLowerCase()}${b.n === 1 ? "" : "s"}`, b.bad ? h("b", { style: { color: "var(--crit-ink)" } }, ` · ${C.fmt.n(b.bad)}`) : null)))) : null,
+      (d.customers || []).length ? sec("Customers behind it", "REACHABLE, grouped by customer", h("div", { class: "no-cust" }, d.customers.slice(0, 12).map((c) => h("div", {}, h("span", {}, c.customer), h("span", { class: "muted" }, `${c.n} ${c.n === 1 ? "site" : "sites"}`), c.hurt ? h("b", { style: { color: "var(--crit-ink)" } }, `${c.hurt} hurt`) : h("span")))) ) : null,
+      (j.near || []).length ? sec("Trouble within three hops", null, j.near.slice(0, 8).map((o) => h("a", { class: "no-map-row", onclick: () => hooks.go(o) }, h("i", { class: "no-map-dot", style: { background: o.state === "down" ? "var(--crit)" : o.state === "degraded" ? "var(--warn)" : "var(--serious)" } }), h("span", { class: "t" }, h("b", {}, o.id), h("span", {}, `${o.hop} ${o.hop === 1 ? "hop" : "hops"} · ${o.state}`))))) : null];
+  };
+  const inc = () => {
+    const list = d.incidents || [];
+    const own = j.incident || j.cause?.incident;
+    if (!list.length && !own) return [h("div", { class: "no-map-sec muted small" }, d.core ? "No incident has named it." : "No incident is open on it or on what it hangs from. Incidents are opened on the backbone; the estate's faults show as events.")];
+    return [own ? sec("Open now", null, h("a", { class: "no-map-row", onclick: () => app.go("incidents", own.id) }, h("i", { class: "no-map-dot", style: { background: "var(--crit)" } }), h("span", { class: "t" }, h("b", {}, `${own.id}: ${own.title}`), h("span", {}, own.severity || "")))) : null,
+      list.length ? sec("Incidents that named it", "netops_incidents, devices = :id", list.map((i) => h("a", { class: "no-map-row", onclick: () => app.go("incidents", i.id) }, h("i", { class: "no-map-dot", style: { background: i.status === "resolved" ? "var(--good)" : "var(--crit)" } }), h("span", { class: "t" }, h("b", {}, `${i.id}: ${i.title}`), h("span", {}, `${i.severity} · ${i.status} · ${C.fmt.ago(T(i.started))}${i.root_cause ? " · " + i.root_cause : ""}`))))) : null];
+  };
+  const cfg = () => {
+    const c = (d.config || [])[0];
+    const props = kv(app, [["kind", KIND_NAME[n.kind] || n.kind], ["vendor", n.vendor], ["model", n.model], ["software", n.os_version], ["customer", n.customer], ["layer", n.layer], ["region", n.region], ["metro", n.metro], ["hub", n.hub], ["site", n.asite]]);
+    if (!c) return [sec("Its properties", "the row in netops_estate_nodes", props), h("div", { class: "no-map-sec muted small" }, "Configurations are kept for the backbone's devices (netops_configs, with every version); this estate object has none.")];
+    return [sec("Its properties", null, props), sec(`Configuration, version ${c.version}`, `${c.author} · ${C.fmt.ago(T(c.ts))}${c.change_id ? " · " + c.change_id : ""} · ${c.lines} lines`, h("pre", { class: "code" }, c.body), h("button", { class: "btn xs", style: { marginTop: "6px" }, onclick: () => deviceDrawer(app, n.id) }, "Blame and every version"))];
+  };
+  const drawBody = () => {
+    if (tab === "over") { body.replaceChildren(...overview); return; }
+    if (!d) { body.replaceChildren(wait()); return; }
+    const f = { metrics, events, logs, rel, inc, cfg }[tab];
+    put(body, f());
+  };
+  detailP.then((x) => { d = x; drawBar(); if (tab !== "over") drawBody(); }).catch((e) => { d = { events: [], days: [], error: e.message }; if (tab !== "over") body.replaceChildren(C.failure(e, "This object")); });
+  drawBar(); drawBody();
+  return [bar, body];
+}
+
+// ---------------------------------------------------------------- the box above every page, and the assistant
+
+const SUGGEST_ICON = { object: "node", place: "layers", customer: "user", circuit: "route", filter: "filter", phrase: "right", history: "clock", question: "sparkle" };
+const SUGGEST_NAME = { object: "Object", place: "Place", customer: "Customer", circuit: "Circuit", filter: "Filter", phrase: "Continue", history: "Asked before", question: "Ask" };
+
+/**
+ * What the person is looking at, for the box and the assistant: the place
+ * the map shows and the object picked. Pages say it with app.setWhere.
+ */
+function whereState(app) {
+  app.where = { place: null, sel: null, off: false };
+  const subs = new Set();
+  app.onWhere = (f) => { subs.add(f); return () => subs.delete(f); };
+  app.setWhere = (patch) => {
+    const before = JSON.stringify([app.where.place?.id, app.where.sel?.id]);
+    Object.assign(app.where, patch);
+    if (patch.sel || patch.place) app.where.off = false;
+    if (JSON.stringify([app.where.place?.id, app.where.sel?.id]) !== before) for (const f of subs) f(app.where);
+  };
+  app.scope = () => (app.where.off ? null : app.where.place);
+  app.target = () => (app.where.off ? null : app.where.sel);
+}
+
+/**
+ * The search box: Search finds and filters in the place in view, Ask hands
+ * a question to the assistant. Both complete as they are typed, from the
+ * app's /v1/suggest (ChloeDB's PREFIX, the substring index and BM25 over
+ * the questions asked before), with what was typed before the word, the
+ * place in view and the object picked.
+ */
+function cmdBar(app, opts = {}) {
+  const { h, C } = app;
+  let mode = opts.mode || "search", items = [], at = -1, seq = 0, timer = 0, lastQ = null, open = false;
+  const scopeEl = h("button", { class: "no-scope", type: "button", title: "Where the search looks: the place in view, or the object picked. Click to search everywhere." });
+  const input = h("input", { class: "no-cmd-in", type: "search", autocomplete: "off", spellcheck: "false", role: "combobox", "aria-autocomplete": "list", "aria-expanded": "false", "aria-label": "Search the network, or ask" });
+  const modeSeg = h("div", { class: "no-cmd-mode", role: "tablist" });
+  const list = h("div", { class: "no-sug", role: "listbox", hidden: true });
+  const foot = h("div", { class: "no-sug-ft" });
+  const box = h("div", { class: "no-cmd" + (opts.compact ? " compact" : "") }, opts.compact ? null : modeSeg, opts.compact ? null : scopeEl, input, list);
+  const placeholder = () => {
+    const t = app.target(), s = app.scope();
+    input.placeholder = mode === "ask"
+      ? (t ? `Ask about ${t.id}: what is wrong, what changed, who is affected…` : "Ask: what is broken right now, which customers are hurt…")
+      : (t || s ? `Search in ${(t || s).name}: an id, a site, a customer, or a sentence` : "Search: an id, a circuit, a customer, or a sentence like “OLTs in London that are down”");
+  };
+  const drawScope = () => {
+    const t = app.target(), s = app.scope();
+    const label = t ? t.id : s ? s.name : "Everywhere";
+    put(scopeEl, C.icon(t ? "node" : s ? "layers" : "search"), h("span", {}, label), t || s ? h("span", { class: "x", "aria-hidden": "true" }, "×") : null);
+    scopeEl.classList.toggle("on", !!(t || s));
+    scopeEl.title = t ? `Asking and completing about ${t.id} (${t.kind || "object"}). Click to search everywhere.` : s ? `Searching in ${s.name}. Click to search everywhere.` : "Searching the whole network. Pick an object or zoom into a place to narrow it.";
+    placeholder();
+  };
+  const drawMode = () => modeSeg.replaceChildren(...[["search", "Search", "search"], ["ask", "Ask", "sparkle"]].map(([m, label, ic]) =>
+    h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), title: m === "ask" ? "Ask the assistant (Tab switches)" : "Search and filter (Tab switches)", onclick: () => setMode(m) }, C.icon(ic), h("span", {}, label))));
+  const setMode = (m) => { mode = m; drawMode(); placeholder(); lastQ = null; fetchSoon(0); input.focus(); };
+  scopeEl.onclick = () => { if (app.where.off) app.where.off = false; else app.where.off = true; drawScope(); lastQ = null; if (open) fetchSoon(0); };
+
+  const show = (v) => { open = v; list.hidden = !v; input.setAttribute("aria-expanded", String(v)); };
+  const mark = (label, typed) => {
+    // The part of a completion that was typed is plain; the rest is what it adds.
+    const i = typed ? label.toLowerCase().indexOf(typed.toLowerCase()) : -1;
+    return i < 0 || !typed ? [label] : [label.slice(0, i), h("b", {}, label.slice(i, i + typed.length)), label.slice(i + typed.length)];
+  };
+  const drawList = (j) => {
+    if (opts.compact && !input.value.trim()) { show(false); return; }
+    const word = (input.value.split(" ").pop() || "");
+    const rows = items.map((it, i) => h("div", { class: "no-sug-i" + (i === at ? " on" : ""), role: "option", "aria-selected": String(i === at), onmousedown: (e) => { e.preventDefault(); pick(i, !it.partial); } },
+      h("span", { class: "k " + it.kind }, C.icon(SUGGEST_ICON[it.kind] || "search")),
+      h("span", { class: "t" }, h("span", { class: "l" }, it.kind === "phrase" || it.kind === "object" || it.kind === "filter" || it.kind === "customer" || it.kind === "place" || it.kind === "circuit" ? [h("span", { class: "muted" }, it.text.slice(0, Math.max(0, it.text.length - it.label.length))), mark(it.label, word)] : mark(it.label, "")),
+        (() => { const sub = (it.kind === "phrase" || it.kind === "question" ? (it.sub || "") : [SUGGEST_NAME[it.kind], it.sub].filter(Boolean).join(" · ")) + (it.fuzzy ? " · with a typo" : ""); return sub ? h("span", { class: "s" }, sub) : null; })()),
+      i === at ? h("kbd", {}, it.partial ? "Tab" : "Enter") : null));
+    const qs = j?.queries || [];
+    const ms = qs.reduce((a, q) => a + (q.ms || 0), 0);
+    put(foot, h("span", {}, qs.length ? `${qs.length} ${qs.length === 1 ? "query" : "queries"} · ${C.fmt.ms(ms)}` : "from what was asked before"),
+      qs.length ? h("a", { class: "no-link", onmousedown: (e) => { e.preventDefault(); showQueries(app, "Completions", qs); } }, "SQL") : null,
+      h("span", { class: "grow" }), opts.compact ? null : h("span", { class: "keys" }, h("kbd", {}, "↑↓"), " choose ", h("kbd", {}, "Tab"), " complete ", h("kbd", {}, "Enter"), mode === "ask" ? " ask" : " search"));
+    list.replaceChildren(...(rows.length ? rows : [h("div", { class: "no-sug-none" }, mode === "ask" ? "Press Enter to ask it as written" : "Nothing to complete: press Enter to search for it as written")]), foot);
+  };
+  const fetchNow = async () => {
+    const q = input.value;
+    const t = app.target(), s = app.scope();
+    const key = [mode, q, t?.id, s?.id, app.lastAsked || ""].join("|");
+    if (key === lastQ) return;
+    lastQ = key;
+    const my = ++seq;
+    const params = new URLSearchParams({ q, mode, scope: t ? "" : s?.id || "", sel: t?.id || "", prev: app.lastAsked || "" });
+    let j;
+    try { j = await app.ctx.api(`/v1/suggest?${params}`); } catch (e) { console.warn(e); return; }
+    if (my !== seq || document.activeElement !== input) return;
+    items = j.items || [];
+    at = items.length && q.trim() ? 0 : -1;
+    drawList(j);
+    show(true);
+  };
+  const fetchSoon = (ms = 90) => { clearTimeout(timer); timer = setTimeout(fetchNow, ms); };
+  const pick = (i, run) => {
+    const it = items[i];
+    if (!it) return;
+    input.value = it.text + (it.partial || !run ? (it.text.endsWith(" ") || it.text.endsWith(":") ? "" : " ") : "");
+    if (run) { submit(it); return; }
+    lastQ = null; fetchSoon(0);
+  };
+  const submit = (it) => {
+    const text = input.value.trim();
+    show(false);
+    if (!text) return;
+    if (mode === "ask" || (it && it.kind === "question")) { app.agent.ask(text); input.value = ""; return; }
+    run(app, text, it);
+    input.blur();
+  };
+  input.addEventListener("input", () => fetchSoon());
+  input.addEventListener("focus", () => { lastQ = null; if (!opts.compact || input.value.trim()) fetchSoon(0); });
+  input.addEventListener("blur", () => setTimeout(() => show(false), 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!open) { fetchSoon(0); return; }
+      e.preventDefault();
+      at = items.length ? (at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length : -1;
+      drawList({ queries: [] });
+      return;
+    }
+    if (e.key === "Tab" && !e.shiftKey) {
+      if (open && at >= 0 && items[at]) { e.preventDefault(); pick(at, false); return; }
+      if (!opts.compact && !input.value.trim()) { e.preventDefault(); setMode(mode === "ask" ? "search" : "ask"); }
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const it = open && at >= 0 ? items[at] : null;
+      if (it && it.partial) { pick(at, false); return; }
+      if (it) { pick(at, true); return; }
+      submit(null);
+      return;
+    }
+    if (e.key === "Escape") { if (open) { e.stopPropagation(); show(false); } else input.blur(); }
+  });
+  app.onWhere?.(() => { drawScope(); lastQ = null; });
+  drawMode(); drawScope();
+  return { el: box, input, focus: () => input.focus(), set: (text, m) => { if (m) { mode = m; drawMode(); } input.value = text; input.focus(); }, drawScope };
+}
+
+/** What a search does from any page: an object or a place opens on the map; a sentence becomes the map's query; anything else is looked up. */
+function run(app, text, it) {
+  const id = it && (it.kind === "object" || it.kind === "place" || it.kind === "circuit") ? it.id : null;
+  if (it && it.kind === "circuit") { linkDrawer(app, it.id); return; }
+  if (id) {
+    if (app.map) app.map.open(id); else { app.pending = { open: id }; app.go("map", id); }
+    return;
+  }
+  const page = (app.ctx.path() || [])[0] || "";
+  const sentence = text.split(/\s+/).length >= 2 || /:/.test(text) || (it && it.kind !== "history");
+  if (!sentence && page !== "map") { lookupDrawer(app, text); return; }
+  // A kind: or state: filter reads as words the map's reader knows; the place in view narrows it.
+  const s = app.scope();
+  let asked = text.replace(/\bkind:([\w-]+)/g, (_, k) => KIND_NAME[k] ? KIND_NAME[k].toLowerCase() + "s" : k).replace(/\bstate:not-?ok\b/g, "that are not ok").replace(/\bstate:(\w+)/g, "that are $1").replace(/\bvendor:(\S+)/g, "$1").replace(/\bin:(\S+)/g, (_, m) => "in " + m.replace(/-/g, " "));
+  const t = app.target();
+  if (t && !/\b(behind|under)\b/.test(asked) && it?.kind !== "history" && /^(everything|all|what|objects?)\b/i.test(asked)) asked += ` behind ${t.id}`;
+  else if (s && !/\bin [A-Z]/.test(asked) && !/\bbehind\b/.test(asked) && !/\bh\d\d-/.test(asked)) asked += placeWords(s);
+  if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); }
+}
+
+/** The words that put a sentence in a place: a metro or a region by name, a hub (or a site's hub) by its id. */
+const placeWords = (s) => (!s ? "" : s.kind === "hub" ? ` in ${s.id}` : s.kind === "site" ? ` in ${s.id.replace(/^s\d+-/, "")}` : ` in ${s.name}`);
+
+function showQueries(app, title, qs) {
+  const { h, C } = app;
+  C.drawer({ title: `${title}: the SQL`, sub: `${qs.length} ${qs.length === 1 ? "query" : "queries"}, ${C.fmt.ms(qs.reduce((a, q) => a + (q.ms || 0), 0))} in ChloeDB`, wide: true,
+    body: h("div", { class: "stack" }, qs.map((q) => h("div", { class: "no-q" }, h("div", { class: "row nw between" }, h("b", {}, q.what || "query"), h("span", { class: "muted small" }, `${C.fmt.ms(q.ms || 0)} · ${q.rows ?? "?"} rows`)), C.sqlBlock(q.sql || "")))) });
+}
+
+// ---- the assistant
+
+/**
+ * A panel on the right of every page that answers questions about the
+ * network from the app's own API, so every answer carries the queries it
+ * ran. What it can answer it reads from the object picked (what is wrong
+ * and why, what changed before, who is affected, what to do, how it went
+ * before, what depends on it) or from the place in view; anything else
+ * becomes the map's sentence search.
+ */
+function assistant(app, root) {
+  const { h, C } = app;
+  const conv = [];
+  const watches = new Map();
+  const bar = cmdBar(app, { mode: "ask", compact: true });
+  const log = h("div", { class: "no-ag-log", "aria-live": "polite" });
+  const sugg = h("div", { class: "no-ag-sug" });
+  const ctxEl = h("div", { class: "no-ag-ctx" });
+  const tabsEl = h("div", { class: "no-ag-tabs", role: "tablist" });
+  let tab = "chat";
+  const watchEl = h("div", { class: "no-ag-watch" });
+  const body = h("div", { class: "no-ag-bd" });
+  const closeBtn = h("button", { class: "btn ghost icon", "aria-label": "Close the assistant", title: "Close (Esc)", onclick: () => close() }, C.icon("x"));
+  const el = h("aside", { class: "no-ag", "aria-label": "Assistant", hidden: true },
+    h("div", { class: "hd" }, C.icon("sparkle"), h("div", { class: "grow" }, h("h2", {}, "Assistant"), h("div", { class: "small muted" }, "Answers from the app's tables, with the SQL behind each")), closeBtn),
+    ctxEl, tabsEl, body, h("div", { class: "ft" }, bar.el));
+  root.append(el);
+  const drawTabs = () => tabsEl.replaceChildren(...[["chat", "Conversation"], ["watch", `Watching${watches.size ? " · " + watches.size : ""}`]].map(([t, label]) => h("button", { role: "tab", "aria-selected": String(tab === t), onclick: () => { tab = t; drawTabs(); drawBody(); } }, label)));
+  const drawCtx = () => {
+    const t = app.target(), s = app.scope();
+    put(ctxEl, h("span", { class: "muted" }, "About "), t ? h("b", {}, t.id) : s ? h("b", {}, s.name) : h("b", {}, "the whole network"),
+      t && t.state && t.state !== "ok" ? C.pill(STATE_PILL[t.state] || "info", t.state) : null,
+      t ? h("span", { class: "muted" }, ` · ${KIND_NAME[t.kind] || t.kind || ""}`) : null);
+  };
+  const intents = () => {
+    const t = app.target(), s = app.scope(), last = app.lastAsked ? intentOf(app.lastAsked) : "";
+    const place = s ? s.name : "the network";
+    if (t) {
+      const all = { wrong: `What is wrong with ${t.id}, and why?`, changed: "What changed before it started?", affected: "Who is affected, and how badly?", todo: "What should I do about it?", before: "How did faults like this end before?", related: "Show what depends on it on the map", watch: "Watch it and tell me when it changes" };
+      const next = { wrong: ["changed", "affected", "todo"], changed: ["todo", "before", "affected"], affected: ["todo", "related", "watch"], todo: ["before", "watch"], before: ["todo", "watch"], related: ["affected", "todo"] }[last] || ["wrong", "changed", "affected", "todo", "related"];
+      return next.map((k) => all[k]);
+    }
+    return [`What is broken in ${place} right now?`, `Which customers are affected in ${place}?`, `What changed in ${place} in the last day?`, "Which incidents are open?"];
+  };
+  const drawSugg = () => sugg.replaceChildren(h("div", { class: "small muted" }, app.lastAsked ? "Next" : "Try"), ...intents().map((q) => h("button", { class: "chip", onclick: () => ask(q) }, q)));
+  const drawBody = () => {
+    if (tab === "watch") {
+      body.replaceChildren(watchEl);
+      watchEl.replaceChildren(...(watches.size ? [...watches.values()].map((w) => h("div", { class: "no-ag-w" }, h("div", { class: "row nw between" }, h("b", {}, w.id), h("button", { class: "btn xs ghost", onclick: () => { w.stop(); watches.delete(w.id); drawTabs(); drawBody(); } }, "Stop")),
+        h("div", { class: "small muted" }, `Read every 30 s · ${w.state || "…"} · ${w.last ? "checked " + C.fmt.ago(w.last) : "starting"}`), w.events.length ? h("ul", { class: "small", style: { margin: "6px 0 0", paddingLeft: "16px" } }, w.events.slice(-5).map((e) => h("li", {}, e))) : null))
+        : [h("div", { class: "muted small" }, "Nothing watched. Ask the assistant to watch an object: it reads the object every 30 seconds and says when its state, its cause or what depends on it changes.")]));
+      return;
+    }
+    body.replaceChildren(log, sugg);
+  };
+  const drawLog = () => log.replaceChildren(...conv.map((m) => m.q ? h("div", { class: "no-ag-q" }, C.icon("user"), h("span", {}, m.q))
+    : h("div", { class: "no-ag-a" }, m.pending ? h("div", { class: "muted small" }, "Reading the tables…") : m.error ? h("div", { class: "error" }, m.error) : [
+      h("div", { class: "txt" }, m.body),
+      m.acts?.length ? h("div", { class: "row", style: { flexWrap: "wrap", gap: "6px" } }, m.acts) : null,
+      m.queries?.length ? h("div", { class: "small muted" }, h("a", { class: "no-link", onclick: () => showQueries(app, "This answer", m.queries) }, `${m.queries.length} ${m.queries.length === 1 ? "query" : "queries"} · ${C.fmt.ms(m.queries.reduce((a, q) => a + (q.ms || 0), 0))}`), m.how ? " · " + m.how : "") : null])));
+  async function ask(text) {
+    open();
+    tab = "chat"; drawTabs(); drawBody();
+    conv.push({ q: text });
+    const a = { pending: true };
+    conv.push(a);
+    drawLog();
+    log.lastChild?.scrollIntoView({ block: "end" });
+    try { Object.assign(a, await answer(app, text, { watch: (id) => addWatch(id) })); } catch (e) { a.error = e.message; }
+    a.pending = false;
+    app.lastAsked = text;
+    drawLog(); drawSugg();
+    log.lastChild?.scrollIntoView({ block: "nearest" });
+  }
+  const addWatch = (id) => {
+    if (watches.has(id)) return false;
+    const w = { id, state: null, cause: null, n: null, events: [], last: 0 };
+    const check = async () => {
+      try {
+        const j = await app.ctx.api(`/v1/map/node?id=${encodeURIComponent(id)}`);
+        const st = j.node.state, cause = j.cause?.id || null, n = j.downstream?.not_ok ?? null;
+        if (w.last && (st !== w.state || cause !== w.cause || (n != null && w.n != null && Math.abs(n - w.n) >= 5))) {
+          const msg = `${hhmm(Date.now())}: ${id} ${st !== w.state ? `is now ${st} (was ${w.state})` : cause !== w.cause ? `has a new cause: ${cause || "none"}` : `has ${n} objects not ok behind it (was ${w.n})`}`;
+          w.events.push(msg);
+          C.toast(msg, st === "ok" ? "ok" : "warn");
+        }
+        Object.assign(w, { state: st, cause, n, last: Date.now() });
+        if (tab === "watch") drawBody();
+      } catch (e) { console.warn(e); }
+    };
+    w.stop = C.every(30000, check, true, { always: true });
+    watches.set(id, w);
+    drawTabs();
+    return true;
+  };
+  function open() { if (!el.hidden) return; el.hidden = false; root.classList.add("no-ag-open"); drawCtx(); drawSugg(); drawTabs(); drawBody(); }
+  function close() { el.hidden = true; root.classList.remove("no-ag-open"); }
+  el.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented) close(); });
+  app.onWhere(() => { drawCtx(); if (!el.hidden) drawSugg(); });
+  app.agent = { ask, open: () => { open(); setTimeout(() => bar.focus(), 30); }, close, toggle: () => (el.hidden ? app.agent.open() : close()), stop: () => { for (const w of watches.values()) w.stop(); } };
+  return app.agent;
+}
+
+function intentOf(text) {
+  const t = text.toLowerCase();
+  if (/\bwatch\b/.test(t)) return "watch";
+  if (/\b(depend|depends|downstream|related|connected|light|map)\b/.test(t)) return "related";
+  if (/\bchang(e|ed|es)\b|\bbefore it (started|began)\b/.test(t) && !/\bend(ed)?\b/.test(t)) return "changed";
+  if (/\b(who|customers?|affected|impact|hurt)\b/.test(t)) return "affected";
+  if (/\b(do|fix|runbook|should|next step|mitigate)\b/.test(t)) return "todo";
+  if (/\b(before|history|similar|last time|end|ended|usually)\b/.test(t)) return "before";
+  if (/\b(wrong|why|cause|broken with|status of)\b/.test(t)) return "wrong";
+  return "";
+}
+
+const ID_RE = /\b((?:[a-z]+\d*-)+[a-z0-9]+(?:--[a-z0-9-]+)?)\b/g;
+
+/** One answer: its paragraphs, its buttons and the queries it ran. */
+async function answer(app, text, hooks) {
+  const { h, C } = app;
+  const queries = [];
+  const call = async (path) => { const j = await app.ctx.api(path); if (j?.queries) queries.push(...j.queries); return j; };
+  const lower = text.toLowerCase();
+  // The object asked about: one named in the question, or the one picked.
+  let id = null;
+  for (const m of text.matchAll(ID_RE)) if (/\d/.test(m[1]) || /^(cr|br|ag|fw|sp|lf)\d/.test(m[1])) { id = m[1]; break; }
+  const t = app.target();
+  if (!id && t && !/\b(network|everywhere|incidents)\b/.test(lower) && !/\bin (the )?[A-Z]/.test(text)) id = t.id;
+  const intent = intentOf(text);
+  const show = (oid) => h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.open(oid); else { app.pending = { open: oid }; app.go("map", oid); } } }, C.icon("node"), "Show on the map");
+  const p = (...kids) => h("p", {}, ...kids);
+  const place = app.scope();
+
+  if (id && intent) {
+    let j;
+    try { j = await call(`/v1/map/node?id=${encodeURIComponent(id)}`); } catch (e) { return { body: [p(`I could not read ${id}: ${e.message}`)], queries }; }
+    const n = j.node, cause = j.cause && j.cause.id ? j.cause : null;
+    const here = cause && cause.id === n.id;
+    const sinceTxt = (s) => (s ? C.fmt.ago(T(s)) : "");
+    if (intent === "wrong") {
+      const body = [];
+      if (!cause && n.state === "ok") body.push(p(h("b", {}, `${n.id} is fine. `), `It answers in ${fms(n.latency_ms)} (usually ${fms(n.base_ms)}) and nothing it hangs from is down or degraded.`));
+      else if (here) body.push(p(h("b", {}, `${n.id} is ${n.state} `), `since ${sinceTxt(n.since)}: ${n.reason || "no reason recorded"}.`));
+      else if (cause) body.push(p(h("b", {}, `${n.id} is ${n.state}, but the trouble is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up: `), `${cause.id} (${KIND_NAME[cause.kind] || cause.kind}) is ${cause.state}${cause.reason ? ": " + cause.reason : ""}${cause.incident ? `, in ${cause.incident.id}` : ""}.`));
+      else body.push(p(h("b", {}, `${n.id} is ${n.state}. `), n.reason || "Nothing above it is broken: the trouble is here."));
+      if (j.downstream.total) body.push(p(`${C.fmt.n(j.downstream.total)} objects depend on it${j.downstream.not_ok ? `, ${C.fmt.n(j.downstream.not_ok)} of them not ok` : ""}.`));
+      if (j.suspect) body.push(p(h("b", {}, `A change ${j.suspect.minutes_before} min before it began: `), `${j.suspect.text} (${j.suspect.author}, ${j.suspect.ticket || "no ticket"}, on ${j.suspect.node}).`));
+      return { body, acts: [show(cause?.id || n.id), j.incident ? h("button", { class: "btn xs", onclick: () => app.go("incidents", j.incident.id) }, `Open ${j.incident.id}`) : null].filter(Boolean), queries, how: "a walk against the edges, then the nearest broken thing above it" };
+    }
+    if (intent === "changed") {
+      const changes = (j.history || []).filter((e) => e.event === "change");
+      const began = cause?.since ? T(cause.since) : null;
+      const before = began ? changes.filter((c) => T(c.ts) <= began && began - T(c.ts) <= 24 * 3600e3) : changes.slice(0, 5);
+      const body = [];
+      if (j.suspect) body.push(p(h("b", {}, `Most likely: ${j.suspect.text}`), `, ${j.suspect.minutes_before} min before the trouble began, by ${j.suspect.author} (${j.suspect.ticket || "no ticket"}) on ${j.suspect.node === n.id ? "this object" : j.suspect.node + ", " + (j.suspect.relation || "near it")}.`));
+      else if (began) body.push(p(`Nothing was changed on ${cause.id} or one hop around it in the six hours before it ${cause.state === "down" ? "went down" : "degraded"} (${sinceTxt(cause.since)}).`));
+      if (before.length) body.push(h("ul", { class: "no-ag-ul" }, before.slice(0, 6).map((c) => h("li", {}, h("b", {}, C.fmt.ago(T(c.ts))), ` · ${c.node}: ${c.text} (${c.author})`))));
+      else body.push(p(began ? "No changes in the day before it." : "No changes in the last thirty days on it or around it."));
+      if (j.changes?.length) body.push(p(`Backbone changes that name it: ${j.changes.map((c) => c.id).join(", ")}.`));
+      return { body, acts: [show(n.id)], queries, how: "its events and those one hop around it, thirty days" };
+    }
+    if (intent === "affected") {
+      const d = await call(`/v1/map/detail?id=${encodeURIComponent(cause?.id || n.id)}`);
+      const cust = d.customers || [];
+      const byKind = {};
+      for (const r of j.downstream.rows) { const b = (byKind[r.kind] ||= { n: 0, bad: 0 }); b.n += r.n; if (r.state && r.state !== "ok") b.bad += r.n; }
+      const body = [p(h("b", {}, `${C.fmt.n(j.downstream.total)} objects depend on ${n.id}`), j.downstream.not_ok ? `, ${C.fmt.n(j.downstream.not_ok)} not ok now.` : ", all ok now.")];
+      const kinds = Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).slice(0, 5);
+      if (kinds.length) body.push(h("ul", { class: "no-ag-ul" }, kinds.map(([k, b]) => h("li", {}, `${C.fmt.n(b.n)} ${(KIND_NAME[k] || k).toLowerCase()}${b.n === 1 ? "" : "s"}${b.bad ? `, ${C.fmt.n(b.bad)} not ok` : ""}`))));
+      if (cust.length) body.push(p(h("b", {}, `${cust.length}${cust.length >= 20 ? "+" : ""} customers behind ${cause && cause.id !== n.id ? cause.id : "it"}: `), cust.slice(0, 6).map((c) => `${c.customer} (${c.n} ${c.n === 1 ? "site" : "sites"}${c.hurt ? `, ${c.hurt} hurt` : ""})`).join(", "), cust.length > 6 ? "…" : "", "."));
+      else body.push(p("No customer sits behind it."));
+      return { body, acts: [show(n.id), h("button", { class: "btn xs", onclick: () => app.map?.light(n.id, d.below) }, C.icon("layers"), "Light them on the map")], queries, how: "REACHABLE along the edges, grouped by kind and by customer" };
+    }
+    if (intent === "todo") {
+      const target = cause?.id || n.id;
+      const d = await call(`/v1/map/detail?id=${encodeURIComponent(target)}`);
+      const body = [];
+      const steps = [];
+      if (!cause && n.state === "ok") steps.push("Nothing needs doing: it is ok and nothing above it is broken.");
+      else {
+        if (cause && cause.id !== n.id) steps.push(`Work on ${cause.id}, not on ${n.id}: it is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up and is ${cause.state}.`);
+        if (j.suspect) steps.push(`Check the change ${j.suspect.minutes_before} min before it began (${j.suspect.ticket || j.suspect.text}) and roll it back if it touched ${j.suspect.node}.`);
+        const ended = (j.before?.ended || [])[0];
+        if (ended) steps.push(`Faults like this on ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s most often were ${ended.cause} and cleared in ${mins(ended.minutes)} on average (${C.fmt.n(ended.n)} times).`);
+        if (j.incident || cause?.incident) steps.push(`It is part of ${(j.incident || cause.incident).id}: post in its room rather than opening a new one.`);
+        else if (j.downstream.not_ok >= 20) steps.push(`${C.fmt.n(j.downstream.not_ok)} objects behind it are not ok: open an incident and tell the customers' account teams.`);
+      }
+      body.push(h("ol", { class: "no-ag-ul" }, steps.map((s) => h("li", {}, s))));
+      const rb = d.runbooks || [];
+      if (rb.length && (cause || n.state !== "ok")) body.push(p(h("b", {}, "Runbooks that read like it: "), rb.slice(0, 3).map((r) => `${r.title}${r.uses ? ` (closed ${r.wins} of ${r.uses})` : ""}`).join("; "), "."));
+      return { body, acts: [show(target), j.incident ? h("button", { class: "btn xs primary", onclick: () => app.go("incidents", j.incident.id) }, `Open ${j.incident.id}`) : null, h("button", { class: "btn xs", onclick: () => { hooks.watch(target); C.toast(`Watching ${target}`, "ok"); } }, C.icon("eye"), `Watch ${target}`)].filter(Boolean), queries, how: "the walk, the change before it, how such faults ended, and BM25 over the runbooks" };
+    }
+    if (intent === "before") {
+      const b = j.before || {};
+      const body = [];
+      if (!b.words) body.push(p(`${n.id} has had no fault to compare in thirty days.`));
+      else {
+        body.push(p(`Faults on ${(KIND_NAME[b.kind] || b.kind).toLowerCase()}s that read like “${b.words}”:`));
+        if ((b.ended || []).length) body.push(h("ul", { class: "no-ag-ul" }, b.ended.slice(0, 5).map((e) => h("li", {}, `${e.cause}: ${C.fmt.n(e.n)} times, cleared in ${mins(e.minutes)} on average, ${mins(e.longest)} at the longest`))));
+        if ((b.like || []).length) body.push(p(h("b", {}, "The closest: "), b.like.slice(0, 3).map((e) => `${e.node} ${C.fmt.ago(T(e.ts))} (${e.text})`).join("; "), "."));
+      }
+      return { body, acts: [show(n.id)], queries, how: "BM25 over two months of faults, then how long the cleared ones lasted" };
+    }
+    if (intent === "related") {
+      const d = await call(`/v1/map/detail?id=${encodeURIComponent(n.id)}`);
+      if (app.map) app.map.light(n.id, d.below); else { app.pending = { open: n.id }; app.go("map", n.id); }
+      return { body: [p(h("b", {}, `Lit on the map: ${C.fmt.n((d.below || []).length)} objects that depend on ${n.id}`), `, and the ${j.upstream.length} it hangs from. The rest is dimmed.`)], acts: [show(n.id)], queries, how: "REACHABLE along the edges" };
+    }
+    if (intent === "watch") {
+      const added = hooks.watch(n.id);
+      return { body: [p(added ? h("b", {}, `Watching ${n.id}. `) : `Already watching ${n.id}. `, "I read it every 30 seconds and say here, and with a note at the bottom of the page, when its state, its cause or how much behind it is not ok changes.")], queries, how: "/v1/map/node, every 30 s" };
+    }
+  }
+  // About the place in view, or the network.
+  const where = placeWords(place);
+  if (/\bincidents?\b/.test(lower) && /\bopen|now|which\b/.test(lower)) {
+    const j = await call("/v1/incidents");
+    const open = (j.incidents || j.rows || []).filter((i) => i.status !== "resolved");
+    return { body: [p(h("b", {}, open.length ? `${open.length} open: ` : "No incident is open."), open.slice(0, 5).map((i) => `${i.id} ${i.title} (${i.severity}, ${i.status})`).join("; "))], acts: open.slice(0, 3).map((i) => h("button", { class: "btn xs", onclick: () => app.go("incidents", i.id) }, i.id)), queries };
+  }
+  if (/\b(broken|wrong|down|red)\b/.test(lower) && /\b(right now|now|what is|what's)\b/.test(lower)) {
+    const j = await call("/v1/map/hot");
+    const col = place ? { region: "region", metro: "metro", hub: "hub", site: "asite" }[place.kind] : null;
+    const f = (j.faults || []).filter((x) => !col || x[col] === place.id);
+    const down = f.filter((x) => x.state === "down");
+    const body = [p(h("b", {}, f.length ? `${f.length} objects are broken${where}` : `Nothing is broken${where}.`), f.length ? `, ${down.length} of them down.` : "")];
+    if (f.length) body.push(h("ul", { class: "no-ag-ul" }, f.slice(0, 6).map((x) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(x.id) : app.go("map", x.id) }, x.id), ` · ${x.state} · ${x.reason} · ${C.fmt.ago(T(x.since))}`))));
+    if ((j.incidents || []).length) body.push(p(`On the backbone: ${j.incidents.map((i) => `${i.id} ${i.title}`).join("; ")}.`));
+    return { body, acts: f[0] ? [show(f[0].id)] : [], queries, how: "state IN ('down', 'degraded'), newest first" };
+  }
+  // Anything else becomes the map's sentence search.
+  let asked = text.replace(/^(show me|find|list|which are|which|what are)\s+/i, "");
+  if (/customers?/.test(lower) && /affected|hurt/.test(lower)) asked = `customer routers${where} that are not ok`;
+  else if (/\bchanged?\b/.test(lower) && /\b(last|today|hour|day|week)\b/.test(lower) && !/\b(olt|cell|switch|router|ont|cpe|radio)/i.test(lower)) asked = `everything changed in the last ${/week/.test(lower) ? "week" : "day"}${where}`;
+  else if (where && !/\bin [A-Z]/.test(asked)) asked += where;
+  const j = await call(`/v1/map/ask?q=${encodeURIComponent(asked)}`);
+  if (!j.understood) return { body: [p(`I did not understand that. ${j.hint || ""}`), p("I can answer, about the object picked: what is wrong and why, what changed before it started, who is affected, what to do, how it went before, what depends on it; or search the network in a sentence.")], queries };
+  const body = [p(h("b", {}, `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}`), ` for “${j.asked}”, read as: ${j.read.map((r) => r.text).join(", ")}.`)];
+  if (j.rows.length) body.push(h("ul", { class: "no-ag-ul" }, j.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.latency_ms ? " · " + fms(r.latency_ms) : ""}`))));
+  return { body, acts: [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")], queries, how: "the sentence became one statement" };
+}
+
+// ---------------------------------------------------------------- dashboards
+
+/** Panels over the backbone's telemetry and the estate, for the place in view or everywhere. */
+function dashPage(body, app) {
+  const { h, C, charts } = app;
+  const head = h("div", { class: "no-dash-head" });
+  const tiles = h("div", { class: "no-kpis" });
+  const grid = h("div", { class: "no-dash" });
+  body.append(head, tiles, grid);
+  const series = (m, key = "v") => {
+    const names = Object.keys(m);
+    const byT = new Map();
+    for (const n of names) for (const p of m[n]) { const t = T(p.t); const o = byT.get(t) || { t }; o[n] = p[key]; byT.set(t, o); }
+    return { names, points: [...byT.values()].sort((a, b) => a.t - b.t) };
+  };
+  const chart = (m, fmtv, o = {}) => {
+    const { names, points } = series(m);
+    if (o.auto) {
+      const vals = points.flatMap((p) => names.map((n) => p[n])).filter((v) => v != null);
+      if (vals.length) { o.min = Math.floor(Math.min(...vals)) - 1; o.max = Math.ceil(Math.max(...vals)) + 1; }
+    }
+    const ch = charts.timeChart({ height: o.height || 170, fmt: fmtv, max: o.max, min: o.min, threshold: o.threshold, series: names.map((n, k) => ({ name: o.label ? o.label(n) : n, color: `var(--s${(k % 6) + 1})`, get: (p) => p[n], fmt: fmtv })) });
+    requestAnimationFrame(() => ch.update(points));
+    return ch;
+  };
+  const heatGrid = (heat) => {
+    const causes = [...new Set(heat.flatMap((d) => Object.keys(d.by)))].sort();
+    const max = Math.max(1, ...heat.flatMap((d) => Object.values(d.by)));
+    const col = (v) => (!v ? "var(--surface-3)" : `var(--seq-${Math.min(7, 1 + Math.round((v / max) * 6))})`);
+    return h("div", { class: "no-heat", style: { gridTemplateColumns: `90px repeat(${heat.length}, minmax(0, 1fr))` } },
+      h("span"), heat.map((d, i) => h("span", { class: "d" }, i % 2 ? "" : d.day.slice(5))),
+      causes.map((c) => [h("span", { class: "c" }, c || "unknown"), heat.map((d) => h("span", { class: "cell", style: { background: col(d.by[c]) }, title: `${d.day} · ${c}: ${d.by[c] || 0} faults` }))]));
+  };
+  const draw = (j) => {
+    const s = j.scope;
+    put(head, h("div", { class: "row nw", style: { gap: "10px", flexWrap: "wrap" } }, h("h2", { style: { margin: 0, fontSize: "16px" } }, s ? `Dashboards · ${s.name}` : "Dashboards · the whole network"),
+      h("span", { class: "muted small" }, `Backbone telemetry over three hours, the estate now, faults over two weeks. ${s ? "The estate's panels are narrowed to the place in view; the backbone's are everywhere." : "Zoom into a place on the map to narrow the estate's panels."}`)));
+    const notOk = j.estate.by_metro.reduce((a, r) => a + r.n, 0);
+    const down = j.estate.by_metro.filter((r) => r.state === "down").reduce((a, r) => a + r.n, 0);
+    const hot = j.links.top[0];
+    const lossy = j.links.lossy[0];
+    const today = Object.values(j.estate.heat.at(-1)?.by || {}).reduce((a, b) => a + b, 0);
+    put(tiles, [
+      kpi(app, "Not ok", C.fmt.n(notOk), `${C.fmt.n(down)} down`, down ? { style: { borderColor: "var(--crit)" } } : {}),
+      kpi(app, "Open incidents", String(app.status?.open_incidents ?? "–"), `${j.incidents.reduce((a, r) => a + r.n, 0)} in 30 days`),
+      kpi(app, "Busiest link", hot ? pct(hot.peak) : "–", hot ? hot.link : ""),
+      kpi(app, "Worst loss", lossy ? lossy.worst.toFixed(1) + "%" : "–", lossy ? lossy.link : ""),
+      kpi(app, "Faults today", C.fmt.n(today), "in the estate"),
+    ]);
+    const metros = {};
+    for (const r of j.estate.by_metro) { const m = (metros[r.metro] ||= { down: 0, degraded: 0, impacted: 0 }); m[r.state] = (m[r.state] || 0) + r.n; }
+    const kinds = {};
+    for (const r of j.estate.by_kind) kinds[r.kind] = (kinds[r.kind] || 0) + r.n;
+    const panel = (title, sub, el, wide) => C.card({ title, sub, body: el, cls: "no-panel" + (wide ? " wide" : "") });
+    put(grid,
+      panel("Link utilisation", "the six busiest links, a point a minute", chart(j.links.util, (v) => pct(v), { max: 1 }), true),
+      panel("Packet loss", "the links that lost the most", chart(j.links.loss, (v) => v.toFixed(2) + "%")),
+      panel("Received optical power", "the same links: a falling level is a dirty or failing optic", chart(j.links.rx, (v) => v.toFixed(1) + " dBm", { auto: true })),
+      panel("Device CPU", "the busiest devices", chart(j.devices.cpu, (v) => v.toFixed(0) + "%", { max: 100 })),
+      j.services.top.length ? panel("Service latency, p95", "the services with the worst", chart(j.services.p95, (v) => v.toFixed(0) + " ms")) : null,
+      panel("Not ok, by metro", "down, degraded and behind a fault", charts.barList(Object.entries(metros).sort((a, b) => (b[1].down + b[1].degraded + b[1].impacted) - (a[1].down + a[1].degraded + a[1].impacted)).slice(0, 10).map(([m, v]) => ({ name: m.replace(/^m-/, "").toUpperCase() + (v.down ? ` · ${v.down} down` : ""), value: v.down + v.degraded + v.impacted, color: v.down ? "var(--crit)" : v.degraded ? "var(--warn)" : "var(--serious)" })), { fmtv: C.fmt.n })),
+      panel("Not ok, by kind", null, charts.barList(Object.entries(kinds).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => ({ name: KIND_NAME[k] || k, value: v })), { fmtv: C.fmt.n })),
+      panel("Faults a day, by cause", "two weeks of the estate's events", heatGrid(j.estate.heat), true),
+      j.incidents.length ? panel("Incidents, 30 days", "by cause, with the mean time to resolve", charts.barList(j.incidents.map((r) => ({ name: `${KIND[r.category] || r.category} · ${mins(r.mttr)}`, value: r.n })), { fmtv: C.fmt.n })) : null);
+  };
+  const stop = live(app, grid, () => `/v1/dash?scope=${encodeURIComponent(app.scope()?.id || "")}`, draw, 30000);
+  const off = app.onWhere(() => stop.run());
+  return () => { stop(); off(); };
 }

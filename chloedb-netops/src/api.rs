@@ -131,6 +131,7 @@ pub fn router(svc: Shared) -> Router {
         .merge(crate::debug::routes())
         .merge(crate::estate::routes())
         .merge(crate::ask::routes())
+        .merge(crate::assist::routes())
         .route("/v1/sim/inject", post(inject))
         .route("/v1/sim/end", post(end_fault))
         .route("/v1/sim/settings", post(settings))

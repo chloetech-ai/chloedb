@@ -232,6 +232,25 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     let none = ask("how is the weather today".into()).await;
     assert!(none["understood"] == false && none["total"] == 0);
     assert!(len(&api.get("/v1/map/asks").await["asks"]) >= 2, "the searches are kept");
+
+    // The box completes from the tables: an id by PREFIX, the rest of a sentence, a filter's values, and the assistant's questions.
+    let q = |s: &str| s.replace(' ', "%20").replace(':', "%3A");
+    let prefix: String = fid.chars().take(fid.len().min(9)).collect();
+    let sug = api.get(&format!("/v1/suggest?q={}", q(&prefix))).await;
+    assert!(sug["items"].as_array().unwrap().iter().any(|i| i["kind"] == "object" && i["id"].as_str().unwrap().starts_with(&prefix)), "{prefix} completes to an object: {}", sug["items"]);
+    assert!(sug["queries"].as_array().unwrap().iter().any(|x| x["sql"].as_str().unwrap().contains("PREFIX(id, :w)")), "by PREFIX");
+    let sug = api.get(&format!("/v1/suggest?q={}", q("OLTs that are not "))).await;
+    assert!(sug["items"].as_array().unwrap().iter().any(|i| i["text"] == "OLTs that are not ok"), "a state follows 'not': {}", sug["items"]);
+    let sug = api.get(&format!("/v1/suggest?q={}", q("kind:ol"))).await;
+    assert_eq!(sug["items"][0]["text"], "kind:olt", "a filter's values: {}", sug["items"]);
+    let sug = api.get(&format!("/v1/suggest?q=&mode=ask&sel={fid}&prev={}", q("What is wrong with it, and why?"))).await;
+    assert_eq!(sug["items"][0]["intent"], "changed", "after what is wrong, what changed: {}", sug["items"]);
+    let det = api.get(&format!("/v1/map/detail?id={fid}")).await;
+    assert!(len(&det["events"]) >= 1 && det["below"].is_array(), "the inspector's tabs: {}", det["events"]);
+    let det = api.get("/v1/map/detail?id=cr1-lon").await;
+    assert!(det["core"] == true && len(&det["metrics"]) > 0 && len(&det["links"]) > 0, "a backbone device has series");
+    let dash = api.get("/v1/dash").await;
+    assert!(len(&dash["links"]["top"]) > 0 && len(&dash["estate"]["heat"]) == 14, "the dashboards");
     for path in ["/v1/incidents", "/v1/alerts", "/v1/rules", "/v1/changes", "/v1/devices", "/v1/services", "/v1/flows", "/v1/agents", "/v1/devices/cr1-lon", "/v1/links/cr1-lon--cr1-nyc", "/v1/services/ip-transit", "/v1/devices/cr1-lon/blame"] {
         ran_sql(&api.get(path).await, path);
     }
