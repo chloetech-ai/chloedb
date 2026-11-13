@@ -280,6 +280,10 @@ const SOURCE_LABEL = { suggestion: 'a suggestion', edit: 'edited by hand' };
 const AUTO = new Set(['repair', 'look', 'use']);
 const AUTO_LABEL = { repair: 'The engine repairs a piece that failed', look: 'The engine fixes what its screen check found', use: 'The engine builds a change from how the app is used' };
 
+// A call that failed for want of an answer, not because of what it asked:
+// the network, a timeout, the engine restarting behind chloedb-server (502,
+// 503, 504), too many requests (429).
+const transientError = (err) => !!err && (err.answered === false || [0, 408, 429, 502, 503, 504].includes(Number(err.status)));
 const DESKTOP_W = 1280; // the Desktop stage's width, as a laptop's window
 // Columns whose values look like people's contact details (Publish warns of them).
 const CONTACT = /(^|_)(e_?mail|phone|mobile|cell|tel|telephone|whatsapp|address|postcode|zip)(_|$)/i;
@@ -1103,7 +1107,7 @@ __sa_ready();
       for (const f of W.frames.values()) if (f.iframe.contentWindow === e.source) entry = f;
       const preview = !entry && [...shell.querySelectorAll('iframe.pv')].some((f) => f.contentWindow === e.source);
       if (!entry && !preview) return;
-      const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
+      const reply = (value, error, refused, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, transient }, '*');
       if (preview && m.kind === 'rpc' && !['sql', 'me', 'people', 'files'].includes(m.method)) { reply(undefined, 'a preview changes nothing'); return; }
       try {
         if (m.kind === 'rpc') {
@@ -1146,7 +1150,10 @@ __sa_ready();
           paintStage();
         }
       } catch (err) {
-        if (m.kind === 'rpc') reply(undefined, err.message, !!err.body?.refused);
+        // A refusal (a rule's, or a key's: 401, 403) is an answer, and a call
+        // nobody answered (the network, the engine restarting: no answer, 502
+        // to 504) is no fault of the view: neither is reported as its error.
+        if (m.kind === 'rpc') reply(undefined, err.message, !!err.body?.refused || err.status === 401 || err.status === 403, transientError(err));
       }
     };
     window.addEventListener('message', onMessage);

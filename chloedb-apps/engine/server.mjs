@@ -579,13 +579,16 @@ const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
-async function publicState(appId) {
+async function publicState(appId, access) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
+    // What visitors may do with its data (publish.mjs): the page offers no
+    // write a visitor who may only look would be refused.
+    access: access || 'look',
     app: { id: appId, name: view.app.name },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
@@ -647,7 +650,7 @@ const routes = [
     const request = await submit(app, description, 'user');
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access) : appState(id))],
   // Renamed by its owner: the name stays (a later plan does not rename it).
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
     const name = String(b.name || '').trim().replace(/\s+/g, ' ');
@@ -906,9 +909,10 @@ const server = http.createServer(async (req, res) => {
     // asks to be treated as a visitor (never the other way round).
     const stranger = !refused ? strangerOf(req) : null;
     const seen = stranger ? await publish.allows(req, url, stranger) : null;
-    if (seen?.denied) return send(res, 403, { error: seen.denied });
+    // A refusal, not an error: the page says it and records nothing (refused).
+    if (seen?.denied) return send(res, 403, { error: seen.denied, refused: true });
     const open = seen || (login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null);
-    if (refused && open?.denied) return send(res, 403, { error: open.denied });
+    if (refused && open?.denied) return send(res, 403, { error: open.denied, refused: true });
     if (refused && open) {
       refused = null;
       if (!open.file) {

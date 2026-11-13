@@ -121,6 +121,15 @@ function coerce(type, v, col) {
   }
 }
 
+// Whether an error a browser reported says only that a call was not
+// answered: the browser's own words for a failed fetch, the command center's
+// ("no answer: the network failed..."), a proxy's 502 to 504, an engine or a
+// server not answering. Not a fault of the app's code, so never a repair.
+const UNANSWERED = /\b(no answer\b|failed to fetch|networkerror|network error|load failed|the network failed|does not answer|is not answering|not answering|bad gateway|service unavailable|gateway time-?out|econnreset|econnrefused|socket hang up|the answer was cut off|too many requests)/i;
+export function unanswered(message) {
+  return UNANSWERED.test(String(message || '').split('\n')[0]);
+}
+
 export class Engine extends EventEmitter {
   constructor(strata, { log = console.log } = {}) {
     super();
@@ -482,7 +491,12 @@ export class Engine extends EventEmitter {
 
   // An error a view's frame reports (POST /api/apps/<id>/error). From code
   // the app no longer runs it is stale; from a visitor it is only recorded.
+  // One that says a call was not answered (the network, the engine or
+  // the server restarting: unanswered()) is no fault of the code: it is
+  // neither recorded nor repaired. A browser of an older runtime still
+  // sends them.
   async browserError(appId, capId, message, { visitor = false } = {}) {
+    if (unanswered(message)) return { stale: false, sent: false, transient: true };
     const live = await this.store.resolve(appId).catch(() => null);
     if (!live?.comp.caps.includes(capId)) return { stale: true };
     this.reportError(appId, capId, String(message || '').slice(0, 1500), 'in the browser', { visitor });

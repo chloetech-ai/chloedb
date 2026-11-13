@@ -59,9 +59,13 @@ const APP_CALLS = [
   ['POST', '/signup', 'look'], ['POST', '/signin', 'look'], ['POST', '/files', 'add'], ['POST', '/files/info', 'look'],
   ['POST', '/track', 'look'], ['POST', '/error', 'look'], ['POST', '/email', 'add'], ['POST', '/ask', 'look'], ['POST', '/fetch', 'look'],
 ];
+// What a visitor is told of a call their access does not allow, by what it
+// would have done.
 const DENIED = {
-  add: 'This app lets visitors only look: its owner has not let the public add to it',
+  add: 'This app is read-only for visitors: its owner has not let the public add to it',
+  change: 'This app is read-only for visitors: only its owner can change or delete what is in it',
 };
+const deniedFor = (rest) => (rest === '/update' || rest === '/remove' ? DENIED.change : DENIED.add);
 // The access a request asks to be seen with (x-sa-as: visitor, from the
 // studio's "See it as a stranger"), or null. Only ever less than the
 // studio's own: the routes treat it as a visitor's.
@@ -216,7 +220,7 @@ export class Publish {
       const call = APP_CALLS.find(([meth, r]) => meth === req.method && r === rest);
       const access = preview.access || this.of(m[1]).access;
       if (!call) return { app: m[1], call: rest, access, denied: 'A visitor cannot do this' };
-      const denied = ACCESS.indexOf(call[2]) > ACCESS.indexOf(access) ? DENIED[call[2]] : null;
+      const denied = ACCESS.indexOf(call[2]) > ACCESS.indexOf(access) ? deniedFor(rest) : null;
       return { app: m[1], call: rest, access, ...(denied ? { denied } : {}) };
     }
     const p = url.pathname;
@@ -239,7 +243,7 @@ export class Publish {
     // A call the owner's choice does not allow is refused with why (403), not sent to the login.
     const need = call[2];
     const access = accessOf(this.apps.get(m[1]));
-    const denied = ACCESS.indexOf(need) > ACCESS.indexOf(access) ? DENIED[need] : null;
+    const denied = ACCESS.indexOf(need) > ACCESS.indexOf(access) ? deniedFor(rest) : null;
     return { app: m[1], call: rest, dear: DEAR.has(rest), access, ...(denied ? { denied } : {}) };
   }
 

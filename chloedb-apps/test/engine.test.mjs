@@ -2929,7 +2929,9 @@ test('a published app: who can do what, chosen by its owner; an app published be
   const host = 'new-one.apps.example.com';
   const call = (m, p) => pub.allows(req(m, host), at(p));
   assert.ok(!(await call('POST', '/api/apps/n1/sql')).denied, 'looking is reading');
-  for (const p of ['/insert', '/update', '/remove', '/call', '/files', '/email']) assert.match((await call('POST', `/api/apps/n1${p}`)).denied, /only look/, p);
+  // Refused in words that say what was asked: adding, or changing what is there.
+  for (const p of ['/insert', '/call', '/files', '/email']) assert.match((await call('POST', `/api/apps/n1${p}`)).denied, /read-only for visitors: its owner has not let the public add/, p);
+  for (const p of ['/update', '/remove']) assert.match((await call('POST', `/api/apps/n1${p}`)).denied, /read-only for visitors: only its owner can change or delete/, p);
   await pub.set('n1', 'New one', { access: 'add' });
   for (const p of ['/insert', '/update', '/remove', '/call']) assert.equal((await call('POST', `/api/apps/n1${p}`)).denied, undefined, p);
   assert.equal((await call('POST', '/api/apps/n1/update')).access, 'add', 'the routes hold edits to the visitor\'s own rows');
@@ -2940,7 +2942,7 @@ test('a published app: who can do what, chosen by its owner; an app published be
   // The studio's "See it as a stranger": an app not published yet, as a visitor with the access weighed.
   assert.equal(strangerOf({ headers: {} }), null);
   const s = strangerOf({ headers: { 'x-sa-as': 'visitor', 'x-sa-access': 'look' } });
-  assert.match((await pub.allows(req('POST', 'engine'), at('/api/apps/zz9/insert'), s)).denied, /only look/);
+  assert.match((await pub.allows(req('POST', 'engine'), at('/api/apps/zz9/insert'), s)).denied, /read-only for visitors/);
   assert.deepEqual(await pub.allows(req('GET', 'engine'), at('/api/apps/zz9'), s), { app: 'zz9', call: '', access: 'look' });
   assert.ok((await pub.allows(req('POST', 'engine'), at('/api/apps/zz9/requests'), s)).denied, 'a stranger never builds');
   // What a visitor is told of a failure: nothing of how it runs.
@@ -3220,4 +3222,104 @@ test('each app reads and writes with a key of its own, held to its tables by the
   } finally {
     child.kill();
   }
+});
+
+test('a call nobody answered is not an error of the app: no record, no repair', async () => {
+  const { Engine, unanswered } = await import('../engine/engine.mjs');
+  const engine = new Engine({}, { log: () => {} });
+  const tracked = [];
+  engine.store = { track: async (...a) => { tracked.push(a); }, resolve: async () => ({ comp: { caps: ['a1/view/list@2'] } }) };
+  const emitted = [];
+  engine.on('error', (e) => emitted.push(e));
+  // What the command center, a browser and a proxy say when nothing answered (audit APC-1).
+  for (const m of ['data.expenses_k0: no answer: the network failed or the server is not running\n    at load', 'data.x: Failed to fetch', 'TypeError: NetworkError when attempting to fetch resource.',
+    'data.rows: the app apps (http://10.0.0.7:7730) does not answer: error sending request', 'Load failed', 'data.x: no answer in 30 s', 'body[2]: Bad Gateway']) {
+    assert.deepEqual(await engine.browserError('a1', 'a1/view/list@2', m), { stale: false, sent: false, transient: true }, m);
+  }
+  assert.equal(emitted.length, 0, 'no repair from a call nobody answered');
+  assert.equal(tracked.length, 0, 'nor is it counted as the app\'s error');
+  // A real error of the code still is.
+  assert.equal(unanswered("TypeError: Cannot read properties of null (reading 'name')"), false);
+  assert.deepEqual(await engine.browserError('a1', 'a1/view/list@2', "TypeError: Cannot read properties of null (reading 'name')"), { stale: false, sent: true });
+  assert.equal(emitted.length, 1);
+});
+
+// A screen in a frame made as the studio makes one, its calls answered by
+// the test as the studio would: rows, a refusal, or no answer at all.
+async function screenInFrame(t, spec, { access = null, answer }) {
+  const { readFileSync } = await import('node:fs');
+  const { loadPlaywright } = await import('../engine/checks.mjs');
+  const pw = loadPlaywright();
+  if (!pw) { t.skip('no playwright'); return null; }
+  const web = (f) => readFileSync(join(import.meta.dirname, '..', 'web', f), 'utf8');
+  const exprs = [];
+  const walk = (v) => (typeof v === 'string' && v.startsWith('=') ? (exprs.push(v.slice(1)), { $e: exprs.length - 1 })
+    : Array.isArray(v) ? v.map(walk) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v);
+  const compiled = walk(spec);
+  const close = (x) => x.replace(/<\/(script)/gi, '<\\/$1');
+  const doc = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div>
+<script>window.__SA = ${JSON.stringify({ slug: 'list', cap: 'a1/view/list@1', app: 'a1', origin: 'https://studio.test', params: {}, access })};</script>
+<script>${close(web('frame.js'))}</script><script>${close(web('screen.js'))}</script>
+<script>window.__SA_EXPR = []; window.__SA_EXPR_SRC = ${JSON.stringify(exprs)};</script>
+${exprs.map((e, i) => `<script>__SA_EXPR[${i}] = function (s) { with (s) { return (${close(e)}\n); } };</script>`).join('\n')}
+<script>(async () => { try { await __sa_screen(document.getElementById('root'), app, ${JSON.stringify(compiled)}); __sa_ready(); } catch (e) { __sa_report(e); } })();</script></body></html>`;
+  const browser = await pw.chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('**/*', (r) => r.fulfill({ contentType: 'text/html', body: '<!doctype html><body></body>' }));
+  await page.goto('https://studio.test/');
+  await page.exposeFunction('__answer', answer);
+  await page.evaluate((srcdoc) => {
+    window.__seen = [];
+    const f = document.createElement('iframe');
+    f.setAttribute('sandbox', 'allow-scripts');
+    window.addEventListener('message', async (e) => {
+      const m = e.data;
+      if (!m || !m.__sa) return;
+      window.__seen.push({ kind: m.kind, method: m.method, message: m.message });
+      if (m.kind !== 'rpc') return;
+      const out = await window.__answer(m.method, m.args);
+      e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, ...out }, '*');
+    });
+    f.srcdoc = srcdoc;
+    document.body.append(f);
+  }, doc);
+  return { page, frame: () => page.frames()[1], seen: () => page.evaluate(() => window.__seen) };
+}
+
+test('a view whose data read is not answered says so, reads again, and reports no error (APC-1)', async (t) => {
+  let sql = 0;
+  const spec = { data: { plants: 'SELECT * FROM plants' }, body: [{ each: '=plants', body: ['=item.name'] }] };
+  const f = await screenInFrame(t, spec, { answer: (method) => (method === 'sql' && ++sql === 1 ? { error: 'no answer: the network failed or the server is not running', transient: true } : { value: [{ id: '1', name: 'Fern' }] }) });
+  if (!f) return;
+  await f.page.waitForTimeout(500);
+  assert.match(await f.frame().evaluate(() => document.body.innerText), /No answer from the app/);
+  await f.page.waitForTimeout(2600);
+  assert.match(await f.frame().evaluate(() => document.body.innerText), /Fern/, 'read again by itself');
+  const seen = await f.seen();
+  assert.deepEqual(seen.filter((x) => x.kind === 'error'), [], 'nothing reported as the view\'s error');
+  assert.ok(sql >= 2);
+});
+
+test('a visitor who may only look is offered no form and no write; a refusal is said quietly, not reported (APC-2)', async (t) => {
+  const spec = { data: { plants: 'SELECT * FROM plants' }, state: { editing: null },
+    body: [{ form: 'plants', fields: ['name'], edit: '=state.editing' },
+      { button: 'Add a fern', do: "=() => app.insert('plants', { name: 'Fern' })" },
+      { button: 'Show all', do: '=() => set({ all: true })' },
+      { table: '=plants', columns: ['name'], actions: [{ label: 'Water', do: "=row => app.update('plants', row.id, { watered: app.today() })" }, { label: 'Edit', do: '=row => set({ editing: row })' }, { label: 'Open', do: "=row => app.open('plant', { id: row.id })" }] }] };
+  const rows = { value: [{ id: '1', name: 'Fern' }] };
+  const look = await screenInFrame(t, spec, { access: 'look', answer: () => rows });
+  if (!look) return;
+  await look.page.waitForTimeout(600);
+  const buttons = await look.frame().$$eval('button, input, form', (xs) => xs.map((x) => x.textContent.trim() || x.tagName));
+  assert.deepEqual(buttons, ['Show all', 'Open'], 'only what reads or moves is drawn');
+  // The owner (no access given) sees all of it.
+  const own = await screenInFrame(t, spec, { answer: (method) => (method === 'update' ? { error: 'This app is read-only for visitors', refused: true } : rows) });
+  await own.page.waitForTimeout(600);
+  const all = await own.frame().$$eval('button', (xs) => xs.map((x) => x.textContent.trim()));
+  for (const b of ['Add a fern', 'Water', 'Edit', 'Open']) assert.ok(all.includes(b), `${b} in ${all}`);
+  await own.frame().click('button:text("Water")');
+  await own.page.waitForTimeout(400);
+  assert.match(await own.frame().evaluate(() => document.body.innerText), /read-only for visitors/, 'the refusal is said');
+  assert.deepEqual((await own.seen()).filter((x) => x.kind === 'error'), [], 'and not reported as an error');
 });

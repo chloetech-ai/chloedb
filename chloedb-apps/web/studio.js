@@ -32,12 +32,21 @@ function h(tag, props, ...children) {
 // row they opened, then the form they gave up on) is told apart from the next.
 const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.getItem(k) || (sessionStorage.setItem(k, Math.random().toString(36).slice(2, 12)), sessionStorage.getItem(k)); } catch { return Math.random().toString(36).slice(2, 12); } })();
 
+// A call that failed: refused (a rule's refusal, or a visitor's access: 401,
+// 403) or transient (nobody answered: the network, the engine restarting
+// behind a proxy, too many requests), told apart from the app's own errors.
+const TRANSIENT = new Set([408, 429, 502, 503, 504]);
+const failed = (res, data) => Object.assign(new Error(data.error || res.statusText || `HTTP ${res.status}`),
+  data.refused || res.status === 401 || res.status === 403 ? { refused: true } : {}, TRANSIENT.has(res.status) ? { transient: true } : {});
+const unanswered = () => Object.assign(new Error('No answer from the app (the connection, or it is restarting)'), { transient: true });
+
 async function api(method, url, body, more) {
   const headers = { 'x-sa-session': SESSION, ...AS_STRANGER, ...(more || {}) };
   if (body) headers['content-type'] = 'application/json';
-  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let res;
+  try { res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined }); } catch { throw unanswered(); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
+  if (!res.ok) throw failed(res, data);
   return data;
 }
 
@@ -993,7 +1002,10 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
   const code = screen
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
     : noClose(view.code);
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {} }).replace(/</g, '\\u003c');
+  // A visitor's access (a published app's page, or "See it as a stranger"):
+  // the frame offers no write it would be refused. None for the owner.
+  const access = S.app?.public ? S.app.access || 'look' : null;
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {}, access }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1097,7 +1109,15 @@ function renderFrames() {
   document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"/.test(v.code || ''));
   box.querySelector('.viewerr')?.remove();
   const err = S.errors.get(S.view);
-  if (err) {
+  if (err && S.app?.public) {
+    // A visitor of a published app: nothing of how it is made, and nothing
+    // that asks the studio (which a visitor may not use), only a way to
+    // start the screen again.
+    box.append(h('div', { class: 'viewerr' },
+      h('div', { class: 'msg' }, h('b', 'Something went wrong on this screen. '), 'Try again; if it keeps happening, tell whoever shared the app.'),
+      h('button', { class: 'btn small', onclick: () => { S.frames.get(S.view)?.iframe.remove(); S.frames.delete(S.view); S.errors.delete(S.view); renderFrames(); } }, 'Try again'),
+      h('button', { class: 'btn small ghost', onclick: () => { S.errors.delete(S.view); renderFrames(); } }, 'Dismiss')));
+  } else if (err) {
     box.append(h('div', { class: 'viewerr' },
       h('div', { class: 'msg' }, h('b', 'This view hit an error. '), err.message, err.repairing ? h('div', { class: 'hint' }, h('span', { class: 'spin' }), ' The engine is repairing it; the fixed version replaces this one when it is ready.') : null),
       !err.repairing ? h('button', { class: 'btn small', onclick: () => ask(`The view "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
@@ -1608,9 +1628,10 @@ function showEmail(o) {
 async function upload(base, file) {
   if (!(file instanceof Blob)) throw new Error('app.upload takes a File (from an <input type="file"> or a drop)');
   const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
-  const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file });
+  let res;
+  try { res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file }); } catch { throw unanswered(); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
+  if (!res.ok) throw failed(res, data);
   return { ...data.file, url: location.origin + data.file.url };
 }
 
@@ -1636,7 +1657,7 @@ window.addEventListener('message', async (e) => {
     if (!['sql', 'me', 'people', 'files'].includes(m.method)) { e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, error: 'a preview changes nothing' }, '*'); return; }
     entry = { slug: 'preview', preview: true };
   }
-  const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
+  const reply = (value, error, refused, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, transient }, '*');
   const base = `/api/apps/${S.appId}`;
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
@@ -1683,7 +1704,7 @@ window.addEventListener('message', async (e) => {
       renderApp();
     }
   } catch (err) {
-    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused);
+    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, !!err.transient);
   }
 });
 
