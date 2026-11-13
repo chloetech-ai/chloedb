@@ -28,9 +28,16 @@ export function cellText(v) {
   return String(v);
 }
 
-function cell(v) {
+/**
+ * Whether a column's whole numbers are names rather than amounts (a year,
+ * an id, a code, a port): shown as written, "2018", not "2,018".
+ */
+export const plainInts = (name) => /(^|_)(id|ids|year|years|yr|code|codes|zip|postcode|sku|upc|isbn|port|no|num|number|version|seq|seq_no|ts|epoch)$/i.test(String(name || "")) || /^(year|id)/i.test(String(name || ""));
+
+function cell(v, col) {
   if (v == null) return h("span", { class: "nul" }, "null");
   if (typeof v === "boolean") return h("span", { class: "bool " + v }, String(v));
+  if (isNum(v) && Number.isInteger(v) && plainInts(col)) return h("span", { class: "n" }, String(v));
   if (isNum(v)) return h("span", { class: "n" }, Number.isInteger(v) ? fmt.n(v) : fmt.n(v, 4));
   if (Array.isArray(v)) {
     if (v.length > 8 && v.every(isNum)) return h("span", { class: "vec", title: `${v.length} numbers` }, `⟨${v.slice(0, 3).map((x) => x.toFixed(3)).join(", ")}, … ${v.length}⟩`);
@@ -98,7 +105,7 @@ export function grid(j, { max = 1000, onRow } = {}) {
       const r = j.rows[i];
       const tr = h("tr", { class: "click", tabIndex: 0 }, h("td", { class: "rn" }, n + 1),
         scored ? h("td", { class: "num sc" }, h("div", { class: "scbar", style: { width: Math.abs(j.scores[i] ?? 0) / maxScore * 100 + "%" } }), h("span", {}, j.scores[i] == null ? "–" : fmt.n(j.scores[i], 4))) : null,
-        r.map((v, ci) => h("td", { class: isNum(v) ? "num" : "", style: widths[ci] ? { maxWidth: widths[ci] + "px" } : null }, cell(v))));
+        r.map((v, ci) => h("td", { class: isNum(v) ? "num" : "", style: widths[ci] ? { maxWidth: widths[ci] + "px" } : null }, cell(v, j.columns?.[ci]))));
       const open = () => (onRow || rowDrawer)(i, j);
       tr.onclick = open; tr.onkeydown = (e) => { if (e.key === "Enter") open(); };
       tr.ondblclick = (e) => { const td = e.target.closest("td"); const ci = [...tr.children].indexOf(td) - 1 - (scored ? 1 : 0); if (ci >= 0) { e.stopPropagation(); copy(cellText(r[ci]), "Value copied"); } };
@@ -117,7 +124,7 @@ export function rowDrawer(i, j) {
   drawer({
     title: `Row ${i + 1}`, sub: j.keys?.[i] != null ? `key ${cellText(j.keys[i])}` : null,
     body: [
-      h("dl", { class: "kv" }, Object.entries(r).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, typeof v === "string" && v.length > 80 ? h("div", { class: "small", style: { whiteSpace: "pre-wrap" } }, v) : cell(v))])),
+      h("dl", { class: "kv" }, Object.entries(r).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, typeof v === "string" && v.length > 80 ? h("div", { class: "small", style: { whiteSpace: "pre-wrap" } }, v) : cell(v, k))])),
       j.scores?.[i] != null ? h("div", { class: "small muted" }, `score ${j.scores[i]}`) : null,
       h("pre", { class: "code", style: { maxHeight: "40vh" } }, JSON.stringify(r, null, 2)),
     ],

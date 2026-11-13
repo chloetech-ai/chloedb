@@ -5,7 +5,7 @@
 // ranked with their next step, error ratio and p99 with the changes of the
 // window, capacity, the coordinators side by side, and who is affected.
 
-import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink } from "../core.js";
+import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink, limited, cannotSee } from "../core.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
 import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState } from "../data.js";
 
@@ -156,7 +156,7 @@ function render(page, r0) {
     h("section", { class: "card home-whocard" }, h("div", { class: "hd" }, h("h3", {}, "Who is affected"), whoSub, h("div", { class: "tools" }, h("a", { class: "btn ghost sm", href: link("queries", { tab: "statements" }) }, "Queries", icon("right")))), h("div", { class: "bd" }, whoBody))));
 
   // ------------------------------------------------------------ data the view reads itself
-  let events = [], eventsFrom = "events", stats = null, statsKeys = false;
+  let events = [], eventsFrom = "events", eventsWhy = "", stats = null, statsKeys = false;
   const MARK = new Set(["copy_down", "copy_up", "primary_changed", "majority_lost", "majority_back", "rollout", "upgrade", "change", "alert_fired", "note", "moves_started", "contain"]);
   async function loadEvents() {
     const r = timeRange();
@@ -165,6 +165,8 @@ function render(page, r0) {
       events = (j.events || []).slice().sort((a, b) => b.ts_ms - a.ts_ms);
       eventsFrom = "events";
     } catch (e) {
+      // Refused (a key limited to tables): said, not shown as a quiet hour.
+      if (e.status === 403) { events = []; eventsFrom = "refused"; eventsWhy = cannotSee(e, "the timeline"); drawEvents(); drawCharts(); return; }
       if (e.status !== 404 && e.status !== 405) return;
       // An older server: the alerts' own changes are what it remembers.
       eventsFrom = "alerts";
@@ -210,6 +212,12 @@ function render(page, r0) {
   function drawBanner() {
     const f = state.fleet;
     const answering = !document.body.classList.contains("not-answering");
+    if (!f && (state.fleetRefused || limited())) {
+      banner.className = "banner home-banner unknown";
+      clear(banner, h("div", { class: "bic" }, icon("lock")), h("div", { class: "grow" }, h("div", { class: "big" }, "This key can't see the fleet's health"),
+        h("div", { class: "small" }, "It is limited to tables: the fleet, its events and its numbers show other tables' work. Its own tables are in ", h("a", { href: "#/sql" }, "SQL"), " and ", h("a", { href: "#/schema" }, "Schema"), ".")));
+      return;
+    }
     if (!f) { banner.className = "banner home-banner"; clear(banner, h("div", { class: "bic" }, h("span", { class: "spin" })), h("div", { class: "grow" }, h("div", { class: "big" }, "Checking the fleet…"))); return; }
     const tones = cardTones();
     let kind = f.status === "critical" ? "bad" : f.status === "warning" ? "warn" : "ok";
@@ -517,10 +525,11 @@ function render(page, r0) {
         style: { left: `calc(46px + ${p.x0.toFixed(1)}px)`, top: p.row * 15 + "px", ...(p.left ? { width: p.width + "px" } : { maxWidth: p.width + "px" }) } },
         h("b", {}, when(p.first.ts_ms, { sec: false })), " ", n > 1 ? h("span", { class: "ev-n" }, `${n} changes: `) : null, p.first.title);
     }));
-    if (!evs.length) lane.append(h("div", { class: "small muted", style: { paddingLeft: "46px", paddingTop: "4px" } }, eventsFrom === "events" ? "No change in this window: no copy went down, no primary moved, nobody changed anything." : "This server keeps no events (it has no /v1/events): only alert changes show."));
+    if (!evs.length) lane.append(h("div", { class: "small muted", style: { paddingLeft: "46px", paddingTop: "4px" } }, eventsFrom === "refused" ? eventsWhy : eventsFrom === "events" ? "No change in this window: no copy went down, no primary moved, nobody changed anything." : "This server keeps no events (it has no /v1/events): only alert changes show."));
   }
   function drawEvents() {
     const evs = events.slice(0, 12);
+    if (!evs.length && eventsFrom === "refused") { clear(evList, h("div", { class: "small muted" }, eventsWhy)); return; }
     if (!evs.length) { clear(evList, h("div", { class: "small muted" }, eventsFrom === "events" ? `Nothing happened in ${timeRange().label.replace("last", "the last")}.` : "This server keeps no events: an older server.")); return; }
     clear(evList, evs.map((e) => h("a", { class: "home-ev", href: eventLink(e), title: whenTitle(e.ts_ms) },
       h("span", { class: "mono small" }, when(e.ts_ms)), h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind)), h("span", { class: "small" }, e.title, e.who ? h("span", { class: "muted" }, " · " + e.who) : null))));

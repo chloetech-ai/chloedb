@@ -30,6 +30,8 @@ export const state = {
   health: null, system: null, alerts: null, cluster: null, whoami: null,
   /** GET /v1/health/fleet, or the same shape worked out here from the cluster when the server lacks it (`derived: true`). */
   fleet: null,
+  /** Why the key may not see the fleet's health (a key limited to tables), or null. */
+  fleetRefused: null,
   online: true, error: null,
 };
 
@@ -317,6 +319,8 @@ async function pollFleet() {
     state.fleet = f;
   } catch (e) {
     if (e.status === 404 || e.status === 405) { fleetMissing = Date.now(); good("fleet"); state.fleet = deriveFleet(); }
+    // A key limited to tables does not see the fleet: said once, not polled again (core.api).
+    else if (e.status === 403 && e.body?.limited) { state.fleetRefused = e.message; good("fleet"); }
     else { bad("fleet", e); bus.emit("fresh"); return; }
   }
   bus.emit("fleet");
