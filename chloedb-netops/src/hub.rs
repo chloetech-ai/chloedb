@@ -160,6 +160,17 @@ fn nums(e: &Engine, devices: &[String]) -> String {
 /// The board an incident starts with: what every incident needs, then what
 /// its suspected cause needs.
 fn template(e: &Engine, inc: &Row) -> Vec<Spec> {
+    // An outage in the estate has no backbone device or link: its board is
+    // the hub it is in, read from the estate's tables.
+    if inc.s("root_kind") == "estate" || inc.s("category") == "estate" || e.is_estate(&inc.s("id")) {
+        use crate::estate::{EVENTS, NODES};
+        let hubs = quoted(&inc.list("sites"));
+        return vec![
+            table_spec("estate:hub", "What is not ok in the hub, by kind".into(), format!("SELECT kind, state, COUNT(*) AS objects FROM {NODES}\nWHERE hub IN ({hubs}) AND state != 'ok'\nGROUP BY kind, state ORDER BY objects DESC LIMIT 30")),
+            table_spec("estate:events", "Faults, clearings and changes in the hub, last three days".into(), format!("SELECT e.ts AS ts, e.node AS node, e.event AS event, e.cause AS cause, e.author AS author, e.text AS text FROM {EVENTS} e JOIN {NODES} n ON n.id = e.node\nWHERE n.hub IN ({hubs}) AND e.ts >= :since3d\nORDER BY ts DESC LIMIT 20")),
+            table_spec("customers", "Customers behind what is not ok in the hub".into(), format!("SELECT customer, COUNT(*) AS objects FROM {NODES}\nWHERE hub IN ({hubs}) AND state != 'ok' AND customer != ''\nGROUP BY customer ORDER BY objects DESC LIMIT 15")),
+        ];
+    }
     let s = scope_of(e, inc);
     let dn = nums(e, &s.devices);
     let mut out = Vec::new();

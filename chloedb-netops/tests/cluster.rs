@@ -328,6 +328,8 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     let i = &inc["incident"];
     assert!(i["root_kind"] == "estate" && i["category"] == "estate" && i["title"].as_str().unwrap().contains(&olt) && i["root_cause"].as_str().unwrap().contains("Loss of signal"), "the estate's incident: {i}");
     assert!(inc["steps"].as_array().unwrap().iter().any(|s| s["sql_text"].as_str().unwrap_or("").contains("netops_estate")), "the estate's agent kept its queries: {}", inc["steps"]);
+    let board = api.get(&format!("/v1/incidents/{id}/panels")).await;
+    assert!(len(&board["panels"]) == 3 && board["panels"].as_array().unwrap().iter().all(|p| p["error"] == ""), "the estate's board reads the estate: {}", board["panels"]);
     let alerts = api.get("/v1/alerts?status=firing").await;
     assert!(alerts["alerts"].as_array().unwrap().iter().any(|a| a["entity"] == olt.as_str() && a["rule"] == "estate-outage" && a["severity"] == "major" && a["incident"] == id.as_str()), "its alert");
     let wh = api.get("/v1/where").await;
