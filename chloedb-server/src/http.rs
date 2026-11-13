@@ -1355,7 +1355,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     };
     let req = QueryReq {
         sql: body_str(&b, "sql")?.to_string(),
-        params: app.svc.params(b.get("params")).await?,
+        params: app.svc.params(Some(&who), b.get("params")).await?,
         timeout_ms: body_u64(&b, "timeout_ms"),
         shard: b.get("shard").and_then(|v| v.as_bool()).unwrap_or(false),
         stats,
@@ -1632,8 +1632,8 @@ pub fn as_objects(j: &mut Json) {
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
+    let params = app.svc.params(Some(&w), b.get("params")).await?;
     if w.limited() && b.get("log").is_some() {
         return Err(w.may_server("a logged query").unwrap_err());
     }
@@ -1792,6 +1792,12 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
         // none.
         let mut seen = std::collections::BTreeSet::new();
         for op in &ops {
+            // A source's offset is the stream's, whatever table the op
+            // writes: a key limited to tables could stop another table's
+            // stream by marking its offset far ahead.
+            if has_source(op) || is_mark(op) {
+                return Err(who.may_server("an operation with a \"source\" (a stream's offset)").unwrap_err());
+            }
             let table = match &op["table"] {
                 Json::Null => None,
                 Json::String(t) => Some(t.as_str()),
@@ -2675,7 +2681,8 @@ async fn convert_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(json!({"model": made, "from": name, "state": "running"})))
 }
 
-async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn embed(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let who = who(w);
     let file = ["image", "audio"].into_iter().find_map(|k| b.get(k).map(|v| (k, v)));
     let what = match file {
         Some((k, v)) => json!({ k: v.as_str().ok_or_else(|| ApiError::bad(format!("{k} is a file in base64")))? }),
@@ -2685,8 +2692,8 @@ async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         None | Some(Json::Null) => Ok(None),
         Some(f) => f.as_str().map(Some).ok_or_else(|| ApiError::bad(format!("{k} is a name"))),
     };
-    let (table, field, _) = app.svc.model(name("table")?, name("field")?)?;
-    let p = app.svc.params(Some(&json!({ "v": { "embed": what, "field": field, "table": table } }))).await?;
+    let (table, field, _) = app.svc.model_for(Some(&who), name("table")?, name("field")?)?;
+    let p = app.svc.params(Some(&who), Some(&json!({ "v": { "embed": what, "field": field, "table": table } }))).await?;
     match p.0.get("v") {
         Some(chloedb::value::Value::Vector(v)) => Ok(AxJson(json!({ "table": table, "field": field, "vector": &v[..] }))),
         // A multi-vector field's model: a vector a token of the text.
@@ -2737,8 +2744,9 @@ pub fn media_headers(mime: &str, sha256: &str) -> HeaderMap {
 
 async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    reads_ok(&app, &who(w), sql)?;
-    let params = app.svc.params(b.get("params")).await?;
+    let who = who(w);
+    reads_ok(&app, &who, sql)?;
+    let params = app.svc.params(Some(&who), b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
@@ -2827,7 +2835,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(_) => format!(" WHERE {}", body_str(&b, "where")?),
     };
     let sql = format!("SELECT COUNT(*) FROM {}{filter}", chloedb::query::sql::ident(&table));
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let next = app.svc.sid_next(&sql, None, &params, field, &prefixes, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     let next: Vec<Json> = prefixes
         .iter()
@@ -2838,7 +2846,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 }
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
@@ -4099,7 +4107,7 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// "local"`.
 async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let timeout = app.svc.timeout_of(body_u64(&b, "timeout_ms"));
     let local = match b.get("scope").and_then(|v| v.as_str()) {
         None | Some("cluster") => false,
