@@ -77,6 +77,16 @@ assert.ok(!prof.batches.some((b) => /IS NOT NULL/.test(b.sql)), "a single field 
 let live = 0, peak = 0;
 await tableView.bounded(Array.from({ length: 20 }, () => async () => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 2)); live--; }), 4);
 assert.equal(peak, 4);
+// CCB-3: the workbench's statements: an apostrophe in a comment is not
+// a string, and a ';' in a string, a quoted name or a comment ends nothing.
+const sqlView = await import(new URL("views/sql.js", app));
+const three = "-- the shop's first query\nSELECT 1 AS one;\nSELECT 2 AS two;\n";
+assert.equal(sqlView.statements(three).length, 2);
+assert.equal(sqlView.statementAt(three, [three.length - 3, three.length - 3]).sql.trim(), "SELECT 2 AS two");
+assert.equal(sqlView.statementAt(three, [30, 30]).sql.trim(), "-- the shop's first query\nSELECT 1 AS one");
+const tricky = `SELECT 'a;b', "x;y" FROM t /* ; it's */ WHERE s = 'it''s;'; -- done; isn't it\nSELECT 3`;
+assert.deepEqual(sqlView.statements(tricky).map((x) => x.sql.trim()), [`SELECT 'a;b', "x;y" FROM t /* ; it's */ WHERE s = 'it''s;'`, "-- done; isn't it\nSELECT 3"]);
+assert.equal(sqlView.statements("SELECT 1; -- only a comment\n").length, 1);
 const { isStored } = await import(new URL("catalog.js", app));
 assert.deepEqual(products.short.fields.map(isStored), [true, true, true, false, true, true, false]);
 assert.equal(isStored({ name: "b", type: "text", from: ["a"], stored: true }), true);

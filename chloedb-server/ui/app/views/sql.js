@@ -36,20 +36,40 @@ const stripStrings = (sql) => sql.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^
 /** The `:name` parameters a statement uses, in order. */
 export function paramNames(sql) { return [...new Set([...stripStrings(sql).matchAll(/(?<![:\w]):([A-Za-z_]\w*)/g)].map((m) => m[1]))]; }
 
+/**
+ * Where each `;` that ends a statement is in `text`: not one in a string
+ * ('it''s'), a quoted name ("a;b"), a `--` comment to the end of its line
+ * or a block comment (an apostrophe there is no string: "-- the shop's").
+ */
+export function splitPoints(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "'" || c === '"') { const j = text.indexOf(c, i + 1); if (j < 0) break; i = j; }
+    else if (c === "-" && text[i + 1] === "-") { const j = text.indexOf("\n", i); if (j < 0) break; i = j; }
+    else if (c === "/" && text[i + 1] === "*") { const j = text.indexOf("*/", i + 2); if (j < 0) break; i = j + 1; }
+    else if (c === ";") out.push(i);
+  }
+  return out;
+}
+/** The statements of `text` that hold more than comments and spaces: [{sql, start}]. */
+export function statements(text) {
+  const out = [];
+  let start = 0;
+  for (const i of [...splitPoints(text), text.length]) {
+    const sql = text.slice(start, i);
+    if (stripStrings(sql).replace(/\/\*[\s\S]*?\*\//g, "").trim()) out.push({ sql, start, end: i });
+    start = i + 1;
+  }
+  return out;
+}
+
 /** The statement the caret is in, or the selection, and where in the text it starts. */
 export function statementAt(text, [a, b]) {
   if (b > a) return { sql: text.slice(a, b), start: a };
-  let start = 0, inStr = false, lastSql = "", lastStart = 0;
-  for (let i = 0; i <= text.length; i++) {
-    const c = text[i];
-    if (c === "'") inStr = !inStr;
-    if ((c === ";" && !inStr) || i === text.length) {
-      const s = text.slice(start, i);
-      if (s.trim()) { if (a <= i || i === text.length) return { sql: s, start }; lastSql = s; lastStart = start; }
-      start = i + 1;
-    }
-  }
-  return { sql: lastSql, start: lastStart };
+  const all = statements(text);
+  const at = all.find((s) => a <= s.end) || all[all.length - 1];
+  return at ? { sql: at.sql, start: at.start } : { sql: "", start: 0 };
 }
 
 /** The (line, column) from 1 of offset `pos` in `text`. */
@@ -267,7 +287,7 @@ function render(page, r) {
     const lead = at.sql.length - at.sql.trimStart().length;
     return { ...at, from: at.start + lead, to: at.start + at.sql.trimEnd().length, p: parseStatement(at.sql) };
   }
-  const many = () => ed.value.split(";").filter((x) => x.replace(/--[^\n]*/g, "").trim()).length > 1;
+  const many = () => statements(ed.value).length > 1;
   function mark() {
     const c = current();
     explainBtn.disabled = onLogs();
