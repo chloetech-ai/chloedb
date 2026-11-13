@@ -77,6 +77,11 @@ first, nothing was written, and the handle has loaded the tenant again.
 write may or may not be there. Anything else: not committed. The writes
 that shared its commit fail with it, the same way.
 
+A handle does not take a store's refusal for `NotWriter`: it loads the
+tenant again and looks. A store's client may send a put twice (after an
+answer it lost) and report the store's refusal of the second; the write
+is then committed, and the handle says so.
+
 ## From the server
 
 ```bash
@@ -105,9 +110,11 @@ The routes need an admin key until tenants have keys of their own.
 | `POST /v1/admin/tenants/:id/base` | makes a new base now |
 | `DELETE /v1/admin/tenants/:id` | deletes it |
 
-A statement that reads runs on the server's copy; `"latest": true` looks at
-the store first. A write that another server beat answers 409: send it
-again. Two servers started on one store answer for the same tenants.
+A statement that reads (a query or an `EXPLAIN`, as the engine reads the
+statement, not by its first word) runs on the server's copy, through what
+cannot write; `"latest": true` looks at the store first. Any other
+statement is a write. A write that another server beat answers 409: send
+it again. Two servers started on one store answer for the same tenants.
 
 ## A blackboard for agents
 
@@ -121,6 +128,8 @@ curl -H "Authorization: Bearer $ADMIN" $URL/v1/admin/tenants \
   -d '{"id": "migration", "template": "blackboard"}'
 curl -H "Authorization: Bearer $ADMIN" $URL/v1/admin/tenants/migration/board/add_tasks \
   -d '{"agent": "lead", "tasks": [{"id": "lexer", "title": "port the lexer", "spec": "..."}]}'
+curl -H "Authorization: Bearer $ADMIN" $URL/v1/admin/tenants/migration/board/claim \
+  -d '{"agent": "worker-7", "key": "claim-1"}'
 
 # an agent, named by the URL it is given
 claude mcp add --transport http board "$URL/v1/admin/tenants/migration/mcp?agent=worker-7" \
@@ -129,11 +138,11 @@ claude mcp add --transport http board "$URL/v1/admin/tenants/migration/mcp?agent
 
 | tool | does |
 |---|---|
-| `add_tasks(tasks, key?)` | takes tasks in; one whose id the board has already is left as it is |
-| `claim(n?, lease_s?, key?)` | gives the caller up to `n` tasks, oldest first: open ones, and claimed ones whose lease has passed |
+| `add_tasks(tasks, key?)` | takes tasks in; one whose id the board has already is left as it is (a list with a task that has no id needs a `key`) |
+| `claim(key, n?, lease_s?)` | gives the caller up to `n` tasks, oldest first: open ones, and claimed ones whose lease has passed |
 | `heartbeat(task, lease_s?)` | extends the caller's lease; refused once another agent has the task |
-| `complete(task, result, key?)`, `fail(task, why, key?)` | end the caller's claim; refused once another agent has the task, so a task is done once |
-| `post(body, task?, key?)` | records a finding, as a duplicate (`dup_of`) of an earlier one that says the same |
+| `complete(task, result, key)`, `fail(task, why, key)` | end the caller's claim; refused once another agent has the task, so a task is done once |
+| `post(body, key, task?)` | records a finding, as a duplicate (`dup_of`) of an earlier one that says the same |
 | `search(q, limit?)` | findings and tasks by their words, best first; a finding's duplicates are counted, not listed |
 | `timeline(since?, limit?)` | what happened, in order: tasks taken in, claims, tasks done or failed, findings |
 | `status()`, `get_task(id)` | the board in numbers; one task |
@@ -151,10 +160,16 @@ From Rust they are `chloedb::blackboard::Board`.
   seconds unless asked, a day at most), by the clock of the server that
   answers. After that another agent's `claim` may take it, and the first
   agent's `heartbeat` and `complete` are refused.
-- **Applied once.** A call that failed or timed out may be sent again
-  with the same `key`: if the first was committed, the second changes
-  nothing and answers what the first answered. Keys are kept in the
-  tenant, so any server knows them.
+- **Applied once.** A `key` is the caller's own name for one call. A call
+  that failed or timed out may be sent again with the same `key`: if the
+  first was committed, the second changes nothing and answers what the
+  first answered. Keys are kept in the tenant, so any server knows them,
+  and a key is its agent's: two agents that choose the same word are not
+  answered each other's calls. Over HTTP and MCP the calls that are not
+  the same when made twice (`claim`, `complete`, `fail`, `post`, and
+  `add_tasks` of a task without an id) are refused without a key (400;
+  over MCP, an invalid-parameters error). From Rust the key is the
+  caller's choice. Keys are never deleted yet.
 - **Duplicates.** Two findings say the same when they share at least 80%
   of their words (letters and digits, in any case). This is a comparison
   of words, not of meaning: the design's comparison by vectors is not
@@ -183,4 +198,6 @@ server, twice, before it answers 409.
   one take it from each other (each write that loses answers 409). An
   agent of a blackboard therefore holds an admin key of the server: run
   one only where that is acceptable, until tenants have keys of their own.
-- The format is not frozen.
+- The format is not frozen. Log objects are written as version 1 of
+  `STRARC01`, the experimental one; the accepted format begins at 2, and
+  its readers will not take what is written now for theirs.

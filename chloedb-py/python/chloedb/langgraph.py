@@ -58,7 +58,8 @@ try:
 except ImportError as e:  # pragma: no cover - the extra is not installed
     raise ImportError('chloedb.langgraph needs langgraph: pip install "chloedb[langgraph]"') from e
 
-from ._adapters import Params, chunks, conditions, ensure_table, field, json_fits, json_value, open_store, rows_of, table_schema, unit, where
+from ._adapters import Params, chunks, conditions, ensure_table, field, json_pruned, json_value, open_store, rows_of, table_schema, unit, where
+from ._native import ChloeDBError
 from ._search import quote
 
 __all__ = ["ChloeDBSaver", "ChloeDBStore"]
@@ -94,6 +95,9 @@ def _time(text: str | None) -> datetime | None:
 # The checkpointer.
 
 _ROOT = ""
+
+# What a checkpoint's tuple is made of.
+_CHECKPOINT_COLUMNS = "thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata"
 
 
 class ChloeDBSaver(BaseCheckpointSaver[str]):
@@ -131,9 +135,14 @@ class ChloeDBSaver(BaseCheckpointSaver[str]):
             {
                 "table": self.table,
                 "key": "id",
+                # A thread's rows on one shard of a cluster, in one run of
+                # each segment: a thread is read from one shard, and a
+                # task's writes go in one transaction.
+                "shard_by": "thread_id",
+                "cluster_by": "thread_id",
                 "fields": [
                     {"name": "id", **kw},
-                    {"name": "thread_id", **kw},
+                    {"name": "thread_id", **kw, "not_null": True},
                     {"name": "checkpoint_ns", **kw},
                     {"name": "checkpoint_id", **kw},
                     {"name": "parent_checkpoint_id", **kw},
@@ -149,9 +158,11 @@ class ChloeDBSaver(BaseCheckpointSaver[str]):
             {
                 "table": self.writes_table,
                 "key": "id",
+                "shard_by": "thread_id",
+                "cluster_by": "thread_id",
                 "fields": [
                     {"name": "id", **kw},
-                    {"name": "thread_id", **kw},
+                    {"name": "thread_id", **kw, "not_null": True},
                     {"name": "checkpoint_ns", **kw},
                     {"name": "checkpoint_id", **kw},
                     {"name": "task_id", **kw},
@@ -224,15 +235,17 @@ class ChloeDBSaver(BaseCheckpointSaver[str]):
         thread_id = str(conf["thread_id"])
         ns = conf.get("checkpoint_ns", _ROOT) or _ROOT
         checkpoint_id = get_checkpoint_id(config)
+        # One read, of the thread's shard on a cluster (the tables are placed
+        # by thread_id): the checkpoint named, or the newest (checkpoint ids
+        # sort by time).
+        params = {"t": thread_id, "n": ns}
         if checkpoint_id:
-            row = self.store.get(_key(thread_id, ns, checkpoint_id), table=self.table)
+            params["c"] = checkpoint_id
+            which = "AND checkpoint_id = :c LIMIT 1"
         else:
-            # The newest: checkpoint ids sort by time.
-            r = self.store.query(
-                f"SELECT id FROM {quote(self.table)} WHERE thread_id = :t AND checkpoint_ns = :n ORDER BY checkpoint_id DESC LIMIT 1",
-                {"t": thread_id, "n": ns},
-            )
-            row = self.store.get(r.rows[0][0], table=self.table) if r.rows else None
+            which = "ORDER BY checkpoint_id DESC LIMIT 1"
+        r = self.store.query(f"SELECT {_CHECKPOINT_COLUMNS} FROM {quote(self.table)} WHERE thread_id = :t AND checkpoint_ns = :n {which}", params)
+        row = next(iter(r), None)
         if row is None:
             return None
         return self._tuple(row, self._writes(thread_id, ns, [row["checkpoint_id"]])[row["checkpoint_id"]])
@@ -281,8 +294,8 @@ class ChloeDBSaver(BaseCheckpointSaver[str]):
                 "type": type_,
                 "checkpoint": _b64(data),
                 "metadata": json.dumps(meta, ensure_ascii=False),
-                # The metadata to filter by, when a JSON field takes it.
-                "meta": meta if meta and json_fits(meta) else None,
+                # The metadata to filter by: what of it a JSON field takes.
+                "meta": json_pruned(meta),
             },
             table=self.table,
         )
@@ -318,8 +331,14 @@ class ChloeDBSaver(BaseCheckpointSaver[str]):
         if not rows:
             return
         if not all(w[0] in WRITES_IDX_MAP for w in writes):
-            have = self.store.get_many([r["id"] for r in rows], table=self.writes_table)
-            rows = [r for r, h in zip(rows, have) if h is None]
+            have = {
+                r["id"]
+                for r in self.store.query(
+                    f"SELECT id FROM {quote(self.writes_table)} WHERE thread_id = :t AND checkpoint_ns = :n AND checkpoint_id = :c AND task_id = :k",
+                    {"t": thread_id, "n": ns, "c": checkpoint_id, "k": task_id},
+                )
+            }
+            rows = [r for r in rows if r["id"] not in have]
             if not rows:
                 return
         self.store.upsert(rows, table=self.writes_table)
@@ -567,7 +586,7 @@ class ChloeDBStore(BaseStore):
                 "ns": _ns(op.namespace),
                 "key": op.key,
                 "value": json.dumps(value, ensure_ascii=False),
-                "attrs": value if value and json_fits(value) else None,
+                "attrs": json_pruned(value),
                 "created_at": existing.get(id_) or _iso(now),
                 "updated_at": _iso(now),
                 "expires_at": _iso(now + timedelta(minutes=float(ttl))) if ttl is not None else None,
@@ -578,31 +597,8 @@ class ChloeDBStore(BaseStore):
                 if vec is not None:
                     row["embedding"] = vec
             rows.append(row)
-        if self._model is not None:
-            # A row with no text to embed is written without a vector.
-            have = [r for r in rows if r.get("content")]
-            none = [r for r in rows if not r.get("content")]
-            for part in chunks(have):
-                self.store.upsert(list(part), table=self.table)
-            if none:
-                self._upsert_unembedded(none)
-            return
-        for part in chunks(rows):
-            self.store.upsert(list(part), table=self.table)
-
-    def _upsert_unembedded(self, rows: list[dict]) -> None:
-        """Rows that have no text to embed, written without a vector (the
-        field's model would refuse them for lacking one)."""
-        db = getattr(self.store, "_db", None)
-        later = getattr(self.store, "set_embed_later", None)
-        if later is not None and db is not None:
-            later(True)
-            try:
-                for part in chunks(rows):
-                    self.store.upsert(list(part), table=self.table)
-            finally:
-                later(False)
-            return
+        # A row with no text to embed is written without a vector: the
+        # field's model embeds only the rows that have text.
         for part in chunks(rows):
             self.store.upsert(list(part), table=self.table)
 
@@ -637,12 +633,31 @@ class ChloeDBStore(BaseStore):
             if c.match_type == "prefix" and c.path and "*" not in c.path:
                 cond = self._prefix(c.path, p)
                 break
-        names = {tuple(r["ns"].split(".")) for r in rows_of(self.store, f"SELECT ns, COUNT(*) AS n FROM {quote(self.table)} {conditions(cond)} GROUP BY ns", p.values) if r["ns"]}
+        names = {tuple(n.split(".")) for n in self._namespaces(cond, p.values) if n}
         if op.match_conditions:
             names = {n for n in names if all(_matches(c, n) for c in op.match_conditions)}
         if op.max_depth is not None:
             names = {n[: op.max_depth] for n in names}
         return sorted(names)[op.offset : op.offset + op.limit]
+
+
+    def _namespaces(self, cond: str | None, params: Mapping[str, Any]) -> set[str]:
+        """The namespaces of the items `cond` keeps: grouped by the server,
+        or, past the most groups a query may make (a server's
+        --max-groups), read a page at a time in their order."""
+        table = quote(self.table)
+        try:
+            return {r["ns"] for r in rows_of(self.store, f"SELECT ns, COUNT(*) AS n FROM {table} {conditions(cond)} GROUP BY ns", params)}
+        except ChloeDBError as e:
+            if "groups" not in str(e):
+                raise
+        out: set[str] = set()
+        last = None
+        for r in rows_of(self.store, f"SELECT ns FROM {table} {conditions(cond)} ORDER BY ns", params):
+            if r["ns"] != last:
+                last = r["ns"]
+                out.add(last)
+        return out
 
 
 def _validate(op: Op) -> None:
