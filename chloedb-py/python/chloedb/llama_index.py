@@ -182,7 +182,8 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
 
     def _where(self, node_ids: Optional[List[str]], filters: Optional[MetadataFilters], p: Params, doc_ids: Optional[List[str]] = None) -> str | None:
         # An empty list of ids, as None, limits nothing (as LlamaIndex's
-        # retrievers pass them).
+        # retrievers pass them to a query); get_nodes and delete_nodes take
+        # an empty list as naming no node before they get here.
         conds = [_filters(filters, p)]
         if node_ids:
             conds.append("id IN (" + ", ".join(p(str(i)) for i in node_ids) + ")")
@@ -192,14 +193,20 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
         return " AND ".join(kept) if kept else None
 
     def delete_nodes(self, node_ids: Optional[List[str]] = None, filters: Optional[MetadataFilters] = None, **delete_kwargs: Any) -> None:
-        if not node_ids and filters is None:
+        """Deletes the nodes of `node_ids` that `filters` keeps (either
+        alone limits it). An empty list of ids, or filters with no
+        condition and no ids, delete nothing: `clear()` deletes every
+        node."""
+        if node_ids is not None and len(node_ids) == 0:
             return
         if node_ids and filters is None:
             self._vt.delete([str(i) for i in node_ids])
             return
         p = Params()
         cond = self._where(node_ids, filters, p)
-        self._vt.delete_where(cond or "TRUE", p.values)
+        if cond is None:
+            return
+        self._vt.delete_where(cond, p.values)
 
     def clear(self) -> None:
         self._vt.clear()
@@ -207,6 +214,10 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
     # Reading.
 
     def get_nodes(self, node_ids: Optional[List[str]] = None, filters: Optional[MetadataFilters] = None, **kwargs: Any) -> List[BaseNode]:
+        """The nodes of `node_ids` that `filters` keeps; an empty list of
+        ids names none."""
+        if node_ids is not None and len(node_ids) == 0:
+            return []
         if node_ids and filters is None:
             return [self._node(r) for r in self._vt.get([str(i) for i in node_ids])]
         p = Params()

@@ -375,12 +375,18 @@ jobs:
   # are not fetched here), and clippy over the feature's code. `vision`
   # includes `bert`, so the cross-encoder tests against transformers'
   # scores of the small models in chloedb/tests/models run here too.
+  # Two parts that run at once, ChloeDB's and the server's: each builds
+  # candle on its own, and one after the other they took 31 minutes.
   vision:
-    name: images (feature vision)
+    name: images (feature vision, ${{ matrix.part }})
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [chloedb, chloedb-server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -390,11 +396,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: |
-            chloedb
-            chloedb-server
-          key: vision
+          workspaces: ${{ matrix.part }}
+          key: vision-${{ matrix.part }}
       - name: ChloeDB
+        if: matrix.part == 'chloedb'
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -402,6 +407,7 @@ jobs:
           cargo test --locked --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
           cargo clippy --locked --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
       - name: chloedb-server
+        if: matrix.part == 'chloedb-server'
         working-directory: chloedb-server
         run: cargo test --locked --profile ci --features vision --test media_vectors --test media
 
@@ -448,12 +454,20 @@ jobs:
   # (CHLOEDB_ENGINE=datafusion: a plan it does not lower runs on the
   # operators), Parquet files in and out (feature parquet, on DataFusion's
   # Arrow) with s3:// URLs (feature s3), and clippy over the features' code.
+  # The tests build with one set of features (datafusion, sqlite, parquet,
+  # s3), so ChloeDB and DataFusion compile once rather than once for each of
+  # three sets, and clippy runs at the same time in a part of its own: in
+  # one job, one after the other, they took 35 minutes.
   datafusion:
-    name: DataFusion engine (feature datafusion)
+    name: DataFusion engine (feature datafusion, ${{ matrix.part }})
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [tests, clippy]
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
@@ -466,17 +480,21 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
-          key: datafusion
+          key: datafusion-${{ matrix.part }}
       - name: ChloeDB
+        if: matrix.part == 'tests'
         working-directory: chloedb
         run: |
-          cargo test --locked --profile ci --features datafusion --test datafusion_engine --test hash_function
-          cargo test --locked --profile ci --features datafusion,sqlite --test window_functions --test set_operations
-          CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+          f=datafusion,sqlite,parquet,s3
+          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations
+          CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features $f --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
-          cargo test --locked --profile ci --features datafusion,parquet,s3 --test parquet
-          cargo test --locked --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
-          cargo clippy --locked --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --locked --profile ci --features $f --test parquet
+          cargo test --locked --profile ci --features $f --lib -- parquet:: objects:: arrow_rows::
+      - name: Clippy
+        if: matrix.part == 'clippy'
+        working-directory: chloedb
+        run: cargo clippy --locked --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
