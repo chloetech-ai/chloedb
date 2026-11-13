@@ -122,7 +122,14 @@ each other in a graph that ChloeDB walks.
   search.
 - **It repairs itself.** A view or function that fails at run time is sent
   back to the forge with its error, once per version, and the fixed version
-  replaces it while the app stays open.
+  replaces it while the app stays open. A call nobody answered (the network,
+  the engine restarting) is not a failure of the code: the view says so and
+  reads again, and nothing is repaired; nor is a refusal (a rule's, or a
+  visitor's access).
+- **A build can be stopped.** Stop beside a running build (`POST
+  /api/apps/<id>/stop`) kills its model calls at once; "Stop and try again"
+  is offered once it has taken twice as long as builds here do. A failed
+  build says what went wrong in a sentence, its error under Details.
 - **Everything is live.** The engine follows ChloeDB's feed of committed
   writes, so every open window sees new rows and new versions as they land,
   whoever wrote them (another window, a trigger, another client of the
@@ -162,7 +169,7 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
 | `STRATA_APPS_LIBRARY` | the built-in library's folder (default `library/`) |
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
-| `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
+| `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 90), or after this many in all (default 1200); its owner can stop it at any time |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 | `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default `claude-sonnet-5-5`; set it to `claude-opus-5-5` for Opus everywhere); code views, functions and repairs keep `STRATA_APPS_MODEL` |
 | `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
