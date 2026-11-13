@@ -1104,6 +1104,7 @@ jobs:
           path: .docs-bin/
           retention-days: 3
           if-no-files-found: error
+          include-hidden-files: true
 
   docs:
     name: Documentation site and its examples
