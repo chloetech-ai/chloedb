@@ -40,6 +40,7 @@ pub mod clap;
 pub mod cluster;
 pub mod data;
 pub mod db;
+pub mod content;
 pub mod derive;
 pub mod embed;
 pub mod env;
