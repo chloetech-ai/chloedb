@@ -486,6 +486,13 @@ pub struct State {
     pub rejected: Vec<Rejected>,
     /// The latest upgrades made or suggested, the newest last.
     pub log: Vec<super::autoscale::Entry>,
+    /// The image the app engine's tag names (`spec.apps.image`, when it
+    /// names no digest), asked of the registry as the servers' is, and
+    /// that tag (`appsTrack`). With `on`, the engine runs it by its digest
+    /// ([`apps_image`]), so a new image of the tag starts a new engine pod,
+    /// as a new server image rolls the servers.
+    pub apps: Option<Image>,
+    pub apps_track: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -573,13 +580,26 @@ pub fn available(s: &State, image: &str) -> bool {
     !runs_it && !s.rejected.iter().any(|r| r.digest == latest.digest)
 }
 
+/// The image the app engine runs (`spec.apps.image` is `image`): with
+/// `on`, the digest its tag named when the registry was last asked
+/// ([`State::apps`]), so that a new image of the tag restarts the engine
+/// on it; else (`off`, `suggest`, an image by digest, a tag not asked yet)
+/// `image` as it is.
+pub fn apps_image(u: &Upgrade, s: &State, image: &str) -> String {
+    let Some(i) = s.apps.as_ref().filter(|_| u.mode == Mode::On && s.apps_track == image && digest_of(image).is_none()) else { return image.to_string() };
+    match Ref::parse(image) {
+        Ok(r) => r.pinned(&i.digest),
+        Err(_) => image.to_string(),
+    }
+}
+
 /// The JSON Schema of `spec.upgrade`, for the resource definition.
 pub fn schema() -> Json {
     json!({
         "type": "object",
         "description": "Following an image tag for new versions of ChloeDB: a new image is suggested (suggest) or rolled out (on), by its digest.",
         "properties": {
-            "mode": {"type": "string", "enum": ["off", "suggest", "on"], "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready."},
+            "mode": {"type": "string", "enum": ["off", "suggest", "on"], "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready, and the app engine (spec.apps, at a tag) runs its tag's newest image too."},
             "track": {"type": "string", "description": "The image tag to follow (default: the image's repository at its tag, or at latest)."},
             "checkMinutes": {"type": "integer", "minimum": 1, "description": "Minutes between two looks at the registry (default 10)."},
         },
@@ -652,6 +672,25 @@ mod tests {
         assert_eq!(decide(&on, &s, &pinned, true), None);
         assert!(s.log.last().unwrap().text.starts_with("bbbbbbbbbbbb failed and was rolled back"));
         assert_eq!(said(&latest), "bbbbbbbbbbbb (commit abcdef0)");
+    }
+
+    #[test]
+    fn the_app_engine_runs_its_tags_image_by_digest_with_upgrades_on() {
+        let d = format!("sha256:{}", "c".repeat(64));
+        let tag = "ghcr.io/chloetech-ai/chloedb-apps:latest";
+        let s = State { apps: Some(Image { image: format!("ghcr.io/chloetech-ai/chloedb-apps@{d}"), digest: d.clone(), revision: None, created: None }), apps_track: tag.into(), ..State::default() };
+        let on = Upgrade { mode: Mode::On, ..Upgrade::default() };
+        assert_eq!(apps_image(&on, &s, tag), format!("ghcr.io/chloetech-ai/chloedb-apps@{d}"));
+        // Suggest or off: the tag as it is; another tag, or a digest: as given.
+        assert_eq!(apps_image(&Upgrade { mode: Mode::Suggest, ..on.clone() }, &s, tag), tag);
+        assert_eq!(apps_image(&Upgrade::default(), &s, tag), tag);
+        assert_eq!(apps_image(&on, &s, "ghcr.io/chloetech-ai/chloedb-apps:0.3.0"), "ghcr.io/chloetech-ai/chloedb-apps:0.3.0");
+        let pinned = format!("ghcr.io/chloetech-ai/chloedb-apps@sha256:{}", "a".repeat(64));
+        assert_eq!(apps_image(&on, &State { apps_track: pinned.clone(), ..s.clone() }, &pinned), pinned);
+        assert_eq!(apps_image(&on, &State::default(), tag), tag);
+        // Read back from a status written before the field existed.
+        let old: State = serde_json::from_value(json!({"mode": "on", "track": "x:latest"})).unwrap();
+        assert!(old.apps.is_none() && old.apps_track.is_empty());
     }
 
     #[test]

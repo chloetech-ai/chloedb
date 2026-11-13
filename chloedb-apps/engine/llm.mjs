@@ -16,27 +16,55 @@ const CLAUDE = process.env.STRATA_APPS_CLAUDE || 'claude';
 // refused until the cap is raised. Calls already running finish, so the total
 // can pass the cap by what they cost; a call stopped before its answer is not
 // counted.
-export const spend = { cap: Number(process.env.STRATA_APPS_SPEND_CAP_USD) || 0, usd: 0, calls: 0, refused: 0, since: new Date().toISOString(), file: null };
+//
+// Apps' own model calls (app.ask, which a published app's visitors set off)
+// count against a share of the cap of their own, `asksCap`
+// (STRATA_APPS_ASK_CAP_USD, by default a quarter of the cap), and builds
+// against the rest, so that traffic to apps never stops the studio's builds,
+// nor builds the apps (audit N-G3).
+const CAP = Number(process.env.STRATA_APPS_SPEND_CAP_USD) || 0;
+const ASKS_CAP = process.env.STRATA_APPS_ASK_CAP_USD !== undefined && process.env.STRATA_APPS_ASK_CAP_USD !== '' ? Math.max(0, Number(process.env.STRATA_APPS_ASK_CAP_USD) || 0) : CAP / 4;
+export const spend = { cap: CAP, asksCap: CAP ? Math.min(ASKS_CAP, CAP) : ASKS_CAP, usd: 0, asksUsd: 0, calls: 0, refused: 0, since: new Date().toISOString(), file: null };
 let saving = Promise.resolve();
 export async function useSpendFile(file) {
   spend.file = file;
   try {
     const j = JSON.parse(await readFile(file, 'utf8'));
-    if (Number.isFinite(j.usd)) Object.assign(spend, { usd: j.usd, calls: j.calls || 0, refused: j.refused || 0, since: j.since || spend.since });
+    if (Number.isFinite(j.usd)) Object.assign(spend, { usd: j.usd, asksUsd: Number(j.asksUsd) || 0, calls: j.calls || 0, refused: j.refused || 0, since: j.since || spend.since });
   } catch { /* first start */ }
   return spend;
 }
 function saveSpend() {
   if (!spend.file) return;
-  const { usd, calls, refused, since, cap } = spend;
-  saving = saving.then(() => writeFile(`${spend.file}.tmp`, JSON.stringify({ usd, calls, refused, since, cap }))
+  const { usd, asksUsd, calls, refused, since, cap, asksCap } = spend;
+  saving = saving.then(() => writeFile(`${spend.file}.tmp`, JSON.stringify({ usd, asksUsd, calls, refused, since, cap, asksCap }))
     .then(() => rename(`${spend.file}.tmp`, spend.file))).catch(() => {});
 }
-function overCap() {
-  if (!spend.cap || spend.usd < spend.cap) return null;
-  spend.refused++;
+// Why a call of `bucket` ('build': the studio's own; 'asks': an app's
+// app.ask) may not run now, if it may not.
+export function overCap(bucket = 'build') {
+  const refuse = (text) => {
+    spend.refused++;
+    saveSpend();
+    return Object.assign(new Error(text), { status: 402, refused: true });
+  };
+  if (bucket === 'asks') {
+    if (spend.asksCap && spend.asksUsd >= spend.asksCap) return refuse(`this studio's apps have reached their share of its spending limit for the model ($${spend.asksUsd.toFixed(2)} of $${spend.asksCap}); the studio's builds go on; ask whoever runs it to raise STRATA_APPS_ASK_CAP_USD`);
+    if (spend.cap && spend.usd >= spend.cap) return refuse(`this studio has reached its spending limit for the model ($${spend.usd.toFixed(2)} of $${spend.cap}); ask whoever shared it to raise the limit`);
+    return null;
+  }
+  if (!spend.cap) return null;
+  const builds = spend.usd - spend.asksUsd;
+  const share = spend.cap - spend.asksCap;
+  if (builds < share) return null;
+  return refuse(`this studio has reached its spending limit for the model ($${builds.toFixed(2)} of $${share} for builds${spend.asksCap ? ', the rest kept for apps\' own calls' : ''}); ask whoever shared it to raise the limit`);
+}
+
+function counted(cost, bucket) {
+  spend.usd += cost;
+  if (bucket === 'asks') spend.asksUsd += cost;
+  spend.calls++;
   saveSpend();
-  return Object.assign(new Error(`this studio has reached its spending limit for the model ($${spend.usd.toFixed(2)} of $${spend.cap}); ask whoever shared it to raise the limit`), { status: 402, refused: true });
 }
 
 // How long one answer may take. A build is stopped only when the model goes
@@ -51,8 +79,9 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 // prompt, in one message.
 // tools: built-in tools the model may use (WebSearch, WebFetch for an app's
 // web ask); none by default. maxBudgetUsd stops a call that costs more.
-export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd }) {
-  const over = overCap();
+// bucket: 'asks' for an app's own call (app.ask), counted apart (overCap).
+export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
+  const over = overCap(bucket);
   if (over) return Promise.reject(over);
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
@@ -107,13 +136,11 @@ export function ask({ system, prompt, images = [], model = MODEL, effort = proce
       const data = result;
       if (!data) return reject(new Error(`claude exited ${code}: ${(err || buf || text).slice(0, 600)}`));
       if (data.is_error || data.subtype !== 'success' && data.subtype) {
-        if (data.total_cost_usd) { spend.usd += data.total_cost_usd; spend.calls++; saveSpend(); }
+        if (data.total_cost_usd) counted(data.total_cost_usd, bucket);
         return reject(new Error(`claude: ${data.result || data.terminal_reason || data.subtype}`));
       }
       const out = { text: data.result || text, usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model };
-      spend.usd += out.cost;
-      spend.calls++;
-      saveSpend();
+      counted(out.cost, bucket);
       // STRATA_APPS_DUMP=dir keeps every answer there, to study what the model writes.
       if (process.env.STRATA_APPS_DUMP) {
         import('node:fs').then((fs) => fs.promises.mkdir(process.env.STRATA_APPS_DUMP, { recursive: true })

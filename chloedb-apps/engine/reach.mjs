@@ -42,6 +42,9 @@ export const ASK_MODEL = process.env.STRATA_APPS_ASK_MODEL || 'claude-haiku-5-5'
 // fetches per app per day.
 export const ASKS_PER_DAY = Number(process.env.STRATA_APPS_ASKS_PER_DAY) || 200;
 export const FETCHES_PER_DAY = Number(process.env.STRATA_APPS_FETCHES_PER_DAY) || 1000;
+// What one app's model calls may cost in a day, in US dollars (audit N-G3:
+// a published app's visitors cannot spend the studio's whole share).
+export const ASK_USD_PER_DAY = Number(process.env.STRATA_APPS_ASK_USD_PER_DAY) || 2;
 // Bursts: at most this many in any minute, per app.
 const ASKS_PER_MINUTE = 20;
 const FETCHES_PER_MINUTE = 60;
@@ -488,6 +491,7 @@ export class Reach {
       if (kept !== null) { c.cached++; this.saveCount(appId, c); return json ? this.parse(kept) : kept; }
     }
     if (this.pending.has(key)) return this.pending.get(key);
+    if (c.usd >= ASK_USD_PER_DAY) throw err(`app.ask: this app's model calls cost $${c.usd.toFixed(2)} today, its limit ($${ASK_USD_PER_DAY}); it can ask again tomorrow`, 429, { refused: true });
     if (c.asks >= on.perDay) throw err(`app.ask: this app has asked the model ${c.asks} times today, its limit (${on.perDay}); it can ask again tomorrow, or its owner can raise the limit`, 429, { refused: true });
     this.burst(appId, 'ask', ASKS_PER_MINUTE);
     c.asks++;
@@ -495,7 +499,7 @@ export class Reach {
     const p = (async () => {
       const sys = `You answer requests that an app's code sends you; the app shows or stores your answer as it is. Answer only what is asked, with no preamble and no sign-off. Plain text, no Markdown, unless the request asks for a format.${web ? ' Search the web when the answer depends on current facts, and name your sources in one short line at the end.' : ' You have no web access: answer from what you know and what the request gives, and say so when you do not know.'}${json ? ' Answer with one JSON value and nothing else: no code fences, no words around it.' : ''}${system ? `\n\nThe app's instructions:\n${system}` : ''}`;
       const t0 = Date.now();
-      const r = await this.llm({ system: sys, prompt, model: this.model, timeoutMs: web ? 150_000 : 60_000, idleMs: web ? 90_000 : 45_000, tools: web ? ['WebSearch', 'WebFetch'] : [], maxBudgetUsd: web ? WEB_BUDGET_USD : undefined });
+      const r = await this.llm({ system: sys, prompt, model: this.model, timeoutMs: web ? 150_000 : 60_000, idleMs: web ? 90_000 : 45_000, tools: web ? ['WebSearch', 'WebFetch'] : [], maxBudgetUsd: web ? WEB_BUDGET_USD : undefined, bucket: 'asks' });
       c.usd += r.cost || 0;
       this.saveCount(appId, c);
       const text = String(r.text || '').trim();
