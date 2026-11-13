@@ -33,7 +33,7 @@ chloedb-sheets serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --tok
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN
 ```
 
-`--server` was `--strata` before 0.3.1; the old name still works.
+`--server` was `--strata` before 0.3.2; the old name still works.
 
 `--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. It checks its callers itself (`"checks_callers": true` in its manifest), so chloedb-server sends it keys limited to tables, and keys that may only write, with who they are (`x-chloedb-principal`, `x-chloedb-scope`, `x-chloedb-tables`). A key that may write makes workbooks, which are its own: it changes them, shares them (**Share**, `POST /v1/books/:id/share {shared}`) and deletes them, and another key opens one only once it is shared, or when it is an admin of every table. A workbook made before owners existed is everyone's. What a workbook reads from the cluster (its query blocks, the tables opened as sheets, a sheet copied to a table) runs as the caller's key: chloedb-sheets sends its own token narrowed to the caller's grants (`x-chloedb-as-tables`, [server](server.md#apps)), so a query reads only the tables the signed-in key may read, and a refusal is the server's 403. The analyst preset's keys make their own workbooks this way. Called directly with its token (not through chloedb-server), it answers as before, as the token's.
 

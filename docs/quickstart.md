@@ -28,7 +28,7 @@ brew install chloetech-ai/tap/chloedb
 
 ```sh
 # install
-v=0.3.1 p=macos-arm64
+v=0.3.2 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -181,7 +181,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.1
+  ghcr.io/chloetech-ai/chloedb-server:0.3.2
 ```
 
 Then every request sends the token, and the console asks for it once:

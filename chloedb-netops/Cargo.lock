@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "chloedb-netops"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "chrono",

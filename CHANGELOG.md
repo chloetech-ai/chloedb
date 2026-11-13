@@ -11,6 +11,278 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.2
+
+What the persona swarm found, agent-friendly administration, server limits
+and understanding through a coordinator: `chloedb-server-v0.3.2`,
+`chloedb-py-v0.3.2` and `chloedb-js-v0.3.2` (the Java package is built
+from source; `chloedb-crawl`, `chloedb-sheets` and `chloectx` are now
+attached prebuilt to the server's release, and the installer takes
+`--with crawl,sheets,ctx`). The file format stays 3. The shard protocol
+moves to 21: write receipts' counts, strict writes and
+`insert_if_absent` are additions a coordinator uses only with shards of
+21, and an older shard's counts read `null`. One plan feature is new,
+`full_join` (`FULL JOIN`), which a 0.3.1 shard refuses by name, so
+upgrade the shards before the coordinators. Auth changes: keys gain the
+`propose` and `ops` scopes and agent marks (#482); keys limited to tables
+reach more routes (#457).
+
+### What changes by default
+
+- A duplicate primary key answers 409 over HTTP (it was 400), and an
+  `INSERT` into a `shard_by` table refuses a key another shard holds.
+- A `set`, `add` or `delete` with the wrong `routing` is a 404 instead of
+  `200 written: 0`; `"if_missing": "skip"` keeps the old behaviour.
+- `written` counts a key repeated in one batch once.
+- An agent's `DROP TABLE` or `DELETE` without `WHERE` waits for a person's
+  approval, even with an admin key.
+- New installs keep models in `~/.local/share/chloedb/models`; a machine
+  with the old `~/.local/share/strata/models` keeps using it.
+- `chloedb-crawl` and `chloedb-sheets` take `--server URL`; `--strata`
+  stays an alias.
+- A published app's visitors no longer start a repair, and apps published
+  before keep the "change" access.
+
+### Agents and administration
+
+#### Server
+
+- **Keys for agents.** Two new scopes for agents' keys: `propose` (reads, the server's views, plans, dry runs, change requests) and `ops` (that, and the bounded actions alone: contain rules, cancelling queries, silencing and acknowledging alerts, notes). Keys can be marked as an agent's (`"agent": true`), last minutes (`expires_minutes`), and name the person they act for (`on_behalf_of`). `GET /v1/whoami` answers `may`: what the key may do alone, whether it may propose or approve changes ([docs](docs/chloedb/server.md#agents-and-administration)).
+- **Error codes.** Every error answer carries a stable `error_code`, `retryable`, a `hint` and a `docs` link beside its sentence; over gRPC the code is in the metadata `chloedb-error-code`.
+- **Tiers, reasons and caps.** Every route has a tier (0 reads, 1 bounded, 2 changes that can be undone, 3 losses or costs). An agent's change says why (`x-chloedb-reason`), its contain rules last an hour at most and its silences two hours, and the audit log names agents (`actor: "agent"`, with model, session and run from `x-chloedb-agent-*`) and the person they act for.
+- **Dry runs and change requests.** `POST /v1/admin/changes/preview` dry runs a change of any route in one shape (tier, what it would do, undo, blast radius, rows a SQL statement touches, the route's own plan, a fingerprint). `POST /v1/admin/changes` files it for a person to approve; an approval by an agent is refused, and an approval of a plan the cluster has since moved away from fails `plan_stale` instead of being applied. An agent's `DROP TABLE` or `DELETE` without `WHERE` is refused, even with an admin key, until a person approves it. The command center's On-call page lists change requests beside the agent's proposals.
+- **Operations over MCP.** A role or admin key sees operations tools in `/v1/mcp`: health, cluster, load, alerts, events, queries, logs, metrics, audit, the catalog, jobs, runbooks, plans, dry runs, change requests, and the tier 1 actions.
+- **The catalog, jobs, waiting, runbooks.** `GET /v1/catalog` lists every route with its scope, tier and MCP tool, and every error code; `GET /v1/admin/jobs` lists what runs in the background in one shape; `GET /v1/events?after=&wait_s=` waits for the next event; runbooks for every built-in alert and fleet problem ([docs](docs/chloedb/runbooks.md)), found with `GET /v1/runbooks?for=` and named in each fleet problem's `next`.
+- **`chloedb-server admin`.** The API from a shell, one request at a time, JSON out, with exit codes by outcome (0 done, 2 refused for the key, 3 stale, 4 retry later, 5 not reached).
+
+One-way door: auth (new key scopes and roles, approval rules). Role keys are stored as read keys with a role beside them, so a server from before roles admits them as read keys.
+
+(#482)
+
+### Server limits and operator rights
+
+#### Changed
+
+- chloedb-server's listeners hold each client to more (audit N-8, D-B7): one client address may hold half of a listener's connections (`--max-connections-per-client`); past the cap, 8 connections are still taken for `/livez`, `/readyz` and `/v1/health` (two at once per address) and any other request on them is answered 503 with `Retry-After`, so a full server is not restarted for failing its probes; a connection with no request under way for `--idle-timeout-secs` (300) is closed, over HTTP/2 too; a request body that pauses for `--body-timeout-secs` (30), or averages under 1 KiB a second once it has taken that long, fails; a write the client does not read for `--write-timeout-secs` (60) closes its connection. Each is 0 for no limit.
+- gRPC is served on the same accept loop as HTTP, rather than by tonic's server: the connection cap and share per client, the TLS handshake, idle and write timeouts and `--stop-grace-ms` now hold on the port between coordinators and shards too, a follower's gRPC `Feed` ends when the server stops (the rest of D-B6), and `grpc-timeout` is honoured as before. A gRPC connection carries 1,024 calls at once; past that a client waits for one to end.
+- A budget of model calls per API key (audit D-B13): `--model-calls-per-key-day` (10,000) calls a day (UTC) with the server's own credentials, counted where each request is sent: `/v1/agent` and the on-call agent a call a step, `/v1/judge` a call a row, `llm()` a call a question asked (answers from memory are free). Past it the call answers 429 before anything is sent. The `--token`, the cluster's token and callers that bring their own `api_key` are not counted. `GET /v1/admin/model-budget` shows today's counts. Hosted embedding models are not counted yet. `chloedb::query::llm::Split::finish_within` takes a caller's budget.
+
+#### Fixed
+
+- A key limited to tables refused on the gRPC port is written to the audit log, as an HTTP refusal is (audit N-D11).
+- `POST /v1/admin/models/fetch` answers 409 on a server started with `--no-fetch-models`, rather than downloading what it was told not to (audit N-D12).
+- The Kubernetes operator rolls an app's pod when it makes the app a new key: the key's id is an annotation of the pod template, so a pod no longer keeps a revoked key until it restarts. It makes the new key before revoking the old one (audit N-D4).
+- The operator may only read Secrets cluster-wide; it creates, patches and deletes them in namespace `strata` through the new ClusterRole `strata-operator-secrets` and a RoleBinding there. A cluster in another namespace needs that ClusterRole bound there too (audit N-D9).
+- A coordinator judging a key limited to tables learns the cluster's tables and stored functions again (at most once a second) when the statement names a table it does not know or calls a stored function, so a table or function another coordinator just made or changed is judged as it is now (audit N-D5).
+
+(#478)
+
+### Cluster
+
+- **A primary key is unique across shards for `INSERT` into a `shard_by` table.** An insert whose `shard_by` value placed it on another shard than an existing row with the same key used to succeed, leaving two rows with one key. The coordinator now asks every shard's primary for the inserted keys first (one read by key per shard per request) and refuses a key another shard holds (409, naming the shard). Inserts of one key through one coordinator are serialized; two coordinators inserting the same key at the same moment are not (documented).
+- **A `set`, `add` or `delete` with the wrong `routing` is an error**, 404 naming the routing and the column, instead of `200 written: 0`. `"if_missing": "skip"` keeps the old behaviour.
+- **Write receipts.** `/v1/write`, `/v1/kv` and `/v1/import` answer `receipt: {received, inserted, replaced, updated, deleted, collapsed, not_found, per_shard}`. `written` no longer counts a key repeated in one batch twice (an import of `[{"id":30},{"id":30}]` answers `written: 1`, `collapsed: 1`). `strict=true` (body of `/v1/write`, query of `/v1/import`) refuses a write that would replace a row, repeat a key or miss a key, writing nothing.
+- **`INSERT ... ON CONFLICT DO NOTHING` through a coordinator** (any rows), and **`DO UPDATE`** when its rows go to one shard.
+- **`UPDATE ... LIMIT` and `DELETE ... [ORDER BY] LIMIT` through a coordinator**: the rows are picked by key first, then changed if they still match.
+- **`GET /v1/export?format=jsonl|csv|arrow|parquet&tables=T`** works on a cluster (read by a scroll over the shards) and for a key with read on the table; JSON lines, CSV and Arrow work on one server too. SQLite export stays the admin's.
+- **Rank-log export and interleaving credit run through a coordinator** (`/v1/rank_log/export`, `/v1/rank_log/interleaving`), over every shard.
+- **`POST /v1/sql/check`** says whether a statement will run on this deployment (single server or cluster) without running it.
+- A SQLite or Parquet import through a coordinator creates a missing table on every shard, as its `plan=true` said it would.
+- `ALTER TABLE ... ADD COLUMN ... NOT NULL` without a default counts the rows of every shard that refused it, not the first shard's.
+- A 409 for `if_seq_no` names the key as SQL (`2`, `'p1'`), not `Int(2)`.
+- A duplicate primary key answers 409 over HTTP (it was 400); gRPC is unchanged.
+- `/v1/import` takes `empty=default|null|text` for CSV and TSV empty cells.
+- New docs page: `docs/chloedb/cluster-limits.md`, what a cluster refuses or does differently.
+- Shard protocol 21 (backward compatible): `WriteResponse` carries the receipt counts; shards take an operation's `if_missing` and `strict`, and the `insert_if_absent` operation.
+
+(#457)
+
+### Engine and SQL
+
+- **`FILTER (WHERE ...)` on aggregates works.** It was silently ignored outside windows (`COUNT(*) FILTER (WHERE severity = 'error')` gave the total). Any aggregate takes it now, grouped or not, in `SELECT`, `HAVING` and `ORDER BY`, over one table, joins and derived tables; `FILTER` on a non-aggregate is an error.
+- **Statistical aggregates**: `STDDEV`/`STDDEV_SAMP`, `STDDEV_POP`, `VARIANCE`/`VAR_SAMP`, `VAR_POP`, `COVAR_SAMP`, `COVAR_POP` and `CORR`, with PostgreSQL's NULL rules. They are computed from sums and counts, so they merge over shards.
+- **`COUNT`, `COUNT(DISTINCT)`, `MIN` and `MAX` of a TEXT column** (or of an unindexed one) count its stored values instead of being refused.
+- **Intervals and time arithmetic.** `INTERVAL '15 minutes'` (and `'1 day 12 hours'`, `INTERVAL '15' MINUTE`, months and years on the calendar). `now() - INTERVAL '2 hours'`, `TIMESTAMP '...' + INTERVAL ...` and `date_trunc('day', now())` are values in `WHERE`, so the index range still serves them. A column plus an interval is computed per row. `now() - 3600` is now an error that points to `INTERVAL`, because the number could be seconds or microseconds; before, it silently subtracted microseconds.
+- **`DATE`** is accepted as a column type. It is an alias of `TIMESTAMP` (a date written alone is its midnight UTC), with no change to the file format.
+- **`RIGHT JOIN`** as the first join of a `FROM` (run as the swapped `LEFT JOIN`; `*` keeps the written order).
+- **Correlated `EXISTS` / `NOT EXISTS`** with one equality to the outer row run as a semi or anti join: `IN` / `NOT IN` of the subquery, with `NULL`s handled as `EXISTS` handles them.
+- **Explain hits**: `chloedb::query::sql::ranks` is true only for a SELECT whose ORDER BY ranks rows (a column or a ranking), not for grouped, aggregated or computed orders. `/v1/explain` with `hits` no longer has to fail on `GROUP BY ... ORDER BY revenue`.
+- **CSV import**:
+  - Error line numbers are right with CRLF line endings (they were one short).
+  - An empty cell takes the column's `DEFAULT` (so `NOT NULL DEFAULT` columns accept gaps). `Rows::empty_cells(EmptyCell::Null | Text)` chooses NULL, or the empty string for text.
+- **INT columns accept whole floats** (`2.0`, as pandas writes them) from SQL, JSON and CSV. `2.5` is refused with a clear message.
+- **Messages**:
+  - A key repeated within one INSERT (or one file or transaction) says so, instead of "already has a row".
+  - Keys print as SQL values (`2`, `'a'`), not `Int(2)`.
+  - EXPLAIN shows `price > 10`, not `price >= 10.000000000000002`.
+  - `Error::code()` gives stable codes, `conflict` for a duplicate primary key. `Error::message()` and `Error::within()` add context without repeating the `schema error:` prefix.
+- **`PACK n TOKENS`** no longer marks a row with several text columns "skip: over budget" while half the budget is left. The row is excerpted. Ranking is unchanged.
+
+(#457)
+
+### Keys limited to tables
+
+- **Query parameters read the queried table.** `{"embed": ...}` and `{"vector_of": key}` without a `table` resolve against the table the statement queries (refused, saying to add `"table"`, when it reads two tables with such a field), not the server's first table. A key limited to tables needs read on whatever table a parameter uses (a row's vector, a field's model and its provider key): it can no longer resolve a parameter against another table. `/v1/embed` uses the model of a table the key reads (the first such with none named), and `/v1/models` lists only the fields of tables it reads. The engine's "is text" error suggests `{"embed"}` with the table and field, and for a field with no model suggests a vector or `{"vector_of"}` instead.
+- **`/v1/schema` with no table** answers the first table a limited key may read, never a 403 about a table it did not name (Python's `table()`/`search()` and JS's `search(..., {table})` with such keys).
+- **`PACK n TOKENS`** works for limited keys (it was a syntax error).
+- **More routes for limited keys, each checked by its tables:** `/v1/plan` (write on what it writes, read on every table it reads, subqueries and edge tables too; Python's `next_items`), `/v1/schema/check`, logged queries (`"log"`, into a table the key writes; admin there to create it), `/v1/rank_log/export` and `/interleaving`, OTLP `POST /v1/logs` into a table the key writes, `GET /v1/apps` and `/v1/apps/<name>/...`.
+- **Apps that check their callers.** An app whose `app.json` says `"checks_callers": true` gets limited keys (with `x-chloedb-tables`) and changes from write-scope keys; other apps keep needing a key of every table (admin to change). ChloeCtx now checks its callers: read on `ctx_<space>` to read or ask, write to add or retire notes (so a write key, or `ctx_ops_*=write`, records notes), admin to create a space; builds, the on-call handoff and local stores stay admin-only. Changes through apps are still audited.
+- **MCP** refuses a limited key with a JSON-RPC error (`-32001`, HTTP 403) that says why.
+- **Shard addresses** are left out of query steps (`shard 0 query`) for any key that is not the server's admin.
+- **Rank profiles take one text parameter for both BM25 and a vector** (`bm25(title, :q) + similarity(emb, :q)`, and `embed(:q)` in a profile): the profile is written out and its texts embedded, the plan still naming the profile. Existing queries rank as before.
+- **Explain with `hits`** no longer fails on queries that order groups or computed columns: it explains without hits and says why (`hits_skipped`).
+- **Presets.** `POST /v1/admin/keys {"name", "preset": "analyst" | "oncall" | "ml-app" | "app-owner", "prefix": "team_*"}` makes a job's key, stored as the grants and allowance it expands to. Limited keys may also be given `"routes": ["fleet"]` (GET of fleet health, events, metrics and charts) and `"apps": [...]` (apps that do not check callers, readable through with GET when the key reads every table). `/v1/whoami` and the key list show `limited`, `preset` and `allow`; whoami lists the presets.
+- **Command center with a limited key:** the header shows the key's preset or grants instead of "admin"; Home says the key can't see the fleet or the timeline instead of spinning or saying nothing happened; a route refused to a limited key is not polled again; the Apps page says the listing was refused, or that an app takes a key of every table, instead of "This server has no apps"; the key page offers presets and shows each key's limits; rotating a limited key in the UI keeps its limits (it used to make a successor of every table). Results show INT ids, years and codes without thousands separators.
+- docs/chloedb/server.md no longer says keys per table are "not there yet", and lists every route a limited key may use.
+
+(#457)
+
+### Logs
+
+- **Log explorer** in the command center (Operate > Log explorer, `g e`, `#/explorer`): the log lines in the database's own tables, any table with a `TIMESTAMP` and a text column. A search box (words and `"phrases"` as `ILIKE '%...%'` on a column with a substring index or `MATCH` without one; `host:core-rtr-02`, `attributes.iface:Gi0/1`, `code>=4`, `level>=warn` by the levels the table holds, `-term`, or `WHERE ...` as written), the last 15 minutes, hour, day or week (`ts > now() - INTERVAL '15 minutes'`) or a custom window, a count of lines per minute (wider buckets over longer ranges) with errors and warnings apart and a click to zoom, the newest lines followed live every 3 s with a pause, the lines before and after one on the same host (±10 to ±200), the lines grouped by pattern (numbers, IPs, MACs, hex ids, times and quoted text as placeholders, syslog mnemonics kept), and every statement it ran, to copy or open in the SQL workbench. It works with a key limited to tables (the `oncall` preset's `logs_*`), showing only the tables the key reads; against a server from before `INTERVAL` and `time_bucket` it falls back to literal times and `date_trunc`. Without a log table it shows **Send your logs here**: the table to make, an `oncall` key, an OpenTelemetry Collector's settings for this server's `/v1/logs` and a JSON lines import, with buttons that make the table and the key for an admin.
+- **`time_bucket(width, t)`**: the start of a bucket of a fixed width of a `TIMESTAMP` (`time_bucket('5 minutes', ts)`, or `INTERVAL '5 minutes'`), buckets counted from 1970-01-01 UTC; grouped from the column by the executor, as `date_trunc` is, on one server and through a coordinator. A plan that uses it needs the new plan feature `time_bucket` (protobuf `FUNC_TIME_BUCKET = 23`), which older shards refuse by name.
+- **`POST /v1/import` into a table without a primary key** (a log table) inserts its rows; it failed with "table ... has no primary key" before.
+- **Docs**: a new guide page, [Search your logs](docs/guide/logs.md): a log table, an `oncall` key for `logs_*`, an OpenTelemetry Collector's settings, OTLP JSON and JSON lines with curl, and the first five queries of an incident (the last 15 minutes' errors, per host per minute, an interface flapping, an IP, the top kinds of line), run by `docs/guide/run.py`.
+
+(#457)
+
+### Recommendations
+
+#### Added
+
+- **`FULL [OUTER] JOIN`.** The rows of a `LEFT JOIN`, then the right side's rows that matched none, with `NULL`s on the left. `NULL` keys match nothing, extra `ON` conditions decide which pairs join, and `WHERE` filters the joined rows (neither side's scan). It runs on the operators (DataFusion falls back to them) and through a coordinator, which joins the shards' rows as one database does. A plan with one needs the plan feature `full_join`; gRPC's `JoinKind` gains `JOIN_KIND_FULL = 2`. ([query language](docs/chloedb/query-language.md#subqueries-with-and-joins))
+- **Recommenders: `CREATE RECOMMENDER` and `recommend()`.** `CREATE RECOMMENDER shop ON events(usr, item, ts) [ITEMS items(emb)] [OPTIONS (window = 3, history = 20)]` counts the events already written into the table `shop_counts` (next-item counts, items seen together within `window` events, item popularity, each user's last `history` events), and every transaction that inserts events updates the counts in the same transaction, at commit, so replicas get them with the events. `ORDER BY recommend('shop', :u) DESC` ranks a table's rows for a user by reciprocal rank fusion of what came next after their last items, what was seen with their recent items, the items nearest those by `maxsim` (with a vector field) and popularity, leaving out what the user had; it is `ranked(...)` of the keys, so it filters, joins and fuses as any score. `SELECT * FROM recommend('shop', :u, k => 10)` lists the items with each list's rank. `DROP RECOMMENDER` drops it. The definition is a stored function, so no file format changes. A coordinator refuses both, and a key limited to tables needs read on the counts table. ([query language](docs/chloedb/query-language.md#recommenders-create-recommender-and-recommend), [cluster limits](docs/chloedb/cluster-limits.md))
+
+#### Changed
+
+- `FULL JOIN` is no longer refused; `CROSS JOIN` still is, with what to write instead.
+- next-items.md says that a `ppr` walk is refused through a coordinator, and points to `CREATE RECOMMENDER`.
+
+(#457)
+
+### Ops, apps and the workbench
+
+#### chloedb-server
+- **Alerts.** On a server without a log store, a backtest no longer fails with 409 by default. It covers the points memory holds, and its `note` says what it covered instead of what was asked. `from` and `to` take milliseconds or seconds (as numbers or digits) or ISO 8601 text; anything else is a 400. A saved rule can be backtested by its id (`"rule": "p99-jump"`). A relative rule's title gives the ratio: "p99 2.4x its baseline (> 2x, mean over 5m against the 5m before)", not "Query p99 doubled".
+- **Fleet.** A filling disk's headline and its problem give the same estimate in the same unit ("fills in about 3 h at the last hour's rate"). The headline used to say "within 3 days".
+- **Apps that check their callers can act as them.** An app's token sent with `x-chloedb-as-tables: <grants>` is narrowed to those grants, each capped at the token's own scope, and its statements are checked as the caller's key would be, routes included. The header only narrows: a key already limited to tables gets 403, and a narrowed credential is never the root. Sheets, the crawler and the app creator now declare `checks_callers`. chloedb-server passes an app's `content-disposition` and `x-app-*` response headers through.
+- **Presets.** The analyst preset makes its own workbooks in Sheets. The app-owner preset (`app_*` admin) builds, changes and publishes apps in the app creator.
+- **SQL workbench.**
+  - An answer larger than a query may return (10,000 rows) is no longer refused. The workbench shows the first 10,000 rows, read as a scroll, under a "Showing 10,000 of N rows" banner.
+  - **Export all** writes every row as a CSV, a page at a time. A whole table (`SELECT * FROM t`) comes as Parquet from `/v1/export` when the key may export, and as a CSV otherwise.
+  - A new **Health** tab profiles each column by SQL over the whole answer: NULLs, distinct values, min, max and spread. It flags columns that are always NULL, columns with one value, and sums that a few rows make.
+  - One number format is used for the grid, charts and Sheets, and chart axes get round ticks (0, 500M, 1B, 1.5B rather than 991.7M).
+
+#### ChloeCtx
+- The owner of a space, or an admin, can delete it (`DELETE /v1/spaces/:s`). This drops its `ctx_<space>` table and its `ctx_spaces` row.
+- A note or an incident can carry its own date: `when` (or `ts`), in seconds or ISO 8601 text.
+- A team can keep its own incidents in a space of kind `incidents`. Seen before reads every incidents space the key may read. `POST /v1/incidents/match {lines}` matches pasted log lines to past incidents, as an alert is matched.
+
+#### Sheets
+- Numbers show at most 15 significant digits, the way Excel's General format shows them, in the grid, CSV and xlsx (226159459.83, not 226159459.829999998).
+- An xlsx export says how many charts it left out (`x-app-left-out`, and a warning in the app).
+- The home page no longer clips its right column.
+- Sheets checks its callers. Workbooks have an owner, the list offers **Mine / Shared / All**, and **Share** opens a workbook to other keys. Query blocks, live tables and copies to tables run as the caller's key.
+
+#### Crawler
+- A field found both in JSON-LD and in another source of a page is one column, not two (formula1_com's duplicate event columns).
+- The crawler checks its callers. A crawl is its starter's: only its starter, or an admin of every table, can steer it. A key limited to tables lists only its own crawls, and a crawl writes as the key that started it.
+
+#### App creator
+- The engine checks its callers. A key limited to tables reads an app with read on `app_<id>_*`, uses it with write there and changes it with admin there. Building a new app takes admin on `app_*`.
+
+(#457)
+
+- **Security: visitors of a published app can no longer start a paid repair.** `POST /api/apps/<id>/error` from the public (and errors a visitor's call or trigger hits) is only recorded under Usage; it never reaches the forge or the model's prompt. Before, anyone could spend the model budget and put their own words into the code generator's prompt for a live app.
+- **Privacy: a published app's people are for its members.** `GET /api/apps/<id>/people` answers only signed-in members of that app (names; emails for its owner). A session from another app on the same address no longer makes a visitor a member, and signing up with an email that has an account signs in with the right password and otherwise says only that the email and password cannot be used.
+- **Who can see this?** Publish offers four choices: only me (the default), visitors can look, customers can look and add (and change only what they added themselves), anyone can do anything (typed confirmation). Apps published before keep what they had (anyone can change). **See it as a stranger** opens the app with no account under the choice being weighed, and the tab warns of columns that look like emails, phone numbers or addresses.
+- **Visitors' writes are checked on the server**: a column whose forms offer fixed choices takes only those, a field is at most 10 KB (`STRATA_APPS_PUBLIC_FIELD_MAX`), a row 64 KB (`STRATA_APPS_PUBLIC_ROW_MAX`), a list 100 items; refusals are clear 400s. Failures no longer tell visitors shard names or physical tables.
+- **Owner basics**: rename, duplicate (with rows), export (JSON, and CSV per table) and delete an app, which drops its own `app_<id>_*` tables and nothing of other apps. A name the owner gives stays, and a label that starts the description (`acme-shop ...`) stays in front of the name the model picks. The bar and the gallery show what each app's builds cost.
+- The build's checks no longer show up in Usage as a visitor's insert; suggestions from before a new version are retired when it goes live; the progress estimate is scaled to the real duration of past builds (and starts at about a minute, not 24 s).
+- The app creator's Desktop preview draws the app 1280 px wide, scaled to fit; Data is the first tab; the Publish panel repaints after a change; its switches are labelled; a stray "null" is gone from the home page and the empty stage.
+
+(#457)
+
+### Packaging, releases and docs
+
+#### Added
+
+- **Prebuilt crawler, Sheets and ChloeCtx.** A `chloedb-server-v<version>` release also carries `chloedb-crawl`, `chloedb-sheets` and `chloectx` archives for each platform (each with its `.sha256`), and the website's installer installs them with the server: `curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx` (or `CHLOEDB_WITH`). The crawl, apps and ChloeCtx setup pages use them, and keep the build from source as a fallback.
+- **npm packages, napi-rs style.** `js-release.yml` packs `chloedb` (the JavaScript, with a package per platform as optional dependencies) and `@chloedb/<platform>` (the addon), tests the pair in an empty app, and publishes them on a tag once the repository variable `CHLOEDB_PUBLISH_NPM` is `true` (environment `npm`, secret `NPM_TOKEN`). `index.js` loads the addon from the platform's package when none is beside it. `scripts/pack.mjs --npm <platform>` and `--npm-main` pack them by hand.
+- **`chloedb-server doctor`.** Checks a machine for the guides, changing nothing: the version against the latest release, whether the Python package is ChloeDB or PyPI's placeholder, the models folder, port 7700, and glibc against the prebuilt programs. `ok`/`warn`/`FAIL` lines with a fix each; exits 1 on a `FAIL`.
+- **Python:** `chloedb.AsyncClient` and `AsyncSession` (asyncio; the client's methods as coroutines, run in the loop's executor, standard library only), `chloedb.__version__`, `py.typed`, and `search(text, table=...)` on `Database` and `Client`.
+- **Python:** `chloedb.DuplicateKeyError`, raised for an `INSERT` of a key the table holds, with `.table`, `.field`, `.key` and `.row` where the message names them. It is a `ConflictError` (code `conflict`) and still a `BadRequestError`.
+- **Docs:** each page of the site says which version it describes and the latest release (from `docs/site/versions.json`), `<!-- since X -->` markers show as "since X (unreleased)" badges, `build_docs.py --snapshot TAG` renders a release's docs into `docs/site/docs/v<version>/`, and `server-release.yml` opens a pull request with that snapshot on a server tag.
+- **CI:** `scripts/check-old-names.py` fails on Strata or Engram on the pages a newcomer follows, the installers and the placeholders (except on lines that say they are the old names); `scripts/check-documented-python.py` fails on a `chloedb.X` module or `chloedb[extra]` the docs name that does not exist, or that the latest release lacks without a since marker.
+
+#### Changed
+
+- **PyPI, npm and crates.io placeholders 0.0.2** say they are placeholders for ChloeDB and give the install that works (`pip install --upgrade chloedb -f .../chloedb-py-v0.2.0`), not Strata's `strata-db 0.1.0`. `reserve-names.yml` republishes them.
+- **The quickstart and the Python page** no longer tell readers to run a bare `pip install chloedb` (which installs the placeholder): `pip install --upgrade chloedb -f <release>`, and plain `pip install chloedb` once PyPI holds the releases. The Linux wheels' glibc is stated as released: 0.2.0's are `manylinux_2_35`; from 0.2.1, `manylinux_2_28`, which `py-release.yml` now checks.
+- **The models folder** is `~/.local/share/chloedb/models` for new installs (`chloedb::embed::models_dir`, chloedb-py, the docs); a machine with `~/.local/share/strata/models` and no `~/.local/share/chloedb` keeps using the old one.
+- **`--server URL`** names the server for `chloedb-crawl` and `chloedb-sheets`, as for `chloectx app`; `--strata` still works.
+- **`{"vector_of": key}` and `{"embed": text}` parameters** in the Python and JavaScript bindings read the table the statement's `FROM` names, not the database's first table, unless they name one with `"table"`.
+- **Python and JavaScript clients:** a call that names a table (`search(..., table=)`, `table(name)`, `schema(table)` in JS) reads `/v1/schema?table=` for that table alone and never the server's first table, so a key limited to other tables works with them.
+- **The ChloeCtx demo** keeps its data in `~/chloectx-demo` (an existing `~/engram-demo` is still used).
+- **`docs/guide/run.py`** gives each page an empty models folder of its own (`--shared-models DIR` shares one), so a page that needs a model must fetch it; the agent-memory recipe now fetches its model.
+
+#### Fixed
+
+- `chloedb-crawl serve --local` (and `crawl --local`) stopped by SIGTERM just after start no longer leaves its chloedb-servers running: the signal handlers are installed before the cluster starts.
+
+(#457)
+
+### Understanding
+
+#### Added
+
+- **Understanding in the command center: Enrich rows and Enrich queries.** The Query understanding page is now *Understanding*, and it has two workflows.
+  - *Enrich rows* adds fields that a model makes of each row's text, one step per field. The steps are a language, main phrases, near duplicates, the names it mentions from another table, a classifier's class, a language model's text from a prompt, a vector for meaning, and a caption or transcript of a file. Each step is tried on sample rows first. Then the steps are added in one `ALTER TABLE`, and the rows written before are filled in, 200 rows a write, with progress and a stop button. A table shows how many rows have each field and its commonest values.
+  - *Enrich queries* reads a search in steps: spelling, the values its words name, its class, its language, the names it mentions, and what the caller knows (`country = CL`). It adds what it reads to the request as filters and `bm25`/`rrf` options. You see the request as SQL with its parameters, run beside the words alone, and can save it as a search whose filters are parameters (`NULL` leaves one out).
+- **`POST /v1/derive/preview` takes dictionaries and classifiers.** `dict:<table>.<field>` returns the names a text mentions, read from the table now (`table` and `field` set the analyzer). `classifier:<name>` returns its label, or with `many` the labels a `KEYWORD[]` field would hold, plus `top`.
+
+#### Known
+
+- On a cluster, a `dict:` field is made on each shard from that shard's part of the names table, so a row misses the names other shards hold. The page warns about this on a coordinator; a fix belongs in the write path.
+
+(#492)
+
+#### Fixed
+
+- **Query understanding through a coordinator.** `bm25(.., understand => ..)` and `POST /v1/understand` failed on a cluster with "LIMIT and OFFSET reach row 200000; a query returns at most 10000 rows": the coordinator read a keyword field's dictionary (up to 200,000 values) as a client's query, held to `--max-rows`. It is now the server's own read, as a single server's always was.
+- **"Did you mean" on a cluster.** `POST /v1/correct` on a coordinator answered "a coordinator does not correct text yet". It now corrects as one server does, by its shards' term statistics summed: the words' own document counts, then, for a word in none, its neighbours' (each shard's nearest).
+- **ChloeCtx in the command center.** A space's card counted every note ever written, so a space whose notes were all replaced or retired said "11 notes" and opened to "No notes yet": it counts the current notes now (`live_by_kind` in `GET /v1/spaces`), says how many are only in its history, and the empty list offers the history. The Receipts and Blame tabs, which read a machine's local stores, are left out where `chloectx app` has none (a cluster's).
+
+#### Added
+
+- **A ChloeCtx space as an MCP server.** `POST /v1/apps/chloectx/v1/spaces/<space>/mcp` speaks the Model Context Protocol (streamable HTTP, JSON answers) with three tools: `ask` (the context for a task, within a budget of tokens), `remember` (a note, which may replace an older one) and `notes`. A space's page has a "Connect Claude Code" card that makes a key that may write only the space's table (`ctx_<space>=write`) and shows the `claude mcp add --transport http ...` line to paste.
+- **Keys limited to tables reach an app that holds them to their grants.** An app whose `app.json` says `"limited_keys": true` is called by such keys too (with any grant that reads); other apps still refuse them. `chloectx app` is one: a space is its table `ctx_<space>` (read to read and ask it, write to change it), the incidents `ctx_incidents`, the Inspector `chloectx_memory`; creating a space and building apps from one take an unlimited admin's key, no limited key reaches the machine's local stores, and `GET /v1/spaces` lists the spaces the key may read.
+- **The Inspector's empty state is a setup**: a button makes the table `chloectx_memory` and a key that may write only it, and shows the `chloectx sync setup` command with the key filled in (ChloeCtx 0.2.0 or later).
+
+(#483)
+
+### Read routing
+
+- A coordinator keeps each replica's recent round trips, calls in flight,
+  errors and reported load, shown in `/v1/cluster` (`observed`) and the
+  `chloedb_replica_*` metrics. `--route least-cost` sends a read to a
+  replica drawn at random when it costs clearly less (round-robin stays the
+  default), `--hedge-adaptive` hedges after the replica's own tail instead
+  of after `--hedge-ms`, and `--prefer-caught-up` routes reads that must see
+  a write by each replica's round trips of such reads. Measured by
+  `chloedb-route-bench` (results in `chloedb-server/results/route-*/`).
+- Performance and correctness baselines of ChloeDB's write-ahead log,
+  flushes and merges, and of ChloeCtx's recall; the test Postgres stops by
+  its fast shutdown, so macOS no longer runs out of shared memory segments.
+
+(#493)
+
+### ChloeCtx
+
+- `chloectx ui` shows in its header the version and commit it runs and
+  whether the checkout it was built from has a newer one, and Update runs
+  `chloectx upgrade` from the page, its output shown as it goes (#494).
+
 ## 0.3.1
 
 Fixes from the second audit (13 Nov) and what was built beside them:

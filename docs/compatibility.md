@@ -99,7 +99,7 @@ build from a commit after a release by its commit.
 
 Servers of a cluster (coordinators, shards, replicas, followers) talk over
 gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
-`MIN_PROTOCOL` 1, `PROTOCOL` 20; [the list of what each adds](chloedb/server.md)).
+`MIN_PROTOCOL` 1, `PROTOCOL` 21; [the list of what each adds](chloedb/server.md)).
 
 - When a coordinator or a peer connects it calls `Hello` with the range it
   speaks (1 to 20) and the server answers its own range, the plan version
@@ -123,6 +123,11 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   `GROUP BY` of `date_bin` or `date_trunc` run on the columns) and
   `approx_percentiles` (`approx_percentile`): a 0.3.0 shard refuses a
   query that uses one by name, so upgrade the shards first here too.
+  0.3.2 moved the shard protocol to 21 (write receipts' counts, strict
+  writes, `insert_if_absent`) and added the plan feature `full_join`
+  (`FULL JOIN`): a coordinator counts and writes strictly only
+  through shards of 21, and a 0.3.1 shard refuses a full join by name, so
+  upgrade the shards before the coordinator.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -149,8 +154,8 @@ advance.
 | programs | `chloedb-server`, `chloedb-crawl`, `chloedb-sheets` | `strata-server`, `strata-crawl`, `strata-sheets`, in the image and the release archives |
 | container image | `ghcr.io/chloetech-ai/chloedb-server` | `ghcr.io/chloetech-ai/strata-server` |
 | settings | `CHLOEDB_*` | `STRATA_*` |
-| the server an app writes to | `chloedb-crawl --server URL`, `chloedb-sheets --server URL` (0.3.1) | `--strata URL` |
-| models folder | `~/.local/share/chloedb/models` (0.3.1) | `~/.local/share/strata/models`, used where it exists and the new folder does not |
+| the server an app writes to | `chloedb-crawl --server URL`, `chloedb-sheets --server URL` (0.3.2) | `--strata URL` |
+| models folder | `~/.local/share/chloedb/models` (0.3.2) | `~/.local/share/strata/models`, used where it exists and the new folder does not |
 | HTTP headers and gRPC metadata | `x-chloedb-*` | `x-strata-*` |
 | Python package | `import chloedb`, `ChloeDBError` | `import strata`, `StrataError` (with a `DeprecationWarning`) |
 | JavaScript errors | `ChloeDBError` | `StrataError` |
@@ -179,7 +184,7 @@ format (`STRATADB` magic, ChloeCtx's `memory.strata` and `engram.sock`), the
 gRPC services, the Kubernetes operator's resources (the `StrataCluster`
 kind, the `strata.chloetech.ai` API group, the `strata-system` namespace),
 and the app engine in `chloedb-apps/`. The default models directory is
-`~/.local/share/chloedb/models` from 0.3.1 (`~/.local/share/strata/models`
+`~/.local/share/chloedb/models` from 0.3.2 (`~/.local/share/strata/models`
 before); a machine that has the old folder and no `~/.local/share/chloedb`
 keeps using it, as a machine that already has ChloeCtx's old folder,
 `~/.local/share/engram`, does.

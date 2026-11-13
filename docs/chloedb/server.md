@@ -20,7 +20,7 @@ New to it? [Build an app](build-an-app.md) goes from an empty server to search, 
 A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server [release](https://github.com/chloetech-ai/chloedb/releases) (tagged `chloedb-server-v<version>`) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
 
 ```sh
-v=0.3.1 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+v=0.3.2 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz
 chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo catalogue
@@ -107,7 +107,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--max-body-mb N` | 256 | the largest body of a write or an import, and of a gRPC message; other requests take up to 16 MiB |
 | `--otlp-retain PERIOD` | none (kept for ever) | how long a table [OpenTelemetry logs](#opentelemetry-logs) make keeps its rows (`'30 days'`, `'12h'`); tables already there keep theirs |
 | `--model ID` | `claude-haiku-5-5` | the agent's default model |
-| `--models DIR` | `$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.3.1, always) | where the models of [embedded vector fields](#embedded-vector-fields), [ranking models](query-language.md#ranking-models-gbdtmodel-features) (`<name>/gbdt.json`) and [cross-encoders](query-language.md#cross-encoders-cross_encodermodel-fields-query) (`<name>/config.json`, `tokenizer.json`, `model.safetensors`) are |
+| `--models DIR` | `$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.3.2, always) | where the models of [embedded vector fields](#embedded-vector-fields), [ranking models](query-language.md#ranking-models-gbdtmodel-features) (`<name>/gbdt.json`) and [cross-encoders](query-language.md#cross-encoders-cross_encodermodel-fields-query) (`<name>/config.json`, `tokenizer.json`, `model.safetensors`) are |
 | `--no-backfill` | off | leave the rows stored while their embedded field had no model open without vectors; by default they [get them](#embedded-vector-fields) once the model opens |
 | `--no-fetch-models` | off | do not download the [models ChloeDB knows](#embedded-vector-fields) that an embedded field names and `--models` lacks |
 | `--copy-from PATH` | | fill the new database (`--db` with `--schema`) with this database's rows, re-embedding the vector fields whose embedding changed |
@@ -139,7 +139,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 
 `CHLOEDB_ENGINE` chooses the engine of [joins, groups and sorts over joined or derived rows](query-language.md#subqueries-with-and-joins), over a database's own tables and on a coordinator above its shards' rows. The default, `auto`, uses DataFusion when a query's single-table parts read more than 4,096 rows and ChloeDB's operators below that. The other values are `operators`, `datafusion` and `datafusion-only`. Build with `--no-default-features` to leave DataFusion out of the server.
 
-<!-- since 0.3.1 --> `chloedb-server doctor` checks a machine for the guides and changes nothing: this server's version against the latest release on GitHub (`--offline` skips asking), whether the Python package `chloedb` is ChloeDB or PyPI's placeholder (`--python` picks the interpreter), the models folder and what is in it, whether port 7700 is free (`--port`), and on Linux glibc against what the prebuilt programs and wheels need. Each line is `ok`, `warn` or `FAIL` with the command that fixes it; it exits 1 when a line is `FAIL`.
+<!-- since 0.3.2 --> `chloedb-server doctor` checks a machine for the guides and changes nothing: this server's version against the latest release on GitHub (`--offline` skips asking), whether the Python package `chloedb` is ChloeDB or PyPI's placeholder (`--python` picks the interpreter), the models folder and what is in it, whether port 7700 is free (`--port`), and on Linux glibc against what the prebuilt programs and wheels need. Each line is `ok`, `warn` or `FAIL` with the command that fixes it; it exits 1 when a line is `FAIL`.
 
 `chloedb-server upgrade PATH` copies a database written by a version of ChloeDB from before field ids, which this one refuses to serve, into this version's format in its place, and keeps the old one as `PATH.before-field-ids` ([field ids](index.md#wal-memtable-and-snapshots)). Stop the server that has it open first. A database started with `--seq-no` is not copied: create a new one and fill it with `--copy-from`.
 

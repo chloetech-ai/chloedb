@@ -81,7 +81,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.1.</p>
+      <p class="doc-version">These docs describe release 0.3.2.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -185,7 +185,7 @@ build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
 <p>Servers of a cluster (coordinators, shards, replicas, followers) talk over
 gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
-<code>MIN_PROTOCOL</code> 1, <code>PROTOCOL</code> 20; <a href="server.html">the list of what each adds</a>).</p>
+<code>MIN_PROTOCOL</code> 1, <code>PROTOCOL</code> 21; <a href="server.html">the list of what each adds</a>).</p>
 <ul>
 <li>When a coordinator or a peer connects it calls <code>Hello</code> with the range it
   speaks (1 to 20) and the server answers its own range, the plan version
@@ -208,7 +208,12 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   0.3.1 added the plan features <code>asof_join</code> (<code>ASOF JOIN</code>), <code>date_bin</code> (a
   <code>GROUP BY</code> of <code>date_bin</code> or <code>date_trunc</code> run on the columns) and
   <code>approx_percentiles</code> (<code>approx_percentile</code>): a 0.3.0 shard refuses a
-  query that uses one by name, so upgrade the shards first here too.</li>
+  query that uses one by name, so upgrade the shards first here too.
+  0.3.2 moved the shard protocol to 21 (write receipts' counts, strict
+  writes, <code>insert_if_absent</code>) and added the plan feature <code>full_join</code>
+  (<code>FULL JOIN</code>): a coordinator counts and writes strictly only
+  through shards of 21, and a 0.3.1 shard refuses a full join by name, so
+  upgrade the shards before the coordinator.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -252,12 +257,12 @@ advance.</p>
 </tr>
 <tr>
 <td>the server an app writes to</td>
-<td><code>chloedb-crawl --server URL</code>, <code>chloedb-sheets --server URL</code> (0.3.1)</td>
+<td><code>chloedb-crawl --server URL</code>, <code>chloedb-sheets --server URL</code> (0.3.2)</td>
 <td><code>--strata URL</code></td>
 </tr>
 <tr>
 <td>models folder</td>
-<td><code>~/.local/share/chloedb/models</code> (0.3.1)</td>
+<td><code>~/.local/share/chloedb/models</code> (0.3.2)</td>
 <td><code>~/.local/share/strata/models</code>, used where it exists and the new folder does not</td>
 </tr>
 <tr>
@@ -319,7 +324,7 @@ format (<code>STRATADB</code> magic, ChloeCtx's <code>memory.strata</code> and <
 gRPC services, the Kubernetes operator's resources (the <code>StrataCluster</code>
 kind, the <code>strata.chloetech.ai</code> API group, the <code>strata-system</code> namespace),
 and the app engine in <code>chloedb-apps/</code>. The default models directory is
-<code>~/.local/share/chloedb/models</code> from 0.3.1 (<code>~/.local/share/strata/models</code>
+<code>~/.local/share/chloedb/models</code> from 0.3.2 (<code>~/.local/share/strata/models</code>
 before); a machine that has the old folder and no <code>~/.local/share/chloedb</code>
 keeps using it, as a machine that already has ChloeCtx's old folder,
 <code>~/.local/share/engram</code>, does.</p>

@@ -81,7 +81,7 @@
       <span class="eyebrow">Apps</span>
       <h1>chloedb-sheets: spreadsheets in ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/sheets.md">docs/chloedb/sheets.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.1.</p>
+      <p class="doc-version">These docs describe release 0.3.2.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-app">The app</a></li><li><a href="#how-workbooks-are-kept">How workbooks are kept</a></li><li><a href="#its-api">Its API</a></li></ol></details>
     <div class="doc-body">
@@ -106,7 +106,7 @@ target/release/chloedb-sheets serve --local ./sheets-cluster --server-bin ../chl
 <p>Against a cluster that runs elsewhere, give chloedb-sheets the server (a coordinator or one server) and a key, and give the server the app. Its first start creates the two tables it keeps workbooks in, which takes an admin key; after that a key that can write is enough:</p>
 <pre data-lang="sh">chloedb-sheets serve --server http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SHEETS_TOKEN&quot; --listen 0.0.0.0:7820
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN</pre>
-<p><code>--server</code> was <code>--strata</code> before 0.3.1; the old name still works.</p>
+<p><code>--server</code> was <code>--strata</code> before 0.3.2; the old name still works.</p>
 <p><code>--token</code> (or <code>CHLOEDB_SHEETS_TOKEN</code>) is the bearer token its API requires; the server sends its <code>CHLOEDB_APP_TOKEN</code> (<a href="server.html#apps">apps</a>). Requests that carry an <code>Origin</code> header are refused, so a page on another site cannot reach the app even from inside the network. It checks its callers itself (<code>"checks_callers": true</code> in its manifest), so chloedb-server sends it keys limited to tables, and keys that may only write, with who they are (<code>x-chloedb-principal</code>, <code>x-chloedb-scope</code>, <code>x-chloedb-tables</code>). A key that may write makes workbooks, which are its own: it changes them, shares them (<strong>Share</strong>, <code>POST /v1/books/:id/share {shared}</code>) and deletes them, and another key opens one only once it is shared, or when it is an admin of every table. A workbook made before owners existed is everyone's. What a workbook reads from the cluster (its query blocks, the tables opened as sheets, a sheet copied to a table) runs as the caller's key: chloedb-sheets sends its own token narrowed to the caller's grants (<code>x-chloedb-as-tables</code>, <a href="server.html#apps">server</a>), so a query reads only the tables the signed-in key may read, and a refusal is the server's 403. The analyst preset's keys make their own workbooks this way. Called directly with its token (not through chloedb-server), it answers as before, as the token's.</p>
 <h3 id="on-kubernetes">On Kubernetes<a class="anchor" href="#on-kubernetes" aria-label="Link to this section">#</a></h3>
 <p>A cluster the <a href="server.html#on-kubernetes">operator</a> runs gets spreadsheets of its own from its <code>StrataCluster</code>, with nothing to start by hand:</p>

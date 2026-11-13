@@ -81,7 +81,7 @@
       <span class="eyebrow">Start</span>
       <h1>Quickstart: a first search in five minutes</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs describe release 0.3.1.</p>
+      <p class="doc-version">These docs describe release 0.3.2.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -96,7 +96,7 @@
 <pre data-lang="sh">brew install chloetech-ai/tap/chloedb</pre>
 <p><strong>Docker</strong>: skip to <a href="#chloedb-in-docker">ChloeDB in Docker</a> below, which runs the same steps against the image.</p>
 <p><strong>By hand</strong>: each <code>chloedb-server-v&lt;version&gt;</code> <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> has an archive per platform (<code>linux-x86_64</code>, <code>linux-aarch64</code>, <code>macos-arm64</code>, <code>macos-x86_64</code>) with a <code>.sha256</code> beside it:</p>
-<pre data-lang="sh">v=0.3.1 p=macos-arm64
+<pre data-lang="sh">v=0.3.2 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv chloedb-server-$p/chloedb-server ~/.local/bin/</pre>
 <p>Check that it runs:</p>
@@ -183,7 +183,7 @@ EOF</pre>
 <h2 id="chloedb-in-docker">ChloeDB in Docker<a class="anchor" href="#chloedb-in-docker" aria-label="Link to this section">#</a></h2>
 <p>The image <code>ghcr.io/chloetech-ai/chloedb-server</code> (Linux, x86-64 and arm64) keeps its database in <code>/data</code>: mount a volume there to keep it. Inside a container the server listens on all of the container's interfaces, which it allows only with a token, so pick one. Publishing the port on <code>127.0.0.1</code> keeps it to this machine.</p>
 <pre data-lang="sh">docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.1</pre>
+  ghcr.io/chloetech-ai/chloedb-server:0.3.2</pre>
 <p>Then every request sends the token, and the console asks for it once:</p>
 <pre data-lang="sh">sql() { curl -sS http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; -H &#x27;authorization: Bearer pick-a-secret&#x27; --data-binary @-; echo; }</pre>
 <p>and steps 3 to 5 run as written (the <code>/v1/write</code> call needs the same <code>authorization</code> header). Arguments after the image replace its default ones (<code>--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701</code>): add <code>--demo 20000</code> by passing <code>--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000</code>. <code>docker rm -f chloedb</code> stops it; the volume keeps the database.</p>
