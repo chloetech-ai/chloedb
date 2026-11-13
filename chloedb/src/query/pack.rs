@@ -50,8 +50,8 @@
 //! without a primary key, the reads are pages of the query instead).
 //!
 //! Tokens are counted by [`count_tokens`], an estimate: a tokenizer's count
-//! depends on the model, and the estimate is meant to be within a tenth of
-//! the usual BPE tokenizers' on English prose and code.
+//! depends on the model. Measured against two (`chloedb/results/pack/`), it
+//! counts English prose and code 13 to 27% high, the safe side.
 //!
 //! The clause is taken off the statement's text before it is parsed, and the
 //! rest runs as any query does, once per read (and once per row followed),
@@ -100,11 +100,19 @@ fn err(m: impl Into<String>) -> Error {
 
 /// An estimate of the tokens a language model's tokenizer makes of `text`.
 ///
-/// A run of letters is one token per six letters or part of them (most
-/// English words are one; `idempotency` is two), a run of digits one per
-/// three, a letter of a script written without spaces (CJK) one each, and
-/// any other character but whitespace one each. Whitespace joins the token
+/// A run of Latin letters is one token per six letters or part of them
+/// (most English words are one; `idempotency` is two), a run of letters
+/// of another alphabet (Cyrillic, Greek, Arabic, Hebrew, Devanagari and the
+/// other scripts of India) one per three, a run of digits one per three, a
+/// letter of a script written without spaces (CJK, Thai) one each, and any
+/// other character but whitespace one each. Whitespace joins the token
 /// after it, as BPE tokenizers make " word" one token.
+///
+/// Measured against cl100k_base and o200k_base (`chloedb/results/pack/`):
+/// English prose and Rust code count 13 to 27% more than either says, the
+/// safe side for a budget; Chinese, Japanese, Korean, Arabic, Hindi and
+/// Russian count 9 to 27% more than o200k_base says, but cl100k_base makes
+/// up to 2.4 times more of them (Hindi) than this says.
 pub fn count_tokens(text: &str) -> usize {
     let mut n = 0;
     let mut chars = text.chars().peekable();
@@ -120,17 +128,24 @@ pub fn count_tokens(text: &str) -> usize {
             }
             n += len.div_ceil(3);
         } else if c.is_alphabetic() && !spaceless(c) {
+            let latin = is_latin(c);
             let mut len = 1usize;
-            while chars.peek().is_some_and(|d| d.is_alphabetic() && !spaceless(*d)) {
+            while chars.peek().is_some_and(|d| d.is_alphabetic() && !spaceless(*d) && is_latin(*d) == latin) {
                 chars.next();
                 len += 1;
             }
-            n += len.div_ceil(6);
+            n += len.div_ceil(if latin { 6 } else { 3 });
         } else {
             n += 1;
         }
     }
     n
+}
+
+/// Whether letter `c` is Latin (with its accented and extended forms),
+/// which BPE tokenizers learned the most of and make the longest tokens of.
+fn is_latin(c: char) -> bool {
+    matches!(c as u32, 0..=0x024f | 0x1e00..=0x1eff | 0x2c60..=0x2c7f | 0xa720..=0xa7ff | 0xff21..=0xff5a)
 }
 
 /// Whether `c` is of a script written without spaces between words, whose
@@ -1231,6 +1246,9 @@ mod tests {
         assert_eq!(count_tokens("2026"), 2);
         assert_eq!(count_tokens("fn main() {}"), 6);
         assert_eq!(count_tokens("日本語"), 3);
+        // Other alphabets: a token per three letters.
+        assert_eq!(count_tokens("привет"), 2);
+        assert_eq!(count_tokens("café привет"), 3);
     }
 
     #[test]
