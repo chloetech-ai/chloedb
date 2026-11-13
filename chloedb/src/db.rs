@@ -1578,7 +1578,12 @@ impl Db {
         if !m.single() {
             return Err(Error::Schema(format!("model {name} embeds a text into a vector a token, not one vector: embed('{name}', ..) needs a model of one vector a text")));
         }
-        self.named_models.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), m.clone());
+        let mut kept = self.named_models.write().unwrap_or_else(|e| e.into_inner());
+        // A few, as the server keeps: each is a model's tokenizer and table.
+        if kept.len() >= 16 {
+            kept.clear();
+        }
+        kept.insert(name.to_string(), m.clone());
         Ok(m)
     }
 
