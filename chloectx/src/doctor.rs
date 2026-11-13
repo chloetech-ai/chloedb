@@ -206,7 +206,7 @@ pub fn run(project: &Path) -> i32 {
     if cfg.pointer("/distill/enabled") == Some(&json!(false)) || std::env::var("CHLOECTX_DISTILL").is_ok_and(|v| v == "0") {
         r.warn("distillation", "off: no decisions, rules or planned work are written down");
     } else {
-        match distill {
+        match &distill {
             Some((m, from)) => r.ok("distillation", format!("model {m} (from the {from})")),
             None => r.warn("distillation", "uses the Claude Code CLI's default model; a small one is enough (`chloectx install --user --distill-model haiku`)"),
         }
@@ -225,6 +225,17 @@ pub fn run(project: &Path) -> i32 {
         if let Some(e) = last_distill(&store) {
             let when = e["ts"].as_i64().map(|t| format!("{} min ago", (crate::now() - t) / 60)).unwrap_or_default();
             match e.get("error").and_then(|v| v.as_str()) {
+                // A failure that is not the login: one small call now says
+                // whether it still fails, and with what (CTX-2).
+                Some(err) if !crate::health::is_login_error(err) => {
+                    r.warn("last distillation", format!("failed {when}: {err}"));
+                    let dc: crate::distill::DistillConfig = cfg.get("distill").cloned().and_then(|d| serde_json::from_value(d).ok()).unwrap_or_default();
+                    let model = distill.as_ref().map(|(m, _)| m.clone()).unwrap_or_else(|| dc.model());
+                    match crate::llm::complete(&dc.cli(&model, 60), "Reply with the single word ok.", "ok") {
+                        Ok(_) => r.ok("a model call now", format!("works ({} via {})", if model.is_empty() { "the CLI's default model" } else { &model }, dc.command)),
+                        Err(e) => r.fail("a model call now", format!("still fails: {e}")),
+                    }
+                }
                 Some(err) => r.warn("last distillation", format!("failed {when}: {err}")),
                 None => r.ok("last distillation", format!("{when}, {} notes kept", e["kept"])),
             }

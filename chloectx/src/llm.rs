@@ -176,7 +176,7 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         .env("DISABLE_PROMPT_CACHING", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| err(format!("{}: {e}", cli.command)))?;
     // The prompt is written, and the answer read, on threads of their own
@@ -193,10 +193,24 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         let mut buf = Vec::new();
         stdout.read_to_end(&mut buf).map(|_| buf)
     });
+    // Its stderr, read the same way: what the CLI says when it fails
+    // (an unknown flag, a crash, a proxy error) is the cause (CTX-2).
+    let mut stderr = child.stderr.take().unwrap();
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_tail = |r: std::thread::JoinHandle<Vec<u8>>| -> String {
+        if !r.is_finished() {
+            return String::new();
+        }
+        tail_text(&r.join().unwrap_or_default(), STDERR_KEPT)
+    };
     let deadline = Instant::now() + cli.timeout;
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
         }
         if Instant::now() > deadline {
             let _ = child.kill();
@@ -204,7 +218,7 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
             return Err(err("model call timed out"));
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
     let _ = writer.join();
     // The child has exited; its stdout closes unless a process it started
     // still holds it, which the deadline bounds as well.
@@ -215,7 +229,18 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         return Err(err("model call timed out"));
     }
     let stdout = reader.join().map_err(|_| err("model output: the reader failed"))??;
-    let v: Json = serde_json::from_slice(&stdout).map_err(|e| err(format!("model output: {e}")))?;
+    while !err_reader.is_finished() && Instant::now() <= deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let v: Json = match serde_json::from_slice(&stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            let said = stderr_tail(err_reader);
+            let out = tail_text(&stdout, 300);
+            let what = if !said.is_empty() { said } else if !out.is_empty() { format!("stdout: {out}") } else { format!("no output ({e})") };
+            return Err(err(format!("{} exited with {}: {what}", cli.command, exit_text(&status))));
+        }
+    };
     if v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false) {
         return Err(err(format!("model call failed: {}", v.get("result").and_then(|r| r.as_str()).unwrap_or(""))));
     }
@@ -225,6 +250,39 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         usage: v.get("usage").map(Usage::of).unwrap_or_default(),
         ms: t0.elapsed().as_millis() as u64,
     })
+}
+
+/// How much of the CLI's stderr a failed call keeps in its error.
+const STDERR_KEPT: usize = 1500;
+
+/// The last `max` bytes of `bytes` as text, at a character boundary, its
+/// lines joined, prefixed with `…` when cut.
+fn tail_text(bytes: &[u8], max: usize) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let s = s.trim();
+    let one: String = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ");
+    if one.len() <= max {
+        return one;
+    }
+    let mut i = one.len() - max;
+    while !one.is_char_boundary(i) {
+        i += 1;
+    }
+    format!("…{}", &one[i..])
+}
+
+fn exit_text(st: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = st.signal() {
+            return format!("signal {sig}");
+        }
+    }
+    match st.code() {
+        Some(c) => format!("status {c}"),
+        None => "an unknown status".into(),
+    }
 }
 
 /// Runs the model once through Anthropic's Messages API with `key`
