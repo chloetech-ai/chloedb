@@ -35,6 +35,7 @@ pub mod board;
 pub mod budget;
 pub mod coord;
 pub mod copy;
+pub mod connectors;
 pub mod contain;
 pub mod cores;
 pub mod demo;

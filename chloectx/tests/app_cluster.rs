@@ -324,11 +324,47 @@ fn app_in_a_cluster() {
     assert_eq!(live.len(), 2, "{live:?}");
     assert!(live.iter().any(|t| t.contains("1000 EUR")) && !live.iter().any(|t| t.contains("500 EUR need") || t.contains("old mailer")), "{live:?}");
     assert_eq!(texts(&app.get("/v1/spaces/billing/notes?all=1")).len(), 4);
+    // A space's counts: every record, and the notes a context still shows.
+    let listed = app.get("/v1/spaces");
+    let billing = listed["spaces"].as_array().unwrap().iter().find(|s| s["name"] == "billing").unwrap();
+    assert_eq!((billing["by_kind"]["decision"].as_i64(), billing["by_kind"]["fact"].as_i64()), (Some(2), Some(1)), "{billing}");
+    assert_eq!((billing["live_by_kind"]["decision"].as_i64(), billing["live_by_kind"]["fact"].as_i64(), billing["live_by_kind"]["preference"].as_i64()), (Some(1), None, Some(1)), "{billing}");
     let h = app.get(&format!("/v1/spaces/billing/notes/{}", old["id"].as_str().unwrap()));
     assert_eq!(h["note"]["tag"], "superseded");
     assert_eq!(h["later"][0]["id"], new["id"], "{h}");
     let h = app.get(&format!("/v1/spaces/billing/notes/{}", new["id"].as_str().unwrap()));
     assert_eq!(h["earlier"][0]["id"], old["id"], "{h}");
+
+    // The space as an MCP server, for an agent whose key is limited to its
+    // table (the grants chloedb-server sends in x-chloedb-tables).
+    let auth = format!("Bearer {TOKEN}");
+    let mcp = |space: &str, grants: &str, body: Value| http.call("POST", &format!("{app_url}/v1/spaces/{space}/mcp"), Some(&body), &[("authorization", &auth), ("x-chloedb-tables", grants)]);
+    let (s, init) = mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}));
+    assert_eq!((s, init["result"]["protocolVersion"].as_str(), init["result"]["serverInfo"]["name"].as_str()), (200, Some("2025-06-18"), Some("chloectx-billing")), "{init}");
+    assert_eq!(mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).0, 202);
+    let (_, listed) = mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, ["ask", "remember", "notes"], "{listed}");
+    let call = |grants: &str, name: &str, args: Value| mcp("billing", grants, json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": name, "arguments": args}})).1;
+    let asked = call("ctx_billing=admin", "ask", json!({"question": "Who approves a refund of 700 EUR?"}));
+    let text = asked["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("1000 EUR") && text.contains(new["id"].as_str().unwrap()), "{asked}");
+    let kept = call("ctx_billing=admin", "remember", json!({"kind": "fact", "text": "Finance closes the books on the third working day."}));
+    assert!(kept["result"]["content"][0]["text"].as_str().unwrap_or("").starts_with("Kept as "), "{kept}");
+    let listed = call("ctx_billing=admin", "notes", json!({"kind": "fact"}));
+    assert!(listed["result"]["content"][0]["text"].as_str().unwrap_or("").contains("third working day"), "{listed}");
+    // A reader asks and may not write; another space, or the app's other
+    // routes, are not its key's.
+    let refused = call("ctx_billing=read", "remember", json!({"kind": "fact", "text": "x"}));
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(mcp("payroll", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})).0, 403);
+    assert_eq!(http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=admin")]).0, 403);
+    assert_eq!(http.call("POST", &format!("{app_url}/v1/spaces"), Some(&json!({"name": "other"})), &[("authorization", &auth), ("x-chloedb-tables", "ctx_*=admin")]).0, 403);
+    let (_, mine) = http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=read")]);
+    assert_eq!(mine["spaces"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), ["billing"], "{mine}");
+    // Retire the fact the agent kept, for the counts below.
+    let id = kept["result"]["content"][0]["text"].as_str().unwrap().trim_start_matches("Kept as ").trim_end_matches('.').to_string();
+    assert_eq!(http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{id}"), None, &[("authorization", &auth)]).0, 200);
 
     // A context within a budget: the current version, with what it changed;
     // the old one left out, and why.
@@ -456,7 +492,7 @@ fn app_in_a_cluster() {
     let again = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "Chargebacks arrive as webhooks and are matched by the invoice number."}));
     let all = app.get("/v1/spaces/billing/notes?all=1");
     assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
-    assert_eq!(texts(&all).len(), 6, "{all}");
+    assert_eq!(texts(&all).len(), 7, "the agent's retired fact too: {all}");
     drop(procs);
 }
 

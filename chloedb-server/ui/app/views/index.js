@@ -49,8 +49,9 @@ import feedback from "./feedback.js";
 import start from "./start.js";
 import tablehome from "./table.js";
 import saved from "./saved.js";
+import connectors from "./connectors.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, feedback, start, tablehome, saved];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, feedback, start, tablehome, saved, connectors];
 
 export const GROUPS = ["Build", "Watch", "Run the cluster", "Apps", "Labs"];
 
@@ -70,6 +71,7 @@ export const NAV = [
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
+    { id: "connectors", title: "Connectors", icon: "streams", scope: "admin" },
     { id: "models", title: "Models", icon: "cpu" },
     { id: "schema", title: "Schema", icon: "schema", key: "d" },
     { id: "slices", title: "Slices", icon: "layers" },

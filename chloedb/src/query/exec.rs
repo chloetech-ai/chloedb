@@ -151,6 +151,55 @@ pub fn corrected_text(text: &str, corrections: &[Correction]) -> String {
     out
 }
 
+/// A word of a query that may be a typo ([`correction_words`]): it, its
+/// analysed term and the edits a neighbour may be away.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorrectionWord {
+    pub word: String,
+    pub term: String,
+    pub edits: u8,
+}
+
+/// The words of `text` "did you mean" looks at: one analysed term each,
+/// long enough for a typo ([`Fuzzy::Auto`]). Codes, numbers and names
+/// written with capitals inside (`p150n`, `dLNs`, `iPSC`) are not typos of
+/// words, and stay.
+pub fn correction_words(text: &str, analyzer: text::Analyzer) -> Vec<CorrectionWord> {
+    let mut out = Vec::new();
+    for (_, word) in words_of(text) {
+        if word.chars().any(|c| c.is_numeric()) || word.chars().skip(1).any(|c| c.is_uppercase()) {
+            continue;
+        }
+        let seq = analyzer.query_term_seq(word, true);
+        let [t] = seq.as_slice() else { continue };
+        let edits = Fuzzy::Auto.edits(t.chars().count());
+        if edits == 0 {
+            continue;
+        }
+        out.push(CorrectionWord { word: word.to_string(), term: t.clone(), edits });
+    }
+    out
+}
+
+impl CorrectionWord {
+    /// The correction of a word in `df` documents (0: a word of the
+    /// collection is not corrected) among its indexed neighbours `near`
+    /// (term, documents, edits): the most likely one by
+    /// [`correction_chance`], if at least [`CORRECTION_CHANCE`]. A
+    /// coordinator passes its shards' counts summed.
+    pub fn correct(&self, df: u64, near: &[(String, u64, u8)], analyzer: text::Analyzer) -> Option<Correction> {
+        if df > 0 {
+            return None;
+        }
+        let (n, d, chance) = near
+            .iter()
+            .filter(|x| x.2 > 0 && x.2 <= self.edits && x.1 > df)
+            .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
+            .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)))?;
+        (chance >= CORRECTION_CHANCE).then(|| Correction { word: self.word.clone(), term: self.term.clone(), to: n.clone(), to_word: surface(&self.word, n, analyzer), edits: d, chance })
+    }
+}
+
 /// Readers of one segment's indexes, by schema field. Each opens on first
 /// use (opening only parses headers: every structure is a zero-copy view),
 /// so a query touches the headers of the fields it uses and no others, which
@@ -1233,37 +1282,16 @@ impl<'a> Executor<'a> {
     pub fn corrections(self, field: usize, text: &str) -> Result<Vec<Correction>> {
         let analyzer = self.schema.fields[field].text_analyzer();
         let mut out = Vec::new();
-        for (_, word) in words_of(text) {
-            // Codes, numbers and names written with capitals inside
-            // (`p150n`, `dLNs`, `iPSC`) are not typos of words.
-            if word.chars().any(|c| c.is_numeric()) || word.chars().skip(1).any(|c| c.is_uppercase()) {
-                continue;
-            }
-            let seq = analyzer.query_term_seq(word, true);
-            let [t] = seq.as_slice() else { continue };
-            let len = t.chars().count();
-            let e = Fuzzy::Auto.edits(len);
-            if e == 0 {
-                continue;
-            }
-            let local = self.local_stats(field, std::slice::from_ref(t))?;
-            let df = local.df.get(t).copied().unwrap_or(0);
+        for w in correction_words(text, analyzer) {
+            let local = self.local_stats(field, std::slice::from_ref(&w.term))?;
+            let df = local.df.get(&w.term).copied().unwrap_or(0);
             // A word some document holds is a word of the collection: "did
             // you mean" corrects only words in none.
             if df > 0 {
                 continue;
             }
-            let near = self.near_terms(field, t, e)?;
-            let best = near
-                .iter()
-                .filter(|x| x.2 > 0 && x.1 > df)
-                .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
-                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)));
-            if let Some((n, d, chance)) = best {
-                if chance >= CORRECTION_CHANCE {
-                    out.push(Correction { word: word.to_string(), term: t.clone(), to: n.clone(), to_word: surface(word, n, analyzer), edits: d, chance });
-                }
-            }
+            let near = self.near_terms(field, &w.term, w.edits)?;
+            out.extend(w.correct(df, &near, analyzer));
         }
         Ok(out)
     }
@@ -3321,6 +3349,8 @@ impl<'a> Executor<'a> {
                 TimeOf::Trunc(u) => format!("date_trunc('{}', {})", u.name(), self.field_name(tc.field)),
                 TimeOf::Part(p) => format!("date_part('{}', {})", p.name(), self.field_name(tc.field)),
                 TimeOf::Format(f) => format!("strftime({}, {})", crate::query::hint::sql_value(&Value::Str(f.clone())), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
         }
     }

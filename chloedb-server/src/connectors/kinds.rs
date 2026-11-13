@@ -1,0 +1,818 @@
+//! The kinds of connector: what each reads, how, and the table and map it
+//! writes by default.
+//!
+//! A pull connector ([`pull`]) asks a system on a schedule for what
+//! changed since its cursor and answers records and its next cursor; a
+//! push connector ([`push`]) turns a request a system sent into records.
+//! Each kind has a default target table (made when the connector is, if
+//! missing) and a default map into it, and some have presets for the
+//! network operations app's tables ([`preset_map`]).
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use serde_json::{json, Map, Value as Json};
+
+use super::map;
+use super::Connector;
+
+/// What a kind is, for the API and the command center's form.
+pub struct Kind {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub about: &'static str,
+    pub pull: bool,
+    pub push: bool,
+    /// The settings it reads from `config`, each with what it is.
+    pub settings: &'static [(&'static str, &'static str)],
+    /// The secrets it reads, by name.
+    pub secrets: &'static [&'static str],
+    /// Its default target's name.
+    pub target: &'static str,
+}
+
+pub const KINDS: &[Kind] = &[
+    Kind {
+        name: "webhook",
+        title: "Webhook",
+        about: "Any system that posts JSON: each request's records (a list in the body, or the body) become rows. Presets: alertmanager, and any target with a map.",
+        pull: false,
+        push: true,
+        settings: &[("records", "path to the list of records in a request (default: the body, or its list)"), ("preset", "alertmanager: Alertmanager's webhook (alerts[*])"), ("map", "column -> path, template or value")],
+        secrets: &[],
+        target: "webhook_events",
+    },
+    Kind {
+        name: "http_json",
+        title: "HTTP JSON pull",
+        about: "Any REST API that answers JSON, asked on a schedule: the records at a path, the next page at another, a cursor kept from the records.",
+        pull: true,
+        push: false,
+        settings: &[("url", "the URL; {cursor} is replaced by the cursor"), ("records", "path to the records"), ("next", "path to the next page's URL (optional)"), ("cursor", "path in a record whose highest value is the next cursor (optional)"), ("start", "the first cursor"), ("headers", "headers; {secret:NAME} is a secret"), ("auth", "basic (username + secret password) or bearer (secret token)"), ("map", "column -> path, template or value")],
+        secrets: &["token", "password"],
+        target: "http_records",
+    },
+    Kind {
+        name: "prometheus",
+        title: "Prometheus rollups",
+        about: "PromQL queries asked over each new minute (query_range), their series joined by labels into one row per key and step: the per-minute rollups an incident needs, the full series staying in Prometheus.",
+        pull: true,
+        push: false,
+        settings: &[("url", "Prometheus (or Thanos, Mimir, VictoriaMetrics) base URL"), ("queries", "{column: PromQL}"), ("key", "the labels that name a row's subject (default: every label)"), ("rename", "{label: column}"), ("step_s", "the step, seconds (default 60)"), ("lag_s", "how far behind now to stay (default 60)"), ("backfill_s", "how far back the first run reads (default 3600)"), ("auth", "basic or bearer")],
+        secrets: &["token", "password"],
+        target: "prometheus_rollups",
+    },
+    Kind {
+        name: "servicenow",
+        title: "ServiceNow",
+        about: "Records of a ServiceNow table (change_request, incident, problem...) updated since the last run, through the Table API.",
+        pull: true,
+        push: false,
+        settings: &[("instance", "https://<instance>.service-now.com"), ("table", "change_request, incident, ..."), ("query", "an encoded query that narrows them (optional)"), ("fields", "the fields to read (optional, comma separated)"), ("username", "the integration user (basic auth)"), ("backfill_days", "how far back the first run reads (default 30)")],
+        secrets: &["password", "token"],
+        target: "servicenow_records",
+    },
+    Kind {
+        name: "jira",
+        title: "Jira",
+        about: "Issues matching a JQL query updated since the last run, through Jira Cloud's or Data Center's search API.",
+        pull: true,
+        push: false,
+        settings: &[("url", "https://<site>.atlassian.net or your Jira's base URL"), ("jql", "which issues (project = NET AND issuetype = Change)"), ("username", "the account's email (Cloud, basic auth with an API token)"), ("fields", "{name: field id} for custom fields (window_start: customfield_10050)"), ("api", "cloud or server (default: cloud for *.atlassian.net)"), ("backfill_days", "how far back the first run reads (default 30)")],
+        secrets: &["token"],
+        target: "jira_issues",
+    },
+    Kind {
+        name: "oxidized",
+        title: "Oxidized configs",
+        about: "Device configurations from Oxidized's web API: each node whose backup changed is fetched and kept as a version. Its exec hook can push a node at once.",
+        pull: true,
+        push: true,
+        settings: &[("url", "oxidized-web's base URL"), ("username", "basic auth, if oxidized-web is behind it"), ("max_nodes", "nodes fetched per run (default 200)")],
+        secrets: &["password"],
+        target: "device_configs",
+    },
+    Kind {
+        name: "mail",
+        title: "Mailbox hook",
+        about: "Emails handed over raw (a mail server's pipe, a .forward to curl, an inbound mail route): headers, text, and the BCOP maintenance fields carriers attach (provider, circuits, window, impact).",
+        pull: false,
+        push: true,
+        settings: &[("map", "column -> path, template or value")],
+        secrets: &[],
+        target: "mail_messages",
+    },
+];
+
+pub fn kind(name: &str) -> Option<&'static Kind> {
+    KINDS.iter().find(|k| k.name == name)
+}
+
+/// The table a kind makes when its target does not exist.
+pub fn default_schema(kind: &str, table: &str) -> String {
+    let cols = match kind {
+        "prometheus" => "id KEYWORD PRIMARY KEY, ts TIMESTAMP, subject KEYWORD, labels JSON, values_ JSON",
+        "servicenow" => "id KEYWORD PRIMARY KEY, number KEYWORD, title TEXT, description TEXT, state KEYWORD, priority KEYWORD, assigned_to KEYWORD, assignment_group KEYWORD, ci KEYWORD, opened TIMESTAMP, updated TIMESTAMP, starts TIMESTAMP, ends TIMESTAMP, data JSON",
+        "jira" => "id KEYWORD PRIMARY KEY, project KEYWORD, issuetype KEYWORD, title TEXT, description TEXT, status KEYWORD, priority KEYWORD, assignee KEYWORD, reporter KEYWORD, labels KEYWORD[], created TIMESTAMP, updated TIMESTAMP, resolution KEYWORD, url KEYWORD, fields JSON",
+        "oxidized" => "id KEYWORD PRIMARY KEY, device KEYWORD, ip KEYWORD, model KEYWORD, grp KEYWORD, ts TIMESTAMP, version INT, lines INT, sha256 KEYWORD, body TEXT",
+        "mail" => "id KEYWORD PRIMARY KEY, sender KEYWORD, subject TEXT, sent TIMESTAMP, received TIMESTAMP, body TEXT, provider KEYWORD, maint_id KEYWORD, circuits KEYWORD[], starts TIMESTAMP, ends TIMESTAMP, impact KEYWORD, status KEYWORD",
+        "webhook" | "http_json" => "id KEYWORD PRIMARY KEY, received TIMESTAMP, connector KEYWORD, data JSON, text TEXT",
+        _ => "id KEYWORD PRIMARY KEY, data JSON",
+    };
+    let retain = match kind {
+        "prometheus" => " OPTIONS(retain = '7 days', retain_by = 'ts')",
+        _ => "",
+    };
+    format!("CREATE TABLE IF NOT EXISTS {table} ({cols}){retain}")
+}
+
+/// The map a kind's connector writes its default target with.
+fn default_map(c: &Connector) -> Option<Json> {
+    Some(match c.kind.as_str() {
+        "prometheus" => json!({"id": "$.id", "ts": "$.ts", "subject": "$.subject", "labels": "$.labels", "values_": "$.values"}),
+        "servicenow" => json!({"id": "$.number", "number": "$.number", "title": "$.short_description", "description": "$.description", "state": "$.state", "priority": "$.priority", "assigned_to": "$.assigned_to", "assignment_group": "$.assignment_group", "ci": "$.cmdb_ci", "opened": "$.opened_at", "updated": "$.sys_updated_on", "starts": "$.start_date", "ends": "$.end_date", "data": "$"}),
+        "jira" => json!({"id": "$.key", "project": "$.project", "issuetype": "$.issuetype", "title": "$.summary", "description": "$.description", "status": "$.status", "priority": "$.priority", "assignee": "$.assignee", "reporter": "$.reporter", "labels": "$.labels", "created": "$.created", "updated": "$.updated", "resolution": "$.resolution", "url": "$.url", "fields": "$.custom"}),
+        "oxidized" => json!({"id": "$.id", "device": "$.device", "ip": "$.ip", "model": "$.model", "grp": "$.group", "ts": "$.ts", "version": "$.version", "lines": "$.lines", "sha256": "$.sha256", "body": "$.body"}),
+        "mail" => json!({"id": "$.id", "sender": "$.sender", "subject": "$.subject", "sent": "$.date", "received": "$.received", "body": "$.body", "provider": "$.provider", "maint_id": "$.maint_id", "circuits": "$.circuits", "starts": "$.start", "ends": "$.end", "impact": "$.impact", "status": "$.status"}),
+        "webhook" if c.config["preset"] == "alertmanager" => json!({"id": "{fingerprint}-{startsAt}", "received": {"now": true}, "connector": {"const": c.name}, "data": "$", "text": "{labels.alertname} {labels.severity} {labels.instance} {annotations.summary} {annotations.description}"}),
+        "webhook" | "http_json" => json!({"id": {"as": "hash"}, "received": {"now": true}, "connector": {"const": c.name}, "data": "$", "text": {"as": "text_of"}}),
+        _ => return None,
+    })
+}
+
+/// A preset map into one of the network operations app's tables
+/// (`chloedb-netops`), by kind and target.
+fn preset_map(c: &Connector) -> Option<Json> {
+    let change_status = json!({"new": "planned", "assess": "planned", "authorize": "planned", "scheduled": "approved", "implement": "running", "review": "done", "closed": "done", "canceled": "cancelled", "cancelled": "cancelled", "*": "planned"});
+    Some(match (c.kind.as_str(), c.target.as_str()) {
+        ("servicenow", "netops_changes") => json!({
+            "id": "$.number", "title": "$.short_description", "description": "$.description", "kind": {"path": "$.type", "as": "lower"},
+            "risk": {"path": "$.risk", "as": "lower"}, "status": {"path": "$.state", "as": "lower", "values": change_status},
+            "window_start": "$.start_date", "window_end": "$.end_date", "owner": "$.assigned_to", "approver": "$.approval_set",
+            "devices": {"path": "$.cmdb_ci", "as": "list"}, "rollback_plan": "$.backout_plan", "outcome": {"path": "$.close_code", "as": "lower"},
+            "started": "$.work_start", "verified": "$.work_end"
+        }),
+        ("servicenow", "netops_tickets") => json!({
+            "id": "$.number", "title": "$.short_description", "body": "$.description", "status": {"path": "$.state", "as": "lower"},
+            "priority": "$.priority", "assignee": "$.assigned_to", "queue": "$.assignment_group", "device": "$.cmdb_ci",
+            "customer": "$.company", "opened": "$.opened_at", "updated": "$.sys_updated_on", "resolution": "$.close_notes"
+        }),
+        ("jira", "netops_changes") => json!({
+            "id": "$.key", "title": "$.summary", "description": "$.description", "kind": {"path": "$.issuetype", "as": "lower"},
+            "risk": {"path": "$.custom.risk", "as": "lower"}, "status": {"path": "$.status", "as": "lower", "values": json!({"to do": "planned", "open": "planned", "approved": "approved", "in progress": "running", "done": "done", "closed": "done", "cancelled": "cancelled", "*": "planned"})},
+            "window_start": "$.custom.window_start", "window_end": "$.custom.window_end", "owner": "$.assignee", "approver": "$.custom.approver",
+            "devices": {"path": "$.custom.devices", "as": "list"}, "ticket": "$.key", "rollback_plan": "$.custom.rollback_plan"
+        }),
+        ("jira", "netops_tickets") => json!({
+            "id": "$.key", "title": "$.summary", "body": "$.description", "status": {"path": "$.status", "as": "lower"}, "priority": {"path": "$.priority", "as": "lower"},
+            "assignee": "$.assignee", "queue": "$.project", "device": "$.custom.device", "customer": "$.custom.customer",
+            "opened": "$.created", "updated": "$.updated", "resolution": "$.resolution"
+        }),
+        ("oxidized", "netops_configs") => json!({"id": "$.id", "device": "$.device", "version": "$.version", "ts": "$.ts", "author": {"const": "oxidized"}, "lines": "$.lines", "body": "$.body"}),
+        ("mail", "netops_maintenance") => json!({
+            "id": {"template": "{provider}-{maint_id}", "default": "$.id"}, "provider": "$.provider", "reference": "$.maint_id",
+            "circuit": {"path": "$.circuits", "as": "first"}, "window_start": "$.start", "window_end": "$.end", "impact": "$.impact",
+            "status": {"path": "$.status", "default": "new"}, "received": "$.received", "subject": "$.subject", "raw": "$.body"
+        }),
+        ("prometheus", t) if t.starts_with("netops_") => return None,
+        _ => return None,
+    })
+}
+
+/// The map `c` writes with: its own, else a preset for its target, else
+/// its kind's for its kind's default table. None: the record is the row.
+pub fn map_of(c: &Connector) -> Option<Map<String, Json>> {
+    let m = match &c.config["map"] {
+        Json::Object(m) if !m.is_empty() => return Some(m.clone()),
+        _ => preset_map(c).or_else(|| (c.target == default_target(c)).then(|| default_map(c)).flatten()),
+    };
+    // A preset's id that fell back to a path: a template of only missing
+    // values comes out as "-": keep the map as given.
+    m.and_then(|m| match m {
+        Json::Object(o) => Some(o),
+        _ => None,
+    })
+}
+
+/// The target a connector of `c`'s kind writes when it names none: the
+/// kind's table, or for a webhook preset its own.
+pub fn default_target(c: &Connector) -> String {
+    match (c.kind.as_str(), c.config["preset"].as_str()) {
+        ("webhook", Some("alertmanager")) => "alertmanager_alerts".into(),
+        (k, _) => kind(k).map_or("connector_records", |k| k.target).into(),
+    }
+}
+
+/// What a run reads with: the connector, its cursor, its secrets.
+pub struct Ctx<'a> {
+    pub c: &'a Connector,
+    pub cursor: Option<String>,
+    pub secrets: &'a HashMap<String, String>,
+    pub http: &'a reqwest::Client,
+    pub now_us: i64,
+    /// The most records one run reads.
+    pub limit: usize,
+}
+
+/// What a pull read.
+#[derive(Debug, Default)]
+pub struct Fetched {
+    pub records: Vec<Json>,
+    /// The cursor to start from next time (none: keep the last one).
+    pub cursor: Option<String>,
+    /// It stopped at the limit: run again soon.
+    pub more: bool,
+}
+
+impl Ctx<'_> {
+    fn s(&self, key: &str) -> Option<&str> {
+        self.c.config.get(key).and_then(Json::as_str).filter(|s| !s.trim().is_empty())
+    }
+
+    fn need(&self, key: &str) -> Result<&str, String> {
+        self.s(key).ok_or_else(|| format!("the {} connector {} needs \"{key}\" in its config", self.c.kind, self.c.name))
+    }
+
+    fn u(&self, key: &str, default: u64) -> u64 {
+        self.c.config.get(key).and_then(Json::as_u64).unwrap_or(default)
+    }
+
+    fn secret(&self, name: &str) -> Option<String> {
+        self.secrets.get(name).cloned()
+    }
+
+    /// `{secret:NAME}` in `s` replaced by the secret.
+    fn with_secrets(&self, s: &str) -> String {
+        let mut out = s.to_string();
+        while let Some(i) = out.find("{secret:") {
+            let Some(j) = out[i..].find('}') else { break };
+            let name = out[i + 8..i + j].to_string();
+            let v = self.secret(&name).unwrap_or_default();
+            out.replace_range(i..i + j + 1, &v);
+        }
+        out
+    }
+
+    /// A request with the connector's auth and headers.
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let mut r = self.http.get(url).timeout(Duration::from_secs(60)).header("accept", "application/json");
+        let user = self.s("username");
+        match self.s("auth").unwrap_or(if user.is_some() { "basic" } else if self.secrets.contains_key("token") { "bearer" } else { "none" }) {
+            "basic" => r = r.basic_auth(user.unwrap_or_default(), self.secret("password").or_else(|| self.secret("token"))),
+            "bearer" => {
+                if let Some(t) = self.secret("token") {
+                    r = r.bearer_auth(t)
+                }
+            }
+            _ => {}
+        }
+        if let Some(Json::Object(h)) = self.c.config.get("headers") {
+            for (k, v) in h {
+                r = r.header(k.as_str(), self.with_secrets(&map::text(v)));
+            }
+        }
+        r
+    }
+
+    async fn json(&self, url: &str) -> Result<Json, String> {
+        let res = self.get(url).send().await.map_err(|e| format!("GET {}: {e}", strip_query(url)))?;
+        let status = res.status();
+        let body = res.bytes().await.map_err(|e| format!("GET {}: {e}", strip_query(url)))?;
+        if !status.is_success() {
+            return Err(format!("GET {} answered {status}: {}", strip_query(url), String::from_utf8_lossy(&body).chars().take(300).collect::<String>()));
+        }
+        serde_json::from_slice(&body).map_err(|e| format!("GET {}: not JSON ({e})", strip_query(url)))
+    }
+
+    async fn text(&self, url: &str) -> Result<String, String> {
+        let res = self.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
+        let status = res.status();
+        let body = res.text().await.map_err(|e| format!("GET {url}: {e}"))?;
+        if !status.is_success() {
+            return Err(format!("GET {url} answered {status}: {}", body.chars().take(300).collect::<String>()));
+        }
+        Ok(body)
+    }
+
+    fn base(&self, key: &str) -> Result<String, String> {
+        Ok(self.need(key)?.trim_end_matches('/').to_string())
+    }
+}
+
+/// A URL without its query (which may hold a token), for messages.
+fn strip_query(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
+fn enc(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// One pull of `ctx`'s connector.
+pub async fn pull(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    match ctx.c.kind.as_str() {
+        "prometheus" => prometheus(ctx).await,
+        "servicenow" => servicenow(ctx).await,
+        "jira" => jira(ctx).await,
+        "oxidized" => oxidized(ctx, None).await,
+        "http_json" => http_json(ctx).await,
+        k => Err(format!("a {k} connector is not pulled: systems push to it (POST /v1/connectors/{}/push)", ctx.c.name)),
+    }
+}
+
+/// The records of a push to `ctx`'s connector.
+pub async fn push(ctx: &Ctx<'_>, body: &[u8], content_type: &str) -> Result<Vec<Json>, String> {
+    let as_json = || serde_json::from_slice::<Json>(body).map_err(|e| format!("the body is not JSON: {e}"));
+    match ctx.c.kind.as_str() {
+        "webhook" => {
+            let b = as_json()?;
+            let path = ctx.s("records").map(str::to_string).or_else(|| (ctx.c.config["preset"] == "alertmanager").then(|| "$.alerts".to_string()));
+            Ok(map::records(&b, path.as_deref()))
+        }
+        "mail" => {
+            // Raw mail, or JSON {"raw": "..."} (or a list of them).
+            let raws: Vec<Vec<u8>> = if content_type.starts_with("application/json") {
+                match as_json()? {
+                    Json::Array(a) => a.iter().filter_map(|x| x["raw"].as_str().or(x.as_str()).map(|s| s.as_bytes().to_vec())).collect(),
+                    o => vec![o["raw"].as_str().ok_or("a JSON body is {\"raw\": \"<the message>\"}")?.as_bytes().to_vec()],
+                }
+            } else {
+                vec![body.to_vec()]
+            };
+            Ok(raws.iter().map(|r| super::mail::parse(r, ctx.now_us)).collect())
+        }
+        "oxidized" => {
+            // Oxidized's exec hook: {"node": "...", "group": "..."}, or the
+            // config itself as {"node", "text"}.
+            let b = as_json()?;
+            let node = b["node"].as_str().or(b["name"].as_str()).ok_or("an Oxidized push is {\"node\": \"<name>\", \"group\"?: \"<group>\"}")?.to_string();
+            if let Some(text) = b["text"].as_str() {
+                return Ok(vec![config_record(&node, &b, text, ctx.now_us)]);
+            }
+            let f = oxidized(ctx, Some((node, b["group"].as_str().map(str::to_string)))).await?;
+            Ok(f.records)
+        }
+        k => Err(format!("a {k} connector is not pushed to: it pulls on its schedule (POST /v1/admin/connectors/{}/run runs it now)", ctx.c.name)),
+    }
+}
+
+// ----- prometheus
+
+async fn prometheus(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    let base = ctx.base("url")?;
+    let queries = match &ctx.c.config["queries"] {
+        Json::Object(q) if !q.is_empty() => q.clone(),
+        Json::String(q) => {
+            let mut m = Map::new();
+            m.insert("value".into(), json!(q));
+            m
+        }
+        _ => return Err(format!("the prometheus connector {} needs \"queries\": {{\"column\": \"PromQL\"}}", ctx.c.name)),
+    };
+    let step = ctx.u("step_s", 60).max(1);
+    let lag = ctx.u("lag_s", 60);
+    let now_s = (ctx.now_us / 1_000_000) as u64;
+    let end = (now_s.saturating_sub(lag) / step) * step;
+    let start = match ctx.cursor.as_deref().and_then(|c| c.parse::<u64>().ok()) {
+        Some(c) => c + step,
+        None => (end.saturating_sub(ctx.u("backfill_s", 3600)) / step) * step,
+    };
+    if start > end {
+        return Ok(Fetched::default());
+    }
+    // At most 11,000 points a series per request (Prometheus's limit).
+    let end = end.min(start + step * 10_000);
+    let key: Option<Vec<String>> = ctx.c.config["key"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).or_else(|| ctx.s("key").map(|k| k.split(',').map(|x| x.trim().to_string()).collect()));
+    let rename: Map<String, Json> = ctx.c.config["rename"].as_object().cloned().unwrap_or_default();
+    // (subject labels, ts) -> record
+    let mut rows: std::collections::BTreeMap<(String, u64), Map<String, Json>> = std::collections::BTreeMap::new();
+    for (col, q) in &queries {
+        let q = map::text(q);
+        let url = format!("{base}/api/v1/query_range?query={}&start={start}&end={end}&step={step}", enc(&q));
+        let j = ctx.json(&url).await?;
+        if j["status"] != "success" {
+            return Err(format!("Prometheus refused {col}: {}", j["error"].as_str().unwrap_or("no error given")));
+        }
+        for series in j["data"]["result"].as_array().into_iter().flatten() {
+            let labels = series["metric"].as_object().cloned().unwrap_or_default();
+            let subject: Vec<(String, String)> = match &key {
+                Some(k) => k.iter().map(|l| (l.clone(), labels.get(l).map(map::text).unwrap_or_default())).collect(),
+                None => labels.iter().filter(|(k, _)| k.as_str() != "__name__").map(|(k, v)| (k.clone(), map::text(v))).collect(),
+            };
+            let subject_text = subject.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",");
+            for point in series["values"].as_array().into_iter().flatten() {
+                let ts = point[0].as_f64().unwrap_or(0.0) as u64;
+                let Some(v) = point[1].as_str().and_then(|s| s.parse::<f64>().ok()).filter(|x| x.is_finite()) else { continue };
+                let rec = rows.entry((subject_text.clone(), ts)).or_insert_with(|| {
+                    let mut r = Map::new();
+                    let ts_text = chloedb::timestamp::format(ts as i64 * 1_000_000);
+                    let id_parts: Vec<&str> = subject.iter().map(|(_, v)| v.as_str()).collect();
+                    r.insert("id".into(), json!(format!("{}|{ts_text}", id_parts.join("|"))));
+                    r.insert("ts".into(), json!(ts_text));
+                    r.insert("subject".into(), json!(subject_text));
+                    let mut ls = Map::new();
+                    for (k, v) in &subject {
+                        let name = rename.get(k).and_then(Json::as_str).unwrap_or(k).to_string();
+                        r.insert(name, json!(v));
+                        ls.insert(k.clone(), json!(v));
+                    }
+                    r.insert("labels".into(), Json::Object(ls));
+                    r.insert("values".into(), json!({}));
+                    r
+                });
+                rec.insert(col.clone(), json!(v));
+                if let Some(Json::Object(vs)) = rec.get_mut("values") {
+                    vs.insert(col.clone(), json!(v));
+                }
+            }
+        }
+    }
+    let records: Vec<Json> = rows.into_values().map(Json::Object).collect();
+    let more = end < (now_s.saturating_sub(lag) / step) * step;
+    Ok(Fetched { records, cursor: Some(end.to_string()), more })
+}
+
+// ----- servicenow
+
+/// A ServiceNow record read with `sysparm_display_value=all`, flat: each
+/// field its display value (a choice's label, a reference's name), or its
+/// value for a time (UTC, where the display is in the user's zone), and
+/// `<field>_value` beside it when they differ.
+fn sn_flat(r: &Json) -> Json {
+    let mut out = Map::new();
+    for (k, v) in r.as_object().into_iter().flatten() {
+        match v {
+            Json::Object(o) if o.contains_key("value") || o.contains_key("display_value") => {
+                let value = o.get("value").cloned().unwrap_or(Json::Null);
+                let display = o.get("display_value").cloned().unwrap_or(Json::Null);
+                let is_time = value.as_str().is_some_and(|s| s.len() == 19 && s.as_bytes().get(10) == Some(&b' ') && map::time_text(s).is_some());
+                if is_time {
+                    out.insert(k.clone(), value);
+                } else {
+                    out.insert(k.clone(), if display.is_null() || display == "" { value.clone() } else { display.clone() });
+                    if value != display && !value.is_null() && value != "" {
+                        out.insert(format!("{k}_value"), value);
+                    }
+                }
+            }
+            v => {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    Json::Object(out)
+}
+
+async fn servicenow(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    let base = ctx.base("instance")?;
+    let table = ctx.s("table").unwrap_or("change_request");
+    if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("{table:?} is not a ServiceNow table's name"));
+    }
+    // Updated since the cursor, as minutes ago on the instance's clock, so
+    // that neither clock's zone matters; a minute more, since rows are
+    // upserts and one read twice is the same row.
+    let since_us = ctx.cursor.as_deref().and_then(map::time_text).unwrap_or(ctx.now_us - ctx.u("backfill_days", 30) as i64 * 86_400_000_000);
+    let minutes = ((ctx.now_us - since_us).max(0) / 60_000_000) + 2;
+    let mut q = format!("sys_updated_on>=javascript:gs.minutesAgoStart({minutes})");
+    if let Some(extra) = ctx.s("query") {
+        q = format!("{extra}^{q}");
+    }
+    q.push_str("^ORDERBYsys_updated_on");
+    let page = 200usize;
+    let mut out = Fetched::default();
+    let mut cursor_us = since_us;
+    let mut offset = 0usize;
+    loop {
+        let mut url = format!("{base}/api/now/table/{table}?sysparm_query={}&sysparm_display_value=all&sysparm_exclude_reference_link=true&sysparm_limit={page}&sysparm_offset={offset}", enc(&q));
+        if let Some(f) = ctx.s("fields") {
+            url.push_str(&format!("&sysparm_fields={}", enc(f)));
+        }
+        let j = ctx.json(&url).await?;
+        let batch = j["result"].as_array().cloned().ok_or("ServiceNow answered no \"result\" list")?;
+        let n = batch.len();
+        for r in batch {
+            let flat = sn_flat(&r);
+            if let Some(t) = flat["sys_updated_on"].as_str().and_then(map::time_text) {
+                cursor_us = cursor_us.max(t);
+            }
+            out.records.push(flat);
+        }
+        offset += n;
+        if n < page {
+            break;
+        }
+        if out.records.len() >= ctx.limit {
+            out.more = true;
+            break;
+        }
+    }
+    out.cursor = Some(chloedb::timestamp::format(cursor_us));
+    Ok(out)
+}
+
+// ----- jira
+
+/// Text of a field in Atlassian's document format (Jira Cloud's v3
+/// descriptions and comments), or the field as it is.
+fn adf_text(v: &Json) -> Json {
+    fn go(v: &Json, out: &mut String) {
+        match v {
+            Json::Object(o) => {
+                if let Some(t) = o.get("text").and_then(Json::as_str) {
+                    out.push_str(t);
+                }
+                if let Some(c) = o.get("content") {
+                    go(c, out);
+                }
+                if matches!(o.get("type").and_then(Json::as_str), Some("paragraph" | "heading" | "listItem" | "hardBreak" | "codeBlock")) {
+                    out.push('\n');
+                }
+            }
+            Json::Array(a) => a.iter().for_each(|x| go(x, out)),
+            _ => {}
+        }
+    }
+    match v {
+        Json::Object(o) if o.get("type").and_then(Json::as_str) == Some("doc") => {
+            let mut s = String::new();
+            go(v, &mut s);
+            json!(s.trim_end())
+        }
+        v => v.clone(),
+    }
+}
+
+/// A Jira field's value, plain: a user's name, an option's value, an
+/// object's name, a list of those.
+fn jira_plain(v: &Json) -> Json {
+    match v {
+        Json::Object(o) => {
+            for k in ["displayName", "value", "name", "key", "emailAddress"] {
+                if let Some(x) = o.get(k) {
+                    return x.clone();
+                }
+            }
+            if o.get("type").and_then(Json::as_str) == Some("doc") {
+                return adf_text(v);
+            }
+            v.clone()
+        }
+        Json::Array(a) => Json::Array(a.iter().map(jira_plain).collect()),
+        v => v.clone(),
+    }
+}
+
+fn jira_flat(issue: &Json, base: &str, custom: &Map<String, Json>) -> Json {
+    let f = &issue["fields"];
+    let mut c = Map::new();
+    for (name, id) in custom {
+        if let Some(id) = id.as_str() {
+            c.insert(name.clone(), jira_plain(&f[id]));
+        }
+    }
+    let key = issue["key"].as_str().unwrap_or_default();
+    json!({
+        "key": key,
+        "id": issue["id"],
+        "url": format!("{base}/browse/{key}"),
+        "project": f["project"]["key"],
+        "issuetype": f["issuetype"]["name"],
+        "summary": f["summary"],
+        "description": adf_text(&f["description"]),
+        "status": f["status"]["name"],
+        "status_category": f["status"]["statusCategory"]["name"],
+        "priority": f["priority"]["name"],
+        "assignee": f["assignee"]["displayName"],
+        "reporter": f["reporter"]["displayName"],
+        "labels": f["labels"],
+        "components": jira_plain(&f["components"]),
+        "created": f["created"],
+        "updated": f["updated"],
+        "resolution": f["resolution"]["name"],
+        "resolved": f["resolutiondate"],
+        "due": f["duedate"],
+        "custom": c,
+    })
+}
+
+async fn jira(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    let base = ctx.base("url")?;
+    let cloud = match ctx.s("api") {
+        Some(a) => a == "cloud",
+        None => base.contains(".atlassian.net"),
+    };
+    let since_us = ctx.cursor.as_deref().and_then(map::time_text).unwrap_or(ctx.now_us - ctx.u("backfill_days", 30) as i64 * 86_400_000_000);
+    // Relative minutes: Jira reads a date in the account's zone, a "-Nm"
+    // on its own clock.
+    let minutes = ((ctx.now_us - since_us).max(0) / 60_000_000) + 2;
+    let jql = match ctx.s("jql") {
+        Some(j) => format!("({j}) AND updated >= \"-{minutes}m\" ORDER BY updated ASC"),
+        None => format!("updated >= \"-{minutes}m\" ORDER BY updated ASC"),
+    };
+    let custom: Map<String, Json> = ctx.c.config["fields"].as_object().cloned().unwrap_or_default();
+    let mut fields = "summary,status,priority,issuetype,project,assignee,reporter,labels,components,created,updated,resolution,resolutiondate,duedate,description".to_string();
+    for id in custom.values().filter_map(Json::as_str) {
+        fields.push(',');
+        fields.push_str(id);
+    }
+    let mut out = Fetched::default();
+    let mut cursor_us = since_us;
+    let mut token: Option<String> = None;
+    let mut start_at = 0u64;
+    loop {
+        let url = if cloud {
+            let mut u = format!("{base}/rest/api/3/search/jql?jql={}&fields={}&maxResults=100", enc(&jql), enc(&fields));
+            if let Some(t) = &token {
+                u.push_str(&format!("&nextPageToken={}", enc(t)));
+            }
+            u
+        } else {
+            format!("{base}/rest/api/2/search?jql={}&fields={}&maxResults=100&startAt={start_at}", enc(&jql), enc(&fields))
+        };
+        let j = ctx.json(&url).await?;
+        let issues = j["issues"].as_array().cloned().ok_or("Jira answered no \"issues\" list")?;
+        let n = issues.len();
+        for i in &issues {
+            let flat = jira_flat(i, &base, &custom);
+            if let Some(t) = flat["updated"].as_str().and_then(map::time_text) {
+                cursor_us = cursor_us.max(t);
+            }
+            out.records.push(flat);
+        }
+        start_at += n as u64;
+        let done = if cloud {
+            token = j["nextPageToken"].as_str().map(str::to_string);
+            token.is_none() || j["isLast"] == true || n == 0
+        } else {
+            n == 0 || start_at >= j["total"].as_u64().unwrap_or(0)
+        };
+        if done {
+            break;
+        }
+        if out.records.len() >= ctx.limit {
+            out.more = true;
+            break;
+        }
+    }
+    out.cursor = Some(chloedb::timestamp::format(cursor_us));
+    Ok(out)
+}
+
+// ----- oxidized
+
+fn config_record(node: &str, meta: &Json, text: &str, now_us: i64) -> Json {
+    let sha = {
+        use sha2::Digest;
+        let d = sha2::Sha256::digest(text.as_bytes());
+        d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let ts_us = [&meta["mtime"], &meta["last"]["end"], &meta["time"]].into_iter().find_map(map::time).unwrap_or(now_us);
+    json!({
+        "id": format!("{node}@{}", &sha[..12]),
+        "device": node,
+        "ip": meta["ip"],
+        "model": meta["model"],
+        "group": meta["group"],
+        "ts": chloedb::timestamp::format(ts_us),
+        "version": ts_us / 1_000_000,
+        "lines": text.lines().count(),
+        "sha256": sha,
+        "body": text,
+    })
+}
+
+async fn oxidized(ctx: &Ctx<'_>, one: Option<(String, Option<String>)>) -> Result<Fetched, String> {
+    let base = ctx.base("url")?;
+    let fetch_url = |name: &str, group: Option<&str>| match group.filter(|g| !g.is_empty()) {
+        Some(g) => format!("{base}/node/fetch/{}/{}", enc(g), enc(name)),
+        None => format!("{base}/node/fetch/{}", enc(name)),
+    };
+    if let Some((name, group)) = one {
+        let nodes = ctx.json(&format!("{base}/nodes.json")).await.unwrap_or(json!([]));
+        let meta = nodes.as_array().and_then(|a| a.iter().find(|n| n["name"] == name.as_str())).cloned().unwrap_or_else(|| json!({"name": name, "group": group}));
+        let group = group.or_else(|| meta["group"].as_str().map(str::to_string));
+        let text = ctx.text(&fetch_url(&name, group.as_deref())).await?;
+        return Ok(Fetched { records: vec![config_record(&name, &meta, &text, ctx.now_us)], cursor: None, more: false });
+    }
+    let nodes = ctx.json(&format!("{base}/nodes.json")).await?;
+    let nodes = nodes.as_array().cloned().ok_or("Oxidized's /nodes.json answered no list")?;
+    // The cursor: each node's last backup time we fetched.
+    let mut seen: Map<String, Json> = ctx.cursor.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+    let max = ctx.u("max_nodes", 200) as usize;
+    let mut out = Fetched::default();
+    for n in &nodes {
+        let Some(name) = n["name"].as_str() else { continue };
+        let stamp = [&n["mtime"], &n["last"]["end"], &n["time"]].into_iter().find(|v| !v.is_null()).map(map::text).unwrap_or_default();
+        if stamp.is_empty() || seen.get(name).and_then(Json::as_str) == Some(stamp.as_str()) {
+            continue;
+        }
+        if n["last"]["status"].as_str().is_some_and(|s| s != "success" && s != "no_connection") && n["mtime"].is_null() {
+            continue;
+        }
+        if out.records.len() >= max {
+            out.more = true;
+            break;
+        }
+        let text = ctx.text(&fetch_url(name, n["group"].as_str())).await?;
+        out.records.push(config_record(name, n, &text, ctx.now_us));
+        seen.insert(name.to_string(), json!(stamp));
+    }
+    out.cursor = Some(Json::Object(seen).to_string());
+    Ok(out)
+}
+
+// ----- http_json
+
+async fn http_json(ctx: &Ctx<'_>) -> Result<Fetched, String> {
+    let url0 = ctx.need("url")?;
+    let cursor = ctx.cursor.clone().or_else(|| ctx.s("start").map(str::to_string)).unwrap_or_default();
+    let mut url = url0.replace("{cursor}", &enc(&cursor));
+    let records_path = ctx.s("records").map(str::to_string);
+    let mut out = Fetched::default();
+    let mut best: Option<Json> = None;
+    for _page in 0..1000 {
+        let j = ctx.json(&ctx.with_secrets(&url)).await?;
+        let batch = map::records(&j, records_path.as_deref());
+        if let Some(cp) = ctx.s("cursor") {
+            for r in &batch {
+                let v = map::path(r, cp);
+                let higher = match (&best, &v) {
+                    (_, Json::Null) => false,
+                    (None, _) => true,
+                    (Some(b), v) => match (map::number(b), map::number(v)) {
+                        (Some(x), Some(y)) => y > x,
+                        _ => map::text(v) > map::text(b),
+                    },
+                };
+                if higher {
+                    best = Some(v);
+                }
+            }
+        }
+        out.records.extend(batch);
+        let next = ctx.s("next").map(|p| map::text(&map::path(&j, p))).filter(|n| !n.is_empty());
+        match next {
+            Some(n) if out.records.len() < ctx.limit => {
+                url = if n.starts_with("http://") || n.starts_with("https://") {
+                    n
+                } else if n.starts_with('/') {
+                    let origin: String = url0.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+                    format!("{origin}{n}")
+                } else {
+                    n
+                };
+            }
+            Some(_) => {
+                out.more = true;
+                break;
+            }
+            None => break,
+        }
+    }
+    out.cursor = best.map(|b| map::text(&b));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn servicenow_records_flatten_to_labels_and_utc_times() {
+        let r = json!({"number": {"value": "CHG0001", "display_value": "CHG0001"}, "state": {"value": "-2", "display_value": "Scheduled"}, "start_date": {"value": "2026-11-20 06:00:00", "display_value": "11/20/2026 01:00:00 AM"}, "assigned_to": {"value": "6816f79c", "display_value": "Beth Anglin"}});
+        let f = sn_flat(&r);
+        assert_eq!(f["number"], "CHG0001");
+        assert_eq!(f["state"], "Scheduled");
+        assert_eq!(f["state_value"], "-2");
+        assert_eq!(f["start_date"], "2026-11-20 06:00:00");
+        assert_eq!(f["assigned_to"], "Beth Anglin");
+    }
+
+    #[test]
+    fn jira_issues_flatten_with_their_document_text_and_custom_fields() {
+        let i = json!({"key": "NET-7", "id": "10007", "fields": {"summary": "Upgrade cr1", "status": {"name": "In Progress", "statusCategory": {"name": "In Progress"}}, "issuetype": {"name": "Change"}, "project": {"key": "NET"}, "assignee": {"displayName": "Ana"}, "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Reload "}, {"type": "text", "text": "cr1-nyc"}]}]}, "customfield_1": "2026-11-20T06:00:00.000+0000", "customfield_2": [{"value": "cr1-nyc"}, {"value": "cr2-nyc"}]}});
+        let mut custom = Map::new();
+        custom.insert("window_start".into(), json!("customfield_1"));
+        custom.insert("devices".into(), json!("customfield_2"));
+        let f = jira_flat(&i, "https://x.atlassian.net", &custom);
+        assert_eq!(f["description"], "Reload cr1-nyc");
+        assert_eq!(f["status"], "In Progress");
+        assert_eq!(f["url"], "https://x.atlassian.net/browse/NET-7");
+        assert_eq!(f["custom"]["devices"], json!(["cr1-nyc", "cr2-nyc"]));
+    }
+
+    #[test]
+    fn every_kind_has_a_default_table() {
+        for k in KINDS {
+            assert!(default_schema(k.name, k.target).starts_with("CREATE TABLE IF NOT EXISTS"));
+        }
+    }
+}

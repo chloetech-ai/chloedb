@@ -76,6 +76,7 @@ NAV = [
         ("sqlite", "SQLite in and out", "docs/chloedb/sqlite.md", "reference"),
         ("parquet", "Parquet and S3", "docs/chloedb/parquet.md", "reference"),
         ("postgres", "Following Postgres", "docs/chloedb/postgres.md", "reference"),
+        ("connectors", "Connectors", "docs/chloedb/connectors.md", "reference"),
         ("opensearch", "OpenSearch API", "docs/chloedb/opensearch.md", "reference"),
         ("compatibility", "Versions and compatibility", "docs/compatibility.md", "reference"),
     ]),

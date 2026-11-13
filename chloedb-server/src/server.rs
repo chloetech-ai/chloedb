@@ -180,6 +180,10 @@ pub struct Options {
     pub cloud_file: Option<PathBuf>,
     /// The hub's book of connections to other clusters ([`crate::hub`]).
     pub hub_file: Option<PathBuf>,
+    /// The connectors' secrets (default: DB.connectors.json beside --db).
+    pub connector_secrets: Option<PathBuf>,
+    /// Pulls of the connectors run here on their schedules.
+    pub connectors: bool,
     /// Who this hub's calls to other clusters say they come from.
     pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
@@ -523,6 +527,13 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(file) = hub {
         let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
         svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
+    }
+    let connector_secrets = o.connector_secrets.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::connectors::Connectors::file_of));
+    if let Some(file) = connector_secrets {
+        svc.connectors.keep_secrets(file)?;
+    }
+    if o.connectors {
+        svc.connectors.enable();
     }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {

@@ -153,7 +153,7 @@ fn values(rows: &[Vec<Value>], sorted: &[usize], w: &WindowFn, keys: &[&[Value]]
                 WindowFunc::NthValue { arg: a, n: k } => {
                     bounds.iter().map(|&(lo, hi)| match lo.checked_add(*k as usize - 1).filter(|&j| j < hi) { Some(j) => arg(a, j), None => Ok(Value::Null) }).collect::<Result<_>>()?
                 }
-                WindowFunc::Agg(a) if a.func.percentile().is_some() => return Err(err("a percentile aggregates groups (GROUP BY), not a window")),
+                WindowFunc::Agg(a) if a.func.fraction().is_some() => return Err(err("a percentile aggregates groups (GROUP BY), not a window")),
                 WindowFunc::Agg(a) => {
                     let new = || Acc::new(&Projection::Agg { func: a.func, of: crate::query::logical::Col::Field(0) });
                     let mut add = |acc: &mut Acc, at: usize| -> Result<()> {

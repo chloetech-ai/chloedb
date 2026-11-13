@@ -57,6 +57,7 @@
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
@@ -85,7 +86,7 @@
 <p>A shop in one page: search, stock that never oversells, holds that expire, and click events counted exactly once. Each part is a few lines of SQL or JSON over HTTP, with links to the reference for the rest.</p>
 <h2 id="run-a-server">Run a server<a class="anchor" href="#run-a-server" aria-label="Link to this section">#</a></h2>
 <p>Download the server for your machine (no Rust or build needed), and start it on a new database:</p>
-<pre data-lang="sh">v=0.3.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+<pre data-lang="sh">v=0.3.1 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; cp chloedb-server-$p/chloedb-server ./chloedb-server
 ./chloedb-server --db shop.chloedb --seq-no</pre>

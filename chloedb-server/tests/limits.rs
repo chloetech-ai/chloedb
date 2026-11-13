@@ -342,3 +342,58 @@ async fn a_coordinator_sends_a_busy_shard_its_part_again() {
     let (status, body) = query(&base, "SELECT COUNT(*) FROM products").await;
     assert_eq!((status, body["rows"][0][0].as_u64()), (200, Some(N as u64 + 20)), "{body}");
 }
+
+/// Query understanding and "did you mean" through a coordinator held to
+/// --max-rows, as on one server: the dictionaries understanding reads
+/// (up to 200,000 values) are the server's own reads, and a coordinator
+/// corrects text by its shards' term statistics.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capped_coordinator_understands_and_corrects_as_one_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let rows_capped = |db: Arc<Db>| {
+        let mut s = capped(db);
+        s.max_groups = None;
+        Arc::new(s)
+    };
+    let one = http(rows_capped(open(dir.path(), "all.strata", |_| true))).await;
+    let shard = |s: usize| move |i: usize| shard_of(&chloedb::Value::Str(format!("p{i:07}")), 2) == s;
+    let shards = [grpc(rows_capped(open(dir.path(), "s0.strata", shard(0)))).await, grpc(rows_capped(open(dir.path(), "s1.strata", shard(1)))).await];
+    let c = Coordinator::connect(shards.to_vec()).await.unwrap();
+    let schema = c.schema.clone();
+    let mut coord = Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(10));
+    coord.max_rows = Some(100);
+    let coord = http(Arc::new(coord)).await;
+    let client = chloedb_server::http_client().build().unwrap();
+    let post = |base: &str, path: &str, body: Json| {
+        let r = client.post(format!("{base}{path}")).json(&body).send();
+        async move {
+            let r = r.await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    for text in ["waterprof hiking boots", "lether boots", "waterproof jacket", "the walking shoes"] {
+        let body = json!({"table": "products", "field": "body", "text": text});
+        let (s1, want) = post(&one, "/v1/correct", body.clone()).await;
+        let (s2, got) = post(&coord, "/v1/correct", body).await;
+        assert_eq!((s1, s2), (200, 200), "{text}: {want} {got}");
+        assert_eq!(got["text"], want["text"], "{text}: {got} vs one server's {want}");
+        assert_eq!(got["changed"], want["changed"], "{text}: {got}");
+    }
+    let (_, fixed) = post(&coord, "/v1/correct", json!({"table": "products", "field": "body", "text": "waterprof hiking boots"})).await;
+    assert_eq!((fixed["text"].as_str(), fixed["words"][0]["to"].as_str()), (Some("waterproof hiking boots"), Some("waterproof")), "{fixed}");
+    let (status, e) = post(&coord, "/v1/correct", json!({"table": "products", "field": "brand", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
+    // Understanding: the words, and a search with them.
+    let body = json!({"table": "products", "field": "body", "text": "leather boots under 300", "fields": "category, brand, price"});
+    let (s1, want) = post(&one, "/v1/understand", body.clone()).await;
+    let (s2, got) = post(&coord, "/v1/understand", body).await;
+    assert_eq!((s1, s2), (200, 200), "{want} {got}");
+    assert_eq!((got["ranked"].clone(), got["filters"].clone(), got["boosts"].clone()), (want["ranked"].clone(), want["filters"].clone(), want["boosts"].clone()), "{got} vs one server's {want}");
+    let sql = "SELECT id FROM products ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'category, brand, price') DESC LIMIT 10";
+    let (status, a) = post(&coord, "/v1/query", json!({"sql": sql, "params": {"q": "leather boots under 300"}})).await;
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["rows"].as_array().unwrap().len(), 10, "{a}");
+    // Without understand_fields, every keyword field is read.
+    let (status, a) = post(&coord, "/v1/understand", json!({"table": "products", "field": "body", "text": "leather boots"})).await;
+    assert_eq!(status, 200, "{a}");
+}

@@ -6,7 +6,7 @@
 //!
 //! | call | answer |
 //! |---|---|
-//! | `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}]}` |
+//! | `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}], create}` (`create`: the table's CREATE TABLE) |
 //! | `GET /v1/memory/sessions?project=` | `{sessions: [{session, records, first, last, turns}]}`, the latest first |
 //! | `GET /v1/memory/records?project=&session=&kind=&q=&limit=&before=` | `{records}`: a session's in the order recorded, else the latest first (`before`: a `seq` to page back from), or the best matches for `q` |
 //!
@@ -64,13 +64,13 @@ impl App {
     /// `GET /v1/memory`: the projects synced to the cluster.
     pub fn memory(&self) -> Answer {
         if !self.memory_exists()? {
-            return Ok(json!({"table": TABLE, "exists": false, "projects": []}));
+            return Ok(json!({"table": TABLE, "exists": false, "projects": [], "create": crate::sync::CREATE}));
         }
         let rs = self.cluster.query(&format!("SELECT project, COUNT(*), COUNT(DISTINCT session), MAX(ts) FROM {TABLE} GROUP BY project LIMIT 1000"), &Params::new())?;
         let mut projects: Vec<Json> =
             rs.rows.iter().map(|r| json!({"project": str_of(r.first()), "records": int_of(r.get(1)), "sessions": int_of(r.get(2)), "last": int_of(r.get(3))})).collect();
         projects.sort_by_key(|p| std::cmp::Reverse(p["last"].as_i64().unwrap_or(0)));
-        Ok(json!({"table": TABLE, "exists": true, "projects": projects}))
+        Ok(json!({"table": TABLE, "exists": true, "projects": projects, "create": crate::sync::CREATE}))
     }
 
     /// `GET /v1/memory/sessions?project=`: a project's sessions, the
