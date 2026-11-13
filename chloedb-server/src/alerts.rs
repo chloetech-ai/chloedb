@@ -94,6 +94,15 @@ pub struct Rule {
     /// (now / before; a p99 that doubled is 2), not the window's own.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub vs: String,
+    /// A query whose answer's first number is the value watched, run
+    /// every [`SQL_EVERY_MS`] ([`refresh_sql`]) with `:since` and `:now`,
+    /// the window's start and end as timestamps: the rule's metric is then
+    /// `sql_<id>`, which the series' points carry. A `SELECT` of the
+    /// cluster's tables (`SELECT COUNT(*) FROM otel_logs WHERE severity =
+    /// 'ERROR' AND ts > :since`), so that a rule watches the data as well
+    /// as the server.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sql: String,
 }
 
 fn warning() -> String {
@@ -157,6 +166,22 @@ impl Rule {
         if !self.runbook.is_empty() && !(self.runbook.starts_with("https://") || self.runbook.starts_with("http://")) {
             return Err(ApiError::bad(format!("rule {}: the runbook is an http(s) URL", self.id)));
         }
+        if !self.sql.is_empty() {
+            let q = self.sql.trim().trim_end_matches(';').trim();
+            let first = q.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            if !matches!(first.as_str(), "select" | "with") || q.contains(';') {
+                return Err(ApiError::bad(format!("rule {}: sql is one SELECT, whose first number is the value watched", self.id)));
+            }
+            if q.len() > MAX_SQL {
+                return Err(ApiError::bad(format!("rule {}: sql is at most {MAX_SQL} bytes", self.id)));
+            }
+            if self.metric != sql_metric(&self.id) {
+                return Err(ApiError::bad(format!("rule {}: a rule with sql watches the metric {:?}", self.id, sql_metric(&self.id))));
+            }
+            if self.scope != "self" {
+                return Err(ApiError::bad(format!("rule {}: a rule with sql runs its query here (scope self)", self.id)));
+            }
+        }
         Ok(())
     }
 
@@ -175,7 +200,7 @@ impl Rule {
     /// alert again.
     fn condition(&self) -> (String, String, String, u64, u64, String, String, bool) {
         let n = |x: f64| format!("{x}");
-        (self.metric.clone(), self.op.clone(), n(self.threshold), self.for_s, self.window_s, self.eval.clone(), self.resolve.map(n).unwrap_or_default() + &self.scope + &self.vs, self.enabled)
+        (self.metric.clone(), self.op.clone(), n(self.threshold), self.for_s, self.window_s, self.eval.clone(), self.resolve.map(n).unwrap_or_default() + &self.scope + &self.vs + &self.sql, self.enabled)
     }
 
     /// A short digest of [`Self::condition`]: a coordinator tells a copy
@@ -223,6 +248,7 @@ fn rule(id: &str, name: &str, metric: &str, op: &str, threshold: f64, eval: &str
         route: String::new(),
         builtin: false,
         vs: String::new(),
+        sql: String::new(),
     }
 }
 
@@ -933,6 +959,36 @@ pub struct Alerts {
     /// Until when a restarted coordinator sends no FIRING message
     /// ([`STARTUP_MS`]); 0 for a server that starts afresh.
     starting_until: u64,
+    /// The rules with `sql`: each one's last value, by its metric, and
+    /// how its last run went ([`refresh_sql`]).
+    sql_values: Mutex<std::collections::BTreeMap<String, f64>>,
+    sql_runs: Mutex<HashMap<String, SqlRun>>,
+    pub(crate) sql_checked: AtomicU64,
+    pub(crate) sql_running: AtomicBool,
+}
+
+/// A rule's last run of its query: when, how long it took, and its
+/// value or why it has none.
+#[derive(Clone, Debug, Serialize)]
+pub struct SqlRun {
+    pub at_ms: u64,
+    pub took_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// How often the rules with `sql` run their queries.
+pub const SQL_EVERY_MS: u64 = 30_000;
+/// How long a rule's query may take.
+const SQL_TIMEOUT_MS: u64 = 10_000;
+/// The longest query a rule holds.
+const MAX_SQL: usize = 4096;
+
+/// The metric a rule with `sql` watches.
+pub fn sql_metric(id: &str) -> String {
+    format!("sql_{id}")
 }
 
 /// How long a route has to take a message, its three tries included.
@@ -1037,6 +1093,10 @@ impl Alerts {
             peer_states: Mutex::new(HashMap::new()),
             slo: Mutex::new(None),
             starting_until: if restarted { now + STARTUP_MS } else { 0 },
+            sql_values: Mutex::new(Default::default()),
+            sql_runs: Mutex::new(HashMap::new()),
+            sql_checked: AtomicU64::new(0),
+            sql_running: AtomicBool::new(false),
         })
     }
 
@@ -1187,6 +1247,13 @@ impl Alerts {
     /// edit keeps its time).
     pub fn set_rules_at(&self, rules: Vec<Rule>, by: &str, at_ms: u64) -> Result<(Vec<Arc<Event>>, Vec<Rule>, Vec<Rule>), ApiError> {
         let mut ids = HashSet::new();
+        let rules: Vec<Rule> = rules.into_iter().map(|mut r| {
+            if !r.sql.trim().is_empty() {
+                r.sql = r.sql.trim().trim_end_matches(';').trim_end().to_string();
+                r.metric = sql_metric(&r.id);
+            }
+            r
+        }).collect();
         for r in &rules {
             r.check()?;
             if !ids.insert(r.id.clone()) {
@@ -1961,6 +2028,9 @@ impl Alerts {
                 let mut j = json!(r);
                 let s = out.iter().find(|s| s["rule"] == r.id.as_str()).cloned().unwrap_or(Json::Null);
                 j["status"] = json!({"state": s["state"], "since_ms": s["since_ms"], "value": s["value"]});
+                if let Some(run) = (!r.sql.is_empty()).then(|| lock(&self.sql_runs).get(&r.id).cloned()).flatten() {
+                    j["sql_run"] = json!(run);
+                }
                 j
             })
             .collect();
@@ -3026,6 +3096,68 @@ pub fn tick(svc: &Arc<crate::service::Service>, point: &Json) {
     }
 }
 
+/// Runs the queries of the rules with `sql` when [`SQL_EVERY_MS`] has
+/// passed since the last runs, in a task of its own, one query after the
+/// other; each one's first number becomes the value its rule's metric
+/// (`sql_<id>`) has in the series' next points ([`Alerts::sql_values`]).
+/// A query that fails, or answers no number, leaves its rule without
+/// data, and says why in the rule's `sql_run`.
+pub fn refresh_sql(svc: &Arc<crate::service::Service>) {
+    let now = now_ms();
+    if now.saturating_sub(svc.alerts.sql_checked.load(Ordering::Relaxed)) < SQL_EVERY_MS {
+        return;
+    }
+    let rules: Vec<Rule> = svc.alerts.rules().into_iter().filter(|r| r.enabled && !r.sql.is_empty()).collect();
+    if rules.is_empty() {
+        let mut v = lock(&svc.alerts.sql_values);
+        if !v.is_empty() {
+            v.clear();
+            lock(&svc.alerts.sql_runs).clear();
+        }
+        return;
+    }
+    if svc.alerts.sql_running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    svc.alerts.sql_checked.store(now, Ordering::Relaxed);
+    let svc = svc.clone();
+    tokio::spawn(async move {
+        let mut values = std::collections::BTreeMap::new();
+        let mut runs = HashMap::new();
+        for r in rules {
+            let t0 = std::time::Instant::now();
+            // `:since` and `:now`: the rule's window, as timestamps, for a
+            // query over the rows of the last minutes.
+            let t = now_ms() as i64;
+            let at = |ms: i64| chloedb::value::Value::Str(chloedb::timestamp::format(ms * 1000));
+            let params = chloedb::query::Params::new().set("since", at(t - r.window_s as i64 * 1000)).set("now", at(t));
+            let req = crate::service::QueryReq { sql: r.sql.clone(), params, timeout_ms: SQL_TIMEOUT_MS, ..Default::default() };
+            let (value, error) = match Box::pin(svc.query(req)).await {
+                Ok(a) => match a.rs.rows.first().and_then(|row| row.iter().find_map(|v| v.as_f64())) {
+                    Some(v) if v.is_finite() => (Some(v), None),
+                    _ => (None, Some("the query answered no number".to_string())),
+                },
+                Err(e) => (None, Some(e.message)),
+            };
+            if let Some(v) = value {
+                values.insert(sql_metric(&r.id), v);
+            }
+            runs.insert(r.id.clone(), SqlRun { at_ms: now_ms(), took_ms: t0.elapsed().as_secs_f64() * 1e3, value, error });
+        }
+        *lock(&svc.alerts.sql_values) = values;
+        *lock(&svc.alerts.sql_runs) = runs;
+        svc.alerts.sql_running.store(false, Ordering::Release);
+    });
+}
+
+impl Alerts {
+    /// The last values of the rules with `sql`, by metric, for the
+    /// series' points ([`refresh_sql`]).
+    pub fn sql_values(&self) -> std::collections::BTreeMap<String, f64> {
+        lock(&self.sql_values).clone()
+    }
+}
+
 /// Each key's calls of `[from, to)` on this server, with its owner.
 fn key_calls(svc: &crate::service::Service, from: u64, to: u64) -> Vec<KeyCalls> {
     let calls = svc.query_log.statements.key_calls(from, to);
@@ -3650,6 +3782,25 @@ mod tests {
         let ps: Vec<Arc<Json>> = primary(0, 300, 1.0).collect();
         b.check(&ps, 300_000);
         assert_eq!(b.one("out-of-sync").unwrap()["state"], "firing");
+    }
+
+    /// A rule can watch a query's first number instead of a metric: the
+    /// query is one SELECT, its value is the series `sql_<id>` that the
+    /// sampler adds, and it fires as any other rule does.
+    #[test]
+    fn a_rule_watches_the_first_number_of_a_query() {
+        let a = Alerts::new(None, None).unwrap();
+        let errs = |sql: &str| Rule { sql: sql.into(), ..rule("errs", "Errors in the logs", "", ">", 5.0, "max", 60, 0, "warning", "self", "") };
+        for bad in ["DELETE FROM otel_logs", "SELECT 1; DROP TABLE t", "WITH x AS (SELECT 1) DELETE FROM t; SELECT 1"] {
+            assert!(a.set_rules(vec![errs(bad)], "t").is_err(), "{bad:?}");
+        }
+        a.set_rules(vec![errs("SELECT COUNT(*) FROM otel_logs WHERE severity_number >= 17 AND ts > :since;")], "t").unwrap();
+        let r = a.rules().into_iter().find(|r| r.id == "errs").unwrap();
+        assert_eq!((r.metric.as_str(), r.sql.as_str()), ("sql_errs", "SELECT COUNT(*) FROM otel_logs WHERE severity_number >= 17 AND ts > :since"));
+        let ps: Vec<Arc<Json>> = [(0u64, 1.0), (30_000, 9.0)].iter().map(|(t, v)| Arc::new(json!({"t": t, "sql_errs": v}))).collect();
+        let fired = a.check(&ps, 30_000);
+        assert!(fired.iter().any(|e| e.rule == "errs" && e.state == "firing"), "{fired:?}");
+        assert!(a.json()["rules"].as_array().unwrap().iter().any(|r| r["id"] == "errs" && r["sql"].is_string()));
     }
 
     fn points(vals: &[(u64, f64)]) -> Vec<Arc<Json>> {

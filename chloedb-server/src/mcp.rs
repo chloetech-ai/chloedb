@@ -429,6 +429,110 @@ fn tools_listed<'a>(tools: impl Iterator<Item = &'a Tool>) -> Json {
     json!({"tools": tools})
 }
 
+/// The prefix of a saved search's tool: `fn_<name>` calls the stored
+/// function `name` (one that `RETURNS TABLE`).
+pub const SAVED_PREFIX: &str = "fn_";
+
+/// A parameter type's JSON schema.
+fn param_schema(ty: &str) -> Json {
+    let t = ty.to_ascii_uppercase();
+    match t.split('(').next().unwrap_or("") {
+        "INT" => json!({"type": "integer"}),
+        "FLOAT" => json!({"type": "number"}),
+        "BOOL" => json!({"type": "boolean"}),
+        "VECTOR" => json!({"type": "array", "items": {"type": "number"}}),
+        "JSON" => json!({}),
+        _ if t.ends_with("[]") => json!({"type": "array"}),
+        _ => json!({"type": "string"}),
+    }
+}
+
+/// The saved searches as tools: each stored function that returns a
+/// table, by its current version ([`SAVED_PREFIX`]).
+pub fn saved_tools(set: &chloedb::query::function::FunctionSet) -> Vec<Json> {
+    use chloedb::query::function::Kind;
+    let mut out = Vec::new();
+    for f in set.currents().filter(|f| f.def.kind == Kind::Table) {
+        let name = format!("{SAVED_PREFIX}{}", f.def.name);
+        if name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            continue;
+        }
+        let mut props = serde_json::Map::new();
+        let mut required = Vec::new();
+        let text = first_text(&f.def);
+        for p in &f.def.params {
+            let vector = is_vector(&p.ty);
+            let mut sch = if vector { json!({"type": ["string", "array"], "items": {"type": "number"}}) } else { param_schema(&p.ty) };
+            let what = match (&p.default, vector, text) {
+                (Some(d), ..) => format!("{} (default {d})", p.ty),
+                (None, true, Some(t)) => format!("{}: words to embed, or a vector; left out, the words of {t:?}", p.ty),
+                (None, true, None) => format!("{}: words to embed, or a vector", p.ty),
+                (None, false, _) => p.ty.clone(),
+            };
+            sch["description"] = json!(what);
+            props.insert(p.name.clone(), sch);
+            if p.default.is_none() && !(vector && text.is_some()) {
+                required.push(p.name.clone());
+            }
+        }
+        let about = f.def.description.clone().unwrap_or_else(|| format!("A saved search of this database: {}.", f.def.signature()));
+        let title = format!("Saved search {}", f.def.name);
+        out.push(json!({
+            "name": name,
+            "title": title,
+            "description": format!("{about} Runs SELECT * FROM {} (version {}) and answers its rows.", f.def.signature(), f.version),
+            "inputSchema": {"type": "object", "properties": props, "required": required},
+            "annotations": {"title": title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }));
+    }
+    out
+}
+
+fn is_vector(ty: &str) -> bool {
+    ty.to_ascii_uppercase().starts_with("VECTOR")
+}
+
+/// The first parameter of type TEXT: the words of a search.
+fn first_text(def: &chloedb::query::function::Definition) -> Option<&str> {
+    def.params.iter().find(|p| p.ty.eq_ignore_ascii_case("TEXT")).map(|p| p.name.as_str())
+}
+
+/// The query a saved search's tool runs: the function called with the
+/// arguments given, by name, as parameters.
+fn saved_call(set: &chloedb::query::function::FunctionSet, tool: &str, args: &Json) -> Option<Result<Act, Failed>> {
+    let name = tool.strip_prefix(SAVED_PREFIX)?;
+    let f = set.current(name).filter(|f| f.def.kind == chloedb::query::function::Kind::Table)?;
+    let given = args.as_object().cloned().unwrap_or_default();
+    if let Some(k) = given.keys().find(|k| !f.def.params.iter().any(|p| &p.name == *k)) {
+        return Some(Err(Failed::Arguments(format!("{tool} takes no argument {k:?}: its parameters are {}", f.def.signature()))));
+    }
+    // A vector parameter takes words, which the server embeds, and is the
+    // words of the first text parameter when left out.
+    let mut given = given;
+    let words = first_text(&f.def).and_then(|t| given.get(t)).and_then(Json::as_str).map(String::from);
+    for p in f.def.params.iter().filter(|p| is_vector(&p.ty)) {
+        match given.get(&p.name) {
+            Some(Json::String(w)) => {
+                let w = w.clone();
+                given.insert(p.name.clone(), json!({"embed": w}));
+            }
+            None | Some(Json::Null) if p.default.is_none() => {
+                if let Some(w) = &words {
+                    given.insert(p.name.clone(), json!({"embed": w}));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(p) = f.def.params.iter().find(|p| p.default.is_none() && given.get(&p.name).is_none_or(Json::is_null)) {
+        return Some(Err(Failed::Arguments(format!("{tool} needs {:?} ({})", p.name, p.ty))));
+    }
+    let named: Vec<String> = f.def.params.iter().filter(|p| given.get(&p.name).is_some_and(|v| !v.is_null())).map(|p| format!("{0} => :{0}", p.name)).collect();
+    let sql = format!("SELECT * FROM {}({})", f.def.name, named.join(", "));
+    let params: serde_json::Map<String, Json> = given.into_iter().filter(|(_, v)| !v.is_null()).collect();
+    Some(Ok(route(Method::POST, "/v1/query", Some(json!({"sql": sql, "params": params})), Shape::Rows(50))))
+}
+
 struct Resource {
     uri: &'static str,
     name: &'static str,
@@ -659,7 +763,14 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             }))
         }
         "ping" | "logging/setLevel" => ok(&id, json!({})),
-        "tools/list" => ok(&id, tools_for(caller.who)),
+        "tools/list" => {
+            svc.learn_functions().await;
+            let mut j = tools_for(caller.who);
+            if let Some(list) = j["tools"].as_array_mut() {
+                list.extend(saved_tools(&svc.functions()));
+            }
+            ok(&id, j)
+        }
         "resources/list" => ok(&id, resources_json()),
         "resources/templates/list" => ok(&id, json!({"resourceTemplates": []})),
         "prompts/list" => ok(&id, json!({"prompts": []})),
@@ -685,12 +796,20 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
 
 /// A tool's call: its answer's content, text and perhaps an image.
 async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, name: &str, args: &Json) -> Result<Vec<Json>, Failed> {
-    let tool = TOOLS.iter().chain(ops_tools::OPS_TOOLS).find(|t| t.name == name).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))?;
     if !args.is_object() {
         return Err(Failed::Arguments("arguments are an object".into()));
     }
+    let act = match TOOLS.iter().chain(ops_tools::OPS_TOOLS).find(|t| t.name == name) {
+        Some(tool) => (tool.act)(args)?,
+        None => {
+            if name.starts_with(SAVED_PREFIX) {
+                svc.learn_functions().await;
+            }
+            saved_call(&svc.functions(), name, args).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))??
+        }
+    };
     let mut image = None;
-    let answer = match (tool.act)(args)? {
+    let answer = match act {
         Act::CheckSql(sql) => check_sql(&sql, &svc.tables_listed().await).map_err(Failed::Call)?,
         Act::SearchDocs { query, limit } => search_docs(&query, limit),
         Act::Runbook { query } => crate::runbooks::find(&query),
@@ -909,6 +1028,51 @@ mod tests {
         let j = search_docs("expire_by holds", 2);
         assert!(j["sections"].as_array().unwrap().iter().any(|h| h["text"].as_str().unwrap().contains("expire_by")), "{j}");
         assert_eq!(search_docs("zzqqxx", 3)["sections"], json!([]));
+    }
+
+    #[test]
+    fn saved_searches_are_tools_with_their_parameters() {
+        use chloedb::query::function::{Definition, Function, FunctionSet, Kind, Param};
+        let def = |name: &str, kind| Definition {
+            name: name.into(),
+            kind,
+            params: vec![Param { name: "q".into(), ty: "TEXT".into(), default: None }, Param { name: "k".into(), ty: "INT".into(), default: Some("10".into()) }],
+            returns: if kind == Kind::Table { "TABLE".into() } else { "FLOAT".into() },
+            body: if kind == Kind::Table { "SELECT 1".into() } else { "1.0".into() },
+            description: Some("Finds help articles.".into()),
+        };
+        let set = FunctionSet::of([Function::new(def("recall", Kind::Table), 2, None, None).unwrap(), Function::new(def("boost", Kind::Scalar), 1, None, None).unwrap()]);
+        let tools = saved_tools(&set);
+        assert_eq!(tools.len(), 1, "only table functions: {tools:?}");
+        let t = &tools[0];
+        assert_eq!(t["name"], "fn_recall");
+        assert_eq!(t["inputSchema"]["required"], json!(["q"]));
+        assert_eq!(t["inputSchema"]["properties"]["k"]["type"], "integer");
+        assert!(t["description"].as_str().unwrap().starts_with("Finds help articles."), "{t}");
+        match saved_call(&set, "fn_recall", &json!({"q": "tokio"})) {
+            Some(Ok(Act::Route { path, body: Some(b), .. })) => {
+                assert_eq!(path, "/v1/query");
+                assert_eq!(b["sql"], "SELECT * FROM recall(q => :q)");
+                assert_eq!(b["params"], json!({"q": "tokio"}));
+            }
+            _ => panic!("a query"),
+        }
+        assert!(matches!(saved_call(&set, "fn_recall", &json!({})), Some(Err(Failed::Arguments(_)))));
+        assert!(matches!(saved_call(&set, "fn_recall", &json!({"q": "x", "zz": 1})), Some(Err(Failed::Arguments(_)))));
+        assert!(saved_call(&set, "fn_boost", &json!({})).is_none());
+        // A vector parameter is the words of the first text one when left out.
+        let mut both = def("both", Kind::Table);
+        both.params.push(Param { name: "v".into(), ty: "VECTOR(4)".into(), default: None });
+        let set = FunctionSet::of([Function::new(both, 1, None, None).unwrap()]);
+        assert_eq!(saved_tools(&set)[0]["inputSchema"]["required"], json!(["q"]));
+        match saved_call(&set, "fn_both", &json!({"q": "tokio"})) {
+            Some(Ok(Act::Route { body: Some(b), .. })) => {
+                assert_eq!(b["sql"], "SELECT * FROM both(q => :q, v => :v)");
+                assert_eq!(b["params"]["v"], json!({"embed": "tokio"}));
+            }
+            _ => panic!("a query"),
+        }
+        assert!(saved_call(&set, "fn_nothing", &json!({})).is_none());
     }
 
     #[test]

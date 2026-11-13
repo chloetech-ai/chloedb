@@ -556,6 +556,11 @@ pub fn proposal_id(r: &Report, ts: i64) -> String {
 /// `current_hash` now: refused when it was applied or dismissed, when the
 /// profile changed since it was measured (the proof is of another
 /// profile), and, unless `force`, when its verdict was not to propose.
+///
+/// The row is data, which whoever may write the proposals table could
+/// have changed: its statement is run only as a `CREATE OR REPLACE RANK
+/// PROFILE` of the row's profile on the row's table, rebuilt from what it
+/// parses to, and never as anything else (a `DROP TABLE`, a function).
 pub fn check_apply(row: &Json, current_hash: Option<&str>, force: bool) -> Result<String> {
     let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let id = s("id");
@@ -579,7 +584,11 @@ pub fn check_apply(row: &Json, current_hash: Option<&str>, force: bool) -> Resul
     if s("verdict") != Verdict::Propose.as_str() && !force {
         return Err(bad(format!("proposal {id}'s verdict is {}, not propose: apply it with force to apply it anyway", s("verdict"))));
     }
-    Ok(statement.to_string())
+    let not_profile = || bad(format!("proposal {id}'s statement is not CREATE OR REPLACE RANK PROFILE {} ON {}: it is not applied", s("profile"), s("target")));
+    match crate::query::profile::parse_statement(statement).map_err(|_| not_profile())? {
+        Some(crate::query::profile::Statement::Create { table, profile, replace: true }) if table.eq_ignore_ascii_case(s("target")) && profile.name.eq_ignore_ascii_case(s("profile")) => Ok(knobs::statement(&table, &profile)),
+        _ => Err(not_profile()),
+    }
 }
 
 // ------------------------------------------------------------ running it
@@ -979,5 +988,25 @@ mod tests {
         let mut done = row.clone();
         done["status"] = json!("applied");
         assert!(check_apply(&done, Some("aa"), true).is_err());
+    }
+
+    #[test]
+    fn apply_runs_only_the_rank_profile_of_the_row() {
+        let row = json!({"id": "p1", "status": "open", "statement": "CREATE OR REPLACE RANK PROFILE p ON t AS SELECT * FROM t ORDER BY x DESC", "baseline_hash": "aa", "profile": "p", "target": "t", "verdict": "propose"});
+        assert!(check_apply(&row, Some("aa"), false).unwrap().starts_with("CREATE OR REPLACE RANK PROFILE p ON t AS "));
+        for bad in [
+            "DROP TABLE orders",
+            "CREATE FUNCTION f(x INT) RETURNS INT AS 'x'",
+            "CREATE RANK PROFILE p ON t AS SELECT * FROM t ORDER BY x DESC",
+            "CREATE OR REPLACE RANK PROFILE p ON orders AS SELECT * FROM orders ORDER BY x DESC",
+            "CREATE OR REPLACE RANK PROFILE q ON t AS SELECT * FROM t ORDER BY x DESC",
+            "DROP RANK PROFILE p ON t",
+            "CREATE OR REPLACE RANK PROFILE p ON t AS SELECT * FROM t ORDER BY x DESC; DROP TABLE orders",
+        ] {
+            let mut r = row.clone();
+            r["statement"] = json!(bad);
+            let e = check_apply(&r, Some("aa"), true).unwrap_err().to_string();
+            assert!(e.contains("is not applied"), "{bad}: {e}");
+        }
     }
 }

@@ -60,6 +60,10 @@ function render(page) {
   }
   const nt = () => tableOf(g.nodes);
   const key = () => nt().short.key;
+  // A node's id is kept as a string; an INT or FLOAT key goes back as a number.
+  const numKey = () => /^(int|float)$/.test((nt().short.fields || []).find((f) => f.name === key())?.type || "");
+  const idOf = (v) => numKey() && /^-?\d+(\.\d+)?$/.test(String(v)) ? Number(v) : v;
+  const idLit = (v) => lit(idOf(v));
   const G = () => quoteName(g.name);
 
   // ------------------------------------------------------------ controls
@@ -91,7 +95,7 @@ function render(page) {
     const cols = nodeCols();
     const out = [];
     for (let i = 0; i < want.length; i += 200) {
-      const j = await api("/v1/sql", { body: { sql: `SELECT ${cols.map(quoteName).join(", ")} FROM ${quoteName(g.nodes)} WHERE ${quoteName(key())} IN (${want.slice(i, i + 200).map(lit).join(", ")}) LIMIT 200` } });
+      const j = await api("/v1/sql", { body: { sql: `SELECT ${cols.map(quoteName).join(", ")} FROM ${quoteName(g.nodes)} WHERE ${quoteName(key())} IN (${want.slice(i, i + 200).map(idLit).join(", ")}) LIMIT 200` } });
       for (const r of j.rows) out.push(Object.fromEntries(cols.map((c, k) => [c, r[k]])));
     }
     return out;
@@ -121,19 +125,19 @@ function render(page) {
     let pairs = [];
     if (g.kind === "table") {
       const E = quoteName(g.name), S = quoteName(g.src), D = quoteName(g.dst), W = g.w ? quoteName(g.w) : null;
-      const q = (col) => `SELECT ${S}, ${D}${W ? ", " + W : ""} FROM ${E} WHERE ${col} = ${lit(id)}${W ? ` ORDER BY ${W} DESC` : ""} LIMIT ${limit}`;
+      const q = (col) => `SELECT ${S}, ${D}${W ? ", " + W : ""} FROM ${E} WHERE ${col} = ${idLit(id)}${W ? ` ORDER BY ${W} DESC` : ""} LIMIT ${limit}`;
       const sqls = (st.dir === "out" ? [q(S)] : st.dir === "in" ? [q(D)] : [q(S), q(D)]);
       lastSql = sqls.join(";\n");
       for (const sql of sqls) { const j = await api("/v1/sql", { body: { sql } }); for (const r of j.rows) pairs.push([String(r[0]), String(r[1]), W ? r[2] : 1]); }
     } else if (g.kind === "field") {
       const dirs = st.dir === "both" ? ["out", "in"] : [st.dir];
-      const sqls = dirs.map((d) => `SELECT ${quoteName(key())}, hops() FROM ${quoteName(g.nodes)} WHERE REACHABLE(${quoteName(g.name)}, ${lit(id)}, hops => 1, dir => '${d}') LIMIT ${limit + 1}`);
+      const sqls = dirs.map((d) => `SELECT ${quoteName(key())}, hops() FROM ${quoteName(g.nodes)} WHERE REACHABLE(${quoteName(g.name)}, ${idLit(id)}, hops => 1, dir => '${d}') LIMIT ${limit + 1}`);
       lastSql = sqls.join(";\n");
       for (const [i, sql] of sqls.entries()) { const j = await api("/v1/sql", { body: { sql } }); for (const r of j.rows) { const o = String(r[0]); if (o !== id) pairs.push(dirs[i] === "out" ? [id, o, 1] : [o, id, 1]); } }
     } else {
       const sql = `SELECT ${quoteName(key())}, score() FROM ${quoteName(g.nodes)} ORDER BY similarity(${quoteName(g.name)}, :v) DESC LIMIT 7`;
       lastSql = sql + `\n-- :v = {"vector_of": ${JSON.stringify(id)}, "field": "${g.name}", "table": "${g.nodes}"}`;
-      const j = await api("/v1/query", { body: { sql, params: { v: { vector_of: id, field: g.name, table: g.nodes } } } });
+      const j = await api("/v1/query", { body: { sql, params: { v: { vector_of: idOf(id), field: g.name, table: g.nodes } } } });
       for (const r of j.rows) if (String(r[0]) !== id) pairs.push([id, String(r[0]), r[1]]);
     }
     const others = [...new Set(pairs.flatMap(([a, b]) => [a, b]).filter((k) => !nodes.has(k)))];
@@ -148,7 +152,7 @@ function render(page) {
   /** The edge table's links between new nodes and the rest, so the picture is the graph the nodes induce, not only the walks that found them. */
   async function linksAmong(fresh) {
     if (g.kind !== "table" || !fresh.length || nodes.size > 400) return;
-    const all = [...nodes.keys()].map(lit).join(", "), now = fresh.map(lit).join(", ");
+    const all = [...nodes.keys()].map(idLit).join(", "), now = fresh.map(idLit).join(", ");
     const E = quoteName(g.name), S = quoteName(g.src), D = quoteName(g.dst), W = g.w ? quoteName(g.w) : null;
     const sql = `SELECT ${S}, ${D}${W ? ", " + W : ""} FROM ${E} WHERE (${S} IN (${now}) AND ${D} IN (${all})) OR (${D} IN (${now}) AND ${S} IN (${all})) LIMIT 2000`;
     try { const j = await api("/v1/sql", { body: { sql } }); for (const r of j.rows) addEdge(String(r[0]), String(r[1]), W ? r[2] : 1); } catch { /* a picture without them */ }
@@ -365,7 +369,7 @@ function render(page) {
     rebuild(); drawSide();
   }
   async function pagerank(id) {
-    const sql = `SELECT ${nodeCols().map(quoteName).join(", ")}, score() FROM ${quoteName(g.nodes)} ORDER BY ppr(${G()}, ${lit(id)}${st.dir !== "both" ? `, dir => '${st.dir}'` : ""}) DESC LIMIT 15`;
+    const sql = `SELECT ${nodeCols().map(quoteName).join(", ")}, score() FROM ${quoteName(g.nodes)} ORDER BY ppr(${G()}, ${idLit(id)}${st.dir !== "both" ? `, dir => '${st.dir}'` : ""}) DESC LIMIT 15`;
     lastSql = sql;
     try {
       const j = await api("/v1/query", { body: { sql } });
@@ -379,7 +383,7 @@ function render(page) {
     } catch (e) { toast(e.message, "bad"); }
   }
   async function findPath(a, b) {
-    const sql = `SELECT ${quoteName(key())}, hops() FROM ${quoteName(g.nodes)} WHERE PATH(${G()}, ${lit(a)}, ${lit(b)}, max_hops => 6, dir => '${g.kind === "sim" ? "out" : st.dir}') ORDER BY hops() LIMIT 10`;
+    const sql = `SELECT ${quoteName(key())}, hops() FROM ${quoteName(g.nodes)} WHERE PATH(${G()}, ${idLit(a)}, ${idLit(b)}, max_hops => 6, dir => '${g.kind === "sim" ? "out" : st.dir}') ORDER BY hops() LIMIT 10`;
     lastSql = sql;
     try {
       const j = await api("/v1/sql", { body: { sql } });

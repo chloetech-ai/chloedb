@@ -588,7 +588,9 @@ function render(page, r) {
     let audit = null, running = new Set();
     const id = () => `${state.system?.pid ?? "?"}:${state.system?.started_ms ?? ""}`;
     async function loadAudit() { try { audit = (await api("/v1/admin/audit?limit=1000")).entries || []; } catch { audit = []; } if (tab === "upkeep") drawOps(); }
-    let opsBox = null, dbBox = null;
+    let opsBox = null, dbBox = null, rowsAll = null, rowsAt = 0;
+    // The rows of every table (the metrics' docs count only the default one).
+    const countRows = () => { if (Date.now() - rowsAt < 60000) return; rowsAt = Date.now(); api("/v1/index/tables", { timeout: 4000 }).then((j) => { rowsAll = (j.tables || []).reduce((a, x) => a + (x.docs || 0), 0); drawDb(); }).catch(() => {}); };
     function drawDb() {
       const y = state.system;
       if (!dbBox) return;
@@ -601,7 +603,7 @@ function render(page, r) {
         body: h("div", { class: "stack", style: { gap: "10px" } },
           d ? meter(used, DISK, `disk: ${fmt.bytes(d.available_bytes)} free of ${fmt.bytes(d.total_bytes)}`) : null,
           trend("disk_used_ratio", { ratio: true }),
-          kv([["tables", y.db.tables], ["sequence", y.db.seq_no ? `term ${y.db.seq_no.term} · write ${fmt.n(y.db.seq_no.seq)}` : "not numbered (--seq-no)"], ["rows", fmt.n(p.docs)], ["file", fmt.bytes(p.file_bytes)], ["log", fmt.bytes(p.wal_bytes)]]),
+          kv([["tables", y.db.tables], ["sequence", y.db.seq_no ? `term ${y.db.seq_no.term} · write ${fmt.n(y.db.seq_no.seq)}` : "not numbered (--seq-no)"], ["rows", (countRows(), fmt.n(rowsAll ?? p.docs))], ["file", fmt.bytes(p.file_bytes)], ["log", fmt.bytes(p.wal_bytes)]]),
           trend("file_bytes")) }));
     }
     const OPS = () => {
