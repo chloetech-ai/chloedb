@@ -115,6 +115,17 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
         return Ok(());
     }
     let refuse = |m: String| ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
+    // A query that packs its rows reads what the query without its clause
+    // reads: FOLLOW reads the query's own table, and the clause names
+    // columns of it, no table.
+    let unpacked;
+    let text = match chloedb::query::pack::split(text) {
+        Ok(Some((rest, _))) => {
+            unpacked = rest;
+            unpacked.as_str()
+        }
+        _ => text,
+    };
     let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
     let mut walk = Walk::default();
     for s in &statements {
@@ -294,6 +305,10 @@ mod tests {
         }
         // Not a table at all: refused too (it might be a function).
         assert_eq!(reads(&k, "SELECT * FROM nothing_here").unwrap_err().status, 403);
+        // PACK is judged by the query without its clause (audit N-D6).
+        assert!(reads(&k, "SELECT id, body FROM crawl_docs ORDER BY bm25(body, 'x') DESC PACK 4000 TOKENS DEDUPE 0.9 FOLLOW links 1 HOP WITH RECEIPT LIMIT 50").is_ok());
+        assert_eq!(reads(&k, "SELECT id, body FROM secrets ORDER BY id PACK 4000 TOKENS").unwrap_err().status, 403);
+        assert_eq!(reads(&k, "SELECT id FROM crawl_docs WHERE id IN (SELECT id FROM secrets) PACK 100 TOKENS").unwrap_err().status, 403);
         // A key of every table is not checked here.
         let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None };
         assert!(reads(&all, "SELECT * FROM secrets").is_ok());
