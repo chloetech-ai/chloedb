@@ -603,3 +603,211 @@ async fn unnumbered_shards_move_and_a_move_left_is_given_up() {
     // Nothing is left to finish.
     assert!(b.finish_move().await.unwrap()["finished"].is_null());
 }
+
+/// A coordinator keeps what it observes of each replica it calls (calls
+/// by how they ended, round-trip time, overhead, error rate, calls in
+/// flight) and shows it in its cluster view and its metrics; it does not
+/// route by it yet, so both copies of a shard are still asked in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_keeps_what_it_observes_of_each_replica() {
+    let dir = tempfile::tempdir().unwrap();
+    // One shard, two copies holding the same rows, neither replicating.
+    let (_a, url_a) = serve(create(dir.path(), "a.strata", |_| true), dir.path(), "a.strata").await;
+    let (_b, url_b) = serve(create(dir.path(), "b.strata", |_| true), dir.path(), "b.strata").await;
+    let (c, svc) = coordinator(&[format!("{url_a}|{url_b}")]).await;
+    for _ in 0..20 {
+        let a = svc.query(QueryReq { sql: "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".into(), ..Default::default() }).await.unwrap();
+        assert!(!a.rs.rows.is_empty());
+    }
+    let snap = c.snapshot().await;
+    let replicas = snap["shards"][0]["replicas"].as_array().unwrap().clone();
+    assert_eq!(replicas.len(), 2, "{snap}");
+    for r in &replicas {
+        let o = &r["observed"];
+        // Asked in turn: each copy answered some of the calls.
+        assert!(o["calls"]["ok"].as_u64().unwrap() > 0, "{r}");
+        assert_eq!(o["calls"]["failed"], 0, "{r}");
+        assert_eq!(o["inflight"], 0, "{r}");
+        assert!(o["rtt_ms"]["fast"].as_f64().unwrap() > 0.0, "{r}");
+        // Queries say how long the copy took, so overhead is known.
+        assert!(o["overhead_ms"]["fast"].as_f64().unwrap() >= 0.0, "{r}");
+        assert_eq!(o["error_rate"], 0.0, "{r}");
+    }
+    let families = c.metrics();
+    let family = |name: &str| families.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no {name}"));
+    for url in [&url_a, &url_b] {
+        let label = format!("shard=\"0\",replica=\"{url}\"");
+        assert!(family("chloedb_replica_inflight").values.iter().any(|(l, v)| *l == label && *v == 0.0), "{label}");
+        assert!(family("chloedb_replica_overhead_ms").values.iter().any(|(l, _)| *l == label), "{label}");
+        assert!(family("chloedb_replica_err_rate").values.iter().any(|(l, v)| *l == label && *v == 0.0), "{label}");
+    }
+}
+
+/// A TCP proxy to `to` that holds back every chunk the server sends by
+/// `delay`: a copy on a slow network, or a slow machine. Returns its URL.
+async fn slow_proxy(to: &str, delay: Arc<std::sync::atomic::AtomicU64>) -> String {
+    let to = to.trim_start_matches("http://").to_string();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let Ok((client, _)) = l.accept().await else { return };
+            let (to, delay) = (to.clone(), delay.clone());
+            tokio::spawn(async move {
+                let Ok(server) = tokio::net::TcpStream::connect(&to).await else { return };
+                let (mut cr, mut cw) = client.into_split();
+                let (mut sr, mut sw) = server.into_split();
+                tokio::spawn(async move { tokio::io::copy(&mut cr, &mut sw).await });
+                let mut buf = vec![0u8; 64 << 10];
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                while let Ok(n) = sr.read(&mut buf).await {
+                    if n == 0 || {
+                        tokio::time::sleep(Duration::from_millis(delay.load(std::sync::atomic::Ordering::Relaxed))).await;
+                        cw.write_all(&buf[..n]).await.is_err()
+                    } {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+/// Queries answered by each copy of shard 0, as its coordinator observed.
+async fn answered(c: &Coordinator) -> Vec<u64> {
+    let snap = c.snapshot().await;
+    snap["shards"][0]["replicas"].as_array().unwrap().iter().map(|r| r["observed"]["calls"]["ok"].as_u64().unwrap()).collect()
+}
+
+/// With `--route least-cost` a coordinator asks a copy that answers
+/// clearly slower less often, where round-robin asks each in turn; copies
+/// that answer alike are still asked in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn least_cost_routing_asks_a_slow_copy_less() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    let dir = tempfile::tempdir().unwrap();
+    let (_a, url_a) = serve(create(dir.path(), "a.strata", |_| true), dir.path(), "a.strata").await;
+    let (_b, url_b) = serve(create(dir.path(), "b.strata", |_| true), dir.path(), "b.strata").await;
+    let slow_b = slow_proxy(&url_b, Arc::new(25.into())).await;
+    // No hedges: each query asks one copy.
+    let opts = |route| CoordOptions { route, hedge: Duration::from_secs(60), ..Default::default() };
+    let run = |urls: String, route: Route| async move {
+        let c = Arc::new(Coordinator::connect_with(vec![urls], opts(route)).await.unwrap());
+        let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+        for _ in 0..40 {
+            let a = svc.query(QueryReq { sql: "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".into(), ..Default::default() }).await.unwrap();
+            assert!(!a.rs.rows.is_empty());
+        }
+        answered(&c).await
+    };
+    let rr = run(format!("{url_a}|{slow_b}"), Route::RoundRobin).await;
+    assert!(rr[1] >= 15, "round-robin asks the slow copy in turn: {rr:?}");
+    let lc = run(format!("{url_a}|{slow_b}"), Route::LeastCost).await;
+    assert_eq!(lc.iter().sum::<u64>(), 40, "{lc:?}");
+    assert!(lc[1] <= 5, "least-cost asks the slow copy less: {lc:?}");
+    // Two copies alike: still in turn.
+    let even = run(format!("{url_a}|{url_b}"), Route::LeastCost).await;
+    assert!(even.iter().all(|&n| n >= 10), "copies alike share the reads: {even:?}");
+}
+
+/// With `--route least-cost` and kept BM25 statistics (the default), a
+/// copy asked less while it was slow is asked in turn again once it is
+/// not: kept statistics are taken only of the copy the route asks first,
+/// so they do not pin reads to the copies asked before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_asked_less_while_slow_is_asked_again_with_kept_statistics() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let part = |s: usize| move |i: usize| shard_of(&key(i), 2) == s;
+    let (_a, url_a) = serve(create(d, "a.strata", part(0)), d, "a.strata").await;
+    let (_b, url_b) = serve(create(d, "b.strata", part(0)), d, "b.strata").await;
+    let (_c, url_c) = serve(create(d, "c.strata", part(1)), d, "c.strata").await;
+    let delay = Arc::new(AtomicU64::new(25));
+    let slow_b = slow_proxy(&url_b, delay.clone()).await;
+    // The same hop in front of the other, so that the two are alike once
+    // the delay is gone.
+    let via_a = slow_proxy(&url_a, Arc::new(0.into())).await;
+    // No hedges: each query asks one copy of a shard.
+    let opts = CoordOptions { route: Route::LeastCost, hedge: Duration::from_secs(60), ..Default::default() };
+    assert!(opts.stats_cache_terms > 0, "the default keeps statistics");
+    let c = Arc::new(Coordinator::connect_with(vec![format!("{via_a}|{slow_b}"), url_c], opts).await.unwrap());
+    let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+    let ask = |term: &'static str, times: usize| {
+        let svc = svc.clone();
+        async move {
+            for _ in 0..times {
+                let sql = format!("SELECT id FROM products WHERE MATCH(body, '{term}') ORDER BY bm25(body, '{term}') DESC LIMIT 5");
+                assert!(!svc.query(QueryReq { sql, ..Default::default() }).await.unwrap().rs.rows.is_empty());
+            }
+        }
+    };
+    ask("kettle", 30).await;
+    let slow = answered(&c).await;
+    assert!(slow[1] <= 6, "the slow copy is asked less: {slow:?}");
+    let kept = c.metrics().into_iter().find(|f| f.name == "chloedb_stats_cache_terms").map(|f| f.values[0].1).unwrap_or(0.0);
+    assert!(kept > 0.0, "statistics were kept");
+    // No longer slow. Once what was observed of it is old, it is asked in
+    // turn, and statistics of new terms are kept of each copy asked.
+    delay.store(0, Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    // Four at a time: one at a time, a single sample a millisecond off
+    // passes a copy over until the other's average drifts (see MIN_GAIN_MS).
+    // The first alone, so that one copy keeps the new term's statistics.
+    ask("blender", 1).await;
+    futures::future::join_all((0..4).map(|_| ask("blender", 20))).await;
+    let after: Vec<u64> = answered(&c).await.iter().zip(&slow).map(|(n, m)| n - m).collect();
+    // Without it, every read stays on the copy whose statistics were kept
+    // ([81, 0]).
+    assert!(after.iter().all(|&n| n >= 20), "both copies share the reads again: {after:?}");
+}
+
+/// With `--hedge-adaptive` a query to a copy that stalls is hedged once
+/// it has taken longer than that copy usually takes (its 95th percentile,
+/// a few ms here), not after the fixed `--hedge-ms`; and a copy outrun so
+/// is not put in its cool-off, which is for failing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_adaptive_hedge_asks_another_copy_of_a_stalled_one_sooner() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let (_a, url_a) = serve(create(dir.path(), "a.strata", |_| true), dir.path(), "a.strata").await;
+    let (_b, url_b) = serve(create(dir.path(), "b.strata", |_| true), dir.path(), "b.strata").await;
+    let stall = Arc::new(AtomicU64::new(0));
+    let via_a = slow_proxy(&url_a, Arc::new(0.into())).await;
+    let via_b = slow_proxy(&url_b, stall.clone()).await;
+    let metric = |c: &Coordinator, name: &str| c.metrics().into_iter().find(|f| f.name == name).map(|f| f.values.iter().map(|v| v.1).sum::<f64>()).unwrap_or(0.0);
+    for (route, adaptive) in [(Route::RoundRobin, false), (Route::RoundRobin, true), (Route::LeastCost, true)] {
+        stall.store(0, Ordering::Relaxed);
+        let opts = CoordOptions { route, hedge_adaptive: adaptive, ..Default::default() };
+        let c = Arc::new(Coordinator::connect_with(vec![format!("{via_a}|{via_b}")], opts).await.unwrap());
+        let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+        let ask = || async {
+            let t = Instant::now();
+            let sql = "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".to_string();
+            assert!(!svc.query(QueryReq { sql, ..Default::default() }).await.unwrap().rs.rows.is_empty());
+            t.elapsed()
+        };
+        // Both copies answer alike long enough to know how long they take.
+        for _ in 0..80 {
+            ask().await;
+        }
+        stall.store(80, Ordering::Relaxed);
+        let mut worst = Duration::ZERO;
+        for _ in 0..10 {
+            worst = worst.max(ask().await);
+        }
+        let (hedges, avoided) = (metric(&c, "chloedb_shard_hedges_total"), metric(&c, "chloedb_replicas_avoided"));
+        eprintln!("{} adaptive={adaptive}: worst {worst:?}, hedges {hedges}, avoided {avoided}", route.name());
+        if adaptive {
+            assert!(worst < Duration::from_millis(40), "{} adaptive: a stalled copy is hedged early: {worst:?}", route.name());
+            assert!(hedges >= 1.0, "hedged: {hedges}");
+            assert_eq!(avoided, 0.0, "outrun early, not put in its cool-off");
+        } else {
+            // The fixed 100 ms hedge is longer than the stall: waited out.
+            assert!(worst >= Duration::from_millis(70), "fixed: {worst:?}");
+        }
+    }
+}

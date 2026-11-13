@@ -1,0 +1,5105 @@
+{
+  "args": {
+    "busy_slots": 1,
+    "copies": 3,
+    "delay_ms": 30,
+    "hedge_delay_ms": 150,
+    "rounds": 2,
+    "rows": 3000000,
+    "seconds": 10.0,
+    "shards": 3,
+    "slots": 64,
+    "warmup": 3.0
+  },
+  "coordinator": "CoordOptions::default() with route set: hedge 100 ms, kept BM25 statistics",
+  "machine": {
+    "arch": "aarch64",
+    "cores": 10,
+    "cpu": "Apple M1 Pro",
+    "memory_gb": 32,
+    "os": "macOS 27.0.1",
+    "setup": "one process: shards, coordinators and clients over loopback gRPC"
+  },
+  "runs": [
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 4.17,
+        "p50_ms": 0.87,
+        "p90_ms": 0.98,
+        "p99_ms": 1.18,
+        "qps": 1132.0,
+        "queries": 11320
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          3854,
+          3705,
+          3763
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.29,
+        0.29
+      ],
+      "shard0_per_second": [
+        [
+          299,
+          288,
+          285
+        ],
+        [
+          385,
+          367,
+          391
+        ],
+        [
+          404,
+          389,
+          379
+        ],
+        [
+          401,
+          385,
+          391
+        ],
+        [
+          382,
+          369,
+          382
+        ],
+        [
+          397,
+          374,
+          383
+        ],
+        [
+          349,
+          345,
+          341
+        ],
+        [
+          379,
+          361,
+          370
+        ],
+        [
+          381,
+          370,
+          368
+        ],
+        [
+          377,
+          359,
+          390
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 6.25,
+        "p50_ms": 0.78,
+        "p90_ms": 0.88,
+        "p99_ms": 1.02,
+        "qps": 1261.0,
+        "queries": 12609
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4285,
+          4124,
+          4200
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.41,
+        0.22,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          325,
+          307,
+          318
+        ],
+        [
+          440,
+          412,
+          434
+        ],
+        [
+          431,
+          433,
+          417
+        ],
+        [
+          428,
+          401,
+          426
+        ],
+        [
+          404,
+          399,
+          390
+        ],
+        [
+          410,
+          394,
+          414
+        ],
+        [
+          434,
+          413,
+          409
+        ],
+        [
+          438,
+          412,
+          435
+        ],
+        [
+          442,
+          442,
+          425
+        ],
+        [
+          433,
+          407,
+          425
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 1.63,
+        "p50_ms": 0.77,
+        "p90_ms": 0.85,
+        "p99_ms": 0.97,
+        "qps": 1287.0,
+        "queries": 12876
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4383,
+          4219,
+          4276
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.34,
+        0.17
+      ],
+      "shard0_per_second": [
+        [
+          335,
+          327,
+          324
+        ],
+        [
+          455,
+          429,
+          436
+        ],
+        [
+          442,
+          412,
+          438
+        ],
+        [
+          440,
+          442,
+          422
+        ],
+        [
+          449,
+          421,
+          435
+        ],
+        [
+          419,
+          413,
+          422
+        ],
+        [
+          443,
+          426,
+          428
+        ],
+        [
+          411,
+          401,
+          412
+        ],
+        [
+          436,
+          412,
+          413
+        ],
+        [
+          439,
+          419,
+          446
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 10.24,
+        "p50_ms": 0.78,
+        "p90_ms": 0.86,
+        "p99_ms": 0.96,
+        "qps": 1274.0,
+        "queries": 12745
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4341,
+          4175,
+          4231
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.2,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          331,
+          320,
+          315
+        ],
+        [
+          441,
+          419,
+          423
+        ],
+        [
+          420,
+          407,
+          422
+        ],
+        [
+          435,
+          409,
+          412
+        ],
+        [
+          420,
+          415,
+          435
+        ],
+        [
+          433,
+          417,
+          408
+        ],
+        [
+          420,
+          408,
+          428
+        ],
+        [
+          447,
+          425,
+          420
+        ],
+        [
+          438,
+          406,
+          433
+        ],
+        [
+          442,
+          443,
+          423
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 26.67,
+        "p50_ms": 3.41,
+        "p90_ms": 5.35,
+        "p99_ms": 8.18,
+        "qps": 4388.0,
+        "queries": 43906
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14688,
+          14912,
+          14321
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.22,
+        3.15,
+        2.73
+      ],
+      "shard0_per_second": [
+        [
+          1088,
+          1120,
+          1058
+        ],
+        [
+          1487,
+          1509,
+          1446
+        ],
+        [
+          1448,
+          1481,
+          1422
+        ],
+        [
+          1492,
+          1498,
+          1455
+        ],
+        [
+          1472,
+          1489,
+          1446
+        ],
+        [
+          1482,
+          1504,
+          1436
+        ],
+        [
+          1480,
+          1521,
+          1452
+        ],
+        [
+          1470,
+          1486,
+          1424
+        ],
+        [
+          1488,
+          1509,
+          1442
+        ],
+        [
+          1430,
+          1450,
+          1395
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 45.29,
+        "p50_ms": 3.54,
+        "p90_ms": 5.78,
+        "p99_ms": 9.44,
+        "qps": 4147.0,
+        "queries": 41494
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          13933,
+          13820,
+          13765
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.49,
+        3.17,
+        3.02
+      ],
+      "shard0_per_second": [
+        [
+          1119,
+          1104,
+          1098
+        ],
+        [
+          1446,
+          1438,
+          1412
+        ],
+        [
+          1351,
+          1331,
+          1336
+        ],
+        [
+          1255,
+          1248,
+          1245
+        ],
+        [
+          1370,
+          1369,
+          1393
+        ],
+        [
+          1427,
+          1402,
+          1398
+        ],
+        [
+          1373,
+          1381,
+          1353
+        ],
+        [
+          1360,
+          1329,
+          1338
+        ],
+        [
+          1409,
+          1396,
+          1387
+        ],
+        [
+          1450,
+          1464,
+          1433
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 34.59,
+        "p50_ms": 3.52,
+        "p90_ms": 5.58,
+        "p99_ms": 8.61,
+        "qps": 4239.0,
+        "queries": 42416
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          13688,
+          14613,
+          14161
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.39,
+        3.73,
+        3.22
+      ],
+      "shard0_per_second": [
+        [
+          1014,
+          1078,
+          1043
+        ],
+        [
+          1346,
+          1436,
+          1369
+        ],
+        [
+          1350,
+          1436,
+          1414
+        ],
+        [
+          1400,
+          1506,
+          1452
+        ],
+        [
+          1386,
+          1479,
+          1439
+        ],
+        [
+          1419,
+          1508,
+          1489
+        ],
+        [
+          1386,
+          1501,
+          1424
+        ],
+        [
+          1374,
+          1460,
+          1419
+        ],
+        [
+          1348,
+          1446,
+          1388
+        ],
+        [
+          1323,
+          1397,
+          1365
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 29.59,
+        "p50_ms": 3.52,
+        "p90_ms": 5.7,
+        "p99_ms": 8.86,
+        "qps": 4205.0,
+        "queries": 42072
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          13806,
+          14133,
+          14153
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.15,
+        2.98,
+        3.32
+      ],
+      "shard0_per_second": [
+        [
+          1082,
+          1103,
+          1109
+        ],
+        [
+          1353,
+          1395,
+          1391
+        ],
+        [
+          1398,
+          1419,
+          1448
+        ],
+        [
+          1371,
+          1383,
+          1368
+        ],
+        [
+          1393,
+          1427,
+          1444
+        ],
+        [
+          1338,
+          1377,
+          1388
+        ],
+        [
+          1394,
+          1418,
+          1384
+        ],
+        [
+          1359,
+          1388,
+          1375
+        ],
+        [
+          1373,
+          1414,
+          1412
+        ],
+        [
+          1397,
+          1440,
+          1443
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 68.44,
+        "p50_ms": 13.75,
+        "p90_ms": 20.17,
+        "p99_ms": 28.9,
+        "qps": 4499.0,
+        "queries": 45060
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15080,
+          14161,
+          15893
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.12,
+        14.66,
+        16.17
+      ],
+      "shard0_per_second": [
+        [
+          1171,
+          1094,
+          1233
+        ],
+        [
+          1403,
+          1337,
+          1467
+        ],
+        [
+          1509,
+          1402,
+          1596
+        ],
+        [
+          1533,
+          1441,
+          1619
+        ],
+        [
+          1553,
+          1448,
+          1647
+        ],
+        [
+          1453,
+          1362,
+          1507
+        ],
+        [
+          1568,
+          1472,
+          1662
+        ],
+        [
+          1572,
+          1486,
+          1639
+        ],
+        [
+          1504,
+          1416,
+          1607
+        ],
+        [
+          1432,
+          1343,
+          1528
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 127.69,
+        "p50_ms": 14.0,
+        "p90_ms": 20.34,
+        "p99_ms": 31.35,
+        "qps": 4380.0,
+        "queries": 43878
+      },
+      "clients": 64,
+      "hedges": 10.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16058,
+          11264,
+          16992
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.88,
+        11.34,
+        16.8
+      ],
+      "shard0_per_second": [
+        [
+          1184,
+          1237,
+          1191
+        ],
+        [
+          1556,
+          1563,
+          1546
+        ],
+        [
+          1565,
+          1579,
+          1581
+        ],
+        [
+          1562,
+          1600,
+          1534
+        ],
+        [
+          1591,
+          1538,
+          1514
+        ],
+        [
+          1455,
+          1514,
+          1502
+        ],
+        [
+          1231,
+          1396,
+          1377
+        ],
+        [
+          1341,
+          837,
+          1455
+        ],
+        [
+          1932,
+          0,
+          2336
+        ],
+        [
+          2058,
+          0,
+          2309
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 98.13,
+        "p50_ms": 13.54,
+        "p90_ms": 19.93,
+        "p99_ms": 28.47,
+        "qps": 4572.0,
+        "queries": 45772
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15139,
+          14990,
+          15694
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.59,
+        14.76,
+        14.34
+      ],
+      "shard0_per_second": [
+        [
+          1050,
+          1036,
+          1079
+        ],
+        [
+          1555,
+          1546,
+          1609
+        ],
+        [
+          1562,
+          1540,
+          1594
+        ],
+        [
+          1544,
+          1536,
+          1631
+        ],
+        [
+          1578,
+          1582,
+          1627
+        ],
+        [
+          1541,
+          1517,
+          1589
+        ],
+        [
+          1438,
+          1404,
+          1485
+        ],
+        [
+          1435,
+          1395,
+          1525
+        ],
+        [
+          1543,
+          1556,
+          1586
+        ],
+        [
+          1505,
+          1501,
+          1574
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 53.73,
+        "p50_ms": 13.27,
+        "p90_ms": 19.04,
+        "p99_ms": 26.58,
+        "qps": 4684.0,
+        "queries": 46922
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15899,
+          15959,
+          15138
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.46,
+        15.56,
+        14.46
+      ],
+      "shard0_per_second": [
+        [
+          1192,
+          1202,
+          1120
+        ],
+        [
+          1585,
+          1566,
+          1532
+        ],
+        [
+          1541,
+          1580,
+          1502
+        ],
+        [
+          1556,
+          1631,
+          1512
+        ],
+        [
+          1603,
+          1615,
+          1525
+        ],
+        [
+          1577,
+          1622,
+          1489
+        ],
+        [
+          1586,
+          1581,
+          1517
+        ],
+        [
+          1597,
+          1603,
+          1499
+        ],
+        [
+          1636,
+          1569,
+          1532
+        ],
+        [
+          1610,
+          1576,
+          1505
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 151.61,
+        "p50_ms": 8.79,
+        "p90_ms": 72.41,
+        "p99_ms": 79.08,
+        "qps": 46.0,
+        "queries": 467
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          217,
+          92,
+          320
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.68,
+        0.05,
+        0.07
+      ],
+      "shard0_per_second": [
+        [
+          17,
+          0,
+          35
+        ],
+        [
+          22,
+          0,
+          42
+        ],
+        [
+          23,
+          12,
+          24
+        ],
+        [
+          21,
+          13,
+          43
+        ],
+        [
+          23,
+          12,
+          34
+        ],
+        [
+          22,
+          8,
+          23
+        ],
+        [
+          21,
+          10,
+          21
+        ],
+        [
+          21,
+          20,
+          22
+        ],
+        [
+          21,
+          11,
+          23
+        ],
+        [
+          20,
+          6,
+          35
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 33.66,
+        "p50_ms": 0.85,
+        "p90_ms": 0.98,
+        "p99_ms": 1.24,
+        "qps": 941.0,
+        "queries": 9443
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          57,
+          4134,
+          5289
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.17,
+        0.2,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          4,
+          342,
+          426
+        ],
+        [
+          6,
+          406,
+          542
+        ],
+        [
+          6,
+          406,
+          522
+        ],
+        [
+          5,
+          408,
+          514
+        ],
+        [
+          6,
+          392,
+          502
+        ],
+        [
+          6,
+          381,
+          482
+        ],
+        [
+          5,
+          421,
+          531
+        ],
+        [
+          5,
+          433,
+          559
+        ],
+        [
+          6,
+          421,
+          542
+        ],
+        [
+          6,
+          405,
+          536
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 88.82,
+        "p50_ms": 8.54,
+        "p90_ms": 72.17,
+        "p99_ms": 82.14,
+        "qps": 46.0,
+        "queries": 462
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          216,
+          202,
+          200
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.8,
+        0.07,
+        0.02
+      ],
+      "shard0_per_second": [
+        [
+          17,
+          24,
+          20
+        ],
+        [
+          22,
+          19,
+          18
+        ],
+        [
+          22,
+          20,
+          11
+        ],
+        [
+          20,
+          18,
+          31
+        ],
+        [
+          21,
+          20,
+          33
+        ],
+        [
+          23,
+          9,
+          20
+        ],
+        [
+          21,
+          16,
+          16
+        ],
+        [
+          22,
+          31,
+          10
+        ],
+        [
+          22,
+          20,
+          13
+        ],
+        [
+          21,
+          18,
+          20
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 33.31,
+        "p50_ms": 0.8,
+        "p90_ms": 0.9,
+        "p99_ms": 1.11,
+        "qps": 1005.0,
+        "queries": 10087
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          60,
+          4840,
+          5228
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.22,
+        0.22
+      ],
+      "shard0_per_second": [
+        [
+          5,
+          374,
+          393
+        ],
+        [
+          6,
+          472,
+          510
+        ],
+        [
+          6,
+          486,
+          518
+        ],
+        [
+          6,
+          484,
+          527
+        ],
+        [
+          6,
+          484,
+          521
+        ],
+        [
+          6,
+          468,
+          506
+        ],
+        [
+          6,
+          470,
+          505
+        ],
+        [
+          6,
+          484,
+          521
+        ],
+        [
+          6,
+          489,
+          527
+        ],
+        [
+          6,
+          485,
+          527
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 34.02,
+        "p50_ms": 1.13,
+        "p90_ms": 32.09,
+        "p99_ms": 33.05,
+        "qps": 1437.0,
+        "queries": 14418
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          4742,
+          4964,
+          4763
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.66,
+        0.22,
+        0.24
+      ],
+      "shard0_per_second": [
+        [
+          368,
+          393,
+          367
+        ],
+        [
+          474,
+          496,
+          479
+        ],
+        [
+          473,
+          490,
+          470
+        ],
+        [
+          463,
+          484,
+          468
+        ],
+        [
+          475,
+          498,
+          482
+        ],
+        [
+          473,
+          487,
+          481
+        ],
+        [
+          470,
+          501,
+          478
+        ],
+        [
+          469,
+          490,
+          458
+        ],
+        [
+          472,
+          495,
+          472
+        ],
+        [
+          471,
+          491,
+          477
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 37.08,
+        "p50_ms": 3.48,
+        "p90_ms": 5.53,
+        "p99_ms": 9.14,
+        "qps": 4169.0,
+        "queries": 41836
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          173,
+          20507,
+          21301
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.41,
+        5.34,
+        4.05
+      ],
+      "shard0_per_second": [
+        [
+          13,
+          1628,
+          1684
+        ],
+        [
+          19,
+          2052,
+          2143
+        ],
+        [
+          16,
+          2135,
+          2207
+        ],
+        [
+          18,
+          2038,
+          2124
+        ],
+        [
+          16,
+          2012,
+          2087
+        ],
+        [
+          16,
+          2000,
+          2077
+        ],
+        [
+          19,
+          2054,
+          2147
+        ],
+        [
+          16,
+          1994,
+          2078
+        ],
+        [
+          17,
+          1922,
+          1980
+        ],
+        [
+          17,
+          2088,
+          2157
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 52.13,
+        "p50_ms": 1.13,
+        "p90_ms": 32.09,
+        "p99_ms": 33.16,
+        "qps": 1424.0,
+        "queries": 14293
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          4739,
+          4793,
+          4790
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.56,
+        0.17,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          368,
+          390,
+          377
+        ],
+        [
+          469,
+          467,
+          476
+        ],
+        [
+          476,
+          478,
+          476
+        ],
+        [
+          470,
+          478,
+          480
+        ],
+        [
+          466,
+          465,
+          477
+        ],
+        [
+          465,
+          480,
+          459
+        ],
+        [
+          475,
+          479,
+          474
+        ],
+        [
+          469,
+          470,
+          477
+        ],
+        [
+          476,
+          479,
+          475
+        ],
+        [
+          470,
+          472,
+          476
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 43.49,
+        "p50_ms": 3.28,
+        "p90_ms": 5.27,
+        "p99_ms": 31.48,
+        "qps": 4197.0,
+        "queries": 42118
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          422,
+          20911,
+          20958
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        1.44,
+        4.73,
+        4.22
+      ],
+      "shard0_per_second": [
+        [
+          31,
+          1576,
+          1597
+        ],
+        [
+          41,
+          2059,
+          2067
+        ],
+        [
+          40,
+          1978,
+          1970
+        ],
+        [
+          41,
+          2021,
+          2011
+        ],
+        [
+          43,
+          2137,
+          2138
+        ],
+        [
+          42,
+          2086,
+          2093
+        ],
+        [
+          44,
+          2148,
+          2154
+        ],
+        [
+          44,
+          2158,
+          2135
+        ],
+        [
+          42,
+          2125,
+          2136
+        ],
+        [
+          43,
+          2046,
+          2064
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 75.14,
+        "p50_ms": 5.42,
+        "p90_ms": 36.33,
+        "p99_ms": 39.86,
+        "qps": 4432.0,
+        "queries": 44495
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          14112,
+          14967,
+          15578
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        49.32,
+        4.0,
+        4.78
+      ],
+      "shard0_per_second": [
+        [
+          1099,
+          1172,
+          1222
+        ],
+        [
+          1394,
+          1493,
+          1549
+        ],
+        [
+          1414,
+          1486,
+          1541
+        ],
+        [
+          1412,
+          1468,
+          1541
+        ],
+        [
+          1401,
+          1500,
+          1548
+        ],
+        [
+          1407,
+          1496,
+          1552
+        ],
+        [
+          1415,
+          1493,
+          1566
+        ],
+        [
+          1369,
+          1472,
+          1502
+        ],
+        [
+          1407,
+          1498,
+          1558
+        ],
+        [
+          1391,
+          1478,
+          1542
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 81.68,
+        "p50_ms": 12.13,
+        "p90_ms": 20.41,
+        "p99_ms": 45.48,
+        "qps": 4523.0,
+        "queries": 45424
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          3190,
+          19757,
+          22688
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        12.1,
+        19.17,
+        19.71
+      ],
+      "shard0_per_second": [
+        [
+          249,
+          1611,
+          1812
+        ],
+        [
+          318,
+          1988,
+          2237
+        ],
+        [
+          306,
+          1916,
+          2179
+        ],
+        [
+          307,
+          1891,
+          2149
+        ],
+        [
+          316,
+          1903,
+          2221
+        ],
+        [
+          308,
+          1854,
+          2158
+        ],
+        [
+          314,
+          1933,
+          2261
+        ],
+        [
+          323,
+          2030,
+          2308
+        ],
+        [
+          329,
+          2017,
+          2328
+        ],
+        [
+          320,
+          2007,
+          2334
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 82.03,
+        "p50_ms": 6.51,
+        "p90_ms": 37.28,
+        "p99_ms": 42.12,
+        "qps": 4341.0,
+        "queries": 43582
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          12692,
+          14577,
+          16469
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        45.83,
+        5.05,
+        6.59
+      ],
+      "shard0_per_second": [
+        [
+          994,
+          1141,
+          1297
+        ],
+        [
+          1304,
+          1500,
+          1713
+        ],
+        [
+          1301,
+          1505,
+          1685
+        ],
+        [
+          1283,
+          1471,
+          1656
+        ],
+        [
+          1265,
+          1461,
+          1644
+        ],
+        [
+          1251,
+          1414,
+          1615
+        ],
+        [
+          1284,
+          1487,
+          1659
+        ],
+        [
+          1251,
+          1433,
+          1616
+        ],
+        [
+          1267,
+          1440,
+          1641
+        ],
+        [
+          1142,
+          1317,
+          1508
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 72.47,
+        "p50_ms": 11.89,
+        "p90_ms": 20.46,
+        "p99_ms": 44.91,
+        "qps": 4559.0,
+        "queries": 45758
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slow",
+      "shard0_answers_by_copy": [
+        [
+          3369,
+          20499,
+          22060
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        12.83,
+        18.78,
+        21.8
+      ],
+      "shard0_per_second": [
+        [
+          259,
+          1566,
+          1672
+        ],
+        [
+          343,
+          2070,
+          2209
+        ],
+        [
+          336,
+          2109,
+          2263
+        ],
+        [
+          335,
+          2033,
+          2166
+        ],
+        [
+          335,
+          2012,
+          2206
+        ],
+        [
+          341,
+          2074,
+          2235
+        ],
+        [
+          341,
+          2095,
+          2257
+        ],
+        [
+          335,
+          2069,
+          2228
+        ],
+        [
+          330,
+          2034,
+          2179
+        ],
+        [
+          326,
+          1902,
+          2053
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 1.4,
+        "p50_ms": 0.85,
+        "p90_ms": 0.94,
+        "p99_ms": 1.07,
+        "qps": 1167.0,
+        "queries": 11846
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          8051,
+          3929
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.22,
+        0.1
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          712,
+          358
+        ],
+        [
+          0,
+          800,
+          387
+        ],
+        [
+          0,
+          799,
+          388
+        ],
+        [
+          0,
+          775,
+          392
+        ],
+        [
+          0,
+          778,
+          366
+        ],
+        [
+          0,
+          768,
+          376
+        ],
+        [
+          0,
+          784,
+          391
+        ],
+        [
+          0,
+          805,
+          385
+        ],
+        [
+          0,
+          784,
+          383
+        ],
+        [
+          0,
+          760,
+          374
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 37.69,
+        "p50_ms": 0.8,
+        "p90_ms": 0.89,
+        "p99_ms": 0.99,
+        "qps": 1238.0,
+        "queries": 12566
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          108,
+          12649
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.0,
+        0.41
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          8,
+          1114
+        ],
+        [
+          0,
+          9,
+          1226
+        ],
+        [
+          0,
+          12,
+          1232
+        ],
+        [
+          0,
+          11,
+          1233
+        ],
+        [
+          0,
+          12,
+          1235
+        ],
+        [
+          0,
+          9,
+          1188
+        ],
+        [
+          0,
+          12,
+          1215
+        ],
+        [
+          0,
+          9,
+          1229
+        ],
+        [
+          0,
+          12,
+          1238
+        ],
+        [
+          0,
+          11,
+          1242
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 26.48,
+        "p50_ms": 0.77,
+        "p90_ms": 0.84,
+        "p99_ms": 0.93,
+        "qps": 1284.0,
+        "queries": 13038
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          8883,
+          4351
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.27,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          753,
+          375
+        ],
+        [
+          0,
+          873,
+          418
+        ],
+        [
+          0,
+          856,
+          425
+        ],
+        [
+          0,
+          868,
+          419
+        ],
+        [
+          0,
+          862,
+          425
+        ],
+        [
+          0,
+          873,
+          414
+        ],
+        [
+          0,
+          862,
+          425
+        ],
+        [
+          0,
+          861,
+          429
+        ],
+        [
+          0,
+          870,
+          418
+        ],
+        [
+          0,
+          860,
+          427
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 15.34,
+        "p50_ms": 0.77,
+        "p90_ms": 0.85,
+        "p99_ms": 0.97,
+        "qps": 1278.0,
+        "queries": 12973
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          113,
+          13054
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.0,
+        0.41
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          9,
+          1106
+        ],
+        [
+          0,
+          12,
+          1233
+        ],
+        [
+          0,
+          9,
+          1252
+        ],
+        [
+          0,
+          12,
+          1283
+        ],
+        [
+          0,
+          11,
+          1287
+        ],
+        [
+          0,
+          12,
+          1283
+        ],
+        [
+          0,
+          9,
+          1265
+        ],
+        [
+          0,
+          12,
+          1278
+        ],
+        [
+          0,
+          13,
+          1288
+        ],
+        [
+          0,
+          9,
+          1277
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 27.17,
+        "p50_ms": 3.59,
+        "p90_ms": 5.69,
+        "p99_ms": 8.68,
+        "qps": 4168.0,
+        "queries": 42324
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          28875,
+          14096
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        8.07,
+        3.22
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2558,
+          1252
+        ],
+        [
+          0,
+          2836,
+          1386
+        ],
+        [
+          0,
+          2762,
+          1356
+        ],
+        [
+          0,
+          2748,
+          1344
+        ],
+        [
+          0,
+          2796,
+          1355
+        ],
+        [
+          0,
+          2815,
+          1386
+        ],
+        [
+          0,
+          2752,
+          1340
+        ],
+        [
+          0,
+          2766,
+          1332
+        ],
+        [
+          0,
+          2874,
+          1408
+        ],
+        [
+          0,
+          2818,
+          1379
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 39.48,
+        "p50_ms": 3.58,
+        "p90_ms": 5.59,
+        "p99_ms": 8.25,
+        "qps": 4190.0,
+        "queries": 42548
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          20802,
+          22363
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        5.37,
+        5.85
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          1659,
+          1796
+        ],
+        [
+          0,
+          2027,
+          2195
+        ],
+        [
+          0,
+          2059,
+          2163
+        ],
+        [
+          0,
+          2032,
+          2197
+        ],
+        [
+          0,
+          2046,
+          2191
+        ],
+        [
+          0,
+          2018,
+          2191
+        ],
+        [
+          0,
+          2038,
+          2191
+        ],
+        [
+          0,
+          2015,
+          2216
+        ],
+        [
+          0,
+          2050,
+          2175
+        ],
+        [
+          0,
+          2042,
+          2185
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 114.5,
+        "p50_ms": 3.74,
+        "p90_ms": 5.87,
+        "p99_ms": 9.06,
+        "qps": 3985.0,
+        "queries": 40473
+      },
+      "clients": 16,
+      "hedges": 7.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          27851,
+          13278
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        8.61,
+        2.78
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2442,
+          1192
+        ],
+        [
+          0,
+          2405,
+          1175
+        ],
+        [
+          0,
+          2754,
+          1323
+        ],
+        [
+          0,
+          2694,
+          1278
+        ],
+        [
+          0,
+          2783,
+          1314
+        ],
+        [
+          0,
+          2758,
+          1288
+        ],
+        [
+          0,
+          2739,
+          1305
+        ],
+        [
+          0,
+          2773,
+          1320
+        ],
+        [
+          0,
+          2689,
+          1275
+        ],
+        [
+          0,
+          2719,
+          1285
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 39.24,
+        "p50_ms": 3.59,
+        "p90_ms": 5.55,
+        "p99_ms": 8.32,
+        "qps": 4192.0,
+        "queries": 42566
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          20441,
+          22756
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        4.88,
+        5.71
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          1823,
+          1998
+        ],
+        [
+          0,
+          2023,
+          2209
+        ],
+        [
+          0,
+          2030,
+          2221
+        ],
+        [
+          0,
+          1993,
+          2224
+        ],
+        [
+          0,
+          1990,
+          2211
+        ],
+        [
+          0,
+          1965,
+          2170
+        ],
+        [
+          0,
+          1949,
+          2239
+        ],
+        [
+          0,
+          1876,
+          2110
+        ],
+        [
+          0,
+          1990,
+          2234
+        ],
+        [
+          0,
+          1993,
+          2251
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 150.1,
+        "p50_ms": 14.13,
+        "p90_ms": 20.33,
+        "p99_ms": 27.54,
+        "qps": 4409.0,
+        "queries": 44786
+      },
+      "clients": 64,
+      "hedges": 22.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          29452,
+          16069
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.29,
+        36.68,
+        14.37
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2641,
+          1447
+        ],
+        [
+          0,
+          2884,
+          1548
+        ],
+        [
+          0,
+          2865,
+          1575
+        ],
+        [
+          0,
+          2758,
+          1527
+        ],
+        [
+          0,
+          2827,
+          1551
+        ],
+        [
+          0,
+          2788,
+          1549
+        ],
+        [
+          0,
+          2833,
+          1576
+        ],
+        [
+          0,
+          2912,
+          1558
+        ],
+        [
+          0,
+          2864,
+          1548
+        ],
+        [
+          0,
+          2884,
+          1558
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 153.93,
+        "p50_ms": 13.46,
+        "p90_ms": 19.23,
+        "p99_ms": 26.13,
+        "qps": 4623.0,
+        "queries": 46954
+      },
+      "clients": 64,
+      "hedges": 11.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          23570,
+          24186
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        25.27,
+        24.51
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2109,
+          2148
+        ],
+        [
+          0,
+          2277,
+          2259
+        ],
+        [
+          0,
+          2243,
+          2321
+        ],
+        [
+          0,
+          2191,
+          2311
+        ],
+        [
+          0,
+          2304,
+          2356
+        ],
+        [
+          0,
+          2307,
+          2340
+        ],
+        [
+          0,
+          2272,
+          2386
+        ],
+        [
+          0,
+          2253,
+          2316
+        ],
+        [
+          0,
+          2323,
+          2428
+        ],
+        [
+          0,
+          2338,
+          2360
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 145.82,
+        "p50_ms": 13.58,
+        "p90_ms": 19.55,
+        "p99_ms": 27.18,
+        "qps": 4580.0,
+        "queries": 46525
+      },
+      "clients": 64,
+      "hedges": 14.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          29794,
+          17479
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        33.49,
+        15.12
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2649,
+          1549
+        ],
+        [
+          0,
+          2933,
+          1716
+        ],
+        [
+          0,
+          2821,
+          1631
+        ],
+        [
+          0,
+          2910,
+          1707
+        ],
+        [
+          0,
+          2904,
+          1694
+        ],
+        [
+          0,
+          2914,
+          1698
+        ],
+        [
+          0,
+          2956,
+          1746
+        ],
+        [
+          0,
+          2865,
+          1663
+        ],
+        [
+          0,
+          2735,
+          1638
+        ],
+        [
+          0,
+          2906,
+          1707
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 144.71,
+        "p50_ms": 13.31,
+        "p90_ms": 19.0,
+        "p99_ms": 26.06,
+        "qps": 4679.0,
+        "queries": 47544
+      },
+      "clients": 64,
+      "hedges": 4.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "slowhedge",
+      "shard0_answers_by_copy": [
+        [
+          0,
+          25365,
+          22887
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.07,
+        27.32,
+        24.73
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2259,
+          1979
+        ],
+        [
+          0,
+          2518,
+          2161
+        ],
+        [
+          0,
+          2420,
+          2274
+        ],
+        [
+          0,
+          2432,
+          2235
+        ],
+        [
+          0,
+          2479,
+          2268
+        ],
+        [
+          0,
+          2424,
+          2225
+        ],
+        [
+          0,
+          2412,
+          2301
+        ],
+        [
+          0,
+          2512,
+          2176
+        ],
+        [
+          0,
+          2401,
+          2179
+        ],
+        [
+          0,
+          2514,
+          2179
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 1.41,
+        "p50_ms": 0.85,
+        "p90_ms": 0.94,
+        "p99_ms": 1.09,
+        "qps": 1161.0,
+        "queries": 11614
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3947,
+          3796,
+          3872
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.17,
+        0.29,
+        0.22
+      ],
+      "shard0_per_second": [
+        [
+          298,
+          275,
+          287
+        ],
+        [
+          389,
+          388,
+          384
+        ],
+        [
+          396,
+          370,
+          399
+        ],
+        [
+          397,
+          385,
+          374
+        ],
+        [
+          395,
+          386,
+          387
+        ],
+        [
+          399,
+          371,
+          400
+        ],
+        [
+          389,
+          385,
+          374
+        ],
+        [
+          391,
+          379,
+          384
+        ],
+        [
+          396,
+          373,
+          399
+        ],
+        [
+          405,
+          387,
+          379
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 34.62,
+        "p50_ms": 0.77,
+        "p90_ms": 0.84,
+        "p99_ms": 0.95,
+        "qps": 1290.0,
+        "queries": 12902
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          4390,
+          4219,
+          4295
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.27,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          333,
+          316,
+          324
+        ],
+        [
+          440,
+          421,
+          430
+        ],
+        [
+          439,
+          426,
+          437
+        ],
+        [
+          448,
+          426,
+          430
+        ],
+        [
+          443,
+          422,
+          443
+        ],
+        [
+          435,
+          431,
+          421
+        ],
+        [
+          425,
+          399,
+          425
+        ],
+        [
+          441,
+          438,
+          417
+        ],
+        [
+          440,
+          414,
+          430
+        ],
+        [
+          430,
+          419,
+          434
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 25.4,
+        "p50_ms": 0.76,
+        "p90_ms": 0.84,
+        "p99_ms": 0.97,
+        "qps": 1294.0,
+        "queries": 12941
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          4405,
+          4241,
+          4296
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.2,
+        0.2,
+        0.32
+      ],
+      "shard0_per_second": [
+        [
+          325,
+          314,
+          305
+        ],
+        [
+          448,
+          426,
+          434
+        ],
+        [
+          429,
+          412,
+          433
+        ],
+        [
+          443,
+          432,
+          424
+        ],
+        [
+          439,
+          411,
+          437
+        ],
+        [
+          437,
+          434,
+          416
+        ],
+        [
+          438,
+          417,
+          429
+        ],
+        [
+          439,
+          427,
+          440
+        ],
+        [
+          450,
+          426,
+          432
+        ],
+        [
+          447,
+          425,
+          443
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 1.25,
+        "p50_ms": 0.76,
+        "p90_ms": 0.84,
+        "p99_ms": 0.95,
+        "qps": 1295.0,
+        "queries": 12955
+      },
+      "clients": 1,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          4406,
+          4246,
+          4304
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.17,
+        0.32,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          334,
+          326,
+          320
+        ],
+        [
+          451,
+          427,
+          433
+        ],
+        [
+          447,
+          424,
+          443
+        ],
+        [
+          439,
+          433,
+          419
+        ],
+        [
+          442,
+          415,
+          430
+        ],
+        [
+          433,
+          427,
+          442
+        ],
+        [
+          448,
+          430,
+          427
+        ],
+        [
+          415,
+          401,
+          421
+        ],
+        [
+          446,
+          429,
+          421
+        ],
+        [
+          443,
+          423,
+          437
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 29.37,
+        "p50_ms": 3.49,
+        "p90_ms": 5.8,
+        "p99_ms": 8.97,
+        "qps": 4220.0,
+        "queries": 42225
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          14343,
+          14241,
+          13671
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.73,
+        3.27,
+        2.95
+      ],
+      "shard0_per_second": [
+        [
+          1094,
+          1076,
+          1024
+        ],
+        [
+          1472,
+          1445,
+          1398
+        ],
+        [
+          1451,
+          1455,
+          1375
+        ],
+        [
+          1345,
+          1338,
+          1284
+        ],
+        [
+          1428,
+          1400,
+          1368
+        ],
+        [
+          1389,
+          1408,
+          1335
+        ],
+        [
+          1467,
+          1448,
+          1406
+        ],
+        [
+          1462,
+          1454,
+          1392
+        ],
+        [
+          1451,
+          1430,
+          1391
+        ],
+        [
+          1423,
+          1428,
+          1346
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 45.94,
+        "p50_ms": 3.48,
+        "p90_ms": 5.6,
+        "p99_ms": 8.62,
+        "qps": 4265.0,
+        "queries": 42674
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          10541,
+          16153,
+          15998
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.27,
+        3.8,
+        3.9
+      ],
+      "shard0_per_second": [
+        [
+          828,
+          1250,
+          1233
+        ],
+        [
+          1061,
+          1625,
+          1570
+        ],
+        [
+          1082,
+          1608,
+          1619
+        ],
+        [
+          1068,
+          1627,
+          1629
+        ],
+        [
+          1037,
+          1557,
+          1573
+        ],
+        [
+          1083,
+          1632,
+          1624
+        ],
+        [
+          1045,
+          1654,
+          1611
+        ],
+        [
+          1010,
+          1587,
+          1573
+        ],
+        [
+          1001,
+          1594,
+          1600
+        ],
+        [
+          1044,
+          1592,
+          1555
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 38.39,
+        "p50_ms": 3.5,
+        "p90_ms": 5.87,
+        "p99_ms": 8.96,
+        "qps": 4203.0,
+        "queries": 42063
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          14961,
+          13767,
+          13352
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.29,
+        2.76,
+        2.78
+      ],
+      "shard0_per_second": [
+        [
+          1147,
+          1055,
+          1031
+        ],
+        [
+          1486,
+          1359,
+          1296
+        ],
+        [
+          1508,
+          1379,
+          1336
+        ],
+        [
+          1548,
+          1411,
+          1378
+        ],
+        [
+          1525,
+          1428,
+          1385
+        ],
+        [
+          1488,
+          1373,
+          1333
+        ],
+        [
+          1499,
+          1373,
+          1319
+        ],
+        [
+          1474,
+          1356,
+          1321
+        ],
+        [
+          1433,
+          1327,
+          1296
+        ],
+        [
+          1474,
+          1355,
+          1319
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 45.13,
+        "p50_ms": 3.49,
+        "p90_ms": 5.75,
+        "p99_ms": 9.1,
+        "qps": 4209.0,
+        "queries": 42119
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          10220,
+          16336,
+          15596
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.8,
+        3.98,
+        3.17
+      ],
+      "shard0_per_second": [
+        [
+          757,
+          1222,
+          1193
+        ],
+        [
+          1034,
+          1663,
+          1531
+        ],
+        [
+          1030,
+          1646,
+          1583
+        ],
+        [
+          1050,
+          1649,
+          1564
+        ],
+        [
+          965,
+          1571,
+          1522
+        ],
+        [
+          1041,
+          1640,
+          1569
+        ],
+        [
+          1015,
+          1629,
+          1559
+        ],
+        [
+          1038,
+          1683,
+          1560
+        ],
+        [
+          997,
+          1581,
+          1528
+        ],
+        [
+          1040,
+          1655,
+          1584
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 69.33,
+        "p50_ms": 12.43,
+        "p90_ms": 23.92,
+        "p99_ms": 33.92,
+        "qps": 4577.0,
+        "queries": 45833
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          15407,
+          15086,
+          15409
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        31.88,
+        10.68,
+        10.85
+      ],
+      "shard0_per_second": [
+        [
+          1196,
+          1162,
+          1192
+        ],
+        [
+          1509,
+          1469,
+          1511
+        ],
+        [
+          1545,
+          1539,
+          1566
+        ],
+        [
+          1554,
+          1516,
+          1539
+        ],
+        [
+          1565,
+          1525,
+          1571
+        ],
+        [
+          1555,
+          1495,
+          1549
+        ],
+        [
+          1510,
+          1513,
+          1511
+        ],
+        [
+          1525,
+          1500,
+          1530
+        ],
+        [
+          1505,
+          1479,
+          1520
+        ],
+        [
+          1530,
+          1496,
+          1522
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 137.77,
+        "p50_ms": 13.45,
+        "p90_ms": 19.52,
+        "p99_ms": 26.5,
+        "qps": 4603.0,
+        "queries": 46132
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          8249,
+          19232,
+          18753
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        8.93,
+        20.46,
+        18.93
+      ],
+      "shard0_per_second": [
+        [
+          647,
+          1445,
+          1399
+        ],
+        [
+          784,
+          1890,
+          1835
+        ],
+        [
+          797,
+          1847,
+          1802
+        ],
+        [
+          832,
+          1866,
+          1864
+        ],
+        [
+          839,
+          1947,
+          1899
+        ],
+        [
+          830,
+          1940,
+          1922
+        ],
+        [
+          833,
+          1989,
+          1851
+        ],
+        [
+          810,
+          1891,
+          1790
+        ],
+        [
+          836,
+          1915,
+          1954
+        ],
+        [
+          831,
+          1956,
+          1911
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 52.01,
+        "p50_ms": 11.73,
+        "p90_ms": 25.99,
+        "p99_ms": 34.82,
+        "qps": 4526.0,
+        "queries": 45319
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          15533,
+          14637,
+          15194
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        34.73,
+        9.59,
+        9.61
+      ],
+      "shard0_per_second": [
+        [
+          1197,
+          1145,
+          1188
+        ],
+        [
+          1549,
+          1439,
+          1509
+        ],
+        [
+          1502,
+          1398,
+          1451
+        ],
+        [
+          1562,
+          1490,
+          1527
+        ],
+        [
+          1512,
+          1412,
+          1464
+        ],
+        [
+          1591,
+          1502,
+          1553
+        ],
+        [
+          1595,
+          1496,
+          1557
+        ],
+        [
+          1571,
+          1482,
+          1545
+        ],
+        [
+          1568,
+          1471,
+          1541
+        ],
+        [
+          1514,
+          1430,
+          1483
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 134.16,
+        "p50_ms": 13.43,
+        "p90_ms": 19.9,
+        "p99_ms": 28.56,
+        "qps": 4586.0,
+        "queries": 45937
+      },
+      "clients": 64,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          9391,
+          16740,
+          19866
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        10.1,
+        15.61,
+        21.68
+      ],
+      "shard0_per_second": [
+        [
+          721,
+          1313,
+          1511
+        ],
+        [
+          936,
+          1553,
+          1966
+        ],
+        [
+          973,
+          1694,
+          2022
+        ],
+        [
+          919,
+          1671,
+          2022
+        ],
+        [
+          927,
+          1681,
+          1990
+        ],
+        [
+          896,
+          1724,
+          2028
+        ],
+        [
+          944,
+          1645,
+          1927
+        ],
+        [
+          953,
+          1644,
+          2012
+        ],
+        [
+          911,
+          1680,
+          1953
+        ],
+        [
+          956,
+          1700,
+          1923
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 38.68,
+        "p50_ms": 4.66,
+        "p90_ms": 6.64,
+        "p99_ms": 9.6,
+        "qps": 3274.0,
+        "queries": 98230
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "recover",
+      "shard0_answers_by_copy": [
+        [
+          741,
+          97133,
+          362
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.31,
+        9.65,
+        0.02
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2147,
+          0
+        ],
+        [
+          0,
+          2837,
+          0
+        ],
+        [
+          16,
+          2949,
+          11
+        ],
+        [
+          29,
+          3237,
+          11
+        ],
+        [
+          25,
+          3177,
+          11
+        ],
+        [
+          27,
+          3286,
+          12
+        ],
+        [
+          28,
+          3262,
+          14
+        ],
+        [
+          25,
+          3170,
+          12
+        ],
+        [
+          28,
+          3260,
+          16
+        ],
+        [
+          25,
+          3262,
+          11
+        ],
+        [
+          26,
+          3202,
+          12
+        ],
+        [
+          27,
+          3298,
+          12
+        ],
+        [
+          25,
+          3303,
+          11
+        ],
+        [
+          29,
+          3209,
+          16
+        ],
+        [
+          25,
+          3231,
+          12
+        ],
+        [
+          25,
+          3328,
+          13
+        ],
+        [
+          27,
+          3370,
+          14
+        ],
+        [
+          28,
+          3330,
+          16
+        ],
+        [
+          25,
+          3099,
+          11
+        ],
+        [
+          27,
+          3305,
+          13
+        ],
+        [
+          24,
+          3295,
+          12
+        ],
+        [
+          28,
+          3325,
+          12
+        ],
+        [
+          29,
+          3256,
+          16
+        ],
+        [
+          24,
+          3278,
+          12
+        ],
+        [
+          27,
+          3313,
+          13
+        ],
+        [
+          28,
+          3253,
+          14
+        ],
+        [
+          26,
+          3311,
+          11
+        ],
+        [
+          30,
+          3311,
+          16
+        ],
+        [
+          25,
+          3331,
+          11
+        ],
+        [
+          24,
+          3356,
+          12
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 44.94,
+        "p50_ms": 4.35,
+        "p90_ms": 6.9,
+        "p99_ms": 10.55,
+        "qps": 3420.0,
+        "queries": 102624
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "recover",
+      "shard0_answers_by_copy": [
+        [
+          2037,
+          48543,
+          52066
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.38,
+        5.08,
+        5.45
+      ],
+      "shard0_per_second": [
+        [
+          13,
+          1158,
+          1273
+        ],
+        [
+          13,
+          1555,
+          1729
+        ],
+        [
+          14,
+          1656,
+          1786
+        ],
+        [
+          19,
+          1640,
+          1747
+        ],
+        [
+          14,
+          1610,
+          1769
+        ],
+        [
+          15,
+          1666,
+          1803
+        ],
+        [
+          15,
+          1663,
+          1773
+        ],
+        [
+          14,
+          1625,
+          1775
+        ],
+        [
+          17,
+          1642,
+          1774
+        ],
+        [
+          13,
+          1608,
+          1753
+        ],
+        [
+          42,
+          1584,
+          1663
+        ],
+        [
+          91,
+          1616,
+          1743
+        ],
+        [
+          100,
+          1683,
+          1757
+        ],
+        [
+          92,
+          1604,
+          1770
+        ],
+        [
+          95,
+          1631,
+          1758
+        ],
+        [
+          99,
+          1600,
+          1697
+        ],
+        [
+          95,
+          1558,
+          1680
+        ],
+        [
+          83,
+          1442,
+          1561
+        ],
+        [
+          95,
+          1623,
+          1758
+        ],
+        [
+          90,
+          1636,
+          1753
+        ],
+        [
+          97,
+          1639,
+          1752
+        ],
+        [
+          104,
+          1636,
+          1742
+        ],
+        [
+          100,
+          1640,
+          1750
+        ],
+        [
+          98,
+          1648,
+          1748
+        ],
+        [
+          101,
+          1624,
+          1710
+        ],
+        [
+          95,
+          1653,
+          1751
+        ],
+        [
+          94,
+          1643,
+          1756
+        ],
+        [
+          103,
+          1672,
+          1736
+        ],
+        [
+          92,
+          1590,
+          1689
+        ],
+        [
+          96,
+          1608,
+          1710
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 56.11,
+        "p50_ms": 3.48,
+        "p90_ms": 6.15,
+        "p99_ms": 32.25,
+        "qps": 3288.0,
+        "queries": 98682
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "recover",
+      "shard0_answers_by_copy": [
+        [
+          32179,
+          33210,
+          33311
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        8.08,
+        2.02,
+        2.24
+      ],
+      "shard0_per_second": [
+        [
+          357,
+          383,
+          375
+        ],
+        [
+          472,
+          487,
+          491
+        ],
+        [
+          473,
+          486,
+          491
+        ],
+        [
+          464,
+          480,
+          478
+        ],
+        [
+          467,
+          482,
+          487
+        ],
+        [
+          471,
+          478,
+          493
+        ],
+        [
+          471,
+          492,
+          492
+        ],
+        [
+          471,
+          489,
+          473
+        ],
+        [
+          467,
+          480,
+          471
+        ],
+        [
+          471,
+          483,
+          494
+        ],
+        [
+          1068,
+          1075,
+          1097
+        ],
+        [
+          1266,
+          1312,
+          1288
+        ],
+        [
+          1317,
+          1360,
+          1382
+        ],
+        [
+          1388,
+          1438,
+          1435
+        ],
+        [
+          1415,
+          1453,
+          1473
+        ],
+        [
+          1415,
+          1473,
+          1461
+        ],
+        [
+          1407,
+          1461,
+          1472
+        ],
+        [
+          1411,
+          1439,
+          1459
+        ],
+        [
+          1395,
+          1453,
+          1436
+        ],
+        [
+          1401,
+          1429,
+          1447
+        ],
+        [
+          1340,
+          1387,
+          1383
+        ],
+        [
+          1366,
+          1427,
+          1428
+        ],
+        [
+          1381,
+          1422,
+          1424
+        ],
+        [
+          1398,
+          1447,
+          1454
+        ],
+        [
+          1348,
+          1378,
+          1395
+        ],
+        [
+          1382,
+          1451,
+          1426
+        ],
+        [
+          1390,
+          1430,
+          1452
+        ],
+        [
+          1331,
+          1381,
+          1389
+        ],
+        [
+          1407,
+          1421,
+          1445
+        ],
+        [
+          1402,
+          1464,
+          1447
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 53.87,
+        "p50_ms": 3.46,
+        "p90_ms": 5.43,
+        "p99_ms": 8.76,
+        "qps": 4230.0,
+        "queries": 126936
+      },
+      "clients": 16,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "recover",
+      "shard0_answers_by_copy": [
+        [
+          2058,
+          61313,
+          63580
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.57,
+        4.66,
+        5.22
+      ],
+      "shard0_per_second": [
+        [
+          27,
+          1581,
+          1619
+        ],
+        [
+          34,
+          2051,
+          2133
+        ],
+        [
+          33,
+          2050,
+          2095
+        ],
+        [
+          36,
+          2020,
+          2102
+        ],
+        [
+          34,
+          2056,
+          2155
+        ],
+        [
+          34,
+          2040,
+          2138
+        ],
+        [
+          34,
+          2046,
+          2123
+        ],
+        [
+          32,
+          1976,
+          2087
+        ],
+        [
+          33,
+          1995,
+          2078
+        ],
+        [
+          34,
+          1800,
+          1915
+        ],
+        [
+          45,
+          1845,
+          1923
+        ],
+        [
+          80,
+          1934,
+          2029
+        ],
+        [
+          84,
+          2003,
+          2072
+        ],
+        [
+          94,
+          2127,
+          2180
+        ],
+        [
+          94,
+          2111,
+          2183
+        ],
+        [
+          81,
+          2034,
+          2152
+        ],
+        [
+          88,
+          2100,
+          2181
+        ],
+        [
+          82,
+          2027,
+          2075
+        ],
+        [
+          86,
+          2109,
+          2158
+        ],
+        [
+          83,
+          2007,
+          2091
+        ],
+        [
+          90,
+          2020,
+          2070
+        ],
+        [
+          88,
+          2091,
+          2189
+        ],
+        [
+          88,
+          2098,
+          2185
+        ],
+        [
+          86,
+          2116,
+          2178
+        ],
+        [
+          95,
+          2124,
+          2177
+        ],
+        [
+          83,
+          2113,
+          2163
+        ],
+        [
+          89,
+          2115,
+          2207
+        ],
+        [
+          88,
+          2024,
+          2058
+        ],
+        [
+          89,
+          2094,
+          2191
+        ],
+        [
+          96,
+          2060,
+          2117
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 41.41,
+        "p50_ms": 8.56,
+        "p90_ms": 12.96,
+        "p99_ms": 20.09,
+        "qps": 3547.0,
+        "queries": 35745
+      },
+      "clients": 32,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "scenario": "two",
+      "shard0_answers_by_copy": [
+        [
+          76,
+          17919,
+          59
+        ],
+        [
+          48,
+          90,
+          17827
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        10.83,
+        0.0,
+        0.24,
+        0.02,
+        10.39
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          1468,
+          1441
+        ],
+        [
+          0,
+          1733,
+          1707
+        ],
+        [
+          12,
+          1802,
+          1777
+        ],
+        [
+          21,
+          1769,
+          1768
+        ],
+        [
+          19,
+          1791,
+          1738
+        ],
+        [
+          10,
+          1751,
+          1822
+        ],
+        [
+          16,
+          1709,
+          1807
+        ],
+        [
+          8,
+          1811,
+          1735
+        ],
+        [
+          17,
+          1798,
+          1747
+        ],
+        [
+          18,
+          1815,
+          1759
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 116.23,
+        "p50_ms": 7.15,
+        "p90_ms": 12.47,
+        "p99_ms": 37.38,
+        "qps": 3848.0,
+        "queries": 38766
+      },
+      "clients": 32,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "scenario": "two",
+      "shard0_answers_by_copy": [
+        [
+          316,
+          8789,
+          10589
+        ],
+        [
+          425,
+          9248,
+          9685
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        1.29,
+        5.12,
+        5.76,
+        1.51,
+        4.76,
+        5.46
+      ],
+      "shard0_per_second": [
+        [
+          59,
+          1458,
+          1590
+        ],
+        [
+          77,
+          1750,
+          1949
+        ],
+        [
+          74,
+          1710,
+          1943
+        ],
+        [
+          67,
+          1694,
+          1875
+        ],
+        [
+          67,
+          1743,
+          1967
+        ],
+        [
+          79,
+          1786,
+          1980
+        ],
+        [
+          69,
+          1855,
+          2110
+        ],
+        [
+          83,
+          1843,
+          2053
+        ],
+        [
+          74,
+          1837,
+          2082
+        ],
+        [
+          68,
+          1775,
+          2062
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 40.19,
+        "p50_ms": 1.79,
+        "p90_ms": 32.45,
+        "p99_ms": 33.77,
+        "qps": 2851.0,
+        "queries": 28698
+      },
+      "clients": 32,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "scenario": "two",
+      "shard0_answers_by_copy": [
+        [
+          4513,
+          5651,
+          4934
+        ],
+        [
+          4573,
+          4442,
+          4777
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        13.66,
+        0.51,
+        0.61,
+        13.98,
+        0.46,
+        0.54
+      ],
+      "shard0_per_second": [
+        [
+          729,
+          809,
+          800
+        ],
+        [
+          896,
+          974,
+          909
+        ],
+        [
+          879,
+          986,
+          975
+        ],
+        [
+          892,
+          997,
+          933
+        ],
+        [
+          896,
+          989,
+          921
+        ],
+        [
+          905,
+          1026,
+          965
+        ],
+        [
+          905,
+          997,
+          957
+        ],
+        [
+          899,
+          1002,
+          998
+        ],
+        [
+          906,
+          984,
+          932
+        ],
+        [
+          896,
+          1019,
+          1024
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "errors": 0,
+        "max_ms": 54.28,
+        "p50_ms": 6.73,
+        "p90_ms": 11.41,
+        "p99_ms": 36.34,
+        "qps": 4124.0,
+        "queries": 41561
+      },
+      "clients": 32,
+      "hedges": 0.0,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "scenario": "two",
+      "shard0_answers_by_copy": [
+        [
+          274,
+          10247,
+          10630
+        ],
+        [
+          429,
+          9765,
+          10541
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        1.1,
+        4.71,
+        5.49,
+        1.07,
+        5.2,
+        5.51
+      ],
+      "shard0_per_second": [
+        [
+          57,
+          1650,
+          1753
+        ],
+        [
+          62,
+          2046,
+          2130
+        ],
+        [
+          75,
+          1990,
+          2085
+        ],
+        [
+          60,
+          1910,
+          2003
+        ],
+        [
+          69,
+          2007,
+          2080
+        ],
+        [
+          72,
+          1867,
+          1958
+        ],
+        [
+          73,
+          1934,
+          2146
+        ],
+        [
+          67,
+          1975,
+          2130
+        ],
+        [
+          69,
+          2035,
+          2060
+        ],
+        [
+          69,
+          1982,
+          2113
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    }
+  ]
+}

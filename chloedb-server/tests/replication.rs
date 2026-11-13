@@ -2042,3 +2042,166 @@ async fn a_write_sent_again_to_the_promoted_copy_applies_once() {
     assert_eq!(idem::forget_expired(&r1db, later, Instant::now() + Duration::from_secs(5)).unwrap(), 2);
     assert_eq!(keys(&r1db), 0);
 }
+
+/// A proxy to `to` passing bytes each way `delay` after they arrive, in
+/// order, without holding the next back: a link that takes that long.
+async fn late_link(to: &str, delay: Duration) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let to = to.trim_start_matches("http://").to_string();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    fn pipe(mut from: tokio::net::tcp::OwnedReadHalf, mut to: tokio::net::tcp::OwnedWriteHalf, delay: Duration) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 64 << 10];
+            while let Ok(n) = from.read(&mut buf).await {
+                if n == 0 || tx.send((Instant::now(), buf[..n].to_vec())).is_err() {
+                    return;
+                }
+            }
+        });
+        tokio::spawn(async move {
+            while let Some((at, bytes)) = rx.recv().await {
+                tokio::time::sleep_until((at + delay).into()).await;
+                if to.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    tokio::spawn(async move {
+        loop {
+            let Ok((client, _)) = l.accept().await else { return };
+            let Ok(server) = tokio::net::TcpStream::connect(&to).await else { continue };
+            let (cr, cw) = client.into_split();
+            let (sr, sw) = server.into_split();
+            pipe(cr, sw, delay);
+            pipe(sr, cw, delay);
+        }
+    });
+    url
+}
+
+/// With `--route least-cost --prefer-caught-up`, a read that must see a
+/// write is not sent in its turn to a replica that applies writes late
+/// (it would wait for the write), while plain reads, which it answers as
+/// fast as the others, still go to it. Every read sees its write.
+#[tokio::test(flavor = "multi_thread")]
+async fn reads_after_a_write_go_to_copies_that_hold_it_with_prefer_caught_up() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    for prefer in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut urls = Vec::new();
+        let mut svcs = Vec::new();
+        for k in 0..2 {
+            let rdb = create_with(dir.path(), &format!("r{k}.strata"), 1 << 20, |_| true);
+            let (r, ur) = replica(rdb.clone(), None).await;
+            urls.push(ur);
+            svcs.push(r);
+        }
+        let pdb = create_with(dir.path(), "p.strata", 1 << 20, |_| true);
+        // What the primary ships replica 1 arrives 50 ms late.
+        let late = late_link(&urls[1], Duration::from_millis(50)).await;
+        let pu = grpc(primary(pdb, None, ships_to(&[&urls[0], &late], Acks::Primary), Duration::from_secs(5))).await;
+        for r in &svcs {
+            until("the replica serves reads", || async { r.health().await["replication"]["serves_reads"] == true }).await;
+        }
+        let opts = CoordOptions { route: Route::LeastCost, prefer_caught_up: prefer, ..Default::default() };
+        let c = Arc::new(Coordinator::connect_with(vec![format!("{}|{}|{pu}", urls[0], urls[1])], opts).await.unwrap());
+        let coord = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+        let answered = || async {
+            let snap = c.snapshot_within(Duration::ZERO).await;
+            snap["shards"][0]["replicas"].as_array().unwrap().iter().map(|r| r["observed"]["calls"]["ok"].as_u64().unwrap()).collect::<Vec<_>>()
+        };
+        // Four at a time, so that each copy is asked and measured.
+        let plain = || async {
+            futures::future::join_all((0..4).map(|_| async {
+                for _ in 0..30 {
+                    let q = QueryReq { sql: "SELECT id FROM products WHERE MATCH(body, 'kettle') LIMIT 5".into(), ..Default::default() };
+                    assert!(!coord.query(q).await.unwrap().rs.rows.is_empty());
+                }
+            }))
+            .await;
+        };
+        plain().await;
+        let mut slow = 0;
+        for i in 0..30 {
+            let key = format!("p{:07}", i);
+            let w = coord.write_ops(vec![set(&key, "sold", json!(800_000 + i))], None).await.unwrap();
+            let t = Instant::now();
+            let sql = format!("SELECT id FROM products WHERE sold = {} LIMIT 10", 800_000 + i);
+            let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone()), ..Default::default() }).await.unwrap();
+            let ids: Vec<String> = a.rs.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
+            assert_eq!(ids, [key], "the read sees its write");
+            slow += (t.elapsed() > Duration::from_millis(30)) as usize;
+        }
+        let before = answered().await;
+        plain().await;
+        let shares: Vec<u64> = answered().await.iter().zip(&before).map(|(a, b)| a - b).collect();
+        let snap = c.snapshot_within(Duration::ZERO).await;
+        eprintln!("r1 observed {}", snap["shards"][0]["replicas"][1]["observed"]);
+        eprintln!("prefer_caught_up={prefer}: {slow} of 30 reads after a write waited; plain reads by copy {shares:?}");
+        if prefer {
+            assert!(slow <= 3, "reads after a write avoid the replica that applies late: {slow}");
+            assert!(shares[1] >= 20, "plain reads still go to it: {shares:?}");
+        }
+    }
+}
+
+/// The same over two shards, with ranked reads after a write, whose BM25
+/// statistics the coordinator keeps (the default): kept statistics pin a
+/// read to the copy they are of, which must be one the read is routed to,
+/// not a replica that applies writes late.
+#[tokio::test(flavor = "multi_thread")]
+async fn ranked_reads_after_a_write_with_kept_statistics_go_to_copies_that_hold_it() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    let dir = tempfile::tempdir().unwrap();
+    let key = |i: usize| Value::Str(format!("p{i:07}"));
+    let mut shards = Vec::new();
+    let mut svcs = Vec::new();
+    for s in 0..2 {
+        let keep = |i: usize| shard_of(&key(i), 2) == s;
+        let mut urls = Vec::new();
+        for k in 0..2 {
+            let rdb = create_with(dir.path(), &format!("r{s}{k}.strata"), 1 << 20, keep);
+            let (r, ur) = replica(rdb, None).await;
+            urls.push(ur);
+            svcs.push(r);
+        }
+        let late = late_link(&urls[1], Duration::from_millis(50)).await;
+        let pdb = create_with(dir.path(), &format!("p{s}.strata"), 1 << 20, keep);
+        let pu = grpc(primary(pdb, None, ships_to(&[&urls[0], &late], Acks::Primary), Duration::from_secs(5))).await;
+        shards.push(format!("{}|{}|{pu}", urls[0], urls[1]));
+    }
+    for r in &svcs {
+        until("the replica serves reads", || async { r.health().await["replication"]["serves_reads"] == true }).await;
+    }
+    let opts = CoordOptions { route: Route::LeastCost, prefer_caught_up: true, ..Default::default() };
+    assert!(opts.stats_cache_terms > 0);
+    let c = Arc::new(Coordinator::connect_with(shards, opts).await.unwrap());
+    let coord = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+    let ranked = "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 200";
+    // Plain ranked reads, four at a time: every copy is asked, measured,
+    // and keeps the statistics of 'kettle'.
+    futures::future::join_all((0..4).map(|_| async {
+        for _ in 0..40 {
+            assert!(!coord.query(QueryReq { sql: ranked.into(), ..Default::default() }).await.unwrap().rs.rows.is_empty());
+        }
+    }))
+    .await;
+    let kettles: Vec<String> = coord.query(QueryReq { sql: ranked.into(), ..Default::default() }).await.unwrap().rs.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
+    let mut slow = 0;
+    for (i, k) in kettles.iter().take(30).enumerate() {
+        let v = 700_000 + i;
+        let w = coord.write_ops(vec![set(k, "sold", json!(v))], None).await.unwrap();
+        let t = Instant::now();
+        let sql = format!("SELECT id FROM products WHERE MATCH(body, 'kettle') AND sold = {v} ORDER BY bm25(body, 'kettle') DESC LIMIT 5");
+        let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone()), ..Default::default() }).await.unwrap();
+        let ids: Vec<String> = a.rs.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
+        assert_eq!(ids, [k.clone()], "the read sees its write");
+        slow += (t.elapsed() > Duration::from_millis(30)) as usize;
+    }
+    let hits: Vec<(String, f64)> = c.metrics().into_iter().find(|f| f.name == "chloedb_stats_cache_total").map(|f| f.values).unwrap_or_default();
+    eprintln!("ranked reads after a write that waited: {slow} of 30; kept-statistics hits {hits:?}");
+    assert!(slow <= 3, "kept statistics do not pin a read after a write to a replica that applies late: {slow}");
+}
