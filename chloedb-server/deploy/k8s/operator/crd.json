@@ -622,7 +622,7 @@
                         "type": "integer"
                       },
                       "mode": {
-                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready.",
+                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready, and the app engine (spec.apps, at a tag) runs its tag's newest image too.",
                         "enum": [
                           "off",
                           "suggest",

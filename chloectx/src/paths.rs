@@ -33,7 +33,7 @@ pub const HOME: &str = "chloectx";
 pub const OLD_HOME: &str = "engram";
 
 /// `$XDG_DATA_HOME`, else `~/.local/share`.
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }

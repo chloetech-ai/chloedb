@@ -98,6 +98,11 @@ editing their settings by hand.
 - `~/.local/bin/chloectx ui` opens a local inspector of what was stored, per
   project and per session. It prints a URL with an access token; on a remote
   machine, forward the port first (`ssh -L 8765:127.0.0.1:8765 host`).
+- To upgrade it later: `~/.local/bin/chloectx upgrade` (pulls the checkout
+  it was built from, rebuilds and reinstalls; `--check` only says whether a
+  newer version is there). `chloectx stores` lists every store and
+  `chloectx prune` removes those of folders that are gone or temporary; it
+  asks first, so let the user run it or confirm the list with them.
 - To remove it: `~/.local/bin/chloectx uninstall --user` (or
   `chloectx uninstall --project /absolute/path`). Stores are kept under
   `~/.local/share/chloectx/projects/` (or `~/.local/share/engram/projects/`).
