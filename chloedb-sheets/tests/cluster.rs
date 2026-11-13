@@ -198,6 +198,65 @@ async fn workbooks_live_in_a_cluster() {
     assert!(r.status().is_success());
     assert!(r.bytes().await.unwrap().starts_with(b"PK"), "an xlsx is a zip");
 
+    // Numbers shown and exported with the digits they have: not IronCalc's
+    // nine fixed decimals (226159459.830000013), nor cut to nine (4.127118644).
+    api.ops(&id, json!([{"op": "set_many", "sheet": 0, "row": 20, "col": 1, "values": [["226159459.83", "4.127118644067796", "=1983364195.779999+0"]]}])).await;
+    let cells = api.shown(&id, 0, 20, 3).await;
+    assert_eq!((cells[&(20, 1)].as_str(), cells[&(20, 2)].as_str(), cells[&(20, 3)].as_str()), ("226159459.83", "4.1271186440678", "1983364195.78"));
+    let r = api.http.get(format!("{}/v1/books/{id}/export?format=csv", api.url)).bearer_auth(TOKEN).send().await.unwrap();
+    let csv_text = r.text().await.unwrap();
+    assert!(csv_text.contains("226159459.83,4.1271186440678,1983364195.78"), "{csv_text}");
+    // The xlsx says what it leaves out: the chart.
+    let r = api.http.get(format!("{}/v1/books/{id}/export?format=xlsx", api.url)).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.headers().get("x-app-left-out").and_then(|v| v.to_str().ok()), Some("1 chart"));
+
+    // Callers, as chloedb-server names them to an app that checks its
+    // callers: a workbook is its maker's; a key limited to tables opens its
+    // own and shared ones, and its queries read only its tables.
+    let as_ = |m: reqwest::Method, path: &str, who: &[(&str, &str)]| {
+        let mut r = api.http.request(m, format!("{}{path}", api.url)).bearer_auth(TOKEN);
+        for (k, v) in who {
+            r = r.header(*k, *v);
+        }
+        r
+    };
+    let ana = [("x-chloedb-principal", "ana"), ("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ana_*=admin,regions=read")];
+    let bob = [("x-chloedb-principal", "bob"), ("x-chloedb-scope", "write"), ("x-chloedb-tables", "bob_*=admin")];
+    let reader = [("x-chloedb-principal", "rita"), ("x-chloedb-scope", "read")];
+    let r = as_(reqwest::Method::POST, "/v1/books", &ana).json(&json!({"name": "Ana's"})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let mine: Value = r.json().await.unwrap();
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    assert_eq!(mine["owner"], "ana", "{mine}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books?whose=mine", &ana).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().iter().map(|b| b["id"].as_str().unwrap()).collect::<Vec<_>>(), [mine_id.as_str()], "{list}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books", &ana).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().len(), 1, "only its own: {list}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books?whose=shared", &reader).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().len(), 5, "a key of every table reads every workbook: {list}");
+    // Its queries read its tables and no other.
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/query"), &ana).json(&json!({"sheet": 0, "row": 1, "col": 1, "sql": "SELECT region FROM regions"})).send().await.unwrap();
+    let q: Value = r.json().await.unwrap();
+    assert!(q["error"].is_null(), "{q}");
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/query"), &ana).json(&json!({"sheet": 0, "row": 5, "col": 1, "sql": "SELECT id FROM sheets_books"})).send().await.unwrap();
+    let q: Value = r.json().await.unwrap();
+    assert!(q["error"].as_str().is_some_and(|e| e.contains("sheets_books")), "a table it may not read: {q}");
+    let r = as_(reqwest::Method::POST, "/v1/from-table", &ana).json(&json!({"table": "sheets_cells"})).send().await.unwrap();
+    assert_eq!(r.status(), 403, "{}", r.text().await.unwrap());
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/to-table"), &ana).json(&json!({"sheet": 0, "table": "not_anas"})).send().await.unwrap();
+    assert_eq!(r.status(), 403, "{}", r.text().await.unwrap());
+    // Others' workbooks: not opened, not changed, until shared (then opened).
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{id}"), &ana).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{mine_id}/cells"), &bob).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/share"), &bob).json(&json!({"shared": true})).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/share"), &ana).json(&json!({"shared": true})).send().await.unwrap().status(), 200);
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{mine_id}/cells"), &bob).send().await.unwrap().status(), 200);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/ops"), &bob).json(&json!({"ops": []})).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, "/v1/books", &reader).json(&json!({"name": "x"})).send().await.unwrap().status(), 403, "making one takes write");
+    assert_eq!(as_(reqwest::Method::DELETE, &format!("/v1/books/{mine_id}"), &ana).send().await.unwrap().status(), 200);
+    let manifest = api.get("/app.json").await;
+    assert_eq!(manifest["checks_callers"], true);
+
     // A restart: the cells, the formula, the chart and the query come back from Strata.
     sheets.stop();
     let sheets = Sheets::start(dir.path(), &bin);

@@ -562,6 +562,16 @@ pub fn column_name(path: &str) -> String {
     sql_name(&rest.replace('.', "_"))
 }
 
+/// Whether `path` is the field column `c` holds, from another source: a
+/// column made of a path, both paths named alike without their sources
+/// (`ld.location.name`, `md.location.name`).
+fn same_field(c: &Column, path: &str) -> bool {
+    match &c.source {
+        Source::Path(p) => !p.starts_with("meta.") && p != path && column_name(p) == column_name(path),
+        _ => false,
+    }
+}
+
 pub fn sql_name(s: &str) -> String {
     let mut n = crate::extract::slug(s);
     if n.is_empty() {
@@ -617,6 +627,13 @@ impl Plan {
         if path.starts_with("rule.") || SAME_AS_META.contains(&path) || self.columns.iter().any(|c| c.source == Source::Path(path.to_string())) || self.columns.len() >= 120 {
             return None;
         }
+        // The same field from another source (`ld.startDate` beside
+        // `md.startdate`) is that column's, which [`Plan::row`] fills from
+        // either: not a second column (`ld_startdate`) of which one is
+        // always NULL.
+        if !path.starts_with("meta.") && self.columns.iter().any(|c| same_field(c, path)) {
+            return None;
+        }
         let meta = path.strip_prefix("meta.").and_then(|m| META.iter().find(|(n, _)| *n == m));
         let (mut name, ty) = match meta {
             Some((n, t)) => (n.to_string(), *t),
@@ -657,7 +674,9 @@ impl Plan {
                 Source::Path(format!("meta.{name}"))
             } else if let Some(r) = rules.iter().find(|r| sql_name(&r.name) == name) {
                 Source::Rule(r.name.clone())
-            } else if let Some(p) = known_paths.iter().find(|p| column_name(p) == name || sql_name(&p.replace('.', "_")) == name) {
+            } else if let Some(p) = known_paths.iter().find(|p| sql_name(&p.replace('.', "_")) == name).or_else(|| known_paths.iter().find(|p| column_name(p) == name)) {
+                // Its full name (`ld_startdate`), else the short one's path
+                // most pages have (`known_paths` come the most first).
                 Source::Path(p.clone())
             } else {
                 Source::Other
@@ -710,7 +729,13 @@ impl Plan {
                     _ => None,
                 },
                 Source::Rule(r) => f.page.rules.get(r).cloned(),
-                Source::Path(p) => paths.get(p).cloned(),
+                // Its path, else the same field from another source (the
+                // page's JSON-LD where the column was made of microdata).
+                Source::Path(p) => match paths.get(p).and_then(|v| coerce(v, c.ty)) {
+                    Some(v) => Some(v),
+                    None if !p.starts_with("meta.") => paths.iter().filter(|(q, _)| *q != p && !q.starts_with("meta.") && same_field(c, q)).find_map(|(_, v)| coerce(v, c.ty)),
+                    None => None,
+                },
                 Source::Other => None,
             };
             if let Some(v) = v.and_then(|v| coerce(&v, c.ty)) {
@@ -792,6 +817,36 @@ mod tests {
         assert_eq!(coerce(&json!("£3.10"), Ty::Float), Some(json!(3.1)));
         assert_eq!(coerce(&json!(["x", 2]), Ty::KeywordList), Some(json!(["x", "2"])));
         assert_eq!(coerce(&json!("Nov 7, 2026"), Ty::Timestamp), Some(json!("2026-11-07T00:00:00Z")));
+    }
+
+    /// One field from two sources (microdata and JSON-LD) is one column,
+    /// filled from either: not `startdate` always NULL beside
+    /// `ld_startdate` holding the values (the formula1_com crawl).
+    #[test]
+    fn one_field_from_two_sources_is_one_column() {
+        let mut stats = FieldStats::default();
+        stats.add(&json!("2026-03-14T04:00:00Z"));
+        let mut plan = Plan { table: "t".into(), columns: Vec::new(), embed: None, data: true };
+        plan.add_path("md.startdate", Ty::Timestamp, &stats, 10.0, None).expect("a column");
+        plan.add_path("md.location.name", Ty::Keyword, &stats, 10.0, None).expect("a column");
+        assert!(plan.add_path("ld.startDate", Ty::Timestamp, &stats, 10.0, None).is_none(), "the same field");
+        assert!(plan.add_path("ld.location.name", Ty::Keyword, &stats, 10.0, None).is_none());
+        assert_eq!(plan.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["startdate", "location_name"]);
+        // A page with only the JSON-LD fills them.
+        let mut page = crate::extract::Page::default();
+        page.structured.insert("ld".into(), json!({"startDate": "2026-03-14T04:00:00Z", "location": {"name": "Albert Park"}}));
+        page.structured.insert("md".into(), json!({"startdate": "soon"}));
+        let f = Fetched { url: "https://x/1".into(), host: "x".into(), depth: 0, status: 200, fetched: "2026-11-13T00:00:00Z".into(), bytes: 1, fetch_ms: 1, page };
+        let row = plan.row(&f);
+        assert_eq!(row.get("startdate"), Some(&json!("2026-03-14T04:00:00Z")), "the microdata's is no time: the JSON-LD's is");
+        assert_eq!(row.get("location_name"), Some(&json!("Albert Park")));
+        // A table made before: its columns matched by their full names first.
+        let fields = vec![json!({"name": "url", "type": "keyword"}), json!({"name": "startdate", "type": "timestamp"}), json!({"name": "ld_startdate", "type": "timestamp"})];
+        let known = vec!["ld.startDate".to_string(), "md.startdate".to_string()];
+        let p = Plan::from_existing("t", &fields, &[], None, &known);
+        let src = |n: &str| p.columns.iter().find(|c| c.name == n).map(|c| c.source.clone());
+        assert_eq!(src("ld_startdate"), Some(Source::Path("ld.startDate".into())));
+        assert_eq!(src("startdate"), Some(Source::Path("ld.startDate".into())), "the path most pages have");
     }
 
     #[test]

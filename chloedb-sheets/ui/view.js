@@ -86,7 +86,13 @@ const CSS = `
 .sx-checks label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
 .sx-values { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
 .sx-values label { display: flex; gap: 8px; align-items: center; padding: 2px 0; font-size: 13px; }
-.sx-home-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sx-home-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sx-home-grid > * { min-width: 0; }
+.sx-scroll { overflow-x: auto; max-width: 100%; }
+.sx-scroll table { min-width: 100%; }
+.sx-whose { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.sx-whose button { border: 0; background: transparent; padding: 3px 10px; font-size: 12.5px; color: inherit; cursor: pointer; }
+.sx-whose button[aria-pressed="true"] { background: var(--line); font-weight: 600; }
 .sx-hits { list-style: none; margin: 0; padding: 0; }
 .sx-hits li { padding: 7px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; font-size: 13px; }
 .sx-hits li:first-child { border-top: 0; }
@@ -980,6 +986,7 @@ function wrapLines(g, text, width) {
 // ---------------------------------------------------------------- the page
 
 function render(el, ctx) {
+  if (typeof ctx.core?.fmt?.num === "function") { sharedNum = ctx.core.fmt.num; sharedTick = ctx.core.fmt.tick || null; }
   const { h } = ctx.core;
   el.append(h("style", {}, CSS));
   const root = h("div", { style: { height: "100%" } });
@@ -2350,6 +2357,7 @@ function bookPage(root, ctx, id, rest) {
       const a = h("a", { href: URL.createObjectURL(blob), download: name });
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      leftOut(r, toast);
     } catch (e) { toast(e.message, "bad"); }
   }
   function toTableDialog(sheet = st.sheet) {
@@ -2501,7 +2509,12 @@ function num(text) {
   const v = parseFloat(m);
   return pct ? v / 100 : v;
 }
+// The command center's number format (core.fmt.num), so a sum or a chart's
+// value reads as the workbench's grid and charts show it; this one is the
+// same rule, for a command center from before it.
+let sharedNum = null, sharedTick = null;
 function fmtNum(v) {
+  if (sharedNum) return sharedNum(v);
   if (!isFinite(v)) return String(v);
   const a = Math.abs(v);
   if (a !== 0 && (a >= 1e15 || a < 1e-4)) return v.toExponential(4);
@@ -2525,6 +2538,12 @@ function describeRule(r) {
     case "Formula": return `formula =${x.formula}`;
     default: return String(t).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
   }
+}
+
+/** Says what an export left out (an xlsx keeps no charts), as the app's answer names it. */
+function leftOut(r, toast) {
+  const what = r?.headers?.get?.("x-app-left-out");
+  if (what) toast(`The file leaves out ${what}: an Excel file from Sheets keeps values, formulas and styles, not charts`, "warn");
 }
 
 /** The tables /v1/tables lists, whatever its shape. */
@@ -2710,7 +2729,7 @@ class ChartLayer {
     const step = niceStep(hi - lo || 1, horiz ? Math.max(2, Math.floor(W / 90)) : Math.max(2, Math.floor((H - lg) / 40)));
     lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step; if (hi === lo) hi = lo + step;
     const ticks = []; for (let t = lo; t <= hi + step / 2; t += step) ticks.push(+t.toFixed(10));
-    const tl = (v) => (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(Math.abs(v) >= 1e7 ? 0 : 1) + "M" : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(Math.abs(v) >= 1e4 ? 0 : 1) + "k" : String(+v.toFixed(4)));
+    const tl = (v) => sharedTick ? sharedTick(v) : (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(Math.abs(v) >= 1e7 ? 0 : 1) + "M" : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(Math.abs(v) >= 1e4 ? 0 : 1) + "k" : String(+v.toFixed(4)));
     const left = horiz ? Math.min(120, 10 + Math.max(...cats.map((s) => String(s).length)) * 6) : 10 + Math.max(...ticks.map((t) => tl(t).length)) * 6.5, bottom = horiz ? 18 : 20, top = 6 + lg, right = 10;
     const pw = Math.max(10, W - left - right), ph = Math.max(10, H - top - bottom);
     const val = (v) => (horiz ? left + ((v - lo) / (hi - lo)) * pw : top + ph - ((v - lo) / (hi - lo)) * ph);
@@ -3117,6 +3136,13 @@ function homePage(root, ctx) {
   const tables = h("div");
   const info = h("span", { class: "small muted" });
   const newBtn = h("button", { class: "btn primary", onclick: () => newBook() }, icon("plus"), "New workbook");
+  // Whose workbooks the list shows: the key's own, others', or all it may open.
+  let whose = "all";
+  try { whose = localStorage.getItem("sx-whose") || "all"; } catch { /* no storage */ }
+  const whoseBar = h("div", { class: "sx-whose", role: "group", "aria-label": "Whose workbooks" });
+  const drawWhose = () => whoseBar.replaceChildren(...[["mine", "Mine"], ["shared", "Shared"], ["all", "All"]].map(([k, label]) =>
+    h("button", { type: "button", "aria-pressed": String(whose === k), onclick: () => { whose = k; try { localStorage.setItem("sx-whose", k); } catch { /* no storage */ } drawWhose(); loadBooks(); } }, label)));
+  drawWhose();
   const drop = core.dropzone({ label: "Import a file", sub: "Excel (.xlsx), CSV or TSV, or a SQLite database (.sqlite, .db): as a workbook, or as tables of the cluster", accept: ".xlsx,.xlsm,.csv,.tsv,.txt,.sqlite,.sqlite3,.db", multiple: false, onFiles: (f) => importFile(f[0]) });
   root.append(
     h("div", { class: "page-head" }, h("div", {},
@@ -3126,10 +3152,10 @@ function homePage(root, ctx) {
     h("div", { class: "sx-home-grid" },
       h("div", { class: "stack", style: { gap: "16px" } },
         core.card({ title: "Search", body: h("div", { class: "stack", style: { gap: "8px" } }, searchIn, hits) }),
-        core.card({ title: "Workbooks", tools: [newBtn], body: books, flush: true })),
+        core.card({ title: "Workbooks", tools: [whoseBar, newBtn], body: books, flush: true })),
       h("div", { class: "stack", style: { gap: "16px" } },
         core.card({ title: "Import", body: drop }),
-        core.card({ title: "Tables of the cluster", sub: "open one live, or copy it into a workbook", body: tables, flush: true }))));
+        core.card({ title: "Tables of the cluster", sub: "open one live, or copy it into a workbook", body: h("div", { class: "sx-scroll" }, tables), flush: true }))));
 
   async function newBook() {
     const name = await ask(core, { title: "A new workbook", label: "Its name", value: "Untitled" });
@@ -3139,21 +3165,24 @@ function homePage(root, ctx) {
 
   async function loadBooks() {
     try {
-      const j = await ctx.api("/v1/books", { timeout: 15000 });
+      const j = await ctx.api(`/v1/books?whose=${whose}`, { timeout: 15000 });
       if (gone) return;
       const list = j.books || [];
+      const me = j.me;
       const t = core.table([
         { key: "name", label: "Name", render: (b) => h("a", { href: ctx.href("b", b.id), class: "row nw", style: { gap: "10px", alignItems: "center" } }, h("span", { class: "sx-book-ic", "aria-hidden": "true" }, icon("table")), h("span", {}, h("b", {}, b.name), h("div", { class: "small muted" }, (b.sheet_names || "").split("\n").join(" · ").slice(0, 80)))) },
         { key: "source", label: "From", render: (b) => h("span", { class: "small dim" }, sourceLabel(b.source)) },
+        { key: "owner", label: "Owner", render: (b) => h("span", { class: "small dim", title: b.shared ? "Shared: keys limited to tables open it too" : "" }, b.owner ? (b.owner === me ? "you" : b.owner) : "–", b.shared ? " · shared" : "") },
         { key: "cells", label: "Cells", num: true, render: (b) => (b.cells ?? 0).toLocaleString() },
         { key: "updated_ms", label: "Changed", num: true, render: (b) => h("span", { class: "small", title: new Date(b.updated_ms).toLocaleString() }, core.fmt.ago(b.updated_ms)) },
         { key: "", label: "", sortable: false, render: (b) => h("button", { class: "btn ghost sm icon", title: "More", "aria-label": `More about ${b.name}`, onclick: (e) => core.menu(e.currentTarget, [
           { label: "Open", icon: "right", onclick: () => { location.hash = ctx.href("b", b.id); } },
           { label: "Download as Excel", icon: "download", onclick: () => downloadBook(b) },
+          { label: b.shared ? "Stop sharing" : "Share (keys limited to tables open it)", icon: "share", onclick: async () => { try { await ctx.api(`/v1/books/${encodeURIComponent(b.id)}/share`, { body: { shared: !b.shared } }); toast(b.shared ? `${b.name} is no longer shared` : `${b.name} is shared`, "ok"); loadBooks(); } catch (err) { toast(err.message, "bad"); } } },
           "-",
           { label: "Delete", icon: "trash", danger: true, onclick: async () => { if (!(await core.confirm({ title: `Delete ${b.name}?`, body: "Its sheets, charts and queries are deleted from ChloeDB. This cannot be undone.", ok: "Delete", danger: true }))) return; try { await ctx.api(`/v1/books/${encodeURIComponent(b.id)}`, { method: "DELETE" }); toast(`Deleted ${b.name}`, "ok"); loadBooks(); } catch (err) { toast(err.message, "bad"); } } },
         ]) }, icon("dots")) },
-      ], { rows: list, sortKey: "updated_ms", desc: true, onRow: (b) => { location.hash = ctx.href("b", b.id); }, empty: core.empty("table", "No workbooks yet", "Make one, or import an Excel, CSV or SQLite file.", newBtn.cloneNode(true)) });
+      ], { rows: list, sortKey: "updated_ms", desc: true, onRow: (b) => { location.hash = ctx.href("b", b.id); }, empty: core.empty("table", whose === "mine" ? "No workbooks of yours yet" : whose === "shared" ? "No one else's workbooks to open" : "No workbooks yet", "Make one, or import an Excel, CSV or SQLite file.", newBtn.cloneNode(true)) });
       t.querySelector(".empty button")?.addEventListener("click", newBook);
       books.replaceChildren(t);
     } catch (e) { if (!gone) books.replaceChildren(core.failure ? core.failure(e, "The workbooks") : h("p", {}, e.message)); }
@@ -3163,6 +3192,7 @@ function homePage(root, ctx) {
       const r = await ctx.api(`/v1/books/${encodeURIComponent(b.id)}/export?format=xlsx`, { blob: true, timeout: 120000 });
       const a = h("a", { href: URL.createObjectURL(await r.blob()), download: `${b.name}.xlsx` });
       document.body.append(a); a.click(); a.remove();
+      leftOut(r, toast);
     } catch (e) { toast(e.message, "bad"); }
   }
 
@@ -3179,6 +3209,16 @@ function homePage(root, ctx) {
           h("a", { class: "btn sm", href: ctx.href("t", x.name), title: "Its rows, read and written live" }, "Open"),
           h("button", { class: "btn sm", title: "Copy its rows into a new workbook", onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const r = await ctx.api("/v1/from-table", { body: { table: x.name, name: x.name }, timeout: 300000 }); location.hash = ctx.href("b", r.id); } catch (err) { toast(err.message, "bad"); b.disabled = false; } } }, icon("copy"), "To a workbook")) },
       ], { rows: list, sortKey: "name", desc: false, onRow: (x) => { location.hash = ctx.href("t", x.name); }, empty: core.empty("db", "No tables yet", "Import a SQLite file into the cluster, or save a sheet as a table.") }));
+      // Rows the health does not say, counted (the first 40 tables).
+      const missing = list.filter((x) => x.rows == null).slice(0, 40);
+      for (const x of missing) {
+        core.api("/v1/query", { body: { sql: `SELECT COUNT(*) AS n FROM ${qid(x.name)}` }, timeout: 15000 }).then((r) => {
+          if (gone) return;
+          x.rows = Number(r.rows?.[0]?.[0] ?? r.rows?.[0]?.n);
+          const cell = [...tables.querySelectorAll("tr")].find((tr) => tr.querySelector("b")?.textContent === x.name)?.children?.[1];
+          if (cell && Number.isFinite(x.rows)) cell.textContent = x.rows.toLocaleString();
+        }).catch(() => {});
+      }
     } catch (e) { if (!gone) tables.replaceChildren(core.failure ? core.failure(e, "The cluster's tables") : h("p", {}, e.message)); }
   }
 

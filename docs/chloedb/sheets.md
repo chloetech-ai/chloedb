@@ -35,7 +35,7 @@ chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOK
 
 `--server` was `--strata` before 0.3.1; the old name still works.
 
-`--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
+`--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. It checks its callers itself (`"checks_callers": true` in its manifest), so chloedb-server sends it keys limited to tables, and keys that may only write, with who they are (`x-chloedb-principal`, `x-chloedb-scope`, `x-chloedb-tables`). A key that may write makes workbooks, which are its own: it changes them, shares them (**Share**, `POST /v1/books/:id/share {shared}`) and deletes them, and another key opens one only once it is shared, or when it is an admin of every table. A workbook made before owners existed is everyone's. What a workbook reads from the cluster (its query blocks, the tables opened as sheets, a sheet copied to a table) runs as the caller's key: chloedb-sheets sends its own token narrowed to the caller's grants (`x-chloedb-as-tables`, [server](server.md#apps)), so a query reads only the tables the signed-in key may read, and a refusal is the server's 403. The analyst preset's keys make their own workbooks this way. Called directly with its token (not through chloedb-server), it answers as before, as the token's.
 
 ### On Kubernetes
 
@@ -66,7 +66,7 @@ target/release/chloedb-sheets export <workbook id> -o budget.xlsx --server http:
 
 ## The app
 
-**Sheets** lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.
+**Sheets** lists the workbooks, newest first (**Mine**, **Shared** or **All**, with each one's owner), the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.
 
 ![A workbook: a color scale, data bars, number formats, a frozen header row and a stacked column chart over the sheet](../assets/img/strata-sheets-workbook.png)
 
@@ -82,6 +82,8 @@ A **filter** puts buttons on the header row of a range: each lists the column's 
 ![The cluster's products table opened as a sheet: typed columns, the key in bold, a WHERE box and a text search](../assets/img/strata-sheets-table.png)
 
 **A table of the cluster** opens at `#/app/sheets/t/<table>` as a sheet whose columns are the table's, named and typed in the header. Rows are read a page of 100 at a time as they come into view, ordered by the key (or by the column whose header you click, then by the key), and read again every five seconds. Typing into a cell sets that field of that row (`{"op": "set"}` by key); pasting sets many; Delete clears them. **Row** adds one, **Column** runs `ALTER TABLE ... ADD COLUMN`, **Delete rows** deletes the rows selected (after asking), and **Open as a workbook** copies the rows shown (the filter and order included) into a new workbook, for formulas, charts and pivots over them. A row's key does not change in place.
+
+**Numbers** are shown as Excel's General format shows them, to 15 significant digits and no more (`226159459.83`, `4.1271186440678`, `1.5E+20`), in the grid, a CSV and an xlsx file alike; a number format of the cell's own still applies. **Charts do not go into an .xlsx file**: the file keeps the cells, formulas and formats, and the download says how many charts it left out (the `x-app-left-out` header of `GET /v1/books/:id/xlsx`).
 
 ## How workbooks are kept
 
@@ -102,7 +104,7 @@ Each route is under the app's address (through chloedb-server: `/v1/apps/sheets/
 
 | route | what |
 |---|---|
-| `GET /v1/books`, `POST /v1/books {name}` | the workbooks; a new one |
+| `GET /v1/books?whose=mine\|shared\|all`, `POST /v1/books {name}` | the workbooks the caller may open (with `owner` and `shared`, and the caller as `me`); a new one, the caller's |
 | `POST /v1/import?name=&format=&tables=&header=` | a file (the body) as a new workbook: xlsx, csv, tsv or sqlite (by default what the bytes are); a SQLite file's `tables`, a CSV file's `header` |
 | `POST /v1/sqlite/tables` | a SQLite file's tables, their columns and row counts, and its views (`"kind": "view"`, not counted) |
 | `POST /v1/from-table {table \| sql, name, limit}` | a table of the cluster, or a SELECT's answer, as a new workbook |

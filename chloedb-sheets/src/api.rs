@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use crate::book::Ext;
 use crate::books::{Books, Fail, QuerySpec};
+use crate::caller::Caller;
 use crate::ops::{Op, Rect};
 use crate::{io, store};
 
@@ -43,6 +44,12 @@ pub struct ApiError(StatusCode, String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(json!({"error": self.1}))).into_response()
+    }
+}
+
+impl From<(u16, String)> for ApiError {
+    fn from((s, m): (u16, String)) -> ApiError {
+        ApiError(StatusCode::from_u16(s).unwrap_or(StatusCode::FORBIDDEN), m)
     }
 }
 
@@ -81,6 +88,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/books/:id/refresh", post(refresh))
         .route("/v1/books/:id/queries/:qid", axum::routing::delete(forget_query))
         .route("/v1/books/:id/to-table", post(to_table))
+        .route("/v1/books/:id/share", post(share))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         .with_state(svc)
@@ -115,6 +123,9 @@ async fn manifest() -> Json<Value> {
         "icon_svg": ICON,
         "view": "ui/view.js",
         "version": env!("CARGO_PKG_VERSION"),
+        // It refuses what x-chloedb-scope and x-chloedb-tables do not allow
+        // ([`crate::caller`]): the server forwards it keys limited to tables.
+        "checks_callers": true,
     }))
 }
 
@@ -139,10 +150,59 @@ async fn info(State(svc): State<Shared>) -> Json<Value> {
     }))
 }
 
-async fn list(State(svc): State<Shared>) -> Answer {
+/// The workbooks the caller may open: `?whose=mine`, `shared` (others')
+/// or `all` (the default).
+async fn list(State(svc): State<Shared>, headers: header::HeaderMap, Query(q): Query<HashMap<String, String>>) -> Answer {
     svc.books.ready().await?;
-    let books = store::list(&svc.books.strata).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
-    Ok(Json(json!({"books": books})))
+    let who = Caller::of(&headers);
+    let whose = q.get("whose").map(String::as_str).unwrap_or("all");
+    let books: Vec<Value> = store::list(&svc.books.strata).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?.into_iter().filter(|(_, e)| who.lists(e, whose)).map(|(b, _)| b).collect();
+    Ok(Json(json!({"books": books, "whose": whose, "me": who.name})))
+}
+
+/// A workbook the caller may open (403 else), and its extension.
+async fn seen(svc: &Service, who: &Caller, id: &str) -> Result<(), ApiError> {
+    if who.direct() {
+        return Ok(());
+    }
+    let g = svc.books.open(id).await?;
+    who.may_see(&g.as_ref().expect("open").ext)?;
+    Ok(())
+}
+
+/// A workbook the caller may change (403 else).
+async fn changed(svc: &Service, who: &Caller, id: &str) -> Result<(), ApiError> {
+    if who.direct() {
+        return Ok(());
+    }
+    let g = svc.books.open(id).await?;
+    let ext = &g.as_ref().expect("open").ext;
+    who.may_see(ext)?;
+    who.may_change(ext)?;
+    Ok(())
+}
+
+/// The caller's own workbook: its owner.
+fn owned(who: &Caller) -> Ext {
+    Ext { owner: who.owner(), ..Ext::default() }
+}
+
+#[derive(Deserialize)]
+struct Share {
+    shared: bool,
+}
+
+/// Shares a workbook (keys limited to tables open it too), or not: its
+/// owner's or an admin's to say.
+async fn share(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Json(s): Json<Share>) -> Answer {
+    let who = Caller::of(&headers);
+    changed(&svc, &who, &id).await?;
+    let mut g = svc.books.open(&id).await?;
+    let b = g.as_mut().expect("open");
+    b.ext.shared = s.shared;
+    let cells = svc.books.save(b, false).await;
+    let _ = cells;
+    Ok(Json(json!({"book": b.summary()})))
 }
 
 #[derive(Deserialize)]
@@ -151,10 +211,12 @@ struct NewBook {
     name: Option<String>,
 }
 
-async fn create(State(svc): State<Shared>, Json(b): Json<NewBook>) -> Answer {
+async fn create(State(svc): State<Shared>, headers: header::HeaderMap, Json(b): Json<NewBook>) -> Answer {
+    let who = Caller::of(&headers);
+    who.may_make()?;
     let name = b.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
     let e = crate::book::new_engine(&name);
-    Ok(Json(svc.books.create(e, "new", Ext::default()).await?))
+    Ok(Json(svc.books.create(e, "new", owned(&who)).await?))
 }
 
 #[derive(Deserialize)]
@@ -173,7 +235,9 @@ struct ImportQuery {
 }
 
 /// A file as a new workbook: the body is its bytes.
-async fn import(State(svc): State<Shared>, Query(q): Query<ImportQuery>, body: Bytes) -> Answer {
+async fn import(State(svc): State<Shared>, headers: header::HeaderMap, Query(q): Query<ImportQuery>, body: Bytes) -> Answer {
+    let who = Caller::of(&headers);
+    who.may_make()?;
     if body.is_empty() {
         return Err(bad("send the file as the body"));
     }
@@ -188,7 +252,7 @@ async fn import(State(svc): State<Shared>, Query(q): Query<ImportQuery>, body: B
         f => Err(format!("format {f:?}: xlsx, csv, tsv or sqlite")),
     })
     .map_err(bad)?;
-    let mut s = svc.books.create(engine, &format!("{format}:{name}"), Ext::default()).await?;
+    let mut s = svc.books.create(engine, &format!("{format}:{name}"), owned(&who)).await?;
     s["import"] = report;
     Ok(Json(s))
 }
@@ -215,23 +279,39 @@ struct FromTable {
     limit: Option<usize>,
 }
 
-async fn from_table(State(svc): State<Shared>, Json(b): Json<FromTable>) -> Answer {
-    Ok(Json(svc.books.from_table(b.table.as_deref(), b.sql.as_deref(), b.name.as_deref(), b.limit).await?))
+async fn from_table(State(svc): State<Shared>, headers: header::HeaderMap, Json(b): Json<FromTable>) -> Answer {
+    let who = Caller::of(&headers);
+    who.may_make()?;
+    let run = svc.books.strata.as_caller(who.as_tables());
+    Ok(Json(svc.books.from_table(b.table.as_deref(), b.sql.as_deref(), b.name.as_deref(), b.limit, &run, owned(&who)).await?))
 }
 
-async fn search(State(svc): State<Shared>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn search(State(svc): State<Shared>, headers: header::HeaderMap, Query(q): Query<HashMap<String, String>>) -> Answer {
     svc.books.ready().await?;
     let limit = q.get("limit").and_then(|l| l.parse().ok()).unwrap_or(50);
-    let j = store::search(&svc.books.strata, q.get("q").map(String::as_str).unwrap_or(""), limit).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    let mut j = store::search(&svc.books.strata, q.get("q").map(String::as_str).unwrap_or(""), limit).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    // Only the workbooks the caller may open (each answer's rows begin
+    // with the workbook's id).
+    let who = Caller::of(&headers);
+    if !who.direct() {
+        let open: std::collections::HashSet<String> = store::list(&svc.books.strata).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?.into_iter().filter(|(_, e)| who.sees(e)).filter_map(|(b, _)| b["id"].as_str().map(str::to_string)).collect();
+        for k in ["cells", "books"] {
+            if let Some(rows) = j[k]["rows"].as_array_mut() {
+                rows.retain(|r| r[0].as_str().is_some_and(|id| open.contains(id)));
+            }
+        }
+    }
     Ok(Json(j))
 }
 
-async fn one(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+async fn one(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     Ok(Json(g.as_ref().expect("open").summary()))
 }
 
-async fn forget(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+async fn forget(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>) -> Answer {
+    changed(&svc, &Caller::of(&headers), &id).await?;
     svc.books.delete(&id).await?;
     Ok(Json(json!({"deleted": id})))
 }
@@ -241,7 +321,8 @@ struct Ops {
     ops: Vec<Value>,
 }
 
-async fn apply(State(svc): State<Shared>, Path(id): Path<String>, Json(b): Json<Ops>) -> Answer {
+async fn apply(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Json(b): Json<Ops>) -> Answer {
+    changed(&svc, &Caller::of(&headers), &id).await?;
     let mut list = Vec::with_capacity(b.ops.len());
     for (i, o) in b.ops.into_iter().enumerate() {
         let op: Op = serde_json::from_value(o).map_err(|e| bad(format!("operation {i}: {e}")))?;
@@ -254,7 +335,8 @@ fn num<T: std::str::FromStr>(q: &HashMap<String, String>, k: &str, d: T) -> T {
     q.get(k).and_then(|v| v.parse().ok()).unwrap_or(d)
 }
 
-async fn cells(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn cells(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     let b = g.as_ref().expect("open");
     let (r0, c0) = (num(&q, "r0", 1), num(&q, "c0", 1));
@@ -266,7 +348,8 @@ async fn cells(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Quer
     Ok(Json(j))
 }
 
-async fn layout(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn layout(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     let b = g.as_ref().expect("open");
     let mut j = b.layout(num(&q, "sheet", 0)).map_err(bad)?;
@@ -274,7 +357,8 @@ async fn layout(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Que
     Ok(Json(j))
 }
 
-async fn changes(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn changes(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     Ok(Json(svc.books.changes(&id, num(&q, "since", 0)).await?))
 }
 
@@ -286,7 +370,8 @@ struct CopyReq {
 
 /// The clipboard of an area (to paste with its formulas and styles), and
 /// its values as tab-separated text (for other programs).
-async fn copy(State(svc): State<Shared>, Path(id): Path<String>, Json(c): Json<CopyReq>) -> Answer {
+async fn copy(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Json(c): Json<CopyReq>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let mut g = svc.books.open(&id).await?;
     let b = g.as_mut().expect("open");
     let clip = crate::ops::copy(&mut b.engine, c.sheet, c.area).map_err(bad)?;
@@ -297,7 +382,8 @@ async fn copy(State(svc): State<Shared>, Path(id): Path<String>, Json(c): Json<C
 
 /// The values of a range (A1:D20 or a defined name), as numbers where
 /// they are: for charts.
-async fn values(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn values(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     let b = g.as_ref().expect("open");
     let sheet = num(&q, "sheet", 0);
@@ -310,7 +396,8 @@ async fn values(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Que
 }
 
 /// The cells that hold a text: `?q=&sheet=&case=1&whole=1&formulas=1`.
-async fn find(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+async fn find(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Answer {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     let b = g.as_ref().expect("open");
     let text = q.get("q").map(String::as_str).unwrap_or("");
@@ -348,7 +435,8 @@ fn parse_cell(s: &str) -> Option<(i32, i32)> {
 }
 
 /// The workbook as a file: xlsx, or a sheet as CSV.
-async fn export(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Result<Response, ApiError> {
+async fn export(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Result<Response, ApiError> {
+    seen(&svc, &Caller::of(&headers), &id).await?;
     let g = svc.books.open(&id).await?;
     let b = g.as_ref().expect("open");
     let name: String = b.name().chars().map(|c| if c.is_ascii_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
@@ -359,18 +447,33 @@ async fn export(State(svc): State<Shared>, Path(id): Path<String>, Query(q): Que
         f => return Err(bad(format!("format {f:?}: xlsx or csv"))),
     };
     let disp = format!("attachment; filename=\"{}.{ext}\"", name.trim());
-    Ok(([(header::CONTENT_TYPE, ctype.to_string()), (header::CONTENT_DISPOSITION, disp)], bytes).into_response())
+    let mut r = ([(header::CONTENT_TYPE, ctype.to_string()), (header::CONTENT_DISPOSITION, disp)], bytes).into_response();
+    // IronCalc writes no charts into an xlsx: the answer says so, and the
+    // view tells whoever downloads it.
+    let charts = b.ext.charts.len();
+    if format == "xlsx" && charts > 0 {
+        let v = format!("{charts} chart{}", if charts == 1 { "" } else { "s" });
+        if let Ok(v) = header::HeaderValue::from_str(&v) {
+            r.headers_mut().insert("x-app-left-out", v);
+        }
+    }
+    Ok(r)
 }
 
-async fn query(State(svc): State<Shared>, Path(id): Path<String>, Json(spec): Json<QuerySpec>) -> Answer {
-    Ok(Json(svc.books.query(&id, spec).await?))
+async fn query(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Json(spec): Json<QuerySpec>) -> Answer {
+    let who = Caller::of(&headers);
+    changed(&svc, &who, &id).await?;
+    Ok(Json(svc.books.query(&id, spec, &svc.books.strata.as_caller(who.as_tables())).await?))
 }
 
-async fn refresh(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
-    Ok(Json(svc.books.refresh_all(&id).await?))
+async fn refresh(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>) -> Answer {
+    let who = Caller::of(&headers);
+    changed(&svc, &who, &id).await?;
+    Ok(Json(svc.books.refresh_all(&id, &svc.books.strata.as_caller(who.as_tables())).await?))
 }
 
-async fn forget_query(State(svc): State<Shared>, Path((id, qid)): Path<(String, String)>) -> Answer {
+async fn forget_query(State(svc): State<Shared>, headers: header::HeaderMap, Path((id, qid)): Path<(String, String)>) -> Answer {
+    changed(&svc, &Caller::of(&headers), &id).await?;
     let mut g = svc.books.open(&id).await?;
     let b = g.as_mut().expect("open");
     Books::forget_query(b, &qid);
@@ -387,8 +490,10 @@ struct ToTable {
     key: Option<String>,
 }
 
-async fn to_table(State(svc): State<Shared>, Path(id): Path<String>, Json(t): Json<ToTable>) -> Answer {
-    Ok(Json(svc.books.to_table(&id, t.sheet, &t.table, t.key.as_deref()).await?))
+async fn to_table(State(svc): State<Shared>, headers: header::HeaderMap, Path(id): Path<String>, Json(t): Json<ToTable>) -> Answer {
+    let who = Caller::of(&headers);
+    seen(&svc, &who, &id).await?;
+    Ok(Json(svc.books.to_table(&id, t.sheet, &t.table, t.key.as_deref(), &svc.books.strata.as_caller(who.as_tables())).await?))
 }
 
 #[cfg(test)]

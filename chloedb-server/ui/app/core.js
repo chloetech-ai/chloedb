@@ -513,6 +513,35 @@ export const fmt = {
   },
   pct(v, d = 1) { if (v == null || Number.isNaN(v)) return "–"; return (v * 100).toFixed(d).replace(/\.0+$/, "") + "%"; },
   rate(v) { return v == null ? "–" : fmt.si(v) + "/s"; },
+  /**
+   * A value of the data (a cell, a chart's point, a Sheets cell's sum): the
+   * one number format of every grid and chart, so a number reads the same in
+   * each. Grouped digits, 2 decimals from 1,000 up and up to 6 below, and an
+   * exponent outside 1e-4 to 1e15, where grouped digits stop being read.
+   */
+  num(v) {
+    if (v == null || v === "" || Number.isNaN(Number(v))) return "–";
+    v = Number(v);
+    if (!Number.isFinite(v)) return String(v);
+    const a = Math.abs(v);
+    if (a !== 0 && (a >= 1e15 || a < 1e-4)) return v.toExponential(4).replace(/\.?0+e/, "e");
+    return v.toLocaleString(undefined, { maximumFractionDigits: a >= 1000 ? 2 : 6 });
+  },
+  /** A chart axis's ticks: about `n` round values (1, 2, 2.5 or 5 times a power of ten) from lo to hi. */
+  ticks(lo, hi, n = 4) {
+    if (!(hi > lo)) hi = lo + 1;
+    const raw = (hi - lo) / Math.max(1, n), mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+    const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+    const out = [];
+    for (let t = Math.floor(lo / step) * step; t <= Math.ceil(hi / step) * step + step / 2; t += step) out.push(+t.toPrecision(12));
+    return out;
+  },
+  /** A tick's label: short (1.5M, 250k), as round as the ticks are. */
+  tick(v) {
+    const a = Math.abs(v);
+    const short = (x, u) => +x.toPrecision(3) + u;
+    return a >= 1e12 ? short(v / 1e12, "T") : a >= 1e9 ? short(v / 1e9, "B") : a >= 1e6 ? short(v / 1e6, "M") : a >= 1e4 ? short(v / 1e3, "k") : fmt.num(+v.toPrecision(6));
+  },
   /** How long until a disk fills, from days: minutes or hours under a day, as the server's texts say it. */
   fills(days) {
     if (days == null || !Number.isFinite(days)) return "–";

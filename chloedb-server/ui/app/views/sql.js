@@ -16,6 +16,8 @@ import { h, icon, clear, fmt, api, store, bus, toast, copy, modal, drawer, empty
 import { editor, quoteName, typeName } from "../sqledit.js";
 import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "../results.js";
+import { tooBig, firstPage, banner as cappedBanner } from "../bigresult.js";
+import { healthView } from "../health.js";
 import { profileView } from "../profile.js";
 import { state, isProduction } from "../data.js";
 import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
@@ -499,10 +501,15 @@ function render(page, r) {
       let j;
       if (logs) j = await api("/v1/logs/query", { body: { sql, params }, signal: running.signal });
       else if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
-      else if (!p.write && READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
+      else if (!p.write && READ.test(stripStrings(sql))) {
+        // More rows than a query returns: the first page, read as a scroll,
+        // with how many there are and "Export all" (bigresult.js).
+        try { j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal }); }
+        catch (e) { if (!tooBig(e)) throw e; j = await firstPage(sql, params, running.signal); }
+      }
       else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });
       j.roundtrip_ms = performance.now() - t0;
-      last = { j, sql, explain, p, reason, sent, logs };
+      last = { j, sql, explain, p, reason, sent, logs, params };
       remember(sql, j, null, p, reason, logs);
       if (/^\s*(CREATE|DROP|ALTER)\b/i.test(sql)) { invalidate(); tables(true).then(drawSide); toast(/^\s*CREATE/i.test(sql) ? "Created" : /^\s*ALTER/i.test(sql) ? "Table altered" : "Dropped", "ok"); }
       show(explain ? "plan" : j.written != null || p.write ? "results" : lastKind === "plan" ? "results" : lastKind);
@@ -617,14 +624,15 @@ function render(page, r) {
     lastKind = kind;
     if (!last) return;
     const { j, explain } = last;
-    const kinds = explain ? [["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]] : j.written != null ? [["results", "Written"], ["json", "JSON"]] : j.local ? [["results", `Results ${fmt.n(j.rows.length)}`], ["json", "JSON"]] : [["results", `Results ${fmt.n(j.rows?.length || 0)}`], ["chart", "Chart"], ["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]];
+    const kinds = explain ? [["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]] : j.written != null ? [["results", "Written"], ["json", "JSON"]] : j.local ? [["results", `Results ${fmt.n(j.rows.length)}`], ["json", "JSON"]] : [["results", `Results ${fmt.n(j.rows?.length || 0)}${j.capped ? "+" : ""}`], ["health", "Health"], ["chart", "Chart"], ["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]];
     if (kind === "trace") kind = "profile";
     if (!kinds.some(([k]) => k === kind)) kind = kinds[0][0];
     clear(outTabs, kinds.map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === kind), onclick: () => show(k) }, l)));
     clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : [answerStats(j), j.nodes?.length ? serversLine(j.nodes) : null],
       j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "chloedb-query")) : null);
     if (kind === "results" && (j.written != null || last.p?.write)) clear(outBody, written(j, last));
-    else if (kind === "results") clear(outBody, grid(j));
+    else if (kind === "results") clear(outBody, j.capped ? cappedBanner(j, last.sql, last.params) : null, grid(j, j.capped ? { max: j.rows.length } : undefined));
+    else if (kind === "health") clear(outBody, healthView(j, last.logs ? null : last.sql, last.params));
     else if (kind === "chart") clear(outBody, h("div", { style: { padding: "12px 14px" } }, resultChart(j)));
     else if (kind === "profile") {
       const steps = explain ? j.steps : j.stats?.steps;

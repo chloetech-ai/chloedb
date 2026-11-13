@@ -5,6 +5,7 @@
 //! unused for a while are let go (they are in Strata); a book Strata could
 //! not take is kept and saved again until it can.
 
+use crate::book::Shown;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -262,16 +263,16 @@ impl Books {
 
     /// Runs a query into a block of a sheet (a new one, or the one `id` names
     /// again), and saves.
-    pub async fn query(&self, book: &str, spec: QuerySpec) -> Result<Value, Fail> {
+    pub async fn query(&self, book: &str, spec: QuerySpec, run: &Strata) -> Result<Value, Fail> {
         let mut g = self.open(book).await?;
         let b = g.as_mut().expect("open");
-        let err = self.fill_query(b, spec).await.err();
+        let err = self.fill_query(b, spec, run).await.err();
         let cells = self.save(b, false).await;
         Ok(self.answer(b, cells, Vec::new(), err))
     }
 
     /// Runs every query of a book again.
-    pub async fn refresh_all(&self, book: &str) -> Result<Value, Fail> {
+    pub async fn refresh_all(&self, book: &str, run: &Strata) -> Result<Value, Fail> {
         let mut g = self.open(book).await?;
         let b = g.as_mut().expect("open");
         let qs = b.ext.queries.clone();
@@ -279,7 +280,7 @@ impl Books {
         for q in qs {
             let Some(sheet) = b.sheet_index(q.sheet) else { continue };
             let spec = QuerySpec { id: Some(q.id.clone()), sheet, row: q.row, col: q.col, sql: q.sql.clone(), limit: None };
-            if let Err(e) = self.fill_query(b, spec).await {
+            if let Err(e) = self.fill_query(b, spec, run).await {
                 errors.push(json!({"id": q.id, "error": e}));
             }
         }
@@ -289,7 +290,9 @@ impl Books {
         Ok(a)
     }
 
-    async fn fill_query(&self, b: &mut Book, spec: QuerySpec) -> Result<(), String> {
+    /// `run`: the client the query runs with, narrowed to the caller's
+    /// tables ([`Strata::as_caller`]).
+    async fn fill_query(&self, b: &mut Book, spec: QuerySpec, run: &Strata) -> Result<(), String> {
         let sid = b.sheet_id(spec.sheet).ok_or("no such sheet")?;
         let sql = spec.sql.trim().trim_end_matches(';').to_string();
         if sql.is_empty() {
@@ -299,8 +302,7 @@ impl Books {
         let t0 = Instant::now();
         let mut names: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<String>> = Vec::new();
-        let answer = self
-            .strata
+        let answer = run
             .scroll(&sql, json!({}), limit, |cols, page| {
                 if names.is_empty() {
                     names = cols.to_vec();
@@ -373,7 +375,7 @@ impl Books {
 
     /// A new workbook of a Strata table (or of any `SELECT`): a sheet of its
     /// rows, the names in the first row, frozen.
-    pub async fn from_table(&self, table: Option<&str>, sql: Option<&str>, name: Option<&str>, limit: Option<usize>) -> Result<Value, Fail> {
+    pub async fn from_table(&self, table: Option<&str>, sql: Option<&str>, name: Option<&str>, limit: Option<usize>, run: &Strata, ext: Ext) -> Result<Value, Fail> {
         let sql = match (sql.filter(|s| !s.trim().is_empty()), table) {
             (Some(s), _) => s.trim().trim_end_matches(';').to_string(),
             (None, Some(t)) => format!("SELECT * FROM {}", ident(t)),
@@ -382,8 +384,7 @@ impl Books {
         let limit = limit.unwrap_or(MAX_QUERY_ROWS).clamp(1, MAX_QUERY_ROWS);
         let mut names: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<Value>> = Vec::new();
-        self.strata
-            .scroll(&sql, json!({}), limit, |cols, page| {
+        run.scroll(&sql, json!({}), limit, |cols, page| {
                 if names.is_empty() {
                     names = cols.to_vec();
                 }
@@ -394,12 +395,12 @@ impl Books {
                 }
             })
             .await
-            .map_err(|e| Fail { status: if e.status == 0 || e.status >= 500 { 502 } else { 400 }, message: e.to_string() })?;
+            .map_err(|e| Fail { status: if e.status == 0 || e.status >= 500 { 502 } else if e.status == 403 { 403 } else { 400 }, message: e.to_string() })?;
         rows.truncate(limit);
         let title = name.map(str::to_string).or_else(|| table.map(str::to_string)).unwrap_or_else(|| "Query".into());
         let n_rows = rows.len();
         let engine = tokio::task::block_in_place(|| table_engine(&title, &names, rows))?;
-        let mut summary = self.create(engine, &format!("table:{}", table.unwrap_or("query")), Ext::default()).await?;
+        let mut summary = self.create(engine, &format!("table:{}", table.unwrap_or("query")), ext).await?;
         summary["copied"] = json!({"rows": n_rows, "columns": names.len(), "sql": sql});
         Ok(summary)
     }
@@ -408,7 +409,7 @@ impl Books {
     /// columns, each column's type is what its values are (INT, FLOAT,
     /// BOOL or TEXT), and the rows are keyed by `key` (a column whose
     /// values are distinct) or by their number.
-    pub async fn to_table(&self, book: &str, sheet: u32, table: &str, key: Option<&str>) -> Result<Value, Fail> {
+    pub async fn to_table(&self, book: &str, sheet: u32, table: &str, key: Option<&str>, run: &Strata) -> Result<Value, Fail> {
         let (cols, docs) = {
             let g = self.open(book).await?;
             let b = g.as_ref().expect("open");
@@ -426,12 +427,12 @@ impl Books {
             ident(t),
             cols.iter().map(|(n, ty, pk)| format!("{} {}{}", ident(n), ty, if *pk { " PRIMARY KEY" } else { "" })).collect::<Vec<_>>().join(", ")
         );
-        self.strata.sql(&ddl).await.map_err(|e| Fail { status: if e.status == 409 { 409 } else if e.status >= 500 || e.status == 0 { 502 } else { 400 }, message: e.to_string() })?;
+        run.sql(&ddl).await.map_err(|e| Fail { status: if e.status == 409 || e.status == 403 { e.status } else if e.status >= 500 || e.status == 0 { 502 } else { 400 }, message: e.to_string() })?;
         let n = docs.len();
         let base = store::new_id("t");
         for (i, chunk) in docs.chunks(store::WRITE_OPS).enumerate() {
             let ops: Vec<Value> = chunk.iter().map(|d| json!({"op": "upsert", "table": t, "doc": d})).collect();
-            self.strata.write(ops, &format!("{base}-{i}"), store::PATIENCE).await.map_err(|e| Fail { status: 502, message: e.to_string() })?;
+            run.write(ops, &format!("{base}-{i}"), store::PATIENCE).await.map_err(|e| Fail { status: if e.status == 403 { 403 } else { 502 }, message: e.to_string() })?;
         }
         Ok(json!({"table": t, "rows": n, "columns": cols.iter().map(|(n, ty, pk)| json!({"name": n, "type": ty, "key": pk})).collect::<Vec<_>>(), "sql": ddl}))
     }
@@ -488,7 +489,7 @@ fn sheet_rows(b: &Book, sheet: u32, key: Option<&str>) -> Result<(Vec<(String, &
     let d = ws.dimension();
     let mut names: Vec<String> = Vec::new();
     for c in 1..=d.max_column {
-        let n = m.get_formatted_cell_value(sheet, 1, c).unwrap_or_default();
+        let n = m.shown(sheet, 1, c).unwrap_or_default();
         let mut n: String = n.trim().chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' }).collect();
         n = n.trim_matches('_').to_string();
         if n.is_empty() || n.starts_with(|ch: char| ch.is_ascii_digit()) {
@@ -509,7 +510,7 @@ fn sheet_rows(b: &Book, sheet: u32, key: Option<&str>) -> Result<(Vec<(String, &
             let c = j as i32 + 1;
             let v = match m.get_cell_value_by_index(sheet, r, c) {
                 Ok(CellValue::Number(x)) => {
-                    let shown = m.get_formatted_cell_value(sheet, r, c).unwrap_or_default();
+                    let shown = m.shown(sheet, r, c).unwrap_or_default();
                     let is_int = x.fract() == 0.0 && x.abs() < 9e15;
                     *k = match *k {
                         0 | 1 if is_int => 1,
