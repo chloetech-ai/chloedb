@@ -76,8 +76,6 @@ fixes are planned for 0.3.1. Until then:
 - `chunks_of` reads up to a million source rows whatever the query's
   `LIMIT`, outside `--max-rows`, and `POST /v1/synonyms/mine` takes its
   bounds from the caller with read scope.
-- The command center's feedback view links an item's `route` as given, and
-  a mark keeps the text under it, a password field's included.
 - Tenants: a conditional put that landed but was answered as refused is
   taken as not committed, and a blackboard call without a `key` can then
   be applied twice.
@@ -317,10 +315,11 @@ fixes are planned for 0.3.1. Until then:
   answers), and `GET /api/kit` the frames' runtime and policy.
 - App engine: a published app stays open when a read of the published apps
   fails (it kept closing every one, answering 401, while the cluster was
-  slow), and a visitor can do less: a visitor's `/error` starts no repair,
-  `/people` gives visitors names and roles but no emails, a visitor's
-  `/fetch` takes none of their options and `/ask` only `json` and
-  `system`, and a public sign-up is a member, never the owner.
+  slow), and a visitor can do less: a visitor's `/error`, or a function
+  that fails on a visitor's call, starts no repair; `/people` gives
+  visitors names and roles but no emails; a visitor's `/fetch` takes none
+  of their options and adds no host to the owner's list, and `/ask` takes
+  only `json`; a public sign-up is a member, never the owner.
 
 ### Experimental
 
