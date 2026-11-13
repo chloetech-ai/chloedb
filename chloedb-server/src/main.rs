@@ -166,6 +166,23 @@ struct Args {
     /// at the query's deadline).
     #[arg(long, default_value_t = 0)]
     shard_timeout_ms: u64,
+    /// With --shards: how the replica of a shard asked first for a read is
+    /// chosen: round-robin (each in turn) or least-cost (in turn, unless
+    /// another costs clearly less by its recent round trips, calls in
+    /// flight, errors and reported load).
+    #[arg(long, default_value = "round-robin", value_parser = ["round-robin", "least-cost"])]
+    route: String,
+    /// With --shards: hedge a query after the replica asked has taken
+    /// longer than it usually does (its recent average round trip plus six
+    /// deviations; 2 ms at least, --hedge-ms at most), instead of after
+    /// --hedge-ms.
+    #[arg(long)]
+    hedge_adaptive: bool,
+    /// With --shards and --route least-cost: route a read that must see a
+    /// write (min_seq_nos) by each replica's round trips of such reads,
+    /// unless it is known to hold the write already.
+    #[arg(long)]
+    prefer_caught_up: bool,
     /// With --shards: answer without shards that have no replica answering,
     /// flagged "partial" (a request's "partial" overrides it).
     #[arg(long)]
@@ -1360,8 +1377,11 @@ async fn run() {
             hedge: std::time::Duration::from_millis(a.hedge_ms),
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
+            route: chloedb_server::coord::Route::parse(&a.route).unwrap_or_else(|| fail(&format!("--route is round-robin or least-cost, not {:?}", a.route))),
             stats_cache_terms: a.stats_cache_terms,
             write_every_copy: a.write_every_copy,
+            hedge_adaptive: a.hedge_adaptive,
+            prefer_caught_up: a.prefer_caught_up,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {

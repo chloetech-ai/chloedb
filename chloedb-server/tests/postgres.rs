@@ -39,12 +39,30 @@ struct Pg {
     _dir: Option<tempfile::TempDir>,
 }
 
+/// How long a test's Postgres has to stop before it is killed.
+const PG_STOP: Duration = Duration::from_secs(10);
+
 impl Drop for Pg {
+    /// Stops the server by its fast shutdown (SIGINT, which `runuser`
+    /// passes on), which removes its System V shared memory segment;
+    /// killed (SIGKILL), it leaves the segment behind, and a few runs of
+    /// the tests use up the system's (32 on macOS, `kern.sysv.shmmni`),
+    /// after which `initdb` fails. Killed only if it has not stopped
+    /// within [`PG_STOP`].
     fn drop(&mut self) {
-        if let Some(c) = &mut self.child {
-            let _ = c.kill();
-            let _ = c.wait();
+        let Some(c) = &mut self.child else { return };
+        if let Ok(pid) = libc::pid_t::try_from(c.id()) {
+            unsafe { libc::kill(pid, libc::SIGINT) };
+            let until = Instant::now() + PG_STOP;
+            while Instant::now() < until {
+                if let Ok(Some(_)) = c.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
+        let _ = c.kill();
+        let _ = c.wait();
     }
 }
 

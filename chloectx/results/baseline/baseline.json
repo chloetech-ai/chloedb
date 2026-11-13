@@ -1,0 +1,396 @@
+{
+  "meta": {
+    "chloectx": "0.1.0",
+    "debug_assertions": false,
+    "embedder": "hash:256",
+    "git": "24338daa",
+    "machine": "macos aarch64 / Apple M1 Pro / 10 cores",
+    "scale": 1.0
+  },
+  "metrics": {
+    "append.4writers.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0994
+    },
+    "append.4writers.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.1833
+    },
+    "append.4writers.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.9928
+    },
+    "append.4writers_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rec/s",
+      "value": 30852.8003
+    },
+    "append.nosync_pair.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0555
+    },
+    "append.nosync_pair.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.091
+    },
+    "append.nosync_pair.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.1575
+    },
+    "append.nosync_pairs_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "pairs/s",
+      "value": 12705.4668
+    },
+    "append.sync_single.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 5.0436
+    },
+    "append.sync_single.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 6.4909
+    },
+    "append.sync_single.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 8.7828
+    },
+    "daemon.hook_post_tool_use.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0051
+    },
+    "daemon.hook_post_tool_use.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0084
+    },
+    "daemon.hook_post_tool_use.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.012
+    },
+    "daemon.hook_stop.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0018
+    },
+    "daemon.hook_stop.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0023
+    },
+    "daemon.hook_stop.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0049
+    },
+    "daemon.hook_user_prompt_submit.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.9427
+    },
+    "daemon.hook_user_prompt_submit.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 1.2744
+    },
+    "daemon.hook_user_prompt_submit.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 1.4079
+    },
+    "daemon.records": {
+      "better": "quality",
+      "tolerance": 0.0,
+      "unit": "records",
+      "value": 6481.0
+    },
+    "disk.store_20k_mb": {
+      "better": "lower",
+      "tolerance": 1.25,
+      "unit": "MB",
+      "value": 59.4453
+    },
+    "disk.wal_unflushed_4k_mb": {
+      "better": "lower",
+      "tolerance": 1.25,
+      "unit": "MB",
+      "value": 6.787
+    },
+    "load.bulk_records_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rec/s",
+      "value": 20007.9649
+    },
+    "open.first_search_after_reopen_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 3.6642
+    },
+    "open.first_search_after_replay_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 1.1516
+    },
+    "open.reopen_20k_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.8615
+    },
+    "open.reopen_unflushed_4k_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 44.9156
+    },
+    "quality.20k.hit_at_1": {
+      "better": "quality",
+      "tolerance": 0.02,
+      "unit": "",
+      "value": 0.605
+    },
+    "quality.20k.hit_at_5": {
+      "better": "quality",
+      "tolerance": 0.01,
+      "unit": "",
+      "value": 1.0
+    },
+    "quality.20k.mrr": {
+      "better": "quality",
+      "tolerance": 0.02,
+      "unit": "",
+      "value": 0.7896
+    },
+    "quality.2k.hit_at_1": {
+      "better": "quality",
+      "tolerance": 0.02,
+      "unit": "",
+      "value": 1.0
+    },
+    "quality.2k.hit_at_5": {
+      "better": "quality",
+      "tolerance": 0.01,
+      "unit": "",
+      "value": 1.0
+    },
+    "quality.2k.mrr": {
+      "better": "quality",
+      "tolerance": 0.02,
+      "unit": "",
+      "value": 1.0
+    },
+    "quality.daemon.recalls_earlier_preference": {
+      "better": "quality",
+      "tolerance": 0.0,
+      "unit": "",
+      "value": 1.0
+    },
+    "read.get10.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0988
+    },
+    "read.get10.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.1051
+    },
+    "read.get10.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.1096
+    },
+    "read.latest20.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0526
+    },
+    "read.latest20.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0559
+    },
+    "read.latest20.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0687
+    },
+    "read.session_range100.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.1761
+    },
+    "read.session_range100.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.1928
+    },
+    "read.session_range100.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.2352
+    },
+    "read.sql_group_by_kind_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.1946
+    },
+    "rss.peak_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 155.8125
+    },
+    "search.20k.bm25.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.05
+    },
+    "search.20k.bm25.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0938
+    },
+    "search.20k.bm25.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.1168
+    },
+    "search.20k.hybrid.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.7743
+    },
+    "search.20k.hybrid.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 1.3805
+    },
+    "search.20k.hybrid.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 1.4694
+    },
+    "search.20k.vector.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.5839
+    },
+    "search.20k.vector.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 1.1213
+    },
+    "search.20k.vector.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 1.2595
+    },
+    "search.2k.bm25.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0391
+    },
+    "search.2k.bm25.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0493
+    },
+    "search.2k.bm25.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0503
+    },
+    "search.2k.hybrid.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.5765
+    },
+    "search.2k.hybrid.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.6414
+    },
+    "search.2k.hybrid.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.6467
+    },
+    "search.2k.vector.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.4416
+    },
+    "search.2k.vector.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.4994
+    },
+    "search.2k.vector.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.508
+    }
+  }
+}
