@@ -980,7 +980,7 @@ fn level(scope: &str) -> u8 {
 const SCOPES: [&str; 4] = ["feed", "read", "write", "admin"];
 
 impl Caller {
-    pub fn of(req: &Request) -> Caller {
+    pub(crate) fn of(req: &Request) -> Caller {
         let scope = req.header("x-chloedb-scope").map(level);
         let tables = req.header("x-chloedb-tables").map(|t| {
             t.split(',')
