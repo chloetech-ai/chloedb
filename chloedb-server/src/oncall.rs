@@ -498,6 +498,9 @@ pub struct OncallReq {
     pub wait: bool,
     /// Who asks, as the audit names them.
     pub by: String,
+    /// Who asks: each step with the server's key takes from its model
+    /// budget ([`crate::budget`]).
+    pub who: Option<crate::keys::Principal>,
 }
 
 fn system_prompt(svc: &Service) -> String {
@@ -841,6 +844,9 @@ async fn drive(svc: &Arc<Service>, router: &Router, caller: &Caller<'_>, key: &s
         }
         if let Some(e) = &req.effort {
             body["output_config"] = json!({"effort": e});
+        }
+        if req.api_key.is_none() {
+            svc.model_budget.take(req.who.as_ref(), 1, "the on-call agent")?;
         }
         let resp = tokio::select! {
             r = crate::agent::call(&client, &svc.agent.base_url, key, &body) => r?,

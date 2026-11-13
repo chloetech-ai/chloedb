@@ -234,6 +234,19 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     Ok(())
 }
 
+/// Whether statement `text` calls a function `functions` holds as a
+/// stored one: a coordinator learns its functions again before judging
+/// such a call ([`check_reads`]), since another coordinator may have
+/// changed its body (audit N-D5).
+pub fn calls_stored(text: &str, functions: &FunctionSet) -> bool {
+    let Ok(statements) = chloedb::query::parse::parse(text) else { return false };
+    let mut walk = Walk::default();
+    for s in &statements {
+        let _ = s.visit(&mut walk);
+    }
+    walk.calls.iter().any(|c| functions.current(c.split('@').next().unwrap_or(c)).is_some())
+}
+
 /// Walks statement `s`, a query with its stored functions written out
 /// ([`chloedb::query::function::expand`], as the engine runs it), so that
 /// a table function is checked by the tables its body reads.

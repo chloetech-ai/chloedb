@@ -312,6 +312,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         scroll: None,
         skip_steps: r.skip_steps,
         cache_key,
+        // The caller, whose model budget llm() takes from ([`Grpc::query`]).
+        who: None,
         // A client's, held to the server's limits.
         own_read: false,
     })
@@ -514,6 +516,8 @@ impl pb::strata_server::Strata for Grpc {
             svc.check_epoch(r.epoch)?;
             let (scroll, page) = (r.scroll, r.page_size as usize);
             let mut q = query_req(r)?;
+            // llm() takes from the caller's model budget.
+            q.who = Some(who.clone());
             if scroll {
                 q.scroll = Some(crate::service::ScrollAsk { page, keep_alive, owner });
             }
@@ -766,6 +770,10 @@ impl pb::strata_server::Strata for Grpc {
     type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
 
     async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
+        // A feed goes on until its follower leaves: it ends when the
+        // listener stops instead, so that the server stops within its
+        // grace time (as the HTTP feed does).
+        let stopping = Box::pin(crate::server::Stopping::of(req.extensions().get::<crate::server::Stopping>().cloned()));
         let rx = self
             .serve("Feed", req, |svc, _who, r| async move {
                 let copy = r.copy.then_some(crate::service::feed::CopyOpts { since: r.since, whole: r.whole, digests: r.digests });
@@ -774,7 +782,7 @@ impl pb::strata_server::Strata for Grpc {
             .await?
             .into_inner();
         let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
-        Ok(Response::new(Box::pin(chunks)))
+        Ok(Response::new(Box::pin(chunks.take_until(stopping))))
     }
 
     async fn feed_keys(&self, req: Request<pb::FeedKeysRequest>) -> Result<Response<pb::FeedKeysResponse>, Status> {

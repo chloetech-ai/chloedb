@@ -36,6 +36,9 @@ pub struct AgentReq {
     pub api_key: Option<String>,
     /// Model calls at most.
     pub max_steps: usize,
+    /// Who asked: each call with the server's key takes from its model
+    /// budget ([`crate::budget`]), and its queries run as it.
+    pub who: Option<crate::keys::Principal>,
 }
 
 fn field_line(svc: &Service, f: &chloedb::Field, i: usize) -> String {
@@ -178,15 +181,15 @@ fn shown(v: &chloedb::Value) -> Json {
 }
 
 /// Runs a `run_sql` call; the model's view of the result, and the UI's.
-async fn run_sql(svc: &Arc<Service>, input: &Json) -> (Result<Json, String>, Json) {
+async fn run_sql(svc: &Arc<Service>, input: &Json, who: Option<&crate::keys::Principal>) -> (Result<Json, String>, Json) {
     let sql = input.get("sql").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let t0 = Instant::now();
     let r: Result<_, ApiError> = async {
         if chloedb::query::bind_write(&sql, &svc.first_table(), &chloedb::query::Params::new()).ok().flatten().is_some() {
             return Err(ApiError::bad("run_sql is read-only"));
         }
-        let params = svc.params(None, input.get("params")).await?;
-        svc.query(QueryReq { sql: sql.clone(), params, ..Default::default() }).await
+        let params = svc.params(who, input.get("params")).await?;
+        svc.query(QueryReq { sql: sql.clone(), params, who: who.cloned(), ..Default::default() }).await
     }
     .await;
     let ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -241,6 +244,7 @@ pub(crate) async fn call(client: &reqwest::Client, base: &str, key: &str, body: 
 }
 
 pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
+    let own_key = req.api_key.is_none();
     let key = req.api_key.or_else(|| svc.agent.api_key.clone()).ok_or_else(|| ApiError {
         status: 400,
         message: "no Anthropic API key: start the server with ANTHROPIC_API_KEY set, or enter a key in the UI".into(),
@@ -271,6 +275,9 @@ pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
         if let Some(e) = &req.effort {
             body["output_config"] = json!({"effort": e});
         }
+        if own_key {
+            svc.model_budget.take(req.who.as_ref(), 1, "/v1/agent")?;
+        }
         let resp = call(&client, &svc.agent.base_url, &key, &body).await?;
         let u = &resp["usage"];
         input_tokens += u["input_tokens"].as_u64().unwrap_or(0) + u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
@@ -287,7 +294,7 @@ pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
                 for b in content.iter().filter(|b| b["type"] == "tool_use") {
                     let id = b["id"].as_str().unwrap_or("");
                     let (r, ui) = match b["name"].as_str() {
-                        Some("run_sql") => run_sql(svc, &b["input"]).await,
+                        Some("run_sql") => run_sql(svc, &b["input"], req.who.as_ref()).await,
                         other => (Err(format!("unknown tool {other:?}")), json!({"tool": other, "ok": false})),
                     };
                     steps.push(ui);

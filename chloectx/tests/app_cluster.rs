@@ -523,7 +523,7 @@ fn app_in_a_cluster() {
     let again = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "Chargebacks arrive as webhooks and are matched by the invoice number."}));
     let all = app.get("/v1/spaces/billing/notes?all=1");
     assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
-    assert_eq!(texts(&all).len(), 7, "the agent's retired fact too: {all}");
+    assert_eq!(texts(&all).len(), 8, "the agent's retired fact and the dated note too: {all}");
     drop(procs);
 }
 
