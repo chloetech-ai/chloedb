@@ -87,7 +87,7 @@
 <pre data-lang="sh">brew install chloetech-ai/tap/chloedb</pre>
 <p><strong>Docker</strong>: skip to <a href="#chloedb-in-docker">ChloeDB in Docker</a> below, which runs the same steps against the image.</p>
 <p><strong>By hand</strong>: each <code>chloedb-server-v&lt;version&gt;</code> <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> has an archive per platform (<code>linux-x86_64</code>, <code>linux-aarch64</code>, <code>macos-arm64</code>, <code>macos-x86_64</code>) with a <code>.sha256</code> beside it:</p>
-<pre data-lang="sh">v=0.2.0 p=macos-arm64
+<pre data-lang="sh">v=0.3.0 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv chloedb-server-$p/chloedb-server ~/.local/bin/</pre>
 <p>Check that it runs:</p>
@@ -152,7 +152,7 @@ curl -sS http://127.0.0.1:7710/v1/sql -H &#x27;content-type: application/json&#x
 <pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
 pip install chloedb</pre>
 <p>Until the package is on PyPI, install the wheel from the release instead:</p>
-<pre data-lang="sh">pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0</pre>
+<pre data-lang="sh">pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
 <pre data-lang="sh">python3 - &lt;&lt;&#x27;EOF&#x27;
 import chloedb
 
@@ -176,7 +176,7 @@ EOF</pre>
 <h2 id="chloedb-in-docker">ChloeDB in Docker<a class="anchor" href="#chloedb-in-docker" aria-label="Link to this section">#</a></h2>
 <p>The image <code>ghcr.io/chloetech-ai/chloedb-server</code> (Linux, x86-64 and arm64) keeps its database in <code>/data</code>: mount a volume there to keep it. Inside a container the server listens on all of the container's interfaces, which it allows only with a token, so pick one. Publishing the port on <code>127.0.0.1</code> keeps it to this machine.</p>
 <pre data-lang="sh">docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.2.0</pre>
+  ghcr.io/chloetech-ai/chloedb-server:0.3.0</pre>
 <p>Then every request sends the token, and the console asks for it once:</p>
 <pre data-lang="sh">sql() { curl -sS http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; -H &#x27;authorization: Bearer pick-a-secret&#x27; --data-binary @-; echo; }</pre>
 <p>and steps 3 to 5 run as written (the <code>/v1/write</code> call needs the same <code>authorization</code> header). Arguments after the image replace its default ones (<code>--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701</code>): add <code>--demo 20000</code> by passing <code>--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000</code>. <code>docker rm -f chloedb</code> stops it; the volume keeps the database.</p>

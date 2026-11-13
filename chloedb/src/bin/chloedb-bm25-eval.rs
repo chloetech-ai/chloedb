@@ -9,7 +9,9 @@
 //! ```
 //!
 //! Each variant is a `bm25` call's options: `plain` (none), `fuzzy`
-//! (`fuzzy => 'auto'`); or a boost of BM25 by a row's `importance`, a
+//! (`fuzzy => 'auto'`), `rm3` (`expand => 10`, pseudo-relevance feedback
+//! with its default terms and weight; `rm3_<rows>_<terms>_<weight>` sets
+//! them); or a boost of BM25 by a row's `importance`, a
 //! synthetic column independent of content (uniform in [0, 5), by row):
 //! `boost` ranks by `bm25(body, :q) * (1 + 0.2 * importance)` and
 //! `strong_boost` by `bm25(body, :q) * (1 + importance)` (rank-safe: the
@@ -142,9 +144,13 @@ fn query(variant: &str, coll: &str, cross_encoder: &str) -> (String, bool) {
     if let Some(n) = variant.strip_prefix("colbert_rerank").and_then(|n| n.parse().ok()) {
         return (rerank_n("maxsim(tok, :t)", n), true);
     }
+    if variant.starts_with("rm3") {
+        return (top10(&format!("bm25(body, :q, syntax => 'plain', {})", rm3_opts(variant))), true);
+    }
     match variant {
         "plain" => (top10("bm25(body, :q, syntax => 'plain')"), true),
-        "fuzzy" => (top10("bm25(body, :q, syntax => 'plain', fuzzy => 'auto')"), true),
+        "fuzzy" | "typed_fuzzy" => (top10("bm25(body, :q, syntax => 'plain', fuzzy => 'auto')"), true),
+        "typed" | "typed_corrected" => (top10("bm25(body, :q, syntax => 'plain')"), true),
         "boost" => (top10("bm25(body, :q, syntax => 'plain') * (1 + 0.2 * importance)"), true),
         "boost_top100" => (top10("bm25(body, :q, syntax => 'plain') * (1 + 0.2 * importance)"), false),
         "boost_rerank100" => (rerank("bm25(body, :q, syntax => 'plain') * (1 + 0.2 * importance)"), true),
@@ -187,6 +193,40 @@ fn text_of(variant: &str, text: &str) -> String {
         _ => format!("-{w}"),
     };
     words.iter().enumerate().map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// An `rm3[_rows_terms_weight]` variant's `bm25` options: expansion by
+/// pseudo-relevance feedback ([`chloedb::query::prf`]), its defaults when
+/// not given.
+fn rm3_opts(variant: &str) -> String {
+    let p: Vec<&str> = variant.split('_').skip(1).collect();
+    let n = |i: usize, d: String| p.get(i).map_or(d, |x| x.to_string());
+    format!(
+        "expand => {}, expand_terms => {}, expand_weight => {}",
+        n(0, "10".into()),
+        n(1, chloedb::query::prf::DEFAULT_TERMS.to_string()),
+        n(2, chloedb::query::prf::DEFAULT_WEIGHT.to_string())
+    )
+}
+
+/// The words of `s`, lowercased, letters and digits only.
+fn words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect()
+}
+
+/// `s` with two letters of its longest word of 5 letters or more swapped,
+/// as `examples/typo_queries.rs` types a query (none when they are the
+/// same letter).
+fn typo_of(s: &str) -> Option<String> {
+    let mut w = words(s);
+    let (i, _) = w.iter().enumerate().filter(|(_, x)| x.len() >= 5 && x.is_ascii()).max_by_key(|(i, x)| (x.len(), std::cmp::Reverse(*i)))?;
+    let mut b = w[i].clone().into_bytes();
+    if b[1] == b[2] {
+        return None;
+    }
+    b.swap(1, 2);
+    w[i] = String::from_utf8(b).ok()?;
+    Some(w.join(" "))
 }
 
 /// Row `i`'s importance: uniform in [0, 5) by a hash of `i`, to 0.01.
@@ -297,6 +337,35 @@ fn main() {
             let _ = std::fs::remove_dir_all(&path);
             continue;
         }
+        // "Did you mean": how often a typed query is corrected back to the
+        // words it was typed from, and how often a query as written is
+        // changed.
+        let mut correction = Json::Null;
+        if args.variants.iter().any(|v| v == "typed_corrected") {
+            let (mut typed, mut fixed, mut clean_changed, mut typed_changed) = (0, 0, 0, 0);
+            for (_, text) in &coll.queries {
+                let c = db.correct("docs", "body", text).unwrap();
+                if c.changed {
+                    clean_changed += 1;
+                    if std::env::var_os("CHLOEDB_DEBUG_CORRECT").is_some() {
+                        eprintln!("  clean {text:?} -> {:?}", c.words.iter().map(|w| (&w.word, &w.to_word, w.chance)).collect::<Vec<_>>());
+                    }
+                }
+                if let Some(t) = typo_of(text) {
+                    typed += 1;
+                    let c = db.correct("docs", "body", &t).unwrap();
+                    let ok = words(&c.text) == words(text);
+                    typed_changed += c.changed as usize;
+                    if !ok && std::env::var_os("CHLOEDB_DEBUG_CORRECT").is_some() {
+                        eprintln!("  {text:?} typed {t:?} -> {:?} {:?}", c.text, c.words.iter().map(|w| (&w.word, &w.to_word, w.chance)).collect::<Vec<_>>());
+                    }
+                    fixed += ok as usize;
+                }
+            }
+            let n = coll.queries.len();
+            eprintln!("{name} did you mean: {fixed} of {typed} typed queries corrected to the words as written ({:.3}), {typed_changed} changed; {clean_changed} of {n} queries as written changed ({:.3})", fixed as f64 / typed.max(1) as f64, clean_changed as f64 / n.max(1) as f64);
+            correction = json!({"typed": typed, "corrected_back": fixed, "typed_changed": typed_changed, "share_corrected_back": fixed as f64 / typed.max(1) as f64, "queries": n, "clean_changed": clean_changed, "share_clean_changed": clean_changed as f64 / n.max(1) as f64});
+        }
         // Per variant: each query's top ids (from the first run) and times.
         let mut ids: Vec<Vec<Vec<String>>> = vec![Vec::new(); args.variants.len()];
         let mut times: Vec<Vec<Vec<f64>>> = vec![vec![Vec::new(); coll.queries.len()]; args.variants.len()];
@@ -307,7 +376,12 @@ fn main() {
                 let opts = ExecOptions { rank_safe: safe, ..ExecOptions::default() };
                 for (q, (_, text)) in coll.queries.iter().enumerate() {
                     let text = text_of(v, text);
+                    let text = match v.as_str() {
+                        "typed" | "typed_fuzzy" | "typed_corrected" => typo_of(&text).unwrap_or(text),
+                        _ => text,
+                    };
                     let t = Instant::now();
+                    let text = if v == "typed_corrected" { db.correct("docs", "body", &text).unwrap().text } else { text };
                     let mut params = Params::new();
                     if v.starts_with("colbert_rerank") {
                         params = params.set("t", db.embed_query_in("docs", "tok", &text).unwrap_or_else(|e| panic!("{name}: {e}")));
@@ -388,6 +462,9 @@ fn main() {
             variants.insert(v.clone(), doc);
         }
         let mut entry = json!({ "docs": coll.docs.len(), "queries": coll.queries.len(), "load_s": load_s, "db_bytes": disk_bytes(&path), "variants": variants });
+        if !correction.is_null() {
+            entry["did_you_mean"] = correction;
+        }
         if colbert {
             entry["colbert"] = json!({ "model": args.colbert, "pool_factor": args.colbert_pool });
         }

@@ -43,6 +43,114 @@ pub const DEFAULT_K: usize = 100;
 /// then the most frequent), as Elasticsearch's `max_expansions`.
 pub const MAX_FUZZY_TERMS: usize = 50;
 
+/// The least chance ([`text::fuzzy::meant`]) at which
+/// [`Executor::corrections`] takes a word for a typo of its neighbour.
+pub const CORRECTION_CHANCE: f32 = 0.5;
+
+/// The document count [`correction_chance`] gives a word in none: an
+/// unseen word may be a word the collection does not use rather than a
+/// typo, so it takes a neighbour one edit away in 5 documents for even
+/// odds. Chosen on BEIR's queries with a typo typed in
+/// (`chloedb-bm25-eval`, `typed_corrected`): at 0.05, 0.90 to 0.98 of the
+/// queries it changed were corrected to the words as written, and it
+/// changed 0 to 4% of the queries as written.
+pub const UNSEEN_DF: f64 = 0.05;
+
+/// The chance that a word in `df` documents was typed for a term `edits`
+/// away in `near_df`, as [`text::fuzzy::meant`] works it out but counting
+/// a word in no document as in [`UNSEEN_DF`]: "did you mean" says a word
+/// is wrong, so it wants more evidence than a ranking that only adds the
+/// neighbour.
+pub fn correction_chance(df: u64, near_df: u64, edits: u8) -> f32 {
+    let x = near_df as f64 * text::fuzzy::EDIT_CHANCE.powi(edits as i32);
+    if x <= 0.0 {
+        return 0.0;
+    }
+    (x / (x + (df as f64).max(UNSEEN_DF))) as f32
+}
+
+/// A word of a query taken for a typo ([`Executor::corrections`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Correction {
+    /// The word as written.
+    pub word: String,
+    /// Its analysed term.
+    pub term: String,
+    /// The indexed term it most likely meant.
+    pub to: String,
+    /// A word that analyses to [`Correction::to`], as close to the word
+    /// as written as the endings tried allow: what "did you mean" shows.
+    pub to_word: String,
+    pub edits: u8,
+    /// The chance it was meant ([`text::fuzzy::meant`]).
+    pub chance: f32,
+}
+
+/// The maximal runs of letters and digits of `text`, with where each
+/// starts.
+pub(crate) fn words_of(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        match (c.is_alphanumeric(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(b)) => {
+                out.push((b, &text[b..i]));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(b) = start {
+        out.push((b, &text[b..]));
+    }
+    out
+}
+
+/// A word that analyses to `term`, nearest to `typed` by edits: the term
+/// itself or it with a common ending (`vaccin` gives `vaccines` for
+/// `vacines`), else the term.
+pub(crate) fn surface(typed: &str, term: &str, analyzer: text::Analyzer) -> String {
+    let lower = typed.to_lowercase();
+    // The typed word's own ending on the corrected term: `ifnlammation`,
+    // analysed `ifnlamm`, gives `inflammation` for `inflamm`.
+    if let Some(typed_term) = analyzer.query_term_seq(&lower, false).first() {
+        if let Some(rest) = lower.strip_prefix(typed_term.as_str()) {
+            let c = format!("{term}{rest}");
+            if analyzer.query_term_seq(&c, false).as_slice() == [term.to_string()] {
+                return c;
+            }
+        }
+    }
+    let typed: Vec<char> = lower.chars().collect();
+    let mut cands: Vec<String> = ["", "s", "e", "es", "ed", "ing", "y", "er", "ers", "ion", "ions", "al", "ly", "ment", "ments", "ness", "ity", "ive"].iter().map(|e| format!("{term}{e}")).collect();
+    if let Some(stem) = term.strip_suffix('i') {
+        cands.extend(["y", "ies", "ied"].iter().map(|e| format!("{stem}{e}")));
+    }
+    cands
+        .into_iter()
+        .filter(|c| analyzer.query_term_seq(c, false).as_slice() == [term.to_string()])
+        .filter_map(|c| text::fuzzy::within(&typed, &c, 8).map(|d| (d, c)))
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.len().cmp(&b.1.len())))
+        .map_or_else(|| term.to_string(), |(_, c)| c)
+}
+
+/// `text` with each corrected word replaced by its [`Correction::to_word`],
+/// everything else as written.
+pub fn corrected_text(text: &str, corrections: &[Correction]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (b, w) in words_of(text) {
+        if let Some(c) = corrections.iter().find(|c| c.word == w) {
+            out.push_str(&text[at..b]);
+            out.push_str(&c.to_word);
+            at = b + w.len();
+        }
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 /// Readers of one segment's indexes, by schema field. Each opens on first
 /// use (opening only parses headers: every structure is a zero-copy view),
 /// so a query touches the headers of the fields it uses and no others, which
@@ -1112,6 +1220,50 @@ impl<'a> Executor<'a> {
             let terms: Vec<String> = self.bm25_terms(field, text, opts)?.into_iter().map(|(t, _)| t).collect();
             let c = self.local_stats(field, &terms)?;
             out.merge_field(&self.schema.fields[field].name, FieldStats::from_collection(&c));
+        }
+        Ok(out)
+    }
+
+    /// The words of `text` that look like typos of `field`'s terms, each
+    /// with the term it most likely meant ([`Correction`]): a word in no
+    /// document whose most likely neighbour (one edit away for up to 5
+    /// letters, two beyond, by [`correction_chance`]) has a chance of at
+    /// least [`CORRECTION_CHANCE`]. Words with digits or capitals inside
+    /// are names and codes, and stay.
+    pub fn corrections(self, field: usize, text: &str) -> Result<Vec<Correction>> {
+        let analyzer = self.schema.fields[field].text_analyzer();
+        let mut out = Vec::new();
+        for (_, word) in words_of(text) {
+            // Codes, numbers and names written with capitals inside
+            // (`p150n`, `dLNs`, `iPSC`) are not typos of words.
+            if word.chars().any(|c| c.is_numeric()) || word.chars().skip(1).any(|c| c.is_uppercase()) {
+                continue;
+            }
+            let seq = analyzer.query_term_seq(word, true);
+            let [t] = seq.as_slice() else { continue };
+            let len = t.chars().count();
+            let e = Fuzzy::Auto.edits(len);
+            if e == 0 {
+                continue;
+            }
+            let local = self.local_stats(field, std::slice::from_ref(t))?;
+            let df = local.df.get(t).copied().unwrap_or(0);
+            // A word some document holds is a word of the collection: "did
+            // you mean" corrects only words in none.
+            if df > 0 {
+                continue;
+            }
+            let near = self.near_terms(field, t, e)?;
+            let best = near
+                .iter()
+                .filter(|x| x.2 > 0 && x.1 > df)
+                .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
+                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)));
+            if let Some((n, d, chance)) = best {
+                if chance >= CORRECTION_CHANCE {
+                    out.push(Correction { word: word.to_string(), term: t.clone(), to: n.clone(), to_word: surface(word, n, analyzer), edits: d, chance });
+                }
+            }
         }
         Ok(out)
     }
@@ -4766,14 +4918,51 @@ fn has_graphs(q: &Select) -> bool {
 /// (`'query'`, the default), or as plain words (`'plain'`), for text
 /// passed on as it came, such as a prompt or a document.
 pub(crate) fn plain_syntax(opts: &Opts) -> Result<bool> {
+    Ok(syntax(opts)? == Syntax::Plain)
+}
+
+/// How `bm25` reads its text (`syntax =>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Syntax {
+    /// `'query'`, the default: words with signs, weights and quotes.
+    Query,
+    /// `'plain'`: words alone.
+    Plain,
+    /// `'terms'`: analysed terms, each optionally weighted (`vaccin^0.4
+    /// mrna^0.12`), taken as they are written, never analysed again: what
+    /// a query's expansion ([`crate::query::prf`]) writes.
+    Terms,
+}
+
+pub(crate) fn syntax(opts: &Opts) -> Result<Syntax> {
     match opts.get("syntax") {
-        None => Ok(false),
+        None => Ok(Syntax::Query),
         Some(v) => match v.as_str() {
-            Some("query") => Ok(false),
-            Some("plain") => Ok(true),
-            _ => Err(err(format!("bm25's syntax is 'query' or 'plain', not {v:?}"))),
+            Some("query") => Ok(Syntax::Query),
+            Some("plain") => Ok(Syntax::Plain),
+            Some("terms") => Ok(Syntax::Terms),
+            _ => Err(err(format!("bm25's syntax is 'query', 'plain' or 'terms', not {v:?}"))),
         },
     }
+}
+
+/// The terms of a text written with `syntax => 'terms'`: each word a term
+/// as it is, with the weight after its `^` (1 without one).
+pub(crate) fn weighted_terms(q: &str) -> Result<Vec<(String, f32)>> {
+    let mut out = Vec::new();
+    for word in q.split_whitespace() {
+        let (t, w) = match word.rsplit_once('^') {
+            Some((t, w)) => match w.parse::<f32>() {
+                Ok(w) if w.is_finite() && w >= 0.0 => (t, w),
+                _ => return Err(err(format!("syntax => 'terms': the weight of {word:?} is not a number of at least 0"))),
+            },
+            None => (word, 1.0),
+        };
+        if !t.is_empty() && w > 0.0 {
+            out.push((t.to_string(), w));
+        }
+    }
+    Ok(out)
 }
 
 /// The `min` option of `MATCH` and `bm25`: how many of the text's items
@@ -4817,7 +5006,14 @@ fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<(Vec<(
             should.push((seq.clone(), phrase(text)));
         }
     };
-    if plain_syntax(opts)? {
+    let syn = syntax(opts)?;
+    if syn == Syntax::Terms {
+        if min.is_some() {
+            return Err(err("syntax => 'terms' takes no min"));
+        }
+        return Ok((weighted_terms(q)?, None, 0));
+    }
+    if syn == Syntax::Plain {
         terms = analyzer.query_term_seq(q, drop).into_iter().map(|t| (t, 1.0)).collect();
         for word in q.split_whitespace() {
             let seq = analyzer.query_term_seq(word, drop);

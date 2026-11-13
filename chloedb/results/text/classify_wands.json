@@ -1,0 +1,97 @@
+{
+  "collection": "WANDS",
+  "embedded_s": 1.259581645,
+  "judged_queries": 479,
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "model": "potion-retrieval-32M",
+  "products": 42994,
+  "queries": 480,
+  "results": {
+    "bm25": {
+      "dev": 0.43520881738706174,
+      "ndcg@10": 0.43274613469203016,
+      "test": 0.43029371317489395
+    },
+    "topic_centroid": {
+      "boost": {
+        "0.1": {
+          "dev": 0.43956479867874093,
+          "ms_per_query": 0.6588775135699374,
+          "ndcg@10": 0.4383085386396677,
+          "p_vs_bm25": 0.0011998800119988001,
+          "test": 0.43705751301742274
+        },
+        "0.25": {
+          "dev": 0.43928994374393454,
+          "ms_per_query": 0.7953021795407097,
+          "ndcg@10": 0.4385030976271893,
+          "p_vs_bm25": 0.036996300369963,
+          "test": 0.43771953003593006
+        },
+        "0.5": {
+          "dev": 0.43643140100207783,
+          "ms_per_query": 0.6921677849686848,
+          "ndcg@10": 0.436124019222106,
+          "p_vs_bm25": 0.34296570342965704,
+          "test": 0.4358179181995498
+        }
+      },
+      "classify_10000_rows_ms": 389.25019199999997,
+      "classify_text_p50_ms": 0.065719,
+      "holdout_products_accuracy": 0.8132,
+      "labels": 501,
+      "method": "centroid",
+      "queries_top1": 0.5104166666666666,
+      "queries_top1_dev": 0.5,
+      "queries_top1_test": 0.5208333333333334,
+      "queries_top3": 0.7104166666666667,
+      "queries_top3_test": 0.7208333333333333,
+      "queries_with_a_class_products_have": 469,
+      "train_accuracy": 0.8407,
+      "train_s": 2.013028054
+    },
+    "topic_logistic": {
+      "boost": {
+        "0.1": {
+          "dev": 0.4416574289787375,
+          "ms_per_query": 0.6700295824634656,
+          "ndcg@10": 0.43864287553751635,
+          "p_vs_bm25": 0.0015998400159984002,
+          "test": 0.4356408827356332
+        },
+        "0.25": {
+          "dev": 0.43998512539278156,
+          "ms_per_query": 0.6644647473903966,
+          "ndcg@10": 0.4356477122705071,
+          "p_vs_bm25": 0.3367663233676632,
+          "test": 0.43132837170290844
+        },
+        "0.5": {
+          "dev": 0.4345860697905739,
+          "ms_per_query": 0.6366543966597078,
+          "ndcg@10": 0.4283026685347224,
+          "p_vs_bm25": 0.2763723627637236,
+          "test": 0.4220454481174361
+        }
+      },
+      "classify_10000_rows_ms": 401.45336199999997,
+      "classify_text_p50_ms": 0.072714,
+      "holdout_products_accuracy": 0.8187,
+      "labels": 501,
+      "method": "logistic",
+      "queries_top1": 0.6291666666666667,
+      "queries_top1_dev": 0.6541666666666667,
+      "queries_top1_test": 0.6041666666666666,
+      "queries_top3": 0.8041666666666667,
+      "queries_top3_test": 0.7875,
+      "queries_with_a_class_products_have": 469,
+      "train_accuracy": 0.8364,
+      "train_s": 30.836382097
+    }
+  }
+}

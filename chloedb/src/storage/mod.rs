@@ -22,6 +22,7 @@
 //! * [`Database`], [`WriteTxn`], [`Snapshot`]: the API.
 
 mod db;
+pub mod arc;
 pub mod cold;
 pub mod dir;
 pub mod feed;
