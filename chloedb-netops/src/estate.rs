@@ -299,7 +299,7 @@ impl Estate {
                         let asite = e.add(Node::container(stag.clone(), "site", 3, format!("{label} {}, {} hub {}", s + 1, site.name, hi + 1), anc, sx, sy, sw, sh));
                         let anc = [region, metro, hub, asite];
                         let (vendor, model, versions) = gear(kind, hi + s);
-                        let node = e.add(Node { id: format!("{kind}-{stag}"), kind, layer: "access", tier: 3, name: format!("{kind}-{stag}"), anc, x: sx, y: sy - sh / 2.0 + 0.17 * sh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2), children: 0 });
+                        let node = e.add(Node { id: format!("{kind}-{stag}"), kind, layer: "access", tier: 3, name: format!("{kind}-{stag}"), anc, x: sx, y: if kind == "cell" { sy } else { sy - sh / 2.0 + 0.17 * sh }, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2), children: 0 });
                         e.edges.push((routers[s % 2], node, "access"));
                         if s % 3 == 0 {
                             e.edges.push((routers[(s + 1) % 2], node, "access"));
@@ -309,7 +309,12 @@ impl Estate {
                             let (gw, gh) = (0.9 * sw, 0.6 * sh);
                             let gc = ((count as f64 * gw / gh).sqrt().ceil() as usize).max(1);
                             let gr = count.div_ceil(gc);
-                            let (px, py) = (sx - gw / 2.0 + gw * ((b % gc) as f64 + 0.5) / gc as f64, sy - sh / 2.0 + 0.34 * sh + gh * ((b / gc) as f64 + 0.5) / gr as f64);
+                            let (mut px, mut py) = (sx - gw / 2.0 + gw * ((b % gc) as f64 + 0.5) / gc as f64, sy - sh / 2.0 + 0.34 * sh + gh * ((b / gc) as f64 + 0.5) / gr as f64);
+                            if behind_kind == "radio" {
+                                // A cell site is a circle: its sectors stand around the tower.
+                                let a = std::f64::consts::TAU * (b as f64 / count as f64) - std::f64::consts::FRAC_PI_2;
+                                (px, py) = (sx + 0.33 * sw.min(sh) * a.cos(), sy + 0.33 * sw.min(sh) * a.sin());
+                            }
                             let (vendor, model, versions) = gear(behind_kind, b + s);
                             let customer = if behind_kind == "cpe" { format!("{} {}", FIRMS_A[rng.below(FIRMS_A.len())], FIRMS_B[rng.below(FIRMS_B.len())]) } else { String::new() };
                             let id = format!("{behind_kind}-{:03}-{stag}", b + 1);
@@ -565,7 +570,7 @@ fn quoted(ids: impl IntoIterator<Item = impl AsRef<str>>) -> String {
 /// another size), and puts back to `ok` what a stopped app left broken.
 pub async fn ensure(e: &Engine) -> Result<()> {
     let Some(est) = &e.estate else { return Ok(()) };
-    let want = json!({"nodes": est.nodes.len(), "edges": est.edges.len(), "layout": "boxes"}).to_string();
+    let want = json!({"nodes": est.nodes.len(), "edges": est.edges.len(), "layout": "zones"}).to_string();
     let have = e.db.query("SELECT val FROM netops_state WHERE id = 'estate'", json!({})).await?;
     if have.first().map(|r| r.s("val")) == Some(want.clone()) {
         e.db.sql(&format!("UPDATE {NODES} SET state = 'ok', reason = '', latency_ms = base_ms, loss = 0 WHERE state != 'ok'")).await?;
@@ -677,8 +682,9 @@ async fn base(State(svc): State<Shared>) -> Answer {
         let sites = q.rows("The size of a site", &format!("SELECT MIN(r) AS r FROM {NODES}\nWHERE kind = 'site'"), json!({})).await?;
         site_r = sites.first().map_or(0.0, |r| r.f("r"));
     }
+    let core = q.rows("The backbone's devices", &format!("SELECT id, kind, x, y, metro FROM {NODES}\nWHERE layer = 'core' LIMIT 2000"), json!({})).await?;
     let objects: i64 = counts.iter().filter(|c| c.s("layer") != "container").map(|c| c.i("n")).sum();
-    q.done(json!({"containers": containers, "trunks": trunks, "hub_r": hub_r, "site_r": site_r, "counts": counts, "objects": objects, "links": links.first().map_or(0, |r| r.i("n")), "events": events, "operators": OPERATORS, "history_days": HISTORY_DAYS}))
+    q.done(json!({"containers": containers, "trunks": trunks, "core": core, "hub_r": hub_r, "site_r": site_r, "counts": counts, "objects": objects, "links": links.first().map_or(0, |r| r.i("n")), "events": events, "operators": OPERATORS, "history_days": HISTORY_DAYS}))
 }
 
 /// What is wrong now, and where: the objects that are down or degraded,

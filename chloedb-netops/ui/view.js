@@ -2065,7 +2065,9 @@ function mapPage(body, app, path) {
   const zoomBtn = (label, title, fn) => h("button", { class: "btn sm", title, onclick: fn }, label);
   const legend = h("div", { class: "no-map-legend" },
     [["var(--crit)", "down or incident"], ["var(--warn)", "degraded"], ["var(--serious)", "behind a fault"], ["var(--accent)", "search match"]].map(([c, t]) => h("span", {}, h("i", { style: { background: c } }), t)));
-  const stage = h("div", { class: "no-map-stage" }, canvas, crumbs,
+  const shapes = h("div", { class: "no-map-legend", style: { bottom: "42px", maxWidth: "none", flexWrap: "nowrap", whiteSpace: "nowrap" } },
+    [["■", "backbone"], ["◆", "router"], ["▼", "power"], ["●", "OLT, ONT"], ["▲", "cell, sector"], ["▢", "switch, CPE"]].map(([c, t]) => h("span", {}, h("b", { style: { marginRight: "4px" } }, c), t)));
+  const stage = h("div", { class: "no-map-stage" }, canvas, crumbs, shapes,
     h("div", { class: "no-map-zoom" }, zoomBtn("+", "Zoom in", () => zoomBy(1.8)), zoomBtn("−", "Zoom out", () => zoomBy(1 / 1.8)), zoomBtn("Fit", "The whole network", () => fit(true))), legend, stats, tip);
   body.append(h("div", { class: "no-map" },
     h("div", { class: "no-map-bar" }, input, askBtn),
@@ -2167,7 +2169,35 @@ function mapPage(body, app, path) {
     const family = getComputedStyle(canvas).fontFamily || "system-ui, sans-serif";
     const font = (px, w = 500) => { g.font = `${w} ${px}px ${family}`; };
     const onScreen = (c) => sx(c.x + c.w / 2) > -40 && sx(c.x - c.w / 2) < W + 40 && sy(c.y + c.h / 2) > -40 && sy(c.y - c.h / 2) < H + 40;
-    const box = (c, grow = 0) => { const w = c.w * k, hh = c.h * k; g.beginPath(); g.roundRect(sx(c.x) - w / 2 - grow, sy(c.y) - hh / 2 - grow, w + 2 * grow, hh + 2 * grow, Math.max(2, Math.min(10, Math.min(w, hh) * 0.08)) + grow); };
+    // A cell site is a circle, a business park a box with its corners cut, the rest boxes.
+    const shapeOf = (c) => (c.kind !== "site" ? "box" : c.name.startsWith("Cell") ? "circle" : c.name.startsWith("Business") ? "park" : "box");
+    const box = (c, grow = 0) => {
+      const w = c.w * k, hh = c.h * k, sh = shapeOf(c), cx = sx(c.x), cy = sy(c.y);
+      g.beginPath();
+      if (sh === "circle") { g.arc(cx, cy, Math.min(w, hh) / 2 + grow, 0, Math.PI * 2); return; }
+      if (sh === "park") {
+        const a = w / 2 + grow, b = hh / 2 + grow, cut = Math.min(a, b) * 0.28;
+        g.moveTo(cx - a + cut, cy - b); g.lineTo(cx + a - cut, cy - b); g.lineTo(cx + a, cy - b + cut); g.lineTo(cx + a, cy + b - cut); g.lineTo(cx + a - cut, cy + b); g.lineTo(cx - a + cut, cy + b); g.lineTo(cx - a, cy + b - cut); g.lineTo(cx - a, cy - b + cut); g.closePath();
+        return;
+      }
+      g.roundRect(sx(c.x) - w / 2 - grow, sy(c.y) - hh / 2 - grow, w + 2 * grow, hh + 2 * grow, Math.max(2, Math.min(10, Math.min(w, hh) * 0.08)) + grow);
+    };
+    // The layers inside a place, as bands: the backbone along a metro's top, aggregation
+    // and power along a hub's, and what is behind the access node in a site.
+    const zone = (x, y, w, hh, fill, name, above) => {
+      g.globalAlpha = 0.75; g.fillStyle = fill; g.beginPath(); g.roundRect(x, y, w, hh, Math.min(8, hh * 0.25)); g.fill(); g.globalAlpha = 1;
+      if (name && hh >= 22 && w > 260) { font(9.5, 650); g.fillStyle = muted; g.textAlign = "left"; g.textBaseline = "middle"; g.fillText(name, x + 8, above ? y - 8 : y + hh / 2); }
+    };
+    const zones = (c) => {
+      const w = c.w * k, hh = c.h * k, x0 = sx(c.x) - w / 2, y0 = sy(c.y) - hh / 2;
+      if (w > W * 3) return;
+      if (c.kind === "metro" && hh > 120) zone(x0 + w * 0.02, y0 + hh * 0.105, w * 0.96, hh * 0.11, v("--surface-2"), "BACKBONE", true);
+      else if (c.kind === "hub" && hh > 50) zone(x0 + w * 0.03, y0 + hh * 0.115, w * 0.94, hh * 0.155, surface, "AGGREGATION · POWER", true);
+      else if (c.kind === "site" && hh > 60) {
+        if (shapeOf(c) === "circle") { g.strokeStyle = line; g.lineWidth = 1; g.setLineDash([3, 4]); g.beginPath(); g.arc(sx(c.x), sy(c.y), 0.33 * Math.min(w, hh), 0, Math.PI * 2); g.stroke(); g.setLineDash([]); }
+        else zone(x0 + w * 0.04, y0 + hh * 0.31, w * 0.92, hh * 0.65, v("--surface-2"), null, false);
+      }
+    };
     // A name cut to the room it has.
     const fitted = (s, room) => { if (g.measureText(s).width <= room) return s; while (s.length > 1 && g.measureText(s + "…").width > room) s = s.slice(0, -1); return s.length > 1 ? s + "…" : ""; };
     const badge = (x, y, n, color) => {
@@ -2208,6 +2238,7 @@ function mapPage(body, app, path) {
       g.stroke();
       const m = found && found.places[c.id];
       if (m && isDeep) { g.lineWidth = 3; g.strokeStyle = accent; g.setLineDash([5, 4]); box(c, 4); g.stroke(); g.setLineDash([]); }
+      if (!isDeep) zones(c);
     };
     const short = (c) => (c.kind === "hub" ? c.name.replace(/^.* hub /, "Hub ") : c.kind === "site" ? c.name.replace(/,.*$/, "") : c.name);
     const label = (c, isDeep) => {
@@ -2220,7 +2251,7 @@ function mapPage(body, app, path) {
         g.textAlign = "center";
         if (w > 34 && hh > 16) {
           font(w > 120 ? 15 : w > 60 ? 12 : 10, 600); g.fillStyle = text;
-          const two = hh > 70 && w > 80, low = c.kind === "site" ? hh * 0.12 : 0;
+          const two = hh > 70 && w > 80, low = c.kind === "site" ? hh * (shapeOf(c) === "circle" ? 0.26 : 0.12) : 0;
           g.fillText(fitted(w > 60 || c.kind !== "hub" ? short(c) : short(c).replace("Hub ", ""), w - 8), x, y + low - (two ? 8 : 0));
           if (two) { font(11, 400); g.fillStyle = muted; g.fillText(`${C.fmt.n(c.children)} objects`, x, y + low + 10); }
         }
@@ -2230,9 +2261,10 @@ function mapPage(body, app, path) {
         if (strip >= 7) {
           const px = Math.max(9.5, Math.min(c.kind === "region" ? 13 : 14, strip * 0.72));
           font(px, c.kind === "site" ? 500 : 650); g.fillStyle = c.kind === "site" ? muted : text2; g.textAlign = "left";
-          const pad = Math.max(5, Math.min(12, w * 0.03));
+          const pad = Math.max(5, Math.min(12, w * 0.03)), sh = shapeOf(c);
           const name = c.kind === "region" ? c.name.toUpperCase() : short(c);
-          g.fillText(fitted(name, w - 2 * pad), x0 + pad, y0 + Math.max(strip / 2 + 1, px * 0.5 + 3));
+          if (sh === "circle") { g.textAlign = "center"; g.fillText(fitted(name, w * 0.5), x, y0 + hh / 2 - Math.min(w, hh) * 0.42); }
+          else g.fillText(fitted(name, w - 2 * pad - (sh === "park" ? w * 0.2 : 0)), x0 + pad + (sh === "park" ? w * 0.1 : 0), y0 + Math.max(strip / 2 + 1, px * 0.5 + 3));
         }
       }
       if (isDeep) {
@@ -2259,6 +2291,15 @@ function mapPage(body, app, path) {
       }
       for (const c of all) if (c.kind === kind) place(c, kind === deepest);
     }
+    // Before single objects are read, the backbone's devices still stand in their band.
+    if (t === 2 && base.core) for (const n of base.core) {
+      const x = sx(n.x), y = sy(n.y), s = Math.max(1.8, Math.min(4, base.hub_r * k * 0.12));
+      if (x < 0 || x > W || y < 0 || y > H) continue;
+      g.fillStyle = hot.devices[n.id] ? crit : text2;
+      g.beginPath();
+      if (n.kind === "agg") { g.moveTo(x, y - s * 1.3); g.lineTo(x + s * 1.3, y); g.lineTo(x, y + s * 1.3); g.lineTo(x - s * 1.3, y); g.closePath(); } else g.rect(x - s, y - s, s * 2, s * 2);
+      g.fill();
+    }
     // Links, then sites, then the objects themselves.
     let drawn = 0;
     if (t >= 3) {
@@ -2283,9 +2324,12 @@ function mapPage(body, app, path) {
         const s = n.layer === "premises" ? Math.max(2.2, Math.min(6, base.site_r * k * 0.045)) : n.layer === "access" ? Math.max(3.5, Math.min(8, base.site_r * k * 0.16)) : Math.max(3.5, Math.min(9, base.hub_r * k * 0.035));
         g.fillStyle = sc || (n.layer === "core" ? text : n.layer === "aggregation" ? text2 : n.layer === "power" ? v("--seq-5") : n.layer === "access" ? text2 : muted);
         g.beginPath();
-        if (n.layer === "core") g.rect(x - s, y - s, s * 2, s * 2);
-        else if (n.layer === "aggregation") { g.moveTo(x, y - s * 1.3); g.lineTo(x + s * 1.3, y); g.lineTo(x, y + s * 1.3); g.lineTo(x - s * 1.3, y); g.closePath(); }
-        else if (n.layer === "power") { g.moveTo(x, y - s * 1.2); g.lineTo(x + s * 1.1, y + s); g.lineTo(x - s * 1.1, y + s); g.closePath(); }
+        const kd = n.kind;
+        if (kd === "hub-router" || kd === "agg") { g.moveTo(x, y - s * 1.3); g.lineTo(x + s * 1.3, y); g.lineTo(x, y + s * 1.3); g.lineTo(x - s * 1.3, y); g.closePath(); }
+        else if (n.layer === "core") g.rect(x - s, y - s, s * 2, s * 2);
+        else if (kd === "power") { g.moveTo(x, y + s * 1.2); g.lineTo(x + s * 1.15, y - s); g.lineTo(x - s * 1.15, y - s); g.closePath(); }
+        else if (kd === "cell" || kd === "radio") { g.moveTo(x, y - s * 1.25); g.lineTo(x + s * 1.15, y + s); g.lineTo(x - s * 1.15, y + s); g.closePath(); }
+        else if (kd === "switch" || kd === "cpe") g.roundRect(x - s * 0.9, y - s * 0.9, s * 1.8, s * 1.8, s * 0.3);
         else g.arc(x, y, s, 0, Math.PI * 2);
         g.fill();
         if (sc && n.state !== "impacted") { g.strokeStyle = sc; g.globalAlpha = 0.35; g.lineWidth = 4; g.beginPath(); g.arc(x, y, s + 5, 0, Math.PI * 2); g.stroke(); g.globalAlpha = 1; }
@@ -2330,6 +2374,7 @@ function mapPage(body, app, path) {
       const have = new Set(shown.nodes.map((n) => n.id));
       for (const r of found.rows) if (!have.has(r.id)) { const x = sx(r.x), y = sy(r.y); if (x > 0 && x < W && y > 0 && y < H) { g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.stroke(); } }
     }
+    shapes.style.display = t >= 3 ? "" : "none";
     const level = ["", "regions and metros", "hubs", "devices and sites", "every object"][t];
     stats.textContent = base ? `${level} · ${t >= 3 ? `${C.fmt.n(drawn)} of ${C.fmt.n(base.objects)} objects drawn, window read in ${C.fmt.ms(shown.ms)}${shown.cut ? " (cut at 9,000 rows)" : ""}` : `${C.fmt.n(base.objects)} objects, ${C.fmt.n(base.links)} links`}` : "";
   }
