@@ -42,9 +42,14 @@ on:
 # A newer push to main replaces an older one still building; each pull
 # request keeps one run.
 # (A CI run's group names its repository as well as its branch, so that a
-# fork's pull request from a branch called main cannot cancel main's.)
+# fork's pull request from a branch called main cannot cancel main's.) Only
+# a run that builds is in that group: one started by a CI run that failed or
+# was cancelled builds nothing, and must not cancel the build of the last
+# green commit, so it has a group of its own. CI's runs by hand and at night
+# are in a group apart from its pushes, so that the run a release tag needs
+# on an older commit cannot cancel the build of main's newest.
 concurrency:
-  group: image-${{ github.event_name == 'workflow_run' && format('{0}:{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || github.ref }}
+  group: image-${{ github.event_name == 'workflow_run' && (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' && format('{0}:{1}:{2}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch, github.event.workflow_run.event) || format('nothing-{0}', github.run_id)) || github.ref }}
   cancel-in-progress: true
 
 permissions:
