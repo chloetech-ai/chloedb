@@ -108,6 +108,13 @@ const CSS = `
   .sx-home-grid { grid-template-columns: minmax(0, 1fr); }
   .sx-fbar { grid-template-columns: 80px auto minmax(0, 1fr); }
   .sx-stats .opt { display: none; }
+}
+/* A phone: the formatting tools in one row that scrolls sideways, not four
+   rows over the grid; a card's tools under its title, not past its edge. */
+@media (max-width: 600px) {
+  .sx-tools { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  .sx-tools > * { flex: none; }
+  .sx-home-grid .card > .hd { flex-wrap: wrap; row-gap: 8px; }
 }`;
 
 // ---------------------------------------------------------------- small things

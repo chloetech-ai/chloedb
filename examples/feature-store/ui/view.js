@@ -19,7 +19,9 @@ const CSS = `
 .fs-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .fs-kpis .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
 .fs-kpis .delta { max-width: none; }
-.fs-pipe { width: 100%; height: auto; display: block; }
+.fs-pipe { width: 100%; min-width: 760px; height: auto; display: block; }
+/* On a phone the diagram keeps a readable size and scrolls sideways. */
+:has(> .fs-pipe) { overflow-x: auto; }
 .fs-pipe .node rect { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.2; }
 .fs-pipe .node.k-stream rect { stroke: var(--s1); }
 .fs-pipe .node.k-batch rect { stroke: var(--s4); }
