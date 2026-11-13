@@ -6,7 +6,7 @@ This page starts a server with Sheets and ChloeCtx beside it and uses both throu
 
 <!-- run: needs chloedb-server chloedb-sheets chloectx -->
 
-You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.3.1 --> From release 0.3.1, the installer puts the three there prebuilt, with nothing to compile:
+You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.3.2 --> From release 0.3.2, the installer puts the three there prebuilt, with nothing to compile:
 
 ```sh
 # install

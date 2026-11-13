@@ -4,7 +4,7 @@
 
 <!-- run: needs chloedb-server chloedb-crawl -->
 
-You need `chloedb-server` and `chloedb-crawl` on your `PATH`. <!-- since 0.3.1 --> From release 0.3.1, the installer puts both there prebuilt, with nothing to compile:
+You need `chloedb-server` and `chloedb-crawl` on your `PATH`. <!-- since 0.3.2 --> From release 0.3.2, the installer puts both there prebuilt, with nothing to compile:
 
 ```sh
 # install

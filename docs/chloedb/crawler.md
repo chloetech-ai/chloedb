@@ -39,7 +39,7 @@ chloedb-crawl serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --toke
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000
 ```
 
-`--server` was `--strata` before 0.3.1; the old name still works.
+`--server` was `--strata` before 0.3.2; the old name still works.
 
 and the coordinator shows it as an app when told where it is, with the crawler's token:
 
@@ -125,7 +125,7 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `rules` | | fields from CSS selectors, as above |
 | `learn` | on | learn the site's template |
 | `embed` | | a model to embed the title and body with, into `emb` |
-| `user_agent` | `chloedb-crawl/0.3.1 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `chloedb-crawl` (or `strata-crawl`, its old name) |
+| `user_agent` | `chloedb-crawl/0.3.2 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `chloedb-crawl` (or `strata-crawl`, its old name) |
 | `contact` | `--contact` of `chloedb-crawl serve` (or `CHLOEDB_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `chloedb-crawl/<version> (+https://...; ops@example.com)` |
 | `timeout_ms`, `max_bytes`, `batch` | 20,000, 5 MB, 200 | |
 
