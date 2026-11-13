@@ -2318,6 +2318,50 @@ test('apps reach a model and the web only when switched on: cached answers, dail
   assert.equal(fetched.length, 1);
   // another app has its own switches
   await assert.rejects(reach.ask('b2', 'Sum up these notes'), /switched off/);
+  // an app's calls count apart from the studio's builds, and stop at the
+  // app's dollars for the day, whatever its count of asks (audit N-G3)
+  assert.equal(calls.at(-1).bucket, 'asks');
+  (await reach.count('a1')).usd = 5;
+  await assert.rejects(reach.ask('a1', 'One more, about the menu'), (e) => e.refused && e.status === 429 && /cost \$5\.00 today, its limit \(\$2\)/.test(e.message));
+});
+
+test("apps' own model calls have a share of the spending limit of their own, and builds the rest", async () => {
+  const { spend, overCap } = await import('../engine/llm.mjs');
+  const was = { ...spend };
+  try {
+    Object.assign(spend, { cap: 10, asksCap: 2.5, usd: 0, asksUsd: 0, refused: 0, file: null });
+    assert.equal(overCap('build'), null);
+    assert.equal(overCap('asks'), null);
+    // the apps spend their share: they stop, the builds go on
+    Object.assign(spend, { usd: 2.5, asksUsd: 2.5 });
+    assert.match(overCap('asks').message, /apps have reached their share/);
+    assert.equal(overCap('asks').status, 402);
+    assert.equal(overCap('build'), null);
+    // builds spend theirs: they stop, and apps that have some left go on
+    Object.assign(spend, { usd: 8, asksUsd: 0.5 });
+    assert.match(overCap('build').message, /\$7\.50 of \$7\.5 for builds/);
+    assert.equal(overCap('asks'), null);
+    Object.assign(spend, { usd: 10, asksUsd: 1 });
+    assert.match(overCap('asks').message, /reached its spending limit/);
+    // no cap: nothing is refused
+    Object.assign(spend, { cap: 0, asksCap: 0, usd: 100, asksUsd: 100 });
+    assert.equal(overCap('build'), null);
+    assert.equal(overCap('asks'), null);
+  } finally {
+    Object.assign(spend, was);
+  }
+});
+
+test('a published app suggests changes rather than building them, unless its owner says', async () => {
+  const settings = new Map();
+  const store = { setting: async (a, n) => settings.get(`${a}:${n}`) ?? null, putSetting: async (a, n, v) => { settings.set(`${a}:${n}`, String(v)); } };
+  const ev = new Evolver({ engine: { store }, submit: async () => ({}), propose: async () => [] });
+  const { DEFAULT_MODE } = await import('../engine/evolve.mjs');
+  assert.equal(await ev.mode('a'), DEFAULT_MODE);
+  settings.set('a:publish', JSON.stringify({ on: true }));
+  assert.equal(await ev.mode('a'), DEFAULT_MODE === 'build' ? 'suggest' : DEFAULT_MODE);
+  await ev.setMode('a', 'build');
+  assert.equal(await ev.mode('a'), 'build');
 });
 
 test('a function waits for app.ask outside its time limit, and a refusal stays a refusal', async () => {
