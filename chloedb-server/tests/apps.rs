@@ -201,10 +201,12 @@ async fn apps_that_do_not_answer_do_not_hold_up_the_listing() {
     assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
 }
 
-/// A stand-in for chloedb-sheets: serves `--listen`, asks for its token,
-/// and answers `/env` with the names of the settings it was given.
+/// A stand-in for chloedb-sheets: serves the socket the server hands it
+/// (`CHLOEDB_LISTEN_FD`, which it requires: the port is the server's, and
+/// binding it would fail), asks for its token, and answers `/env` with the
+/// names of the settings it was given.
 const FAKE_SHEETS: &str = r#"#!/usr/bin/env python3
-import http.server, json, os, sys
+import http.server, json, os, socket, sys
 args = sys.argv[1:]
 listen = args[args.index("--listen") + 1]
 host, port = listen.rsplit(":", 1)
@@ -220,8 +222,13 @@ class H(http.server.BaseHTTPRequestHandler):
             body = {"env": sorted(os.environ), "args": args, "start_apps": os.environ.get("CHLOEDB_START_APPS"), "key_prefix": os.environ.get("CHLOEDB_KEY", "")[:3]}
         b = json.dumps(body).encode()
         self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b)
+sock = socket.socket(fileno=int(os.environ["CHLOEDB_LISTEN_FD"]))
+assert sock.getsockname()[1] == int(port), (sock.getsockname(), port)
+srv = http.server.HTTPServer((host, int(port)), H, bind_and_activate=False)
+srv.socket.close()
+srv.socket = sock
 print("fake sheets up on " + listen, file=sys.stderr, flush=True)
-http.server.HTTPServer((host, int(port)), H).serve_forever()
+srv.serve_forever()
 "#;
 
 fn alive(pid: i32) -> bool {
@@ -310,9 +317,12 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
     assert!(env["args"].as_array().unwrap().iter().any(|a| a == &json!(base)), "it calls this server back: {env}");
     // Its output is the server's log, and the listing's tail.
     assert!(up["process"]["tail"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("fake sheets up")), "{up}");
-    // Killed, it is started again.
+    // Killed, it is started again, on the same socket: the port stays the
+    // server's while the app is down, so no one else can take it.
     let pid = up["process"]["pid"].as_i64().unwrap() as i32;
     unsafe { libc::kill(pid, libc::SIGKILL) };
+    let app_addr = up["url"].as_str().unwrap().trim_start_matches("http://").to_string();
+    assert!(std::net::TcpListener::bind(&app_addr).is_err(), "{app_addr} is free while the app is down");
     let t0 = std::time::Instant::now();
     let again = loop {
         let a = listing().await;
@@ -323,6 +333,7 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert_eq!(again["process"]["restarts"], 1, "{again}");
+    assert_eq!(again["url"], up["url"], "the same port");
     let keys = app_keys().await;
     assert!(keys.len() == 1 && keys[0]["id"] != first_key, "started again with a new key, the old one ended: {keys:?}");
     assert!(again["process"]["last_exit"].as_str().unwrap().contains("exited"), "{again}");

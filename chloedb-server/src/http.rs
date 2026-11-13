@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`chloedb::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, steps?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and with `steps` or `profile` in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
 //! | `DELETE /v1/query/cursors/:id` | | `{closed}`: a scroll ended before its last page |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`chloedb::rank_log::export`]) |
@@ -1400,7 +1400,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     };
     let req = QueryReq {
         sql: body_str(&b, "sql")?.to_string(),
-        params: app.svc.params(b.get("params")).await?,
+        params: app.svc.params(Some(&who), b.get("params")).await?,
         timeout_ms: body_u64(&b, "timeout_ms"),
         shard: b.get("shard").and_then(|v| v.as_bool()).unwrap_or(false),
         stats,
@@ -1411,6 +1411,17 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
+    // The answer cache knows the query by its SQL and the statistics it
+    // was sent ([`crate::answers`]); its parameters are added after they
+    // are read.
+    let cache_key = (!crate::answers::volatile(&req.sql)).then(|| {
+        let stats = b.get("stats").map(|s| s.to_string()).unwrap_or_default();
+        crate::answers::KeyBuilder::default().part(b"http").part(req.sql.as_bytes()).part(stats.as_bytes()).finish()
+    });
+    let req = QueryReq { cache_key, ..req };
+    // A client's answer has its steps when asked for ([`wants_steps`]); a
+    // shard's has them for its coordinator.
+    let req = QueryReq { skip_steps: !req.shard && !wants_steps(&b), ..req };
     if let Some(log) = b.get("log") {
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
@@ -1494,8 +1505,12 @@ async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
 /// answer gives them).
 async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = chloedb::rank_log::Log::from_json(log)?;
+    let skip = req.skip_steps;
     let (a, served, w) = app.svc.query_logged(who, req, log).await?;
     let mut j = answer(&a);
+    if skip {
+        without_steps(&mut j);
+    }
     if objects {
         as_objects(&mut j);
     }
@@ -1704,10 +1719,29 @@ async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principa
 /// (`"objects": true`; [`as_objects`]).
 fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
     let mut j = answer(a);
+    if !wants_steps(b) && !body_bool(b, "shard")? {
+        without_steps(&mut j);
+    }
     if body_bool(b, "objects")? {
         as_objects(&mut j);
     }
     Ok(j)
+}
+
+/// Whether a client asked for its answer's timed steps (`stats.steps`):
+/// `"steps": true`, or `"profile": true`, which measures their CPU time.
+/// Without, an answer leaves them out (they are most of its bytes), and
+/// the list of queries (`/v1/queries`) keeps them all the same.
+fn wants_steps(b: &Json) -> bool {
+    ["steps", "profile"].iter().any(|k| b.get(*k).and_then(|v| v.as_bool()) == Some(true))
+}
+
+/// An answer without its timed steps ([`wants_steps`]).
+fn without_steps(j: &mut Json) {
+    if let Some(s) = j.get_mut("stats").and_then(Json::as_object_mut) {
+        s.remove("steps");
+        s.remove("steps_dropped");
+    }
 }
 
 /// An answer's rows as objects, `{"id": "p1", "price": 9.5}`, in place of
@@ -1736,8 +1770,8 @@ pub fn as_objects(j: &mut Json) {
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
+    let params = app.svc.params(Some(&w), b.get("params")).await?;
     if w.limited() && b.get("log").is_some() {
         return Err(w.may_server("a logged query").unwrap_err());
     }
@@ -1896,6 +1930,12 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
         // none.
         let mut seen = std::collections::BTreeSet::new();
         for op in &ops {
+            // A source's offset is the stream's, whatever table the op
+            // writes: a key limited to tables could stop another table's
+            // stream by marking its offset far ahead.
+            if has_source(op) || is_mark(op) {
+                return Err(who.may_server("an operation with a \"source\" (a stream's offset)").unwrap_err());
+            }
             let table = match &op["table"] {
                 Json::Null => None,
                 Json::String(t) => Some(t.as_str()),
@@ -2779,7 +2819,8 @@ async fn convert_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(json!({"model": made, "from": name, "state": "running"})))
 }
 
-async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn embed(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let who = who(w);
     let file = ["image", "audio"].into_iter().find_map(|k| b.get(k).map(|v| (k, v)));
     let what = match file {
         Some((k, v)) => json!({ k: v.as_str().ok_or_else(|| ApiError::bad(format!("{k} is a file in base64")))? }),
@@ -2789,8 +2830,8 @@ async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         None | Some(Json::Null) => Ok(None),
         Some(f) => f.as_str().map(Some).ok_or_else(|| ApiError::bad(format!("{k} is a name"))),
     };
-    let (table, field, _) = app.svc.model(name("table")?, name("field")?)?;
-    let p = app.svc.params(Some(&json!({ "v": { "embed": what, "field": field, "table": table } }))).await?;
+    let (table, field, _) = app.svc.model_for(Some(&who), name("table")?, name("field")?)?;
+    let p = app.svc.params(Some(&who), Some(&json!({ "v": { "embed": what, "field": field, "table": table } }))).await?;
     match p.0.get("v") {
         Some(chloedb::value::Value::Vector(v)) => Ok(AxJson(json!({ "table": table, "field": field, "vector": &v[..] }))),
         // A multi-vector field's model: a vector a token of the text.
@@ -2841,8 +2882,9 @@ pub fn media_headers(mime: &str, sha256: &str) -> HeaderMap {
 
 async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    reads_ok(&app, &who(w), sql)?;
-    let params = app.svc.params(b.get("params")).await?;
+    let who = who(w);
+    reads_ok(&app, &who, sql)?;
+    let params = app.svc.params(Some(&who), b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
@@ -2970,7 +3012,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(_) => format!(" WHERE {}", body_str(&b, "where")?),
     };
     let sql = format!("SELECT COUNT(*) FROM {}{filter}", chloedb::query::sql::ident(&table));
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let next = app.svc.sid_next(&sql, None, &params, field, &prefixes, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     let next: Vec<Json> = prefixes
         .iter()
@@ -2981,7 +3023,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 }
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
@@ -4354,7 +4396,7 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// "local"`.
 async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let timeout = app.svc.timeout_of(body_u64(&b, "timeout_ms"));
     let local = match b.get("scope").and_then(|v| v.as_str()) {
         None | Some("cluster") => false,

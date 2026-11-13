@@ -34,7 +34,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh    # into ~/.l
 chloedb-server --demo 20000 --db products.chloedb
 ```
 
-Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
+Open http://127.0.0.1:7700 for the command center: your tables, searchable from one box by words or by meaning, saved searches that code and agents call, a SQL workbench, the health of the server or cluster, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
 
 Or run the container image, which serves `/data/chloedb.chloedb`:
 
@@ -65,7 +65,7 @@ More in [the server guide](docs/chloedb/server.md).
 
 | language | install | guide |
 |---|---|---|
-| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
+| Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
 | JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.0` release | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
 | Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
@@ -109,6 +109,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[ChloeCtx](#chloectx-long-term-memory-for-claude-code)**: long-term memory for Claude Code.
 - **[chloedb-crawl](docs/chloedb/crawler.md)**: give it a URL and it turns the site into a table, adding shards as the table grows.
 - **[chloedb-sheets](docs/chloedb/sheets.md)**: spreadsheets whose cells are rows, with formulas, charts, pivots and SQL queries of the cluster.
+- **[chloedb-netops](docs/chloedb/netops.md)**: a network operations center in tables: the shift's worklist, incidents grouped over the topology with a board per incident, changes, carriers, agents that show their SQL, and a leadership view. Ships with a simulated carrier network.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
 

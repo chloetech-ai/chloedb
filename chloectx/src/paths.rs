@@ -232,6 +232,22 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Makes a new directory under the system's temporary directory that only
+/// its owner can open, with a name no one can guess or make first
+/// (`mkdtemp`): a capsule's copy and a pack's backup of the store go there.
+pub fn private_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut tmpl = std::env::temp_dir().join(format!("{prefix}-XXXXXX")).into_os_string().as_bytes().to_vec();
+    tmpl.push(0);
+    // SAFETY: a NUL-terminated buffer that mkdtemp rewrites in place.
+    let p = unsafe { libc::mkdtemp(tmpl.as_mut_ptr() as *mut libc::c_char) };
+    if p.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    tmpl.pop();
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&tmpl)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

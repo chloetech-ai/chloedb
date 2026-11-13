@@ -265,6 +265,17 @@ pub struct QueryReq {
     /// shard leaves out the boost's inputs' top rows
     /// ([`ExecOptions::boost_inputs`]). False answers them, for any other.
     pub boosts_alone: bool,
+    /// Answer without the timed steps (`stats.steps`), which are kept in
+    /// the list of queries all the same: a client's query that did not ask
+    /// for them, and a coordinator's shards for it. Most of an answer's
+    /// bytes are its steps, and a coordinator spends a sixth of its CPU
+    /// reading its shards' and writing them out again.
+    pub skip_steps: bool,
+    /// What names the query for the answer cache ([`crate::answers`]): its
+    /// SQL and what a coordinator sent with it (plan, statistics), made
+    /// where the request arrived; its parameters and this server's
+    /// settings are added here. `None`: not cached.
+    pub cache_key: Option<crate::answers::Key>,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -618,6 +629,16 @@ pub struct Service {
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
+    /// How long a client's query waits for a slot before it is refused
+    /// with 429 (`--admission-wait-ms`); `None`: until its deadline. A
+    /// query that waits its whole deadline in a queue only holds a client
+    /// longer, so past saturation a short wait keeps the latency of the
+    /// queries that run near the latency of an idle server, and the
+    /// throughput at its peak. A shard's calls from its coordinator always
+    /// wait until their deadline: the coordinator's own slots bound them.
+    pub admission_wait: Option<Duration>,
+    /// Answers kept between queries ([`crate::answers`]; `None`: none).
+    pub answers: Option<Arc<crate::answers::AnswerCache>>,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
     /// Models queries named in `embed('model', ..)`, opened from the models
@@ -785,6 +806,8 @@ impl Service {
             stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
+            admission_wait: None,
+            answers: None,
             embedding: Arc::new(Semaphore::new(cores)),
             named_models: Mutex::new(HashMap::new()),
             cores,
@@ -2436,7 +2459,12 @@ impl Service {
     /// model of its tokens, such as ColBERT, is the list of its tokens'
     /// vectors, as `maxsim` takes them; that of a SPARSE field embedded by
     /// a learned sparse model, its term weights, as `similarity` takes them.
-    pub async fn params(self: &Arc<Self>, j: Option<&Json>) -> Result<Params, ApiError> {
+    ///
+    /// `who` is the request's credential: a key limited to tables may read
+    /// a stored vector, or embed by a field's model, only of a table it may
+    /// read. `None` is the server's own caller (an admin's route), whose
+    /// scope was checked already.
+    pub async fn params(self: &Arc<Self>, who: Option<&Principal>, j: Option<&Json>) -> Result<Params, ApiError> {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
         let m = j.as_object().ok_or_else(|| ApiError::bad("params must be an object"))?;
@@ -2444,11 +2472,11 @@ impl Service {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
                     let table = o.get("table").and_then(|f| f.as_str());
-                    let (table, field) = self.vector_field(table, o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, field) = self.vector_field_for(who, table, o.get("field").and_then(|f| f.as_str()))?;
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, field, e) = self.model(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, field, e) = self.model_for(who, o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
@@ -2491,6 +2519,28 @@ impl Service {
             p = p.set(k, value);
         }
         Ok(p)
+    }
+
+    /// [`Service::vector_field`], for `who`: a key limited to tables names
+    /// the table, one it may read, so that nothing is looked up in the
+    /// others (not even whether one has the field).
+    fn vector_field_for(&self, who: Option<&Principal>, table: Option<&str>, field: Option<&str>) -> Result<(String, String), ApiError> {
+        let Some(who) = who.filter(|w| w.limited()) else { return self.vector_field(table, field) };
+        let t = table.ok_or_else(|| ApiError::bad("a key limited to tables names the table of a vector_of parameter: {\"vector_of\": key, \"table\": \"t\"}"))?;
+        who.may_table(Scope::Read, t, "a vector_of parameter")?;
+        self.vector_field(Some(t), field)
+    }
+
+    /// [`Service::model`], for `who`: the table whose field's model embeds
+    /// is one a key limited to tables may read.
+    pub fn model_for(&self, who: Option<&Principal>, table: Option<&str>, field: Option<&str>) -> Result<(String, String, Arc<dyn chloedb::embed::Embedder>), ApiError> {
+        let Some(who) = who.filter(|w| w.limited()) else { return self.model(table, field) };
+        if let Some(t) = table {
+            who.may_table(Scope::Read, t, "an embed parameter")?;
+        }
+        let m = self.model(table, field)?;
+        who.may_table(Scope::Read, &m.0, "an embed parameter")?;
+        Ok(m)
     }
 
     /// The table and VECTOR field `{"vector_of": key}` reads: `field` of
@@ -2682,8 +2732,54 @@ impl Service {
     /// changed since (through another coordinator, or on that shard), the
     /// coordinator asks again and plans once more.
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        let skip = req.skip_steps;
+        let mut a = self.query_steps(req).await?;
+        if skip {
+            a.rs.stats.steps = Vec::new();
+            a.rs.stats.steps_dropped = 0;
+        }
+        Ok(a)
+    }
+
+    /// The key of `req`'s answer in the answer cache ([`crate::answers`]),
+    /// or `None` when it is not cached: no cache, a request that named no
+    /// query ([`QueryReq::cache_key`]), or one whose answer holds more
+    /// than its rows (a lease, a scroll, Arrow columns, measured steps).
+    fn answer_key(&self, req: &QueryReq, table: &str) -> Option<crate::answers::Key> {
+        let base = req.cache_key?;
+        self.answers.as_ref()?;
+        if req.hold || req.scroll.is_some() || req.profile || req.quiet || req.arrow.is_some() {
+            return None;
+        }
+        // Synonyms set while the server runs are part of what a query reads.
+        let synonyms = self.synonyms().map_or(0, |s| Arc::as_ptr(&s) as *const u8 as usize as u64);
+        let flags = [req.shard as u8, req.own_read as u8, req.boosts_alone as u8];
+        Some(
+            crate::answers::KeyBuilder::default()
+                .key(base)
+                .params(&req.params)
+                .part(table.as_bytes())
+                .part(&flags)
+                .part(&synonyms.to_le_bytes())
+                .part(&req.stats_version.to_le_bytes())
+                .part(&self.max_rows.unwrap_or(0).to_le_bytes())
+                .finish(),
+        )
+    }
+
+    /// [`Self::query`], with its steps.
+    async fn query_steps(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
+        self.dispatch(req).await
+    }
+
+    /// [`Self::query`] of a query the Contain rules admitted: a query that
+    /// runs as steps runs each step here, under the turn its statement
+    /// took, rather than asking for another (a rule that lets one query of
+    /// a key run at a time would otherwise refuse the statement's second
+    /// step while its first holds the turn).
+    async fn dispatch(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // A query that asks a language model about its rows
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
@@ -2694,23 +2790,65 @@ impl Service {
         // from its shards), and the choice here.
         if req.plan.is_none() && !req.shard && chloedb::query::pack::may_pack(&req.sql) {
             let catalog = self.catalog();
-            let key_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).and_then(|s| s.primary_key.map(|k| s.fields[k].name.clone()));
-            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &key_of)? {
+            let table_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).cloned();
+            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &table_of)? {
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that packs its rows is not scrolled: PACK n TOKENS reads what fills the budget"));
                 }
                 let t0 = Instant::now();
-                let mut last = None;
-                while let Some(sql) = p.next_query()? {
-                    let mut sub = req.clone();
-                    sub.sql = sql;
-                    let mut a = Box::pin(self.query(sub)).await?;
-                    p.feed(std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }))?;
-                    last = Some(a);
+                let deadline = t0 + self.timeout_of(req.timeout_ms);
+                // Every read of one version: on a server, the client's
+                // lease, or one held for the pack and released after it
+                // (kept for the client with `hold`). A coordinator's shards
+                // each read their latest.
+                let local = matches!(self.backend, Backend::Local(_));
+                let mut lease = req.snapshot;
+                let (mut last, mut failed) = (None, None);
+                loop {
+                    let step: Result<Option<Answer>, ApiError> = async {
+                        let Some(next) = p.next_query()? else { return Ok(None) };
+                        let mut sub = req.clone();
+                        // As text that reads back as the very query.
+                        sub.sql = next.sql()?;
+                        sub.params = next.params;
+                        (sub.snapshot, sub.hold, sub.release) = (lease, local && lease == 0, false);
+                        // What is left of the statement's time, not a
+                        // deadline of each read's own.
+                        sub.timeout_ms = (deadline.saturating_duration_since(Instant::now()).as_millis() as u64).max(1);
+                        let mut a = Box::pin(self.dispatch(sub)).await?;
+                        p.feed(std::mem::replace(&mut a.rs, no_rows()))?;
+                        Ok(Some(a))
+                    }
+                    .await;
+                    match step {
+                        Ok(Some(a)) => {
+                            if lease == 0 {
+                                lease = a.lease;
+                            }
+                            last = Some(a);
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            failed = Some(e);
+                            break;
+                        }
+                    }
                 }
-                let packed = p.finish(None, None)?;
+                let read = match (local, lease) {
+                    (true, l) if l != 0 => self.leased(l).ok().map(|s| (s.txn(), s.seq_no())),
+                    _ => None,
+                };
+                let made = lease != req.snapshot && lease != 0;
+                if (made && (!req.hold || failed.is_some())) || (req.release && req.snapshot != 0) {
+                    self.release(&[lease]);
+                }
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+                let packed = p.finish(read.map(|r| r.0), read.and_then(|r| r.1))?;
                 let Some(mut a) = last else { return Err(ApiError::bad("PACK: the query read no rows")) };
                 a.rs = packed.rs;
+                a.lease = if req.hold { lease } else { 0 };
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -2727,7 +2865,7 @@ impl Service {
                 loop {
                     let mut source = req.clone();
                     (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql_of(&schema, rows)?, None, false, true);
-                    let mut a = Box::pin(self.query(source)).await?;
+                    let mut a = Box::pin(self.dispatch(source)).await?;
                     let t0 = Instant::now();
                     let chunks = c.finish(&a.rs);
                     if let Some(more) = c.more_rows(rows, &a.rs, &chunks) {
@@ -2756,7 +2894,7 @@ impl Service {
                 }
                 let mut second = req.clone();
                 second.sql = u.rewrite(&made)?.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
@@ -2775,7 +2913,7 @@ impl Service {
                 for f in x.feedback(&schemas)? {
                     let mut fr = req.clone();
                     (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
-                    rows.push(Box::pin(self.query(fr)).await?.rs);
+                    rows.push(Box::pin(self.dispatch(fr)).await?.rs);
                 }
                 let analyzers = x
                     .fields()
@@ -2788,7 +2926,7 @@ impl Service {
                 let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
                 let mut second = req.clone();
                 second.sql = rewritten.to_string();
-                let mut a = Box::pin(self.query(second)).await?;
+                let mut a = Box::pin(self.dispatch(second)).await?;
                 a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
@@ -3026,8 +3164,28 @@ impl Service {
                         stale = true;
                         return Ok((no_rows(), Vec::new()));
                     }
+                    // An answer kept for the same query on this version
+                    // ([`crate::answers`]) needs no slot and no executor.
+                    let txn = snap.txn();
+                    let cached = self.answer_key(&req, &schema.table);
+                    if let (Some(k), Some(cache)) = (cached, &self.answers) {
+                        let tc = Instant::now();
+                        if let Some(kept) = cache.get(k, txn) {
+                            let mut rs = (*kept).clone();
+                            rs.stats.steps.push(chloedb::query::steps::Step {
+                                op: "answer cache".into(),
+                                detail: format!("the answer of this query on version {txn}"),
+                                start_us: steps::us_at(tc),
+                                us: steps::tenth(tc.elapsed().as_nanos() as f64 / 1e3),
+                                rows: Some(rs.rows.len() as u64),
+                                ..Default::default()
+                            });
+                            telemetry::record("answer cache", tc, "hit");
+                            return Ok((rs, Vec::new()));
+                        }
+                    }
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await.ok_or_else(too_many);
+                    let permit = self.admit(self.admission_budget(timeout, req.shard)).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
                     let permit = permit?;
                     lease = self.held(&req, &snap, timeout)?;
@@ -3092,6 +3250,9 @@ impl Service {
                         Ok((r, started, ended)) => {
                             let (mut rs, ipc, scrolled) = r?;
                             steps::around(&mut rs.stats.steps, te, started, ended, back);
+                            if let (Some(k), Some(cache), true, None) = (cached, &self.answers, ipc.is_empty(), &scrolled) {
+                                cache.put(k, txn, &rs);
+                            }
                             arrow = ipc;
                             if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
                                 cursor = self.keep_scroll(scroll::Paged::Db(s), Some(snap.clone()), &schema.table, &req.sql, ask, req.shard, scroll_stats)?;
@@ -3106,7 +3267,7 @@ impl Service {
             Backend::Cluster(c) => {
                 LiveQueries::run(&live, async {
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await;
+                    let permit = self.admit(self.admission_budget(timeout, false)).await;
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
@@ -3396,6 +3557,15 @@ impl Service {
         too_many()
     }
 
+    /// How long a query with deadline `timeout` may wait for a slot: until
+    /// its deadline, or [`Self::admission_wait`] for a client's query.
+    fn admission_budget(&self, timeout: Duration, shard: bool) -> Duration {
+        match self.admission_wait {
+            Some(w) if !shard => w.min(timeout),
+            _ => timeout,
+        }
+    }
+
     /// A query slot, waited for until `timeout`; `None` (counted as
     /// rejected) if none came free.
     async fn admit(&self, timeout: Duration) -> Option<OwnedSemaphorePermit> {
@@ -3551,6 +3721,23 @@ impl Service {
         db.expire(chloedb::timestamp::now(), EXPIRE_BATCH)
     }
 
+    /// Refreshes the database's rollups ([`Db::refresh_rollup`]), every
+    /// bucket of each when `full`, as a server that takes writes does
+    /// every few seconds ([`crate::server::spawn_rollups`]): not a replica,
+    /// which applies the rollups' writes its primary ships. The buckets it
+    /// folded again.
+    pub fn refresh_rollups_due(&self, full: bool) -> chloedb::Result<u64> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() || self.moving.mask().is_some() {
+            return Ok(0);
+        }
+        let mut folded = 0;
+        for r in db.rollups()? {
+            folded += db.refresh_rollup(&r.name, full)?.folded;
+        }
+        Ok(folded)
+    }
+
     /// Deletes the database's records of idempotency keys older than
     /// [`idem::TTL`] ([`idem::forget_expired`]), as a server that takes
     /// writes does every minute ([`crate::server::spawn_key_forgetter`]):
@@ -3685,6 +3872,11 @@ impl Service {
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
         }
+        // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`
+        // ([`chloedb::query::rollup`]).
+        if let Some(st) = chloedb::query::rollup::parse_statement(sql)? {
+            return self.rollup_statement(who, st, sql, timeout_ms).await;
+        }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function ([`chloedb::query::table_synonyms`]).
         if let Some(st) = chloedb::query::table_synonyms::parse_statement(sql)? {
@@ -3792,6 +3984,58 @@ impl Service {
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
     }
 
+    /// A rollup's statement ([`chloedb::query::rollup`]), on a database of
+    /// its own: `CREATE ROLLUP` and `DROP ROLLUP` as table statements are
+    /// ([`Self::ddl`]), `REFRESH ROLLUP` answered with what it did.
+    async fn rollup_statement(self: &Arc<Self>, who: &Principal, st: chloedb::query::rollup::Statement, sql: &str, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::rollup::Statement;
+        who.may(Scope::Admin, "a rollup statement")?;
+        if who.limited() {
+            return Err(ApiError::bad("query error: a rollup statement needs a key that is not limited to tables"));
+        }
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("query error: rollups do not run through a coordinator yet; each shard keeps its own"));
+        };
+        let t0 = Instant::now();
+        match st {
+            Statement::Refresh { name, full } => {
+                self.takes_writes()?;
+                let db = db.clone();
+                let s = tokio::task::spawn_blocking(move || db.refresh_rollup(&name, full)).await.map_err(ApiError::internal)??;
+                let columns = ["buckets_checked", "buckets_folded", "rows_written", "seconds"].map(String::from).to_vec();
+                let rows = vec![vec![Value::Int(s.checked as i64), Value::Int(s.folded as i64), Value::Int(s.rows_written as i64), Value::Float(s.seconds)]];
+                let rs = ResultSet { columns, rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+                Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "rollup", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+            }
+            Statement::Create { rollup, if_not_exists } => {
+                // Made here, and folded by the refresher a few seconds on:
+                // a long table's first fold takes minutes.
+                keys::note(obs::truncate(sql, 500).into_owned());
+                self.takes_writes()?;
+                let _entry = self.moving.enter();
+                self.not_held()?;
+                let by = self.admitted();
+                let timeout = self.timeout_of(timeout_ms);
+                let db = db.clone();
+                let w = tokio::task::spawn_blocking(move || {
+                    wait_for_writer(Instant::now() + timeout, || {
+                        db.create_rollup(&rollup, if_not_exists, &db.exec)?;
+                        Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
+                    })
+                })
+                .await
+                .map_err(ApiError::internal)??;
+                let w = self.replicated(w, timeout, by).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+            Statement::Drop { .. } => {
+                keys::note(obs::truncate(sql, 500).into_owned());
+                let w = self.ddl(sql, &Params::new(), timeout_ms, &who.name).await?;
+                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+        }
+    }
+
     /// `CREATE CLASSIFIER`: the rows it trains on read as a query reads
     /// them (a coordinator's from every shard), the classifier trained
     /// here and kept as a stored function ([`Self::ddl`]), answered with
@@ -3837,7 +4081,7 @@ impl Service {
         let functions = self.functions();
         let f = functions.current(name).ok_or_else(|| ApiError::bad(format!("no classifier named {name}")))?;
         let c = chloedb::query::classify::of_function(f)?.ok_or_else(|| ApiError::bad(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
-        let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
+        let p = self.params(None, Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
         let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
         Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
     }
@@ -5118,6 +5362,9 @@ impl Service {
             }
             Backend::Cluster(c) => more.extend(c.metrics()),
         }
+        if let Some(a) = &self.answers {
+            more.extend(a.metrics());
+        }
         self.metrics.render(&more)
     }
 }
@@ -6195,6 +6442,31 @@ mod tests {
         changed.borrow_and_update();
         svc.reopen_models();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    // Past saturation every query waited for a slot until its deadline, so
+    // a server under ten times its capacity answered all of them seconds
+    // late. With an admission wait, a client's query that finds no slot in
+    // time is refused at once (429), while a shard's call from its
+    // coordinator still waits until its deadline.
+    #[tokio::test]
+    async fn a_query_finding_no_slot_within_the_admission_wait_is_refused_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), chloedb::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let deadline = Duration::from_secs(10);
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 1, deadline);
+        assert_eq!(svc.admission_budget(deadline, false), deadline, "no wait set: until the deadline");
+        svc.admission_wait = Some(Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, false), Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, true), deadline, "a shard's call waits until its deadline");
+        assert_eq!(svc.admission_budget(Duration::from_millis(20), false), Duration::from_millis(20), "never past the deadline");
+        let held = svc.admission.clone().acquire_owned().await.unwrap();
+        let t0 = Instant::now();
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_none());
+        assert!(t0.elapsed() < Duration::from_secs(2), "refused after {:?}", t0.elapsed());
+        drop(held);
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_some(), "a free slot is taken at once");
     }
 
     // A primary fenced by a call of the new primary as it kept its vote

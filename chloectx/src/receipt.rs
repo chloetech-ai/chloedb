@@ -21,7 +21,11 @@
 //!
 //! Receipts are kept in their own ChloeDB file beside the store,
 //! `receipts.strata` (table `receipts`), so the store's file and its
-//! format are unchanged, and kept snapshots do not hold receipts.
+//! format are unchanged, and kept snapshots do not hold receipts. The book
+//! flushes every [`BOOK_FLUSH_DOCS`] receipts and when the daemon stops, so
+//! its write-ahead log stays small, merges its segments in the background,
+//! and keeps receipts for [`BookRetention`] (90 days, at most 20,000 by
+//! default), pruned when the daemon starts.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -373,6 +377,10 @@ pub struct Receipt {
     pub text: String,
     pub text_sha: String,
     pub tokens: usize,
+    /// The version of ChloeCtx that wrote it: a replay by another version
+    /// may rank differently for that reason alone, and says so.
+    #[serde(default)]
+    pub chloectx: String,
 }
 
 impl Receipt {
@@ -406,6 +414,7 @@ impl Receipt {
             text: text.to_string(),
             text_sha: sha(text),
             tokens: tokens(text),
+            chloectx: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 }
@@ -467,12 +476,34 @@ pub struct Replayed {
     pub txn: u64,
     pub verdict: Verdict,
     pub rows: Vec<Row>,
+    /// What differs about the replay itself (another embedder, another
+    /// version of ChloeCtx), which can move scores on unchanged records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// What differs between the recall a receipt records and a replay of it
+/// with `live`'s embedder by this version of ChloeCtx.
+fn replay_notes(r: &Receipt, live: &Store) -> Vec<String> {
+    let mut notes = Vec::new();
+    let now_emb = live.embedder.name();
+    if !r.embedder.is_empty() && r.embedder != now_emb {
+        notes.push(format!("the recall embedded its query with {}; this replay embeds it with {now_emb}, so vector scores can differ on unchanged records", r.embedder));
+    }
+    let here = env!("CARGO_PKG_VERSION");
+    if r.chloectx.is_empty() {
+        notes.push(format!("the receipt does not say which version of ChloeCtx wrote it; this replay is by {here}"));
+    } else if r.chloectx != here {
+        notes.push(format!("the receipt was written by ChloeCtx {}; this replay is by {here}, whose ranking may differ", r.chloectx));
+    }
+    notes
 }
 
 /// Replays a receipt: on the snapshot kept at its commit (or else the
 /// nearest later one), and on `live`, the store as it is now.
 pub fn replay(r: &Receipt, snaps: &Snapshots, live: &Store) -> Result<Vec<Replayed>> {
     let mut out = Vec::new();
+    let notes = replay_notes(r, live);
     let (k, on) = match snaps.exact(r.snapshot.txn) {
         Some(k) => (Some(k), "kept snapshot"),
         None => (snaps.after(r.snapshot.txn), "later snapshot"),
@@ -481,16 +512,38 @@ pub fn replay(r: &Receipt, snaps: &Snapshots, live: &Store) -> Result<Vec<Replay
         let s = snaps.open(&k, live.embedder.clone())?;
         s.set_last_seq(r.snapshot.last_seq);
         let o = retrieve(&s, &r.inputs)?;
-        out.push(Replayed { on: on.into(), txn: k.txn, verdict: compare(&r.rows, &o.rows), rows: o.rows, snapshot: Some(k) });
+        out.push(Replayed { on: on.into(), txn: k.txn, verdict: compare(&r.rows, &o.rows), rows: o.rows, snapshot: Some(k), notes: notes.clone() });
     }
     let live = live.pinned();
     let txn = live.db().map_or(0, |_| live.snapshot().txn());
     let o = retrieve(&live, &r.inputs)?;
-    out.push(Replayed { on: "now".into(), snapshot: None, txn, verdict: compare(&r.rows, &o.rows), rows: o.rows });
+    out.push(Replayed { on: "now".into(), snapshot: None, txn, verdict: compare(&r.rows, &o.rows), rows: o.rows, notes });
     Ok(out)
 }
 
 // ---------------------------------------------------------------- the book
+
+/// The receipts the book's memtable holds before it is flushed into a
+/// segment: a receipt is 10 to 30 KB of JSON, and the write-ahead log is
+/// replayed whole when the daemon starts, before it answers the hook that
+/// started it.
+pub const BOOK_FLUSH_DOCS: usize = 256;
+
+/// How long receipts are kept.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BookRetention {
+    /// Receipts older than this are dropped.
+    pub keep_days: i64,
+    /// At most this many (the oldest go first).
+    pub max_receipts: u64,
+}
+
+impl Default for BookRetention {
+    fn default() -> Self {
+        BookRetention { keep_days: 90, max_receipts: 20_000 }
+    }
+}
 
 /// The receipts of one store, in `receipts.strata` beside it.
 pub struct Book {
@@ -516,15 +569,84 @@ fn book_schema() -> Result<Schema> {
     )?)
 }
 
+/// The book's file in the store's directory.
+pub const BOOK_FILE: &str = "receipts.strata";
+
 impl Book {
     pub fn open(store_dir: &Path, sync: bool) -> Result<Book> {
-        let path = store_dir.join("receipts.strata");
+        let path = store_dir.join(BOOK_FILE);
         let mut o = DbOptions::default();
         o.sync = sync;
         o.publish_snapshots = true;
+        o.memtable_max_docs = BOOK_FLUSH_DOCS;
         let db = if path.exists() { Db::open(&path, o)? } else { Db::create(&path, book_schema()?, o)? };
-        db.spawn_flusher();
+        // A log replayed at open is flushed at once: the next start does
+        // not replay it again.
+        if db.storage().file_stats().memtable_docs >= BOOK_FLUSH_DOCS {
+            db.storage().flush()?;
+        }
+        // No background flusher: the commit that fills the memtable flushes
+        // it, so the log stays bounded however busy the machine is
+        // (receipts are written after the answer, off the hooks' path).
+        db.spawn_merger(chloedb::storage::MergerOptions { threads: 1, ..Default::default() });
         Ok(Book { db, writes: Mutex::new(()), n: AtomicU64::new(0) })
+    }
+
+    /// Writes the receipts in memory to the file (the daemon stops).
+    pub fn flush(&self) -> Result<()> {
+        let _g = self.writes.lock().unwrap();
+        self.db.storage().flush()?;
+        Ok(())
+    }
+
+    /// The bytes of `receipts.strata` and its write-ahead log.
+    pub fn bytes(&self) -> (u64, u64) {
+        let fs = self.db.storage().file_stats();
+        (fs.file_bytes, fs.wal_bytes)
+    }
+
+    /// Drops every receipt, then compacts the file (`chloectx receipts off
+    /// --purge`). Returns how many were dropped.
+    pub fn purge(&self) -> Result<usize> {
+        let rs = self.db.query(&format!("SELECT id FROM receipts LIMIT {}", self.len() + 1000), &Params::new())?;
+        let ids: Vec<String> = rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)).collect();
+        let n = self.delete_ids(&ids)?;
+        self.db.optimize()?;
+        Ok(n)
+    }
+
+    fn delete_ids(&self, ids: &[String]) -> Result<usize> {
+        let _g = self.writes.lock().unwrap();
+        let mut n = 0;
+        for chunk in ids.chunks(1000) {
+            let mut t = self.db.storage().begin()?;
+            for id in chunk {
+                n += t.delete(&Value::Str(id.clone()))? as usize;
+            }
+            t.commit()?;
+        }
+        Ok(n)
+    }
+
+    /// Drops the receipts past `r`: older than `keep_days`, or beyond the
+    /// newest `max_receipts`. Returns how many were dropped.
+    pub fn prune(&self, r: &BookRetention) -> Result<usize> {
+        let cutoff = crate::now() - r.keep_days.max(0) * 86_400;
+        let total = self.len();
+        let over = total.saturating_sub(r.max_receipts);
+        let mut ids: Vec<String> = Vec::new();
+        let rs = self.db.query(&format!("SELECT id FROM receipts WHERE ts < {cutoff} LIMIT {}", total + 1), &Params::new())?;
+        ids.extend(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)));
+        if over > ids.len() as u64 {
+            let rs = self.db.query(&format!("SELECT id FROM receipts ORDER BY ts ASC LIMIT {over}"), &Params::new())?;
+            ids.extend(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)));
+            ids.sort();
+            ids.dedup();
+        }
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        self.delete_ids(&ids)
     }
 
     /// A new receipt id: time-ordered, unique in the store.
@@ -534,20 +656,33 @@ impl Book {
     }
 
     pub fn put(&self, r: &Receipt) -> Result<()> {
-        let body = serde_json::to_string(r).map_err(|e| err(e.to_string()))?;
-        let doc = vec![
-            Value::Str(r.id.clone()),
-            Value::Str(r.session.clone()),
-            Value::Str(r.source.clone()),
-            Value::Int(r.turn),
-            Value::Int(r.ts),
-            Value::Int(r.snapshot.txn as i64),
-            Value::Str(r.inputs.query.chars().take(2000).collect()),
-            Value::Str(body),
-        ];
+        self.put_all(std::slice::from_ref(r))
+    }
+
+    /// Stores receipts in one commit.
+    pub fn put_all(&self, rs: &[Receipt]) -> Result<()> {
+        if rs.is_empty() {
+            return Ok(());
+        }
+        let mut docs = Vec::with_capacity(rs.len());
+        for r in rs {
+            let body = serde_json::to_string(r).map_err(|e| err(e.to_string()))?;
+            docs.push(vec![
+                Value::Str(r.id.clone()),
+                Value::Str(r.session.clone()),
+                Value::Str(r.source.clone()),
+                Value::Int(r.turn),
+                Value::Int(r.ts),
+                Value::Int(r.snapshot.txn as i64),
+                Value::Str(r.inputs.query.chars().take(2000).collect()),
+                Value::Str(body),
+            ]);
+        }
         let _g = self.writes.lock().unwrap();
         let mut t = self.db.storage().begin()?;
-        t.upsert(doc)?;
+        for d in docs {
+            t.upsert(d)?;
+        }
         t.commit()?;
         Ok(())
     }
@@ -561,12 +696,15 @@ impl Book {
         Ok(self.read("SELECT body FROM receipts WHERE id = :id", &Params::new().set("id", Value::Str(id.into())))?.pop())
     }
 
-    /// The receipts of a session's turns `lo..=hi`, oldest first.
+    /// The receipts of a session's turns `lo..=hi`, oldest first: the
+    /// newest 500 of them, when there are more.
     pub fn of_turns(&self, session: &str, lo: i64, hi: i64) -> Result<Vec<Receipt>> {
-        self.read(
-            &format!("SELECT body FROM receipts WHERE session = :s AND turn >= {lo} AND turn <= {hi} ORDER BY ts ASC LIMIT 500"),
+        let mut v = self.read(
+            &format!("SELECT body FROM receipts WHERE session = :s AND turn >= {lo} AND turn <= {hi} ORDER BY ts DESC LIMIT 500"),
             &Params::new().set("s", Value::Str(session.into())),
-        )
+        )?;
+        v.reverse();
+        Ok(v)
     }
 
     /// The newest receipts, newest first.
@@ -630,39 +768,49 @@ pub fn fmt_receipt(r: &Receipt) -> String {
     s
 }
 
+/// A record forgotten, as receipts are scrubbed of it.
+#[derive(Clone, Debug, Default)]
+pub struct Forgotten {
+    pub id: String,
+    /// The record's text when it was a prompt: the receipts whose query it
+    /// was lose their query too.
+    pub prompt: Option<String>,
+}
+
+/// Receipts scrubbed per page, in one commit each.
+const SCRUB_PAGE: usize = 500;
+
 impl Book {
     /// Scrubs the receipts: with `forgotten`, those that showed that record
-    /// lose the text they were shown (their rows keep ids, scores and
-    /// hashes); without, every receipt is redacted as records are
-    /// ([`crate::redact::redact_json`]). Then the file is compacted, so the
-    /// old versions leave it. The number of receipts changed.
-    pub fn scrub(&self, forgotten: Option<&str>) -> Result<usize> {
-        let rs = self.db.query(&format!("SELECT body FROM receipts LIMIT {}", self.len() + 1000), &Params::new())?;
+    /// lose the text they were shown, and its rows their text's hash (they
+    /// keep ids and scores), and a prompt's receipts lose their query;
+    /// without, every receipt is redacted as records are
+    /// ([`crate::redact::redact_json`]). Receipts are read and rewritten a
+    /// page at a time, each page in one commit. Then the file is
+    /// compacted, so the old versions leave it. The number of receipts
+    /// changed.
+    pub fn scrub(&self, forgotten: Option<&Forgotten>) -> Result<usize> {
         let mut n = 0;
-        for row in &rs.rows {
-            let Some(body) = row.first().and_then(|v| v.as_str()) else { continue };
-            let Ok(mut r) = serde_json::from_str::<Receipt>(body) else { continue };
-            let changed = match forgotten {
-                Some(id) if r.shown.iter().any(|s| s == id) || r.text.contains(&format!("[{id}]")) => {
-                    r.text = format!("(removed: record {id} was forgotten, and the text shown with it is no longer kept)");
-                    r.text_sha = sha(&r.text);
-                    r.inputs.skip.retain(|s| s != id);
-                    true
+        // Pages in id order; a rewrite keeps its id, so the order holds.
+        let mut offset = 0;
+        loop {
+            let rs = self.db.query(&format!("SELECT id, body FROM receipts ORDER BY id ASC LIMIT {SCRUB_PAGE} OFFSET {offset}"), &Params::new())?;
+            if rs.rows.is_empty() {
+                break;
+            }
+            offset += rs.rows.len();
+            let mut changed = Vec::new();
+            for row in &rs.rows {
+                let Some(body) = row.get(1).and_then(|v| v.as_str()) else { continue };
+                let Ok(mut r) = serde_json::from_str::<Receipt>(body) else { continue };
+                if scrub_one(&mut r, forgotten)? {
+                    changed.push(r);
                 }
-                Some(_) => false,
-                None => {
-                    let mut v = serde_json::to_value(&r).map_err(|e| err(e.to_string()))?;
-                    if crate::redact::redact_json(&mut v) {
-                        r = serde_json::from_value(v).map_err(|e| err(e.to_string()))?;
-                        true
-                    } else {
-                        false
-                    }
-                }
-            };
-            if changed {
-                self.put(&r)?;
-                n += 1;
+            }
+            n += changed.len();
+            self.put_all(&changed)?;
+            if rs.rows.len() < SCRUB_PAGE {
+                break;
             }
         }
         if n > 0 {
@@ -670,4 +818,36 @@ impl Book {
         }
         Ok(n)
     }
+}
+
+/// Scrubs one receipt of `forgotten` (or redacts it); whether it changed.
+fn scrub_one(r: &mut Receipt, forgotten: Option<&Forgotten>) -> Result<bool> {
+    let Some(f) = forgotten else {
+        let mut v = serde_json::to_value(&*r).map_err(|e| err(e.to_string()))?;
+        if crate::redact::redact_json(&mut v) {
+            *r = serde_json::from_value(v).map_err(|e| err(e.to_string()))?;
+            return Ok(true);
+        }
+        return Ok(false);
+    };
+    let id = f.id.as_str();
+    let mut changed = false;
+    if r.shown.iter().any(|s| s == id) || r.text.contains(&format!("[{id}]")) {
+        r.text = format!("(removed: record {id} was forgotten, and the text shown with it is no longer kept)");
+        r.text_sha = sha(&r.text);
+        r.inputs.skip.retain(|s| s != id);
+        changed = true;
+    }
+    for row in r.rows.iter_mut().filter(|row| row.id == id && !row.sha.is_empty()) {
+        // A hash of a short text confirms a guess of it.
+        row.sha.clear();
+        changed = true;
+    }
+    if let Some(p) = f.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        if r.inputs.query.contains(p) {
+            r.inputs.query = format!("(removed: the prompt this recall answered, record {id}, was forgotten)");
+            changed = true;
+        }
+    }
+    Ok(changed)
 }

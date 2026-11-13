@@ -63,6 +63,7 @@
       <a href="apps.html" aria-current="page">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
       <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -188,7 +189,7 @@ Notes from earlier conversations with the user, in their current versions, oldes
 <h2 id="the-crawler">The crawler<a class="anchor" href="#the-crawler" aria-label="Link to this section">#</a></h2>
 <p>The crawler attaches the same way (<code>--app crawler=URL</code>), and <code>chloedb-crawl serve --local DIR</code> starts a cluster with it already listed. <a href="crawl-to-search.html">Crawl a site into search</a> runs it end to end.</p>
 <h2 id="on-kubernetes">On Kubernetes<a class="anchor" href="#on-kubernetes" aria-label="Link to this section">#</a></h2>
-<p>A cluster the operator runs gets each app from a field of its <code>StrataCluster</code>: <code>spec.crawler</code>, <code>spec.sheets</code>, <code>spec.chloectx</code> and <code>spec.apps</code> (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand (<a href="server.html#on-kubernetes">server on Kubernetes</a>).</p>
+<p>A cluster the operator runs gets each app from a field of its <code>StrataCluster</code>: <code>spec.crawler</code>, <code>spec.sheets</code>, <code>spec.chloectx</code>, <code>spec.netops</code> (<a href="netops.html">network operations</a>) and <code>spec.apps</code> (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand (<a href="server.html#on-kubernetes">server on Kubernetes</a>).</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/guide/apps.md">Edit this page on GitHub</a>

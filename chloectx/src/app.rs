@@ -1141,7 +1141,11 @@ pub fn run(opts: Options) -> Result<()> {
         }
     };
     app.resume_builds();
-    let listener = TcpListener::bind((opts.host.as_str(), opts.port)).map_err(|e| err(format!("cannot listen on {}:{}: {e}", opts.host, opts.port)))?;
+    // Started by chloedb-server: the socket it holds, not --host/--port.
+    let listener = match inherited_listener().map_err(err)? {
+        Some(l) => l,
+        None => TcpListener::bind((opts.host.as_str(), opts.port)).map_err(|e| err(format!("cannot listen on {}:{}: {e}", opts.host, opts.port)))?,
+    };
     eprintln!(
         "chloectx app: on {}:{}, spaces in {} (embedder {}, model {})",
         opts.host,
@@ -1166,6 +1170,34 @@ pub fn run(opts: Options) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// The listening socket chloedb-server handed this program when it
+/// started it as an app (`CHLOEDB_LISTEN_FD`, file descriptor 3), so that
+/// the port the server chose and holds is never free for another process
+/// to take. `Ok(None)` when not started so: it binds its own. The setting
+/// is taken out of the environment and the socket marked close-on-exec, so
+/// that no program this one starts gets it.
+pub fn inherited_listener() -> std::result::Result<Option<std::net::TcpListener>, String> {
+    let Some(v) = std::env::var_os("CHLOEDB_LISTEN_FD") else { return Ok(None) };
+    std::env::remove_var("CHLOEDB_LISTEN_FD");
+    let fd: i32 = v.to_str().and_then(|s| s.parse().ok()).filter(|fd| *fd >= 3).ok_or_else(|| format!("CHLOEDB_LISTEN_FD={v:?} is not a file descriptor of 3 or more"))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        // SAFETY: fcntl on a descriptor number; it fails if none is open.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(format!("CHLOEDB_LISTEN_FD={fd}: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: the descriptor is open, was handed to this process to
+        // own, and nothing else here holds it.
+        let l = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+        l.local_addr().map_err(|e| format!("CHLOEDB_LISTEN_FD={fd} is not a listening socket: {e}"))?;
+        Ok(Some(l))
+    }
+    #[cfg(not(unix))]
+    Err(format!("CHLOEDB_LISTEN_FD={fd}: a socket is handed over on Unix only"))
 }
 
 #[cfg(test)]
