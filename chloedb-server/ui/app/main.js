@@ -598,14 +598,16 @@ function mark(text, q) {
 }
 
 // What the palette finds besides the cluster: read when it opens, kept a minute.
-const found = { at: 0, tables: [], statements: [], keys: [] };
+const found = { at: 0, tables: [], statements: [], keys: [], functions: [] };
 async function loadFinds() {
   if (Date.now() - found.at < 60e3) return;
   found.at = Date.now();
-  const [t, st, k] = await Promise.allSettled([
+  const [t, st, k, fn] = await Promise.allSettled([
     api("/v1/tables", { timeout: 5000 }),
     api("/v1/queries/stats?limit=200", { timeout: 5000 }),
-    can("admin") ? api("/v1/admin/keys", { timeout: 5000 }) : Promise.reject(new Error("not admin"))]);
+    can("admin") ? api("/v1/admin/keys", { timeout: 5000 }) : Promise.reject(new Error("not admin")),
+    api("/v1/functions", { timeout: 5000 })]);
+  if (fn.status === "fulfilled") found.functions = (fn.value.functions || []).filter((f) => f.current != null);
   if (t.status === "fulfilled") found.tables = (Array.isArray(t.value) ? t.value : t.value.tables || []).map((x) => typeof x === "string" ? { name: x } : { name: x.name || x.table, docs: x.docs ?? x.rows });
   if (st.status === "fulfilled") found.statements = Array.isArray(st.value) ? st.value : st.value.statements || [];
   found.keys = k.status === "fulfilled" ? (k.value.keys || []).filter((x) => !x.revoked_ms) : [];
@@ -687,6 +689,12 @@ function entities(q) {
     out.push({ grp: "Keys", sc: sc - 5, icon: "key", name: k.name, sub: [k.scope, k.owner ? "owner " + k.owner : null, k.last_used_ms ? "used " + fmt.ago(k.last_used_ms) : "never used"].filter(Boolean).join(" · "), hint: "Access", run: go(link("access", { tab: "keys", key: k.id })),
       acts: [{ name: `Queries from key ${k.name}`, icon: "queries", hint: "Queries", run: go(link("queries", { key: k.name })) }, { name: `The key in Access and audit`, icon: "access", hint: "Access", run: go(link("access", { tab: "keys", key: k.id })) }] });
   }
+  // Saved searches (stored functions): by name and what they are for.
+  for (const f of found.functions) {
+    const cur = (f.versions || []).find((v) => v.version === f.current) || {};
+    const sc = score(ql, `${f.name} ${cur.description || f.description || ""}`); if (sc <= 0) continue;
+    out.push({ grp: "Saved searches", sc, icon: "bookmark", name: f.name, sub: cur.description || f.description || (cur.kind === "table" ? "a saved search" : "a stored function"), hint: "Saved", run: go(link("saved/" + encodeURIComponent(f.name))) });
+  }
   // A request id.
   if (/^[0-9a-f]{12,32}$/i.test(ql)) out.push({ grp: "Requests", sc: 260, icon: "logs", name: `Request ${ql}`, sub: "its log lines and its query", hint: "Logs", run: go(logsLink({ request: ql })) });
   return out;
@@ -715,12 +723,12 @@ function copyActs(nm, r, shard) {
 
 function openPalette(initial = "") {
   if (document.querySelector(".palette")) return;
-  const inp = h("input", { placeholder: "Shard 117, s9-2, a node, a table, an alert, a key, a view…", "aria-label": "Search", autocomplete: "off", spellcheck: "false", value: initial });
+  const inp = h("input", { placeholder: isCoordinator() ? "Shard 117, s9-2, a node, a table, an alert, a key, a view…" : "A table, a saved search, a view, an alert, a key…", "aria-label": "Search", autocomplete: "off", spellcheck: "false", value: initial });
   const list = h("div", { class: "list", role: "listbox" });
   const closeBtn = h("button", { class: "btn ghost pal-close", type: "button" }, "Cancel");
   const pal = h("div", { class: "palette", role: "dialog", "aria-label": "Command palette" }, h("div", { class: "pal-in" }, icon("search"), inp, closeBtn), list,
     h("div", { class: "foot" }, h("span", {}, h("kbd", {}, "↑"), " ", h("kbd", {}, "↓"), " to move"), h("span", {}, h("kbd", {}, "Enter"), " to open"), h("span", {}, h("kbd", {}, "Tab"), " for its actions"), h("span", {}, h("kbd", {}, "Esc"), " to close"),
-      h("span", { class: "sep" }), h("span", {}, "finds shards, copies, nodes, tables, statements, alerts, keys, request ids")));
+      h("span", { class: "sep" }), h("span", {}, isCoordinator() ? "finds shards, copies, nodes, tables, saved searches, statements, alerts, keys, request ids" : "finds tables, saved searches, statements, alerts, keys, request ids")));
   const scrim = h("div", { class: "scrim" });
   document.body.append(scrim, pal);
   loadFinds().then(() => { if (pal.isConnected) draw(); }).catch(() => {});
@@ -764,7 +772,7 @@ function openPalette(initial = "") {
       row.onmousemove = () => { if (sel === i) return; sel = i; list.querySelectorAll(".it").forEach((el, k) => { el.classList.toggle("on", k === i); el.setAttribute("aria-selected", String(k === i)); }); };
       list.append(row);
     });
-    if (!items.length) list.append(h("div", { class: "empty" }, q ? `Nothing matches "${q}". Shards by number (117), copies by name (s9-2) or port, nodes, zones, tables, statements, alerts and keys are found here.` : "Nothing here"));
+    if (!items.length) list.append(h("div", { class: "empty" }, q ? `Nothing matches "${q}". ${isCoordinator() ? "Shards by number (117), copies by name (s9-2) or port, nodes, zones, " : ""}tables, saved searches, statements, alerts and keys are found here.` : "Nothing here"));
     list.querySelector(".on")?.scrollIntoView({ block: "nearest" });
   }
   inp.oninput = () => { sel = 0; focus = null; draw(); };
