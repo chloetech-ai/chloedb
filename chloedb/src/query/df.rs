@@ -1524,6 +1524,9 @@ impl<'a> Lower<'a, '_> {
         if keys.iter().any(|k| k.left_links || k.right_links) {
             return no("a join along links");
         }
+        if kind == JoinKind::Full {
+            return no("a FULL JOIN");
+        }
         let mut l = self.node(left, "scan")?;
         let r = if right.is_leaf() {
             // As the operators do: the right side read only for the join
@@ -1660,6 +1663,7 @@ impl<'a> Lower<'a, '_> {
         let jt = match kind {
             JoinKind::Inner => JoinType::Inner,
             JoinKind::Left => JoinType::Left,
+            JoinKind::Full => JoinType::Full,
         };
         if let Some(c) = on {
             // The condition reads the joined row's columns.
@@ -1703,6 +1707,7 @@ impl<'a> Lower<'a, '_> {
         let jt = match kind {
             JoinKind::Inner => JoinType::Inner,
             JoinKind::Left => JoinType::Left,
+            JoinKind::Full => JoinType::Full,
         };
         if let Some(c) = on {
             let probe = LogicalPlanBuilder::from(l.plan.clone()).join_on(r.plan.clone(), JoinType::Inner, conds.clone())?.build()?;

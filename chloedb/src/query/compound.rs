@@ -273,7 +273,8 @@ fn joins_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
                 sql::JoinOperator::Join(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::Inner(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::Left(sql::JoinConstraint::On(on))
-                | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) => walk_mut(on, f),
+                | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on))
+                | sql::JoinOperator::FullOuter(sql::JoinConstraint::On(on)) => walk_mut(on, f),
                 _ => {}
             }
         }
@@ -2109,7 +2110,7 @@ impl<'a> Planner<'a> {
             before.extend(es.iter());
         }
         for j in s.from.iter().flat_map(|t| &t.joins) {
-            if let sql::JoinOperator::Join(sql::JoinConstraint::On(on)) | sql::JoinOperator::Inner(sql::JoinConstraint::On(on)) | sql::JoinOperator::Left(sql::JoinConstraint::On(on)) | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) = &j.join_operator {
+            if let sql::JoinOperator::Join(sql::JoinConstraint::On(on)) | sql::JoinOperator::Inner(sql::JoinConstraint::On(on)) | sql::JoinOperator::Left(sql::JoinConstraint::On(on)) | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) | sql::JoinOperator::FullOuter(sql::JoinConstraint::On(on)) = &j.join_operator {
                 before.push(on);
             }
         }
@@ -2171,6 +2172,7 @@ impl<'a> Planner<'a> {
             let (kind, c) = match &j.join_operator {
                 sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) => (ir::JoinKind::Inner, c),
                 sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) => (ir::JoinKind::Left, c),
+                sql::JoinOperator::FullOuter(c) => (ir::JoinKind::Full, c),
                 o => return Err(err(unsupported_join(o)))?,
             };
             let sql::JoinConstraint::On(on) = c else { return Err(err("JOIN needs ON, e.g. JOIN papers b ON a.cites = b.id")) };
@@ -2191,12 +2193,15 @@ impl<'a> Planner<'a> {
         let in_memory = |i: usize| matches!(srcs[i].kind, SrcKind::Rows(_));
         let table = |i: usize| srcs[i].kind.schema();
 
+        // A full join keeps the rows of both sides that match none, so no
+        // condition of WHERE or ON filters the scans it joins.
+        let full_at: Option<usize> = srcs.iter().rposition(|s| s.join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Full));
         // WHERE: each condition naming one scanned side goes to its scan.
         let mut pushed: Vec<Vec<Expr>> = vec![Vec::new(); srcs.len()];
         let mut residual: Vec<Expr> = Vec::new();
         for c in s.selection.iter().flat_map(split_and) {
             let at = sides.of(&c)?;
-            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Left);
+            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| *k != ir::JoinKind::Inner) || full_at.is_some_and(|f| i <= f);
             match at.as_slice() {
                 [i] if !in_memory(*i) && !left_join_right(*i) && !of_rows(&c) && !table(*i).is_some_and(|t| of_rows_filter(&c, t)) => pushed[*i].push(c),
                 _ => residual.push(c),
@@ -2222,7 +2227,8 @@ impl<'a> Planner<'a> {
                         continue;
                     }
                 }
-                if at == [i] && !in_memory(i) && !table(i).is_some_and(|t| of_rows_filter(&c, t)) {
+                let full = srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Full);
+                if at == [i] && !full && !in_memory(i) && !table(i).is_some_and(|t| of_rows_filter(&c, t)) {
                     pushed[i].push(c);
                 } else if at.iter().any(|&x| x > i) {
                     return Err(err(format!("ON of {} names a table joined later", srcs[i].alias)));
@@ -2295,6 +2301,7 @@ impl<'a> Planner<'a> {
         // A window reads all the rows, so none drive (and its order is
         // its own).
         let driver_order = !grouped
+            && full_at.is_none()
             && !windowed(q, s)
             && !matches!(s.distinct, Some(sql::Distinct::Distinct))
             && match order.first() {
@@ -2899,13 +2906,12 @@ pub(crate) fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
-/// Why a join other than `JOIN` and `LEFT JOIN` is refused, and what to
+/// Why a join other than `JOIN`, `LEFT JOIN` and `FULL JOIN` is refused, and what to
 /// write instead.
 fn unsupported_join(o: &sql::JoinOperator) -> String {
     use sql::JoinOperator as J;
     match o {
         J::Right(_) | J::RightOuter(_) => "RIGHT JOIN is not supported: swap the two tables and use LEFT JOIN (a RIGHT JOIN b ON ... is b LEFT JOIN a ON ...)".into(),
-        J::FullOuter(_) => "FULL JOIN is not supported: JOIN and LEFT JOIN are; a FULL JOIN is the rows of a LEFT JOIN b UNION those of b LEFT JOIN a".into(),
         J::CrossJoin(_) => "CROSS JOIN is not supported: join with JOIN ... ON an equality of the two tables' columns".into(),
         J::Semi(_) | J::LeftSemi(_) | J::RightSemi(_) => "SEMI JOIN is not supported: WHERE x IN (SELECT ...) or EXISTS (SELECT ...) keeps the rows that have a match".into(),
         J::Anti(_) | J::LeftAnti(_) | J::RightAnti(_) => "ANTI JOIN is not supported: WHERE x NOT IN (SELECT ...) or NOT EXISTS (SELECT ...) keeps the rows without a match".into(),
