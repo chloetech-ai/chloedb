@@ -301,6 +301,14 @@ struct Args {
     /// that would make more fails with 503 (0: no limit).
     #[arg(long, default_value_t = 600)]
     llm_per_minute: u64,
+    /// Model calls an API key may make a day (UTC) with this server's own
+    /// credentials: /v1/agent and the on-call agent a call a step,
+    /// /v1/judge a call a row, llm() a call a question it asks (answers
+    /// kept in memory are free); past it they answer 429 until the next
+    /// day. The --token, the cluster's token and callers that bring their
+    /// own api_key are not counted (0: no limit).
+    #[arg(long, env = "CHLOEDB_MODEL_CALLS_PER_KEY_DAY", default_value_t = chloedb_server::budget::DEFAULT_PER_DAY)]
+    model_calls_per_key_day: u64,
     /// Memory the running queries may hold together, in MiB: their groups,
     /// candidate rows, answers and joins; a query that needs more fails
     /// with 429 (default: a third of the cgroup memory limit, or of RAM;
@@ -509,14 +517,36 @@ struct Args {
     /// supervisor waits (30 s in Kubernetes).
     #[arg(long, env = "CHLOEDB_STOP_GRACE_MS", default_value_t = 20_000)]
     stop_grace_ms: u64,
-    /// The connections the HTTP listeners hold open at once; past it, new
-    /// ones wait to be accepted (0: three quarters of the open-file limit).
+    /// The connections each listener (HTTP, OpenSearch, gRPC) holds open
+    /// at once; past it, new ones wait to be accepted, but for a few kept
+    /// for /livez, /readyz and /v1/health (0: three quarters of the
+    /// open-file limit, for the listeners together).
     #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS", default_value_t = 0)]
     max_connections: usize,
+    /// The connections one client address may hold of a listener's; a
+    /// client past it is closed at once (0: half of --max-connections).
+    /// Behind a proxy that keeps few connections to the server, the
+    /// default does; one that opens a connection per client may need
+    /// more.
+    #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS_PER_CLIENT", default_value_t = 0)]
+    max_connections_per_client: usize,
     /// The longest a client may take to send a request's headers, and the
-    /// longest an idle connection stays open, in seconds.
+    /// longest an idle HTTP/1 connection stays open, in seconds.
     #[arg(long, env = "CHLOEDB_HEADER_TIMEOUT_SECS", default_value_t = 30)]
     header_timeout_secs: u64,
+    /// The longest any connection (HTTP/2 and gRPC too) stays open with
+    /// no request under way, in seconds (0: no limit).
+    #[arg(long, env = "CHLOEDB_IDLE_TIMEOUT_SECS", default_value_t = 300)]
+    idle_timeout_secs: u64,
+    /// The longest a request body may pause, in seconds; one that has
+    /// taken longer than this must also have averaged 1 KiB a second
+    /// (0: no limit). Not on gRPC.
+    #[arg(long, env = "CHLOEDB_BODY_TIMEOUT_SECS", default_value_t = 30)]
+    body_timeout_secs: u64,
+    /// The longest a write may wait for the client to read its answer, in
+    /// seconds, before its connection is closed (0: no limit).
+    #[arg(long, env = "CHLOEDB_WRITE_TIMEOUT_SECS", default_value_t = 60)]
+    write_timeout_secs: u64,
     /// Do not count how often each document is retrieved and each key
     /// asked for (the index inspector's reads; counted in memory by
     /// default, cheaply: see docs/chloedb/server.md).
@@ -1462,6 +1492,7 @@ async fn run() {
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
     svc.reads.set_on(!a.no_read_stats);
+    svc.model_budget.set_per_day(a.model_calls_per_key_day);
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
     }
@@ -1481,7 +1512,11 @@ async fn run() {
     let (http, ip) = bind(&a.listen).await;
     let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls, limits: auth::Limits {
         header_read: std::time::Duration::from_secs(a.header_timeout_secs.max(1)),
+        idle: std::time::Duration::from_secs(a.idle_timeout_secs),
+        body: std::time::Duration::from_secs(a.body_timeout_secs),
+        write: std::time::Duration::from_secs(a.write_timeout_secs),
         max_connections: a.max_connections,
+        per_client: a.max_connections_per_client,
         stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
     } };
     // fleet: a coordinator names itself to its shards, which tell the others.
@@ -1528,12 +1563,13 @@ async fn run() {
         co.coord.local = Some(chloedb_server::coord::LocalShard { url, service: server::grpc_service(svc.clone(), &access) });
         let (l, cip) = bind(&addr).await;
         let access = Access { hosts: auth::allowed_hosts(cip, &a.allow_host), ..access.clone() };
-        let (peer, no_read_stats) = (a.peer_url.clone(), a.no_read_stats);
+        let (peer, no_read_stats, model_calls) = (a.peer_url.clone(), a.no_read_stats, a.model_calls_per_key_day);
         // Its shards, this one among them, may answer only later: the
         // shard serves meanwhile.
         tasks.push(tokio::spawn(async move {
             let c = server::service(&co).await.unwrap_or_else(|e| fail(&format!("the coordinator: {e}")));
             c.reads.set_on(!no_read_stats);
+            c.model_budget.set_per_day(model_calls);
             let at = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
             chloedb_server::peers::start(&c, chloedb_server::peers::own_url(peer.as_deref(), at, access.tls.is_some()));
             tracing::info!("coordinator HTTP on {addr}, its own shard in-process");

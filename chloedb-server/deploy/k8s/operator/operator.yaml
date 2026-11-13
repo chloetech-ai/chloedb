@@ -64,12 +64,12 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, list, create, delete, patch]
-  # A cluster's tokenSecret, to call its coordinators; and each app's
-  # credentials (<cluster>-<app>-credentials: its own key and token),
-  # made, changed and deleted by the operator.
+  # A cluster's tokenSecret, to call its coordinators. Making, changing
+  # and deleting Secrets (each app's credentials) is strata-operator-secrets',
+  # granted in the namespaces that hold clusters only (below).
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create, patch, delete]
+    verbs: [get]
   # The Lease of each cluster's map, which its coordinators' Role grants
   # (one coordinator at a time changes the map), and a Role grants only
   # what its maker holds.
@@ -85,6 +85,44 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: strata-operator
+subjects:
+  - kind: ServiceAccount
+    name: strata-operator
+    namespace: strata-system
+---
+# Each app's credentials (<cluster>-<app>-credentials: its own key and
+# token), made, changed and deleted by the operator: Secrets it may write
+# only where a RoleBinding grants this, not every Secret of the Kubernetes
+# cluster. Bound here in the namespace `strata`; for clusters in another
+# namespace, bind it there too:
+#
+#   kubectl -n NS create rolebinding strata-operator-secrets \
+#     --clusterrole=strata-operator-secrets --serviceaccount=strata-system:strata-operator
+#
+# Without it, the apps of a cluster there keep the admin token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strata-operator-secrets
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, patch, delete]
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: strata
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strata-operator-secrets
+  namespace: strata
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: strata-operator-secrets
 subjects:
   - kind: ServiceAccount
     name: strata-operator

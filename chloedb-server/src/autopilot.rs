@@ -85,7 +85,7 @@ pub async fn run(svc: &Arc<Service>, who: &Principal, mut b: Json) -> Result<Jso
         let now = chloedb::timestamp::now();
         let (mut docs, mut errors, mut used) = (Vec::new(), Vec::new(), None);
         for (qid, (query, keys)) in by {
-            let req = JudgeReq { table: report.table.clone(), query: query.clone(), keys: keys.iter().map(|k| json!(k)).collect(), fields: Vec::new(), model: model.clone(), api_key: api_key.clone() };
+            let req = JudgeReq { table: report.table.clone(), query: query.clone(), keys: keys.iter().map(|k| json!(k)).collect(), fields: Vec::new(), model: model.clone(), api_key: api_key.clone(), who: Some(who.clone()) };
             let j = match judge::run(svc, req).await {
                 Ok(j) => j,
                 // No key, or the model refused: the report stands as measured.

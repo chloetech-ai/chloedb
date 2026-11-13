@@ -29,12 +29,22 @@ pub fn operator_objects(image: &str) -> Vec<Json> {
             rule(&["rbac.authorization.k8s.io"], &["roles", "rolebindings"], &["get", "create", "patch"]),
             rule(&[""], &["pods"], &["get", "list", "delete"]),
             rule(&[""], &["persistentvolumeclaims"], &["get", "list", "create", "delete", "patch"]),
-            // tokenSecret, and each app's credentials (made, changed, deleted).
-            rule(&[""], &["secrets"], &["get", "create", "patch", "delete"]),
+            // tokenSecret; writing Secrets is the next role's, in the
+            // clusters' namespace only (audit N-D9).
+            rule(&[""], &["secrets"], &["get"]),
             rule(&["coordination.k8s.io"], &["leases"], &["get", "create", "update"]),
         ]}),
         json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "strata-operator"},
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "strata-operator"},
+            "subjects": [{"kind": "ServiceAccount", "name": "strata-operator", "namespace": "strata-system"}]}),
+        // Each app's credentials (made, changed, deleted), in the
+        // namespace the cloud view's clusters run in alone.
+        json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "strata-operator-secrets"}, "rules": [
+            rule(&[""], &["secrets"], &["get", "create", "patch", "delete"]),
+        ]}),
+        json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": super::NAMESPACE}}),
+        json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "strata-operator-secrets", "namespace": super::NAMESPACE},
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "strata-operator-secrets"},
             "subjects": [{"kind": "ServiceAccount", "name": "strata-operator", "namespace": "strata-system"}]}),
         json!({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "strata-operator", "namespace": "strata-system", "labels": labels},
             "spec": {"replicas": 1, "strategy": {"type": "Recreate"}, "selector": {"matchLabels": labels},
@@ -57,6 +67,7 @@ pub fn path_of(o: &Json) -> Result<String, String> {
         "ServiceAccount" => ("serviceaccounts", true),
         "ClusterRole" => ("clusterroles", false),
         "ClusterRoleBinding" => ("clusterrolebindings", false),
+        "RoleBinding" => ("rolebindings", true),
         "Deployment" => ("deployments", true),
         "CustomResourceDefinition" => ("customresourcedefinitions", false),
         "StorageClass" => ("storageclasses", false),
@@ -211,12 +222,23 @@ mod tests {
             // a shard's volumes (listed, grown, deleted) and the app engine's
             // (read, made by apply, grown)
             ("", "persistentvolumeclaims", &["get", "list", "create", "patch", "delete"]),
-            ("", "secrets", &["get", "create", "patch", "delete"]),
+            ("", "secrets", &["get"]),
         ] {
             for v in verbs {
                 assert!(may(group, resource, v), "the operator may not {v} {resource}");
             }
         }
+        // N-D9: Secrets are written in the clusters' namespace alone, by a
+        // RoleBinding there, not by the ClusterRole bound everywhere.
+        for v in ["create", "patch", "delete"] {
+            assert!(!may("", "secrets", v), "the ClusterRole bound everywhere may {v} any Secret");
+        }
+        let all = operator_objects("chloedb-server:dev");
+        let writes = all.iter().find(|o| o["kind"] == "ClusterRole" && o["metadata"]["name"] == "strata-operator-secrets").expect("the role that writes Secrets");
+        assert_eq!(writes["rules"][0]["verbs"], json!(["get", "create", "patch", "delete"]));
+        let bound: Vec<&Json> = all.iter().filter(|o| o["roleRef"]["name"] == "strata-operator-secrets").collect();
+        assert_eq!(bound.len(), 1);
+        assert_eq!((bound[0]["kind"].as_str(), bound[0]["metadata"]["namespace"].as_str()), (Some("RoleBinding"), Some(super::super::NAMESPACE)));
     }
 
     #[test]
@@ -229,11 +251,14 @@ mod tests {
             "/api/v1/namespaces/strata-system/serviceaccounts/strata-operator",
             "/apis/rbac.authorization.k8s.io/v1/clusterroles/strata-operator",
             "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/strata-operator",
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/strata-operator-secrets",
+            "/api/v1/namespaces/strata",
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/strata/rolebindings/strata-operator-secrets",
             "/apis/apps/v1/namespaces/strata-system/deployments/strata-operator",
             "/api/v1/namespaces/strata",
             "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search",
         ]);
-        assert_eq!(all[5]["spec"]["template"]["spec"]["containers"][0]["image"], "ghcr.io/x/chloedb-server:1");
+        assert_eq!(all[8]["spec"]["template"]["spec"]["containers"][0]["image"], "ghcr.io/x/chloedb-server:1");
         assert!(path_of(&json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "x", "namespace": "y"}})).is_err());
         assert!(path_of(&json!({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "x"}})).is_err());
         let sc = json!({"apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": "gp3"}});
