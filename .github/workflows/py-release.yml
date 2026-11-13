@@ -38,10 +38,6 @@ permissions:
   contents: read
 
 env:
-  # The Rust every job builds with, so that a new stable release on the
-  # runners cannot turn main red (clippy 1.100 did, on 12 Nov 2026). Bump it
-  # by hand, after `cargo +<new> clippy` passes in each crate.
-  RUST_TOOLCHAIN: "1.100.0"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
@@ -76,8 +72,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
