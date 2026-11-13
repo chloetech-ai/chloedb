@@ -1101,46 +1101,64 @@ pub async fn preview(spec: &Spec, n: usize) -> Result<Value, String> {
     let include: Vec<Regex> = spec.include.iter().filter_map(|r| Regex::new(r).ok()).collect();
     let exclude: Vec<Regex> = spec.exclude.iter().filter_map(|r| Regex::new(r).ok()).collect();
     let keep: Vec<Regex> = spec.keep.iter().filter_map(|r| Regex::new(r).ok()).collect();
-    let links: Vec<Url> = page
-        .links
-        .iter()
-        .filter(|l| {
-            let s = l.as_str();
-            **l != fu && !urls::not_a_page(l) && urls::in_scope(spec.scope, &seeds, l) && (include.is_empty() || include.iter().any(|r| r.is_match(s))) && !exclude.iter().any(|r| r.is_match(s))
-        })
-        .cloned()
-        .collect();
+    let follows = |l: &Url| {
+        let s = l.as_str();
+        !urls::not_a_page(l) && urls::in_scope(spec.scope, &seeds, l) && (include.is_empty() || include.iter().any(|r| r.is_match(s))) && !exclude.iter().any(|r| r.is_match(s))
+    };
     let kept = |u: &Url| keep.is_empty() || keep.iter().any(|r| r.is_match(u.as_str()));
-    let want = n.saturating_sub(1).min(links.len());
-    let picked = spread(links.into_iter().filter(|u| kept(u)).collect(), want, 4);
+    let mut seen: HashSet<String> = HashSet::from([fu.to_string()]);
+    let mut next: Vec<Url> = page.links.iter().filter(|l| follows(l)).cloned().collect();
     pages.push(to_fetched(&fu, &first, page, 0));
-    let mut set = tokio::task::JoinSet::new();
     let fetcher = Arc::new(fetcher);
-    for u in picked {
-        let fetcher = fetcher.clone();
-        let rules = spec.rules.clone();
-        set.spawn(async move {
-            let got = fetcher.page(&u).await;
-            match got {
-                Ok(g) => {
-                    let page = tokio::task::spawn_blocking({
-                        let body = g.body.clone();
-                        let u = u.clone();
-                        move || extract::extract(&body, &u, &extract::Options { rules: &rules, template: &[], learn: opts_learn, max_text: 200_000 })
-                    })
-                    .await
-                    .map_err(|_| (u.to_string(), "could not be read".to_string()))?;
-                    Ok((u, g, page))
+    // Two levels within the budget: a shop's home links to its lists, whose
+    // links are its products (DAP-14: the preview read the home and a list,
+    // and showed no product's fields). A level's pages are its links that
+    // would be rows, spread over their shapes; links that would not be
+    // rows are read only when nothing else is left, for their links.
+    for depth in 1..=2u32 {
+        let room = n.saturating_sub(pages.len());
+        if room == 0 || next.is_empty() {
+            break;
+        }
+        next.retain(|u| seen.insert(u.to_string()));
+        let (rows, others): (Vec<Url>, Vec<Url>) = next.drain(..).partition(|u| kept(u));
+        let mut picked = spread(rows, room, 4);
+        picked.truncate(room);
+        if picked.len() < room && depth == 1 {
+            // the lists the rows are on (a shop's keep is its products)
+            let mut more = spread(others, room - picked.len(), 4);
+            picked.append(&mut more);
+        }
+        let mut set = tokio::task::JoinSet::new();
+        for u in picked {
+            let fetcher = fetcher.clone();
+            let rules = spec.rules.clone();
+            set.spawn(async move {
+                let got = fetcher.page(&u).await;
+                match got {
+                    Ok(g) => {
+                        let page = tokio::task::spawn_blocking({
+                            let body = g.body.clone();
+                            let u = u.clone();
+                            move || extract::extract(&body, &u, &extract::Options { rules: &rules, template: &[], learn: opts_learn, max_text: 200_000 })
+                        })
+                        .await
+                        .map_err(|_| (u.to_string(), "could not be read".to_string()))?;
+                        Ok((u, g, page))
+                    }
+                    Err(m) => Err((u.to_string(), m.to_string())),
                 }
-                Err(m) => Err((u.to_string(), m.to_string())),
+            });
+        }
+        while let Some(r) = set.join_next().await {
+            match r {
+                Ok(Ok((u, g, page))) => {
+                    next.extend(page.links.iter().filter(|l| follows(l) && !seen.contains(l.as_str())).cloned());
+                    pages.push(to_fetched(&u, &g, page, depth));
+                }
+                Ok(Err((u, m))) => problems.push(json!({"url": u, "message": m})),
+                Err(_) => {}
             }
-        });
-    }
-    while let Some(r) = set.join_next().await {
-        match r {
-            Ok(Ok((u, g, page))) => pages.push(to_fetched(&u, &g, page, 1)),
-            Ok(Err((u, m))) => problems.push(json!({"url": u, "message": m})),
-            Err(_) => {}
         }
     }
     // One of each page (`/` and `/index.html` are often one), and only
