@@ -38,7 +38,7 @@ function cell(v, col) {
   if (v == null) return h("span", { class: "nul" }, "null");
   if (typeof v === "boolean") return h("span", { class: "bool " + v }, String(v));
   if (isNum(v) && Number.isInteger(v) && plainInts(col)) return h("span", { class: "n" }, String(v));
-  if (isNum(v)) return h("span", { class: "n" }, Number.isInteger(v) ? fmt.n(v) : fmt.n(v, 4));
+  if (isNum(v)) return h("span", { class: "n", title: Number.isInteger(v) ? null : String(v) }, fmt.num(v));
   if (Array.isArray(v)) {
     if (v.length > 8 && v.every(isNum)) return h("span", { class: "vec", title: `${v.length} numbers` }, `⟨${v.slice(0, 3).map((x) => x.toFixed(3)).join(", ")}, … ${v.length}⟩`);
     return h("span", { class: "chips" }, v.slice(0, 6).map((x) => h("span", { class: "badge" }, cellText(x))), v.length > 6 ? h("span", { class: "muted" }, `+${v.length - 6}`) : null);
@@ -55,6 +55,8 @@ function download(name, text, type) {
   document.body.append(a); a.click(); a.remove();
 }
 const csvCell = (v, sep) => { const t = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); return t.includes(sep) || t.includes('"') || t.includes("\n") ? `"${t.replace(/"/g, '""')}"` : t; };
+/** Rows as CSV lines, each ended by a newline (a page of an export). */
+export function csvLines(rows, sep = ",") { return rows.map((r) => r.map((v) => csvCell(v, sep)).join(sep) + "\n").join(""); }
 export function asDelimited(j, sep = ",") { return [j.columns.map((c) => csvCell(c, sep)).join(sep), ...j.rows.map((r) => r.map((v) => csvCell(v, sep)).join(sep))].join("\n") + "\n"; }
 
 /**
@@ -181,21 +183,22 @@ function svgChart(pts, names, kind, xName, xfmt) {
   const W = 1000, H = 300, M = { l: 56, r: 14, t: 12, b: 46 };
   const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px" }, role: "img", "aria-label": `${names.join(", ")} by ${xName}` });
   const all = pts.flatMap((p) => p.ys).filter(isNum);
-  const lo = Math.min(0, ...all), hi = Math.max(...all, lo + 1e-9);
+  // Round ticks (0, 250M, 500M...), the axis from the first to the last.
+  const yt = fmt.ticks(Math.min(0, ...all), Math.max(...all, Math.min(0, ...all) + 1e-9), 4);
+  const lo = yt[0], hi = yt[yt.length - 1];
   const n = pts.length, iw = W - M.l - M.r, ih = H - M.t - M.b;
   const numX = pts.every((p) => isNum(p.x)) && kind !== "bar";
   const xs = numX ? pts.map((p) => p.x) : null;
   const x0 = numX ? Math.min(...xs) : 0, x1 = numX ? Math.max(...xs, x0 + 1e-9) : 1;
   const X = (i) => numX ? M.l + (pts[i].x - x0) / (x1 - x0) * iw : M.l + (i + 0.5) / n * iw;
   const Y = (v) => M.t + ih * (1 - (v - lo) / (hi - lo));
-  for (let k = 0; k <= 4; k++) {
-    const v = lo + (hi - lo) * k / 4;
-    svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(v), y2: Y(v), style: { stroke: "var(--grid)" } }), s("text", { x: M.l - 8, y: Y(v) + 3.5, "text-anchor": "end", style: { fill: "var(--muted)", fontSize: "11px" } }, fmt.si(v)));
+  for (const v of yt) {
+    svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(v), y2: Y(v), style: { stroke: "var(--grid)" } }), s("text", { x: M.l - 8, y: Y(v) + 3.5, "text-anchor": "end", style: { fill: "var(--muted)", fontSize: "11px" } }, fmt.tick(v)));
   }
   svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(0), y2: Y(0), style: { stroke: "var(--axis)" } }));
   const every = Math.max(1, Math.ceil(n / 14));
   pts.forEach((p, i) => { if (i % every === 0 && !numX) svgEl.append(s("text", { x: X(i), y: H - M.b + 16, "text-anchor": "end", transform: `rotate(-30 ${X(i)} ${H - M.b + 16})`, style: { fill: "var(--muted)", fontSize: "11px" } }, xText(p.x).slice(0, 18))); });
-  if (numX) for (let k = 0; k <= 4; k++) { const v = x0 + (x1 - x0) * k / 4; svgEl.append(s("text", { x: M.l + iw * k / 4, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt ? xfmt(v) : fmt.si(v))); }
+  if (numX) for (let k = 0; k <= 4; k++) { const v = x0 + (x1 - x0) * k / 4; svgEl.append(s("text", { x: M.l + iw * k / 4, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt ? xfmt(v) : fmt.tick(v))); }
   const group = iw / n, bw = Math.max(2, Math.min(36, (group - 4) / names.length - 2));
   names.forEach((name, k) => {
     const color = SERIES[k];
@@ -223,7 +226,7 @@ function svgChart(pts, names, kind, xName, xfmt) {
       }
     }
   });
-  function tip(ev, p) { showTip(ev.clientX, ev.clientY, [h("div", { class: "t" }, `${xName}: ${xText(p.x)}`), ...names.map((nm, k) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: SERIES[k] } }), h("b", {}, isNum(p.ys[k]) ? fmt.n(p.ys[k], 3) : "–"), h("span", { class: "n" }, nm)))]); }
+  function tip(ev, p) { showTip(ev.clientX, ev.clientY, [h("div", { class: "t" }, `${xName}: ${xText(p.x)}`), ...names.map((nm, k) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: SERIES[k] } }), h("b", {}, isNum(p.ys[k]) ? fmt.num(p.ys[k]) : "–"), h("span", { class: "n" }, nm)))]); }
   return svgEl;
 }
 
