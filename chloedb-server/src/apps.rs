@@ -223,11 +223,21 @@ impl Apps {
         };
         let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let ctype = r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+        // A download's name, and what an app says of its answer in its own
+        // headers (`x-app-*`: what an export left out), go back as they came.
+        let mut passed = HeaderMap::new();
+        for (k, v) in r.headers() {
+            if k == reqwest::header::CONTENT_DISPOSITION || k.as_str().starts_with("x-app-") {
+                if let (Ok(k), Ok(v)) = (header::HeaderName::from_bytes(k.as_str().as_bytes()), header::HeaderValue::from_bytes(v.as_bytes())) {
+                    passed.insert(k, v);
+                }
+            }
+        }
         if r.content_length().is_some_and(|n| n as usize > MAX_ANSWER) {
             return err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer is larger than {} MB", MAX_ANSWER >> 20));
         }
         match r.bytes().await {
-            Ok(b) if b.len() <= MAX_ANSWER => (status, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-cache".to_string())], b).into_response(),
+            Ok(b) if b.len() <= MAX_ANSWER => (status, passed, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-cache".to_string())], b).into_response(),
             Ok(_) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer is larger than {} MB", MAX_ANSWER >> 20)),
             Err(e) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer was cut off: {e}")),
         }

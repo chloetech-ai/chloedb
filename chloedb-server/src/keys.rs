@@ -182,10 +182,10 @@ impl Allow {
 /// The presets of keys limited to tables, for the jobs they are for: each
 /// is its grants and allowance, as a key could be given them by hand.
 pub const PRESETS: &[(&str, &str)] = &[
-    ("analyst", "reads every table, and is admin of the prefix's (its own results); opens Sheets to read"),
+    ("analyst", "reads every table, and is admin of the prefix's (its own results); makes its own workbooks in Sheets, whose queries read as the key may"),
     ("oncall", "writes logs (OTLP too) into the prefix's tables and notes into ChloeCtx spaces ctx_<prefix>, reads the incidents, and sees the fleet's health, events, alerts and metrics"),
     ("ml-app", "is admin of the prefix's tables: queries logged into them, their rank logs, plans, PACK, and the models of their fields"),
-    ("app-owner", "is admin of the prefix's tables (app_* for the app creator's), and names the app creator, which takes it once it checks its callers' tables"),
+    ("app-owner", "is admin of the prefix's tables: app_* builds, changes and publishes apps in the app creator, app_<id>_* one app"),
 ];
 
 /// Preset `name` ([`PRESETS`]) over the tables `prefix` names (`team_*`):
@@ -350,6 +350,38 @@ impl Grant {
             Some(prefix) => table.starts_with(prefix),
             None => table == self.table,
         }
+    }
+}
+
+/// The header with which an app that checks its callers runs a statement
+/// for one ([`Principal::narrowed`]): the caller's tables, as
+/// `x-chloedb-tables` told the app (`*=read`, `team_*=admin`).
+pub const AS_TABLES: &str = "x-chloedb-as-tables";
+
+impl Principal {
+    /// This credential, narrowed to `grants` (`table=scope,...`, as
+    /// [`AS_TABLES`] gives them), each no wider than its scope: what an
+    /// app runs for a caller (a sheet's query) is then checked as the
+    /// caller's key would be, by the tables it reads and writes. It only
+    /// ever narrows: a key already limited to tables cannot narrow itself
+    /// again (its own grants are what count), and the narrowed credential
+    /// is never the root.
+    pub fn narrowed(&self, grants: &str) -> Result<Principal, ApiError> {
+        if self.limited() {
+            return Err(ApiError { status: 403, message: format!("{AS_TABLES} narrows a key of every table; the key {:?} is limited to tables already", self.name) });
+        }
+        let mut g = Vec::new();
+        for s in grants.split(',').filter(|s| !s.trim().is_empty()) {
+            let mut x = Grant::parse(s)?;
+            x.scope = x.scope.min(self.scope);
+            g.push(x);
+        }
+        let mut p = self.clone();
+        p.scope = widest(&g).min(self.scope);
+        p.tables = Some(g.into());
+        p.allow = None;
+        p.root = false;
+        Ok(p)
     }
 }
 

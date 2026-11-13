@@ -301,3 +301,36 @@ async fn apps_by_whether_they_check_their_callers() {
     assert_eq!(s, 200, "{j}");
     assert_eq!(call(&base, "POST", "/v1/apps/sheets/v1/books", ROOT, Some(json!({}))).await.0, 200);
 }
+
+/// An app that checks its callers runs a caller's statement with its own
+/// token narrowed to the caller's tables (`x-chloedb-as-tables`): checked
+/// as the caller's key would be, never wider than the token, and never a
+/// way for a key limited to tables to change its own grants.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_token_narrowed_to_a_callers_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), Vec::new()).await;
+    ok(&base, "CREATE TABLE ana_x (id KEYWORD PRIMARY KEY, n INT)").await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let as_ = |auth: &str, grants: &str, sql: &str| c.post(format!("{base}/v1/sql")).bearer_auth(auth).header("x-chloedb-as-tables", grants).json(&json!({"sql": sql})).send();
+    let status = |r: reqwest::Response| r.status().as_u16();
+    // Read on every table: reads, but neither writes nor makes a table.
+    assert_eq!(status(as_("root-token", "*=read", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
+    assert_eq!(status(as_("root-token", "*=read", "INSERT INTO ana_x (id, n) VALUES ('a', 1)").await.unwrap()), 403);
+    assert_eq!(status(as_("root-token", "*=read", "CREATE TABLE ana_y (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    // The analyst's: reads everything, admin of its own tables only.
+    assert_eq!(status(as_("root-token", "*=read,ana_*=admin", "CREATE TABLE ana_y (id KEYWORD PRIMARY KEY)").await.unwrap()), 200);
+    assert_eq!(status(as_("root-token", "*=read,ana_*=admin", "CREATE TABLE other_y (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    // Its own routes only: what a key limited to tables may call.
+    let r = c.get(format!("{base}/v1/admin/keys")).bearer_auth("root-token").header("x-chloedb-as-tables", "*=admin").send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 403);
+    // Never wider than the credential: a read key narrowed to admin grants reads.
+    let reader = key(&base, json!({"name": "reader", "scope": "read"})).await;
+    assert_eq!(status(as_(&reader, "*=admin", "CREATE TABLE ana_z (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    assert_eq!(status(as_(&reader, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
+    // A key limited to tables cannot narrow itself into other grants.
+    let limited = key(&base, json!({"name": "lim", "tables": {"ana_*": "read"}})).await;
+    assert_eq!(status(as_(&limited, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 403);
+    // A bad grant is refused, not ignored.
+    assert_eq!(status(as_("root-token", "ana_x=sometimes", "SELECT 1").await.unwrap()), 400);
+}

@@ -771,6 +771,15 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // itself and does not pass it on.
     let token = header_str(req.headers(), header::AUTHORIZATION).or_else(|| header_str(req.headers(), header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
     let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+    // An app that checks its callers runs a caller's statement narrowed
+    // to the caller's tables ([`Principal::narrowed`]): checked as theirs.
+    let (who, narrowing) = match (who, header_str(req.headers(), header::HeaderName::from_static(keys::AS_TABLES))) {
+        (Some(w), Some(g)) => match w.narrowed(g) {
+            Ok(n) => (Some(n), None),
+            Err(e) => (Some(w), Some(e)),
+        },
+        (w, _) => (w, None),
+    };
     // A refused credential that is a key known here (expired, revoked):
     // its name and id, so that Access names the client still sending it.
     let known = match &who {
@@ -782,6 +791,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
+        Some(_) if narrowing.is_some() => narrowing,
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
