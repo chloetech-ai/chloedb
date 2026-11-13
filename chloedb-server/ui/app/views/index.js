@@ -110,7 +110,7 @@ export const NAV = [
     { id: "recsys", title: "Recsys eval", icon: "recsys" },
     { id: "sid", title: "Semantic IDs", icon: "sid" },
     { id: "autocomplete", title: "Autocomplete", icon: "autocomplete" },
-    { id: "understand", title: "Query understanding", icon: "sparkle" },
+    { id: "understand", title: "Understanding", icon: "sparkle" },
     { id: "media", title: "Media search", icon: "media" },
     { id: "graph", title: "Graph explorer", icon: "graph" },
     // CON-1: the old console (#/classic) is out of the nav: its tools are

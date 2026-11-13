@@ -229,6 +229,18 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!((status, d["values"][0].as_str()), (200, Some("de")), "{d}");
     let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:nope", "text": "x"})).await;
     assert_eq!(status, 400, "{e}");
+    // A dictionary's names in a text, read from its table now, and a
+    // classifier's label, as derived fields of them would hold them.
+    let (_, one) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT category FROM products WHERE id = 'p0000042'"})).await;
+    let category = one["rows"][0][0].as_str().unwrap().to_string();
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "dict:products.category", "text": format!("anything in {category} today"), "table": "products", "field": "body"})).await;
+    assert_eq!((status, d["many"].as_bool()), (200, Some(true)), "{d}");
+    assert!(d["values"].as_array().unwrap().iter().any(|v| v.as_str() == Some(category.as_str())), "{d}");
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "classifier:cat", "text": "waterproof hiking boots"})).await;
+    assert_eq!(status, 200, "{d}");
+    assert!(d["values"].as_array().unwrap().len() <= 1 && !d["top"].as_array().unwrap().is_empty(), "{d}");
+    let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "dict:nope.name", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
     // A table's own synonym list, by SQL; listed; used by synonyms => 1.
     let rainproof = json!({"sql": "SELECT COUNT(*) FROM products WHERE MATCH(body, 'rainproof', synonyms => 1)"});
     let (status, e) = post(&c, &format!("{base}/v1/query"), rainproof.clone()).await;

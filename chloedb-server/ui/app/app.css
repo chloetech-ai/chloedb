@@ -3665,3 +3665,15 @@ pre.code.diff > .del { background: color-mix(in srgb, var(--crit) 14%, transpare
 /* Tables: the Data tab's tools. */
 .data-tools .input.grow { flex: 1 1 280px; min-width: 0; }
 .data-tools select.input { width: auto; }
+
+/* Understanding: the Enrich rows and Enrich queries workflows (views/enrich.js) */
+.ex-steps > li { padding: 10px 14px; gap: 12px; }
+.start-steps > li.off { background: var(--surface-2); }
+.start-steps > li.off .start-n { background: var(--surface-3); color: var(--muted); }
+.start-steps > li.off b { color: var(--text-2); }
+.ex-step { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.ex-prog { flex: 1 1 160px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--accent) var(--w), var(--surface-2) var(--w)); }
+.ex-try td { vertical-align: top; }
+.ex-sticky { position: sticky; top: 12px; }
+@media (max-width: 900px) { .ex-sticky { position: static; } }
+@media (max-width: 560px) { .qu-top .seg { max-width: 100%; overflow-x: auto; flex-wrap: nowrap; } .qu-top .seg button { flex: none; } }
