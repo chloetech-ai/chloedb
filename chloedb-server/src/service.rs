@@ -3782,7 +3782,7 @@ impl Service {
         let functions = self.functions();
         let f = functions.current(name).ok_or_else(|| ApiError::bad(format!("no classifier named {name}")))?;
         let c = chloedb::query::classify::of_function(f)?.ok_or_else(|| ApiError::bad(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
-        let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
+        let p = self.params(None, Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
         let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
         Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
     }
