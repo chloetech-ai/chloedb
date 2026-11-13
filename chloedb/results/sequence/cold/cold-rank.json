@@ -1,0 +1,338 @@
+{
+ "new_items": 1210,
+ "sources": {
+  "id": {
+   "warm": {
+    "recall@10": 0.0577,
+    "ndcg@10": 0.0343,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0,
+    "ndcg@10": 0.0,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0513,
+    "ndcg@10": 0.0305,
+    "users": 22363
+   },
+   "top10_new_share": 0.0
+  },
+  "text": {
+   "warm": {
+    "recall@10": 0.0427,
+    "ndcg@10": 0.0231,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0394,
+    "ndcg@10": 0.0169,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0423,
+    "ndcg@10": 0.0224,
+    "users": 22363
+   },
+   "top10_new_share": 0.0842
+  },
+  "decoder": {
+   "warm": {
+    "recall@10": 0.0646,
+    "ndcg@10": 0.0354,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0,
+    "ndcg@10": 0.0,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0574,
+    "ndcg@10": 0.0315,
+    "users": 22363
+   },
+   "top10_new_share": 0.0
+  },
+  "rrf(id, text)": {
+   "warm": {
+    "recall@10": 0.0649,
+    "ndcg@10": 0.0365,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0032,
+    "ndcg@10": 0.0013,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.058,
+    "ndcg@10": 0.0326,
+    "users": 22363
+   }
+  },
+  "rrf(id, decoder)": {
+   "warm": {
+    "recall@10": 0.0692,
+    "ndcg@10": 0.0401,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0,
+    "ndcg@10": 0.0,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0615,
+    "ndcg@10": 0.0356,
+    "users": 22363
+   }
+  },
+  "rrf(text, decoder)": {
+   "warm": {
+    "recall@10": 0.0681,
+    "ndcg@10": 0.0357,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0052,
+    "ndcg@10": 0.0018,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0611,
+    "ndcg@10": 0.0319,
+    "users": 22363
+   }
+  },
+  "rrf(id, text, decoder)": {
+   "warm": {
+    "recall@10": 0.0754,
+    "ndcg@10": 0.0415,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0012,
+    "ndcg@10": 0.0004,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0672,
+    "ndcg@10": 0.0369,
+    "users": 22363
+   }
+  },
+  "decoder, up to 1 of 10 to new items under a decoded first 3": {
+   "warm": {
+    "recall@10": 0.0625,
+    "ndcg@10": 0.0348,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.008,
+    "ndcg@10": 0.0023,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0565,
+    "ndcg@10": 0.0312,
+    "users": 22363
+   }
+  },
+  "decoder, up to 2 of 10 to new items under a decoded first 3": {
+   "warm": {
+    "recall@10": 0.0614,
+    "ndcg@10": 0.0345,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0109,
+    "ndcg@10": 0.0032,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0558,
+    "ndcg@10": 0.031,
+    "users": 22363
+   }
+  },
+  "decoder, up to 5 of 10 to new items under a decoded first 3": {
+   "warm": {
+    "recall@10": 0.0604,
+    "ndcg@10": 0.0342,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0145,
+    "ndcg@10": 0.0044,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0553,
+    "ndcg@10": 0.0308,
+    "users": 22363
+   }
+  },
+  "decoder, up to 1 of 10 to new items under a decoded first 2": {
+   "warm": {
+    "recall@10": 0.0609,
+    "ndcg@10": 0.0344,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0141,
+    "ndcg@10": 0.0041,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0557,
+    "ndcg@10": 0.031,
+    "users": 22363
+   }
+  },
+  "decoder, up to 2 of 10 to new items under a decoded first 2": {
+   "warm": {
+    "recall@10": 0.0575,
+    "ndcg@10": 0.0333,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0213,
+    "ndcg@10": 0.0063,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0534,
+    "ndcg@10": 0.0303,
+    "users": 22363
+   }
+  },
+  "decoder, up to 5 of 10 to new items under a decoded first 2": {
+   "warm": {
+    "recall@10": 0.046,
+    "ndcg@10": 0.0295,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.047,
+    "ndcg@10": 0.0149,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0461,
+    "ndcg@10": 0.0279,
+    "users": 22363
+   }
+  },
+  "ranker: id and text ranks": {
+   "warm": {
+    "recall@10": 0.0587,
+    "ndcg@10": 0.0351,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0032,
+    "ndcg@10": 0.0014,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0525,
+    "ndcg@10": 0.0313,
+    "users": 22363
+   }
+  },
+  "ranker: with semantic-ID features": {
+   "warm": {
+    "recall@10": 0.0712,
+    "ndcg@10": 0.0424,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0189,
+    "ndcg@10": 0.0083,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0654,
+    "ndcg@10": 0.0386,
+    "users": 22363
+   }
+  },
+  "ranker: with text-vector similarity to the history": {
+   "warm": {
+    "recall@10": 0.0785,
+    "ndcg@10": 0.0488,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0281,
+    "ndcg@10": 0.0126,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0729,
+    "ndcg@10": 0.0448,
+    "users": 22363
+   }
+  },
+  "ranker: with both": {
+   "warm": {
+    "recall@10": 0.0776,
+    "ndcg@10": 0.0483,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0297,
+    "ndcg@10": 0.0138,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0723,
+    "ndcg@10": 0.0445,
+    "users": 22363
+   }
+  },
+  "ranker: with both, and the decoder's top 20 and rank": {
+   "warm": {
+    "recall@10": 0.0868,
+    "ndcg@10": 0.0527,
+    "users": 19875
+   },
+   "new": {
+    "recall@10": 0.0273,
+    "ndcg@10": 0.0122,
+    "users": 2488
+   },
+   "all": {
+    "recall@10": 0.0802,
+    "ndcg@10": 0.0481,
+    "users": 22363
+   }
+  }
+ },
+ "new_items_under_an_old_items_first_3": 363,
+ "new_items_under_an_old_items_first_2": 943,
+ "feature_gain": [
+  {
+   "id_rr": 31465.56655395031,
+   "text_rr": 22756.55959790945,
+   "hist_l1": 9214.874558210373,
+   "last_l1": 4340.776401877403,
+   "hist_l2": 3669.6155486106873,
+   "last_l2": 1781.988008260727,
+   "hist_l3": 994.8754569292068,
+   "last_l3": 608.8426809310913
+  },
+  {
+   "id_rr": 30714.26906168461,
+   "text_rr": 24470.307185947895,
+   "hist_l1": 9245.426634907722,
+   "last_l1": 4882.713781476021,
+   "hist_l2": 3434.750264406204,
+   "last_l2": 2125.585870027542,
+   "hist_l3": 1805.0104495882988,
+   "last_l3": 392.44421434402466
+  }
+ ]
+}

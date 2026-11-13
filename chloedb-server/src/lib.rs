@@ -23,6 +23,7 @@
 
 pub mod agent;
 pub mod alerts;
+pub mod app_procs;
 pub mod apps;
 pub mod aws;
 pub mod cloud;

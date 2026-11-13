@@ -568,6 +568,13 @@ struct Args {
     /// used are closed.
     #[arg(long, default_value_t = 1000)]
     tenant_open_max: usize,
+    /// The apps this server starts itself, as child processes on loopback
+    /// ports, each with a token and a scoped key of its own: auto (those of
+    /// crawler, sheets and chloectx whose programs are installed beside
+    /// chloedb-server, on a server of its own or a coordinator), off, or
+    /// names (crawler,sheets,chloectx; looked for on the PATH too).
+    #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
+    start_apps: String,
     /// A folder that holds each app's own token in a file of the app's
     /// name, read as it is sent (so a token written there later, as a
     /// Kubernetes Secret mounted there is, needs no restart).
@@ -1181,6 +1188,19 @@ async fn run() {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
     chloedb_server::telemetry::set_redact_params(a.redact_params);
+    // The apps it starts itself (crate::app_procs).
+    let started_apps = {
+        let taken: Vec<String> = chloedb_server::apps::parse(&a.apps).unwrap_or_default().into_iter().map(|x| x.name).collect();
+        let role = chloedb_server::app_procs::Role {
+            replica: a.replica,
+            shard: cluster.is_some() && a.shards.is_empty() && a.replicas.is_empty(),
+            beside_coordinator: a.coordinator_listen.is_some(),
+            kube: a.kube_cluster.is_some() || std::env::var_os("KUBERNETES_SERVICE_HOST").is_some(),
+            tls: tls.is_some(),
+        };
+        let own_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(|p| p.to_path_buf()));
+        chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e))
+    };
     let o = Options {
         db: a.db,
         schema: a.schema,
@@ -1281,6 +1301,7 @@ async fn run() {
         tenant_idle_s: Some(a.tenant_idle_s),
         tenant_open_max: Some(a.tenant_open_max),
         app_token: a.app_token.clone(),
+        started_apps,
         app_token_dir: a.app_token_dir.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
@@ -1416,9 +1437,21 @@ async fn run() {
         }));
     }
     let store = svc.log_store.clone();
+    // The apps it starts itself call it back on loopback.
+    if !svc.apps.procs.is_empty() {
+        let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));
+        let host = match at.ip() {
+            std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            ip => ip,
+        };
+        svc.apps.start(&format!("http://{}", std::net::SocketAddr::new(host, at.port())), std::sync::Arc::new(chloedb_server::app_procs::ServerKeys { keys: svc.keys.clone() }));
+    }
+    let apps = svc.clone();
     if let Err(e) = server::serve_http(svc, http, access).await {
         fail(&format!("HTTP server: {e}"));
     }
+    apps.apps.stop().await;
     for t in tasks {
         let _ = t.await;
     }

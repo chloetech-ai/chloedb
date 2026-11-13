@@ -219,6 +219,10 @@ pub struct Options {
     /// `--tenant-idle-s` and `--tenant-open-max`: when tenants are closed.
     pub tenant_idle_s: Option<f64>,
     pub tenant_open_max: Option<usize>,
+    /// The apps the server starts as child processes (`--start-apps`,
+    /// [`crate::app_procs`]); [`crate::apps::Apps::start`] starts them once
+    /// the server listens.
+    pub started_apps: Vec<crate::app_procs::Plan>,
     /// A folder of each app's own token, a file by the app's name
     /// (`CHLOEDB_APP_TOKEN_DIR`; [`crate::apps`]).
     pub app_token_dir: Option<std::path::PathBuf>,
@@ -434,7 +438,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
-    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone()).with_token_dir(o.app_token_dir.clone());
+    svc.apps = crate::apps::Apps::with_started(crate::apps::parse(&o.apps)?, o.app_token.clone(), o.started_apps.clone()).with_token_dir(o.app_token_dir.clone());
     if let Some(url) = given(&o.tenants) {
         let cache = o.tenant_cache.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("chloedb-tenants-{}", std::process::id())));
         let d = crate::tenants::Limits::default();
