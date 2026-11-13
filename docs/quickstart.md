@@ -15,12 +15,7 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
-**Homebrew**, on macOS or Linux:
-
-```sh
-# install
-brew install chloetech-ai/tap/chloedb
-```
+**Homebrew** is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.
 
 **Docker**: skip to [ChloeDB in Docker](#chloedb-in-docker) below, which runs the same steps against the image.
 
