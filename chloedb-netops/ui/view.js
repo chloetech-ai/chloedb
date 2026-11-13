@@ -2261,6 +2261,20 @@ function mapPage(body, app, path) {
     loadTimer = setTimeout(load, 140);
     drawCrumbs();
   };
+  const inBox = (x0, y0, x1, y1) => !shown.box || (x1 >= shown.box[0] && x0 <= shown.box[2] && y1 >= shown.box[1] && y0 <= shown.box[3]);
+  const changedIn = (was, now) => {
+    if (!was || !shown.box) return true;
+    const key = (f) => `${f.id}|${f.state}|${f.since}`;
+    const before = new Set((was.faults || []).map(key)), after = new Set((now.faults || []).map(key));
+    for (const f of [...(was.faults || []).filter((f) => !after.has(key(f))), ...(now.faults || []).filter((f) => !before.has(key(f)))]) if (inBox(f.x, f.y, f.x, f.y)) return true;
+    for (const id of new Set([...Object.keys(was.places || {}), ...Object.keys(now.places || {})])) {
+      const c = cont.get(id);
+      if (!c || c.kind !== "hub" || JSON.stringify(was.places?.[id]) === JSON.stringify(now.places?.[id])) continue;
+      if (inBox(c.x - c.w / 2, c.y - c.h / 2, c.x + c.w / 2, c.y + c.h / 2)) return true;
+    }
+    return false;
+  };
+  let loadedAt = 0;
   const load = async (force) => {
     if (dead || !base) return;
     const t = tier();
@@ -2273,6 +2287,7 @@ function mapPage(body, app, path) {
       const j = await app.call(`/v1/map/view?x0=${box[0].toFixed(3)}&y0=${box[1].toFixed(3)}&x1=${box[2].toFixed(3)}&y1=${box[3].toFixed(3)}&t=${t}`);
       if (dead || seq !== loadSeq) return;
       shown = { nodes: j.nodes, edges: j.edges, t, box, ms: j.queries.reduce((a, q) => a + q.ms, 0), cut: j.cut };
+      loadedAt = Date.now();
       draw();
     } catch (e) { console.warn(e); }
   };
@@ -2707,7 +2722,10 @@ function mapPage(body, app, path) {
     for (const c of base.containers) cont.set(c.id, c);
     resize();
     fit(false);
-    stopHot = live(app, side, "/v1/map/hot", (j) => { hot = j; draw(); drawTrouble(); if (tier() >= 3) load(true); }, 10000);
+    // What is broken comes every 10 s; the window is asked again only when
+    // something in it changed (a fault in it, or a hub it covers counting
+    // differently), and at the latest every five minutes.
+    stopHot = live(app, side, "/v1/map/hot", (j) => { const was = hot; hot = j; draw(); drawTrouble(); if (tier() >= 3 && (changedIn(was, j) || Date.now() - loadedAt > 300000)) load(true); }, 10000);
     const pend = app.pending; app.pending = null;
     if (pend?.ask) ask((input.value = pend.ask));
     else if (pend?.open || path[1]) open(pend?.open || path[1]);
