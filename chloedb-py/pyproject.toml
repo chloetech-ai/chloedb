@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.9,<2"]
+requires = ["maturin>=1.16.0,<2"]
 build-backend = "maturin"
 
 [project]
@@ -15,16 +15,16 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: R
 [project.optional-dependencies]
 test = ["pytest"]
 # chloedb.Frame (dataframes run in ChloeDB; Arrow in and out)
-frame = ["pyarrow>=14"]
+frame = ["pyarrow>=25.0.1"]
 # chloedb.ingest.kafka
-kafka = ["confluent-kafka>=2.3"]
+kafka = ["confluent-kafka>=2.16.1"]
 # chloedb.langchain: a LangChain vector store (numpy for its maximal
 # marginal relevance search)
-langchain = ["langchain-core>=0.3", "numpy"]
+langchain = ["langchain-core>=1.7.7", "numpy"]
 # chloedb.langgraph: a LangGraph checkpointer and store
-langgraph = ["langgraph>=0.3", "langgraph-checkpoint>=2.0"]
+langgraph = ["langgraph>=1.2.20", "langgraph-checkpoint>=4.3.1"]
 # chloedb.llama_index: a LlamaIndex vector store
-llama-index = ["llama-index-core>=0.12"]
+llama-index = ["llama-index-core>=0.14.25"]
 
 [tool.maturin]
 python-source = "python"
