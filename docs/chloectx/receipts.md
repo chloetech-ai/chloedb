@@ -104,6 +104,11 @@ chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release
 ```
 
+`blame path:line` reads the line from a regular file inside the project,
+after links and `..` are resolved, of at most 8 MiB; any other path is
+refused, so neither the command center's Blame tab nor the daemon's socket
+can be used to read a file elsewhere.
+
 Every `memory_search` answer ends with its receipt's id, so an agent (or
 the person reading its transcript) can ask why a record ranked where it did.
 
