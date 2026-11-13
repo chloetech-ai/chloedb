@@ -290,3 +290,32 @@ async fn a_copy_with_another_cluster_token_is_passed_over() {
     let b = copies.iter().find(|r| r["url"] == json!(ub)).unwrap();
     assert!(b["refuses_token"].is_null(), "{j}");
 }
+
+/// A key limited to tables, on a coordinator that has not yet learned of
+/// a table another coordinator made, may still read it: the coordinator
+/// learns its tables again before refusing (audit N-D5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limited_key_reads_a_table_another_coordinator_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let shard = Access { cluster: cluster(), ..Default::default() };
+    let (_s0, u0) = serve(create(d, "s0.strata", |i| shard_of(&key(i), 2) == 0), d, "s0.strata", shard.clone(), |_| {}).await;
+    let (_s1, u1) = serve(create(d, "s1.strata", |i| shard_of(&key(i), 2) == 1), d, "s1.strata", shard.clone(), |_| {}).await;
+    let coord_access = Access { token: Some(Secret::new(ADMIN)), cluster: cluster(), ..Default::default() };
+    let (_a, svc_a, base_a) = coordinator(&[u0.clone(), u1.clone()], cluster(), coord_access.clone()).await;
+    let (_b, _svc_b, base_b) = coordinator(&[u0.clone(), u1.clone()], cluster(), coord_access.clone()).await;
+    let (status, j) = http(&base_a, "POST", "/v1/admin/keys", Some(ADMIN), Some(json!({"name": "crawler", "tables": {"crawl_*": "read"}}))).await;
+    assert_eq!(status, 200, "{j}");
+    let crawler = j["secret"].as_str().unwrap().to_string();
+
+    let (status, j) = http(&base_b, "POST", "/v1/sql", Some(ADMIN), Some(json!({"sql": "CREATE TABLE crawl_pages (id KEYWORD PRIMARY KEY, body TEXT)"}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert!(!svc_a.table_names().iter().any(|t| t == "crawl_pages"), "the first coordinator has not learned of it yet");
+    // Past the once-a-second limit on asking the shards.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let select = json!({"sql": "SELECT id FROM crawl_pages"});
+    let (status, j) = http(&base_a, "POST", "/v1/query", Some(&crawler), Some(select)).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = http(&base_a, "POST", "/v1/query", Some(&crawler), Some(json!({"sql": "SELECT id FROM crawl_nothing"}))).await;
+    assert_eq!(status, 400, "{j}");
+}

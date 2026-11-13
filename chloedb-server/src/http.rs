@@ -983,11 +983,22 @@ fn who(req_who: Option<axum::Extension<Principal>>) -> Principal {
 
 /// Refuses statement `sql` for a key limited to tables when it names a
 /// table the key may not read ([`crate::scoped::check_reads`]).
-fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError> {
-    match who.limited() {
-        true => crate::scoped::check_reads(who, sql, &app.svc.table_names(), &app.svc.functions()),
-        false => Ok(()),
+async fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError> {
+    if !who.limited() {
+        return Ok(());
     }
+    let check = || crate::scoped::check_reads(who, sql, &app.svc.table_names(), &app.svc.functions());
+    // N-D5: a coordinator judges by the tables and functions it last
+    // learned, and another coordinator may have made a table or changed a
+    // stored function since: it learns them again (at most once a second)
+    // when the text names a table it does not know or calls a stored
+    // function, and judges again if they changed.
+    let first = check();
+    let stale = matches!(&first, Err(e) if e.message.starts_with("no such table")) || (first.is_ok() && crate::scoped::calls_stored(sql, &app.svc.functions()));
+    if stale && app.svc.learn_tables(false).await {
+        return check();
+    }
+    first
 }
 
 /// Refuses what a key limited to tables may not do to the table named
@@ -1372,7 +1383,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if let Some(k) = ["log", "shard"].into_iter().find(|k| given(k)) {
             return Err(who.may_server(&format!("a query with {k}")).unwrap_err());
         }
-        reads_ok(&app, &who, body_str(&b, "sql")?)?;
+        reads_ok(&app, &who, body_str(&b, "sql")?).await?;
     }
     let page = match b.get("page_size") {
         None | Some(Json::Null) => None,
@@ -2773,7 +2784,7 @@ pub fn media_headers(mime: &str, sha256: &str) -> HeaderMap {
 
 async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    reads_ok(&app, &who(w), sql)?;
+    reads_ok(&app, &who(w), sql).await?;
     let params = app.svc.params(b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.

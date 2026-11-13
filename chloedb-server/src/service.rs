@@ -2088,7 +2088,7 @@ impl Service {
     /// A coordinator asks its shards for their tables and rank profiles
     /// again ([`Coordinator::refresh`]; at most once a second unless
     /// `now`): whether it learned of a change.
-    async fn learn_tables(&self, now: bool) -> bool {
+    pub(crate) async fn learn_tables(&self, now: bool) -> bool {
         let Backend::Cluster(c) = &self.backend else { return false };
         let changed = c.refresh(now).await;
         if changed {
