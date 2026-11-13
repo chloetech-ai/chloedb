@@ -37,6 +37,7 @@ pub mod contain;
 pub mod cores;
 pub mod demo;
 pub mod events;
+pub mod feedback;
 pub mod fleet;
 pub mod follow;
 pub mod grpc;
