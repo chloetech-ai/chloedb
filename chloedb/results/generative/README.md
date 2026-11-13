@@ -180,6 +180,33 @@ code so far does not say.
   vectors beside the text's, balanced, 643 items shared a code (a Python
   prototype of the same training, 2026-11-12).
 
+### Does balancing help the decoder?
+
+No, on Beauty. [`decoder_codes.py`](decoder_codes.py) trains the decoder
+below on the codes of each of the two codebooks above (seed 0,
+validation on 2,000 users, patience 5) and scores every user's last
+item. Same container, 2026-11-12 and 13
+([`decoder-codes-plain.json`](decoder-codes-plain.json),
+[`decoder-codes-balanced.json`](decoder-codes-balanced.json)):
+
+| codebook | epochs (best) | Recall@5 | Recall@10 | NDCG@5 | NDCG@10 |
+|---|---|---|---|---|---|
+| plain | 22 (17) | 0.0446 | 0.0679 | 0.0298 | 0.0373 |
+| balanced | 16 (11) | 0.0448 | 0.0677 | 0.0300 | 0.0373 |
+
+The two are the same to the third digit: the decoder does as well with
+a third level spread over 57 numbers' worth as over 251, and 687 fewer
+items sharing a code change nothing it can use. So `balanced` stays off
+by default. What it gives is a codebook whose shape does not depend on
+the seed (the [gate's spread](../sequence/README.md#semantic-ids-in-the-gate))
+and levels that split a catalog evenly, which matters to `sid_at`
+prefixes used as groups or filters, not to this decoder. (The plain run
+took 40 minutes alone on the 4 cores; the balanced run shared them for
+its first epochs, so its time is not a measure. The text vectors here
+are sentence-transformers', where the table at the top embeds with the
+database, so these rows are to be set against each other and not
+against its 0.0667.)
+
 ## The decoder, and how it differs from TIGER's
 
 TIGER's architecture, made to train on a CPU:

@@ -48,6 +48,7 @@ DecayPop's. Stages, each resumable from `--work`:
     python yambda.py train --minutes 90                   # the sequence model
     python yambda.py load                                 # the Strata database
     python yambda.py eval                                 # Strata's sources
+    python yambda.py fuse                                 # weights for fusing history, encode and ppr
 """
 import argparse
 import datetime
@@ -450,9 +451,140 @@ def cmd_eval(a):
     json.dump({"eps": a.eps, "sources": got}, open(os.path.join(a.work, "strata.json"), "w"), indent=1)
 
 
+def simplex(step):
+    """Every way to share 1 among three weights in steps of `step`."""
+    n = round(1 / step)
+    return [(i / n, j / n, (n - i - j) / n) for i in range(n + 1) for j in range(n + 1 - i)]
+
+
+def fuse_sql(w, enc, walk):
+    """The query of a weighted sum of the three sources (a source of weight
+    0 is left out, and not computed)."""
+    terms = [f"{w[0]} * tmm(ranked(:hist), lo => -{K + 1})", f"{w[1]} * tmm(similarity(emb, {enc}))", f"{w[2]} * tmm({walk})"]
+    return "SELECT id FROM items ORDER BY " + " + ".join(t for t, x in zip(terms, w) if x > 0) + f" DESC LIMIT {K}"
+
+
+def cmd_fuse(a):
+    """Weights for fusing `history`, `encode` and `ppr`, in place of
+    `fused`'s equal-weight `rrf`.
+
+    Each source's top 100 and scores are read once (`fuse-lists.json`).
+    From those lists, for every share of 1 among the three sources in
+    steps of 0.1, two fusions are worked out in Python: weighted
+    reciprocal ranks, `sum of w / (60 + rank)`, and a weighted sum of
+    normalised scores as the query language's `tmm` gives them (the
+    history's from its rank, an item outside a source's top 100 scoring 0
+    there, where the database would score it exactly). The users are
+    split in two by their place in the order of ids; each half's weights
+    are the ones with the best NDCG@10 on the other half, so no user is
+    scored with weights they helped choose. The weighted sum then runs as
+    a query for every user, with the other half's weights, and that is
+    the measured result (`fuse.json`)."""
+    import strata
+
+    train, targets = read_split(a.work)
+    baseline = json.load(open(os.path.join(a.work, "baselines.json")))
+    chosen = baseline["chosen"]
+    n_items = train["item"].n_unique()
+    pop = [int(x) for x in decay_pop(train, chosen["decay_pop"])["item"].to_list()[: 2 * K]]
+    db = strata.Database.open(os.path.join(a.work, "db"), models=os.path.join(a.work, "models"))
+    users = sorted(targets)
+    if a.users:
+        users = users[: a.users]
+    now_us = TEST * 1_000_000
+    h = chosen["history"]
+    since = (EPOCH + datetime.timedelta(seconds=TEST - int(h * 3600) if h is not None else 0)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hist = f"SELECT item, COUNT(*) AS n, MAX(ts) AS last FROM events WHERE usr = :u AND ts >= :since GROUP BY item ORDER BY n DESC, last DESC, item LIMIT {K}"
+    enc = f"encode('{MODEL}', (SELECT item, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200), now => :t)"
+    walk = f"ppr(after, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5), dir => 'out', eps => {a.eps})"
+    sql = {"encode": f"SELECT id FROM items ORDER BY similarity(emb, {enc}) DESC LIMIT {K}", "ppr": f"SELECT id FROM items ORDER BY {walk} DESC LIMIT {K}"}
+
+    # Each source's list and scores, read once.
+    path = os.path.join(a.work, "fuse-lists.json")
+    lists = json.load(open(path)) if os.path.exists(path) else {}
+    had = len(lists)
+    t_all = time.time()
+    for n, u in enumerate(users):
+        if str(u) in lists:
+            continue
+        p = {"u": str(u)}
+        got = {"history": [int(r[0]) for r in db.query(hist, {**p, "since": since}).rows]}
+        for s_, q in sql.items():
+            r = db.query(q, {**p, "t": now_us})
+            got[s_] = [[int(x[0]) for x in r.rows], [float(x) for x in r.scores]]
+        lists[str(u)] = got
+        if n % 500 == 0:
+            log(f"lists: {n} users, {time.time() - t_all:.0f} s")
+    if len(lists) > had:
+        json.dump(lists, open(path, "w"))
+
+    grid = simplex(a.step)
+    W = np.asarray(grid)
+    disc = 1 / np.log2(np.arange(10) + 2)
+    fold = {u: n % 2 for n, u in enumerate(users)}
+    methods = ("weighted_rrf", "weighted_sum")
+    ndcg = {m: np.zeros((2, len(grid))) for m in methods}
+    tops = {}
+    for u in users:
+        got = lists[str(u)]
+        cand = list(dict.fromkeys(got["history"] + got["encode"][0] + got["ppr"][0]))
+        at = {x: i for i, x in enumerate(cand)}
+        rr = np.zeros((3, len(cand)))
+        tm = np.zeros((3, len(cand)))
+        for j, x in enumerate(got["history"]):
+            rr[0, at[x]], tm[0, at[x]] = 1 / (60 + j + 1), (K - j) / K
+        for row, name, lo in ((1, "encode", -1.0), (2, "ppr", 0.0)):
+            keys, sc = got[name]
+            top = max(sc) - lo if sc else 0.0
+            for j, (x, v) in enumerate(zip(keys, sc)):
+                rr[row, at[x]], tm[row, at[x]] = 1 / (60 + j + 1), (v - lo) / top if top > 0 else 0.0
+        want = set(int(x) for x in targets[u])
+        is_hit = np.asarray([1.0 if x in want else 0.0 for x in cand])
+        idcg = sum(1 / math.log2(i + 2) for i in range(min(len(want), 10)))
+        n10 = min(10, len(cand))
+        tops[u] = {"cand": cand, "rrf": np.argsort(-rr.sum(axis=0), kind="stable")[:K]}
+        for m, mat in zip(methods, (rr, tm)):
+            order = np.argsort(-(W @ mat), axis=1, kind="stable")[:, :K]
+            ndcg[m][fold[u]] += is_hit[order[:, :n10]] @ disc[:n10] / idcg
+            tops[u][m] = order.astype(np.int16)
+    out = {"step": a.step, "users": len(users), "eps": a.eps, "chosen": {}, "sources": {}}
+    tally = {m: Tally(n_items) for m in ("history", "rrf", *methods)}
+    best = {}
+    for m in methods:
+        # Each half's weights: the best on the other half.
+        best[m] = [int(np.argmax(ndcg[m][1 - f])) for f in (0, 1)]
+        out["chosen"][m] = [{"scored_half": f, "weights": dict(zip(("history", "encode", "ppr"), grid[best[m][f]])), "ndcg@10_where_chosen": round(float(ndcg[m][1 - f][best[m][f]] / sum(1 for u in users if fold[u] != f)), 4)} for f in (0, 1)]
+        log(f"{m}: {out['chosen'][m]}")
+    for u in users:
+        cand = tops[u]["cand"]
+        tally["history"].add(fill(lists[str(u)]["history"], pop), targets[u])
+        tally["rrf"].add(fill([cand[i] for i in tops[u]["rrf"]], pop), targets[u])
+        for m in methods:
+            tally[m].add(fill([cand[i] for i in tops[u][m][best[m][fold[u]]]], pop), targets[u])
+    out["sources"] = {"history": tally["history"].result(), "rrf, equal weights (in Python)": tally["rrf"].result(), "weighted rrf (in Python)": tally["weighted_rrf"].result(), "weighted sum (in Python)": tally["weighted_sum"].result()}
+    for k_, v in out["sources"].items():
+        log(f"{k_:>32} {v}")
+    json.dump(out, open(os.path.join(a.work, "fuse.json"), "w"), indent=1)
+
+    # The weighted sum as a query, each user with the other half's weights.
+    queries = [fuse_sql(grid[best["weighted_sum"][f]], enc, walk) for f in (0, 1)]
+    t = Tally(n_items)
+    t_all = time.time()
+    for n, u in enumerate(users):
+        t0 = time.perf_counter()
+        top = [int(r[0]) for r in db.query(queries[fold[u]], {"u": str(u), "t": now_us, "hist": [str(x) for x in lists[str(u)]["history"]]}).rows]
+        t.add(fill(top, pop), targets[u], (time.perf_counter() - t0) * 1e3)
+        if n % 500 == 0:
+            log(f"query: {n} users, {time.time() - t_all:.0f} s")
+    out["queries"] = queries
+    out["sources"]["weighted sum (the query)"] = t.result()
+    log(f"{'weighted sum (the query)':>32} {out['sources']['weighted sum (the query)']}")
+    json.dump(out, open(os.path.join(a.work, "fuse.json"), "w"), indent=1)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["prep", "train", "load", "eval"])
+    ap.add_argument("stage", choices=["prep", "train", "load", "eval", "fuse"])
     ap.add_argument("--data", default=os.path.expanduser("~/data/yambda"))
     ap.add_argument("--work", default=os.path.expanduser("~/data/yambda/work"))
     ap.add_argument("--quick", action="store_true", help="prep: a short ItemKNN grid")
@@ -467,8 +599,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--users", type=int, default=None)
+    ap.add_argument("--step", type=float, default=0.1, help="fuse: the weights' grid")
     a = ap.parse_args()
-    {"prep": cmd_prep, "train": cmd_train, "load": cmd_load, "eval": cmd_eval}[a.stage](a)
+    {"prep": cmd_prep, "train": cmd_train, "load": cmd_load, "eval": cmd_eval, "fuse": cmd_fuse}[a.stage](a)
 
 
 if __name__ == "__main__":
