@@ -121,11 +121,13 @@ pub enum TenantError {
     /// No tenant has that id (any more).
     Missing,
     /// Another node committed since this one last read `HEAD`: nothing of
-    /// the write was committed. The handle has loaded the tenant again;
-    /// the write can be tried again.
+    /// the write was committed (the handle loaded the tenant again and
+    /// looked: a store's refusal alone is not taken for it). The write
+    /// can be tried again.
     NotWriter,
-    /// The store did not say whether it took the write, and reading `HEAD`
-    /// again did not settle it: it may or may not be committed.
+    /// The store did not say whether it took the write, or refused it and
+    /// then could not be read, and reading `HEAD` again did not settle
+    /// it: it may or may not be committed.
     InDoubt(String),
     /// Anything else; a write that fails with it was not committed.
     Db(Error),
@@ -450,6 +452,14 @@ impl Loaded {
     fn last_seq(&self) -> Result<u64> {
         Ok(numbering(&self.db)?.last().seq)
     }
+}
+
+/// Whether `l` holds the write whose last transaction is `after` of term
+/// `epoch`. Epochs are one handle's (it takes a new one at every load),
+/// so a transaction of this number and term is that write's.
+fn committed(l: &Loaded, after: u64, epoch: u64) -> Result<bool> {
+    let n = numbering(&l.db)?;
+    Ok(n.seq >= after && n.term_at(after) == epoch)
 }
 
 fn numbering(db: &Db) -> Result<crate::storage::Numbering> {
@@ -877,16 +887,44 @@ impl Tenant {
                 Ok(())
             }
             Ok(None) => {
-                self.reload(g);
-                Err(match &**g {
-                    Some(_) => TenantError::NotWriter,
-                    None => self.gone_or(TenantError::NotWriter),
-                })
+                let (epoch, incarnation) = (l.head.epoch, l.head.incarnation.clone());
+                self.refused(g, after, epoch, &incarnation)
             }
             Err(e) => {
                 let (epoch, incarnation, version) = (l.head.epoch, l.head.incarnation.clone(), l.version.clone());
                 self.settle(g, after, epoch, &incarnation, &version, e)
             }
+        }
+    }
+
+    /// After the store refused a put of `HEAD` ("it has changed"): loads
+    /// the tenant again and looks whether the write, whose last
+    /// transaction is `after` of term `epoch`, is in it all the same. It
+    /// is when a store's client sent the put twice (after an answer that
+    /// was lost) and reports the store's refusal of the second: then the
+    /// write is committed, and saying that nothing was would have the
+    /// caller make it again. Otherwise another node wrote first, and
+    /// nothing of the write is committed. When the tenant cannot be read
+    /// again, the handle cannot tell and says so.
+    fn refused(&self, g: &mut RwLockWriteGuard<'_, Option<Loaded>>, after: u64, epoch: u64, incarnation: &str) -> TResult<()> {
+        // The old copy's files are closed before they are replaced.
+        **g = None;
+        let l = match self.load() {
+            Ok(l) => l,
+            Err(TenantError::Missing) => return Err(TenantError::Missing),
+            Err(e) => return Err(TenantError::InDoubt(format!("the store refused the write, as one that came after another node's; then reading the tenant again: {e}"))),
+        };
+        // (Another incarnation: the tenant was deleted and created again,
+        // and the write went with the one it was made to.)
+        let landed = match l.head.incarnation == incarnation {
+            true => committed(&l, after, epoch),
+            false => Ok(false),
+        };
+        **g = Some(l);
+        match landed {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(TenantError::NotWriter),
+            Err(e) => Err(TenantError::InDoubt(format!("the store refused the write, as one that came after another node's; then: {e}"))),
         }
     }
 
@@ -904,14 +942,6 @@ impl Tenant {
 
     fn key(&self, rest: &str) -> String {
         format!("{}/{rest}", self.id)
-    }
-
-    /// `TenantError::Missing` when the store has no `HEAD`, else `other`.
-    fn gone_or(&self, other: TenantError) -> TenantError {
-        match self.store.get(&self.key(HEAD)) {
-            Ok(None) => TenantError::Missing,
-            _ => other,
-        }
     }
 
     // ---- the local copy ----
@@ -1196,10 +1226,7 @@ impl Tenant {
                 **g = Some(l);
                 return Err(TenantError::Missing);
             }
-            // Epochs are one handle's, so a transaction of this number
-            // and term is this write's.
-            let n = numbering(&l.db).map_err(|e| TenantError::InDoubt(format!("{err}; then: {e}")))?;
-            if n.seq >= after && n.term_at(after) == epoch {
+            if committed(&l, after, epoch).map_err(|e| TenantError::InDoubt(format!("{err}; then: {e}")))? {
                 **g = Some(l);
                 return Ok(());
             }

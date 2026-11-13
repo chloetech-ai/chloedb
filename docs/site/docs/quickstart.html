@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
+<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/quickstart.md: edit that file and run the script, not this page. -->
@@ -33,10 +33,13 @@
       <a href="index.html">Overview</a>
       <a href="quickstart.html" aria-current="page">Quickstart</a>
       <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
       <a href="design.html">How ChloeDB works</a>
       <span class="h">Cookbook</span>
       <a href="rag.html">Retrieval for RAG</a>
@@ -55,6 +58,7 @@
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -74,7 +78,7 @@
       <h1>Quickstart: a first search in five minutes</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">1. Install the server</a></li><li><a href="#2-start-it">2. Start it</a></li><li><a href="#3-make-a-table-and-fill-it">3. Make a table and fill it</a></li><li><a href="#4-search">4. Search</a></li><li><a href="#5-open-the-command-center">5. Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p>This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the command center in a browser. The last section does the same from Python, with the database inside your process and no server at all.</p>
