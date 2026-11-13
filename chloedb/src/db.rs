@@ -612,6 +612,14 @@ impl Db {
         r
     }
 
+    /// [`Db::install_copy`] by [`Database::install_copy_over`].
+    pub fn install_copy_over(&self, copy: &Database) -> Result<SeqNo> {
+        let before = self.catalog();
+        let r = self.storage.install_copy_over(copy);
+        self.tables_changed(&before);
+        r
+    }
+
     /// Opens the models of the tables made since the catalog was `before`,
     /// as [`Db::create_table`] does, and forgets those of the tables gone.
     /// Those of a table whose columns changed follow them, as they do on

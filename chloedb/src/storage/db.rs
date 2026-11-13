@@ -2115,9 +2115,27 @@ impl Database {
     /// the same columns ([`Schema::same_columns`]: a replica made to join a
     /// shard after the table was altered), and
     /// the copy's term must not be older than this database's: a copy of a
-    /// replaced primary is refused. Durable on return. Returns the copy's
-    /// last transaction.
+    /// replaced primary is refused, and so is a copy that ends before this
+    /// database's last transaction when that one is of the copy's term: a
+    /// copy taken before transactions of its primary that this database
+    /// holds since (one delivered late, after a newer copy or the
+    /// transactions that follow it), which would drop them
+    /// ([`Database::install_copy_over`] installs it). Durable on return.
+    /// Returns the copy's last transaction.
     pub fn install_copy(&self, copy: &Database) -> Result<SeqNo> {
+        self.install(copy, false)
+    }
+
+    /// [`Database::install_copy`], also when the copy ends before this
+    /// database's last transaction of the copy's term, dropping the later
+    /// ones: for a replica that holds another transaction than its
+    /// primary's under one term and number, whose own are then not the
+    /// primary's however far they reach.
+    pub fn install_copy_over(&self, copy: &Database) -> Result<SeqNo> {
+        self.install(copy, true)
+    }
+
+    fn install(&self, copy: &Database, over: bool) -> Result<SeqNo> {
         if std::ptr::eq(self, copy) {
             return Err(Error::Schema("a database is not a copy of itself".into()));
         }
@@ -2155,11 +2173,22 @@ impl Database {
                 first.table
             )));
         }
-        for (id, _) in &system {
-            self.add_system(&mut wal, *id)?;
-        }
+        // Before anything here changes.
         if theirs.term < ours.term {
             return Err(Error::Schema(format!("the copy is of term {}, older than this database's ({}): it is a copy of a replaced primary", theirs.term, ours.term)));
+        }
+        // Transactions the copy's primary gave after the copy are of its
+        // term: this database's last, when of that term and later than the
+        // copy's, is one of them.
+        let own = ours.last();
+        if !over && own.term == theirs.term && own.seq > theirs.seq {
+            return Err(Error::Schema(format!(
+                "the copy ends at transaction {}, before this database's last ({} of term {}, the copy's term): it was taken before transactions of its primary that this database holds since, and would drop them",
+                theirs.seq, own.seq, own.term
+            )));
+        }
+        for (id, _) in &system {
+            self.add_system(&mut wal, *id)?;
         }
         // What the memtables and pending deletes hold goes into segments,
         // which the commit below drops with the others, and the log they

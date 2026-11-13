@@ -30,8 +30,11 @@ pub struct Stats {
     /// Promotions by hand asked for, and those that won.
     pub promotions: u64,
     pub promoted: u64,
-    /// Copies of a primary installed.
+    /// Copies of a primary installed, and copies that reached a replica
+    /// after it held transactions of the copy's term past the copy's last
+    /// (refused, unless [`super::Bug::InstallsALateCopy`] is put back).
     pub copies: u64,
+    pub late_copies: u64,
     /// Calls a replica refused for holding another transaction under the
     /// term and number they follow, and writes committed by a copy that
     /// stepped down ([`super::Bug::CommitsAfterSteppingDown`]).
