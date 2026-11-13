@@ -69,6 +69,8 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // Keys of its own within its tables ([`crate::keys::Keys::create_delegated`]).
         "/v1/keys/own" => get || method == Method::POST,
         "/v1/keys/own/:id" => method == Method::DELETE,
+        // The feed of the tables it may read (the server filters each line).
+        "/v1/feed" => get,
         _ => false,
     }
 }
@@ -455,7 +457,8 @@ mod tests {
         assert!(route_ok(&Method::POST, "/v1/sql"));
         assert!(route_ok(&Method::GET, "/v1/tables"));
         assert!(route_ok(&Method::PUT, "/v1/kv/:table/:key"));
-        for (m, r) in [(Method::POST, "/v1/admin/keys"), (Method::POST, "/v1/admin/shards"), (Method::GET, "/v1/export"), (Method::GET, "/v1/feed"), (Method::POST, "/v1/mcp"), (Method::POST, "/v1/plan"), (Method::GET, "/v1/apps/:name/*rest"), (Method::GET, "/v1/queries/recent"), (Method::POST, "/v1/alerts/:rule/ack"), (Method::GET, "/metrics")] {
+        assert!(route_ok(&Method::GET, "/v1/feed"));
+        for (m, r) in [(Method::POST, "/v1/admin/keys"), (Method::POST, "/v1/admin/shards"), (Method::GET, "/v1/export"), (Method::GET, "/v1/feed/promoted"), (Method::POST, "/v1/feed/keys"), (Method::POST, "/v1/mcp"), (Method::POST, "/v1/plan"), (Method::GET, "/v1/apps/:name/*rest"), (Method::GET, "/v1/queries/recent"), (Method::POST, "/v1/alerts/:rule/ack"), (Method::GET, "/metrics")] {
             assert!(!route_ok(&m, r), "{m} {r}");
         }
     }

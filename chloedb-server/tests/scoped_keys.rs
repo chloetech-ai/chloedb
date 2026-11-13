@@ -142,7 +142,7 @@ async fn a_key_limited_to_tables_touches_those_alone() {
         ("GET", "/v1/admin/keys", None),
         ("POST", "/v1/admin/vacuum", Some(json!({}))),
         ("GET", "/v1/export", None),
-        ("GET", "/v1/feed", None),
+        ("GET", "/v1/feed?copy=true", None),
         ("GET", "/v1/queries/recent", None),
         ("POST", "/v1/plan", Some(json!({}))),
         ("POST", "/v1/mcp", Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))),
@@ -238,6 +238,79 @@ async fn a_key_makes_its_apps_keys_and_they_end_with_it() {
     // The token makes no key of its own here.
     let (s, _) = call(&base, "POST", "/v1/keys/own", root, Some(json!({"name": "z", "tables": {"a": "read"}}))).await;
     assert_eq!(s, 403);
+}
+
+/// The lines of `path`'s feed, read with `auth`, until one is transaction
+/// `upto`.
+async fn feed_lines(base: &str, path: &str, auth: &str, upto: u64) -> Vec<Json> {
+    let c = chloedb_server::http_client().build().unwrap();
+    let mut r = c.get(format!("{base}{path}")).bearer_auth(auth).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let (mut out, mut buf) = (Vec::new(), Vec::new());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, r.chunk()).await.expect("the feed reaches the last transaction").unwrap().expect("the feed goes on");
+        buf.extend_from_slice(&chunk);
+        while let Some(i) = buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=i).collect();
+            let j: Json = serde_json::from_slice(&line).unwrap();
+            let done = j["seq"].as_u64() == Some(upto);
+            out.push(j);
+            if done {
+                return out;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limited_key_follows_the_feed_of_its_tables_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = DbOptions { publish_snapshots: true, ship_log_bytes: 16 << 20, ..DbOptions::default() };
+    let db = Db::create(&dir.path().join("a.strata"), demo::schema(10), opts).unwrap();
+    db.storage().start_seq_no().unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 16, Duration::from_secs(10));
+    svc.keys = Arc::new(Keys::open(dir.path().join("a.strata.keys.json")).unwrap());
+    let svc = Arc::new(svc);
+    let base = serve(svc.clone(), Access { token: Some(Secret::new("root-token")), ..Default::default() }).await;
+    let root = Some("root-token");
+    for t in ["app_a1_tasks", "app_b2_tasks"] {
+        let (s, j) = call(&base, "POST", "/v1/sql", root, Some(json!({"sql": format!("CREATE TABLE {t} (id KEYWORD PRIMARY KEY, body TEXT)")}))).await;
+        assert_eq!(s, 200, "{t}: {j}");
+    }
+    // One transaction of both apps' rows, then one of the other's alone.
+    let both = json!({"ops": [{"op": "upsert", "table": "app_a1_tasks", "doc": {"id": "a", "body": "mine"}}, {"op": "upsert", "table": "app_b2_tasks", "doc": {"id": "b", "body": "theirs"}}]});
+    let (s, j) = call(&base, "POST", "/v1/write", root, Some(both)).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/write", root, Some(json!({"ops": [{"op": "delete", "table": "app_b2_tasks", "key": "b"}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    let last = svc.local_db().unwrap().storage().numbering().unwrap().seq;
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "a1", "tables": {"app_a1_*": "read"}}))).await;
+    assert_eq!(s, 200, "{made}");
+    let key = made["secret"].as_str().unwrap().to_string();
+    let (_, who) = call(&base, "GET", "/v1/whoami", Some(&key), None).await;
+    assert_eq!(who["auth"]["limited_feed"], true);
+
+    // The token reads every table's operations; the key, its own tables'.
+    let all = feed_lines(&base, "/v1/feed?from=1", "root-token", last).await;
+    let mine = feed_lines(&base, "/v1/feed?from=1", &key, last).await;
+    let tables = |lines: &[Json]| -> Vec<String> { lines.iter().flat_map(|l| l["ops"].as_array().cloned().unwrap_or_default()).filter_map(|o| o["table"].as_str().map(String::from)).collect() };
+    assert!(tables(&all).iter().any(|t| t == "app_b2_tasks"), "{all:?}");
+    let seen = tables(&mine);
+    assert!(seen.iter().any(|t| t == "app_a1_tasks"), "{mine:?}");
+    assert!(seen.iter().all(|t| t == "app_a1_tasks"), "{mine:?}");
+    assert!(!format!("{mine:?}").contains("theirs"), "{mine:?}");
+    // Every transaction is still counted, with no operations when none is
+    // of its tables.
+    let seqs = |lines: &[Json]| -> Vec<u64> { lines.iter().filter_map(|l| l["seq"].as_u64()).collect() };
+    assert_eq!(seqs(&mine), seqs(&all));
+    assert_eq!(mine.last().unwrap()["ops"], json!([]), "{mine:?}");
+    assert!(mine[0].get("feed").is_some(), "{mine:?}");
+    // A copy is of every table: refused.
+    let (s, j) = call(&base, "GET", "/v1/feed?copy=true", Some(&key), None).await;
+    assert_eq!(s, 403, "{j}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

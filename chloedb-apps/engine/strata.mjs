@@ -105,7 +105,9 @@ export class Strata {
         } catch (e) {
           log(`feed: ${e.message}; reconnecting`);
         }
-        await new Promise((r) => setTimeout(r, 500));
+        // Unref'd: a feed that is gone keeps no process alive by itself (a
+        // test's, once its server stopped).
+        await new Promise((r) => setTimeout(r, 500).unref());
       }
     })();
     return true;

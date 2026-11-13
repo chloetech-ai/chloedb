@@ -2977,15 +2977,39 @@ test('each app reads and writes with a key of its own, held to its tables by the
     await third.init();
     assert.equal((await (await third.client('aaaaaa')).query('SELECT title FROM app_aaaaaa_tasks')).length, 1);
     // An engine given the admin token makes itself a limited key, and
-    // keeps the token for the feed alone.
+    // follows the feed with it too where the server filters the feed by a
+    // limited key's tables (else keeps the token for the feed alone).
     const admin = new Strata(root.url, 'root-token');
     const traded = new AppKeys({ db: admin, store: new Store(admin, () => {}), box, log: (m) => logs.push(m) });
     await traded.init();
     assert.equal(traded.mode, 'per-app', logs.join('\n'));
     assert.equal((await admin.req('GET', '/v1/whoami')).name, ENGINE_KEY_NAME);
-    assert.equal(admin.feedToken, 'root-token');
     assert.notEqual(admin.token, 'root-token');
     assert.match(logs.join('\n'), /admin token/);
+    if ((await root.req('GET', '/v1/whoami')).auth?.limited_feed) {
+      assert.equal(admin.feedToken, admin.token, 'the admin token is held no longer');
+      await root.req('POST', '/v1/sql', { sql: 'CREATE TABLE other_secrets (id KEYWORD PRIMARY KEY, body TEXT)' });
+      await root.req('POST', '/v1/write', { ops: [{ op: 'upsert', table: 'other_secrets', doc: { id: 's', body: 'not the engine\'s' } }, { op: 'upsert', table: 'app_aaaaaa_tasks', doc: { id: 'fed', title: 'Fed' } }] });
+      const stop = new AbortController();
+      const timer = setTimeout(() => stop.abort(), 15_000);
+      const res = await fetch(`${root.url}/v1/feed?from=1`, { headers: { authorization: `Bearer ${admin.feedToken}` }, signal: stop.signal });
+      assert.equal(res.status, 200);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let text = '';
+      while (!text.includes('"fed"')) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += dec.decode(value, { stream: true });
+      }
+      clearTimeout(timer);
+      stop.abort();
+      await reader.cancel().catch(() => {});
+      assert.match(text, /"table":"app_aaaaaa_tasks"/);
+      assert.doesNotMatch(text, /other_secrets|not the engine/);
+    } else {
+      assert.equal(admin.feedToken, 'root-token');
+    }
     // ...the same key at its next start.
     const admin2 = new Strata(root.url, 'root-token');
     const traded2 = new AppKeys({ db: admin2, store: new Store(admin2, () => {}), box, log: () => {} });

@@ -17,8 +17,10 @@
 // - "per-app": a key limited to tables with the admin scope on sa_* and
 //   app_* (what the operator gives it), or an admin credential, which the
 //   engine trades for such a key of its own (`chloedb-apps`, made with
-//   /v1/admin/keys and kept sealed as `_engine:key`), so that it holds the
-//   admin token for nothing but the feed of changes.
+//   /v1/admin/keys and kept sealed as `_engine:key`), and follows the feed
+//   of changes with it too where the server filters the feed by a limited
+//   key's tables (`auth.limited_feed`); an older server's feed needs the
+//   admin token, which the engine then keeps for that alone.
 // - "shared": every app's reads and writes go through the engine's one
 //   credential, as before such keys: an open server (no token, so no keys),
 //   a server from before /v1/keys/own, a credential that may not make keys,
@@ -113,9 +115,13 @@ export class AppKeys {
         const secret = await this.engineSecret();
         const was = me.key ? `the key ${JSON.stringify(me.name)}, which reaches every table` : this.ownServer ? 'the token of the server it started' : "the cluster's admin token";
         this.db.useToken(secret);
+        // A server that filters its feed by a limited key's tables lets the
+        // engine follow it with its own key, and drop the admin credential.
+        if (auth.limited_feed) this.db.feedToken = secret;
         const now = await this.db.req('GET', '/v1/whoami');
         this.engineKey = { name: now.name, tables: now.tables };
-        this.log(`the engine was given ${was}: it works with a key of its own, ${JSON.stringify(now.name)}, limited to ${Object.keys(ENGINE_GRANTS).join(' and ')} (kept sealed in sa_settings), and keeps the admin credential for the feed of changes alone.${this.ownServer ? '' : ' Give it a limited key instead (the operator does).'}`);
+        const feed = auth.limited_feed ? 'follows the feed of changes with it too, and holds the admin credential no longer' : 'keeps the admin credential for the feed of changes alone (this chloedb-server is from before a limited key could read the feed)';
+        this.log(`the engine was given ${was}: it works with a key of its own, ${JSON.stringify(now.name)}, limited to ${Object.keys(ENGINE_GRANTS).join(' and ')} (kept sealed in sa_settings), and ${feed}.${this.ownServer ? '' : ' Give it a limited key instead (the operator does).'}`);
       } catch (e) {
         return this.shared(`the engine holds an admin credential and could not make a key of its own limited to sa_* and app_* (${e.message})`);
       }
