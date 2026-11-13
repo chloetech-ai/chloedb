@@ -66,7 +66,17 @@ export class Publish {
   async load(force = false) {
     if (!force && Date.now() - this.loaded < 15000) return;
     this.loaded = Date.now();
-    const rows = await this.store.db.query(`SELECT app, value FROM sa_settings WHERE name = 'publish' LIMIT 5000`).catch(() => []);
+    let rows;
+    try {
+      rows = await this.store.db.query(`SELECT app, value FROM sa_settings WHERE name = 'publish' LIMIT 5000`);
+    } catch (e) {
+      // A read that fails (a slow cluster, a shard rolling) keeps what was
+      // published: closing every app to the public for 15 s would be worse
+      // than missing a change another pod made. Try again in 5 s.
+      this.loaded = Date.now() - 10000;
+      this.log(`publish: could not read the published apps, keeping the last ones: ${e.message || e}`);
+      return;
+    }
     this.apps.clear();
     for (const r of rows) { try { this.apps.set(r.app, JSON.parse(r.value)); } catch { /* a broken row publishes nothing */ } }
     this.index();
