@@ -19,7 +19,7 @@ methods and filter operators is in [the reference](../chloedb/frameworks.md).
 
 ```sh
 # install
-pip install "chloedb[langchain,langgraph,llama-index]" pandas
+pip install "chloedb[langchain,langgraph,llama-index]" pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
 ```
 
 Each extra pulls in its framework's core package only (`langchain-core`,
