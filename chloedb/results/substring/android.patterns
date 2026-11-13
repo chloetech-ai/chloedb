@@ -1,0 +1,15 @@
+LIKE	%java.lang.NullPointerException%
+LIKE	%HexData = [0100000004040000%
+LIKE	%com.tencent.mm%
+ILIKE	%wakelock%
+LIKE	%WakeLock%
+LIKE	%Exception%
+LIKE	%backlight=823
+LIKE	getRunningAppProcesses: caller 10105%
+LIKE	%caller 1____ does not hold%
+LIKE	%Updating screen state%backlight=8%
+LIKE	%no such text anywhere%
+LIKE	%state=ON%
+LIKE	%a%
+WHERE	pid = 3382 AND body LIKE '%HexData%'
+WHERE	service = 'PowerManager_screenOn' AND body ILIKE '%STATE=on%'

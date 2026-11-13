@@ -69,6 +69,7 @@ pub mod simd;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod storage;
+pub mod substring;
 pub mod text;
 pub mod timestamp;
 pub mod upgrade;

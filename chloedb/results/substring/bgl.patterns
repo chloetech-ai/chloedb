@@ -1,0 +1,15 @@
+LIKE	%0x0b85eee0%
+LIKE	generating core.971
+LIKE	%instruction address: 0x00004ed8
+LIKE	%Lustre%
+ILIKE	%machine check%
+LIKE	%machine check%
+LIKE	%instruction cache parity error corrected%
+LIKE	%data TLB error interrupt%
+LIKE	generating core%
+LIKE	%ciod: Error%No such file%
+LIKE	%core.9_1
+LIKE	%no such text anywhere%
+LIKE	%e%
+WHERE	host = 'R02-M1-N0-C:J12-U11' AND body LIKE '%error%'
+WHERE	severity = 'FATAL' AND body LIKE '%0x00004ed8'

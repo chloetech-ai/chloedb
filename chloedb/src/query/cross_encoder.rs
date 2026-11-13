@@ -58,6 +58,12 @@ pub const FILES: [&str; 3] = ["config.json", "tokenizer.json", "model.safetensor
 /// in place of `model.safetensors`.
 pub const ONNX: &str = "model.onnx";
 
+/// ONNX Runtime's environment, shared with [`crate::embed::OnnxEmbedder`].
+#[cfg(feature = "onnx")]
+pub(crate) fn onnx_environment() -> std::result::Result<&'static ort::environment::Environment, Box<dyn std::error::Error + Send + Sync>> {
+    onnx::environment()
+}
+
 /// A model directory's options for the model ([module docs](self)).
 pub const OPTIONS: &str = "cross_encoder.json";
 
@@ -331,8 +337,9 @@ mod onnx {
 
     type Res<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// ONNX Runtime's environment, made once in a process.
-    fn environment() -> Res<&'static Environment> {
+    /// ONNX Runtime's environment, made once in a process (the ONNX
+    /// embedders' too).
+    pub fn environment() -> Res<&'static Environment> {
         static ENV: OnceLock<std::result::Result<Environment, String>> = OnceLock::new();
         ENV.get_or_init(|| ort::init().with_name("chloedb").build().map_err(|e| e.to_string())).as_ref().map_err(|e| e.clone().into())
     }

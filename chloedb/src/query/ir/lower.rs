@@ -233,6 +233,10 @@ impl Lower<'_> {
             Pred::Prefix { field: f, prefix, edits } => Expr::Prefix { expr: field(*f), prefix: Box::new(Expr::Lit(Value::Str(prefix.clone()))), edits: *edits },
             Pred::Present { field: f } => Expr::Not(Box::new(Expr::IsNull(field(*f)))),
             Pred::Path { field: f, path, test } => path_expr(*f, path, test),
+            Pred::Like { field: f, pattern, ci, negated } => {
+                let like = Expr::Like { expr: field(*f), pattern: Box::new(Expr::Lit(Value::Str(pattern.clone()))), case_insensitive: *ci };
+                if *negated { Expr::Not(Box::new(like)) } else { like }
+            }
             Pred::Not(q) => match &**q {
                 Pred::Present { field: f } => Expr::IsNull(field(*f)),
                 Pred::Path { field: f, path, test: PathTest::Has(k) } => Expr::IsNull(Box::new(json_extract(*f, path, *k))),

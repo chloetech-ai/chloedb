@@ -1,0 +1,228 @@
+{
+  "body_bytes": 109997052,
+  "input": "android.jsonl",
+  "lines": 1555005,
+  "plain": {
+    "file_bytes": 132599808,
+    "load_seconds": 5.6,
+    "merge_seconds": 4.0,
+    "segments": 1,
+    "store_bytes": 60374493,
+    "text_body_bytes": 29880646
+  },
+  "queries": [
+    {
+      "count_ms": {
+        "index": 0.089,
+        "scan": 1785.51
+      },
+      "first_10_ms": {
+        "index": 0.111,
+        "scan": 1862.52
+      },
+      "op": "LIKE",
+      "pattern": "%java.lang.NullPointerException%",
+      "rows": 128
+    },
+    {
+      "count_ms": {
+        "index": 1.5,
+        "scan": 1580.65
+      },
+      "first_10_ms": {
+        "index": 1.616,
+        "scan": 1865.84
+      },
+      "op": "LIKE",
+      "pattern": "%HexData = [0100000004040000%",
+      "rows": 2552
+    },
+    {
+      "count_ms": {
+        "index": 45.474,
+        "scan": 1503.62
+      },
+      "first_10_ms": {
+        "index": 42.64,
+        "scan": 1806.81
+      },
+      "op": "LIKE",
+      "pattern": "%com.tencent.mm%",
+      "rows": 19380
+    },
+    {
+      "count_ms": {
+        "index": 148.358,
+        "scan": 1575.09
+      },
+      "first_10_ms": {
+        "index": 163.44,
+        "scan": 1774.33
+      },
+      "op": "ILIKE",
+      "pattern": "%wakelock%",
+      "rows": 15760
+    },
+    {
+      "count_ms": {
+        "index": 13.7,
+        "scan": 1481.69
+      },
+      "first_10_ms": {
+        "index": 14.267,
+        "scan": 1674.62
+      },
+      "op": "LIKE",
+      "pattern": "%WakeLock%",
+      "rows": 13807
+    },
+    {
+      "count_ms": {
+        "index": 19.792,
+        "scan": 1559.69
+      },
+      "first_10_ms": {
+        "index": 19.379,
+        "scan": 1692.78
+      },
+      "op": "LIKE",
+      "pattern": "%Exception%",
+      "rows": 10362
+    },
+    {
+      "count_ms": {
+        "index": 0.043,
+        "scan": 1529.04
+      },
+      "first_10_ms": {
+        "index": 0.034,
+        "scan": 1758.45
+      },
+      "op": "LIKE",
+      "pattern": "%backlight=823",
+      "rows": 6
+    },
+    {
+      "count_ms": {
+        "index": 0.909,
+        "scan": 1340.01
+      },
+      "first_10_ms": {
+        "index": 1.101,
+        "scan": 1691.88
+      },
+      "op": "LIKE",
+      "pattern": "getRunningAppProcesses: caller 10105%",
+      "rows": 2667
+    },
+    {
+      "count_ms": {
+        "index": 128.58,
+        "scan": 1634.72
+      },
+      "first_10_ms": {
+        "index": 137.408,
+        "scan": 1891.08
+      },
+      "op": "LIKE",
+      "pattern": "%caller 1____ does not hold%",
+      "rows": 12510
+    },
+    {
+      "count_ms": {
+        "index": 0.14,
+        "scan": 1552.58
+      },
+      "first_10_ms": {
+        "index": 0.127,
+        "scan": 1918.91
+      },
+      "op": "LIKE",
+      "pattern": "%Updating screen state%backlight=8%",
+      "rows": 8
+    },
+    {
+      "count_ms": {
+        "index": 0.038,
+        "scan": 1541.64
+      },
+      "first_10_ms": {
+        "index": 0.029,
+        "scan": 1816.95
+      },
+      "op": "LIKE",
+      "pattern": "%no such text anywhere%",
+      "rows": 0
+    },
+    {
+      "count_ms": {
+        "index": 0.393,
+        "scan": 1491.36
+      },
+      "first_10_ms": {
+        "index": 0.47,
+        "scan": 1836.31
+      },
+      "op": "LIKE",
+      "pattern": "%state=ON%",
+      "rows": 475
+    },
+    {
+      "count_ms": {
+        "index": 264.882,
+        "scan": 1871.79
+      },
+      "first_10_ms": {
+        "index": 323.407,
+        "scan": 2055.9
+      },
+      "op": "LIKE",
+      "pattern": "%a%",
+      "rows": 1321893
+    },
+    {
+      "count_ms": {
+        "index": 1.997,
+        "scan": 23.26
+      },
+      "first_10_ms": {
+        "index": 2.2,
+        "scan": 24.76
+      },
+      "op": "WHERE",
+      "pattern": "pid = 3382 AND body LIKE '%HexData%'",
+      "rows": 2552
+    },
+    {
+      "count_ms": {
+        "index": 8.725,
+        "scan": 46.04
+      },
+      "first_10_ms": {
+        "index": 8.965,
+        "scan": 48.99
+      },
+      "op": "WHERE",
+      "pattern": "service = 'PowerManager_screenOn' AND body ILIKE '%STATE=on%'",
+      "rows": 475
+    }
+  ],
+  "substring": {
+    "file_bytes": 245051392,
+    "load_seconds": 11.9,
+    "merge_seconds": 13.5,
+    "segments": 1,
+    "store_bytes": 60374493,
+    "sub_body": {
+      "bwt_bytes": 90849152,
+      "bytes": 112444163,
+      "docs_bytes": 0,
+      "parts": 2,
+      "runs": 4597758,
+      "sa_bytes": 21594688,
+      "samples": 5716725,
+      "text_bytes": 111552059
+    },
+    "text_body_bytes": 29880646
+  }
+}
