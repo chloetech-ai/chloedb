@@ -3458,8 +3458,10 @@ impl Coordinator {
                 if p < GET_PROTOCOL {
                     return Err(ApiError { status: 503, message: format!("{} speaks protocol {p}, and checking that an inserted key is on no other shard needs {GET_PROTOCOL}: upgrade it", rep.url) });
                 }
+                // No epoch: every shard is asked, whichever slots it holds
+                // now, so a map that moves on meanwhile changes nothing.
                 let got = c
-                    .get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, epoch: t.epoch(), ..Default::default() })
+                    .get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, ..Default::default() })
                     .await
                     .map_err(|s| self.named(&rep.url, s))?
                     .into_inner();
