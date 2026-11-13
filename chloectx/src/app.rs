@@ -934,6 +934,9 @@ fn manifest() -> Json {
         "name": "chloectx", "title": "ChloeCtx",
         "description": "Memory spaces any agent writes to and asks for context, by search alone; and Seen before: the cluster's firing alerts beside the past incidents they look like",
         "icon_svg": ICON, "view": "ui/view.js", "version": env!("CARGO_PKG_VERSION"),
+        // It refuses what the caller's key may not do ([`Caller`]), so the
+        // server forwards a key limited to tables, and a write key's notes.
+        "checks_callers": true,
     })
 }
 
@@ -951,15 +954,127 @@ fn body_json(req: &Request) -> std::result::Result<Json, Fail> {
     serde_json::from_slice(&req.body).map_err(|e| bad(format!("the body is not JSON: {e}")))
 }
 
+/// Who called, as chloedb-server says in the headers it sets on what it
+/// forwards (`x-chloedb-scope`, and for a key limited to tables
+/// `x-chloedb-tables`, `ctx_*=write,*=read`), which come with the app's
+/// token. A request without them (a program calling the app itself) may do
+/// anything, as before the server sent them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Caller {
+    /// The key's scope: 0 feed, 1 read, 2 write, 3 admin; `None`: not said.
+    scope: Option<u8>,
+    /// A key limited to tables: each grant's table (a name, or a prefix and
+    /// `*`) and scope.
+    tables: Option<Vec<(String, u8)>>,
+}
+
+fn level(scope: &str) -> u8 {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "admin" => 3,
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    }
+}
+
+const SCOPES: [&str; 4] = ["feed", "read", "write", "admin"];
+
+impl Caller {
+    pub fn of(req: &Request) -> Caller {
+        let scope = req.header("x-chloedb-scope").map(level);
+        let tables = req.header("x-chloedb-tables").map(|t| {
+            t.split(',')
+                .filter(|g| !g.trim().is_empty())
+                .map(|g| {
+                    let (t, s) = g.split_once('=').unwrap_or((g, "read"));
+                    (t.trim().to_ascii_lowercase(), level(s))
+                })
+                .collect()
+        });
+        Caller { scope, tables }
+    }
+
+    /// What it may do to table `table`.
+    fn on(&self, table: &str) -> u8 {
+        let table = table.to_ascii_lowercase();
+        match &self.tables {
+            Some(g) => g.iter().filter(|(t, _)| t.strip_suffix('*').map_or(*t == table, |p| table.starts_with(p))).map(|(_, s)| *s).max().unwrap_or(0),
+            None => self.scope.unwrap_or(3),
+        }
+    }
+
+    /// What it may do beyond tables (the app's own work: builds, the
+    /// on-call agent, this machine's stores): nothing for a key limited to
+    /// tables.
+    fn server(&self) -> u8 {
+        match &self.tables {
+            Some(_) => 0,
+            None => self.scope.unwrap_or(3),
+        }
+    }
+
+    /// Refuses (403) what needs `need` on table `table` (`None`: the
+    /// app's own work).
+    fn may(&self, need: u8, table: Option<&str>, what: &str) -> std::result::Result<(), Fail> {
+        let (has, on) = match table {
+            Some(t) => (self.on(t), format!(" on table {t}")),
+            None => (self.server(), String::new()),
+        };
+        if has >= need {
+            return Ok(());
+        }
+        let limited = match (&self.tables, table) {
+            (Some(_), None) => ", which is not for a key limited to tables".to_string(),
+            (Some(g), Some(_)) => format!("; the key is limited to {}", g.iter().map(|(t, s)| format!("{t} ({})", SCOPES[*s as usize])).collect::<Vec<_>>().join(", ")),
+            (None, _) => String::new(),
+        };
+        Err(Fail(403, format!("{what} needs the {} scope{on}{limited}", SCOPES[need as usize])))
+    }
+
+    /// Whether it may read space `name`'s table.
+    fn reads(&self, name: &str) -> bool {
+        self.on(&table_of(name)) >= 1
+    }
+}
+
+/// Refuses a request `caller` may not make: read on a space's table to read
+/// it or ask it, write to add or retire notes, admin to make a space (its
+/// table); the incidents are the space `incidents`'s; and what is not a
+/// space's (apps built, the on-call agent, this machine's stores) needs the
+/// admin scope to change, read to look, and a key of every table.
+fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::Result<(), Fail> {
+    let incidents = table_of(INCIDENTS);
+    let (need, table): (u8, Option<String>) = match (m, p) {
+        ("GET", ["v1", "info"]) | ("GET", ["v1", "spaces"]) => return Ok(()),
+        ("POST", ["v1", "spaces"]) => (3, Some(table_of(body_json(req)?["name"].as_str().unwrap_or("").trim()))),
+        ("GET", ["v1", "spaces", s, "notes", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
+        ("POST", ["v1", "spaces", s, "notes"]) | ("DELETE", ["v1", "spaces", s, "notes", _]) | ("POST", ["v1", "spaces", s, "exchanges"]) => (2, Some(table_of(s))),
+        ("GET", ["v1", "incidents", ..]) => (1, Some(incidents)),
+        ("POST", ["v1", "incidents"]) | ("POST", ["v1", "incidents", "draft"]) => (2, Some(incidents)),
+        ("GET", _) => (1, None),
+        _ => (3, None),
+    };
+    caller.may(need, table.as_deref(), &format!("{m} {}", req.path))
+}
+
 /// Answers one request (the path split on `/`).
 fn route(app: &Arc<App>, req: &Request) -> Answer {
     let parts: Vec<String> = req.path.trim_matches('/').split('/').map(crate::ui::percent_decode).collect();
     let p: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
     let m = req.method.as_str();
     let num = |k: &str, d: usize| req.param(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    let caller = Caller::of(req);
+    allowed(&caller, m, &p, req)?;
     match (m, p.as_slice()) {
         ("GET", ["v1", "info"]) => Ok(app.info()),
-        ("GET", ["v1", "spaces"]) => Ok(app.spaces()?),
+        ("GET", ["v1", "spaces"]) => {
+            // The spaces whose tables the caller reads.
+            let mut j = app.spaces()?;
+            if let Some(list) = j["spaces"].as_array_mut() {
+                list.retain(|s| caller.reads(s["name"].as_str().unwrap_or("")));
+            }
+            Ok(j)
+        }
         ("POST", ["v1", "spaces"]) => {
             let b = body_json(req)?;
             let name = b["name"].as_str().unwrap_or("").trim();
@@ -1145,6 +1260,57 @@ mod tests {
         assert_eq!(params_for(2000).budget, d.budget / 2);
         assert_eq!(params_for(500).replies, 1);
         assert_eq!(tokens(4001), 1001);
+    }
+
+    fn request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> Request {
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        let query = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Request { method: method.into(), path: path.into(), query, headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: body.as_bytes().to_vec() }
+    }
+
+    fn check(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> std::result::Result<(), u16> {
+        let req = request(method, path, headers, body);
+        let parts: Vec<String> = req.path.trim_matches('/').split('/').map(crate::ui::percent_decode).collect();
+        let p: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+        allowed(&Caller::of(&req), &req.method, &p, &req).map_err(|f| f.0)
+    }
+
+    #[test]
+    fn callers_by_their_keys() {
+        // A key limited to its own space's table.
+        let own = [("x-chloedb-scope", "write"), ("x-chloedb-tables", "ctx_ops_*=write,ctx_incidents=read")];
+        assert!(check("POST", "/v1/spaces/ops_a/notes", &own, "{}").is_ok());
+        assert!(check("GET", "/v1/spaces/ops_a/ask?q=x", &own, "").is_ok());
+        assert!(check("POST", "/v1/spaces/ops_a/ask", &own, "{}").is_ok());
+        assert!(check("DELETE", "/v1/spaces/ops_a/notes/n1", &own, "").is_ok());
+        assert!(check("GET", "/v1/incidents/firing", &own, "").is_ok());
+        assert_eq!(check("POST", "/v1/incidents", &own, "{}"), Err(403));
+        assert_eq!(check("POST", "/v1/spaces/other/notes", &own, "{}"), Err(403));
+        assert_eq!(check("GET", "/v1/spaces/other/notes", &own, ""), Err(403));
+        // Making a space is making its table: admin there.
+        assert_eq!(check("POST", "/v1/spaces", &own, r#"{"name": "ops_b"}"#), Err(403));
+        let admin_own = [("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ctx_ops_*=admin")];
+        assert!(check("POST", "/v1/spaces", &admin_own, r#"{"name": "ops_b"}"#).is_ok());
+        assert_eq!(check("POST", "/v1/spaces", &admin_own, r#"{"name": "other"}"#), Err(403));
+        // What is not a space's is not for a key limited to tables.
+        for (m, p) in [("POST", "/v1/incidents/handoff"), ("POST", "/v1/spaces/ops_a/apps"), ("GET", "/v1/local"), ("POST", "/v1/local/x/snapshots")] {
+            assert_eq!(check(m, p, &admin_own, "{}"), Err(403), "{m} {p}");
+        }
+        // A key of every table: by its scope.
+        let writer = [("x-chloedb-scope", "write")];
+        assert!(check("POST", "/v1/spaces/any/notes", &writer, "{}").is_ok());
+        assert!(check("POST", "/v1/incidents", &writer, "{}").is_ok());
+        assert_eq!(check("POST", "/v1/spaces", &writer, r#"{"name": "x"}"#), Err(403));
+        assert_eq!(check("POST", "/v1/incidents/handoff", &writer, "{}"), Err(403));
+        assert!(check("GET", "/v1/local", &writer, "").is_ok());
+        let reader = [("x-chloedb-scope", "read")];
+        assert_eq!(check("POST", "/v1/spaces/any/notes", &reader, "{}"), Err(403));
+        assert!(check("GET", "/v1/spaces/any/ask?q=x", &reader, "").is_ok());
+        // A program calling the app itself, with its token: anything.
+        assert!(check("POST", "/v1/incidents/handoff", &[], "{}").is_ok());
+        assert!(check("POST", "/v1/spaces", &[], r#"{"name": "x"}"#).is_ok());
+        let c = Caller::of(&request("GET", "/v1/spaces", &own, ""));
+        assert!(c.reads("ops_a") && !c.reads("other"));
     }
 
     #[test]
