@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 33] = [
+pub const FEATURES: [&str; 35] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX, DATE_BIN, APPROX_PERCENTILES,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -198,9 +198,19 @@ pub const JSON_COLUMNS: &str = "json_columns";
 /// ([`Func::DateTrunc`], [`Func::DatePart`], [`Func::Strftime`]).
 pub const DATES: &str = "dates";
 
+/// The feature of a plan that cuts times into buckets of a fixed width
+/// ([`Func::DateBin`], `date_bin('5 minutes', at)`), which a ChloeDB from
+/// before it does not have.
+pub const DATE_BIN: &str = "date_bin";
+
 /// The feature of a plan with a percentile ([`AggFn::PercentileCont`],
 /// [`AggFn::PercentileDisc`]), which a Strata from before them cannot read.
 pub const PERCENTILES: &str = "percentiles";
+
+/// The feature of a plan with an approximate percentile
+/// ([`AggFn::ApproxPercentile`]), whose shards answer with sketches
+/// ([`crate::query::agg::sketch`]).
+pub const APPROX_PERCENTILES: &str = "approx_percentiles";
 
 /// The feature of a plan that hashes values ([`Func::Hash`]): a seeded
 /// sample, split or shuffle of rows.
@@ -808,6 +818,13 @@ pub enum Func {
     /// directives of `args[0]`, as SQLite's ([`crate::timestamp::strftime`]).
     /// Needs [`DATES`].
     Strftime,
+    /// `date_bin(width, t [, origin])`: the start of the bucket of `width`
+    /// (`args[0]`, text of a fixed width: `'5 minutes'`, `'1 hour'`,
+    /// `'30s'`; [`crate::timestamp::parse_stride`]) that the TIMESTAMP
+    /// `args[1]` is in, buckets counted from the TIMESTAMP `origin`
+    /// (`args[2]`, 1970-01-01 without one), as PostgreSQL's `date_bin`
+    /// ([`crate::timestamp::bin`]). Needs [`DATES`] and [`DATE_BIN`].
+    DateBin,
     /// `hash(x [, seed])`: an INT from 0 to 2^63 - 1 that only `x` and the
     /// INT `seed` (0 without one) decide, the same on every machine and in
     /// every version ([`eval::hash`]); NULL for a NULL `x` or `seed`. For
@@ -842,6 +859,7 @@ impl Func {
             Func::DateTrunc => "date_trunc",
             Func::DatePart => "date_part",
             Func::Strftime => "strftime",
+            Func::DateBin => "date_bin",
             Func::Hash => "hash",
         }
     }
@@ -874,7 +892,7 @@ impl Func {
             Func::Pow | Func::Dot | Func::SidAt | Func::DateTrunc | Func::DatePart | Func::Strftime => n == 2,
             Func::Clamp => n == 3,
             Func::Coalesce | Func::Least | Func::Greatest | Func::CountTrue => n >= 1,
-            Func::JsonExtract => n == 2 || n == 3,
+            Func::JsonExtract | Func::DateBin => n == 2 || n == 3,
         };
         match (ok, self) {
             (true, _) => Ok(()),
@@ -887,6 +905,7 @@ impl Func {
             (_, Func::DateTrunc) => Err("two arguments: a unit ('day', 'week', 'month', ...) and a TIMESTAMP"),
             (_, Func::DatePart) => Err("two arguments: a part ('year', 'month', 'dow', ...) and a TIMESTAMP"),
             (_, Func::Strftime) => Err("two arguments: a format ('%Y-%m-%d') and a TIMESTAMP"),
+            (_, Func::DateBin) => Err("two or three arguments: a width ('5 minutes', '1 hour', '30s'), a TIMESTAMP, and an origin TIMESTAMP"),
             (_, Func::Hash) => Err("one or two arguments: a value and an INT seed"),
             _ => Err("one argument"),
         }
@@ -905,7 +924,7 @@ impl Func {
         }
         let x = args.first().copied().unwrap_or(f64::NAN);
         let r = match self {
-            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::Hash => f64::NAN,
+            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::DateBin | Func::Hash => f64::NAN,
             Func::Abs => x.abs(),
             Func::Round => {
                 let d = args.get(1).map_or(0.0, |d| d.clamp(-30.0, 30.0).trunc());
@@ -1331,6 +1350,12 @@ impl Node {
     /// percentile ([`PERCENTILES`]).
     fn has_percentiles(&self) -> bool {
         matches!(self, Node::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func.percentile().is_some())) || self.inputs().into_iter().any(Node::has_percentiles)
+    }
+
+    /// Whether the node or one below it (outside subqueries) has an
+    /// approximate percentile ([`APPROX_PERCENTILES`]).
+    fn has_approx_percentiles(&self) -> bool {
+        matches!(self, Node::Aggregate { aggs, .. } if aggs.iter().any(|a| matches!(a.func, AggFn::ApproxPercentile(_)))) || self.inputs().into_iter().any(Node::has_approx_percentiles)
     }
 
     /// Whether the node or one below it (outside subqueries) is a
@@ -2098,15 +2123,19 @@ impl Plan {
         if root.ranks_by_expression() {
             features.push(RANK_EXPRESSIONS.to_string());
         }
-        let (mut sid_at, mut json, mut dates, mut hash) = (false, false, false, false);
+        let (mut sid_at, mut json, mut dates, mut hash, mut date_bin) = (false, false, false, false, false);
         root.visit_exprs(&mut |e| {
             sid_at |= matches!(e, Expr::Call { func: Func::SidAt, .. });
             json |= matches!(e, Expr::Call { func: Func::JsonExtract, .. });
-            dates |= matches!(e, Expr::Call { func: Func::DateTrunc | Func::DatePart | Func::Strftime, .. });
+            dates |= matches!(e, Expr::Call { func: Func::DateTrunc | Func::DatePart | Func::Strftime | Func::DateBin, .. });
+            date_bin |= matches!(e, Expr::Call { func: Func::DateBin, .. });
             hash |= matches!(e, Expr::Call { func: Func::Hash, .. });
         });
         if dates {
             features.push(DATES.to_string());
+        }
+        if date_bin {
+            features.push(DATE_BIN.to_string());
         }
         if hash {
             features.push(HASH.to_string());
@@ -2182,6 +2211,15 @@ impl Plan {
         });
         if percentiles {
             features.push(PERCENTILES.to_string());
+        }
+        let mut approx = root.has_approx_percentiles();
+        root.visit_exprs(&mut |e| {
+            if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
+                approx |= n.has_approx_percentiles();
+            }
+        });
+        if approx {
+            features.push(APPROX_PERCENTILES.to_string());
         }
         let mut set_ops = root.has_set_ops();
         root.visit_exprs(&mut |e| {
