@@ -5572,6 +5572,12 @@ impl Service {
             one("chloedb_queries_running", "gauge", "Queries running now, those whose callers stopped waiting included.", self.running() as f64),
             Family { name: "chloedb_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("chloedb_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
+            one(
+                "chloedb_connections_closed_past_share_total",
+                "counter",
+                "Connections closed before any request because their client held its share of them (--max-connections-per-client): it saw a reset, not an answer.",
+                crate::listener::CLOSED_PAST_SHARE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+            ),
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {

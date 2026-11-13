@@ -1515,7 +1515,13 @@ async fn serve_conns(router: axum::Router, listener: TcpListener, access: &Acces
             Slot::Health => probers.take(peer.ip(), None),
         };
         let Some(held) = held else {
-            tracing::debug!(client = %peer.ip(), held = clients.of(peer.ip()), "a client past its share of connections (--max-connections-per-client): closed");
+            // Its client sees only a reset: say so here, a line a second
+            // at most, and count it.
+            listener::CLOSED_PAST_SHARE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            static LIMIT: crate::obs::RateLimit = crate::obs::RateLimit::new(1);
+            if let Some(more) = LIMIT.admit() {
+                tracing::info!(client = %peer.ip(), held = clients.of(peer.ip()), closed_since = more, "a client past its share of connections (--max-connections-per-client): its new connection closed before any request");
+            }
             continue;
         };
         let _ = tcp.set_nodelay(true);
