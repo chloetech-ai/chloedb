@@ -236,5 +236,5 @@ fn message(j: &Json) -> String {
 }
 
 fn unavailable(message: String) -> ApiError {
-    ApiError { status: 503, message }
+    ApiError { code: None, status: 503, message }
 }

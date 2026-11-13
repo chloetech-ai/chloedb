@@ -34,6 +34,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// The longest a rule holds: a day.
 pub const MAX_EXPIRES_S: u64 = 86_400;
+/// How long a rule holds when it does not say: 15 minutes.
+pub const DEFAULT_EXPIRES_S: u64 = 900;
 /// Rules held at once at most.
 pub const MAX_RULES: usize = 100;
 
@@ -102,7 +104,7 @@ impl Rule {
             "refuse" => format!("refused by contain rule {} ({}, for {} s more){why}", self.id, self.what(), until),
             _ => format!("refused by contain rule {}: {} are running ({}, for {} s more){why}", self.id, self.concurrency, self.what(), until),
         };
-        ApiError { status: 429, message }
+        ApiError { code: None, status: 429, message }
     }
 }
 
@@ -228,7 +230,7 @@ impl Contain {
 
     /// Adds a rule from its request body; `by` names who.
     pub fn add(&self, b: &Json, by: &str) -> Result<Arc<Rule>, ApiError> {
-        let expires_s = b.get("expires_s").and_then(Json::as_u64).unwrap_or(900);
+        let expires_s = b.get("expires_s").and_then(Json::as_u64).unwrap_or(DEFAULT_EXPIRES_S);
         if expires_s == 0 || expires_s > MAX_EXPIRES_S {
             return Err(ApiError::bad(format!("expires_s is 1 to {MAX_EXPIRES_S} (a day)")));
         }
@@ -252,7 +254,7 @@ impl Contain {
         let mut rules = lock(&self.rules);
         rules.retain(|r| r.expires_ms > t);
         if rules.len() >= MAX_RULES {
-            return Err(ApiError { status: 409, message: format!("{MAX_RULES} contain rules hold already: remove one first") });
+            return Err(ApiError { code: None, status: 409, message: format!("{MAX_RULES} contain rules hold already: remove one first") });
         }
         rules.push(r);
         Ok(())

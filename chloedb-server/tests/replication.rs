@@ -1489,7 +1489,7 @@ async fn a_key_s_promotion_calls_only_the_shard_s_known_copies() {
     let x = grpc(xs).await;
     let r = server::service(&server::Options { replica: true, replicas: vec![x.clone()], ..opts("r.strata") }).await.unwrap();
     assert_eq!(r.known_copies(), vec![x.clone()]);
-    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false, tables: None };
+    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false, tables: None, role: None, agent: false, on_behalf_of: None };
     let admin = key(chloedb_server::keys::Scope::Admin);
     for asked in [vec![fake_url.clone()], vec![x.clone(), fake_url.clone()]] {
         let e = r.promote(&admin, asked, Acks::All, false).await.unwrap_err();

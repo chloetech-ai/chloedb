@@ -82,7 +82,7 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
             if !r.status().is_success() {
                 let why = error_of(r).await;
                 let hint = if why.contains("coordinator holds no rows") { ": it is a cluster, whose coordinators hold no rows; copy from one server" } else { "" };
-                return Err(ApiError { status: 502, message: format!("{n} did not export {list}: {why}{hint}") });
+                return Err(ApiError { code: None, status: 502, message: format!("{n} did not export {list}: {why}{hint}") });
             }
             (r.into_body(), None)
         }
@@ -90,7 +90,7 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
     // Into the target.
     let mut answer = match to {
         End::Here => {
-            let data = axum::body::to_bytes(file, svc.max_body).await.map_err(|e| ApiError { status: 502, message: format!("the file from {}: {e} (this server takes at most {} MiB)", from.describe(), svc.max_body >> 20) })?;
+            let data = axum::body::to_bytes(file, svc.max_body).await.map_err(|e| ApiError { code: None, status: 502, message: format!("the file from {}: {e} (this server takes at most {} MiB)", from.describe(), svc.max_body >> 20) })?;
             let opts = chloedb::sqlite::ImportOptions { tables: tables.to_vec(), schemas: Vec::new(), blobs_base64: false };
             let mut j = svc.import_sqlite(who, data, opts, false, 0).await?;
             let written: u64 = j["tables"].as_array().map_or(0, |t| t.iter().filter_map(|t| t["rows"].as_u64()).sum());
@@ -107,10 +107,10 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
                 let status = r.status().as_u16();
                 let why = error_of(r).await;
                 let hint = if status == 413 { ": the file is larger than it takes (--max-body-mb)" } else { "" };
-                return Err(ApiError { status: 502, message: format!("{n} did not import {list}: {why}{hint}") });
+                return Err(ApiError { code: None, status: 502, message: format!("{n} did not import {list}: {why}{hint}") });
             }
-            let raw = axum::body::to_bytes(r.into_body(), ANSWER_MAX).await.map_err(|e| ApiError { status: 502, message: format!("{n}'s answer: {e}") })?;
-            serde_json::from_slice(&raw).map_err(|e| ApiError { status: 502, message: format!("{n}'s answer: {e}") })?
+            let raw = axum::body::to_bytes(r.into_body(), ANSWER_MAX).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{n}'s answer: {e}") })?;
+            serde_json::from_slice(&raw).map_err(|e| ApiError { code: None, status: 502, message: format!("{n}'s answer: {e}") })?
         }
     };
     answer["from"] = json!(from.describe());
@@ -138,7 +138,7 @@ async fn error_of(r: axum::response::Response) -> String {
 /// is reached that way ([`crate::hub::ViaKube`]).
 pub async fn kube_for(svc: &Arc<Service>, name: &str) -> Result<Option<crate::operator::kube::Kube>, ApiError> {
     let Some(v) = svc.hub.get(name).and_then(|c| c.kube) else { return Ok(None) };
-    let k = svc.clouds.kube_of(&v.made, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { status: 502, message: format!("{name}: {e}") })?;
+    let k = svc.clouds.kube_of(&v.made, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{name}: {e}") })?;
     Ok(Some(k))
 }
 
@@ -147,11 +147,11 @@ pub async fn kube_for(svc: &Arc<Service>, name: &str) -> Result<Option<crate::op
 /// the connection, and whether it is new.
 pub async fn adopt_made(svc: &Arc<Service>, id: &str, name: Option<String>, color: Option<String>, by: &str) -> Result<(crate::hub::Connection, bool), ApiError> {
     use crate::cloud::clusters::Phase;
-    let m = svc.clouds.get(id).ok_or_else(|| ApiError { status: 404, message: format!("no cluster {id} was made here") })?;
+    let m = svc.clouds.get(id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no cluster {id} was made here") })?;
     if !matches!(m.phase, Phase::Starting | Phase::Ready) {
-        return Err(ApiError { status: 409, message: format!("{} is {:?}: its command center opens once ChloeDB is installed on it", m.cluster, m.phase).to_lowercase() });
+        return Err(ApiError { code: None, status: 409, message: format!("{} is {:?}: its command center opens once ChloeDB is installed on it", m.cluster, m.phase).to_lowercase() });
     }
-    let k = svc.clouds.kube_of(id, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { status: 502, message: format!("{}: {e}", m.cluster) })?;
+    let k = svc.clouds.kube_of(id, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{}: {e}", m.cluster) })?;
     let via = crate::hub::ViaKube { made: m.id.clone(), provider: m.provider.clone(), cluster: m.cluster.clone(), region: m.region.clone(), namespace: crate::cloud::NAMESPACE.to_string(), service: m.name.clone() };
     let had = svc.hub.list().iter().any(|c| c.kube.as_ref().is_some_and(|v| v.made == m.id));
     let c = svc.hub.adopt(via, name, color, &k, by).await?;
@@ -194,7 +194,7 @@ pub fn bring_when_ready(svc: Arc<Service>, id: String) {
         };
         // As the person who asked for the cluster, with what a key of
         // theirs here could do (they made a cluster: an admin's).
-        let who = Principal { name: format!("{} (bringing tables)", m.by), key: None, scope: Scope::Admin, root: false, tables: None };
+        let who = Principal { name: format!("{} (bringing tables)", m.by), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None };
         let mut last = String::new();
         for i in 0..BRING_TRIES {
             if i > 0 {

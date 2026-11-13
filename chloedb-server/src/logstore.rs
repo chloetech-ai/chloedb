@@ -178,7 +178,7 @@ fn schema_of(table: &str) -> &'static Arc<Schema> {
 
 /// The error a server without a log store answers a query of it with.
 pub fn none_here() -> ApiError {
-    ApiError { status: 409, message: "this server keeps no log store (it was started with --log-store off, or is a coordinator without --log-store)".into() }
+    ApiError { code: None, status: 409, message: "this server keeps no log store (it was started with --log-store off, or is a coordinator without --log-store)".into() }
 }
 
 /// Where the log store of the database at `db` is by default.
@@ -922,7 +922,7 @@ impl LogStore {
         let deadline = t0 + timeout;
         let permit = tokio::time::timeout(timeout, self.gate.clone().acquire_owned())
             .await
-            .map_err(|_| ApiError { status: 429, message: format!("{RUNNING} queries of the log store are running: try again") })?
+            .map_err(|_| ApiError { code: None, status: 429, message: format!("{RUNNING} queries of the log store are running: try again") })?
             .map_err(ApiError::internal)?;
         let (db, sql, params) = (self.db.clone(), sql.to_string(), params.clone());
         let r = tokio::task::spawn_blocking(move || -> Result<ResultSet, ApiError> {
@@ -1083,7 +1083,7 @@ pub fn partial_json(rs: &ResultSet, took_ms: f64) -> Json {
 pub fn from_partial_json(j: &Json) -> Result<ResultSet, ApiError> {
     use base64::Engine;
     use prost::Message;
-    let bad = |e: String| ApiError { status: 502, message: format!("another coordinator's log store answered what this one cannot read: {e}") };
+    let bad = |e: String| ApiError { code: None, status: 502, message: format!("another coordinator's log store answered what this one cannot read: {e}") };
     let b = base64::engine::general_purpose::STANDARD.decode(j["partial"].as_str().ok_or_else(|| bad("no partial answer".into()))?).map_err(|e| bad(e.to_string()))?;
     result_from_pb(pb::QueryResponse::decode(b.as_slice()).map_err(|e| bad(e.to_string()))?)
 }
@@ -1125,8 +1125,8 @@ pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, s
                 r.metadata_mut().insert(obs::HEADER, id);
             }
             let answer = match tokio::time::timeout_at(deadline.into(), c.logs(r)).await {
-                Err(_) => Err(ApiError { status: 504, message: "no answer before the deadline".into() }),
-                Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Err(ApiError { status: 501, message: "an older server, without a log store".into() }),
+                Err(_) => Err(ApiError { code: None, status: 504, message: "no answer before the deadline".into() }),
+                Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Err(ApiError { code: None, status: 501, message: "an older server, without a log store".into() }),
                 Ok(Err(s)) => Err(ApiError::from(s)),
                 Ok(Ok(a)) => result_from_pb(a.into_inner()),
             };
@@ -1170,7 +1170,7 @@ pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, s
         nodes.push(n);
     }
     if sets.is_empty() {
-        return Err(first_error.unwrap_or_else(|| ApiError { status: 503, message: "no server's log store answered".into() }));
+        return Err(first_error.unwrap_or_else(|| ApiError { code: None, status: 503, message: "no server's log store answered".into() }));
     }
     let rs = chloedb::cluster::merge(&select, sets)?;
     let mut j = js::result(&rs, t0.elapsed().as_secs_f64() * 1e3);

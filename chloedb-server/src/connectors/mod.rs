@@ -453,7 +453,7 @@ impl Connectors {
 
     async fn find(&self, svc: &Service, name: &str) -> Result<Connector, ApiError> {
         let list = self.list(svc, true).await.map_err(ApiError::internal)?;
-        list.into_iter().find(|c| c.name == name).ok_or_else(|| ApiError { status: 404, message: format!("no connector named {name}") })
+        list.into_iter().find(|c| c.name == name).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no connector named {name}") })
     }
 
     async fn load_state(&self, svc: &Service) {
@@ -841,10 +841,10 @@ async fn make_target(svc: &Arc<Service>, c: &Connector, caller: &Caller) -> Resu
         return Ok(false);
     }
     if c.target != kinds::default_target(c) && c.config["create_target"] != true {
-        return Err(ApiError { status: 404, message: format!("there is no table {}: make it first, or write the kind's own table ({}), or pass \"create_target\": true in config to make {} with that table's columns", c.target, kinds::default_target(c), c.target) });
+        return Err(ApiError { code: None, status: 404, message: format!("there is no table {}: make it first, or write the kind's own table ({}), or pass \"create_target\": true in config to make {} with that table's columns", c.target, kinds::default_target(c), c.target) });
     }
     let ddl = kinds::default_schema(&c.kind, &c.target);
-    svc.connectors.call(caller.auth.as_ref(), Method::POST, "/v1/sql", Some(json!({ "sql": ddl }))).await.map_err(|e| ApiError { status: 400, message: format!("making {}: {e}", c.target) })?;
+    svc.connectors.call(caller.auth.as_ref(), Method::POST, "/v1/sql", Some(json!({ "sql": ddl }))).await.map_err(|e| ApiError { code: None, status: 400, message: format!("making {}: {e}", c.target) })?;
     Ok(true)
 }
 
@@ -877,7 +877,7 @@ pub async fn create(svc: &Arc<Service>, caller: &Caller, b: &Json) -> Result<Jso
     let mut c = spec(b, None)?;
     me.make_tables(svc).await.map_err(ApiError::internal)?;
     if me.list(svc, true).await.map_err(ApiError::internal)?.iter().any(|x| x.name == c.name) {
-        return Err(ApiError { status: 409, message: format!("a connector named {} exists: POST /v1/admin/connectors/{} changes it", c.name, c.name) });
+        return Err(ApiError { code: None, status: 409, message: format!("a connector named {} exists: POST /v1/admin/connectors/{} changes it", c.name, c.name) });
     }
     let made = make_target(svc, &c, caller).await?;
     if let Some(s) = b.get("secrets").filter(|s| !s.is_null()) {
@@ -946,7 +946,7 @@ pub async fn rotate(svc: &Arc<Service>, caller: &Caller, name: &str) -> Result<J
     if !c.pushed() {
         return Err(bad(format!("a {} connector is not pushed to, so it has no push key", c.kind)));
     }
-    let secret = push_key(svc, &mut c, caller).map_err(|e| ApiError { status: 409, message: e })?;
+    let secret = push_key(svc, &mut c, caller).map_err(|e| ApiError { code: None, status: 409, message: e })?;
     me.own_write(svc, vec![json!({"op": "upsert", "table": CONFIGS, "doc": c.row()})]).await.map_err(ApiError::internal)?;
     me.forget_cache();
     Ok(json!({"connector": c.name, "key_id": c.push_key, "push_secret": secret}))
@@ -960,7 +960,7 @@ pub async fn run_now(svc: &Arc<Service>, name: &str) -> Result<Json, ApiError> {
         return Err(bad(format!("a {} connector is not pulled: systems push to it (POST /v1/connectors/{}/push)", c.kind, c.name)));
     }
     if !lock(&me.running).insert(c.name.clone()) {
-        return Err(ApiError { status: 409, message: format!("connector {} is running now", c.name) });
+        return Err(ApiError { code: None, status: 409, message: format!("connector {} is running now", c.name) });
     }
     let r = me.run(svc, &c, Trigger::Manual, None).await;
     lock(&me.running).remove(&c.name);
@@ -1001,7 +1001,7 @@ pub async fn test(svc: &Arc<Service>, b: &Json) -> Result<Json, ApiError> {
         None if kinds::kind(&c.kind).is_some_and(|k| k.pull) => kinds::pull(&ctx).await,
         None => Err(format!("a {} connector is tested with a \"sample\" of what a system sends it", c.kind)),
     };
-    let f = fetched.map_err(|e| ApiError { status: 502, message: e })?;
+    let f = fetched.map_err(|e| ApiError { code: None, status: 502, message: e })?;
     let target = svc.table(&c.target).await.ok();
     let m = kinds::map_of(&c);
     let mut fitted = map::Fitted::default();
@@ -1041,7 +1041,7 @@ pub async fn push(svc: &Arc<Service>, name: &str, auth: Option<&HeaderValue>, co
         return Err(bad(format!("a {} connector is not pushed to: it pulls on its schedule", c.kind)));
     }
     if !c.enabled {
-        return Err(ApiError { status: 409, message: format!("connector {name} is disabled") });
+        return Err(ApiError { code: None, status: 409, message: format!("connector {name} is disabled") });
     }
     let r = me.run(svc, &c, Trigger::Push, Some((body, content_type, auth))).await;
     match r["error"].as_str() {
@@ -1054,7 +1054,7 @@ pub async fn push(svc: &Arc<Service>, name: &str, auth: Option<&HeaderValue>, co
             } else {
                 400
             };
-            Err(ApiError { status, message: e.to_string() })
+            Err(ApiError { code: None, status, message: e.to_string() })
         }
     }
 }

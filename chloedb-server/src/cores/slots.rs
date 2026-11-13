@@ -20,11 +20,11 @@ use crate::slots::{Move, MoveState, SlotMap};
 use crate::ApiError;
 
 fn conflict(message: String) -> ApiError {
-    ApiError { status: 409, message }
+    ApiError { code: None, status: 409, message }
 }
 
 fn unavailable(message: String) -> ApiError {
-    ApiError { status: 503, message }
+    ApiError { code: None, status: 503, message }
 }
 
 /// What a shard does with a cluster map given to it.
@@ -581,7 +581,7 @@ impl Change {
     fn again(&mut self) -> ChangeStep {
         self.tries += 1;
         if self.tries >= CHANGE_TRIES {
-            return self.done(Err(ApiError { status: 409, message: "other changes of the cluster map kept coming first: try again".into() }));
+            return self.done(Err(ApiError { code: None, status: 409, message: "other changes of the cluster map kept coming first: try again".into() }));
         }
         self.stage = Stage::Syncing;
         ChangeStep::Sync

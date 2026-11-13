@@ -124,7 +124,7 @@ async fn shard(dir: &Path, name: &str, keep: impl Fn(usize) -> bool) -> String {
 }
 
 fn admin() -> Principal {
-    Principal { name: "ops".into(), key: Some("ops-id".into()), scope: Scope::Admin, root: false, tables: None }
+    Principal { name: "ops".into(), key: Some("ops-id".into()), scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None }
 }
 
 async fn sql(svc: &Arc<Service>, s: &str) -> SqlAnswer {
@@ -218,7 +218,7 @@ async fn each_key_has_a_budget_of_model_calls_a_day() {
     let svc = Arc::new(svc);
     svc.model_budget.set_per_day(6);
     sql(&svc, "CREATE FUNCTION gist(t TEXT) RETURNS TEXT AS llm('mock-claude', 'Say what the product is about, for the budget.', :t)").await;
-    let key = |id: &str| Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None };
+    let key = |id: &str| Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None };
     let ask = |who: Principal, limit: usize, offset: usize| {
         let svc = svc.clone();
         async move {

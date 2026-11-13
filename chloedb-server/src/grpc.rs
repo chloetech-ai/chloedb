@@ -367,7 +367,7 @@ fn method_scope(method: &str) -> Option<Scope> {
 fn may_call<T>(req: &Request<T>, method: &str) -> (Principal, Result<(), ApiError>) {
     let who = req.extensions().get::<Principal>().cloned().unwrap_or_else(Principal::open);
     let r = match method_scope(method) {
-        None if !who.root => Err(ApiError { status: 403, message: format!("{method} is a call between the servers of a cluster: it needs the cluster's token ({:?} may not make it)", who.name) }),
+        None if !who.root => Err(ApiError { code: None, status: 403, message: format!("{method} is a call between the servers of a cluster: it needs the cluster's token ({:?} may not make it)", who.name) }),
         None => Ok(()),
         Some(need) => who.may(need, method),
     };
@@ -412,7 +412,7 @@ impl Grpc {
         // ([`crate::service::FOLLOW`]).
         let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
         if follow.is_some() && !who.root && may.is_ok() {
-            may = Err(ApiError { status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
+            may = Err(ApiError { code: None, status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
         }
         if let Err(e) = may {
             self.0.metrics.grpc(method, "PermissionDenied", 0.0);
@@ -423,7 +423,7 @@ impl Grpc {
         let caller = {
             let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
             let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
-            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None, ..Default::default() };
             crate::telemetry::Caller::of(&who, Some(r))
         };
         // A part whose deadline is its client's own (the coordinator says so):
@@ -794,7 +794,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Keys", req, |svc, who, r| async move {
             if who.is_open() {
                 return Err(ApiError {
-                    status: 409,
+                    code: None, status: 409,
                     message: "this server has no token: keys would close it to the servers that gave them, which send it none. Give the cluster's servers a --cluster-token to share keys".into(),
                 });
             }

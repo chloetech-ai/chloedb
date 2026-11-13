@@ -90,6 +90,7 @@ impl ModelBudget {
             let left = max.saturating_sub(e.1);
             let hours = ((day + 1) * DAY_MS - now_ms).div_ceil(3_600_000);
             return Err(ApiError {
+                code: None,
                 status: 429,
                 message: format!("{what} would ask a model {n} time(s), and the key {:?} has {left} of its {max} model calls a day left (--model-calls-per-key-day); the count starts again in {hours} h (UTC midnight), or pass your own api_key", who.name),
             });
@@ -113,7 +114,7 @@ mod tests {
     use crate::keys::Scope;
 
     fn key(id: &str) -> Principal {
-        Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None }
+        Principal { name: format!("app-{id}"), key: Some(id.into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None }
     }
 
     #[test]
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn the_operators_credentials_and_no_limit_are_not_counted() {
         let b = ModelBudget::new(1);
-        for who in [Principal::open(), Principal::cluster(), Principal { name: "token".into(), key: None, scope: Scope::Admin, root: false, tables: None }] {
+        for who in [Principal::open(), Principal::cluster(), Principal { name: "token".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None }] {
             b.take(Some(&who), 100, "llm()").unwrap();
         }
         b.take(None, 100, "llm()").unwrap();

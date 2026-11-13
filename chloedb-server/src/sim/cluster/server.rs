@@ -121,7 +121,7 @@ impl Server {
                     let elsewhere: Vec<i64> = self.rows.iter().filter(|(&k, r)| r.value.is_some() && map.owner(slot_of(k)) != shard && residue.binary_search(&slot_of(k)).is_err()).map(|(&k, _)| k).collect();
                     if let Some(&k) = elsewhere.first() {
                         return Err(ApiError {
-                            status: 409,
+                            code: None, status: 409,
                             message: format!(
                                 "{} rows here have keys in other shards' slots under slot map epoch {} (key {k} is in slot {}, which shard {} holds, not {shard})",
                                 elsewhere.len(),

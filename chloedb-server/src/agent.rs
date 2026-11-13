@@ -228,14 +228,14 @@ pub(crate) async fn call(client: &reqwest::Client, base: &str, key: &str, body: 
                 let msg = j["error"]["message"].as_str().unwrap_or("no message").to_string();
                 if status.as_u16() != 429 && !status.is_server_error() {
                     let code = if status.as_u16() == 401 { 401 } else { 502 };
-                    return Err(ApiError { status: code, message: format!("the Claude API answered {status}: {msg}") });
+                    return Err(ApiError { code: None, status: code, message: format!("the Claude API answered {status}: {msg}") });
                 }
                 format!("{status}: {msg}")
             }
             Err(e) => e.to_string(),
         };
         if attempt == 2 {
-            return Err(ApiError { status: 502, message: format!("the Claude API failed: {retry}") });
+            return Err(ApiError { code: None, status: 502, message: format!("the Claude API failed: {retry}") });
         }
         tokio::time::sleep(wait).await;
         wait *= 3;
@@ -246,7 +246,7 @@ pub(crate) async fn call(client: &reqwest::Client, base: &str, key: &str, body: 
 pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
     let own_key = req.api_key.is_none();
     let key = req.api_key.or_else(|| svc.agent.api_key.clone()).ok_or_else(|| ApiError {
-        status: 400,
+        code: None, status: 400,
         message: "no Anthropic API key: start the server with ANTHROPIC_API_KEY set, or enter a key in the UI".into(),
     })?;
     let model = req.model.unwrap_or_else(|| svc.agent.model.clone());

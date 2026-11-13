@@ -116,6 +116,33 @@ struct Problem {
     j: Json,
 }
 
+/// A problem's `next` for an agent too: `api`, the read its view makes,
+/// and `runbook`, the title of the runbook for it ([`crate::runbooks`]).
+fn for_agents(mut j: Json) -> Json {
+    let view = j["next"]["view"].as_str().unwrap_or_default().to_string();
+    let params = &j["next"]["params"];
+    let api = match view.as_str() {
+        "cluster" => Some("GET /v1/cluster".to_string()),
+        "performance" => Some("GET /v1/queries/slow".to_string()),
+        "queries" => Some("GET /v1/queries/recent?outcome=error".to_string()),
+        "tables" => Some("GET /v1/tables".to_string()),
+        "alerts" => Some("GET /v1/alerts".to_string()),
+        "logs" => Some(match params["q"].as_str() {
+            Some(q) => format!("GET /v1/logs?q={}", crate::mcp::encode(q)),
+            None => "GET /v1/logs".to_string(),
+        }),
+        v => v.strip_prefix("alert/").map(|r| format!("GET /v1/alerts/{r}")),
+    };
+    if let (Some(api), true) = (api, j["next"].is_object()) {
+        j["next"]["api"] = json!(api);
+    }
+    let id = j["id"].as_str().unwrap_or_default().to_string();
+    if let (Some(r), true) = (crate::runbooks::for_id(&id), j["next"].is_object()) {
+        j["next"]["runbook"] = json!(r.title);
+    }
+    j
+}
+
 fn severity(critical: bool) -> &'static str {
     if critical {
         "critical"
@@ -1014,7 +1041,7 @@ impl Fleet {
             "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms, "first_signal_ms": first_signal_ms, "not_ok_since_ms": m.not_ok,
             "api": {"ok": true, "server": if i.coordinator.is_some() { "coordinator" } else { "shard" }},
             "checks": checks,
-            "problems": problems.into_iter().map(|p| p.j).collect::<Vec<_>>(),
+            "problems": problems.into_iter().map(|p| for_agents(p.j)).collect::<Vec<_>>(),
             "coordinators": coordinators,
             "window_s": WINDOW_S,
         })

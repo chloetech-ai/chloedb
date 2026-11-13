@@ -33,7 +33,7 @@ pub const NEW: &str = "x-chloedb-";
 
 /// The headers a client sets, which may be named either way (after the
 /// prefix).
-pub const ALIASED: [&str; 5] = ["client", "app", "reason", "confirm", "table"];
+pub const ALIASED: [&str; 8] = ["client", "app", "reason", "confirm", "table", "agent-model", "agent-session", "agent-run"];
 
 /// An answer header's two names, new then old: `x-chloedb-took-ms` and
 /// `x-strata-took-ms` for `took-ms`.

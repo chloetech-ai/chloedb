@@ -133,7 +133,7 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
     // caller brings, its own.
     let budget = req.api_key.is_none().then(|| (svc.model_budget.clone(), req.who.clone()));
     let key = req.api_key.or_else(|| svc.agent.api_key.clone()).ok_or_else(|| ApiError {
-        status: 400,
+        code: None, status: 400,
         message: "no Anthropic API key: start the server with ANTHROPIC_API_KEY set, or enter a key in the UI".into(),
     })?;
     if req.query.trim().is_empty() {
@@ -260,7 +260,7 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
     if failed == grades.len() {
         let first = grades[0]["error"].as_str().unwrap_or("").to_string();
         if grades.iter().all(|g| g["error"] == first.as_str()) && first != "no such row" {
-            return Err(ApiError { status: 502, message: first });
+            return Err(ApiError { code: None, status: 502, message: first });
         }
     }
     Ok(json!({

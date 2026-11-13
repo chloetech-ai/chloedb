@@ -339,7 +339,7 @@ impl Drop for Live {
 
 /// The answer a query cancelled by an operator gets (status 499).
 pub fn cancelled_error(id: u64) -> crate::ApiError {
-    crate::ApiError { status: 499, message: format!("query {id} was cancelled by an operator (DELETE /v1/queries/{id})") }
+    crate::ApiError { code: None, status: 499, message: format!("query {id} was cancelled by an operator (DELETE /v1/queries/{id})") }
 }
 
 /// How a query can end: answered (`ok`, or `partial` without some
@@ -1850,7 +1850,7 @@ mod tests {
         set_redact_params(false);
         assert_eq!(*r, json!({"n": "int", "q": "text", "v": "vector(384)"}));
         assert!(params_json(&chloedb::query::Params::new()).is_none());
-        let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true, tables: None };
+        let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true, tables: None, role: None, agent: false, on_behalf_of: None };
         let r = crate::keys::Caller { app: Some("shop-ios".into()), client: Some("command-center".into()), ..Default::default() };
         let c = Caller::of(&who, Some(r));
         assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios"), Some("command-center")));
