@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`chloedb::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, steps?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and with `steps` or `profile` in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
 //! | `DELETE /v1/query/cursors/:id` | | `{closed}`: a scroll ended before its last page |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`chloedb::rank_log::export`]) |
@@ -1446,6 +1446,17 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
+    // The answer cache knows the query by its SQL and the statistics it
+    // was sent ([`crate::answers`]); its parameters are added after they
+    // are read.
+    let cache_key = (!crate::answers::volatile(&req.sql)).then(|| {
+        let stats = b.get("stats").map(|s| s.to_string()).unwrap_or_default();
+        crate::answers::KeyBuilder::default().part(b"http").part(req.sql.as_bytes()).part(stats.as_bytes()).finish()
+    });
+    let req = QueryReq { cache_key, ..req };
+    // A client's answer has its steps when asked for ([`wants_steps`]); a
+    // shard's has them for its coordinator.
+    let req = QueryReq { skip_steps: !req.shard && !wants_steps(&b), ..req };
     if let Some(log) = b.get("log") {
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
@@ -1530,9 +1541,13 @@ async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
 /// answer gives them).
 async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = chloedb::rank_log::Log::from_json(log)?;
+    let skip = req.skip_steps;
     let (mut a, served, w) = app.svc.query_logged(who, req, log).await?;
     hide_hosts(who, &mut a.rs.stats.steps);
     let mut j = answer(&a);
+    if skip {
+        without_steps(&mut j);
+    }
     if objects {
         as_objects(&mut j);
     }
@@ -1792,10 +1807,29 @@ async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principa
 /// (`"objects": true`; [`as_objects`]).
 fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
     let mut j = answer(a);
+    if !wants_steps(b) && !body_bool(b, "shard")? {
+        without_steps(&mut j);
+    }
     if body_bool(b, "objects")? {
         as_objects(&mut j);
     }
     Ok(j)
+}
+
+/// Whether a client asked for its answer's timed steps (`stats.steps`):
+/// `"steps": true`, or `"profile": true`, which measures their CPU time.
+/// Without, an answer leaves them out (they are most of its bytes), and
+/// the list of queries (`/v1/queries`) keeps them all the same.
+fn wants_steps(b: &Json) -> bool {
+    ["steps", "profile"].iter().any(|k| b.get(*k).and_then(|v| v.as_bool()) == Some(true))
+}
+
+/// An answer without its timed steps ([`wants_steps`]).
+fn without_steps(j: &mut Json) {
+    if let Some(s) = j.get_mut("stats").and_then(Json::as_object_mut) {
+        s.remove("steps");
+        s.remove("steps_dropped");
+    }
 }
 
 /// An answer's rows as objects, `{"id": "p1", "price": 9.5}`, in place of

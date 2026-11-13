@@ -506,7 +506,7 @@ function render(page, r) {
       else if (!p.write && READ.test(stripStrings(sql))) {
         // More rows than a query returns: the first page, read as a scroll,
         // with how many there are and "Export all" (bigresult.js).
-        try { j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal }); }
+        try { j = await api("/v1/query", { body: { sql, params, trace, profile: trace, steps: true }, signal: running.signal }); }
         catch (e) { if (!tooBig(e)) throw e; j = await firstPage(sql, params, running.signal); }
       }
       else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });

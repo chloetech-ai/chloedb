@@ -22,7 +22,7 @@ const closeCursor = (c) => c && api(`/v1/query/cursors/${encodeURIComponent(c)}`
  * `total` is COUNT(*) of the statement, left out when that fails.
  */
 export async function firstPage(sql, params, signal) {
-  const j = await api("/v1/query", { body: { sql, params, page_size: SHOWN }, signal });
+  const j = await api("/v1/query", { body: { sql, params, page_size: SHOWN, steps: true }, signal });
   closeCursor(j.cursor);
   delete j.cursor;
   let total = null;

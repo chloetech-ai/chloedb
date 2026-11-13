@@ -22,6 +22,7 @@
 //!   searched across a cluster.
 
 pub mod agent;
+pub mod answers;
 pub mod alerts;
 pub mod app_procs;
 pub mod apps;
