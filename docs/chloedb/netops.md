@@ -81,10 +81,11 @@ Removing `spec.netops` deletes its Deployment and Service and restarts the coord
 | **Devices** | the inventory with each device's metrics, what happened on it in the last day, logs, configuration history and blame |
 | **Agents** | the six agents, their runs and what each cost in queries, rows and tokens; capacity, advisories and configuration drift; autopilot |
 | **Map** | the whole network on one plane, from regions down to one customer's router: zoom in and detail appears, what is broken colours the place that holds it at every zoom, a click on an object says what is wrong and what it has to do with everything around it, and a search box takes a sentence ([below](#the-map)) |
+| **Dashboards** | the backbone's busiest links (utilisation, loss, received optical power), the busiest devices and the slowest services over three hours, what is not ok by metro and by kind, faults a day by cause over two weeks, and incidents by cause; the estate's panels follow the place in view on the map |
 | **Data** | the 39 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings |
 | **Leadership** | the switch at the top: services against what was sold, incidents with their cost in customer-minutes and revenue exposed, time to detect and resolve, what caused them and which followed a change, the risk register (spans that cannot fail over at their measured peak, software with open advisories, contracts ending), carriers by cost and downtime, and the week written as a report |
 
-The box in the header looks anything up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number. It answers what the thing is, whether it is healthy, and opens it.
+The box above every page searches, and completes as it is typed ([below](#the-box-above-every-page-and-the-assistant)). An id, a site or a circuit opens on the map; a sentence becomes the map's query; anything else is looked up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number, with what the thing is and whether it is healthy.
 
 Each page has a **SQL** button that lists the queries behind what it shows, with their times.
 
@@ -103,6 +104,26 @@ The Map page draws all of it without ever asking for all of it. Places are boxes
 - **A click is a walk.** For one object: what it hangs from (`REACHABLE` against the edges) and the nearest of those that is broken, which is where its trouble comes from; what depends on it, counted by kind and state (`REACHABLE` along the edges, grouped); what else is in trouble within three hops; the changes and faults of thirty days on it and on everything around it, with the change made just before the trouble began; and how faults that read like this one ended before (BM25 over the events).
 
 ![One object: where its trouble starts, what it hangs from, what depends on it, and the trouble around it](../assets/img/netops-map-object.png)
+
+A click on an object also lights what it hangs from and what depends on it, and fades the rest; the panel beside the map has tabs for the object: **Overview** (the walk above), **Metrics** (a minute's series for the backbone's devices and their links; for the estate, its latest reading and its faults and changes a day over sixty days), **Events**, **Logs** (syslog for the backbone; the estate's events as lines), **Related** (the chain it hangs from, what depends on it by kind, the customers behind it, the trouble around it), **Incidents** and **Config** (its properties, and for the backbone the latest configuration). They are read by `/v1/map/detail`.
+
+### The box above every page, and the assistant
+
+The box has two modes, **Search** and **Ask** (Tab switches them when the box is empty), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, `/v1/suggest` completes it from the tables, from what was typed before the word, and from where the person is:
+
+| typed | completed with | how |
+|---|---|---|
+| the start of an id ("swi", "hr1-h3") | objects, the broken ones first, in the place in view | `PREFIX(id, :w)` over the column's dictionary; with `fuzzy => 'auto'` when nothing matches exactly |
+| a word of a name ("park 7", "insur", "Lon") | sites, hubs and metros, customers | `ILIKE` from the substring index, at the start of a word |
+| the start of a circuit ("LUM-A") | circuits, with their carrier and plane | `PREFIX(circuit, :w)` |
+| `kind:`, `state:`, `vendor:`, `in:` | the values in the place in view, with counts | a `GROUP BY` |
+| the start of a sentence ("OLTs in London ") | what the map's reader has not been told yet: a state (with how many it would find), what happened, by whom, a reading, a place in the graph | the reader's plan of the words so far, and one `GROUP BY state` |
+| a word that asks for the next ("that is not", "changed in", "about", "by") | the words that can follow it | |
+| words of an earlier question | questions asked before | BM25 over `netops_searches` |
+
+In Ask mode it offers questions about the object picked, and after a question the ones that usually follow it (after "what is wrong", what changed before it started, who is affected, what to do). The assistant, on the right of every page, answers them from the app's own API: what is wrong and where the trouble starts, the change made before it, what depends on it and the customers behind it, what to do (the change to check, how such faults ended before, runbooks by BM25), how it went before, what depends on it lit on the map, and a watch that reads the object every 30 seconds and says when it changes. Each answer lists the queries it ran. Anything else becomes the map's sentence search. The answers are written from the query results by fixed rules, not by a model; the command center's own Ask (Ctrl+J) is the server's agent over any table.
+
+Each completion is one to four queries of 1 to 3 ms on one server with 170,000 objects (a name matched at a word's start takes up to 70 ms the first time). ChloeDB has no next-word model: the sentence's next words come from the reader's vocabulary, and earlier questions from BM25.
 
 ### Asking in a sentence
 

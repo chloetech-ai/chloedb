@@ -9,6 +9,7 @@ pub mod agents;
 pub mod api;
 pub mod daily;
 pub mod ask;
+pub mod assist;
 pub mod debug;
 pub mod estate;
 pub mod hub;

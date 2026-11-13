@@ -203,6 +203,10 @@ chloedb-server ... --app netops=http://netops-host:7840   # with CHLOEDB_APP_TOK
 <td>the whole network on one plane, from regions down to one customer's router: zoom in and detail appears, what is broken colours the place that holds it at every zoom, a click on an object says what is wrong and what it has to do with everything around it, and a search box takes a sentence (<a href="#the-map">below</a>)</td>
 </tr>
 <tr>
+<td><strong>Dashboards</strong></td>
+<td>the backbone's busiest links (utilisation, loss, received optical power), the busiest devices and the slowest services over three hours, what is not ok by metro and by kind, faults a day by cause over two weeks, and incidents by cause; the estate's panels follow the place in view on the map</td>
+</tr>
+<tr>
 <td><strong>Data</strong></td>
 <td>the 39 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings</td>
 </tr>
@@ -212,7 +216,7 @@ chloedb-server ... --app netops=http://netops-host:7840   # with CHLOEDB_APP_TOK
 </tr>
 </tbody>
 </table></div>
-<p>The box in the header looks anything up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number. It answers what the thing is, whether it is healthy, and opens it.</p>
+<p>The box above every page searches, and completes as it is typed (<a href="#the-box-above-every-page-and-the-assistant">below</a>). An id, a site or a circuit opens on the map; a sentence becomes the map's query; anything else is looked up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number, with what the thing is and whether it is healthy.</p>
 <p>Each page has a <strong>SQL</strong> button that lists the queries behind what it shows, with their times.</p>
 <p><img alt="An incident's room: the cause the agent named with its evidence, the actions it proposed, and the room's board" src="../../assets/img/netops-incident.png" /></p>
 <h2 id="the-map">The map<a class="anchor" href="#the-map" aria-label="Link to this section">#</a></h2>
@@ -225,6 +229,57 @@ chloedb-server ... --app netops=http://netops-host:7840   # with CHLOEDB_APP_TOK
 <li><strong>A click is a walk.</strong> For one object: what it hangs from (<code>REACHABLE</code> against the edges) and the nearest of those that is broken, which is where its trouble comes from; what depends on it, counted by kind and state (<code>REACHABLE</code> along the edges, grouped); what else is in trouble within three hops; the changes and faults of thirty days on it and on everything around it, with the change made just before the trouble began; and how faults that read like this one ended before (BM25 over the events).</li>
 </ul>
 <p><img alt="One object: where its trouble starts, what it hangs from, what depends on it, and the trouble around it" src="../../assets/img/netops-map-object.png" /></p>
+<p>A click on an object also lights what it hangs from and what depends on it, and fades the rest; the panel beside the map has tabs for the object: <strong>Overview</strong> (the walk above), <strong>Metrics</strong> (a minute's series for the backbone's devices and their links; for the estate, its latest reading and its faults and changes a day over sixty days), <strong>Events</strong>, <strong>Logs</strong> (syslog for the backbone; the estate's events as lines), <strong>Related</strong> (the chain it hangs from, what depends on it by kind, the customers behind it, the trouble around it), <strong>Incidents</strong> and <strong>Config</strong> (its properties, and for the backbone the latest configuration). They are read by <code>/v1/map/detail</code>.</p>
+<h3 id="the-box-above-every-page-and-the-assistant">The box above every page, and the assistant<a class="anchor" href="#the-box-above-every-page-and-the-assistant" aria-label="Link to this section">#</a></h3>
+<p>The box has two modes, <strong>Search</strong> and <strong>Ask</strong> (Tab switches them when the box is empty), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, <code>/v1/suggest</code> completes it from the tables, from what was typed before the word, and from where the person is:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>typed</th>
+<th>completed with</th>
+<th>how</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the start of an id ("swi", "hr1-h3")</td>
+<td>objects, the broken ones first, in the place in view</td>
+<td><code>PREFIX(id, :w)</code> over the column's dictionary; with <code>fuzzy =&gt; 'auto'</code> when nothing matches exactly</td>
+</tr>
+<tr>
+<td>a word of a name ("park 7", "insur", "Lon")</td>
+<td>sites, hubs and metros, customers</td>
+<td><code>ILIKE</code> from the substring index, at the start of a word</td>
+</tr>
+<tr>
+<td>the start of a circuit ("LUM-A")</td>
+<td>circuits, with their carrier and plane</td>
+<td><code>PREFIX(circuit, :w)</code></td>
+</tr>
+<tr>
+<td><code>kind:</code>, <code>state:</code>, <code>vendor:</code>, <code>in:</code></td>
+<td>the values in the place in view, with counts</td>
+<td>a <code>GROUP BY</code></td>
+</tr>
+<tr>
+<td>the start of a sentence ("OLTs in London ")</td>
+<td>what the map's reader has not been told yet: a state (with how many it would find), what happened, by whom, a reading, a place in the graph</td>
+<td>the reader's plan of the words so far, and one <code>GROUP BY state</code></td>
+</tr>
+<tr>
+<td>a word that asks for the next ("that is not", "changed in", "about", "by")</td>
+<td>the words that can follow it</td>
+<td></td>
+</tr>
+<tr>
+<td>words of an earlier question</td>
+<td>questions asked before</td>
+<td>BM25 over <code>netops_searches</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>In Ask mode it offers questions about the object picked, and after a question the ones that usually follow it (after "what is wrong", what changed before it started, who is affected, what to do). The assistant, on the right of every page, answers them from the app's own API: what is wrong and where the trouble starts, the change made before it, what depends on it and the customers behind it, what to do (the change to check, how such faults ended before, runbooks by BM25), how it went before, what depends on it lit on the map, and a watch that reads the object every 30 seconds and says when it changes. Each answer lists the queries it ran. Anything else becomes the map's sentence search. The answers are written from the query results by fixed rules, not by a model; the command center's own Ask (Ctrl+J) is the server's agent over any table.</p>
+<p>Each completion is one to four queries of 1 to 3 ms on one server with 170,000 objects (a name matched at a word's start takes up to 70 ms the first time). ChloeDB has no next-word model: the sentence's next words come from the reader's vocabulary, and earlier questions from BM25.</p>
 <h3 id="asking-in-a-sentence">Asking in a sentence<a class="anchor" href="#asking-in-a-sentence" aria-label="Link to this section">#</a></h3>
 <p>The search box takes a question such as "everything changed in the last week about a firmware upgrade by m.rossi with latency above 15 ms", or "customer routers in Frankfurt behind hr1-h03-fra that are not ok". It names up to five kinds of condition, and ChloeDB answers them in one statement:</p>
 <pre data-lang="sql">SELECT id, kind, name, state, latency_ms, ... FROM netops_estate_nodes
