@@ -167,7 +167,10 @@ async fn http_answers_like_the_embedded_database() {
         let p = if params["q"].is_object() { Params::new().set("q", vector_42(&db)) } else { Params::new() };
         want.push(js::result(&db.query(sql, &p).unwrap(), 0.0));
     }
-    let base = http(service(db, "http://unused"), None).await;
+    let want_chunks = js::result(&db.query(CHUNKS, &Params::new()).unwrap(), 0.0);
+    // A server's own reads (a classifier's rows, the rows chunks_of
+    // splits) are not held to --max-rows.
+    let base = http(service_with(Arc::new(db), |s| s.max_rows = Some(1000)), None).await;
     let c = chloedb_server::http_client().build().unwrap();
     for ((sql, params), want) in queries().into_iter().zip(&want) {
         let (status, got) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": params})).await;
@@ -184,7 +187,69 @@ async fn http_answers_like_the_embedded_database() {
     assert!(metrics.contains("chloedb_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
     let cores = std::thread::available_parallelism().unwrap().get();
     assert!(metrics.contains(&format!("chloedb_query_pool_threads {cores}\n")) && metrics.contains("chloedb_query_pool_queued 0\n"), "{metrics}");
+    // "Did you mean": the words in no row, taken for typos of the field's terms.
+    let (status, fixed) = post(&c, &format!("{base}/v1/correct"), json!({"table": "products", "field": "body", "text": "waterprof hiking boots"})).await;
+    assert_eq!(status, 200, "{fixed}");
+    assert_eq!((fixed["text"].as_str(), fixed["changed"].as_bool()), (Some("waterproof hiking boots"), Some(true)), "{fixed}");
+    assert_eq!(fixed["words"][0]["word"], "waterprof", "{fixed}");
+    // What a search's words say for the table's fields.
+    let (status, u) = post(&c, &format!("{base}/v1/understand"), json!({"table": "products", "field": "body", "text": "leather boots under 300", "fields": "category, brand, price"})).await;
+    assert_eq!(status, 200, "{u}");
+    assert_eq!(u["ranked"], "leather boots", "{u}");
+    assert_eq!(u["ranges"][0]["field"], "price", "{u}");
+    assert!(u["line"].as_str().unwrap().starts_with("bm25(body) understood 'leather boots under 300' with boost of products"), "{u}");
+    // A classifier of the products' categories: trained by SQL, kept as a
+    // function, and asked about a text.
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({"sql": "CREATE CLASSIFIER cat ON products(emb) LABELS category OPTIONS (method = 'centroid')"})).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["rows"][0][2].as_i64().unwrap() >= 2, "labels: {r}");
+    let (status, k) = post(&c, &format!("{base}/v1/classify"), json!({"name": "cat", "text": "waterproof hiking boots", "k": 2})).await;
+    assert_eq!(status, 200, "{k}");
+    assert_eq!((k["classifier"].as_str(), k["version"].as_i64(), k["top"].as_array().map(|t| t.len())), (Some("cat"), Some(1), Some(2)), "{k}");
+    let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id, cat(emb) FROM products ORDER BY id LIMIT 3"})).await;
+    assert_eq!(status, 200, "{q}");
+    assert!(q["rows"][0][1].is_string(), "{q}");
+    // A row's class in a query with no LIMIT: the calls read no more rows
+    // than the server answers (--max-rows).
+    let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id, cat(emb), cat(emb, 'score') FROM products WHERE id = 'p0000042'"})).await;
+    assert_eq!(status, 200, "{q}");
+    assert!(q["rows"][0][1].is_string() && q["rows"][0][2].is_number(), "{q}");
+    let (status, e) = post(&c, &format!("{base}/v1/classify"), json!({"name": "nope", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
+    // The chunks of a row's text, by SQL and as a query, as the embedded
+    // database splits them.
+    for path in ["sql", "query"] {
+        let (status, got) = post(&c, &format!("{base}/v1/{path}"), json!({"sql": CHUNKS})).await;
+        assert_eq!(status, 200, "{got}");
+        assert_eq!(got["rows"], want_chunks["rows"], "{got}");
+        assert_eq!(got["rows"][0][0], "p0000042#0", "{got}");
+    }
+    // What a built-in content model makes of a text.
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:lang", "text": "Der schnelle braune Fuchs springt über den faulen Hund"})).await;
+    assert_eq!((status, d["values"][0].as_str()), (200, Some("de")), "{d}");
+    let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:nope", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
+    // A table's own synonym list, by SQL; listed; used by synonyms => 1.
+    let rainproof = json!({"sql": "SELECT COUNT(*) FROM products WHERE MATCH(body, 'rainproof', synonyms => 1)"});
+    let (status, e) = post(&c, &format!("{base}/v1/query"), rainproof.clone()).await;
+    assert_eq!(status, 400, "no list yet: {e}");
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({"sql": "CREATE SYNONYMS ON products AS 'rainproof => waterproof'"})).await;
+    assert_eq!(status, 200, "{r}");
+    let listed: Json = c.get(format!("{base}/v1/synonyms")).send().await.unwrap().json().await.unwrap();
+    assert_eq!((listed["tables"][0]["table"].as_str(), listed["tables"][0]["rules"].as_u64(), listed["tables"][0]["version"].as_i64()), (Some("products"), Some(1), Some(1)), "{listed}");
+    let (status, n) = post(&c, &format!("{base}/v1/query"), rainproof).await;
+    assert_eq!(status, 200, "{n}");
+    assert!(n["rows"][0][0].as_i64().unwrap() > 0, "{n}");
+    // Mined: proposals, not applied.
+    let (status, m) = post(&c, &format!("{base}/v1/synonyms/mine"), json!({"table": "products", "field": "description", "vector": "emb", "min_cos": -1, "per_word": 1, "max_words": 50})).await;
+    assert_eq!(status, 200, "{m}");
+    assert!(m["words"].as_u64().unwrap() > 10 && !m["proposals"].as_array().unwrap().is_empty(), "{m}");
+    assert!(m["rules"].as_str().unwrap().starts_with("# mined from the words of products.description"), "{m}");
+    let (status, e) = post(&c, &format!("{base}/v1/synonyms/mine"), json!({"table": "products", "field": "description"})).await;
+    assert_eq!(status, 400, "{e}");
 }
+
+const CHUNKS: &str = "SELECT chunk_id, chunk, tokens FROM chunks_of(products, description, max_tokens => 16) WHERE id = 'p0000042'";
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.
 #[tokio::test(flavor = "multi_thread")]
@@ -616,6 +681,12 @@ async fn coordinator_answers_like_one_database() {
         "SELECT id, title, features() FROM products ORDER BY bm25(body, 'waterproof hiking') * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
         "SELECT id, bm25(body, 'boots') AS b, ln(1 + bm25(body, 'leather')) - 0.01 * price AS x FROM products ORDER BY price DESC LIMIT 12",
         "WITH top AS (SELECT * FROM products ORDER BY bm25(body, 'waterproof hiking') DESC LIMIT 60) SELECT id, score(), features() FROM top ORDER BY bm25(body, 'boots') + coalesce(rating, 0) DESC LIMIT 10",
+        // Expansion: the coordinator reads the feedback rows from every
+        // shard, and every shard ranks by the same terms.
+        "SELECT id, score() FROM products WHERE price < 400 ORDER BY bm25(body, 'waterproof hiking', expand => 5) DESC LIMIT 10",
+        // Understanding: the coordinator reads the keyword values of its
+        // shards and counts the rows that say the words on them.
+        "SELECT id, score() FROM products ORDER BY bm25(body, 'leather boots under 300', understand => 'filter', understand_fields => 'category, brand, price') DESC LIMIT 10",
     ] {
         let want = js::result(&whole.query(sql, &Params::new()).unwrap(), 0.0);
         assert!(!want["rows"].as_array().unwrap().is_empty(), "{sql}");
@@ -624,9 +695,50 @@ async fn coordinator_answers_like_one_database() {
         if sql.contains("features()") {
             assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("fetch: ")), "{sql}: {:?}", got.rs.stats.plan);
         }
+        if sql.contains("understand") {
+            assert!(got.rs.stats.plan[0].starts_with("bm25(body) understood 'leather boots under 300' with filter of products"), "{sql}: {:?}", got.rs.stats.plan);
+        }
+        if sql.contains("expand") {
+            assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("bm25(body) expanded from 5 rows of products")), "{sql}: {:?}", got.rs.stats.plan);
+        }
     }
     let h = coord.health().await;
     assert_eq!((h["status"].as_str(), h["docs"].as_u64()), (Some("ok"), Some(N as u64)), "{h}");
+    // A classifier: the coordinator reads every shard's rows, trains, and
+    // every shard holds the function; a row's class is computed on the
+    // coordinator, a parameter's before the shards plan.
+    let train = "CREATE CLASSIFIER cat ON products(emb) LABELS category OPTIONS (method = 'centroid')";
+    let chloedb::db::SqlResult::Rows(one) = whole.sql(train, &Params::new()).unwrap() else { panic!("a report") };
+    let chloedb_server::service::SqlAnswer::Rows(r) = coord.sql(&Principal::open(), train, &Params::new(), After::Any, 0).await.unwrap() else { panic!("a report") };
+    assert_eq!(r.rs.rows[0][..8], one.rows[0][..8], "every shard's rows, trained alike");
+    let p = Params::new().set("q", vector_42(&whole));
+    for sql in ["SELECT id, cat(emb) AS c FROM products ORDER BY id LIMIT 25", "SELECT COUNT(*) FROM products WHERE category = cat(:q)"] {
+        let want = js::result(&whole.query(sql, &p).unwrap(), 0.0);
+        let got = coord.query(QueryReq { sql: sql.into(), params: p.clone(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+        same(sql, &want, &js::result(&got.rs, 0.0));
+        assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("classify: ")), "{sql}: {:?}", got.rs.stats.plan);
+    }
+    // The chunks of rows from every shard, split on the coordinator.
+    let sql = "SELECT chunk_id, chunk, start_char FROM chunks_of(products, description, max_tokens => 16) WHERE year >= 2020";
+    let sorted = |rs: &chloedb::query::exec::ResultSet| {
+        let mut rows: Vec<String> = rs.rows.iter().map(|r| format!("{r:?}")).collect();
+        rows.sort();
+        rows
+    };
+    let want = whole.query(sql, &Params::new()).unwrap();
+    let got = coord.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+    assert!(want.rows.len() > 10);
+    assert_eq!(sorted(&got.rs), sorted(&want));
+    // A table's synonym list through the coordinator: every shard holds
+    // it, and ranks with it as one database does.
+    let rules = "CREATE SYNONYMS ON products AS 'rainproof => waterproof\nboot, shoe'";
+    whole.sql(rules, &Params::new()).unwrap();
+    coord.sql(&Principal::open(), rules, &Params::new(), After::Any, 0).await.unwrap_or_else(|e| panic!("{}", e.message));
+    let sql = "SELECT id, score() FROM products WHERE MATCH(body, 'rainproof shoe', synonyms => 1) ORDER BY bm25(body, 'rainproof shoe', synonyms => 1) DESC, id LIMIT 10";
+    let want = js::result(&whole.query(sql, &Params::new()).unwrap(), 0.0);
+    assert!(!want["rows"].as_array().unwrap().is_empty());
+    let got = coord.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+    same(sql, &want, &js::result(&got.rs, 0.0));
     // A coordinator runs a read's plan, a compound query's included, as it
     // runs the SQL: the shards take the plan's leaves. It takes writes as
     // SQL until its shards take write plans.

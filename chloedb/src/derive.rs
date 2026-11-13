@@ -56,6 +56,15 @@ pub fn model_files(name: &str) -> &'static [&'static str] {
 /// Opens the model of a derived field: with a prompt, a language model's
 /// endpoint ([`crate::hosted::Generator`]), else [`open`].
 pub fn open_for(spec: &crate::schema::Derive, models: &Path) -> Result<Arc<dyn Deriver>> {
+    if spec.model.starts_with(crate::content::BUILTIN) {
+        return crate::content::open(&spec.model);
+    }
+    if spec.model.starts_with(crate::content::DICT) {
+        return Err(model_err(format!("model {}: a dictionary is read from its table by the database that holds it", spec.model)));
+    }
+    if spec.model.starts_with(crate::content::CLASSIFIER) {
+        return Err(model_err(format!("model {}: a classifier is a stored function of the database that holds it", spec.model)));
+    }
     if spec.prompt.is_empty() {
         return open(&spec.model, models);
     }
