@@ -1,0 +1,154 @@
+{
+  "accuracy": 0.9605,
+  "data": "test.csv",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4
+  },
+  "most_confused": [
+    [
+      "it->fr",
+      21
+    ],
+    [
+      "bg->ru",
+      18
+    ],
+    [
+      "nl->und",
+      17
+    ],
+    [
+      "nl->de",
+      16
+    ],
+    [
+      "tr->de",
+      15
+    ],
+    [
+      "it->es",
+      14
+    ],
+    [
+      "pl->und",
+      14
+    ],
+    [
+      "sw->und",
+      12
+    ],
+    [
+      "en->und",
+      11
+    ],
+    [
+      "es->ca",
+      11
+    ],
+    [
+      "it->und",
+      11
+    ],
+    [
+      "pt->es",
+      11
+    ],
+    [
+      "it->ca",
+      10
+    ],
+    [
+      "ru->bg",
+      9
+    ],
+    [
+      "de->und",
+      8
+    ]
+  ],
+  "per_language": {
+    "ar": {
+      "accuracy": 0.996,
+      "texts": 500
+    },
+    "bg": {
+      "accuracy": 0.962,
+      "texts": 500
+    },
+    "de": {
+      "accuracy": 0.98,
+      "texts": 500
+    },
+    "el": {
+      "accuracy": 0.998,
+      "texts": 500
+    },
+    "en": {
+      "accuracy": 0.942,
+      "texts": 500
+    },
+    "es": {
+      "accuracy": 0.956,
+      "texts": 500
+    },
+    "fr": {
+      "accuracy": 0.962,
+      "texts": 500
+    },
+    "hi": {
+      "accuracy": 0.964,
+      "texts": 500
+    },
+    "it": {
+      "accuracy": 0.85,
+      "texts": 500
+    },
+    "ja": {
+      "accuracy": 1.0,
+      "texts": 500
+    },
+    "nl": {
+      "accuracy": 0.904,
+      "texts": 500
+    },
+    "pl": {
+      "accuracy": 0.936,
+      "texts": 500
+    },
+    "pt": {
+      "accuracy": 0.934,
+      "texts": 500
+    },
+    "ru": {
+      "accuracy": 0.98,
+      "texts": 500
+    },
+    "sw": {
+      "accuracy": 0.964,
+      "texts": 500
+    },
+    "th": {
+      "accuracy": 0.996,
+      "texts": 500
+    },
+    "tr": {
+      "accuracy": 0.93,
+      "texts": 500
+    },
+    "ur": {
+      "accuracy": 0.958,
+      "texts": 500
+    },
+    "vi": {
+      "accuracy": 1.0,
+      "texts": 500
+    },
+    "zh": {
+      "accuracy": 0.998,
+      "texts": 500
+    }
+  },
+  "texts": 10000,
+  "us_per_text": 42.2430452
+}
