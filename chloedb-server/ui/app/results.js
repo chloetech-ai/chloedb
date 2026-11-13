@@ -295,7 +295,8 @@ export function answerStats(j) {
   return h("div", { class: "row small", style: { gap: "14px" } },
     j.written != null ? h("span", {}, h("b", {}, fmt.n(j.written)), " written") : h("span", {}, h("b", {}, fmt.plural(j.rows?.length ?? j.rows ?? 0, "row"))),
     h("span", {}, h("b", {}, fmt.ms(j.took_ms)), " on the server"),
-    st.filter_docs != null ? h("span", { title: "rows the WHERE clause kept, before ranking" }, h("b", {}, fmt.n(st.filter_docs)), " passed the filter") : null,
+    // A ranking with no WHERE (meaning, fused) reports 0 kept: not said.
+    st.filter_docs != null && !(st.filter_docs === 0 && (j.rows?.length ?? j.rows)) ? h("span", { title: "rows the WHERE clause kept, before ranking" }, h("b", {}, fmt.n(st.filter_docs)), " passed the filter") : null,
     st.scored ? h("span", { title: "rows the ranking scored" }, h("b", {}, fmt.n(st.scored)), " scored") : null,
     st.reranked ? h("span", {}, h("b", {}, fmt.n(st.reranked)), " reranked") : null,
     j.partial ? h("span", { class: "pill warn" }, icon("warn"), `missing shards ${j.partial.missing_shards.join(", ")}`) : null);

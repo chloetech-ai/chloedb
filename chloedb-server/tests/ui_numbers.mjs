@@ -1,6 +1,7 @@
-// The command center's number format, big answers and column health, in
-// Node (tests/ui.rs runs it when node is on the PATH): the modules load
-// with a little of a browser's globals, and their pure parts are checked.
+// The command center's number format, big answers and column health, and
+// the pure parts of its views (what a search shows, the SQL splitter, the
+// permission model), in Node (tests/ui.rs runs it when node is on the
+// PATH): the modules load with a little of a browser's globals.
 
 import assert from "node:assert/strict";
 
@@ -43,4 +44,26 @@ assert.deepEqual(flags({ n: 50, nonNull: 0 }), [["bad", "always NULL"]]);
 assert.deepEqual(flags({ n: 100, nonNull: 100, distinct: 1 }), [["warn", "one value"]]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 80 }).map(([, t]) => t), ["10 rows make 80% of the sum"]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 20 }), []);
+// CCB-1: a search over a TEXT made from others (not kept, so it reads
+// NULL) shows the stored fields it is made from, the title first; the
+// saved search's SELECT is the same.
+const tableView = await import(new URL("views/table.js", app));
+const products = { table: "products", short: { key: "id", table: "products", fields: [
+  { name: "id", type: "keyword" }, { name: "title", type: "text", indexed: false, positions: false }, { name: "description", type: "text", indexed: false, positions: false },
+  { name: "body", type: "text", from: ["title", "description"] }, { name: "brand", type: "keyword" }, { name: "price", type: "float" },
+  { name: "emb", type: "vector", embed: { from: ["title", "description"], model: "hash:64" } }] } };
+const body = products.short.fields[3], emb = products.short.fields[6];
+const shown = tableView.shownFields(products, [body], emb);
+assert.deepEqual([shown.title, shown.text], ["title", "description"]);
+assert.ok(!shown.cols.includes("body") && !shown.cols.includes("emb"), shown.cols.join());
+const s = tableView.searchSql(products, { q: "rain jacket", fields: [body], vec: emb, mode: "both" });
+assert.match(s.body, /^SELECT id, title, description, brand, price, score\(\)\nFROM products/);
+assert.match(s.body, /bm25\(body, :q\)/);
+// A stored searched field shows itself.
+const docs = { table: "docs", short: { key: "id", fields: [{ name: "id", type: "keyword" }, { name: "title", type: "text" }, { name: "text", type: "text" }, { name: "n", type: "int" }] } };
+assert.deepEqual(tableView.shownFields(docs, [docs.short.fields[2]]), { cols: ["id", "title", "text", "n"], title: "title", text: "text" });
+const { isStored } = await import(new URL("catalog.js", app));
+assert.deepEqual(products.short.fields.map(isStored), [true, true, true, false, true, true, false]);
+assert.equal(isStored({ name: "b", type: "text", from: ["a"], stored: true }), true);
+
 console.log("ok");

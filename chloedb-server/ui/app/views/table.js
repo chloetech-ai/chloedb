@@ -8,7 +8,7 @@
 // #/table lists the tables, the user's own first.
 
 import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, seg, gate, can, sqlBlock, store, debounce, table } from "../core.js";
-import { tables, cached, table as tableOf, typeBadge, invalidate } from "../catalog.js";
+import { tables, cached, table as tableOf, isStored, typeBadge, invalidate } from "../catalog.js";
 import { ownerOf, isMine, folded } from "../owners.js";
 import { quoteName } from "../sqledit.js";
 import { grid, answerStats, exportMenu } from "../results.js";
@@ -34,12 +34,28 @@ export function proseFields(t) {
 }
 /** The vector fields a table embeds from its text (searchable by words). */
 const meaningFields = (t) => (t?.short?.fields || []).filter((f) => f.type === "vector" && f.embed && !f.multi && !/_(next|prev)$/.test(f.name));
-/** The fields an answer shows: the key, a title, the text searched, a few more; never vectors. */
-function shownFields(t, text) {
-  const fs = (t?.short?.fields || []).filter((f) => !["vector", "sparse", "edges"].includes(f.type));
-  const key = t.short?.key;
-  const want = [key, ...text.map((f) => f.name), ...fs.filter((f) => f.type !== "text" && f.type !== "json").map((f) => f.name)];
-  return [...new Set(want.filter((n) => n && fs.some((f) => f.name === n)))].slice(0, 7);
+const TITLE = /^(title|name|subject|headline)$/i;
+const LONG = /(body|content|text|description|desc|summary|abstract|details|article|message|review|notes?)/i;
+/**
+ * The fields an answer shows: {cols, title, text}. The key, a title, the
+ * text searched, a few more; never vectors. A searched field that is not
+ * kept (a TEXT made from others, `from`) reads NULL, so the stored fields
+ * it is made from are shown in its place, as are those a vector is
+ * embedded from.
+ */
+export function shownFields(t, text, vec = null) {
+  const fs = (t?.short?.fields || []).filter((f) => !["vector", "sparse", "edges"].includes(f.type) && isStored(f));
+  const has = (n) => fs.some((f) => f.name === n);
+  const key = t?.short?.key;
+  const sourcesOf = (f) => [].concat(f?.from || f?.embed?.from || []).flatMap((x) => String(x).split(/\s*,\s*/));
+  const searched = [...new Set([...text.flatMap((f) => (isStored(f) ? [f.name] : sourcesOf(f))), ...(vec ? sourcesOf(vec) : [])].filter((n) => has(n) && n !== key))];
+  const prose = fs.filter((f) => f.type === "text" && f.name !== key).map((f) => f.name);
+  const title = [...searched, ...prose].find((n) => TITLE.test(n)) || null;
+  const rest = (n) => n !== title;
+  const body = searched.filter(rest).find((n) => LONG.test(n)) || searched.find(rest) || prose.filter(rest).find((n) => LONG.test(n)) || (title ? null : prose[0]) || null;
+  const others = fs.filter((f) => f.type !== "text" && f.type !== "json").map((f) => f.name);
+  const cols = [...new Set([key, title, body, ...others].filter((n) => n && has(n)))].slice(0, 7);
+  return { cols, title, text: body };
 }
 
 /**
@@ -52,7 +68,8 @@ function shownFields(t, text) {
  * function's (the words :q, the vector :v, the count :k).
  */
 export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
-  const cols = shownFields(t, fields).map(quoteName);
+  const shown = shownFields(t, fields, mode !== "words" ? vec : null);
+  const cols = shown.cols.map(quoteName);
   const from = quoteName(t.table);
   const W = fields.map((f) => quoteName(f.name));
   let where = "", order;
@@ -71,7 +88,7 @@ export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
   if (words) fnParams.push({ name: "q", ty: "TEXT" });
   if (meaning) fnParams.push({ name: "v", ty: `VECTOR(${vec.dim || ""})`.replace("()", "") });
   fnParams.push({ name: "k", ty: "INT", default: 10 });
-  return { sql: `${head}\nLIMIT ${limit}`, params, body: `${head}\nLIMIT :k`, fnParams };
+  return { sql: `${head}\nLIMIT ${limit}`, params, body: `${head}\nLIMIT :k`, fnParams, shown };
 }
 
 // ------------------------------------------------------------ the page
@@ -198,7 +215,7 @@ function render(page, r) {
         const j = await api("/v1/query", { body: { sql: s.sql, params: s.params }, signal: mine.signal });
         if (mine !== running) return;
         last = { s, j, q };
-        clear(out, results(t, j, q, text));
+        clear(out, results(t, j, q, s.shown));
         drawTail();
       } catch (e) { if (e.name !== "AbortError") clear(out, h("div", { class: "error" }, e.message)); }
       finally { if (mine === running) { out.classList.remove("loading"); running = null; } }
@@ -225,18 +242,19 @@ function render(page, r) {
   }
 
   /** The answer of a search as a list: a title, the text with the words marked, the other fields. */
-  function results(t, j, q, text) {
+  function results(t, j, q, shown) {
     const rows = j.rows || [], cols = j.columns || [];
     if (!rows.length) return empty("search", "No rows", "Other words, fewer of them, or search by meaning.");
-    const words = q.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-    const ti = cols.findIndex((c) => /^(title|name|subject|headline)$/i.test(c));
-    const bi = cols.findIndex((c) => text.some((f) => f.name === c) && c !== cols[ti]);
+    const words = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const start = words.length ? `(?<![\\p{L}\\p{N}])(${words.join("|")})` : null;
+    const ti = shown.title ? cols.indexOf(shown.title) : -1;
+    const bi = shown.text ? cols.indexOf(shown.text) : -1;
     const si = cols.indexOf("score()");
     const ki = cols.indexOf(t.short?.key);
     const marked = (s) => {
       s = String(s ?? "");
       if (!words.length) return s;
-      const re = new RegExp(`\\b(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+      const re = new RegExp(start, "giu");
       const out = []; let i = 0;
       for (const m of s.matchAll(re)) { out.push(s.slice(i, m.index), h("mark", {}, m[0])); i = m.index + m[0].length; }
       out.push(s.slice(i));
@@ -244,15 +262,15 @@ function render(page, r) {
     };
     const snip = (s) => {
       s = String(s ?? "").replace(/\s+/g, " ");
-      const at = words.length ? s.toLowerCase().search(new RegExp(`\\b(${words.join("|")})`)) : -1;
+      const at = words.length ? s.toLowerCase().search(new RegExp(start, "u")) : -1;
       const from = at > 80 ? at - 60 : 0;
       return (from ? "…" : "") + s.slice(from, from + 260) + (s.length > from + 260 ? "…" : "");
     };
-    return h("section", { class: "card hits-card" }, h("div", { class: "hd" }, h("h3", {}, fmt.plural(rows.length, "row")), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`))),
+    return h("section", { class: "card hits-card" }, h("div", { class: "hd" }, h("h3", {}, "Results"), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`))),
       h("div", { class: "bd flush" }, h("ol", { class: "hits" }, rows.map((r) => h("li", {},
         h("div", { class: "row nw" }, h("b", { class: "grow" }, ti >= 0 ? marked(r[ti]) : ki >= 0 ? String(r[ki]) : "row"), si >= 0 ? h("span", { class: "small muted mono", title: "score" }, Number(r[si]).toFixed(3)) : null),
         bi >= 0 ? h("div", { class: "small dim" }, marked(snip(r[bi]))) : null,
-        h("div", { class: "small muted hit-f" }, cols.map((c, i) => i === ti || i === bi || i === si || r[i] == null || String(r[i]).length > 80 ? null : h("span", {}, h("span", { class: "k" }, c), " ", String(r[i])))))))));
+        h("div", { class: "small muted hit-f" }, cols.map((c, i) => i === ti || i === bi || i === si || r[i] == null || String(r[i]).length > 80 ? null : h("span", {}, h("span", { class: "k" }, c), " ", typeof r[i] === "number" ? fmt.num(r[i]) : String(r[i])))))))));
   }
 
   /** The offer of meaning for a table without vectors: one click, the defaults told. */
