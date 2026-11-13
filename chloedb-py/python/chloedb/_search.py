@@ -40,9 +40,10 @@ def _time(t: Any) -> Any:
 
 class Search:
     """`table`, `search` and the rank log, shared by `Database` and
-    `Client`, which give `schema`, `_embedded()` (the embedded vector fields
-    whose model is open), `embed`, `query`, `run`, `_query_logged` and
-    `_export_rank_log`."""
+    `Client`, which give `schema`, `_table_schema(name)` (a table's, read
+    without reading the first table's), `_embedded(table)` (the embedded
+    vector fields whose model is open), `embed`, `query`, `run`,
+    `_query_logged` and `_export_rank_log`."""
 
     def query_logged(
         self,
@@ -106,18 +107,23 @@ class Search:
         """A query of the first table or the one named, built from Python
         values (`chloedb.build`):
         `db.table().where(col("year") >= 2019).order_by(bm25("body",
-        q)).limit(10)`."""
-        s = self.schema
-        if name is not None and name.lower() != s["table"].lower():
-            s = next((t for t in self.tables() if t["table"].lower() == name.lower()), None)
-            if s is None:
-                raise ChloeDBError(f"no table {name}")
+        q)).limit(10)`. A table named is read alone: the first table's
+        schema is not, so a key limited to other tables can use it."""
+        if name is None:
+            return Query(self, self.schema)
+        try:
+            s = self._table_schema(name)
+        except ChloeDBError as e:
+            if "no such table" in str(e) or getattr(e, "code", None) == "not_found":
+                raise ChloeDBError(f"no table {name}") from e
+            raise
         return Query(self, s)
 
     def search(
         self,
         text: str,
         *,
+        table: str | None = None,
         limit: int = 10,
         where: Expr | str | None = None,
         columns: str | Iterable[str] = "*",
@@ -130,7 +136,8 @@ class Search:
         timeout_ms: int | None = None,
         memory: int | None = None,
     ) -> Result:
-        """The rows that best match `text`. `min_seq_no(s)` name writes the
+        """The rows of the first table, or of `table`, that best match
+        `text`. `min_seq_no(s)` name writes the
         answer must see, and `timeout_ms` bounds it, as `query` takes them;
         a `Database` also takes `memory`, as its `query` does.
 
@@ -149,14 +156,14 @@ class Search:
         limits = {k: v for k, v in (("timeout_ms", timeout_ms), ("memory", memory)) if v is not None}
         if memory is not None and not getattr(self, "_local", False):
             raise TypeError(f"{type(self).__name__}.search() takes no memory: the server's queries share its --query-memory-mb")
-        s = self.schema
+        s = self.schema if table is None else self._table_schema(table)
         if text_fields is None:
             texts = [f for f in s["fields"] if f["type"] == "text" and f.get("indexed", True)]
             generated = [f["name"] for f in texts if f.get("from")]
             text_fields = generated or [f["name"] for f in texts]
         text_fields = list(text_fields)
         if vector_field is None:
-            embedded = self._embedded()
+            embedded = self._embedded(table)
             vector_field = embedded[0] if embedded else None
         if mode == "auto":
             mode = "hybrid" if vector_field and text_fields else "vector" if vector_field else "text"
@@ -188,13 +195,13 @@ class Search:
             if "bm25" in order:
                 p["_q"] = text
             if "similarity" in order:
-                p["_v"] = {"embed": text, "field": vector_field}
+                p["_v"] = {"embed": text, "field": vector_field, "table": s["table"]}
             return self.query(sql, p, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         # A condition built in Python: the query is a plan.
         ranks = [bm25(f, text) for f in text_fields] if mode in ("text", "hybrid") else []
         if mode in ("vector", "hybrid"):
-            ranks.append(similarity(vector_field, self.embed(text, vector_field)))
-        q = self.table().where(where).order_by(ranks[0] if len(ranks) == 1 else rrf(*ranks)).limit(limit)
+            ranks.append(similarity(vector_field, self.embed(text, vector_field, table=s["table"])))
+        q = Query(self, s).where(where).order_by(ranks[0] if len(ranks) == 1 else rrf(*ranks)).limit(limit)
         if columns != "*":
             names = [c.strip() for c in columns.split(",")] if isinstance(columns, str) else list(columns)
             q = q.select(*[{"score()": score(), "hops()": hops()}.get(c.lower(), c) for c in names])

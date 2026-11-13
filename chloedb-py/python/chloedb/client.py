@@ -135,7 +135,9 @@ class Client(Search, FrameStore):
         self.token = token if token is not None else os.environ.get("CHLOEDB_TOKEN") or os.environ.get("STRATA_TOKEN")
         self.timeout = timeout
         self.retry_for = retry_for
-        self._schema: dict | None = None
+        # /v1/schema's answer for the first table, under None (kept until a
+        # table is made here); a table named is read each time.
+        self._schemas: dict[str | None, dict] = {}
         self._json_only = False  # a server that answers no Arrow
 
     def _call(self, method: str, path: str, body: Any = None, *, data: Any = None, headers: Mapping[str, str] | None = None, text: bool = False, out: Any = None) -> Any:
@@ -173,22 +175,43 @@ class Client(Search, FrameStore):
                     continue
                 raise make_error(f"{msg} (HTTP {e.code})", status=e.code, answer=answer) from None
 
-    def _schema_answer(self) -> dict:
-        if self._schema is None:
-            self._schema = self._call("GET", "/v1/schema")
-        return self._schema
+    def _schema_answer(self, table: str | None = None) -> dict:
+        """/v1/schema's answer for the first table, or for `table` alone
+        (the first table is not read then: a key limited to other tables
+        may not)."""
+        if table is not None:
+            return self._call("GET", "/v1/schema?" + urllib.parse.urlencode({"table": table}))
+        if None not in self._schemas:
+            self._schemas[None] = self._call("GET", "/v1/schema")
+        return self._schemas[None]
+
+    @property
+    def _schema(self) -> dict | None:
+        return self._schemas.get(None)
+
+    @_schema.setter
+    def _schema(self, value: dict | None) -> None:
+        # Setting it to None (a table was made) forgets every table's.
+        if value is None:
+            self._schemas.clear()
+        else:
+            self._schemas[None] = value
 
     @property
     def schema(self) -> dict:
         """The first table's schema in its short form: {table, key, fields}."""
         return ordered_schema(self._schema_answer()["short"])
 
+    def _table_schema(self, name: str) -> dict:
+        """The schema of the table `name`, in its short form."""
+        return ordered_schema(self._schema_answer(name)["short"])
+
     def tables(self) -> list[dict]:
         """Every table's schema in its short form, the first first."""
         return [ordered_schema(t["short"]) for t in self._call("GET", "/v1/tables")["tables"]]
 
-    def _embedded(self) -> list[str]:
-        return [e["field"] for e in self._schema_answer().get("embeddings", []) if e.get("loaded")]
+    def _embedded(self, table: str | None = None) -> list[str]:
+        return [e["field"] for e in self._schema_answer(table).get("embeddings", []) if e.get("loaded")]
 
     def health(self) -> dict:
         """{status, docs, segments, role, ...}, also when the status is "down"

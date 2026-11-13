@@ -7,6 +7,7 @@ what to install when anything of it is used."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0"
@@ -121,6 +122,20 @@ class ConflictError(ChloeDBError):
     server's last write."""
 
 
+class DuplicateKeyError(ConflictError, BadRequestError):
+    """A write of a row whose primary key the table already holds (an
+    INSERT, without OR REPLACE or ON CONFLICT). Its code is "conflict",
+    and it is a ConflictError and a BadRequestError both (it was the
+    latter alone before 0.2.1). `table` is the table, `field` its key
+    field, `key` the key, and `row` the row's position in the write (from
+    1) when the message names it; each is None when it does not."""
+
+    table: str | None = None
+    field: str | None = None
+    key: Any = None
+    row: int | None = None
+
+
 class PartialWriteError(ChloeDBError):
     """A coordinator wrote some shards and not others (`answer["partial"]`):
     send it again with the same `idempotency_key`."""
@@ -158,11 +173,37 @@ ERRORS: dict[str, type] = {
 }
 
 
+# The engine's words for a duplicate key (chloedb::query::hint::duplicate_key),
+# after any "row N: " and a coordinator's "s1-0 (shard 1): ".
+_DUPLICATE = re.compile(r"(?:row (\d+): )?(?:schema error: )?duplicate primary key: (\S+) already has a row with (\S+) (.+?) \((?:INSERT OR REPLACE|$)")
+
+
+def _sql_value(text: str) -> Any:
+    """A key as the message writes it (an SQL literal) as a Python value."""
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1].replace("''", "'")
+    for kind in (int, float):
+        try:
+            return kind(text)
+        except ValueError:
+            pass
+    return text
+
+
 def make_error(message: str, *, status: int | None = None, answer: Any = None, code: str | None = None) -> Any:
     """A ChloeDBError of the class its code names, with `status`, `answer`
-    and `code` set."""
-    code = code or error_code(message, status, answer)
-    err = ERRORS.get(code, ChloeDBError)(message)
+    and `code` set. A duplicate key is a DuplicateKeyError, whatever code
+    it came with."""
+    dup = _DUPLICATE.search(message)
+    if dup is not None and (code or error_code(message, status, answer)) in ("bad_request", "conflict", "error"):
+        err = DuplicateKeyError(message)
+        row, err.table, err.field, key = dup.groups()
+        err.key = _sql_value(key)
+        err.row = None if row is None else int(row)
+        code = "conflict"
+    else:
+        code = code or error_code(message, status, answer)
+        err = ERRORS.get(code, ChloeDBError)(message)
     err.status = status
     err.answer = answer
     err.code = code

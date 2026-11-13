@@ -82,6 +82,7 @@ from ._native import (
     ChloeDBError,
     ConflictError,
     DeadlineError,
+    DuplicateKeyError,
     NotFoundError,
     OverloadedError,
     PartialWriteError,
@@ -91,14 +92,21 @@ from ._native import (
     error_code,
 )
 from .client import Client, Session, Written
+from .aio import AsyncClient, AsyncSession
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .nearby import Nearby, NearbyResult, nearby
 from .ngrams import next_items
 from .result import ArrowResult, Result
 
+# The package's version: pyproject.toml's (a test checks they agree).
+__version__ = "0.2.1"
+
 __all__ = [
+    "__version__",
     "Database",
     "Client",
+    "AsyncClient",
+    "AsyncSession",
     "Nearby",
     "NearbyResult",
     "nearby",
@@ -112,6 +120,7 @@ __all__ = [
     "UnauthorizedError",
     "NotFoundError",
     "ConflictError",
+    "DuplicateKeyError",
     "PartialWriteError",
     "BusyError",
     "OverloadedError",
@@ -307,7 +316,7 @@ class Database(Search, FrameStore):
         the path of a JSON file; the short form or the long one).
         `directory` keeps it as a directory of segment files instead of one
         file. `models` is where embedded fields' models are (default
-        $CHLOEDB_MODELS or ~/.local/share/strata/models; see `chloedb-server
+        $CHLOEDB_MODELS or ~/.local/share/chloedb/models; see `chloedb-server
         fetch-model`). `threads` is how many cores vector indexes build on
         and each query searches segments on (default: every core).
         `timeout_ms` and `memory` limit its queries (see `set_limits`)."""
@@ -392,6 +401,10 @@ class Database(Search, FrameStore):
         """The first table's schema in its short form: {table, key, fields}."""
         return ordered_schema(json.loads(self._db.schema_json()))
 
+    def _table_schema(self, name: str) -> dict:
+        """The schema of the table `name`, in its short form."""
+        return ordered_schema(json.loads(self._db.schema_json(name)))
+
     def tables(self) -> list[dict]:
         """Every table's schema in its short form, the first first (none
         before `connect`'s new file has its first table)."""
@@ -436,9 +449,13 @@ class Database(Search, FrameStore):
         itself; from Rust, `Db::embed_backfill`)."""
         self._db.set_embed_later(on)
 
-    def _embedded(self) -> list[str]:
+    def _embedded(self, table: str | None = None) -> list[str]:
         broken = self.embed_errors
-        return [f["name"] for f in self.schema["fields"] if f.get("embed") and f["name"] not in broken]
+        first = self.schema
+        s = first if table is None else self._table_schema(table)
+        # embed_errors names the first table's fields alone, others' as table.field.
+        name = (lambda f: f) if s["table"] == first["table"] else (lambda f: f"{s['table']}.{f}")
+        return [f["name"] for f in s["fields"] if f.get("embed") and name(f["name"]) not in broken]
 
     def __len__(self) -> int:
         return self._db.count()
