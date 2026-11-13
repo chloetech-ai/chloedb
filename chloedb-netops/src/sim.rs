@@ -281,10 +281,22 @@ impl Engine {
                 semantic = false;
             }
         }
+        // A server may take the column and only refuse to use it: ask once,
+        // so that searches rank by words alone instead of being refused.
+        if semantic {
+            if let Err(e) = self.db.query("SELECT id FROM netops_runbooks\nORDER BY similarity(emb, 'probe') DESC LIMIT 1", json!({})).await {
+                tracing::warn!("search by meaning is off: {e}");
+                semantic = false;
+            }
+        }
         let saved = self.db.query("SELECT val FROM netops_state WHERE id = 'sim'", json!({})).await?;
         let saved: Option<Saved> = saved.first().and_then(|r| serde_json::from_str(&r.s("val")).ok());
         match saved {
-            Some(s) => self.restore(s).await?,
+            Some(s) => {
+                self.restore(s).await?;
+                let mut st = self.st();
+                st.semantic = st.semantic && semantic;
+            }
             None => {
                 if !self.opts.simulate {
                     // A real network's first start: the rules and runbooks
