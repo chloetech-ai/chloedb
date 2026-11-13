@@ -7,7 +7,7 @@
 //!
 //! * **Context**: any agent writes notes and exchanges into a space and
 //!   asks it for context within a token budget, answered by search alone
-//!   ([`context::build`]); the page shows what went into an answer and why.
+//!   ([`crate::context::build`]); the page shows what went into an answer and why.
 //! * **Inspector**: the memory of Claude Code sessions that `chloectx sync`
 //!   copied into the cluster (`chloectx_memory`), read as `chloectx ui`
 //!   reads a local store: by project, session, kind and search.
@@ -61,7 +61,7 @@ use std::time::Duration;
 use serde_json::{json, Value as Json};
 
 use crate::cluster::{self, Cluster};
-use crate::context::{self, ContextParams};
+use crate::context::ContextParams;
 use crate::embed::Embedder;
 use crate::llm::{self, Reply};
 use crate::recall::{self, RankParams};
@@ -73,6 +73,7 @@ use crate::{distill, err, Result};
 mod agents;
 mod from_context;
 mod memory;
+pub mod view;
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 
@@ -489,41 +490,24 @@ impl App {
     /// Notes, the newest first: the live ones, or with `all` every one.
     pub fn notes(&self, space: &str, kind: Option<&str>, limit: usize, all: bool) -> Answer {
         let store = self.space(space)?;
-        let kinds: Vec<Kind> = match kind {
-            Some(k) if !k.is_empty() => vec![note_kind(k).ok_or_else(|| bad("kind is decision, rule, fact, todo or note"))?.0],
-            _ => NOTE_KINDS.to_vec(),
+        let kind = match kind.filter(|k| !k.is_empty()) {
+            Some(k) => Some(note_kind(k).ok_or_else(|| bad("kind is decision, rule, fact, todo or note"))?.0),
+            None => None,
         };
-        let want = limit.clamp(1, 1000);
-        let got = store.latest(&kinds, if all { want } else { (want * 4).min(cluster::WINDOW) }, &Filter::default())?;
-        let notes: Vec<Json> = got.iter().filter(|r| all || (r.tag != "superseded" && r.tag != "done")).take(want).map(record_json).collect();
-        Ok(json!({"notes": notes}))
+        Ok(view::notes(&store, kind, limit, all)?)
     }
 
     /// A note and its history: the notes it replaced, back to the first,
     /// and the ones that replaced it.
     pub fn history(&self, space: &str, id: &str) -> Answer {
         let store = self.space(space)?;
-        let note = store.get(&[id.to_string()])?.pop().ok_or_else(|| Fail(404, format!("no note {id} in {space}")))?;
-        let walk = |start: &Record, label: &str| -> Result<Vec<Record>> {
-            let mut out = Vec::new();
-            let mut seen: HashSet<String> = HashSet::from([start.id.clone()]);
-            let mut next: Vec<String> = start.linked(label).map(String::from).collect();
-            while !next.is_empty() && out.len() < 50 {
-                let got = store.get(&next)?;
-                next = Vec::new();
-                for r in got {
-                    if seen.insert(r.id.clone()) {
-                        next.extend(r.linked(label).map(String::from));
-                        out.push(r);
-                    }
-                }
-            }
-            out.sort_by_key(|r| std::cmp::Reverse(r.seq));
-            Ok(out)
-        };
-        let earlier = walk(&note, "supersedes")?;
-        let later = walk(&note, "superseded_by")?;
-        Ok(json!({"note": record_json(&note), "earlier": earlier.iter().map(record_json).collect::<Vec<_>>(), "later": later.iter().map(record_json).collect::<Vec<_>>()}))
+        view::history(&store, id)?.ok_or_else(|| Fail(404, format!("no note {id} in {space}")))
+    }
+
+    /// A space's overview, sessions or records ([`view`]).
+    pub fn space_view(&self, space: &str, req: &Json) -> Answer {
+        let store = self.space(space)?;
+        Ok(view::by_name(&store, req)?)
     }
 
     /// Stores an exchange (the user's message and the reply) and, with a
@@ -637,47 +621,9 @@ impl App {
         if question.trim().is_empty() {
             return Err(bad("ask needs a question (q)"));
         }
-        let budget = budget.clamp(200, 50_000);
-        let built = context::build(&store, question, &Filter::default(), &params_for(budget))?;
-        let mut items = Vec::new();
-        let mut shown: HashSet<String> = HashSet::new();
-        for (r, p) in built.records.iter().zip(&built.picks) {
-            shown.insert(r.id.clone());
-            let mut j = record_json(r);
-            j["section"] = json!(p.section);
-            j["chars"] = json!(p.chars);
-            j["tokens"] = json!(tokens(p.chars));
-            j["bm25"] = json!(p.bm25);
-            j["cos"] = json!(p.cos);
-            j["replaced"] = json!(p.replaced);
-            items.push(j);
-        }
-        // The versions shown notes replaced: in the context as a reminder
-        // of what changed, not as notes of their own.
-        let older: Vec<String> = built.records.iter().flat_map(|r| r.linked("supersedes").map(String::from)).filter(|id| !shown.contains(id)).collect();
-        let mut left: Vec<Json> = store
-            .get(&older)?
-            .iter()
-            .map(|r| {
-                let mut j = record_json(r);
-                j["why"] = json!("superseded");
-                j
-            })
-            .collect();
-        for (r, why) in &built.left_out {
-            if shown.contains(&r.id) {
-                continue;
-            }
-            let mut j = record_json(r);
-            j["why"] = json!(why);
-            left.push(j);
-        }
-        left.truncate(30);
-        let chars = built.text.len();
-        Ok(json!({
-            "space": space, "question": question, "budget": budget, "context": built.text, "chars": chars, "tokens": tokens(chars),
-            "ms": (built.ms * 100.0).round() / 100.0, "model_calls": 0, "items": items, "left_out": left,
-        }))
+        let mut j = view::ask(&store, question, budget)?;
+        j["space"] = json!(space);
+        Ok(j)
     }
 
     // ---- Seen before ----
@@ -1155,12 +1101,13 @@ fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::
         ("POST", ["v1", "incidents", "match"]) => (1, Some(incidents)),
         ("POST", ["v1", "spaces"]) => (3, Some(table_of(body_json(req)?["name"].as_str().unwrap_or("").trim()))),
         ("DELETE", ["v1", "spaces", s]) => (3, Some(table_of(s))),
-        ("GET", ["v1", "spaces", s, "notes", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
+        ("GET", ["v1", "spaces", s, "notes" | "overview" | "sessions" | "records", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
         ("POST", ["v1", "spaces", s, "notes"]) | ("DELETE", ["v1", "spaces", s, "notes", _]) | ("POST", ["v1", "spaces", s, "exchanges"]) => (2, Some(table_of(s))),
         ("GET", ["v1", "incidents", ..]) => (1, Some(incidents)),
         ("GET", ["v1", "memory", ..]) => (1, Some("chloectx_memory".to_string())),
         ("POST", ["v1", "incidents"]) | ("POST", ["v1", "incidents", "draft"]) => (2, Some(incidents)),
-        ("GET", _) => (1, None),
+        // Asking a store of this machine reads it.
+        ("GET", _) | ("POST", ["v1", "local", _, "ask"]) => (1, None),
         _ => (3, None),
     };
     caller.may(need, table.as_deref(), &format!("{m} {}", req.path))
@@ -1173,6 +1120,32 @@ fn incident_spaces(app: &App, caller: &Caller, named: Option<&str>) -> std::resu
         Some(s) => vec![s.to_string()],
         None => app.incident_spaces()?.into_iter().filter(|s| caller.reads(s)).collect(),
     })
+}
+
+/// A view's arguments from a request's query: `what`, and the parameters
+/// of [`view::by_name`] it was given.
+fn view_args(req: &Request, what: &str) -> Json {
+    let mut j = json!({"what": what});
+    for k in ["session", "kind", "q"] {
+        if let Some(v) = req.param(k).filter(|v| !v.is_empty()) {
+            j[k] = json!(v);
+        }
+    }
+    for k in ["limit", "before"] {
+        if let Some(v) = req.param(k).and_then(|v| v.parse::<i64>().ok()) {
+            j[k] = json!(v);
+        }
+    }
+    if req.param("all").is_some_and(|v| v == "1" || v == "true") {
+        j["all"] = json!(true);
+    }
+    j
+}
+
+/// The daemon's `view` request for a view's arguments.
+fn local_view(mut args: Json) -> Json {
+    args["op"] = json!("view");
+    args
 }
 
 /// Answers one request (the path split on `/`).
@@ -1195,6 +1168,8 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         }
         ("GET", ["v1", "memory"]) => app.memory(),
         ("GET", ["v1", "memory", "sessions"]) => app.memory_sessions(req.param("project").unwrap_or("")),
+        ("GET", ["v1", "memory", "notes"]) => app.memory_notes(req.param("project").unwrap_or(""), req.param("kind"), req.param("all").is_some_and(|v| v == "1" || v == "true")),
+        ("GET", ["v1", "memory", "overview"]) => app.memory_overview(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "records"]) => app.memory_records(
             req.param("project").unwrap_or(""),
             req.param("session"),
@@ -1221,6 +1196,9 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "spaces", s, "notes", id]) => app.history(s, id),
         ("DELETE", ["v1", "spaces", s, "notes", id]) => app.retire(s, id),
         ("POST", ["v1", "spaces", s, "exchanges"]) => app.exchange(s, &body_json(req)?),
+        ("GET", ["v1", "spaces", s, "overview"]) => app.space_view(s, &json!({"what": "overview"})),
+        ("GET", ["v1", "spaces", s, "sessions"]) => app.space_view(s, &json!({"what": "sessions"})),
+        ("GET", ["v1", "spaces", s, "records"]) => app.space_view(s, &view_args(req, "records")),
         ("GET", ["v1", "spaces", s, "ask"]) => app.ask(s, req.param("q").unwrap_or(""), num("budget", 4000)),
         ("POST", ["v1", "spaces", s, "ask"]) => {
             let b = body_json(req)?;
@@ -1260,6 +1238,21 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("POST", ["v1", "spaces", s, "apps", "items"]) => app.build_items(s, &body_json(req)?),
         ("POST", ["v1", "spaces", s, "apps", id, "open"]) => app.open_build(s, id),
         ("GET", ["v1", "local"]) => app.local_stores(),
+        ("GET", ["v1", "local", st, "overview"]) => app.local_rpc(st, &json!({"op": "view", "what": "overview"}), 60),
+        ("GET", ["v1", "local", st, "sessions"]) => app.local_rpc(st, &json!({"op": "view", "what": "sessions"}), 60),
+        ("GET", ["v1", "local", st, "records"]) => app.local_rpc(st, &local_view(view_args(req, "records")), 60),
+        ("GET", ["v1", "local", st, "notes"]) => app.local_rpc(st, &local_view(view_args(req, "notes")), 60),
+        ("GET", ["v1", "local", st, "notes", id]) => app.local_rpc(st, &json!({"op": "view", "what": "history", "id": id}), 60),
+        ("POST", ["v1", "local", st, "ask"]) => {
+            let b = body_json(req)?;
+            app.local_rpc(st, &json!({"op": "view", "what": "ask", "question": b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), "budget": b["budget"].as_u64().unwrap_or(4000)}), 60)
+        }
+        ("GET", ["v1", "local", st, "capsules"]) => app.local_rpc(st, &json!({"op": "capsule", "what": "list"}), 30),
+        ("POST", ["v1", "local", st, "capsules"]) => {
+            let b = body_json(req)?;
+            app.local_rpc(st, &json!({"op": "capsule", "what": "cut", "title": b["title"], "kinds": b["kinds"], "since_days": b["since_days"]}), 600)
+        }
+        ("GET", ["v1", "local", st, "stats"]) => app.local_rpc(st, &json!({"op": "stats"}), 30),
         ("GET", ["v1", "local", st, "receipts"]) => app.local_rpc(st, &json!({"op": "receipts", "session": req.param("session").filter(|s| !s.is_empty()), "limit": num("limit", 50)}), 30),
         ("GET", ["v1", "local", st, "receipts", id]) => app.local_rpc(st, &json!({"op": "receipt", "id": id, "replay": req.param("replay") != Some("0"), "text": true}), 120),
         ("GET", ["v1", "local", st, "blame"]) => app.local_rpc(st, &json!({"op": "blame", "target": req.param("target").unwrap_or(""), "replay": req.param("replay") != Some("0")}), 120),
@@ -1503,6 +1496,10 @@ mod tests {
         assert_eq!(check("POST", "/v1/incidents", &own, "{}"), Err(403));
         assert_eq!(check("POST", "/v1/spaces/other/notes", &own, "{}"), Err(403));
         assert_eq!(check("GET", "/v1/spaces/other/notes", &own, ""), Err(403));
+        for view in ["overview", "sessions", "records?session=s1"] {
+            assert!(check("GET", &format!("/v1/spaces/ops_a/{view}"), &own, "").is_ok(), "{view}");
+            assert_eq!(check("GET", &format!("/v1/spaces/other/{view}"), &own, ""), Err(403), "{view}");
+        }
         // Making a space is making its table: admin there.
         assert_eq!(check("POST", "/v1/spaces", &own, r#"{"name": "ops_b"}"#), Err(403));
         let admin_own = [("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ctx_ops_*=admin")];

@@ -239,16 +239,19 @@ can be used to read a file elsewhere.</p>
 the person reading its transcript) can ask why a record ranked where it did.</p>
 <h2 id="in-the-command-center">In the command center<a class="anchor" href="#in-the-command-center" aria-label="Link to this section">#</a></h2>
 <p>ChloeCtx's page in ChloeDB's command center (<code>chloedb-server --app
-chloectx=URL</code>, then Apps → ChloeCtx) has two tabs for these, beside Context
-and Seen before:</p>
+chloectx=URL</code>, then Apps → ChloeCtx) lists every space it can read; a
+Claude Code store of the machine the app runs on opens with three more
+tabs (Receipts, Blame, Snapshots and capsules) beside Overview, Ask, Memories, Sessions and Connect
+(<code>#/app/chloectx/store/&lt;store&gt;/receipts</code>, <code>…/blame/&lt;path:line&gt;</code>):</p>
 <ul>
-<li><strong>Receipts</strong>: pick a project's store, then the newest receipts (when, the
-  session and turn, which recall, the gate's decision, records and tokens
-  shown, the commit). Open one for its candidates (rank, score with a bar,
+<li><strong>Receipts</strong>: the store's newest receipts (when, which recall, what it
+  was for, records and tokens shown, the gate's decision, the session and
+  turn). Open one for its candidates (rank, score with a bar,
   BM25, cosine, tokens, decision), the query and the gate, the text the
   agent was shown, and the replay on the kept snapshot and on today's
-  store. Below the list, the kept snapshots: keep one by name, drop a named
-  one.</li>
+  store. The kept snapshots are under <strong>Snapshots and capsules</strong>: keep one
+  by name, drop a named one, or cut a capsule (pick the kinds of record)
+  with the <code>claude mcp add</code> line that mounts it.</li>
 <li><strong>Blame</strong>: type <code>path:line</code>. It shows the line, its commit, the edit, the
   prompt and the tool calls before it, the notes from the turn, each
   receipt of what memory had recalled before the edit (with what has become
@@ -288,6 +291,18 @@ behind them, under the app's prefix (<code>/v1/apps/chloectx</code>):</p>
 <tr>
 <td><code>GET</code>, <code>POST {name}</code> <code>/v1/local/:store/snapshots</code>, <code>DELETE /v1/local/:store/snapshots/:name</code></td>
 <td>the kept snapshots; keep one; drop one</td>
+</tr>
+<tr>
+<td><code>GET</code>, <code>POST {title?, kinds?, since_days?}</code> <code>/v1/local/:store/capsules</code></td>
+<td>the capsules cut from the store, newest first; one cut, its manifest and folder</td>
+</tr>
+<tr>
+<td><code>GET /v1/local/:store/overview</code>, <code>/sessions</code>, <code>/records</code>, <code>/notes[/:id]</code>, <code>POST /v1/local/:store/ask</code></td>
+<td>what the other tabs read, as a team space's calls of the same names answer (<a href="chloectx-app.html#spaces-and-what-each-shows">the app</a>)</td>
+</tr>
+<tr>
+<td><code>GET /v1/local/:store/stats</code></td>
+<td><code>chloectx stats --json</code></td>
 </tr>
 </tbody>
 </table></div>
