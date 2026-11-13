@@ -248,13 +248,29 @@ function render(page) {
         reason = ok.reason;
       }
       go.disabled = true;
+      let made = null;
       try {
         let name = st.table;
-        if (st.mode === "new") { await api("/v1/sql", { body: { sql: ddl } }); invalidate(); ts = await tables(true); name = st.name; }
+        if (st.mode === "new") { await api("/v1/sql", { body: { sql: ddl } }); made = st.name; invalidate(); ts = await tables(true); name = st.name; }
         const sent = Date.now();
         const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress, reason);
         done(name, j, file, { sent, reason, route: "/v1/import" });
-      } catch (e) { failed(e.message, "bad", 9000); go.disabled = false; progress.classList.add("hidden"); }
+      } catch (e) {
+        // A table this load made, which a bad row left empty (an import into
+        // an empty table writes nothing when a row is bad), goes again: the
+        // retry, with the column's type changed, makes it anew.
+        let gone = false;
+        if (made) {
+          try {
+            const left = (await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(made)}` } })).rows?.[0]?.[0];
+            if (left === 0) { await api("/v1/sql", { body: { sql: `DROP TABLE ${quoteName(made)}` }, reason: "an import into a new table failed: the empty table it made goes" }); gone = true; }
+          } catch { /* left as it is: the message says so */ }
+          invalidate(); ts = await tables(true).catch(() => ts);
+        }
+        failed(made ? `${e.message}. ${gone ? `Nothing was loaded, and the empty table ${made} was dropped: change the column's type and load again.` : `Table ${made} was made and holds what was loaded.`}` : e.message, "bad", 12000);
+        go.disabled = false; progress.classList.add("hidden");
+        if (gone) check();
+      }
     };
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file")), h("div", { class: "bd" }, box)));
     clear(box, fileRow,
@@ -296,7 +312,8 @@ function render(page) {
       h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", { class: "grow" }, h("div", { class: "big" }, `${fmt.plural(j.written ?? 0, "row")} written to ${name}`), h("div", { class: "small muted" }, `from ${file.name} in ${fmt.ms(j.took_ms)}${skipped?.length ? ` · columns skipped: ${skipped.join(", ")}` : ""}`))),
       sentWith ? audited(sentWith) : null,
       h("div", { class: "row" },
-        h("a", { class: "btn primary", href: "#/sql?q=" + encodeURIComponent(`SELECT * FROM ${quoteName(name)} LIMIT 20;`) }, icon("sql"), "Query it"),
+        h("a", { class: "btn primary", href: `#/table/${encodeURIComponent(name)}?tab=search` }, icon("search"), "Search it"),
+        h("a", { class: "btn", href: "#/sql?q=" + encodeURIComponent(`SELECT * FROM ${quoteName(name)} LIMIT 20;`) }, icon("sql"), "Query it"),
         h("a", { class: "btn", href: "#/builder?table=" + encodeURIComponent(name) }, icon("builder"), "Build a query"),
         h("a", { class: "btn", href: "#/schema?table=" + encodeURIComponent(name) }, icon("schema"), "See it in the schema"),
         h("span", { class: "sep" }), h("button", { class: "btn ghost", onclick: start }, icon("import"), "Load another file")))));
