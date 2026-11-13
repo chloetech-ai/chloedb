@@ -452,6 +452,19 @@ impl GraphReader {
         {
             return Err(corrupt("graph section sizes disagree"));
         }
+        // Each offsets array rises and stays within what it indexes, so that
+        // a damaged one is refused here rather than read as a range of
+        // petabytes (the nightly fuzzer, issue #485).
+        let rises = |len: usize, at: &dyn Fn(usize) -> u64, max: usize| (1..len).all(|i| at(i - 1) <= at(i)) && (len == 0 || at(len - 1) as usize <= max);
+        if !rises(offsets.len(), &|i| offsets[i], n_edges)
+            || (!int_keys && !rises(key_off.len(), &|i| key_off[i], key_bytes.len()))
+            || !rises(name_off.len(), &|i| name_off[i], name_bytes.len())
+            || !rises(dir.len(), &|i| dir[i] as u64, hashes.len())
+            || !rises(in_off.len(), &|i| in_off[i] as u64, n_edges)
+            || in_edges.iter().any(|&e| e as usize >= n_edges)
+        {
+            return Err(corrupt("graph section offsets out of order"));
+        }
         let names = (1..name_off.len())
             .map(|i| String::from_utf8_lossy(&name_bytes[name_off[i - 1] as usize..name_off[i] as usize]).into_owned())
             .collect();
