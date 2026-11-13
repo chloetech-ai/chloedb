@@ -190,7 +190,8 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     let hot = api.get("/v1/map/hot").await;
     let faults = hot["faults"].as_array().unwrap();
     assert!(!faults.is_empty(), "faults are kept going from the start");
-    let f = faults.iter().find(|f| f["layer"] == "access").or(faults.iter().find(|f| f["layer"] != "premises")).unwrap_or(&faults[0]);
+    // A power plant hangs from nothing, so the walk upstream is asked of something that does.
+    let f = ["access", "aggregation", "premises"].iter().find_map(|l| faults.iter().find(|f| f["layer"] == *l)).expect("a fault on something that hangs from the network");
     let (fid, metro, hub) = (f["id"].as_str().unwrap(), f["metro"].as_str().unwrap(), f["hub"].as_str().unwrap());
     for place in [f["region"].as_str().unwrap(), metro, hub] {
         assert!(hot["places"][place][f["state"].as_str().unwrap()].as_i64().unwrap() >= 1, "{fid} counts in {place}: {}", hot["places"][place]);
