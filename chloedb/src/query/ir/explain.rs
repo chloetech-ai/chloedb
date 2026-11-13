@@ -353,10 +353,20 @@ impl<'a> Text<'a> {
             }
             Expr::Between { expr, lo, hi } => {
                 let x = self.operand(expr, names);
+                // `price > 10` binds as `price >= 10.000000000000002`, the
+                // next float: shown as written.
+                let (gt, lt) = (lo.as_deref().and_then(|e| strict(e, true)), hi.as_deref().and_then(|e| strict(e, false)));
                 match (lo, hi) {
                     (Some(lo), Some(hi)) if lo == hi => format!("{x} = {}", self.expr(lo, names)),
+                    (Some(lo), Some(hi)) if gt.is_some() || lt.is_some() => {
+                        let low = gt.map_or_else(|| format!("{x} >= {}", self.expr(lo, names)), |b| format!("{x} > {b}"));
+                        let high = lt.map_or_else(|| format!("{x} <= {}", self.expr(hi, names)), |b| format!("{x} < {b}"));
+                        format!("{low} AND {high}")
+                    }
                     (Some(lo), Some(hi)) => format!("{x} BETWEEN {} AND {}", self.expr(lo, names), self.expr(hi, names)),
+                    (Some(_), None) if gt.is_some() => format!("{x} > {}", gt.expect("a bound")),
                     (Some(lo), None) => format!("{x} >= {}", self.expr(lo, names)),
+                    (None, Some(_)) if lt.is_some() => format!("{x} < {}", lt.expect("a bound")),
                     (None, Some(hi)) => format!("{x} <= {}", self.expr(hi, names)),
                     (None, None) => format!("{x} BETWEEN -inf AND inf"),
                 }
@@ -573,4 +583,16 @@ fn expansion(e: &Expand) -> String {
 
 fn options(opts: &Opts) -> String {
     opts.iter().map(|(k, v)| format!(", {k} => {}", lit(v))).collect()
+}
+
+/// The number `x > n` (`low`) or `x < n` bound as an inclusive bound `e`,
+/// the float next to n, when n is written shorter than the bound: a
+/// condition's own number, not the float after it.
+fn strict(e: &Expr, low: bool) -> Option<f64> {
+    let Expr::Lit(crate::value::Value::Float(a)) = e else { return None };
+    if !a.is_finite() {
+        return None;
+    }
+    let n = if low { crate::query::sql::next_down(*a) } else { crate::query::sql::next_up(*a) };
+    (n.is_finite() && n.to_string().len() < a.to_string().len()).then_some(n)
 }

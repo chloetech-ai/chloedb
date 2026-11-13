@@ -224,3 +224,31 @@ fn which_queries_rank_rows() {
         assert!(!ranks(q), "{q}");
     }
 }
+
+#[test]
+fn messages_say_what_happened() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    // A key given twice in one statement is not "already" in the table.
+    let e = db.sql("INSERT INTO hosts VALUES ('q', 'x'), ('q', 'y')", &Params::new()).unwrap_err();
+    assert!(e.to_string().contains("given to two rows of this write"), "{e}");
+    assert_eq!(e.code(), "conflict");
+    let e = db.sql("INSERT INTO hosts VALUES ('a', 'x')", &Params::new()).unwrap_err();
+    assert!(e.to_string().contains("already has a row with name 'a'"), "{e}");
+    assert_eq!(e.code(), "conflict");
+    assert_eq!(db.sql("SELECT nope FROM hosts", &Params::new()).unwrap_err().code(), "bad_request");
+    // A context added once, with the kind said once.
+    let e = chloedb::Error::Schema("no field nope".into()).within("row 1");
+    assert_eq!(e.to_string(), "schema error: row 1: no field nope");
+    assert_eq!(e.message(), "row 1: no field nope");
+    // EXPLAIN shows a condition's own number, not the float after it.
+    let snap = db.snapshot();
+    let logs = snap.table("logs").unwrap().schema().clone();
+    let explain = |q: &str| chloedb::query::compound::plan_in(q, &[&logs], &Params::new()).unwrap().explain(&[&logs]).join("\n");
+    let text = explain("SELECT id FROM logs WHERE price > 10 AND sold < 7");
+    assert!(text.contains("price > 10") && text.contains("sold <= 6") && !text.contains("10.000000000000002"), "{text}");
+    let text = explain("SELECT id FROM logs WHERE price > 10.5 AND price < 20");
+    assert!(text.contains("price > 10.5 AND price < 20"), "{text}");
+    let text = explain("SELECT id FROM logs WHERE price >= 10.5");
+    assert!(text.contains("price >= 10.5"), "{text}");
+}

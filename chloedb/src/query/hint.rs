@@ -85,6 +85,18 @@ pub fn duplicate_key(schema: &Schema, key: &Value) -> String {
     )
 }
 
+/// Why a write that gives key `key` to two of its rows (one INSERT's
+/// VALUES, one file, one transaction) is refused, before any row has it.
+/// It starts with "duplicate primary key" too.
+pub fn repeated_key(schema: &Schema, key: &Value) -> String {
+    let k = schema.primary_key.map_or("key", |i| schema.fields[i].name.as_str());
+    format!(
+        "duplicate primary key: {k} {} is given to two rows of this write (one statement's VALUES, one file or one transaction), and {} holds one row a key (INSERT OR REPLACE keeps the last of them)",
+        sql_value(key),
+        schema.table
+    )
+}
+
 /// A field's type as `CREATE TABLE` writes it: `KEYWORD[]`, `VECTOR(64)`.
 pub fn type_of(f: &Field) -> String {
     let base = match &f.ty {
