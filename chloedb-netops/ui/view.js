@@ -343,6 +343,7 @@ const CSS = `
 .no-map-hist > div.fault { border-left-color: var(--crit); }
 .no-map-hist .when { color: var(--muted); font-variant-numeric: tabular-nums; }
 .no-map-read { display: grid; gap: 5px; font-size: 12.5px; }
+.no-map-partial { margin: 10px 14px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-left-width: 3px; background: color-mix(in srgb, var(--warn) 9%, var(--surface)); border-radius: 6px; font-size: 12.5px; line-height: 1.45; }
 .no-map-read > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; }
 .no-map-read .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); font-weight: 700; padding-top: 2px; }
 .no-map-side > .btn.ghost { margin: 8px 8px 0; }
@@ -2679,9 +2680,10 @@ function mapPage(body, app, path) {
     const kinds = { column: "column", substring: "substring index", reading: "reading", events: "events", graph: "graph" };
     put(side,
       h("div", { class: "no-map-head" },
-        h("div", { class: "row nw between" }, h("h3", {}, j.understood ? `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}` : "Not understood"), h("button", { class: "btn xs", onclick: () => { found = null; input.value = ""; draw(); drawTrouble(); } }, "Clear")),
+        h("div", { class: "row nw between" }, h("h3", {}, j.understood ? `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}${j.partial ? ", for part of it" : ""}` : j.refused ? "Not answered" : "Not understood"), h("button", { class: "btn xs", onclick: () => { found = null; input.value = ""; draw(); drawTrouble(); } }, "Clear")),
         h("div", { class: "small", style: { marginTop: "2px" } }, `“${j.asked}”`),
         h("div", { class: "muted small", style: { marginTop: "4px" }, title: j.note || "" }, j.reader === "model" ? "Read by the server's model, through llm()" : `Read by the fixed reader${j.note ? ": " + j.note.replace(/ \(.*$/, "") : ""}`)),
+      askCaveat(h, j),
       j.understood ? sec("How it was read", null, h("div", { class: "no-map-read" }, j.read.map((r) => h("div", {}, h("span", { class: "k" }, kinds[r.kind] || r.kind), h("span", {}, h("b", {}, r.text), h("span", { class: "muted" }, " · " + r.how)))))) : h("div", { class: "small", style: { padding: "0 14px" } }, j.hint),
       j.sql ? sec("One statement", `${C.fmt.ms(j.queries.find((q) => q.what.startsWith("The search"))?.ms || 0)}`, C.sqlBlock(j.sql + `\n-- ${JSON.stringify(j.params)}`)) : null,
       j.rows.length ? sec(j.total > j.rows.length ? `The first ${j.rows.length}` : "The matches", "click one to go to it",
@@ -3226,13 +3228,25 @@ async function answer(app, text, hooks) {
   else if (/\bchanged?\b/.test(lower) && /\b(last|today|hour|day|week)\b/.test(lower) && !/\b(olt|cell|switch|router|ont|cpe|radio)/i.test(lower)) asked = `everything changed in the last ${/week/.test(lower) ? "week" : "day"}${where}`;
   else if (where && !/\bin [A-Z]/.test(asked)) asked += where;
   const j = await call(`/v1/map/ask?q=${encodeURIComponent(asked)}`);
+  if (j.refused) return { body: [p(j.hint)], queries };
   if (!j.understood) return { body: [p(`I did not understand that. ${j.hint || ""}`), p("I can answer, about the object picked: what is wrong and why, what changed before it started, who is affected, what to do, how it went before, what depends on it; or search the network in a sentence.")], queries };
   const body = [p(h("b", {}, `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}`), ` for “${j.asked}”, read as: ${j.read.map((r) => r.text).join(", ")}.`)];
+  const caveat = askCaveat(h, j);
+  if (caveat) body.push(caveat);
   if (j.rows.length) body.push(h("ul", { class: "no-ag-ul" }, j.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.latency_ms ? " · " + fms(r.latency_ms) : ""}`))));
   return { body, acts: [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")], queries, how: "the sentence became one statement" };
 }
 
 // ---------------------------------------------------------------- dashboards
+
+/** What a search did not read, or read from a near spelling: the count is then not the answer to the whole question. */
+function askCaveat(h, j) {
+  const ignored = j.ignored || [], corrected = j.corrected || [];
+  if (!j.understood || (!ignored.length && !corrected.length)) return null;
+  return h("div", { class: "no-map-partial" },
+    ignored.length ? h("div", {}, h("b", {}, "Not read: "), ignored.map((w) => `“${w}”`).join(", "), ". The count leaves out what they ask for; say it another way, or name a kind, place, state, reading or event.") : null,
+    corrected.map((c) => h("div", {}, `Read “${c.from}” as ${c.to}.`)));
+}
 
 /** Panels over the backbone's telemetry and the estate, for the place in view or everywhere. */
 function dashPage(body, app) {
