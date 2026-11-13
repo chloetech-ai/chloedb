@@ -436,14 +436,37 @@ impl Daemon {
                         text += &r;
                     }
                 }
+                // What doctor would report that the daemon sees itself
+                // (distillation failing, a newer version): said at the top.
+                let home = crate::paths::home();
+                let notice = crate::health::session_notice(&self.paths.dir, &home);
+                if !notice.model.is_empty() {
+                    let head = notice.model.join("\n");
+                    text = if text.is_empty() { head } else { format!("{head}\n\n{text}") };
+                }
                 self.log(&json!({"ts": now(), "event": event, "session": sid, "source": source, "chars": text.len()}));
+                let mut out = ctx_out("SessionStart", text);
+                if !notice.user.is_empty() {
+                    if out["output"].is_null() {
+                        out["output"] = json!({});
+                    }
+                    out["output"]["systemMessage"] = json!(notice.user.join("\n"));
+                }
                 let me = self.clone();
-                Ok((ctx_out("SessionStart", text), Some(Box::new(move || me.keep_after_recall()) as Deferred)))
+                Ok((out, Some(Box::new(move || {
+                    me.keep_after_recall();
+                    // The checkout is looked at again (no fetch) every few hours.
+                    if crate::version::cached(&home, crate::version::CHECK_EVERY).is_none() {
+                        crate::version::check(&home, false);
+                    }
+                }) as Deferred)))
             }
             "UserPromptSubmit" => {
                 // Redacted at once: the prompt is kept in the session state
                 // (state.json) and in the context of the turn's records.
-                let prompt = crate::redact::redact(p.get("prompt").and_then(|v| v.as_str()).unwrap_or(""));
+                // A harness's envelopes around the prompt go first: recalled
+                // later, they read as the conversation ([`crate::envelope`]).
+                let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
                 let (turn, recent) = self.with_session(&sid, |s| {
                     s.turn += 1;
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
@@ -1684,6 +1707,16 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
     }
     let listener = UnixListener::bind(&paths.socket)?;
     eprintln!("chloectx: serving {} on {} ({} records, embedder {})", project, paths.socket.display(), daemon.store.len(), daemon.store.embedder.name());
+    // Rules a store took from a harness's envelopes before they were
+    // cleaned off prompts: retired once, off the hooks' path.
+    {
+        let d = daemon.clone();
+        std::thread::spawn(move || {
+            if let Some(n) = crate::envelope::retire_once(&d.paths.dir, &d.store).filter(|n| *n > 0) {
+                d.log(&json!({"ts": now(), "event": "envelope_rules_retired", "count": n}));
+            }
+        });
+    }
     // The sync to a server, when one is set up: what this store lacks on
     // start, then what it records, every PUSH_EVERY.
     if crate::sync::remote(&crate::paths::home()).is_some() {

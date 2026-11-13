@@ -289,7 +289,8 @@ jobs:
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built chloedb-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
-      # each that no run checked before, a new range each day. A seed
+      # each that no run checked before, a new range each day; a third as
+      # many with calls lost and with copies arriving late. A seed
       # replays exactly: `chloedb-sim --seed N --trace` (with `--cluster`
       # for the second world) shows what happened in it.
       - name: Simulator seeds
@@ -315,6 +316,7 @@ jobs:
           }
           sim --seeds "$from..$((from + n))"
           sim --seeds "$from..$((from + n / 3))" --drop-ppm 150000
+          sim --seeds "$from..$((from + n / 3))" --late-copies
           sim --cluster --seeds "$from..$((from + n))"
           exit $status
       # Compiler warnings and clippy's correctness and suspicious lints fail
@@ -1102,6 +1104,7 @@ jobs:
           path: .docs-bin/
           retention-days: 3
           if-no-files-found: error
+          include-hidden-files: true
 
   docs:
     name: Documentation site and its examples

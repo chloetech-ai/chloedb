@@ -360,7 +360,18 @@ impl Sim {
                             let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
                             rep.took(kept, now);
                             rep.copying();
-                            let installed = self.copies[i].db.install_copy(&copy);
+                            // One that differs holds transactions that are
+                            // not its primary's, however far they reach.
+                            let over = rep.kept.differs.is_some() || self.cfg.bugs.contains(&Bug::InstallsALateCopy);
+                            let own = self.copies[i].db.numbering.last();
+                            if own.term == copy.numbering.term && own.seq > copy.numbering.seq {
+                                self.history.stats.late_copies += 1;
+                            }
+                            let installed = self.copies[i].db.install_copy(&copy, over);
+                            match &installed {
+                                Ok(at) => self.note(|| format!("s{i} installs a copy of {primary} of term {term}, ending at {} of term {}", at.seq, at.term)),
+                                Err(e) => self.note(|| format!("s{i} refuses a copy of {primary} of term {term}: {}", e.message)),
+                            }
                             self.history.lost_memory(i);
                             let db_term = self.copies[i].db.numbering.term;
                             let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };

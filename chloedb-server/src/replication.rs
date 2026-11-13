@@ -1152,8 +1152,10 @@ pub struct Follow {
     db: Arc<Db>,
     file: Option<PathBuf>,
     /// Taken by each call that may change what it keeps, one at a time: a
-    /// batch, a copy, a vote, a campaign's own vote, taking over.
-    one: tokio::sync::Mutex<()>,
+    /// batch, a copy, a vote, a campaign's own vote, taking over. Shared
+    /// so that a copy's install, which outlives a call its caller gave up,
+    /// holds it to the end ([`Follow::restore`]).
+    one: Arc<tokio::sync::Mutex<()>>,
     /// The core's decisions, and what it keeps beside its database.
     core: Mutex<shard::Replica>,
     /// Transactions applied, and copies of the primary installed.
@@ -1218,7 +1220,7 @@ impl Follow {
         Ok(Follow {
             db,
             file: file.map(Path::to_path_buf),
-            one: tokio::sync::Mutex::new(()),
+            one: Arc::new(tokio::sync::Mutex::new(())),
             core: Mutex::new(core),
             applied: AtomicU64::new(0),
             restores: AtomicU64::new(0),
@@ -1623,7 +1625,7 @@ impl Follow {
     pub async fn restore(&self, mut chunks: tonic::Streaming<pb::RestoreChunk>) -> Result<pb::ReplicateResponse, ApiError> {
         let cut = |s: tonic::Status| ApiError::bad(format!("the copy was cut off: {}", s.message()));
         let first = chunks.message().await.map_err(cut)?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
-        let _one = self.one.lock().await;
+        let one = self.one.clone().lock_owned().await;
         let n = self.numbering()?;
         if let Some(a) = self.take(first.term, &first.primary, false, (first.config, 0), &n)? {
             return Ok(a);
@@ -1661,7 +1663,15 @@ impl Follow {
             return Err(ApiError::bad(format!("the copy ended at {got} of its {size} bytes")));
         }
         let db = self.db.clone();
-        let at = tokio::task::spawn_blocking(move || {
+        // One that differs holds transactions that are not its primary's,
+        // however far they reach: the copy goes in over them. Otherwise a
+        // copy that ends before a transaction of its term held here is
+        // refused (one taken before what its primary shipped here since).
+        let over = self.core().kept.differs.is_some();
+        // The install goes on when the call ends early (its caller gave
+        // up, or the connection broke) and this future is dropped: it keeps
+        // `one` until it is done, so that no call is taken meanwhile.
+        let (at, _one) = tokio::task::spawn_blocking(move || {
             file.sync_all().map_err(|e| ApiError::internal(format!("write the copy beside the database: {e}")))?;
             drop(file);
             let copy = Database::open(&path, DbOptions { layout: Layout::SingleFile, verify_checksums: true, ..DbOptions::default() }).map_err(|e| ApiError::bad(format!("the copy: {e}")))?;
@@ -1670,7 +1680,11 @@ impl Follow {
                 return Err(ApiError::bad(format!("the copy is damaged: {what}")));
             }
             // A flush or a merge may hold the writer for a moment.
-            crate::service::wait_for_writer(Instant::now() + WRITER_WAIT, || db.install_copy(&copy).map_err(ApiError::from))
+            let install = || match over {
+                true => db.install_copy_over(&copy),
+                false => db.install_copy(&copy),
+            };
+            crate::service::wait_for_writer(Instant::now() + WRITER_WAIT, || install().map_err(ApiError::from)).map(|at| (at, one))
         })
         .await
         .map_err(ApiError::internal)??;

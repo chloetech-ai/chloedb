@@ -214,11 +214,23 @@ chloectx sync pull
 ## Upgrade and remove
 
 ```bash
-cd chloedb && git pull && ./install.sh           # rebuilds, replaces the binary, restarts daemons (a clone from before the rename: cd strata)
-chloectx stop --all                                # restart daemons by hand (they start again on demand)
-chloectx uninstall --user                          # or `chloectx uninstall` in a project; stores are kept
-rm -rf ~/.local/share/chloectx/projects/<store>  # delete one project's memory (or ~/.local/share/engram/...)
+chloectx upgrade --check     # is there a newer version? (fetches the checkout's main branch)
+chloectx upgrade             # git pull --ff-only in the checkout it was built from, rebuild, reinstall, doctor
+chloectx stop --all          # restart daemons by hand (they start again on demand)
+chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are kept
 ```
+
+The binary knows the commit and the checkout it was built from (`chloectx --version` names the commit). `chloectx doctor` fetches that checkout's upstream branch and says how many commits on it change ChloeCtx or ChloeDB since the build, and a session that starts while the binary is behind says so once a day, from what the checkout last fetched. `chloectx upgrade` pulls the checkout (fast forward only: it stops when local commits or changes are in the way, and `--no-pull` builds the checkout as it is), stops the daemons of the old build, runs `install.sh --no-wire` into the binary's own prefix, writes the user-level install again (a version may add hook events; the distillation model you chose is kept), and ends with `doctor`. A binary built outside a checkout (no `.git`) cannot upgrade itself: run `git pull && ./install.sh` in a checkout instead, or point `CHLOECTX_SOURCE` at one.
+
+## Keep the stores tidy: `chloectx stores` and `chloectx prune`
+
+Every directory a session runs in gets its own store, including the throwaway folders tools make under the system's temporary directory, so stores pile up over months. `chloectx stores` lists them all, most recently used first, with the project each records, its size on disk and when it was last used, and marks the ones `prune` would remove:
+
+- the project folder no longer exists;
+- the project is in a temporary folder (`/tmp`, `/var/folders` on macOS) and the store was not used for a day;
+- the store names no project (one from before the daemon wrote `project.txt`, whose `daemon.log` does not name it either) and was not used for a month.
+
+`chloectx prune` lists those and asks before it removes them (`--yes` skips the question, `--dry-run` only lists, `--older-than DAYS` adds every store not used for that long). A store whose daemon is running is never removed. Removing a store deletes that project's memory for good. `chloectx doctor` counts the stores and says when ten or more could go.
 
 The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/chloetech-ai/chloedb` points it at the new name.
 
@@ -229,7 +241,7 @@ ChloeCtx was called Engram until November 2026. `git pull && ./install.sh` moves
 - The program is `~/.local/bin/chloectx`, and `~/.local/bin/engram` is a link to it for a release, so whatever still calls the old name keeps working.
 - `chloectx install` (which `install.sh` runs) replaces the entries the old install wrote into Claude Code's settings: the hooks that called `engram`, the MCP server `engram` and its permission `mcp__engram` (the server is `chloectx` now, and its tools `mcp__chloectx__*`), and `ENGRAM_DISTILL_MODEL`, which becomes `CHLOECTX_DISTILL_MODEL` with the same model. An `engram` server or permission is taken for ChloeCtx's only when the same settings hold the old hooks of the program it runs, since another tool may be called engram. `chloectx uninstall` removes both the old and the new entries. Until you run it again, `chloectx doctor` warns about the old ones.
 - The settings are `CHLOECTX_*`, and each `ENGRAM_*` one is still read when the new one is not set.
-- The stores and the embedding model stay in `~/.local/share/engram` on a machine that has that folder and no `~/.local/share/chloectx`: nothing is moved or copied, and `chloectx doctor` says which folder is in use. A new install uses `~/.local/share/chloectx`. A store's files keep their names (`memory.strata`, `engram.sock`), and a daemon started by the old program keeps serving until it stops, which `install.sh` asks it to do.
+- The stores and the embedding model stay in `~/.local/share/engram` on a machine that has that folder and no `~/.local/share/chloectx`: `install.sh` moves nothing, and `chloectx doctor` warns which folder is in use. `chloectx upgrade` moves it: with the daemons stopped, it renames `~/.local/share/engram` to `~/.local/share/chloectx` and leaves `engram` as a link to it (not when `CHLOECTX_HOME` is set). A new install uses `~/.local/share/chloectx`. A store's files keep their names (`memory.strata`, `engram.sock`), and a daemon started by the old program keeps serving until it stops, which `install.sh` asks it to do.
 
 Sessions that were already running keep the old tool names until they restart.
 
@@ -237,7 +249,8 @@ Sessions that were already running keep the old tool names until they restart.
 
 | symptom | cause and fix |
 |---|---|
-| `doctor`: **Claude Code login** fails, or `DISTILL` events show *OAuth session expired* | the CLI's own login expired; run `claude auth login`. Recording and recall keep working meanwhile, but turns from that period are not distilled again later |
+| `doctor`: **Claude Code login** fails, a session starts with *ChloeCtx is not writing down decisions or rules*, or `DISTILL` events show *OAuth session expired* | the CLI's own login expired; run `claude auth login`. Recording and recall keep working meanwhile, but turns from that period are not distilled again later. Until a distillation works again, each session's start says so, to you and to the model |
+| recalled records or rules that are a harness's markup (`<system-reminder>`, `<wake>`, `<coordinator-relay>`) | stored by an earlier version, which kept the envelopes some harnesses wrap prompts in. Prompts are now stored without them, recall and the briefing pass the old ones over, and a daemon retires the rules it had picked out of them once, when it first starts on the store |
 | no records for a session | the session started before ChloeCtx was installed (restart it), `CHLOECTX_DISABLE=1` was set, or the project has its own install that points at a binary that moved (`chloectx doctor` in that directory says which) |
 | the model has no `memory_*` tools | the MCP server is not registered or the session predates it: `claude mcp get chloectx`, then restart the session |
 | `daemon did not answer in time` | read the store's `daemon.log`; a missing embedding model is the usual cause (`chloectx fetch-model`) |

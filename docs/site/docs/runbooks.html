@@ -116,7 +116,7 @@ problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem
 <ol>
 <li>Read which statements fail and where: <code>GET /v1/queries/recent?outcome=error</code>
    and <code>GET /v1/logs?level=error</code> (tools <code>queries</code>, <code>logs</code>). Each error
-   answer carries a <code>code</code> (<code>GET /v1/catalog</code> lists them): <code>query_invalid</code>
+   answer carries an <code>error_code</code> (<code>GET /v1/catalog</code> lists them): <code>query_invalid</code>
    and <code>table_not_found</code> are a client's, <code>unavailable</code> and <code>internal</code> the
    cluster's.</li>
 <li>Errors of one client (<code>key-failing</code>): tell the key's owner; nothing to

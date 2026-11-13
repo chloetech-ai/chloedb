@@ -336,17 +336,49 @@ fn widest(grants: &[Grant]) -> Scope {
 /// secret ([`stored_digest`]).
 const LIMITED: &str = "t:";
 
-/// The digest of `secret` as a key keeps it ([`LIMITED`]).
-fn stored_digest(secret: &str, limited: bool) -> String {
-    match limited {
-        true => format!("{LIMITED}{}", sha256(secret)),
-        false => sha256(secret),
+/// The same for a key another key made ([`Key::parent`],
+/// [`Keys::create_delegated`]): a server from before such keys, which
+/// would not ask whether the key that made it still holds, never takes
+/// its secret either.
+const DELEGATED: &str = "d:";
+
+/// The digest of `secret` as a key keeps it ([`LIMITED`], [`DELEGATED`]):
+/// for a key limited to tables (`limited`), made by another key
+/// (`delegated`, which is limited too).
+fn stored_digest(secret: &str, limited: bool, delegated: bool) -> String {
+    match (limited, delegated) {
+        (_, true) => format!("{DELEGATED}{}", sha256(secret)),
+        (true, false) => format!("{LIMITED}{}", sha256(secret)),
+        (false, false) => sha256(secret),
     }
+}
+
+/// A stored digest without its mark.
+fn unmarked(stored: &str) -> &str {
+    stored.strip_prefix(LIMITED).or_else(|| stored.strip_prefix(DELEGATED)).unwrap_or(stored)
 }
 
 /// Whether a stored digest is the digest `digest` ([`stored_digest`]).
 fn digest_is(stored: &str, digest: &str) -> bool {
-    same_secret(digest.as_bytes(), stored.strip_prefix(LIMITED).unwrap_or(stored).as_bytes())
+    same_secret(digest.as_bytes(), unmarked(stored).as_bytes())
+}
+
+/// The most keys one key may make ([`Keys::create_delegated`]).
+pub const DELEGATED_MAX: usize = 4096;
+
+/// Whether grant `child` asks for no more than `parent` gives: no more
+/// scope, and tables `parent` names (`app_x_*` within `app_*`, `notes`
+/// within `no*` or `*`).
+pub fn within(child: &Grant, parent: &Grant) -> bool {
+    if child.scope > parent.scope {
+        return false;
+    }
+    match (parent.table.strip_suffix('*'), child.table.strip_suffix('*')) {
+        (Some(p), Some(c)) => c.starts_with(p),
+        (Some(p), None) => child.table.starts_with(p),
+        (None, Some(_)) => false,
+        (None, None) => child.table == parent.table,
+    }
 }
 
 /// A key as the keys file keeps it.
@@ -374,6 +406,12 @@ pub struct Key {
     /// `scope`. Its digest is then kept after a mark ([`LIMITED`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tables: Option<Vec<Grant>>,
+    /// The id of the key that made it ([`Keys::create_delegated`]): it
+    /// opens nothing once that key is revoked or has expired, and its
+    /// tables are within that key's. Its digest is kept after a mark of
+    /// its own ([`DELEGATED`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// A key for operations ([`Role`]); its `scope` is then `read`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
@@ -416,14 +454,24 @@ impl Key {
         if let Some(p) = &self.on_behalf_of {
             j["on_behalf_of"] = json!(p);
         }
+        if let Some(p) = &self.parent {
+            j["parent"] = json!(p);
+        }
         j
     }
 
     /// Who it makes a request, if its digest and its limits agree: a key
     /// whose digest is marked limited but that lost its tables (a server
-    /// from before limits wrote it back without them) makes no one.
+    /// from before limits wrote it back without them) makes no one, nor
+    /// does one marked as another key's that lost its parent, or one with
+    /// a parent but not so marked. (Whether the parent still holds is
+    /// [`Keys::find`]'s.)
     fn principal(&self) -> Option<Principal> {
-        let marked = self.sha256.starts_with(LIMITED);
+        let delegated = self.sha256.starts_with(DELEGATED);
+        if delegated != self.parent.is_some() {
+            return None;
+        }
+        let marked = self.sha256.starts_with(LIMITED) || delegated;
         let tables: Option<Arc<[Grant]>> = match (&self.tables, marked) {
             (Some(t), true) if !t.is_empty() => Some(t.clone().into()),
             (None, false) => None,
@@ -545,6 +593,11 @@ impl KeySet {
                     }
                     if x.on_behalf_of.is_none() && k.on_behalf_of.is_some() {
                         x.on_behalf_of = k.on_behalf_of.clone();
+                        changed = true;
+                    }
+                    // And without the key that made it.
+                    if x.parent.is_none() && k.parent.is_some() {
+                        x.parent = k.parent.clone();
                         changed = true;
                     }
                 }
@@ -681,7 +734,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables), role: None, agent: false, on_behalf_of: None };
+        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
@@ -817,12 +870,13 @@ impl Keys {
             scope,
             created_ms: now_ms(),
             expires_ms,
-            sha256: stored_digest(&secret, tables.is_some()),
+            sha256: stored_digest(&secret, tables.is_some(), false),
             last_used_ms: 0,
             owner,
             note,
             last_addr: None,
             tables,
+            parent: None,
             role: more.role,
             agent: more.agent || more.role.is_some(),
             on_behalf_of: more.on_behalf_of.map(|p| p.trim().to_string()),
@@ -839,6 +893,83 @@ impl Keys {
         drop(set);
         self.changed.notify_one();
         Ok((key, full))
+    }
+
+    /// A key made by key `by` (a request's principal) for something of
+    /// its own, such as an app of an app engine: limited to `tables`, each
+    /// of them within a grant of `by` with the admin scope there (`by` may
+    /// manage those tables, so it may hand them on), named
+    /// `<by's name>/<name>`, owned by `by`'s name, and opening nothing once
+    /// `by` is revoked or expires ([`Key::parent`]). A key of that name
+    /// that `by` made is revoked in its place, so that asking again is a
+    /// new secret. `by` is a key of this server's set (not a token, not an
+    /// app's key in memory, not a key another key made), with fewer than
+    /// [`DELEGATED_MAX`] such keys. Its secret, not kept, is the answer's.
+    pub fn create_delegated(&self, by: &Principal, name: &str, tables: Vec<Grant>, note: Option<String>, in_cluster_without_token: bool) -> Result<(Key, String), ApiError> {
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            return Err(ApiError::bad(format!("{name:?} is not the name of a key made by a key: letters, digits, '-', '_' and '.'")));
+        }
+        if tables.is_empty() || tables.len() > 64 {
+            return Err(ApiError::bad("a key made by a key names 1 to 64 table grants"));
+        }
+        if in_cluster_without_token {
+            return Err(ApiError { code: None, status: 409, message: "this server serves in a cluster and has no token: make the key on the coordinator".into() });
+        }
+        let refuse = |m: String| ApiError { code: None, status: 403, message: m };
+        let Some(parent_id) = by.key.clone() else {
+            return Err(refuse(format!("{:?} is not a key: a key makes keys of its own here; the token's holder makes keys with POST /v1/admin/keys", by.name)));
+        };
+        if self.ephemeral().iter().any(|k| k.id == parent_id) {
+            return Err(refuse(format!("{:?} is a key this server made for an app it starts, kept in memory: it makes no keys", by.name)));
+        }
+        let mut set = self.lock();
+        let parent = set.keys.iter().find(|k| k.id == parent_id).cloned().ok_or_else(|| refuse(format!("no key {parent_id} here")))?;
+        if parent.parent.is_some() {
+            return Err(refuse(format!("{:?} was made by another key: it makes none in turn", parent.name)));
+        }
+        let held: Vec<Grant> = match &parent.tables {
+            Some(t) => t.clone(),
+            None => vec![Grant { table: "*".into(), scope: parent.scope }],
+        };
+        for g in &tables {
+            if !held.iter().any(|h| h.scope == Scope::Admin && within(g, h)) {
+                return Err(refuse(format!("{} ({}) is not within a table grant {:?} has the admin scope on ({})", g.table, g.scope.name(), parent.name, grants_text(&held))));
+            }
+        }
+        let full_name = format!("{}/{name}", parent.name);
+        if full_name.len() > 128 {
+            return Err(ApiError::bad("a key made by a key has a name of 128 characters at most, with its maker's"));
+        }
+        let before: Vec<Key> = set.keys.iter().filter(|k| k.parent.as_deref() == Some(parent_id.as_str()) && k.name == full_name).cloned().collect();
+        if set.keys.iter().any(|k| k.name == full_name && k.parent.as_deref() != Some(parent_id.as_str())) {
+            return Err(ApiError { code: None, status: 409, message: format!("a key named {full_name:?} exists, made otherwise") });
+        }
+        if set.keys.iter().filter(|k| k.parent.as_deref() == Some(parent_id.as_str())).count() - before.len() >= DELEGATED_MAX {
+            return Err(ApiError { code: None, status: 409, message: format!("{:?} has made {DELEGATED_MAX} keys, the most: revoke some first", parent.name) });
+        }
+        let id = hex(&random(8)?);
+        let secret = hex(&random(24)?);
+        let full = format!("sk_{id}_{secret}");
+        let now = now_ms();
+        let scope = widest(&tables);
+        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone() };
+        let mut next = set.clone();
+        next.keys.retain(|k| !before.iter().any(|b| b.id == k.id));
+        for b in before {
+            next.revoked.push(Revoked { id: b.id, revoked_ms: now, name: Some(b.name), scope: Some(b.scope.name().into()), owner: b.owner, revoked_by: Some(format!("{} (made again)", parent.name)), sha256: Some(b.sha256) });
+        }
+        next.keys.push(key.clone());
+        self.save(&next)?;
+        *set = next;
+        drop(set);
+        self.changed.notify_one();
+        Ok((key, full))
+    }
+
+    /// The keys key `parent` made ([`Self::create_delegated`]).
+    pub fn delegated(&self, parent: &str) -> Vec<Key> {
+        self.lock().keys.iter().filter(|k| k.parent.as_deref() == Some(parent)).cloned().collect()
     }
 
     /// Revokes key `id`; false if there is none. On a server without a
@@ -865,9 +996,19 @@ impl Keys {
         let mut set = self.lock();
         let mut next = set.clone();
         let Some(k) = set.keys.iter().find(|k| k.id == id).cloned() else { return Ok(false) };
-        next.keys.retain(|k| k.id != id);
-        let scope = Some(k.scope_name().into());
-        next.revoked.push(Revoked { id: id.to_string(), revoked_ms: now_ms(), name: Some(k.name), scope, owner: k.owner, revoked_by: by, sha256: Some(k.sha256) });
+        // The keys it made go with it, so that the revocation of each is
+        // kept and spreads as its own.
+        let gone: Vec<Key> = set.keys.iter().filter(|c| c.id == id || c.parent.as_deref() == Some(id)).cloned().collect();
+        next.keys.retain(|c| !gone.iter().any(|g| g.id == c.id));
+        let at = now_ms();
+        for g in gone {
+            let by = match g.id == k.id {
+                true => by.clone(),
+                false => Some(format!("{} (revoked with the key that made it, {})", by.clone().unwrap_or_else(|| "?".into()), k.name)),
+            };
+            let scope = Some(g.scope_name().into());
+            next.revoked.push(Revoked { id: g.id, revoked_ms: at, name: Some(g.name), scope, owner: g.owner, revoked_by: by, sha256: Some(g.sha256) });
+        }
         if !token && !managed(&next.keys) {
             return Err(ApiError {
                 code: None, status: 409,
@@ -903,7 +1044,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{new_id}_{secret}");
         let expires_ms = old.expires_ms.map(|e| now + e.saturating_sub(old.created_ms));
-        let key = Key { id: new_id, sha256: stored_digest(&secret, old.tables.is_some()), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
+        let key = Key { id: new_id, sha256: stored_digest(&secret, old.tables.is_some(), old.parent.is_some()), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
         let mut next = set.clone();
         let until = now + grace_ms;
         let mut ending = old.clone();
@@ -955,12 +1096,23 @@ impl Keys {
         let (id, secret) = rest.split_once('_')?;
         let digest = sha256(secret);
         let mut set = self.lock();
-        let k = set.keys.iter_mut().find(|k| k.id == id)?;
-        if !digest_is(&k.sha256, &digest) || k.expires_ms.is_some_and(|e| now_ms() >= e) {
+        let now = now_ms();
+        let i = set.keys.iter().position(|k| k.id == id)?;
+        let k = &set.keys[i];
+        if !digest_is(&k.sha256, &digest) || k.expires_ms.is_some_and(|e| now >= e) {
             return None;
         }
+        // A key another key made opens nothing once that key no longer
+        // does (revoked, expired, or itself refused).
+        if let Some(parent) = &k.parent {
+            let p = set.keys.iter().find(|p| &p.id == parent)?;
+            if p.parent.is_some() || p.expires_ms.is_some_and(|e| now >= e) || p.principal().is_none() {
+                return None;
+            }
+        }
+        let k = &mut set.keys[i];
         // Kept in memory; written with the next change of keys.
-        k.last_used_ms = now_ms();
+        k.last_used_ms = now;
         if let Some(addr) = caller().and_then(|c| c.addr) {
             k.last_addr = Some(addr);
         }
@@ -1496,6 +1648,74 @@ mod tests {
 
     /// An app's key: in memory only, limited, replaced at the app's next
     /// start, and no reason to close an open server.
+    #[test]
+    fn a_key_makes_keys_within_its_tables_that_end_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        let g = |s: &str| Grant::parse(s).unwrap();
+        let bearer = |s: &str| format!("Bearer {s}");
+        let (engine, engine_secret) = keys.create_limited("apps-app", Scope::Admin, Some(vec![g("sa_*=admin"), g("app_*=admin"), g("other=read")]), None, None, None, true, false).unwrap();
+        let by = keys.resolve(None, None, Some(&bearer(&engine_secret))).unwrap();
+        // Within its admin grants: a prefix within a prefix, a name within one.
+        let (child, secret) = keys.create_delegated(&by, "app-abc123", vec![g("app_abc123_*=write"), g("sa_numbers=read")], None, false).unwrap();
+        assert_eq!((child.name.as_str(), child.parent.as_deref(), child.owner.as_deref()), ("apps-app/app-abc123", Some(engine.id.as_str()), Some("apps-app")));
+        assert!(child.sha256.starts_with(DELEGATED));
+        let p = keys.resolve(None, None, Some(&bearer(&secret))).unwrap();
+        assert_eq!(p.table_scope("app_abc123_tasks"), Some(Scope::Write));
+        assert_eq!(p.table_scope("app_other1_tasks"), None);
+        assert_eq!(p.table_scope("sa_people"), None);
+        // Not beyond them: another prefix, more scope, a grant it reads only.
+        for bad in [vec![g("*=read")], vec![g("ap*=write")], vec![g("other=read")], vec![g("crawl_x=read")]] {
+            assert_eq!(keys.create_delegated(&by, "x", bad.clone(), None, false).unwrap_err().status, 403, "{bad:?}");
+        }
+        // A key it made makes none; nor does the token or an open server.
+        assert_eq!(keys.create_delegated(&p, "y", vec![g("app_abc123_x=read")], None, false).unwrap_err().status, 403);
+        assert_eq!(keys.create_delegated(&Principal::open(), "y", vec![g("app_x=read")], None, false).unwrap_err().status, 403);
+        // Again by the same name: a new secret, the old one revoked.
+        let (again, secret2) = keys.create_delegated(&by, "app-abc123", vec![g("app_abc123_*=write")], None, false).unwrap();
+        assert_ne!(again.id, child.id);
+        assert_eq!(keys.resolve(None, None, Some(&bearer(&secret))), None);
+        assert!(keys.resolve(None, None, Some(&bearer(&secret2))).is_some());
+        assert_eq!(keys.delegated(&engine.id).len(), 1);
+        // Kept in the file with its parent; then it ends with its maker.
+        let back = Keys::open(dir.path().join("keys.json")).unwrap();
+        assert!(back.resolve(None, None, Some(&bearer(&secret2))).is_some());
+        assert!(back.revoke(&engine.id, true).unwrap());
+        assert_eq!(back.resolve(Some(&Secret::new("t")), None, Some(&bearer(&secret2))), None);
+        assert!(back.revoked().iter().any(|r| r["id"] == again.id.as_str()));
+        // An unlimited admin key makes keys of any tables; a read key none.
+        let (_, admin) = keys.create("ops", Scope::Admin, None, true, false).unwrap();
+        let ops = keys.resolve(None, None, Some(&bearer(&admin))).unwrap();
+        assert!(keys.create_delegated(&ops, "dash", vec![g("anything=read")], None, false).is_ok());
+        let (_, read) = keys.create("reader", Scope::Read, None, true, false).unwrap();
+        let reader = keys.resolve(None, None, Some(&bearer(&read))).unwrap();
+        assert_eq!(keys.create_delegated(&reader, "z", vec![g("anything=read")], None, false).unwrap_err().status, 403);
+    }
+
+    #[test]
+    fn a_key_made_by_a_key_needs_its_maker_wherever_it_is_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        let (_, maker) = keys.create("ops", Scope::Admin, None, true, false).unwrap();
+        let by = keys.resolve(None, None, Some(&format!("Bearer {maker}"))).unwrap();
+        let (child, secret) = keys.create_delegated(&by, "app", vec![Grant::parse("app_*=write").unwrap()], None, false).unwrap();
+        // A server from before such keys writes it back without its parent:
+        // it opens nothing there (its mark), and the parent comes back here.
+        let mut old = keys.set();
+        for k in old.keys.iter_mut() {
+            k.parent = None;
+        }
+        let other = Keys::memory();
+        other.merge(&old).unwrap();
+        assert_eq!(other.resolve(Some(&Secret::new("t")), None, Some(&format!("Bearer {secret}"))), None);
+        keys.merge(&old).unwrap();
+        assert!(keys.resolve(None, None, Some(&format!("Bearer {secret}"))).is_some());
+        // A set that has the child but not its maker opens nothing.
+        let alone = Keys::memory();
+        alone.merge(&KeySet { keys: keys.set().keys.into_iter().filter(|k| k.id == child.id).collect(), revoked: vec![] }).unwrap();
+        assert_eq!(alone.resolve(Some(&Secret::new("t")), None, Some(&format!("Bearer {secret}"))), None);
+    }
+
     #[test]
     fn an_apps_key_is_kept_in_memory() {
         let dir = tempfile::tempdir().unwrap();
