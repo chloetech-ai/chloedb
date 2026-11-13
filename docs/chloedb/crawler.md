@@ -35,9 +35,11 @@ At the default pace, a page a second for one site ([below](#what-it-does-with-a-
 The crawler writes to any chloedb-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):
 
 ```bash
-chloedb-crawl serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$CRAWL_TOKEN" \
+chloedb-crawl serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$CRAWL_TOKEN" \
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000
 ```
+
+`--server` was `--strata` before 0.2.1; the old name still works.
 
 and the coordinator shows it as an app when told where it is, with the crawler's token:
 

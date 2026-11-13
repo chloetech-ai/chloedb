@@ -2,7 +2,7 @@
 
 The `chloedb` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
-LangChain, LangGraph and LlamaIndex take ChloeDB as a vector store, a checkpointer and a memory store, and `chloedb.dbapi` is a DB-API 2.0 driver: see [frameworks](frameworks.md).
+LangChain, LangGraph and LlamaIndex take ChloeDB as a vector store, a checkpointer and a memory store, and `chloedb.dbapi` is a DB-API 2.0 driver: see [frameworks](frameworks.md) <!-- since 0.2.1 --> (new in 0.2.1, not in release 0.2.0's wheel).
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
@@ -12,11 +12,13 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The package is not on PyPI yet, so point pip at the release and it picks the wheel for your machine:
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. Point pip at the release and it picks the wheel for your machine:
 
 ```sh
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
+pip install --upgrade chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
+
+ChloeDB is not on PyPI yet: `chloedb` there is a placeholder (0.0.x) that holds the name, and importing it raises an `ImportError` that says how to install ChloeDB. `--upgrade` replaces it when an earlier `pip install chloedb` installed it, and pip also falls back to it, silently, when the release has no wheel for your machine (an older glibc, say). Once the releases are published to PyPI (the workflow below does it, when the repository is set up for it), `pip install chloedb` installs ChloeDB, whose versions are above the placeholder's.
 
 The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
@@ -24,10 +26,11 @@ The old name, `import strata`, still works for a release, with a `DeprecationWar
 |---|---|
 | macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
 | macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
-| Linux aarch64, glibc 2.28+ | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
+| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later), from 0.2.1 | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
+| Linux aarch64, glibc 2.28+, from 0.2.1 | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
+| Linux x86-64 and aarch64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later), release 0.2.0 | `chloedb-0.2.0-cp310-abi3-manylinux_2_35_x86_64.whl`, `..._aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI once the repository is set up for it (the workflow's header says how), and `pip install chloedb` then takes them; until then the package is not on PyPI. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. From 0.2.1 the Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8), and the workflow fails if a wheel is tagged for a newer glibc; release 0.2.0's were built on Ubuntu 22.04, so they need glibc 2.35. The same tag publishes them to PyPI once the repository is set up for it (the workflow's header says how), and `pip install chloedb` then takes them; until then the package is not on PyPI. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 
@@ -90,7 +93,7 @@ db.query("SELECT year, COUNT(*) FROM books WHERE genres = :g GROUP BY year", g="
 db.close()
 ```
 
-`chloedb.open(path, schema)` opens the database at `path`, or creates it with `schema` if it does not exist. The schema is a dict, JSON text or the path of a JSON file, in the [form the server takes](server.md#schemas). `Database.create(path, schema)` and `Database.open(path)` do one or the other. `models=` says where embedding and [ranking](query-language.md#ranking-models-gbdtmodel-features) models, and the captioners of [text made from media](server.md#text-from-media), are (default `$CHLOEDB_MODELS`, else `~/.local/share/strata/models`; `chloedb-server fetch-model NAME` downloads one there), and `directory=True` creates the database as a directory of segment files.
+`chloedb.open(path, schema)` opens the database at `path`, or creates it with `schema` if it does not exist. The schema is a dict, JSON text or the path of a JSON file, in the [form the server takes](server.md#schemas). `Database.create(path, schema)` and `Database.open(path)` do one or the other. `models=` says where embedding and [ranking](query-language.md#ranking-models-gbdtmodel-features) models, and the captioners of [text made from media](server.md#text-from-media), are (default `$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.2.1, always); `chloedb-server fetch-model NAME` downloads one there), and `directory=True` creates the database as a directory of segment files.
 
 A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `chloedb.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
@@ -144,7 +147,7 @@ db.query("SELECT id FROM books ORDER BY similarity(embedding, :v) DESC LIMIT 10"
 db.query("SELECT id FROM books ORDER BY similarity(embedding, :v) DESC LIMIT 10", v={"vector_of": "b1"})
 ```
 
-A parameter is a number, a string, `None`, a list of numbers or a numpy array (a vector), a list, a dict of term weights, `{"embed": text}` (the text's vector by an embedded field's model; add `"field"` to pick one) or `{"vector_of": key}` (a stored row's vector).
+A parameter is a number, a string, `None`, a list of numbers or a numpy array (a vector), a list, a dict of term weights, `{"embed": text}` (the text's vector by an embedded field's model; add `"field"` to pick one) or `{"vector_of": key}` (a stored row's vector). Either reads the table the statement's `FROM` names <!-- since 0.2.1 -->, unless it names another with `"table"` (before 0.2.1, the first table).
 
 The answer is a `Result`:
 
@@ -180,7 +183,7 @@ duckdb.sql("SELECT avg(rating) FROM r")
 
 A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `ChloeDBError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
-`search(text, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
+`search(text, table=None, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case, on the first table or on `table` <!-- since 0.2.1 --> (which reads that table alone: a client with a key limited to other tables than the first can search its own). It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
 ```python
 db.search("dragon", where=col("year") >= 1990, columns=["id", "title"])
@@ -346,7 +349,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 
 ## A server from Python
 
-`chloedb.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`chloedb.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. A method given `table=`, and `table(name)`, read that table alone, never the first one, so a [key limited to tables](server.md#security) works with them <!-- since 0.2.1 -->. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
 client = chloedb.connect("http://127.0.0.1:7700")   # token= or $CHLOEDB_TOKEN for a server with --token
@@ -372,6 +375,19 @@ except chloedb.ChloeDBError as e:
     if not (e.answer or {}).get("partial"):
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
+```
+
+### From asyncio
+
+<!-- since 0.2.1 --> `chloedb.AsyncClient(url, token=None, timeout=30, retry_for=10)` is the client for asyncio (FastAPI, aiohttp): the same methods, each a coroutine, whose request runs in a thread of the event loop's default executor, so the package still needs nothing beyond the standard library and the loop is never blocked. What reads the server and is a property or `len()` on `Client` is a coroutine here: `await db.schema()`, `await db.count()`. `scroll` is an async iterator, `session()` gives an `AsyncSession`, and `client` is the `Client` underneath.
+
+```python
+async with chloedb.AsyncClient("http://127.0.0.1:7700", token=key) as db:
+    hits = await db.search("letters", table="books", limit=3)
+    async for page in db.scroll("SELECT id FROM books"):
+        handle(page.dicts())
+    q = (await db.table("books")).where(col("year") >= 2000).limit(5)
+    rows = await db.run(q)            # q.run() would block the loop
 ```
 
 ### Reading your own writes
@@ -403,11 +419,14 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `unauthorized` | `UnauthorizedError` | no token, or one without the rights the request needs (401, 403) |
 | `not_found` | `NotFoundError` | no such route, table or cursor (404); `get` of a missing key answers None instead |
 | `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
+| `conflict` | `DuplicateKeyError` | <!-- since 0.2.1 --> an `INSERT` of a key the table already holds; a `ConflictError` and a `BadRequestError` both (it was a `BadRequestError` alone before), with `.table`, `.field` (the key field), `.key` and `.row` (the row's place in the write, from 1) where the message names them |
 | `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
 | `busy` | `BusyError` | the database is open in another process, or another writer holds it |
 | `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
+
+`chloedb.__version__` is the package's version <!-- since 0.2.1 -->, and the package ships `py.typed`, so type checkers read its annotations.
 
 Other codes have no subclass: `memory` (a query past its memory budget, [limits](#limits-memory-deadlines-interrupting)), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.
 

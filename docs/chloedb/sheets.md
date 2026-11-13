@@ -29,9 +29,11 @@ Open `http://127.0.0.1:7700` and go to **Apps → Sheets**.
 Against a cluster that runs elsewhere, give chloedb-sheets the server (a coordinator or one server) and a key, and give the server the app. Its first start creates the two tables it keeps workbooks in, which takes an admin key; after that a key that can write is enough:
 
 ```bash
-chloedb-sheets serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
+chloedb-sheets serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN
 ```
+
+`--server` was `--strata` before 0.2.1; the old name still works.
 
 `--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
 
@@ -57,9 +59,9 @@ Removing `spec.sheets` deletes its Deployment and Service and restarts the coord
 `import` and `export` move files without the UI:
 
 ```bash
-target/release/chloedb-sheets import budget.xlsx --strata http://127.0.0.1:7700
-target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --strata http://127.0.0.1:7700
-target/release/chloedb-sheets export <workbook id> -o budget.xlsx --strata http://127.0.0.1:7700
+target/release/chloedb-sheets import budget.xlsx --server http://127.0.0.1:7700
+target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --server http://127.0.0.1:7700
+target/release/chloedb-sheets export <workbook id> -o budget.xlsx --server http://127.0.0.1:7700
 ```
 
 ## The app

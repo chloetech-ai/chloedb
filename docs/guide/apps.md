@@ -6,7 +6,14 @@ This page starts a server with Sheets and ChloeCtx beside it and uses both throu
 
 <!-- run: needs chloedb-server chloedb-sheets chloectx -->
 
-You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. From a checkout of the repository, build each in its directory (`cargo build --release`) and add their `target/release` directories to `PATH`.
+You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.2.1 --> From release 0.2.1, the installer puts the three there prebuilt, with nothing to compile:
+
+```sh
+# install
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx
+```
+
+Release 0.2.0 has no prebuilt Sheets or ChloeCtx. With it, or to build from source, build each in its directory of a checkout of the repository (`cargo build --release`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
 
 ## How an app attaches
 
@@ -34,7 +41,7 @@ chloedb-server --db ./apps.chloedb --listen 127.0.0.1:7700 --grpc off \
   --app sheets=http://127.0.0.1:7820 --app chloectx=http://127.0.0.1:7760 > server.log 2>&1 &
 until curl -sf http://127.0.0.1:7700/v1/health > /dev/null; do sleep 0.2; done
 
-chloedb-sheets serve --strata http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" > sheets.log 2>&1 &
+chloedb-sheets serve --server http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" > sheets.log 2>&1 &
 chloectx app --server http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" --embedder hash:64 > chloectx.log 2>&1 &
 ```
 
