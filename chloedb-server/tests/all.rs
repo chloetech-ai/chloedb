@@ -77,6 +77,7 @@ mod stream;
 mod stream_moves;
 mod tables;
 mod telemetry;
+mod tenants;
 mod ui;
 mod upgrade;
 mod write_stall;
