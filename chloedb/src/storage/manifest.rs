@@ -381,7 +381,7 @@ struct V1 {
 
 /// The features this version of Strata reads, besides its analyzers'
 /// ([`known_feature`]).
-pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_KEYWORD, crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, FUNCTIONS_FEATURE, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", crate::schema::PACKED_POSITIONS, RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", crate::substring::FEATURE, "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
+pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_KEYWORD, crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, FUNCTIONS_FEATURE, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", crate::schema::PACKED_POSITIONS, RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", crate::schema::SPARSE_EMBED, crate::substring::FEATURE, "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
 
 /// The feature of a database whose fields have ids
 /// ([`crate::schema::Field::id`]): every database this version creates.

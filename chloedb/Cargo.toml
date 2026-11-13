@@ -86,7 +86,8 @@ embed = ["dep:tokenizers"]
 # Mistral, Jina, Ollama, and servers of their APIs (`chloedb::hosted`).
 hosted = ["dep:ureq"]
 bert = ["embed", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:gemm"]
-# Cross-encoders exported to ONNX (`model.onnx`), run by ONNX Runtime.
+# Models exported to ONNX (`model.onnx`), run by ONNX Runtime: cross-encoders,
+# embedding models (`OnnxEmbedder`) and learned sparse models (`SparseEncoder`).
 onnx = ["embed", "dep:ort"]
 # Images: decoded with the `image` crate, embedded by SigLIP.
 vision = ["bert", "dep:image"]
@@ -136,6 +137,10 @@ required-features = ["audio"]
 [[example]]
 name = "df_join"
 required-features = ["datafusion"]
+
+[[example]]
+name = "sparse_beir"
+required-features = ["onnx"]
 
 [dev-dependencies]
 tempfile = "3"

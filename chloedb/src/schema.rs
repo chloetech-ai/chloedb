@@ -137,6 +137,12 @@ pub const RABITQ: &str = "rabitq";
 /// it would not keep through a merge, so they refuse the database by name.
 pub const VECTOR_PARTITION: &str = "vector_partition";
 
+/// The feature of a database with a SPARSE field embedded by a learned
+/// sparse model ([`Field::embed`] on a SPARSE field): versions of ChloeDB
+/// from before it would neither weigh its rows' text nor accept the
+/// schema, so they refuse the database by name.
+pub const SPARSE_EMBED: &str = "sparse_embed";
+
 /// The most partitions a segment builds for a KEYWORD partition key
 /// ([`VectorPartition`]): the most frequent values get one each, and a
 /// filter on another value searches the field's own graph.
@@ -1198,11 +1204,19 @@ impl Schema {
         for f in s.fields.iter() {
             let Some(e) = &f.embed else { continue };
             let bad = |m: String| Err(Error::Schema(format!("field {}: {m}", f.name)));
-            if !matches!(f.ty, FieldType::Vector { .. }) {
-                return bad("only a VECTOR field can be embedded".into());
+            if !matches!(f.ty, FieldType::Vector { .. } | FieldType::Sparse) {
+                return bad("only a VECTOR or SPARSE field can be embedded".into());
             }
             if e.from.is_empty() || e.model.is_empty() {
                 return bad("an embedded field needs source fields and a model".into());
+            }
+            if f.ty == FieldType::Sparse {
+                if f.multi {
+                    return bad("an embedded SPARSE field holds one set of term weights a row".into());
+                }
+                if let Some(m) = e.from.iter().find_map(|src| s.field(src).filter(|g| g.media.is_some())) {
+                    return bad(format!("a SPARSE field weighs the terms of text, not of the MEDIA field {}", m.name));
+                }
             }
             if let Some(m) = e.from.iter().find_map(|src| s.field(src).filter(|g| g.media.is_some())) {
                 if f.multi {
@@ -1667,7 +1681,7 @@ impl Schema {
     /// its fields' [`Logical::feature`], `not_null`, `default`,
     /// `multi_vector`, `semantic_id`, [`Analyzer::feature`], `media`
     /// ([`Field::media`]), `derive` ([`Field::derive`]), [`JSON`],
-    /// [`JSON_TEXT`], [`crate::substring::FEATURE`] and [`RABITQ`], and
+    /// [`JSON_TEXT`], [`crate::substring::FEATURE`], [`RABITQ`] and [`SPARSE_EMBED`], and
     /// its options `shard_by`, `cluster_by`, `retain` and `edge_table`
     /// ([`Schema::with_shard_by`], [`Schema::with_cluster_by`],
     /// [`Schema::with_retain`], [`Schema::with_edges`]), [`EXPIRE_BY`],
@@ -1693,6 +1707,7 @@ impl Schema {
                 f.substring.then_some(crate::substring::FEATURE),
                 f.codes.rabitq_bits().map(|_| RABITQ),
                 f.partition.as_ref().map(|_| VECTOR_PARTITION),
+                (f.ty == FieldType::Sparse && f.embed.is_some()).then_some(SPARSE_EMBED),
             ];
             named.into_iter().flatten().map(String::from).chain(f.analyzer.and_then(Analyzer::feature))
         });
@@ -2103,7 +2118,16 @@ impl Schema {
                         }
                         ("vector", false)
                     }
-                    FieldType::Sparse => ("sparse", true),
+                    FieldType::Sparse => {
+                        if let Some(e) = &f.embed {
+                            let mut j = json!({"from": e.from, "model": e.model});
+                            if let Some(fp) = &e.fingerprint {
+                                j["fingerprint"] = json!(fp);
+                            }
+                            m.insert("embed".into(), j);
+                        }
+                        ("sparse", true)
+                    }
                     FieldType::Edges => ("edges", true),
                     FieldType::Json => {
                         if f.text {

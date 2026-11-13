@@ -144,8 +144,9 @@ pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
     }
 }
 
-/// Vectors computed ahead of a write, by embedded field and source text.
-type Known = HashMap<usize, HashMap<String, Arc<[f32]>>>;
+/// Values of embedded fields computed ahead of a write (a VECTOR field's
+/// vectors, a SPARSE field's term weights), by field and source text.
+type Known = HashMap<usize, HashMap<String, Value>>;
 
 /// Text made ahead of a write, by derived field and the MEDIA value it is
 /// made from.
@@ -826,8 +827,8 @@ impl Db {
         }
     }
 
-    /// Gives embedded VECTOR field `field` ([`crate::schema::Embed`]) of the
-    /// first table its model. Writes through this `Db` that leave the vector
+    /// Gives embedded VECTOR or SPARSE field `field`
+    /// ([`crate::schema::Embed`]) of the first table its model. Writes through this `Db` that leave the vector
     /// out get it computed ([`Db::load`], SQL `INSERT` and `UPDATE`,
     /// [`Db::embed_missing`] before a [`crate::storage::WriteTxn`]).
     pub fn set_embedder(&self, field: &str, e: Arc<dyn Embedder>) -> Result<()> {
@@ -840,9 +841,21 @@ impl Db {
         let schema = self.table(table)?;
         let i = schema.field_index(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let f = &schema.fields[i];
+        if let (FieldType::Sparse, Some(spec)) = (&f.ty, &f.embed) {
+            if !e.sparse() {
+                return Err(Error::Schema(format!("model {} makes vectors, and field {field} is a SPARSE field: it needs a learned sparse model, which makes term weights", spec.model)));
+            }
+            let mut all = self.embedders.write().unwrap_or_else(|e| e.into_inner());
+            all.retain(|m| !(m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name)));
+            all.push(Model { table: schema.table.clone(), field: f.name.clone(), embed: spec.clone(), dim: 0, model: e });
+            return Ok(());
+        }
         let (FieldType::Vector { dim, .. }, Some(spec)) = (&f.ty, &f.embed) else {
-            return Err(Error::Schema(format!("field {field} is not an embedded VECTOR field")));
+            return Err(Error::Schema(format!("field {field} is not an embedded VECTOR or SPARSE field")));
         };
+        if e.sparse() {
+            return Err(Error::Schema(format!("model {} is a learned sparse model, which makes term weights: field {field} is a VECTOR field, and a SPARSE field holds its output", spec.model)));
+        }
         if e.dim() != *dim {
             return Err(Error::Schema(format!("model {} makes {}-dimension vectors; field {field} holds {dim}", spec.model, e.dim())));
         }
@@ -871,12 +884,15 @@ impl Db {
     /// `field` of table `table`: the vector of the text as a query by the
     /// field's model, as `similarity` takes it, or for a multi-vector field
     /// (`VECTOR(d)[]`) the list of the vectors of its tokens
-    /// ([`Embedder::embed_query_tokens`]), as `maxsim` takes them.
+    /// ([`Embedder::embed_query_tokens`]), as `maxsim` takes them, or for
+    /// a SPARSE field the query's term weights
+    /// ([`Embedder::embed_query_sparse`]), as `similarity` takes them.
     pub fn embed_query_in(&self, table: &str, field: &str, text: &str) -> Result<Value> {
         let schema = self.table(table)?;
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let e = self.embedder_in(table, field).ok_or_else(|| Error::Schema(format!("field {field} has no model here (Db::open_embedders or Db::set_embedder_in)")))?;
         Ok(match f.multi {
+            _ if f.ty == FieldType::Sparse => Value::Str(crate::embed::terms_json(&e.embed_query_sparse(text)?)),
             true => Value::List(e.embed_query_tokens(text)?.into_iter().map(|v| Value::Vector(v.into())).collect()),
             false => Value::Vector(e.embed_query(text)?.into()),
         })
@@ -930,7 +946,12 @@ impl Db {
             .iter()
             .map(|f| {
                 let serves = |m: &&Model| {
-                    m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name) && f.embed.as_ref() == Some(&m.embed) && matches!(f.ty, FieldType::Vector { dim, .. } if dim == m.dim)
+                    let fits = match f.ty {
+                        FieldType::Vector { dim, .. } => dim == m.dim && !m.model.sparse(),
+                        FieldType::Sparse => m.model.sparse(),
+                        _ => false,
+                    };
+                    m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name) && f.embed.as_ref() == Some(&m.embed) && fits
                 };
                 all.iter().find(serves).map(|m| m.model.clone())
             })
@@ -1232,7 +1253,8 @@ impl Db {
     }
 
     /// The primary keys of the live rows of the table named `table` whose
-    /// embedded VECTOR field `field` has no vector: rows written while the
+    /// embedded VECTOR field `field` has no vector (or SPARSE field no
+    /// terms): rows written while the
     /// field had no model open here (no API key yet, the model not
     /// fetched), and rows whose sources are all empty, which get none.
     /// [`Db::embed_backfill`] fills in the others.
@@ -1240,11 +1262,24 @@ impl Db {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
         let schema = snap.schema();
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("{table} has no field {field}")))?;
-        if f.embed.is_none() || !matches!(f.ty, FieldType::Vector { .. }) {
-            return Err(Error::Schema(format!("{table}.{field} is not an embedded VECTOR field")));
+        if f.embed.is_none() || !matches!(f.ty, FieldType::Vector { .. } | FieldType::Sparse) {
+            return Err(Error::Schema(format!("{table}.{field} is not an embedded VECTOR or SPARSE field")));
         }
-        if schema.primary_key.is_none() {
+        let Some(pk) = schema.primary_key else {
             return Err(Error::Schema(format!("{table} has no primary key: rows without {field}'s vector can only be written again")));
+        };
+        // A SPARSE field's terms are a stored value: the rows whose value is
+        // null and that have text to weigh.
+        if f.ty == FieldType::Sparse {
+            let i = schema.field_index(field).expect("the field");
+            let mut keys = Vec::new();
+            for d in self.documents(&snap) {
+                let d = d?;
+                if matches!(d[i], Value::Null) && !schema.embed_text(i, &d).is_empty() {
+                    keys.push(d[pk].clone());
+                }
+            }
+            return Ok(keys);
         }
         let key = f.key();
         let mut keys = Vec::new();
@@ -2901,15 +2936,15 @@ fn embed_known(models: &[Option<Arc<dyn Embedder>>], schema: &Schema, docs: &mut
             if matches!(d[f], Value::Null) {
                 let t = schema.embed_text(f, d);
                 if let Some(v) = ahead.and_then(|a| a.get(&t)) {
-                    d[f] = embedded_value(schema, f, v.clone());
+                    d[f] = v.clone();
                 } else if !t.is_empty() {
                     todo.push(j);
                     texts.push(t);
                 }
             }
         }
-        for (j, v) in todo.into_iter().zip(embed_sources(e.as_ref(), schema, f, &texts, files)?) {
-            docs[j][f] = embedded_value(schema, f, v.into());
+        for (j, v) in todo.into_iter().zip(embedded_values(e.as_ref(), schema, f, &texts, files)?) {
+            docs[j][f] = v;
         }
     }
     Ok(())
@@ -2924,11 +2959,27 @@ fn vectors_of(models: &[Option<Arc<dyn Embedder>>], schema: &Schema, docs: &[Doc
         let mut seen = HashSet::new();
         let texts: Vec<String> = docs.iter().filter(|d| matches!(d[f], Value::Null)).map(|d| schema.embed_text(f, d)).filter(|t| !t.is_empty() && seen.insert(t.clone())).collect();
         if !texts.is_empty() {
-            let vectors = embed_sources(e.as_ref(), schema, f, &texts, files)?;
-            known.insert(f, texts.into_iter().zip(vectors).map(|(t, v)| (t, v.into())).collect());
+            let values = embedded_values(e.as_ref(), schema, f, &texts, files)?;
+            known.insert(f, texts.into_iter().zip(values).collect());
         }
     }
     Ok(known)
+}
+
+/// The values of embedded field `f` of `schema` for `sources` (as
+/// [`Schema::embed_text`] gives them): a VECTOR field's vectors
+/// ([`embed_sources`]), or a SPARSE field's term weights, as the JSON
+/// object a SPARSE value is ([`Embedder::embed_sparse`]).
+fn embedded_values(e: &dyn Embedder, schema: &Schema, f: usize, sources: &[String], files: &Files) -> Result<Vec<Value>> {
+    if schema.fields[f].ty == FieldType::Sparse {
+        let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+        let terms = e.embed_sparse(&refs)?;
+        if terms.len() != sources.len() {
+            return Err(Error::Schema(format!("model {} made the terms of {} texts of {}", e.name(), terms.len(), sources.len())));
+        }
+        return Ok(terms.iter().map(|t| Value::Str(crate::embed::terms_json(t))).collect());
+    }
+    Ok(embed_sources(e, schema, f, sources, files)?.into_iter().map(|v| embedded_value(schema, f, v.into())).collect())
 }
 
 /// The value of embedded field `f` of `schema` from what [`embed_sources`]
