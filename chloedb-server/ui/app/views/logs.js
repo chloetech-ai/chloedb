@@ -10,9 +10,11 @@
 // the SQL workbench ("As SQL"). Without a log store, the latest lines in
 // this server's memory are shown instead, followed live.
 
-import { h, s, icon, clear, fmt, card, api, bus, every, toast, seg, debounce, copy, showTip, hideTip, drawer, table, pill, empty, modal, confirm, can, needs, copyName, findCopy, link, when, whenTitle, ApiError } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, every, toast, seg, debounce, copy, showTip, hideTip, drawer, table, pill, empty, modal, confirm, can, needs, copyName, findCopy, link, when, whenTitle, ApiError, failure, gate } from "../core.js";
 import { state, timeRange, rangeParams, setWindow, setRange, isCoordinator } from "../data.js";
-import { lit } from "../catalog.js";
+import { lit, tables as catalogTables } from "../catalog.js";
+import { ownerOf } from "../owners.js";
+import { quoteName } from "../sqledit.js";
 
 export default { id: "logs", title: "Logs", icon: "logs", group: "Operate", keywords: "log lines errors warnings request id level debug search patterns live tail server copy shard route status", render, onParams };
 
@@ -89,7 +91,116 @@ const tokenLabel = (t) => {
 let reroute = null;
 function onParams(r) { reroute?.(r.params); }
 
+/**
+ * The tables a Logs page can read besides the servers' own lines: a
+ * TIMESTAMP field and a text one (otel_logs, and the user's own events).
+ * [{table, ts, body, level, levelNum, service}]
+ */
+export function logTables(ts) {
+  const out = [];
+  for (const t of ts || []) {
+    const fs = t.short?.fields || [];
+    const pick = (re, types) => fs.find((f) => types.includes(f.type) && re.test(f.name));
+    const tsf = pick(/^(ts|timestamp|time|at|created(_at)?|logged_at|event_time)$/i, ["timestamp"]) || fs.find((f) => f.type === "timestamp");
+    const body = pick(/^(body|message|msg|text|line|log)$/i, ["text"]) || fs.find((f) => f.type === "text");
+    if (!tsf || !body || ownerOf(t.table)?.machinery) continue;
+    out.push({ table: t.table, ts: tsf.name, body: body.name, level: pick(/^(severity|severity_text|level|log_level|lvl)$/i, ["keyword"])?.name || null, levelNum: pick(/^severity_number$/i, ["int"])?.name || null, service: pick(/^(service|service_name|app|host|source|logger)$/i, ["keyword"])?.name || null });
+  }
+  return out.sort((a, b) => (b.table === "otel_logs") - (a.table === "otel_logs"));
+}
+
+/** The source picker at the top of Logs: the servers' own lines, or a table's. */
+function sourcePicker(current) {
+  const sel = h("select", { class: "select sm", title: "Whose lines: the servers' own, or a table with a time and a message (otel_logs, your events)", "aria-label": "Lines of" }, h("option", { value: "" }, "The servers' own lines"));
+  catalogTables().then((ts) => {
+    for (const x of logTables(ts)) sel.append(h("option", { value: x.table, selected: x.table === current }, `Table ${x.table}`));
+    sel.value = current || "";
+    if (sel.options.length < 2) sel.remove();
+  }).catch(() => sel.remove());
+  sel.onchange = () => { location.hash = sel.value ? link("logs", { source: sel.value }) : link("logs"); };
+  return sel;
+}
+
+/** Logs from a table (T5): its lines over the top bar's window, by minute, searched and filtered, with an alert over the search. */
+function tableLogs(page, r, name) {
+  const body = h("div", { class: "stack" });
+  const sub = h("p", {});
+  page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Logs"), sub), h("div", { class: "tools" }, sourcePicker(name))), body);
+  let src = null, alive = true, gen = 0;
+  const input = h("input", { class: "input", placeholder: "Words that every line must hold: timeout refused", value: r.params.get("q") || "", style: { flex: "1", minWidth: "0" } });
+  let level = r.params.get("level") || "all", service = r.params.get("service") || "";
+  const levelBox = h("span"), svcBox = h("span"), histBox = h("div", { class: "tl-hist" }), linesBox = h("div"), sqlBox = h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } });
+  const keep = () => { const p = new URLSearchParams(location.hash.split("?")[1] || ""); p.set("source", name); for (const [k, v] of [["q", input.value.trim()], ["level", level === "all" ? "" : level], ["service", service]]) { if (v) p.set(k, v); else p.delete(k); } try { history.replaceState(null, "", location.pathname + location.search + "#/logs?" + p); } catch { /* old browser */ } };
+  const tsLit = (ms) => lit(new Date(ms).toISOString());
+  function where({ relative = false } = {}) {
+    const w = [];
+    const r0 = timeRange();
+    w.push(relative ? `${quoteName(src.ts)} > :since` : `${quoteName(src.ts)} >= ${tsLit(r0.from)} AND ${quoteName(src.ts)} <= ${tsLit(r0.to)}`);
+    const q = input.value.trim();
+    if (q) w.push(`MATCH(${quoteName(src.body)}, ${lit(q)})`);
+    if (level !== "all") {
+      if (src.levelNum) w.push(`${quoteName(src.levelNum)} >= ${level === "error" ? 17 : 13}`);
+      else if (src.level) w.push(`${quoteName(src.level)} IN (${(level === "error" ? ["ERROR", "error", "FATAL", "fatal", "CRITICAL", "critical"] : ["WARN", "warn", "WARNING", "warning", "ERROR", "error", "FATAL", "fatal", "CRITICAL", "critical"]).map(lit).join(", ")})`);
+    }
+    if (service && src.service) w.push(`${quoteName(src.service)} = ${lit(service)}`);
+    return w.join(" AND ");
+  }
+  async function load() {
+    const my = ++gen;
+    keep();
+    const r0 = timeRange();
+    const span = r0.to - r0.from;
+    const unit = span <= 3 * 3600e3 ? "minute" : span <= 3 * 86400e3 ? "hour" : "day";
+    const t = quoteName(src.table), ts = quoteName(src.ts);
+    const cols = [src.ts, src.level, src.service, src.body].filter(Boolean).map(quoteName).join(", ");
+    const linesSql = `SELECT ${cols} FROM ${t} WHERE ${where()} ORDER BY ${ts} DESC LIMIT 300`;
+    const histSql = `SELECT date_trunc('${unit}', ${ts}) AS at, COUNT(*) AS n FROM ${t} WHERE ${where()} GROUP BY at ORDER BY at`;
+    linesBox.classList.add("loading");
+    const [lines, hist] = await Promise.allSettled([api("/v1/query", { body: { sql: linesSql } }), api("/v1/query", { body: { sql: histSql } })]);
+    if (my !== gen || !alive) return;
+    linesBox.classList.remove("loading");
+    if (hist.status === "fulfilled") {
+      const rows = hist.value.rows || [];
+      const max = Math.max(1, ...rows.map((x) => x[1]));
+      const total = rows.reduce((a, x) => a + x[1], 0);
+      clear(histBox, h("div", { class: "small muted", style: { marginBottom: "4px" } }, `${fmt.n(total)} lines, by ${unit}`), h("div", { class: "tl-bars" }, rows.map((x) => h("span", { title: `${when(Date.parse(x[0]), { sec: false })}: ${fmt.n(x[1])}`, style: { height: Math.max(2, (x[1] / max) * 60) + "px" } }))));
+    } else clear(histBox, h("div", { class: "error" }, hist.reason.message));
+    if (lines.status === "fulfilled") {
+      const j = lines.value, ci = (n) => j.columns.indexOf(n);
+      const iT = ci(src.ts), iL = src.level ? ci(src.level) : -1, iS = src.service ? ci(src.service) : -1, iB = ci(src.body);
+      clear(linesBox, j.rows?.length ? h("div", { class: "tlog" }, j.rows.map((x) => h("div", { class: "tlog-r" },
+        h("span", { class: "mono small muted nowrap", title: x[iT] }, when(Date.parse(x[iT]))),
+        iL >= 0 ? h("span", { class: "tlog-l " + String(x[iL] || "").toLowerCase() }, x[iL] || "") : null,
+        iS >= 0 ? h("span", { class: "small dim nowrap" }, x[iS] || "") : null,
+        h("span", { class: "mono small tlog-b" }, String(x[iB] ?? ""))))) : empty("logs", "No lines", "A wider window, fewer words, or another level."));
+    } else clear(linesBox, h("div", { class: "error" }, lines.reason.message));
+    const alertSql = `SELECT COUNT(*) FROM ${t} WHERE ${where({ relative: true })}`;
+    clear(sqlBox,
+      h("a", { class: "btn sm", href: link("sql", { q: linesSql }) }, icon("sql"), "As SQL"),
+      gate(h("a", { class: "btn sm", title: "An alert that counts these lines every 30 s over its window", href: `#/alerts?new=1&sql=${encodeURIComponent(alertSql)}&name=${encodeURIComponent(`Lines in ${src.table}${input.value.trim() ? ` with "${input.value.trim()}"` : ""}${level !== "all" ? `, ${level} or worse` : ""}`)}&threshold=0` }, icon("alerts"), "Alert on these lines"), "admin"));
+  }
+  catalogTables().then(async (ts) => {
+    src = logTables(ts).find((x) => x.table === name);
+    if (!src) { clear(body, card({ body: empty("logs", `${name} has no lines to show`, "A log table needs a TIMESTAMP field and a TEXT one.", h("a", { class: "btn", href: link("logs") }, "The servers' own lines")) })); return; }
+    sub.textContent = `The lines of table ${src.table}, over the top bar's window: ${src.ts} for the time, ${src.body} for the message${src.level ? `, ${src.level} for the level` : ""}.`;
+    clear(levelBox, seg([["all", "All"], ["warn", "Warn+"], ["error", "Errors"]], level, (v) => { level = v; load(); }, { "aria-label": "Level" }));
+    if (src.service) {
+      const sel = h("select", { class: "select sm", "aria-label": src.service }, h("option", { value: "" }, `every ${src.service}`));
+      api("/v1/query", { body: { sql: `SELECT ${quoteName(src.service)}, COUNT(*) AS n FROM ${quoteName(src.table)} GROUP BY ${quoteName(src.service)} ORDER BY n DESC LIMIT 30` } }).then((j) => { for (const x of j.rows || []) if (x[0] != null) sel.append(h("option", { value: x[0], selected: x[0] === service }, `${x[0]} (${fmt.si(x[1])})`)); }).catch(() => {});
+      sel.onchange = () => { service = sel.value; load(); };
+      clear(svcBox, sel);
+    }
+    input.onkeydown = (e) => { if (e.key === "Enter") load(); };
+    input.oninput = debounce(load, 400);
+    clear(body, h("div", { class: "row nw", style: { gap: "8px", flexWrap: "wrap" } }, icon("search"), input, levelBox, svcBox), card({ body: histBox }), sqlBox, card({ flush: true, body: linesBox }));
+    load();
+  }).catch((e) => clear(body, failure(e, "The tables")));
+  const offs = [bus.on("range", () => src && load())];
+  return () => { alive = false; offs.forEach((f) => f()); };
+}
+
 function render(page, r) {
+  if (r.params.get("source")) return tableLogs(page, r, r.params.get("source"));
   // Old links: the Queries tab is Queries > History, the SQL tab is the SQL workbench.
   const tab0 = r.params.get("tab");
   if (tab0 === "queries") { location.replace(link("queries", { tab: "history", request: r.params.get("request"), fingerprint: r.params.get("fingerprint") })); return; }
@@ -126,7 +237,7 @@ function render(page, r) {
   const main = h("div", { class: "al-lmain" }, facets, h("div", { class: "al-lcol" }, h("div", { class: "row nw al-lhead" }, tabs, h("span", { class: "sep" }), countNote), list, more), scrim, detail);
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Logs"), sub),
-      h("div", { class: "tools" }, storeBtn, levelBtn, h("a", { class: "btn sm ghost al-wide-only", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
+      h("div", { class: "tools" }, sourcePicker(""), storeBtn, levelBtn, h("a", { class: "btn sm ghost al-wide-only", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
     h("div", { class: "row nw al-sqrow" }, bar, sqlLink, shareBtn),
     h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), filtersBtn, chartBtn, moreBtn, liveBtn),
     h("section", { class: "card al-hist" }, h("div", { class: "bd" }, hist, markLegend)),

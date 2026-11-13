@@ -1,6 +1,6 @@
 # Quickstart: a first search in five minutes
 
-This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the query console in a browser. The last section does the same from Python, with the database inside your process and no server at all.
+This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the command center in a browser. The last section does the same from Python, with the database inside your process and no server at all.
 
 You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer), and `curl`. On Windows, use WSL 2 or Docker.
 
@@ -122,9 +122,9 @@ sql <<'EOF'
 EOF
 ```
 
-## 5. Open the query console
+## 5. Open the command center
 
-Open [http://127.0.0.1:7700](http://127.0.0.1:7700) in a browser. The query console lists the table, builds queries from a search box and filters, shows the SQL it runs and the plan the planner chose, and runs any SQL you type. With `--demo 20000`, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:
+Open [http://127.0.0.1:7700](http://127.0.0.1:7700) in a browser. In the command center, **Start here** walks through the first steps and ticks each one off once it is done. **Tables** lists `products`: its page searches it from one box (by words, by meaning, or both), shows its rows, how full each field is, and what uses it, and **Save as a saved search** keeps the query as a stored function that SQL, HTTP, Python, JavaScript and agents (over MCP) all call. The **SQL workbench** runs any SQL you type and shows the plan the planner chose; **Ask** (Ctrl+J) answers a question in words by querying the tables, with an Anthropic API key (the server's, or one you give the tab). The older query console is still at [/classic](http://127.0.0.1:7700/classic). With `--demo 20000`, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:
 
 ```sh
 chloedb-server --db demo.chloedb --demo 20000 --listen 127.0.0.1:7710 --grpc off > demo.log 2>&1 &

@@ -24,6 +24,7 @@
 
 import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, seg, sqlBlock, drawer, gate, every, store, toggle, table as coreTable } from "../core.js";
 import { tables, invalidate } from "../catalog.js";
+import { isMine } from "../owners.js";
 import { quoteName } from "../sqledit.js";
 
 export default {
@@ -57,6 +58,8 @@ const CODES = [
 ];
 
 const NEXT = "_next", PREV = "_prev";
+/** Text fields that hold addresses or codes rather than prose. */
+export const NOT_PROSE = /(^|_)(url|uri|href|link|path|id|ids|key|hash|sha|uuid|email|domain|host|ip|slug|mime|etag|token)s?$/i;
 
 /** The model and technique of a field, from its short JSON. */
 function techniqueOf(f, models) {
@@ -132,7 +135,8 @@ function render(page) {
         rows.push({ t, f, next, prev, key: `${t.table}.${f.name}`, e: (t.embeddings || []).find((x) => x.field === f.name), en: next && (t.embeddings || []).find((x) => x.field === next.name) });
       }
       const embedded = new Set(fields.filter((f) => f.embed).flatMap((f) => [].concat(f.embed.from)));
-      for (const f of fields) if (f.type === "text" && !embedded.has(f.name)) bare.push({ t, f });
+      // The user's own text, not an address or a code: a URL, a path or an id has no meaning to embed.
+      if (isMine(t.table)) for (const f of fields) if (f.type === "text" && !embedded.has(f.name) && !NOT_PROSE.test(f.name)) bare.push({ t, f });
     }
     const cols = [
       { key: "key", label: "Field", render: (r) => h("div", {}, h("b", { class: "mono" }, r.f.name), h("div", { class: "small muted" }, r.t.table)) },
@@ -140,7 +144,8 @@ function render(page) {
       { key: "model", label: "Model", sort: (r) => r.f.embed?.model || "", render: (r) => {
         if (!r.f.embed) return h("span", { class: "muted small" }, "none");
         const tt = techniqueOf(r.f, models);
-        return h("div", {}, h("div", { class: "mono small" }, r.f.embed.model), h("div", { class: "row nw", style: { marginTop: "3px" } }, techBadge(tt.technique, tt.model?.precision), h("span", { class: "small muted" }, `${r.f.dim || tt.model?.dim || "?"} dims${r.f.multi ? " a token" : ""}`)));
+        return h("div", {}, h("div", { class: "mono small" }, r.f.embed.model), h("div", { class: "row nw", style: { marginTop: "3px" } }, techBadge(tt.technique, tt.model?.precision), h("span", { class: "small muted" }, `${r.f.dim || tt.model?.dim || "?"} dims${r.f.multi ? " a token" : ""}`)),
+          tt.technique === "hash" ? h("div", { class: "small", style: { marginTop: "4px", color: "var(--serious)" }, title: "A hash model turns words into numbers without meaning: a search by meaning finds rows with the same words only. Change it to a static model to search by meaning." }, icon("warn"), " A test model: no meaning. Change it before real use.") : null);
       } },
       { key: "search", label: "Searched with", sortable: false, render: (r) => { const tt = techniqueOf(r.f, models); return h("div", { class: "small" }, indexText(tt), h("span", { class: "muted" }, ` · ${tt.codes.toUpperCase().replace("RABITQ", "RaBitQ ")}${tt.keep_f32 ? " · f32 kept" : ""}`)); } },
       { key: "state", label: "Vectors", sortable: false, render: (r) => h("div", { class: "stack mm-state" }, vectorsState(r.e, fetches),
