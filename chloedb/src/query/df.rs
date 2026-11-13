@@ -1524,9 +1524,6 @@ impl<'a> Lower<'a, '_> {
         if keys.iter().any(|k| k.left_links || k.right_links) {
             return no("a join along links");
         }
-        if kind == JoinKind::AsOf {
-            return no("an ASOF JOIN");
-        }
         let mut l = self.node(left, "scan")?;
         let r = if right.is_leaf() {
             // As the operators do: the right side read only for the join
@@ -1648,6 +1645,9 @@ impl<'a> Lower<'a, '_> {
 
     /// The join of `l` and `r` on `keys` (and `on`).
     fn joined(&mut self, l: Rel, r: Rel, kind: JoinKind, keys: &[crate::query::ir::JoinKey], on: Option<&Expr>) -> R<Rel> {
+        if kind == JoinKind::AsOf {
+            return self.asof_joined(l, r, keys, on);
+        }
         let both: Vec<String> = l.cols.iter().chain(&r.cols).cloned().collect();
         let mut conds = Vec::new();
         for k in keys {
@@ -1678,6 +1678,120 @@ impl<'a> Lower<'a, '_> {
         ord.extend(r.ord.iter().cloned());
         let names = l.names.iter().chain(&r.names).cloned().collect();
         Ok(Rel { plan, cols: both, names, key: None, score, ord })
+    }
+
+    /// An ASOF JOIN on columns: both sides held as Arrow batches, the right
+    /// side's rows grouped by their keys' bytes ([`RowConverter`]) and
+    /// sorted by time, each left row's latest right row at or before its
+    /// time found by binary search on the query's threads, and the right
+    /// columns taken by those positions (NULLs where none). The answer is
+    /// a memory table in the left's order. Times are the columns the match
+    /// condition compares, as integers (a TIMESTAMP's microseconds); any
+    /// other shape falls back to the operators.
+    fn asof_joined(&mut self, l: Rel, r: Rel, keys: &[crate::query::ir::JoinKey], on: Option<&Expr>) -> R<Rel> {
+        use datafusion::arrow::array::UInt32Array;
+        use datafusion::arrow::compute::{cast, take};
+        use datafusion::arrow::row::{RowConverter, SortField};
+        let Some(Expr::Cmp { op, left: lt, right: rt }) = on else { return no("an ASOF JOIN without its match condition") };
+        let strict = match op {
+            CmpOp::Ge => false,
+            CmpOp::Gt => true,
+            _ => return no("an ASOF JOIN's match condition other than >= or >"),
+        };
+        let lw = l.cols.len();
+        let (Expr::Output(li), Expr::Output(rj)) = (lt.as_ref(), rt.as_ref()) else { return no("an ASOF JOIN whose times are not columns") };
+        let (li, rj) = (*li as usize, *rj as usize);
+        if li >= lw || rj < lw || rj - lw >= r.cols.len() {
+            return no("an ASOF JOIN's times on the wrong sides");
+        }
+        let (l, lheld) = self.materialized(l)?;
+        let (r, rheld) = self.materialized(r)?;
+        let column = |b: &RecordBatch, name: &str| -> R<ArrayRef> { b.column_by_name(name).cloned().ok_or_else(|| Fail::No(format!("no column {name} held"))) };
+        let as_int = |a: ArrayRef| -> R<ArrayRef> {
+            match a.data_type() {
+                DataType::Int64 | DataType::Timestamp(..) | DataType::Int32 | DataType::Date32 | DataType::Date64 => Ok(cast(&a, &DataType::Int64).map_err(DataFusionError::from)?),
+                t => no(format!("an ASOF JOIN on times of type {t}")),
+            }
+        };
+        let lt_a = as_int(column(&lheld, &l.cols[li])?)?;
+        let rt_a = as_int(column(&rheld, &r.cols[rj - lw])?)?;
+        let mut lk = Vec::new();
+        let mut rk = Vec::new();
+        for k in keys {
+            let Expr::Output(j) = &k.right else { return no("an ASOF JOIN key that is not a column of the right") };
+            let e = self.top(&k.left, &l.cols, l.plan.schema())?;
+            let a = self.key_array(&l, &lheld, e)?;
+            let b = column(&rheld, &r.cols[*j as usize])?;
+            if matches!(a.data_type(), DataType::List(_)) || matches!(b.data_type(), DataType::List(_)) {
+                return no("an ASOF JOIN on a multi-valued key");
+            }
+            let b = if b.data_type() == a.data_type() { b } else { cast(&b, a.data_type()).map_err(DataFusionError::from)? };
+            lk.push(a);
+            rk.push(b);
+        }
+        let conv = RowConverter::new(lk.iter().map(|a| SortField::new(a.data_type().clone())).collect()).map_err(DataFusionError::from)?;
+        let lrows = conv.convert_columns(&lk).map_err(DataFusionError::from)?;
+        let rrows = conv.convert_columns(&rk).map_err(DataFusionError::from)?;
+        let lt_v = lt_a.as_primitive::<Int64Type>();
+        let rt_v = rt_a.as_primitive::<Int64Type>();
+        let null_key = |cols: &[ArrayRef], i: usize| cols.iter().any(|a| a.is_null(i));
+        // The right rows of each key, by time.
+        let mut buckets: HashMap<&[u8], Vec<u32>> = HashMap::new();
+        for i in 0..rheld.num_rows() {
+            if rt_v.is_null(i) || null_key(&rk, i) {
+                continue;
+            }
+            buckets.entry(rrows.row(i).data()).or_default().push(i as u32);
+        }
+        for b in buckets.values_mut() {
+            b.sort_by_key(|&i| (rt_v.value(i as usize), i));
+        }
+        let n = lheld.num_rows();
+        const CHUNK: usize = 16_384;
+        let chunks = n.div_ceil(CHUNK);
+        let slots: Vec<Mutex<Vec<Option<u32>>>> = (0..chunks).map(|_| Mutex::new(Vec::new())).collect();
+        let next = AtomicUsize::new(0);
+        let work = || loop {
+            let c = next.fetch_add(1, AtomicOrdering::Relaxed);
+            if c >= chunks {
+                return;
+            }
+            let out: Vec<Option<u32>> = (c * CHUNK..((c + 1) * CHUNK).min(n))
+                .map(|i| {
+                    if lt_v.is_null(i) || null_key(&lk, i) {
+                        return None;
+                    }
+                    let t = lt_v.value(i);
+                    let b = buckets.get(lrows.row(i).data())?;
+                    let k = b.partition_point(|&ri| {
+                        let x = rt_v.value(ri as usize);
+                        x < t || (!strict && x == t)
+                    });
+                    (k > 0).then(|| b[k - 1])
+                })
+                .collect();
+            *slots[c].lock().unwrap_or_else(|e| e.into_inner()) = out;
+        };
+        let threads = self.opts.threads.max(1).min(chunks.max(1));
+        super::pool::Pool::global().run(threads - 1, &work);
+        self.opts.check()?;
+        let at = UInt32Array::from_iter(slots.into_iter().flat_map(|s| s.into_inner().unwrap_or_else(|e| e.into_inner())));
+        let mut fields: Vec<Field> = lheld.schema().fields().iter().map(|f| f.as_ref().clone()).collect();
+        let mut arrays: Vec<ArrayRef> = lheld.columns().to_vec();
+        for c in &r.cols {
+            let a = column(&rheld, c)?;
+            fields.push(Field::new(c, a.data_type().clone(), true));
+            arrays.push(take(a.as_ref(), &at, None).map_err(DataFusionError::from)?);
+        }
+        let schema = Arc::new(ArrowSchema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(DataFusionError::from)?;
+        let score = match &l.score {
+            Score::Col(s) => Score::Col(s.clone()),
+            _ => Score::Zero,
+        };
+        let cols = l.cols.iter().chain(&r.cols).cloned().collect();
+        let names = l.names.iter().chain(&r.names).cloned().collect();
+        self.scan(schema, batch, Rel { plan: LogicalPlan::default(), cols, names, key: None, score, ord: l.ord.clone() })
     }
 
     /// [`Self::joined`] on keys of which some are multi-valued, as the
