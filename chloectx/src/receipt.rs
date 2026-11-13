@@ -585,7 +585,9 @@ impl Book {
         if db.storage().file_stats().memtable_docs >= BOOK_FLUSH_DOCS {
             db.storage().flush()?;
         }
-        db.spawn_flusher();
+        // No background flusher: the commit that fills the memtable flushes
+        // it, so the log stays bounded however busy the machine is
+        // (receipts are written after the answer, off the hooks' path).
         db.spawn_merger(chloedb::storage::MergerOptions { threads: 1, ..Default::default() });
         Ok(Book { db, writes: Mutex::new(()), n: AtomicU64::new(0) })
     }
