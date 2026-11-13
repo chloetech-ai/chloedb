@@ -1239,7 +1239,9 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
         loop {
             tick.tick().await;
             let Some(svc) = svc.upgrade() else { return };
-            let s = svc.sample();
+            let mut s = svc.sample();
+            crate::alerts::refresh_sql(&svc);
+            s.named = svc.alerts.sql_values();
             if let Some(point) = svc.series.add(s) {
                 // alerts agent: this server's rules, and a coordinator's cluster.
                 crate::alerts::tick(&svc, &point);

@@ -7,6 +7,7 @@
 
 import { h, icon, clear, fmt, api, store, toast, copy, menu, empty, seg, sqlBlock, debounce, failure, sortable, bus } from "../core.js";
 import { isProduction } from "../data.js";
+import { folded, firstMine, isMine } from "../owners.js";
 import { quoteName } from "../sqledit.js";
 import { tables, cached, table as tableOf, typeBadge, typeMeta, operators, lit, paths as listPaths, cachedPaths, pathFields, pathSql, PATH_TYPES } from "../catalog.js";
 import { grid, answerStats, exportMenu } from "../results.js";
@@ -103,6 +104,16 @@ function condition(f, c) {
   }
 }
 
+/**
+ * The text field a search looks in first: one named as a body (body,
+ * content, text, description…), else a title, else the first.
+ */
+export function bestText(fields) {
+  const ts = (fields || []).filter(searchable);
+  const by = (re) => ts.find((f) => re.test(f.name));
+  return by(/^(body|content|contents|text|description|desc|message|msg|summary|abstract|details|article|transcript|comment|review|notes?)$/i) || by(/(body|content|text|description|message|summary)/i) || by(/^(title|name|subject|headline)$/i) || ts[0] || null;
+}
+
 /** The SELECT a state stands for: {sql, params, ranked, grouped, notes}. */
 export function toSql(st) {
   const t = tableOf(st.table);
@@ -115,13 +126,22 @@ export function toSql(st) {
   // finding: one score per signal, and MATCH for the words that must be there
   const where = [], scores = [];
   let pn = 0;
+  // Words that need not all be there ("must match" off, the default): a
+  // row needs one of them, and the more it has the higher it ranks. Alone,
+  // the ranking is a guard: all the words while enough rows have them,
+  // else one fewer at a time (bm25's min and min_rows). With other scores,
+  // a row needs a word of one of them (MATCH's min => 1).
+  const loose = st.signals.filter((s) => s.kind === "words" && !s.must && !grouped && s.text?.trim());
+  const scored = st.signals.filter((s) => s.text?.trim() && !(grouped && s.kind !== "words")).length;
+  const anyWord = [];
   for (const s of st.signals) {
     const f = F(s.field);
     if (s.kind === "words") {
       if (!s.text?.trim()) continue;
       const opt = s.fuzzy ? ", fuzzy => 'auto'" : "";
-      if (s.must || grouped) where.push(`MATCH(${quoteName(f.name)}, ${lit(s.text)}${opt})`);
-      scores.push({ s, sql: `bm25(${quoteName(f.name)}, ${lit(s.text)}${opt})` });
+      if (s.must || grouped) { where.push(`MATCH(${quoteName(f.name)}, ${lit(s.text)}${opt})`); scores.push({ s, sql: `bm25(${quoteName(f.name)}, ${lit(s.text)}${opt})` }); continue; }
+      if (scored === 1 && !st.sort) scores.push({ s, sql: `bm25(${quoteName(f.name)}, ${lit(s.text)}${opt}, min => 1, min_rows => ${num(st.limit || 20)})` });
+      else { anyWord.push(`MATCH(${quoteName(f.name)}, ${lit(s.text)}${opt}, min => 1)`); scores.push({ s, sql: `bm25(${quoteName(f.name)}, ${lit(s.text)}${opt})` }); }
     } else {
       if (!s.text?.trim()) continue;
       const p = pn++ ? `q${pn}` : "q";
@@ -131,6 +151,8 @@ export function toSql(st) {
       else scores.push({ s, sql: `similarity(${quoteName(f.name)}, :${p})` });
     }
   }
+  if (anyWord.length && !st.signals.some((s) => s.kind === "meaning" && s.text?.trim())) where.push(anyWord.length > 1 ? `(${anyWord.join(" OR ")})` : anyWord[0]);
+  else if (loose.length && anyWord.length) notes.push("A meaning search ranks every row, so the words rank rows here and need not be there.");
   const conds = [];
   for (const c of st.filters) { const f = F(c.field); conds.push(condition(f, c)); }
   if (conds.length) where.push(st.any && conds.length > 1 ? `(${conds.join(" OR ")})` : conds.join(" AND "));
@@ -275,7 +297,7 @@ function render(page, r) {
   function ensureGroup() { return (st.group ||= { by: [], measures: [{ id: uid(), fn: "count" }], min: 0 }); }
   function addField(stage, name, kind) {
     const f = field(name);
-    if (stage === "find") st.signals.push(f.type === "vector" ? { id: uid(), kind: "meaning", field: name, text: "", w: 1 } : { id: uid(), kind: "words", field: name, text: "", must: true, fuzzy: false, w: 1 });
+    if (stage === "find") st.signals.push(f.type === "vector" ? { id: uid(), kind: "meaning", field: name, text: "", w: 1 } : { id: uid(), kind: "words", field: name, text: "", must: false, fuzzy: false, w: 1 });
     else if (stage === "filter") { st.filters.push({ id: uid(), field: name, op: operators(f)[0][0], value: "", value2: "" }); loadStats(f); }
     else if (stage === "boost") {
       if (isTime(f) || kind === "closeness") { st.boosts.push({ id: uid(), kind: "closeness", field: name, days: 30, origin: "", scale: "" }); loadStats(f).then(() => fillCloseness()); }
@@ -366,7 +388,7 @@ function render(page, r) {
     drawFields();
     clear(palette,
       h("div", { class: "wb-sh" }, h("b", {}, "Tables")),
-      h("div", { class: "bld-tables" }, ts.map((x) => h("button", { class: "tt-h", "aria-pressed": String(x.table === st.table), draggable: "true", title: "Click to build on it, or drag it onto “Rows from”", ondragstart: startDrag("table", x.table), onclick: () => useTable(x.table) }, icon("table"), h("span", { class: "grow ellipsis" }, x.table), h("span", { class: "small muted" }, (x.short?.fields || []).length)))),
+      h("div", { class: "bld-tables" }, folded(ts, (x) => h("button", { class: "tt-h", "aria-pressed": String(x.table === st.table), draggable: "true", title: "Click to build on it, or drag it onto “Rows from”", ondragstart: startDrag("table", x.table), onclick: () => useTable(x.table) }, icon("table"), h("span", { class: "grow ellipsis" }, x.table), h("span", { class: "small muted" }, (x.short?.fields || []).length)), { key: "builder", nameOf: (x) => x.table, open: !isMine(st.table) })),
       h("div", { class: "wb-sh", style: { marginTop: "14px" } }, h("b", {}, "Blocks"), h("span", { class: "small muted" }, "drag or click")),
       h("div", { class: "bld-blocks" }, BLOCKS.map((b) => {
         const el = h("button", { class: "blk", draggable: "true", dataset: { stage: b.stage }, title: b.what, ondragstart: startDrag("block", b.kind), onclick: () => addBlock(b.kind) }, icon(b.icon), h("span", {}, h("b", {}, b.label), h("span", { class: "small muted" }, b.what)));
@@ -476,7 +498,7 @@ function render(page, r) {
             fieldSel(s.field, s.kind === "words" ? searchable : (x) => x.type === "vector", (v) => { s.field = v; changed(); }), text, rm(st.signals, s)),
           h("div", { class: "row small dim opts" },
             s.kind === "words" ? [
-              h("label", { class: "row nw", title: "Leave out the rows without the words (MATCH)" }, h("input", { type: "checkbox", checked: s.must, onchange: (e) => { s.must = e.target.checked; changed(); } }), "must match"),
+              h("label", { class: "row nw", title: "On: only rows with every word (MATCH). Off, the default: rows with some of the words, those with all of them first while enough have them" }, h("input", { type: "checkbox", checked: s.must, onchange: (e) => { s.must = e.target.checked; changed(); } }), "every word"),
               h("label", { class: "row nw", title: "Also match words one or two edits away" }, h("input", { type: "checkbox", checked: s.fuzzy, onchange: (e) => { s.fuzzy = e.target.checked; changed(false); } }), "allow typos")] : h("span", { class: "muted" }, f?.embed ? `embedded by ${f.embed.model}` : "no model: give a vector"),
             st.signals.length > 1 && st.fusion === "weighted" ? weight(s) : null));
       });
@@ -633,7 +655,7 @@ function render(page, r) {
     if (!ts.length) { clear(flow, empty("table", "No tables yet", "Import a file or create a table first.", h("a", { class: "btn primary", href: "#/import" }, icon("import"), "Import"))); return; }
     const want = r.params.get("table");
     if (want && tableOf(want)) st = store.get(`builder.state.${tableOf(want).table}`, null) || starter(tableOf(want));
-    if (!st || !tableOf(st.table)) st = starter(ts[0]);
+    if (!st || !tableOf(st.table)) st = starter(firstMine(ts));
     drawPalette(); changed();
     loadTotal();
     for (const c of st.filters) { const f = field(c.field); if (f) loadStats(f); }
@@ -644,8 +666,8 @@ function render(page, r) {
   function starter(t) {
     const s = blank(t.table);
     const fs = t.short?.fields || [];
-    const text = fs.find(searchable);
-    if (text) s.signals.push({ id: uid(), kind: "words", field: text.name, text: "", must: true, fuzzy: false, w: 1 });
+    const text = bestText(fs);
+    if (text) s.signals.push({ id: uid(), kind: "words", field: text.name, text: "", must: false, fuzzy: false, w: 1 });
     s.columns = fs.filter((f) => showable(f) && (f.name === t.short.key || f.type === "text" || isNum(f))).slice(0, 4).map((f) => f.name);
     return s;
   }

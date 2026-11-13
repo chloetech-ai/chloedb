@@ -5,10 +5,11 @@
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
 import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
-import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
+import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
 import { openFeedback, setViewOf } from "./feedback.js";
+import { openAsk, setWhereOf } from "./ask.js";
 
 const app = document.getElementById("app");
 const byId = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
@@ -126,10 +127,19 @@ function navLink(e) {
   a.addEventListener("click", (ev) => { if (ev.button === 0 && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey) { ev.preventDefault(); location.hash = link(e.id); } });
   return a;
 }
+// A single server (no shards behind it) leaves the cluster's pages out of
+// the sidebar; a coordinator puts watching the fleet before building.
+const single = () => !!state.health && !isCoordinator();
+let navShape = null;
+const shapeOf = () => `${isCoordinator()}|${single()}`;
+for (const ev of ["health", "cluster"]) bus.on(ev, () => { if (navShape !== shapeOf()) { drawNav(); drawBadges(); } });
 function drawNav() {
   clear(nav);
+  navShape = shapeOf();
   const pins = new Set(store.get(PINS, []));
-  for (const [g, list] of NAV) {
+  const groups = isCoordinator() ? ["Watch", "Run the cluster", "Build", "Apps", "Labs"].map((g) => NAV.find((x) => x[0] === g)).filter(Boolean) : NAV;
+  for (const [g, all] of groups) {
+    const list = all.filter((e) => !(e.cluster && single()));
     if (g === "Apps") {
       const as = listApps();
       if (as.length) { nav.append(h("h6", {}, "Apps")); for (const a of as) nav.append(appLink(a)); }
@@ -175,7 +185,8 @@ function labItem(e, pinned) {
 // silenced (firingNow).
 function shellBadge(id) {
   if (id === "home") { const f = state.fleet; if (!f) return null; const n = (f.problems || []).length; return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
-  if (id === "alerts") { const fa = firingNow(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : "warn", title: `${fmt.plural(n, "alert")} firing` } : null; }
+  // Info alerts are counted, in a neutral tone: only a warning or worse turns the count amber or red (F2).
+  if (id === "alerts") { const fa = firingNow(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : fa.some((a) => a.severity === "warning") ? "warn" : "info", title: `${fmt.plural(n, "alert")} firing${fa.every((a) => a.severity === "info") ? " (info)" : ""}` } : null; }
   if (id === "cluster") {
     const c = state.cluster; if (!c?.shards) return null;
     let down = 0, dark = 0;
@@ -199,9 +210,12 @@ function drawBadges() {
     el.textContent = b.n > 99 ? "99+" : String(b.n);
     el.title = b.title || "";
   }
-  const n = firingNow().length;
+  const fa = firingNow(), n = fa.length;
   bellCount.textContent = n; bellCount.classList.toggle("hidden", !n);
-  bell.title = n ? `${fmt.plural(n, "alert")} firing` : "Alerts: nothing firing";
+  // The bell is red for a critical alert, amber for a warning, and grey when all that fires is info.
+  bellCount.classList.toggle("crit", fa.some((a) => a.severity === "critical"));
+  bellCount.classList.toggle("info", !!n && !fa.some((a) => a.severity === "critical" || a.severity === "warning"));
+  bell.title = n ? `${fmt.plural(n, "alert")} firing${bellCount.classList.contains("info") ? " (info only)" : ""}` : "Alerts: nothing firing";
 }
 for (const ev of ["alerts", "fleet", "cluster"]) bus.on(ev, drawBadges);
 bus.on("whoami", () => { drawNav(); drawBadges(); });
@@ -230,6 +244,9 @@ const themeBtn = h("button", { class: "btn ghost icon", title: "Light or dark (t
 // Feedback: this view as a picture, to mark up and send (feedback.js).
 const feedbackBtn = h("button", { class: "btn ghost icon fb-open", title: "Feedback: take this view as a picture, mark what is wrong or what you want, and send it (f)", "aria-label": "Send feedback", onclick: () => openFeedback() }, icon("feedback"));
 setViewOf(() => ({ id: currentEntry?.id || current?.id || null, title: currentEntry?.title || current?.title || null }));
+// Ask: a question about the data, in words, answered by the server's agent (ask.js).
+const askBtn = h("button", { class: "btn ghost sm ask-open", title: "Ask a question about your data, in words (Ctrl+J)", "aria-label": "Ask about your data", onclick: () => openAsk() }, icon("sparkle"), h("span", { class: "lbl" }, "Ask"));
+setWhereOf(() => ({ title: currentEntry?.title || null, table: current?.id === "table" ? parse().rest[0] || null : null }));
 const whoBtn = h("button", { class: "btn ghost sm who", title: "Who you are signed in as" }, icon("user"), h("span", {}, "…"));
 whoBtn.onclick = () => menu(whoBtn, [
   { label: "Use another key or token", icon: "access", onclick: askToken },
@@ -242,7 +259,7 @@ whoBtn.onclick = () => menu(whoBtn, [
 // button holds the range, the window, Share, the theme and the key.
 const navBtn = h("button", { class: "btn ghost icon hamb", "aria-label": "Views", title: "Views", "aria-expanded": "false", onclick: () => openNav(!shell.classList.contains("nav-open")) }, icon("menu"));
 const moreBtn = h("button", { class: "btn sm more", "aria-haspopup": "dialog", title: "Time range, Share, theme and key", onclick: () => moreSheet() }, icon("clock"), h("span", { class: "lbl" }, "1h"));
-const top = h("header", { class: "top" }, navBtn, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, moreBtn, shareBtn, feedbackBtn, bell, themeBtn, whoBtn);
+const top = h("header", { class: "top" }, navBtn, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, moreBtn, shareBtn, askBtn, feedbackBtn, bell, themeBtn, whoBtn);
 // Says when the server does not answer, and that what shows is old.
 const downBar = h("div", { class: "downbar hidden", role: "alert" });
 const content = h("main", { class: "content", id: "content" });
@@ -282,6 +299,7 @@ function moreSheet() {
       timed && state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
       row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)),
       row("share", "Share a link to this view", timed ? "with this window as fixed times; it opens paused" : null, share),
+      row("sparkle", "Ask about your data", "a question in words, answered from the tables", () => setTimeout(() => openAsk(), 250)),
       row("feedback", "Send feedback", "mark up a picture of this view", () => setTimeout(() => openFeedback(), 250)),
       h("hr"),
       row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),
@@ -362,12 +380,13 @@ function drawCluster() {
   const cn = crumbs.querySelector(".cname");
   if (cn && cn.textContent !== (name || location.host)) drawCrumbs();
   const shards = c?.shards?.length;
-  brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? "environment not set" : "connecting…");
+  brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? (isSandbox() ? "sandbox" : "environment not set") : "connecting…");
   brand.title = connectionName ? `${connectionName}: ${name || "a cluster"}${env ? " (" + env + ")" : ""}, through this hub (${location.host}), which adds its key to every call. Click for the other connections` : `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
   const prod = env != null && /^prod/i.test(env);
-  envBadge.className = "env" + (env ? "" : " hidden") + (prod ? " prod" : "");
-  envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : "";
-  envBadge.title = env ? `Environment: ${env}${prod ? ". Changes here reach production." : ""}` : "";
+  const sandbox = isSandbox();
+  envBadge.className = "env" + (env || sandbox ? "" : " hidden") + (prod ? " prod" : "") + (sandbox ? " sandbox" : "");
+  envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : sandbox ? "SANDBOX" : "";
+  envBadge.title = env ? `Environment: ${env}${prod ? ". Changes here reach production." : ""}` : sandbox ? "A sandbox: no environment is set and this page is opened on this machine, so writes run without a second ask. Start the server with --environment (production, staging…) to treat it as one." : "";
   top.classList.toggle("prod", prod);
   document.title = `${currentEntry?.title || "ChloeDB"} · ${name || "ChloeDB"}${prod ? " · PROD" : ""}`;
   if (name || env) remember(location.origin, name, env);
@@ -512,6 +531,7 @@ const go = (hash) => () => { location.hash = hash; };
 const ACTIONS = [
   { name: "Share a link to this view and window", icon: "share", run: () => share(), hint: "s" },
   { name: "Pause or resume the live view", icon: "pause", run: () => setPaused(!state.paused), hint: "p" },
+  { name: "Ask a question about your data, in words", icon: "sparkle", run: () => setTimeout(() => openAsk(), 50), hint: "Ctrl J" },
   { name: "Send feedback: mark up a picture of this view", icon: "feedback", run: () => setTimeout(() => openFeedback(), 50), hint: "f" },
   ...RANGES.map(([k, m], i) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m), hint: String(i + 1) })),
   { name: "Show a fixed window (dates and times)", icon: "clock", run: () => pickWindow() },
@@ -736,6 +756,7 @@ const GKEYS = Object.fromEntries(ENTRIES.filter((e) => e.key).map((e) => [e.key,
 function shortcuts() {
   const rows = [
     ["Ctrl K, /", "Find a shard, copy, node, table, statement, alert, key, view or action"],
+    ["Ctrl J", "Ask a question about your data, in words"],
     ...ENTRIES.filter((e) => e.key).map((e) => [`g then ${e.key}`, `${e.title} (${e.group})`]),
     ["1 2 3 4 5", "Show the last 15 min, 1 h, 6 h, 24 h, 7 days"],
     ["p", "Pause or go live"], ["s", "Share: copy a link to this view and window"], ["f", "Feedback: mark up a picture of this view and send it"], ["t", "Light or dark"], ["[", "Collapse or expand the sidebar"], ["?", "These shortcuts"], ["Esc", "Close a panel, a dialog or the palette"],
@@ -747,6 +768,7 @@ let gPending = 0;
 document.addEventListener("keydown", (e) => {
   const typing = e.target.closest?.("input,textarea,select,[contenteditable=true]");
   if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey) && !document.querySelector(".fb-ed")) { e.preventDefault(); openPalette(); return; }
+  if ((e.key === "j" || e.key === "J") && (e.ctrlKey || e.metaKey) && !document.querySelector(".fb-ed,.palette")) { e.preventDefault(); openAsk(); return; }
   // Feedback takes a drawer or a dialog too, so f works over them.
   if (e.key === "f" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector(".palette,.fb-ed,.menu")) { e.preventDefault(); openFeedback(); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".modal,.palette,.drawer,.fb-ed")) return;

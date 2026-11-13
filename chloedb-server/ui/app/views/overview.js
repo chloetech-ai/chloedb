@@ -5,6 +5,9 @@
 // ranked with their next step, error ratio and p99 with the changes of the
 // window, capacity, the coordinators side by side, and who is affected.
 
+import { can } from "../core.js";
+import { tables as catalogTables } from "../catalog.js";
+import { isMine } from "../owners.js";
 import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink } from "../core.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
 import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState } from "../data.js";
@@ -22,6 +25,8 @@ const SLO_ERR = 0.01, SLO_P99 = 250;
 const check = (id) => (state.fleet?.checks || []).find((c) => c.id === id) || null;
 const sloErr = () => check("error_ratio")?.slo ?? SLO_ERR;
 const sloP99 = () => check("p99")?.slo_ms ?? SLO_P99;
+/** One p99 wherever Home names it (F4): the last minute's when the server says it, else its window's. */
+const p99Shown = () => { const p = check("p99"); return p?.recent?.value_ms ?? p?.value_ms ?? null; };
 const median = (xs) => { const v = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
 const pctTxt = (v) => v == null ? "–" : v < 0.001 && v > 0 ? "<0.1%" : fmt.pct(v, v < 0.1 ? 2 : 1);
 const durTxt = (ms) => ms == null ? "" : fmt.dur(Math.max(0, (Date.now() - ms) / 1000)).replace(/ 0s$/, "");
@@ -98,7 +103,9 @@ function render(page, r0) {
   const head = h("div", { class: "page-head" });
   const banner = h("div", { class: "banner home-banner" });
   const kpiRow = h("div", { class: "grid g6 home-kpis" });
-  page.append(head, banner, kpiRow);
+  // A server with none of the user's tables: where to start (T1).
+  const startNudge = h("div");
+  page.append(head, startNudge, banner, kpiRow);
 
   // Where, and the problems.
   // The lens and grouping come from the link first, so a shared link shows what its sender saw (SH-3).
@@ -236,7 +243,7 @@ function render(page, r0) {
       const m = model();
       sub.push([m.shards.length ? `${m.shards.filter((s) => s.st === "ok").length} of ${m.shards.length} shards serve reads and writes` : null, m.total ? `${m.up} of ${m.total} copies answer` : null,
         check("error_ratio")?.value != null ? `error ratio ${pctTxt(check("error_ratio").value)} (SLO ${pctTxt(sloErr())})` : null,
-        check("p99")?.value_ms != null ? `p99 ${fmt.ms(check("p99").value_ms)} (SLO ${fmt.ms(sloP99())})` : null,
+        p99Shown() != null ? `p99 ${fmt.ms(p99Shown())}${check("p99")?.recent?.value_ms != null ? " last minute" : ""} (SLO ${fmt.ms(sloP99())})` : null,
         firingNow().length ? null : "nothing firing", `checked ${when(f.at_ms)}`].filter(Boolean).join(" · "));
     } else {
       if (rec) sub.push(`failed ${when(rec.from_ms)}–${when(rec.to_ms)}; answering again since ${when(rec.to_ms)} (${durTxt(rec.to_ms)})`);
@@ -294,7 +301,7 @@ function render(page, r0) {
     }
     // The last minute when the server says it (NEW-scenarios-2), else the window.
     const p99Recent = p9?.recent?.value_ms != null;
-    const p99v = p99Recent ? p9.recent.value_ms : p9?.value_ms ?? lastP.p99_ms ?? null;
+    const p99v = p99Shown() ?? lastP.p99_ms ?? null;
     const lastMin = (w) => w ? `last ${w >= 120 ? fmt.dur(w).replace(/m 0s$/, " min") : "minute"}` : "";
     const p99Tone = p9 ? (p9.status === "warning" && p99Recent && p99v <= sloP99() ? "" : tone(p9.status)) : p99v > sloP99() ? "bad" : "";
     out.push({ key: "p99", label: "p99 latency", icon: "clock", val: msParts(p99v), tone: p99Tone, spark: ps.map((p) => p.p99_ms), color: SERIES[6], sub: `${now}SLO ${fmt.ms(sloP99())} · ${p99Recent ? lastMin(p9.recent.window_s) : p9?.window_s ? "over " + fmt.dur(p9.window_s).replace(/m 0s$/, " min") : ""}`, why: p99v != null ? `p99 ${fmt.ms(p99v)} is over the SLO (${fmt.ms(sloP99())})` : null, link: link("performance") });
@@ -426,7 +433,7 @@ function render(page, r0) {
         m.shards.length ? `${m.shards.length} of ${m.shards.length} shards serve reads and writes` : null,
         m.total ? `${m.up} of ${m.total} copies answer` : null,
         check("error_ratio")?.value != null ? `${pctTxt(check("error_ratio").value)} of queries fail (SLO ${pctTxt(sloErr())})` : "no failed queries counted",
-        check("p99")?.value_ms != null ? `p99 ${fmt.ms(check("p99").value_ms)} (SLO ${fmt.ms(sloP99())})` : null,
+        p99Shown() != null ? `p99 ${fmt.ms(p99Shown())}${check("p99")?.recent?.value_ms != null ? " last minute" : ""} (SLO ${fmt.ms(sloP99())})` : null,
         check("lag") ? `replication lag at most ${fmt.si(check("lag").max_txn || 0)} transactions` : null,
         check("disk")?.max != null ? `fullest disk ${fmt.pct(check("disk").max, 0)}` : null,
         `${firingNow().length ? fmt.plural(firingNow().length, "alert") + " firing" : "no alert firing"}`,
@@ -614,11 +621,53 @@ function render(page, r0) {
   const byIdTables = () => "tables";
   const tableOf = (sql) => { const m = /\bFROM\s+("?)([A-Za-z_][\w.]*)\1/i.exec(sql) || /\bINTO\s+([A-Za-z_][\w.]*)/i.exec(sql); return m ? (m[2] || m[1]) : null; };
 
+  // ------------------------------------------------------------ ready for production (F3, F7, F9, F10)
+  const readyBody = h("div");
+  const readyTitle = h("h3", {}, "Ready for production");
+  const readySub = h("span", { class: "sub" });
+  page.append(h("section", { class: "card home-ready" }, h("div", { class: "hd" }, readyTitle, readySub), h("div", { class: "bd" }, readyBody)));
+  let auditFile, auditKnown = false;
+  async function loadAudit() {
+    if (!can("admin")) { auditKnown = false; drawReady(); return; }
+    try { const j = await api("/v1/admin/audit?limit=1", { timeout: 4000 }); auditFile = j.file || null; auditKnown = true; } catch { auditKnown = false; }
+    drawReady();
+  }
+  function drawReady() {
+    const w = state.whoami, a = state.alerts, env = environment();
+    const rules = (a?.rules || []).filter((r) => r.enabled !== false);
+    const told = rules.filter((r) => r.owner && r.runbook).length;
+    const routes = (a?.routes || []).length + (a?.webhook ? 1 : 0);
+    const shards = state.cluster?.shards || [];
+    const single = !isCoordinator();
+    const items = [
+      { ok: env != null, title: env != null ? `Environment named: ${env}` : "No environment named", fix: "Start the server with --environment production (or staging): the command center then asks before writes and drops.", href: "#/system" },
+      { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: "Start it with --token, then give each person, app and agent its own key, limited to its tables.", href: "#/access?tab=keys" },
+      { ok: routes > 0, title: routes ? `Alerts go somewhere: ${fmt.plural(routes, "route")}` : "Alerts go nowhere: no route (Slack, PagerDuty, a webhook)", fix: "Add a route in Alerts, so that a firing alert reaches a person.", href: "#/alerts?routes=1" },
+      { ok: rules.length ? told === rules.length : null, title: rules.length ? `${told} of ${rules.length} alert rules say who owns them and what to do` : "No alert rules", fix: "Give each rule an owner and a runbook URL: the person paged knows it is theirs and where to start.", href: "#/alerts" },
+      { ok: auditKnown ? !!auditFile : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : "Audit log kept in memory only: a restart loses who changed what", fix: "Start the server with --audit-log FILE (the operator: spec.auditLog).", href: "#/access" },
+      single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
+        : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : `${shards.filter((sh) => (sh.replicas || []).length < 2).length} shards have one copy`, fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
+    ];
+    const bad = items.filter((x) => x.ok === false).length;
+    readyTitle.textContent = env != null && /^prod/i.test(env) ? "Ready for production" : "Before production";
+    readySub.textContent = bad ? `${bad} of ${items.length} not set` : "all set that can be told from here";
+    clear(readyBody, h("ul", { class: "ready-list" }, items.map((x) => h("li", { class: x.ok === true ? "ok" : x.ok === false ? "no" : "unk" },
+      icon(x.ok === true ? "okc" : x.ok === false ? "warn" : "info"),
+      h("div", { class: "grow" }, h("div", {}, x.title), x.ok === true ? null : h("div", { class: "small muted" }, x.fix)),
+      x.ok === true ? null : h("a", { class: "btn ghost sm", href: x.href }, "Fix", icon("right"))))));
+  }
+  async function drawStart() {
+    let ts = [];
+    try { ts = await catalogTables(); } catch { return; }
+    clear(startNudge, ts.some((t) => isMine(t.table)) ? null : h("div", { class: "banner home-start" }, icon("rocket"), h("div", { class: "grow" }, h("b", {}, "None of your data here yet."), h("span", { class: "dim" }, ` ${ts.length ? `The ${fmt.plural(ts.length, "table")} here belong to apps. ` : ""}Import a file or load sample rows, then search it.`)), h("a", { class: "btn primary sm", href: "#/start" }, "Start here", icon("right"))));
+  }
+
   // ------------------------------------------------------------ wiring
   function drawFleet() { drawHead(); drawKpis(); drawBanner(); drawProblems(); drawCoords(); }
   function drawCluster() { drawHead(); drawWhere(); drawCapacity(); drawKpis(); drawBanner(); }
-  drawFleet(); drawCluster(); drawCharts(); drawEvents(); drawWho();
+  drawFleet(); drawCluster(); drawCharts(); drawEvents(); drawWho(); drawReady(); drawStart();
   const offs = [
+    bus.on("alerts", drawReady), bus.on("whoami", () => { drawReady(); loadAudit(); }), bus.on("cluster", drawReady), every(60000, loadAudit),
     bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", drawBanner),
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
     bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),

@@ -8,6 +8,7 @@ import { h, icon, clear, fmt, every, api, bus, seg, toast, modal, can, needs, li
 import { timeChart, SERIES } from "../charts.js";
 import { state, visible, domain, setZoom, setRange, setWindow, timeRange, rangeParams, fresh, firingAlerts, overnight } from "../data.js";
 import { eventLink, kindName, kindTone } from "./overview.js";
+import { ownerOf } from "../owners.js";
 
 export default { id: "timeline", title: "Timeline", icon: "timeline", group: "Operate", keywords: "timeline events history what changed overnight failover primary copy down rollout audit changes notes incident postmortem", render, onParams };
 
@@ -32,7 +33,7 @@ function onParams(r) { reopen?.(r); }
 function render(page, r0) {
   let shardFilter = r0.params.get("shard"), focusId = r0.params.get("event");
   const hidden = new Set(JSON.parse(localStorage.getItem("chloedb.cc.tl.hidden") || "[]"));
-  let events = [], source = "events", stats = [], statsSince = null, q = "";
+  let events = [], source = "events", stats = [], statsSince = null, q = "", spans = [];
   const open = new Set(); // grouped rows shown in full
 
   const presets = seg([["1h", "1h"], ["6h", "6h"], ["overnight", "Overnight"], ["24h", "24h"], ["7d", "7d"]], presetNow(), (v) => {
@@ -93,6 +94,21 @@ function render(page, r0) {
       // New statement shapes of the window, as events on the clients' lane.
       for (const s of stats) if (s.new && s.first_seen_ms >= from && s.first_seen_ms <= to) events.push({ id: "shape-" + s.fingerprint, ts_ms: s.first_seen_ms, kind: "new_shape", severity: "info", title: `new statement shape${s.keys?.[0] ? " from key " + s.keys[0].key : ""}: ${(s.sql || s.fingerprint || "").slice(0, 90)}`, detail: { calls: s.calls, p99_ms: s.p99_ms, fingerprint: s.fingerprint }, who: s.keys?.[0]?.key });
     } catch { /* an older server, or a read key */ }
+    // The operator's rollouts (F1): each spec version's span, from when it
+    // was set to when every copy ran it. A version the events do not name
+    // shows as a rollout; copies going down and primaries moving inside a
+    // span are the rollout's, not an incident.
+    spans = [];
+    try {
+      const k = await api("/v1/kube", { timeout: 5000 });
+      for (const v of k?.status?.history || []) {
+        const a = v.atMs, b = v.readyMs || (v.failed ? a : Date.now());
+        if (!a || b < from || a > to) continue;
+        spans.push({ from: a, to: b + 2 * 60e3, version: v.version, by: v.by, done: !!v.readyMs, failed: !!v.failed });
+        if (!events.some((e) => (e.kind === "rollout" || e.kind === "upgrade") && Math.abs(e.ts_ms - a) < 10 * 60e3)) events.push({ id: `spec-v${v.version}`, ts_ms: a, kind: v.by === "upgrader" ? "upgrade" : "rollout", severity: v.failed ? "warning" : "info", title: `Spec v${v.version} rolled out${v.by ? ` by ${["operator", "upgrader", "autoscaler"].includes(v.by) ? "the " + v.by : v.by}` : ""}${v.readyMs ? `, every copy on it after ${fmt.dur((v.readyMs - a) / 1000).replace(/ 0s$/, "")}` : v.failed ? ", failed" : ", still rolling"}`, who: v.by || "operator", detail: { version: v.version } });
+      }
+    } catch { /* not on Kubernetes, or an older server */ }
+    for (const e of events) e.during = spans.find((x) => e.ts_ms >= x.from && e.ts_ms <= x.to && DURING.has(e.kind)) || null;
     events.sort((a, b) => b.ts_ms - a.ts_ms);
     drawAll();
   }
@@ -137,9 +153,14 @@ function render(page, r0) {
     const prim = of((k) => k === "primary_changed");
     const auto = prim.filter((e) => e.detail?.automatic).length;
     const rolls = of((k) => k === "rollout" || k === "upgrade");
-    const people = of((k, e) => k === "change" && e.who && !/^(operator|autoscaler|upgrader)$/.test(e.who));
+    const changes = of((k, e) => k === "change" && e.who && !/^(operator|autoscaler|upgrader)$/.test(e.who));
+    // F8: an app's changes (its own functions and tables, often under the
+    // root token) are machine changes, counted apart from people's.
+    const machine = changes.filter((e) => machineOf(e)), people = changes.filter((e) => !machineOf(e));
+    const byApp = [...new Set(machine.map(machineOf))];
     const shapes = of((k) => k === "new_shape");
-    const copiesDown = of((k) => k === "copy_down");
+    const copiesAll = of((k) => k === "copy_down");
+    const copiesDown = copiesAll.filter((e) => !e.during), copiesRolling = copiesAll.length - copiesDown.length;
     const who = [...new Set(people.map((e) => e.who))];
     const dk = (state.fleet?.checks || []).find((c) => c.id === "disk");
     const tile = (label, val, sub, tone, href) => h(href ? "a" : "div", { class: "tl-tile " + (tone || ""), href }, h("div", { class: "small dim" }, label), h("div", { class: "v" }, val), h("div", { class: "small muted", title: typeof sub === "string" ? sub : null }, sub));
@@ -147,10 +168,10 @@ function render(page, r0) {
     const blind = statsSince != null && statsSince + 60e3 > r.from;
     clear(sumBody,
       tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((x) => `${x.what} (${when(x.from, { sec: false })}, ${x.open ? "still open" : fmt.dur((x.to - x.from) / 1000).replace(/ 0s$/, "")}${x.n > 1 ? `, ${x.n} signals` : ""})`).join(" · ") : "no shard lost its majority, no critical alert", incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0].first) : null),
-      tile("Copies down", String(copiesDown.length), copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : "every copy stayed up", copiesDown.length ? "warn" : ""),
+      tile("Copies down", String(copiesDown.length), [copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : copiesRolling ? "none outside a rollout" : "every copy stayed up", copiesRolling ? `${copiesRolling} more restarted by a rollout, as planned` : null].filter(Boolean).join(" · "), copiesDown.length ? "warn" : ""),
       tile("Primaries moved", String(prim.length), prim.length ? [auto ? `${auto} failover${auto === 1 ? "" : "s"}` : null, prim.length - auto ? `${prim.length - auto} handed over` : null].filter(Boolean).join(" · ") : "no primary moved", auto ? "warn" : ""),
-      tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout", "", rolls[0] ? eventLink(rolls[0]) : null),
-      tile("Changes by people", String(people.length), people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything", ""),
+      tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout", "", rolls[0] ? (rolls[0].id?.startsWith("spec-") ? link("rollout", { tab: "history" }) : eventLink(rolls[0])) : null),
+      tile("Changes by people", String(people.length), [people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything", machine.length ? `${machine.length} more by ${byApp.join(", ")}` : null].filter(Boolean).join(" · "), ""),
       tile("New client traffic", blind && !shapes.length ? "?" : String(shapes.length), shapes.length ? shapes.slice(0, 2).map((e) => e.who ? "key " + e.who : "a new shape").join(" · ") + (blind ? ` · others can't be told: this server started at ${when(statsSince, { sec: false })}` : "") : blind ? `Can't tell: this server started at ${when(statsSince, { sec: false })}, after the window began` : stats.length && !stats.some((s) => "new" in s) ? "this server does not mark new shapes" : "no new statement shape", shapes.length ? "warn" : ""),
       tile("Capacity", dk?.max != null ? fmt.pct(dk.max, 0) : "–", dk?.max != null ? `fullest disk now, ${dk.where || ""}${dk.days_to_full != null ? ` · full in about ${fmt.fills(dk.days_to_full)}` : ""}` : "not known", dk?.max > 0.85 ? "warn" : "", link("cluster", { tab: "capacity" })),
     );
@@ -253,9 +274,10 @@ function render(page, r0) {
     // minutes of each other (NEW-shell-monitor-16).
     const rows = [], byKey = new Map();
     for (const e of evs) {
-      const k = `${e.kind}|${e.who || ""}|${shapeOf(e.title)}`;
+      const app = e.kind === "change" ? machineOf(e) : null;
+      const k = app ? `machine|${app}` : `${e.kind}|${e.who || ""}|${shapeOf(e.title)}`;
       const p = byKey.get(k);
-      if (p && p.first - e.ts_ms < 30 * 60e3) { p.all.push(e); p.first = e.ts_ms; continue; }
+      if (p && (app || p.first - e.ts_ms < 30 * 60e3)) { p.all.push(e); p.first = e.ts_ms; continue; }
       const row = { e, all: [e], first: e.ts_ms, k };
       byKey.set(k, row); rows.push(row);
     }
@@ -267,7 +289,8 @@ function render(page, r0) {
       h("tbody", {}, lines.slice(0, 400).map((row) => { const { e, all, first, sub } = row; const n = all.length; return h("tr", { class: (e.id === focusId ? "sel" : "") + (sub ? " tl-sub" : "") },
         h("td", { class: "mono small nowrap tl-t", title: whenTitle(e.ts_ms) }, when(e.ts_ms)),
         h("td", { class: "tl-k" }, h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind))),
-        h("td", { class: "tl-w" }, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, n > 1 ? groupTitle(all) : e.title,
+        h("td", { class: "tl-w" }, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, row.k?.startsWith("machine|") && !sub ? `${fmt.plural(n, "change")} by ${machineOf(e)} (its own functions and tables)` : n > 1 ? groupTitle(all) : e.title,
+          e.during ? h("span", { class: "badge", title: `Inside the rollout of spec v${e.during.version}: expected while copies restart` }, `rollout v${e.during.version}`) : null,
           n > 1 ? h("button", { class: "btn xs ghost tl-more", "aria-expanded": String(open.has(row.k + e.ts_ms)), title: `${n} like it, from ${when(first)} to ${when(e.ts_ms)}`, onclick: () => { const id = row.k + e.ts_ms; if (open.has(id)) open.delete(id); else open.add(id); drawList(); } }, open.has(row.k + e.ts_ms) ? "hide them" : `×${n}, from ${when(first, { sec: false })}`) : null),
           detailText(e) ? h("div", { class: "small muted" }, detailText(e)) : null,
           rawOf(e)),
@@ -319,7 +342,8 @@ function render(page, r0) {
 // ---------------------------------------------------------------- helpers
 /** Incidents: majority lost, critical alerts and copies down within 15 min of each other, as one. */
 export function incidentsOf(evs) {
-  const sig = evs.filter((e) => e.kind === "majority_lost" || (e.kind === "alert_fired" && e.severity === "critical") || e.kind === "copy_down").sort((a, b) => a.ts_ms - b.ts_ms);
+  // A copy a rollout restarts is not a signal of an incident (F1).
+  const sig = evs.filter((e) => e.kind === "majority_lost" || (e.kind === "alert_fired" && e.severity === "critical") || (e.kind === "copy_down" && !e.during)).sort((a, b) => a.ts_ms - b.ts_ms);
   const endOf = (e) => { const end = evs.find((x) => x.ts_ms >= e.ts_ms && x.kind === ENDS[e.kind] && sameWhere(x, e)); return end ? end.ts_ms : null; };
   const out = [];
   for (const e of sig) {
@@ -335,6 +359,17 @@ export function incidentsOf(evs) {
   }
   // Copies down alone, with nothing critical, are not an incident.
   return out.filter((x) => x.all.some((e) => e.kind !== "copy_down")).reverse();
+}
+/** Kinds a rollout makes happen: marked as its own when inside its span. */
+const DURING = new Set(["copy_down", "copy_up", "primary_changed", "majority_lost", "majority_back", "alert_fired", "alert_resolved"]);
+/** The app a change was made by, from the objects it names (sa_*, ctx_*…), or null for a person's. */
+export function machineOf(e) {
+  if (e.kind !== "change") return null;
+  if (/^app:/.test(e.who || "")) return e.who.slice(4);
+  const text = `${e.title || ""} ${typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail || {})}`;
+  const m = text.match(/\b(?:FUNCTION|TABLE|INTO|FROM|UPDATE|function|table)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"?([A-Za-z_][\w]*)/) || text.match(/\b((?:sa|ctx|sheets|crawl|swarm|cc)_[\w]+)/);
+  const o = m ? ownerOf(m[1]) : null;
+  return o?.machinery ? o.owner : null;
 }
 const rank = (e) => e.kind === "majority_lost" ? 0 : e.kind === "alert_fired" ? 1 : 2;
 const whatOf = (e) => { const t = e.title || kindName(e.kind); return t.length > 44 ? t.slice(0, 42) + "…" : t; };

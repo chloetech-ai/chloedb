@@ -34,7 +34,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh    # into ~/.l
 chloedb-server --demo 20000 --db products.chloedb
 ```
 
-Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
+Open http://127.0.0.1:7700 for the command center: your tables, searchable from one box by words or by meaning, saved searches that code and agents call, a SQL workbench, the health of the server or cluster, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
 
 Or run the container image, which serves `/data/chloedb.chloedb`:
 
