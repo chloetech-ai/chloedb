@@ -16,7 +16,7 @@ import { firingAlerts, refreshAlerts, state } from "../data.js";
 
 export default {
   id: "oncall", title: "On-call agent", icon: "agent", group: "Operate",
-  keywords: "on-call oncall agent claude ai llm investigate incident alert firing why slow root cause diagnose triage proposals approve reject contain cancel silence runbook",
+  keywords: "on-call oncall agent claude ai llm investigate incident alert firing why slow root cause diagnose triage proposals approve reject contain cancel silence runbook change request changes inbox dry run plan stale",
   render, onParams, badge,
 };
 
@@ -24,7 +24,7 @@ export default {
 // Proposals waiting for an admin: the navigation counts them.
 let pendingN = 0;
 export function badge() {
-  return pendingN ? { n: pendingN, tone: "warn", title: `${fmt.plural(pendingN, "proposal")} of the on-call agent wait for an admin` } : null;
+  return pendingN ? { n: pendingN, tone: "warn", title: `${fmt.plural(pendingN, "proposal")} (the on-call agent's, and change requests) wait for an admin` } : null;
 }
 async function pollPending() {
   if (!can("admin") || document.hidden) return;
@@ -43,8 +43,10 @@ const SUGGEST = [
 ];
 const EFFORTS = [["", "default"], ["low", "low"], ["medium", "medium"], ["high", "high"]];
 const STATE_PILL = { running: ["info", "running"], done: ["ok", "reported"], failed: ["bad", "failed"], stopped: ["disabled", "stopped"] };
-const PROPOSAL_PILL = { pending: ["pending", "waits for an admin"], applying: ["info", "applying"], applied: ["ok", "applied"], failed: ["bad", "failed"], rejected: ["disabled", "rejected"], expired: ["disabled", "expired"] };
-const ACTION_ICON = { contain: "shield", remove_contain: "shield", cancel_query: "stop", silence_alert: "pause" };
+const PROPOSAL_PILL = { pending: ["pending", "waits for an admin"], applying: ["info", "applying"], applied: ["ok", "applied"], failed: ["bad", "failed"], rejected: ["disabled", "rejected"], expired: ["disabled", "expired"], withdrawn: ["disabled", "withdrawn"] };
+const ACTION_ICON = { contain: "shield", remove_contain: "shield", cancel_query: "stop", silence_alert: "pause", change: "wrench" };
+/** What a change request's tier means, for the person approving it. */
+const TIER_WORDS = { 1: "bounded, undone by itself", 2: "changes the cluster or its data, can be undone", 3: "loses data or costs money" };
 const mins = (m) => (m >= 120 && m % 60 === 0 ? `${m / 60} h` : `${m} min`);
 const QUERIES = { running: "Running queries", slow: "Slow queries", recent: "Recent queries", stats: "Statements by fingerprint" };
 /** What each tool reads, in words; its icon; and the view that shows the same. */
@@ -239,17 +241,33 @@ function render(page, route) {
     try { full.set(r.id, await api(`/v1/admin/oncall/runs/${encodeURIComponent(r.id)}/stop`, { body: {} })); toast("Stopping: it ends before its next model call", "info"); } catch (e) { toast(e.message, "bad"); }
     refresh();
   }
+  /** What a change request's dry run said when it was filed. */
+  function changeBlock(p) {
+    const d = p.plan || {};
+    const rows = d.affects && d.affects.rows != null ? `${fmt.n(d.affects.rows)} rows of ${d.affects.table}` : null;
+    const line = (k, v) => (v ? h("div", { class: "small" }, h("span", { class: "muted" }, k, ": "), v) : null);
+    return h("div", { class: "stack", style: { gap: "4px" } },
+      line("Tier", p.tier != null ? `${p.tier}: ${TIER_WORDS[p.tier] || ""}` : null),
+      line("Touches", rows),
+      line("Undo", d.undo || (d.reversible === false ? "none: it cannot be undone" : null)),
+      line("Meanwhile", d.blast),
+      line("Filed by", `${p.asked_by}${p.agent ? " (an agent)" : ""} ${fmt.ago(p.created_ms)}`));
+  }
   async function approve(p) {
-    const danger = p.action === "cancel_query" || (p.action === "contain" && p.body?.action === "refuse");
+    const change = p.action === "change";
+    const danger = p.action === "cancel_query" || (p.action === "contain" && p.body?.action === "refuse") || (change && (p.tier || 0) >= 3);
     const ok = await confirm({
       title: `Approve ${p.id}?`,
       ok: "Approve and apply",
       danger,
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("p", { style: { margin: 0 } }, h("b", {}, cap(p.what)), "."),
-        h("p", { class: "small dim", style: { margin: 0 } }, "Why, the agent says: ", p.why),
+        h("p", { class: "small dim", style: { margin: 0 } }, change ? "Why, it says: " : "Why, the agent says: ", p.why),
+        change ? changeBlock(p) : null,
         requestBlock(p, false),
-        h("p", { class: "small muted", style: { margin: 0 } }, "It is made now with your key, and the audit log names you, with the proposal's reason. It may no longer fit if the cluster moved since ", when(p.created_ms), ".")),
+        h("p", { class: "small muted", style: { margin: 0 } }, change
+          ? ["It is made now with your key, and the audit log names you and this change request. It is dry run again first: if the cluster moved since ", when(p.created_ms), " (other steps, other rows), it is not applied and fails as stale."]
+          : ["It is made now with your key, and the audit log names you, with the proposal's reason. It may no longer fit if the cluster moved since ", when(p.created_ms), "."])),
     });
     if (!ok) return;
     try {
@@ -319,9 +337,9 @@ function render(page, route) {
       clear(sideBox, inbox, card({ title: "Investigations", sub: ov ? `the last ${ov.kept} runs are kept` : "", body: h("div", { class: "stack", style: { gap: "0" } }, h("div", { class: "oc-find" }, sideSearch), sideList), flush: true }));
     }
     clear(inbox, pending.length ? card({
-      title: "Waiting for an admin", sub: fmt.plural(pending.length, "proposal"), cls: "oc-inbox", flush: true,
+      title: "Waiting for an admin", sub: fmt.plural(pending.length, pending.every((p) => p.action === "change") ? "change request" : "proposal"), cls: "oc-inbox", flush: true,
       body: h("div", { class: "oc-runs" }, pending.map((p) => h("div", { class: "oc-pend" },
-        h("button", { class: "oc-pend-what", onclick: () => { location.hash = "#/oncall?run=" + encodeURIComponent(p.run) + "&proposal=" + p.id; } },
+        h("button", { class: "oc-pend-what", title: p.action === "change" ? `Filed by ${p.asked_by}: ${p.why}` : "", onclick: () => { if (p.run) location.hash = "#/oncall?run=" + encodeURIComponent(p.run) + "&proposal=" + p.id; else approve(p); } },
           icon(ACTION_ICON[p.action] || "wrench"), h("span", { class: "grow" }, h("b", {}, cap(p.what)), h("span", { class: "small muted" }, ` · ${p.id} · expires ${left(p.expires_ms)}`))),
         h("div", { class: "row nw", style: { gap: "6px" } },
           h("button", { class: "btn sm primary", disabled: !can("admin"), title: can("admin") ? "Approve: see what it does first" : needs("admin"), onclick: () => approve(p) }, "Approve"),

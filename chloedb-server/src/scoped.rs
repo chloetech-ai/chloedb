@@ -121,7 +121,7 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
         }
         Command::CreateRankProfile { table, .. } => who.may_table(Scope::Admin, table, "CREATE RANK PROFILE"),
         Command::DropRankProfile { table: Some(t), .. } => who.may_table(Scope::Admin, t, "DROP RANK PROFILE"),
-        Command::DropRankProfile { table: None, .. } => Err(ApiError { status: 403, message: "a key limited to tables names the table of the rank profile it drops: DROP RANK PROFILE name ON table".into() }),
+        Command::DropRankProfile { table: None, .. } => Err(ApiError { code: None, status: 403, message: "a key limited to tables names the table of the rank profile it drops: DROP RANK PROFILE name ON table".into() }),
         Command::Function(f) => check_function(who, f, tables, functions),
     }
 }
@@ -144,7 +144,7 @@ fn check_function(who: &Principal, f: &chloedb::query::function::Statement, tabl
     if let Some(cur) = functions.current(&def.name) {
         if cur.hash != def.hash() {
             return Err(ApiError {
-                status: 403,
+                code: None, status: 403,
                 message: format!("function {} exists (version {}): a key limited to tables defines new functions, and the same ones again, but replaces none (an admin key does); the key {:?} is limited to tables", def.name, cur.version, who.name),
             });
         }
@@ -169,7 +169,7 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     if !who.limited() {
         return Ok(());
     }
-    let refuse = |m: String| ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
+    let refuse = |m: String| ApiError { code: None, status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) };
     // A query that packs its rows reads what the query without its clause
     // reads: FOLLOW reads the query's own table, and the clause names
     // columns of it, no table.
@@ -311,7 +311,7 @@ pub fn check_plan(who: &Principal, plan: &chloedb::query::ir::Plan) -> Result<()
         nodes(n, &mut seen);
     }
     if let Some(m) = seen.refused {
-        return Err(ApiError { status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) });
+        return Err(ApiError { code: None, status: 403, message: format!("{m}; the key {:?} is limited to tables", who.name) });
     }
     for t in &seen.writes {
         who.may_table(Scope::Write, t, "a write plan")?;
@@ -428,7 +428,7 @@ mod tests {
     fn key(grants: &[&str]) -> Principal {
         let g: Vec<Grant> = grants.iter().map(|g| Grant::parse(g).unwrap()).collect();
         let scope = g.iter().map(|g| g.scope).max().unwrap();
-        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()), allow: None }
+        Principal { name: "app:test".into(), key: Some("k".into()), scope, root: false, tables: Some(g.into()), role: None, agent: false, on_behalf_of: None, allow: None }
     }
 
     fn tables() -> Vec<String> {
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(reads(&k, "SELECT id, body FROM secrets ORDER BY id PACK 4000 TOKENS").unwrap_err().status, 403);
         assert_eq!(reads(&k, "SELECT id FROM crawl_docs WHERE id IN (SELECT id FROM secrets) PACK 100 TOKENS").unwrap_err().status, 403);
         // A key of every table is not checked here.
-        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None };
+        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
         assert!(reads(&all, "SELECT * FROM secrets").is_ok());
     }
 
@@ -611,7 +611,7 @@ mod tests {
         let sub = plan(json!({"version": 1, "root": {"node": "filter", "input": search("crawl_docs"), "cond": {"exists": search("secrets")}}}));
         assert_eq!(check_plan(&k, &sub).unwrap_err().status, 403);
         // Not checked for a key of every table.
-        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None };
+        let all = Principal { name: "ops".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
         assert!(check_plan(&all, &plan(json!({"version": 1, "root": search("secrets")}))).is_ok());
     }
 

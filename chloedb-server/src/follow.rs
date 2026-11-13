@@ -154,7 +154,7 @@ impl Http {
         let j: Json = res.json().await.unwrap_or(Json::Null);
         if status >= 300 {
             let message = j.get("error").and_then(Json::as_str).map(String::from).unwrap_or_else(|| format!("{} answered {status}", self.url));
-            return Err(ApiError { status, message });
+            return Err(ApiError { code: None, status, message });
         }
         Ok(j)
     }
@@ -174,14 +174,14 @@ impl Http {
         if status >= 300 {
             let j: Json = res.json().await.unwrap_or(Json::Null);
             let message = j.get("error").and_then(Json::as_str).map(String::from).unwrap_or_else(|| format!("{} answered {status}", self.url));
-            return Err(ApiError { status, message });
+            return Err(ApiError { code: None, status, message });
         }
         Ok(Lines { body: res.bytes_stream().map(|b| b.map(|b| b.to_vec())).boxed(), buf: Vec::new() })
     }
 }
 
 fn unavailable(url: &str, e: reqwest::Error) -> ApiError {
-    ApiError { status: 503, message: format!("{url}: {e}") }
+    ApiError { code: None, status: 503, message: format!("{url}: {e}") }
 }
 
 /// An NDJSON answer, a line at a time.
@@ -441,7 +441,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
     let since = |at: i64| kept.copy_ms.is_some_and(|c| c as i64 > at);
     if let Some(&at) = mine.promoted.get(&f.o.name).filter(|&&at| !f.o.copy && !f.o.reverse && !since(at)) {
         return Err(ApiError {
-            status: 409,
+            code: None, status: 409,
             message: format!("this cluster was promoted from {} (at {}): it takes its own writes; to follow {} again, copy it afresh (--copy)", f.o.name, chloedb::timestamp::format(at.saturating_mul(1000)), f.o.name),
         });
     }
@@ -510,7 +510,7 @@ where
                 tokio::time::sleep(wait).await;
                 wait = (wait * 2).min(Duration::from_secs(10));
             }
-            Err(e) => return Err(ApiError { status: e.status, message: format!("{what}: {}", e.message) }),
+            Err(e) => return Err(ApiError { code: None, status: e.status, message: format!("{what}: {}", e.message) }),
         }
     }
 }
@@ -711,7 +711,7 @@ impl Follow {
         let src = &self.o.source;
         let j = retry("the source's promotions", || self.src.get("/v1/feed/promoted")).await?;
         let Some(p) = j["promotions"].as_array().and_then(|a| a.first()).cloned() else {
-            return Err(ApiError { status: 409, message: format!("{src} was never promoted from a cluster it followed: follow it with a copy (without --reverse)") });
+            return Err(ApiError { code: None, status: 409, message: format!("{src} was never promoted from a cluster it followed: follow it with a copy (without --reverse)") });
         };
         if kept.copied && p["at_ms"].as_u64().is_some_and(|at| kept.copy_ms.is_some_and(|c| c > at)) {
             return Ok(None);
@@ -721,7 +721,7 @@ impl Follow {
         let health = retry("the follower's health", || self.dst.get("/v1/health")).await?;
         let mine = health.get("shards").and_then(Json::as_array).map(Vec::len);
         let n = mine.unwrap_or(1);
-        let again = |why: String| ApiError { status: 409, message: format!("{why}: this cluster can follow {src} only with a copy (--copy, which writes its rows over these and deletes the keys it lacks)") };
+        let again = |why: String| ApiError { code: None, status: 409, message: format!("{why}: this cluster can follow {src} only with a copy (--copy, which writes its rows over these and deletes the keys it lacks)") };
         if seqs.is_empty() || applied.len() != n || applied.iter().enumerate().any(|(i, a)| a.0 != i) {
             return Err(again(format!("{src} was promoted from {} after applying {} shards of it, and this cluster has {n}", p["promoted"], applied.len())));
         }
@@ -737,13 +737,13 @@ impl Follow {
                 let mut l = self.dst.lines(&path).await?;
                 let mut last = None;
                 while let Some(line) = l.next().await {
-                    let line = line.map_err(|e| ApiError { status: 503, message: format!("this cluster's shard {i}'s feed: {e}") })?;
+                    let line = line.map_err(|e| ApiError { code: None, status: 503, message: format!("this cluster's shard {i}'s feed: {e}") })?;
                     if let Some(h) = line.get("feed") {
                         last = h["last"].as_u64();
                     } else if line.get("gone").is_some() || line.get("diverged").is_some() {
                         return Err(again(format!("this cluster's shard {i} no longer holds transaction {seq} as {src} applied it, or holds many after it")));
                     } else if let Some(e) = line.get("error") {
-                        return Err(ApiError { status: line["status"].as_u64().unwrap_or(500) as u16, message: format!("this cluster's shard {i}'s feed: {}", e.as_str().unwrap_or_default()) });
+                        return Err(ApiError { code: None, status: line["status"].as_u64().unwrap_or(500) as u16, message: format!("this cluster's shard {i}'s feed: {}", e.as_str().unwrap_or_default()) });
                     } else if let Some(t) = line["seq"].as_u64() {
                         let rows = line["ops"].as_array().is_some_and(|o| !o.is_empty()) || line.get("sources").is_some();
                         if rows {
@@ -757,9 +757,9 @@ impl Follow {
                         return Ok(());
                     }
                 }
-                Err(ApiError { status: 503, message: format!("this cluster's shard {i}'s feed ended before its last transaction") })
+                Err(ApiError { code: None, status: 503, message: format!("this cluster's shard {i}'s feed ended before its last transaction") })
             };
-            tokio::time::timeout(Duration::from_secs(30), check).await.map_err(|_| ApiError { status: 503, message: format!("this cluster's shard {i}'s feed did not reach its last transaction in 30 s") })??;
+            tokio::time::timeout(Duration::from_secs(30), check).await.map_err(|_| ApiError { code: None, status: 503, message: format!("this cluster's shard {i}'s feed did not reach its last transaction in 30 s") })??;
         }
         tracing::info!(source = %src, from = %p["promoted"], "this cluster holds what the source applied of it: following it from its promotion");
         Ok(Some(seqs))
@@ -861,14 +861,14 @@ impl Follow {
             let mut lines = Vec::with_capacity(n);
             for i in 0..n {
                 let path = self.copy_path(i, since.get(&i).copied().unwrap_or_default(), &whole);
-                let mut l = self.src.lines(&path).await.map_err(|e| ApiError { status: e.status, message: format!("the copy of shard {i}: {}", e.message) })?;
+                let mut l = self.src.lines(&path).await.map_err(|e| ApiError { code: None, status: e.status, message: format!("the copy of shard {i}: {}", e.message) })?;
                 let head = match l.next().await {
                     Some(Ok(j)) => j,
-                    Some(Err(e)) => return Err(ApiError { status: 503, message: format!("the copy of shard {i}: {e}") }),
-                    None => return Err(ApiError { status: 503, message: format!("the copy of shard {i} ended at once") }),
+                    Some(Err(e)) => return Err(ApiError { code: None, status: 503, message: format!("the copy of shard {i}: {e}") }),
+                    None => return Err(ApiError { code: None, status: 503, message: format!("the copy of shard {i} ended at once") }),
                 };
                 if let Some(e) = head.get("error") {
-                    return Err(ApiError { status: head["status"].as_u64().unwrap_or(500) as u16, message: format!("the copy of shard {i}: {}", e.as_str().unwrap_or_default()) });
+                    return Err(ApiError { code: None, status: head["status"].as_u64().unwrap_or(500) as u16, message: format!("the copy of shard {i}: {}", e.as_str().unwrap_or_default()) });
                 }
                 let Some(h) = head.get("copy").filter(|c| c.is_object()).cloned() else {
                     return Err(ApiError::internal(format!("the copy of shard {i} began with {head}, not its version: the source needs shard protocol {}", crate::grpc::FEED_KEYS_PROTOCOL)));
@@ -905,7 +905,7 @@ impl Follow {
                 whole.extend(changed);
                 tries -= 1;
             } else if tries >= COPY_TRIES {
-                return Err(ApiError { status: 503, message: format!("the source's shards served different slot maps or tables in {COPY_TRIES} tries of a copy: a move or a change of tables was under way; start again") });
+                return Err(ApiError { code: None, status: 503, message: format!("the source's shards served different slot maps or tables in {COPY_TRIES} tries of a copy: a move or a change of tables was under way; start again") });
             } else {
                 tracing::info!(tries, "the source's shards differ (a slot move or a change of tables): copying again");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -926,8 +926,8 @@ impl Follow {
             loop {
                 let j = match l.next().await {
                     Some(Ok(j)) => j,
-                    Some(Err(e)) => return Err(ApiError { status: 503, message: format!("the copy of shard {i}: {e}") }),
-                    None => return Err(ApiError { status: 503, message: format!("the copy of shard {i} ended before its rows did") }),
+                    Some(Err(e)) => return Err(ApiError { code: None, status: 503, message: format!("the copy of shard {i}: {e}") }),
+                    None => return Err(ApiError { code: None, status: 503, message: format!("the copy of shard {i} ended before its rows did") }),
                 };
                 if j.get("copy") == Some(&Json::Bool(true)) {
                     let rows = j["ops"].as_array().into_iter().flatten().filter(|o| !o["table"].as_str().is_some_and(own_table));
@@ -941,7 +941,7 @@ impl Follow {
                         self.status(false).await;
                     }
                 } else if let Some(c) = j.get("copied") {
-                    for (slot, (k, h)) in digests_of(&c["digests"]).map_err(|e| ApiError { status: 502, message: format!("the copy of shard {i}: {}: the source needs shard protocol {}", e.message, crate::grpc::FEED_KEYS_PROTOCOL) })? {
+                    for (slot, (k, h)) in digests_of(&c["digests"]).map_err(|e| ApiError { code: None, status: 502, message: format!("the copy of shard {i}: {}: the source needs shard protocol {}", e.message, crate::grpc::FEED_KEYS_PROTOCOL) })? {
                         let d = digests.entry(slot).or_default();
                         d.0 += k;
                         d.1 = d.1.wrapping_add(h);
@@ -960,7 +960,7 @@ impl Follow {
                     at.push((seq, c["term"].as_u64().unwrap_or(0)));
                     break;
                 } else if let Some(e) = j.get("error") {
-                    return Err(ApiError { status: j["status"].as_u64().unwrap_or(500) as u16, message: format!("the copy of shard {i}: {}", e.as_str().unwrap_or_default()) });
+                    return Err(ApiError { code: None, status: j["status"].as_u64().unwrap_or(500) as u16, message: format!("the copy of shard {i}: {}", e.as_str().unwrap_or_default()) });
                 }
             }
         }
@@ -1195,7 +1195,7 @@ impl Follow {
                             continue;
                         }
                         if !again {
-                            return Err(ApiError { status: 503, message: format!("shard {i}'s feed: {why}") });
+                            return Err(ApiError { code: None, status: 503, message: format!("shard {i}'s feed: {why}") });
                         }
                         tracing::warn!(shard = i, "the feed stopped: {why}; reading again");
                         let r = &mut self.readers[i];
@@ -1360,7 +1360,7 @@ impl Follow {
                     self.status(false).await;
                     tokio::time::sleep(RECONNECT).await;
                 }
-                Err(e) => return Err(ApiError { status: e.status, message: format!("writing to the follower: {}", e.message) }),
+                Err(e) => return Err(ApiError { code: None, status: e.status, message: format!("writing to the follower: {}", e.message) }),
             }
         };
         self.error = None;
@@ -1394,7 +1394,7 @@ impl Follow {
             Some(have) if token(have) == token(s) => return Ok(()),
             Some(have) => {
                 return Err(ApiError {
-                    status: 409,
+                    code: None, status: 409,
                     message: format!("table {} here is not the source's:\n{}\nwhere the source has\n{}\nDrop it here, or follow into a cluster without it", s.table, create_sql(have), create_sql(s)),
                 })
             }
@@ -1439,7 +1439,7 @@ impl Follow {
                                 }
                             }
                         }
-                        _ => return Err(ApiError { status: 409, message: format!("table {table} here is neither as the source had it before its change nor after it") }),
+                        _ => return Err(ApiError { code: None, status: 409, message: format!("table {table} here is neither as the source had it before its change nor after it") }),
                     }
                 }
                 Some("drop_table") => {
@@ -1563,7 +1563,7 @@ pub async fn switch_over(o: SwitchOptions) -> Result<Json, ApiError> {
     let name = o.name.as_str();
     let cluster = || async {
         let v = dst.get("/v1/admin/follow").await?;
-        v["clusters"].as_array().into_iter().flatten().find(|c| c["name"] == name).cloned().ok_or_else(|| ApiError { status: 404, message: format!("{} never followed {name}", o.target) })
+        v["clusters"].as_array().into_iter().flatten().find(|c| c["name"] == name).cloned().ok_or_else(|| ApiError { code: None, status: 404, message: format!("{} never followed {name}", o.target) })
     };
     let c = cluster().await?;
     let mut planned = c["source_holds"] == true || c.get("promoted_ms").is_some();
@@ -1587,7 +1587,7 @@ pub async fn switch_over(o: SwitchOptions) -> Result<Json, ApiError> {
                     }
                     if Instant::now() >= until {
                         return Err(ApiError {
-                            status: 503,
+                            code: None, status: 503,
                             message: format!(
                                 "{} did not apply the writes of {name} up to its hold in {} s ({} transactions behind, as its follow process last said): {name} still holds its writes; run this again, or end the hold there (POST /v1/admin/hold-writes {{\"hold\": false}})",
                                 o.target,
@@ -1602,7 +1602,7 @@ pub async fn switch_over(o: SwitchOptions) -> Result<Json, ApiError> {
             }
             Err(why) if !o.unplanned => {
                 return Err(ApiError {
-                    status: 409,
+                    code: None, status: 409,
                     message: format!(
                         "could not hold the writes of {name}: {why}. Promoting {} now loses the writes {name} took that it has not applied ({} transactions, as its follow process last said); if {name} is gone, switch over with --unplanned",
                         o.target, c["status"]["behind"]

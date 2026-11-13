@@ -82,7 +82,7 @@ pub fn create_sql() -> String {
 /// Who makes the table: the server itself, since a key that may write
 /// feedback need not be one that may create tables.
 fn maker() -> Principal {
-    Principal { name: "feedback".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None }
+    Principal { name: "feedback".into(), key: None, scope: Scope::Admin, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None }
 }
 
 /// Refuses what a key limited to tables may not do to the feedback table.
@@ -164,7 +164,7 @@ pub fn picture(data_url: &str, max: usize, what: &str) -> Result<(String, Vec<u8
         return Err(ApiError::bad(format!("{what} is a PNG, JPEG or WebP image, not {mime:?}")));
     }
     if b64.len() / 4 * 3 > max + 3 {
-        return Err(ApiError { status: 413, message: format!("{what} is at most {} MB", max >> 20) });
+        return Err(ApiError { code: None, status: 413, message: format!("{what} is at most {} MB", max >> 20) });
     }
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ApiError::bad(format!("{what}: not base64 ({e})")))?;
     let magic: &[u8] = match mime {
@@ -386,10 +386,10 @@ pub async fn list(svc: &Arc<Service>, who: &Principal, q: &std::collections::Has
 async fn row(svc: &Arc<Service>, id: &str, cols: &str) -> Result<Map<String, Json>, ApiError> {
     id_ok(id)?;
     if !exists(svc).await {
-        return Err(ApiError { status: 404, message: format!("no feedback {id:?}: none was sent yet") });
+        return Err(ApiError { code: None, status: 404, message: format!("no feedback {id:?}: none was sent yet") });
     }
     let p = Params::new().set("id", Value::Str(id.into()));
-    select(svc, format!("SELECT {cols} FROM {TABLE} WHERE id = :id"), p).await?.into_iter().next().ok_or_else(|| ApiError { status: 404, message: format!("no feedback {id:?}") })
+    select(svc, format!("SELECT {cols} FROM {TABLE} WHERE id = :id"), p).await?.into_iter().next().ok_or_else(|| ApiError { code: None, status: 404, message: format!("no feedback {id:?}") })
 }
 
 /// `GET /v1/feedback/:id`: the row, its marks and context as JSON, and the
@@ -418,7 +418,7 @@ pub async fn image(svc: &Arc<Service>, who: &Principal, id: &str, thumb: bool) -
     let r = row(svc, id, col).await?;
     match r.get(col).and_then(|v| v.as_str()) {
         Some(s) => picture(s, usize::MAX >> 1, col),
-        None => Err(ApiError { status: 404, message: format!("feedback {id} has no {}", if thumb { "thumbnail" } else { "screenshot" }) }),
+        None => Err(ApiError { code: None, status: 404, message: format!("feedback {id} has no {}", if thumb { "thumbnail" } else { "screenshot" }) }),
     }
 }
 
@@ -468,7 +468,7 @@ pub async fn update(svc: &Arc<Service>, who: &Principal, id: &str, b: Json) -> R
         if let Some(want) = &if_status {
             let is = now.get("status").and_then(|s| s.as_str()).unwrap_or("");
             if is != want {
-                return Err(ApiError { status: 409, message: format!("feedback {id} is {is}, not {want}: someone changed it first") });
+                return Err(ApiError { code: None, status: 409, message: format!("feedback {id} is {is}, not {want}: someone changed it first") });
             }
         }
         svc.write_ops(ops, None).await?;

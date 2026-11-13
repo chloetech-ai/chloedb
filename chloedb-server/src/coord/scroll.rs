@@ -164,7 +164,7 @@ impl Coordinator {
             async move {
                 let first = leased[i].map(|(r, _)| r);
                 let a = self
-                    .call(t, i, start, first, deadline, |r, mut c| {
+                    .call(t, i, start, first, read.min(i), deadline, |r, mut c| {
                         let snapshot = leased[i].filter(|(lr, _)| *lr == r).map_or(0, |(_, l)| l);
                         async move {
                             let p = self.speak(t, i, r, &mut c, protocol).await?;
@@ -279,7 +279,7 @@ impl Coordinator {
                     continue;
                 }
                 Err(_) => {
-                    failed = failed.or(Some(ApiError { status: 504, message: format!("{name}: its scroll's page ran past the deadline") }));
+                    failed = failed.or(Some(ApiError { code: None, status: 504, message: format!("{name}: its scroll's page ran past the deadline") }));
                     continue;
                 }
             };

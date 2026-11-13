@@ -528,7 +528,7 @@ impl Hub {
     pub async fn add(&self, a: Add, by: &str) -> Result<Added, ApiError> {
         check_name(&a.name)?;
         if !a.replace && self.get(&a.name).is_some() {
-            return Err(ApiError { status: 409, message: format!("{} is in the book already: pick another name, or replace it", a.name) });
+            return Err(ApiError { code: None, status: 409, message: format!("{} is in the book already: pick another name, or replace it", a.name) });
         }
         let key = a.key.trim();
         if key.is_empty() {
@@ -542,7 +542,7 @@ impl Hub {
                 return Err(ApiError::bad(format!("{u}: a connection's address is an http:// or https:// URL")));
             }
             if parsed.scheme() == "http" && !loopback(&parsed) && !a.allow_plain {
-                return Err(ApiError { status: 409, message: format!("{u} is plain HTTP beyond this machine: the key and the rows would cross the network readable. Give the cluster HTTPS, or allow plain HTTP for this connection") });
+                return Err(ApiError { code: None, status: 409, message: format!("{u} is plain HTTP beyond this machine: the key and the rows would cross the network readable. Give the cluster HTTPS, or allow plain HTTP for this connection") });
             }
             urls.push(u.trim_end_matches('/').to_string());
         }
@@ -562,8 +562,8 @@ impl Hub {
                         Some(t) if t.eq_ignore_ascii_case(&fp) => pin = Some(fp),
                         _ => return Ok(Added::NeedsTrust { url: first, fingerprint: fp }),
                     },
-                    (Err(e), _) => return Err(ApiError { status: 502, message: format!("{first} does not answer: {}", error_text(&e)) }),
-                    (Ok(_), None) => return Err(ApiError { status: 502, message: format!("{first} answered without a certificate") }),
+                    (Err(e), _) => return Err(ApiError { code: None, status: 502, message: format!("{first} does not answer: {}", error_text(&e)) }),
+                    (Ok(_), None) => return Err(ApiError { code: None, status: 502, message: format!("{first} answered without a certificate") }),
                 }
             }
         }
@@ -603,16 +603,16 @@ impl Hub {
             if let Some(key) = key {
                 rb = rb.header(VIA_PROXY_AUTH, format!("Bearer {key}"));
             }
-            let r = rb.send().await.map_err(|e| ApiError { status: 502, message: format!("{} does not answer: {}", v.describe(), error_text(&e)) })?;
+            let r = rb.send().await.map_err(|e| ApiError { code: None, status: 502, message: format!("{} does not answer: {}", v.describe(), error_text(&e)) })?;
             let status = r.status().as_u16();
-            let body = r.bytes().await.map_err(|e| ApiError { status: 502, message: format!("{}: {e}", v.describe()) })?;
+            let body = r.bytes().await.map_err(|e| ApiError { code: None, status: 502, message: format!("{}: {e}", v.describe()) })?;
             if let Some(m) = kube_status(&body).filter(|_| status >= 400) {
-                return Err(ApiError { status: 502, message: format!("{} ({status}): {m}", v.describe()) });
+                return Err(ApiError { code: None, status: 502, message: format!("{} ({status}): {m}", v.describe()) });
             }
             return match status {
-                200..=299 => serde_json::from_slice::<Json>(&body).ok().filter(|j| j.get("scope").is_some()).ok_or_else(|| ApiError { status: 502, message: format!("{} did not answer as ChloeDB does", c.name) }),
-                401 | 403 => Err(ApiError { status: 409, message: format!("{} refused the key ({status}): check it, and that it has not expired", c.name) }),
-                s => Err(ApiError { status: 502, message: format!("{} answered {s} through {}", c.name, v.describe()) }),
+                200..=299 => serde_json::from_slice::<Json>(&body).ok().filter(|j| j.get("scope").is_some()).ok_or_else(|| ApiError { code: None, status: 502, message: format!("{} did not answer as ChloeDB does", c.name) }),
+                401 | 403 => Err(ApiError { code: None, status: 409, message: format!("{} refused the key ({status}): check it, and that it has not expired", c.name) }),
+                s => Err(ApiError { code: None, status: 502, message: format!("{} answered {s} through {}", c.name, v.describe()) }),
             };
         }
         let key = key.unwrap_or_default();
@@ -624,21 +624,21 @@ impl Hub {
         for u in &c.urls {
             match cl.get(format!("{u}/v1/whoami")).bearer_auth(key).header("x-strata-client", "hub").send().await {
                 Ok(r) if r.status().is_success() => {
-                    let j: Json = r.json().await.map_err(|e| ApiError { status: 502, message: format!("{u} did not answer as ChloeDB does: {e}") })?;
+                    let j: Json = r.json().await.map_err(|e| ApiError { code: None, status: 502, message: format!("{u} did not answer as ChloeDB does: {e}") })?;
                     if j.get("scope").is_none() {
-                        return Err(ApiError { status: 502, message: format!("{u} did not answer as ChloeDB does") });
+                        return Err(ApiError { code: None, status: 502, message: format!("{u} did not answer as ChloeDB does") });
                     }
                     if j["auth"]["open"] == true && !loopback(&reqwest::Url::parse(u).map_err(|e| ApiError::bad(e.to_string()))?) {
                         tracing::warn!(connection = %c.name, url = %u, "this cluster takes calls without a key");
                     }
                     return Ok(j);
                 }
-                Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => return Err(ApiError { status: 409, message: format!("{u} refused the key ({}): check it, and that it has not expired", r.status().as_u16()) }),
+                Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => return Err(ApiError { code: None, status: 409, message: format!("{u} refused the key ({}): check it, and that it has not expired", r.status().as_u16()) }),
                 Ok(r) => last = format!("{u} answered {}", r.status()),
                 Err(e) => last = format!("{u} does not answer: {}", error_text(&e)),
             }
         }
-        Err(ApiError { status: 502, message: last })
+        Err(ApiError { code: None, status: 502, message: last })
     }
 
     /// The key kept for a connection; none for one without
@@ -664,18 +664,18 @@ impl Hub {
         let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| via.service.clone());
         check_name(&name)?;
         if self.get(&name).is_some() {
-            return Err(ApiError { status: 409, message: format!("{name} is in the book already: pick another name") });
+            return Err(ApiError { code: None, status: 409, message: format!("{name} is in the book already: pick another name") });
         }
-        let gone = |e: String| ApiError { status: 502, message: format!("{}: {e}", via.describe()) };
+        let gone = |e: String| ApiError { code: None, status: 502, message: format!("{}: {e}", via.describe()) };
         let sc = k.get(&format!("/apis/strata.chloetech.ai/v1alpha1/namespaces/{}/strataclusters/{}", via.namespace, via.service)).await.map_err(gone)?;
-        let sc = sc.ok_or_else(|| ApiError { status: 404, message: format!("{} has no StrataCluster {}/{}", via.cluster, via.namespace, via.service) })?;
+        let sc = sc.ok_or_else(|| ApiError { code: None, status: 404, message: format!("{} has no StrataCluster {}/{}", via.cluster, via.namespace, via.service) })?;
         let root = match sc["spec"]["tokenSecret"].as_str() {
             Some(secret) => {
                 let sec = k.get(&format!("/api/v1/namespaces/{}/secrets/{secret}", via.namespace)).await.map_err(gone)?;
-                let b64 = sec.as_ref().and_then(|s| s["data"]["token"].as_str()).ok_or_else(|| ApiError { status: 502, message: format!("{} has no token in its Secret {secret}", via.cluster) })?;
+                let b64 = sec.as_ref().and_then(|s| s["data"]["token"].as_str()).ok_or_else(|| ApiError { code: None, status: 502, message: format!("{} has no token in its Secret {secret}", via.cluster) })?;
                 use base64::Engine;
-                let t = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ApiError { status: 502, message: format!("the Secret {secret}: {e}") })?;
-                Some(String::from_utf8(t).map_err(|_| ApiError { status: 502, message: format!("the Secret {secret} is not a token") })?.trim().to_string())
+                let t = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ApiError { code: None, status: 502, message: format!("the Secret {secret}: {e}") })?;
+                Some(String::from_utf8(t).map_err(|_| ApiError { code: None, status: 502, message: format!("the Secret {secret} is not a token") })?.trim().to_string())
             }
             None => None,
         };
@@ -704,15 +704,15 @@ impl Hub {
                     .json(&body)
                     .send()
                     .await
-                    .map_err(|e| ApiError { status: 502, message: format!("{} does not answer: {}", via.describe(), error_text(&e)) })?;
+                    .map_err(|e| ApiError { code: None, status: 502, message: format!("{} does not answer: {}", via.describe(), error_text(&e)) })?;
                 let status = r.status().as_u16();
                 let b = r.bytes().await.unwrap_or_default();
                 if !(200..300).contains(&status) {
                     let why = kube_status(&b).or_else(|| serde_json::from_slice::<Json>(&b).ok().and_then(|j| j["error"].as_str().map(String::from))).unwrap_or_else(|| format!("{status}"));
-                    return Err(ApiError { status: 502, message: format!("{name} did not make a key for this hub: {why}") });
+                    return Err(ApiError { code: None, status: 502, message: format!("{name} did not make a key for this hub: {why}") });
                 }
-                let j: Json = serde_json::from_slice(&b).map_err(|e| ApiError { status: 502, message: format!("{name}: {e}") })?;
-                Some(j["secret"].as_str().ok_or_else(|| ApiError { status: 502, message: format!("{name} made no key") })?.to_string())
+                let j: Json = serde_json::from_slice(&b).map_err(|e| ApiError { code: None, status: 502, message: format!("{name}: {e}") })?;
+                Some(j["secret"].as_str().ok_or_else(|| ApiError { code: None, status: 502, message: format!("{name} made no key") })?.to_string())
             }
             None => None,
         };
@@ -839,7 +839,7 @@ impl Hub {
                 Err(e) => {
                     let m = format!("{} does not answer: {}", v.describe(), error_text(&e));
                     self.noted(name, &Err(m.clone()));
-                    Err(ApiError { status: 502, message: m })
+                    Err(ApiError { code: None, status: 502, message: m })
                 }
             };
         }
@@ -874,7 +874,7 @@ impl Hub {
             }
         }
         self.noted(name, &Err(last.clone()));
-        Err(ApiError { status: 502, message: last })
+        Err(ApiError { code: None, status: 502, message: last })
     }
 }
 
@@ -894,7 +894,7 @@ fn answer(name: &str, r: reqwest::Response) -> axum::response::Response {
     let status = r.status().as_u16();
     if status == 401 || status == 403 {
         let why = format!("{name} refused this hub's key ({status}): it may have expired or been revoked; put a new one in Connections");
-        return ApiError { status: 502, message: why }.into_response();
+        return ApiError { code: None, status: 502, message: why }.into_response();
     }
     let mut out = axum::response::Response::builder().status(status);
     for (k, v) in r.headers() {
@@ -917,10 +917,10 @@ async fn answer_kube(name: &str, v: &ViaKube, r: reqwest::Response) -> axum::res
     let headers = r.headers().clone();
     let body = r.bytes().await.unwrap_or_default();
     if let Some(m) = kube_status(&body) {
-        return ApiError { status: 502, message: format!("{} ({status}): {m}", v.describe()) }.into_response();
+        return ApiError { code: None, status: 502, message: format!("{} ({status}): {m}", v.describe()) }.into_response();
     }
     if status == 401 || status == 403 {
-        return ApiError { status: 502, message: format!("{name} refused this hub's key ({status}): it may have expired or been revoked; open it again from Cloud setup") }.into_response();
+        return ApiError { code: None, status: 502, message: format!("{name} refused this hub's key ({status}): it may have expired or been revoked; open it again from Cloud setup") }.into_response();
     }
     let mut out = axum::response::Response::builder().status(status);
     for (k, val) in &headers {
@@ -941,7 +941,7 @@ fn key_view(who: &Json) -> Json {
 }
 
 fn not_found(name: &str) -> ApiError {
-    ApiError { status: 404, message: format!("no connection {name} in this hub's book") }
+    ApiError { code: None, status: 404, message: format!("no connection {name} in this hub's book") }
 }
 
 /// An error and its causes, on one line.

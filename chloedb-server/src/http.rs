@@ -56,6 +56,12 @@
 //! | `POST /v1/admin/oncall/runs/:id/stop` | | the run: it stops before its next model call |
 //! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
 //! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
+//! | `POST /v1/admin/changes/preview` | `{method, path, body?}` | the dry run of a change of any route: `{tier, would, reversible, undo, blast, affects, preflight, plan, plan_id, fingerprint}` ([`crate::changes`]) |
+//! | `POST /v1/admin/changes`, `GET /v1/admin/changes?state=`, `GET /v1/admin/changes/:id` | `{method, path, body?, reason, what?}` to file | a change request, pending a person's approval for an hour; the list, `{changes, pending}`; one |
+//! | `POST /v1/admin/changes/:id/approve`, `.../reject`, `.../withdraw` | `{reason?}` | approved by a person (an agent is refused `approval_refused`), dry run again first (`plan_stale` when it moved); rejected by a person; withdrawn by whoever filed it |
+//! | `GET /v1/catalog?q=` | | every route with its scope, tier, roles, dry run and MCP tool, and every error code ([`crate::catalog`]) |
+//! | `GET /v1/runbooks?for=&q=` | | the runbook for an alert or fleet problem, or by words ([`crate::runbooks`]) |
+//! | `GET /v1/admin/jobs?kind=` | | `{jobs, running}`: plans, moves, on-call runs and change requests in one shape |
 //! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
@@ -149,7 +155,7 @@ impl IntoResponse for ApiError {
         let code = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let failure = (self.status >= 500).then(|| Failure(self.message.as_str().into()));
         let client = (400..500).contains(&self.status).then(|| ClientError(self.message.as_str().into()));
-        let mut r = (code, AxJson(json!({"error": self.message}))).into_response();
+        let mut r = (code, AxJson(crate::errors::answer(&self))).into_response();
         if let Some(c) = client {
             r.extensions_mut().insert(c);
         }
@@ -196,7 +202,12 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // credential, through the same checks (a copy, so the router does not
     // hold itself); and health, which takes no credential (the on-call
     // agent's first look, [`crate::oncall`]).
-    let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    // Two copies deep: a dry run or change request a tool files makes
+    // requests of its own (a plan, a count of rows), through the copy
+    // below it, which files none.
+    let copy = |app: &App| api(app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    let inner = copy(&app);
+    let tools = copy(&App { mcp: Some(inner), ..app.clone() });
     // connectors: their runs write through the same routes and checks.
     crate::connectors::Connectors::start(&app.svc, tools.clone(), app.hosts.as_deref().and_then(|h| h.first().cloned()));
     let app = App { mcp: Some(tools), ..app };
@@ -320,6 +331,17 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/oncall/proposals", get(oncall_proposals))
         .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
         .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
+        // Dry runs and change requests ([`crate::changes`]), the catalog of
+        // routes ([`crate::catalog`]) and the jobs running.
+        .route("/v1/admin/changes", get(changes_list).post(changes_file))
+        .route("/v1/admin/changes/preview", post(changes_preview))
+        .route("/v1/admin/changes/:id", get(changes_get))
+        .route("/v1/admin/changes/:id/approve", post(changes_approve))
+        .route("/v1/admin/changes/:id/reject", post(changes_reject))
+        .route("/v1/admin/changes/:id/withdraw", post(changes_withdraw))
+        .route("/v1/catalog", get(catalog))
+        .route("/v1/runbooks", get(runbooks))
+        .route("/v1/admin/jobs", get(jobs))
         .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
@@ -597,7 +619,17 @@ pub fn caller_of(headers: &HeaderMap, peer: Option<std::net::SocketAddr>, truste
     }
     let client = header_text(headers, "x-strata-client").map(|c| c.to_ascii_lowercase()).filter(|c| c == keys::COMMAND_CENTER);
     let app = header_text(headers, "x-strata-app").or_else(|| header_str(headers, header::USER_AGENT).and_then(keys::product));
-    keys::Caller { addr: addr.map(|a| a.to_string()), client, app, reason: header_text(headers, "x-strata-reason") }
+    let short = |n: &str| header_text(headers, n).map(|v| v.chars().take(120).collect::<String>());
+    keys::Caller {
+        addr: addr.map(|a| a.to_string()),
+        client,
+        app,
+        reason: header_text(headers, "x-strata-reason"),
+        agent_model: short("x-strata-agent-model"),
+        agent_session: short("x-strata-agent-session"),
+        agent_run: short("x-strata-agent-run"),
+        change: short("x-strata-change"),
+    }
 }
 
 /// A copy of a coordinator's cluster, by its URL or short name (`s1-0`):
@@ -622,7 +654,7 @@ fn copy_of(snap: &Json, node: &str) -> Result<CopyOf, ApiError> {
             }
         }
     }
-    Err(ApiError { status: 404, message: format!("no copy {node} in this cluster: GET /v1/cluster lists each copy's url and short name") })
+    Err(ApiError { code: None, status: 404, message: format!("no copy {node} in this cluster: GET /v1/cluster lists each copy's url and short name") })
 }
 
 /// Asks the copy `url` of the cluster to do `kind` (a kind of `Profile`
@@ -643,7 +675,7 @@ async fn ask_copy(c: &crate::coord::Coordinator, url: &str, kind: crate::profili
 async fn copy_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let c = app.svc.coordinator()?;
     let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
-    let primary = copy.primary.clone().ok_or_else(|| ApiError { status: 409, message: format!("shard {} has no primary up to compare its copies", copy.shard) })?;
+    let primary = copy.primary.clone().ok_or_else(|| ApiError { code: None, status: 409, message: format!("shard {} has no primary up to compare its copies", copy.shard) })?;
     let by = keys::audit_name(&who(w));
     keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "primary": primary})), ..Default::default() });
     let mut body = json!({"by": by});
@@ -724,14 +756,33 @@ fn event_of_row(r: &Json) -> Json {
 /// newest first; from the log store for what memory no longer holds. Who
 /// did what is the admin's to read.
 async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params) -> Res {
-    let now = telemetry::now_ms();
-    let to = param_u64(&q, "to", now)?;
-    let from = param_u64(&q, "from", to.saturating_sub(86_400_000))?;
     let limit = param_u64(&q, "limit", 500)?.clamp(1, 5000) as usize;
     let kinds: Vec<String> = q.get("kind").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
     if kinds.iter().any(|k| !k.chars().all(|c| c.is_ascii_lowercase() || c == '_')) {
         return Err(ApiError::bad("kind is a list of event kinds, such as kind=copy_down,primary_changed"));
     }
+    // after=<id>: only the events after that one; wait_s: until one
+    // comes, for that long at most (30 s), so an agent waits on a job's
+    // next event instead of polling.
+    let after: Option<i64> = match q.get("after").filter(|s| !s.is_empty()) {
+        Some(a) => Some(a.parse().map_err(|_| ApiError::bad("after is an event's id"))?),
+        None => None,
+    };
+    let wait_s = param_u64(&q, "wait_s", 0)?.min(30);
+    if let (Some(after), true) = (after, wait_s > 0 && !q.contains_key("to")) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(wait_s);
+        loop {
+            let now = telemetry::now_ms();
+            let (kept, _) = app.svc.events.range(now.saturating_sub(86_400_000), now, &kinds, limit);
+            if kept.iter().any(|r| r.id > after) || std::time::Instant::now() >= until {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+    let now = telemetry::now_ms();
+    let to = param_u64(&q, "to", now)?;
+    let from = param_u64(&q, "from", to.saturating_sub(86_400_000))?;
     let (kept, oldest) = app.svc.events.range(from, to, &kinds, limit);
     let mut events: Vec<Json> = kept.iter().map(|r| json!(**r)).collect();
     let mut source = vec!["memory"];
@@ -748,6 +799,9 @@ async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal
             }
             Err(e) => error = Some(format!("the log store did not answer: {}", e.message)),
         }
+    }
+    if let Some(after) = after {
+        events.retain(|e| e["id"].as_i64().is_some_and(|id| id > after));
     }
     events.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()).then(b["id"].as_i64().cmp(&a["id"].as_i64())));
     events.truncate(limit);
@@ -846,14 +900,22 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // A follow process's writes ([`crate::service::FOLLOW`]).
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
-        None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
+        None => Some(ApiError { code: None, status: 401, message: "missing or wrong token".into() }),
         Some(_) if narrowing.is_some() => narrowing,
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
         Some(_) if app_grants => None,
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
-        Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
-        Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
+        // A key for operations: the server's views, and for `ops` the
+        // bounded actions ([`crate::ops::role_may`]).
+        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may(need, &format!("{method} {route}")).err(),
+        // An agent says why it changes the server: the audit log keeps it.
+        Some(w) if agent_needs_reason(w, &method, route) => Some(ApiError::coded(
+            400,
+            "reason_required",
+            format!("{method} {route} by an agent says why: send the x-chloedb-reason header (a sentence; the audit log keeps it)"),
+        )),
+        Some(w) if follow.is_some() && !w.root => Some(ApiError { code: None, status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
         Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
         Some(_) => None,
     };
@@ -912,9 +974,19 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let failed = (status >= 400).then(|| res.extensions().get::<ClientError>().map(|e| e.0.clone()).or_else(|| res.extensions().get::<Failure>().map(|e| e.0.clone()))).flatten();
     // A change through an app is audited as an admin's change is.
     let app_change = route == "/v1/apps/:name/*rest" && !read;
-    if refusal || detail.is_some() || ((need == Scope::Admin || app_change) && !read) {
+    // An approved change request being applied: audited whatever its route.
+    let applying = keys::caller().and_then(|c| c.change).filter(|id| app.svc.oncall.proposal_of(id).is_some_and(|p| p.state == "applying"));
+    if refusal || detail.is_some() || ((need == Scope::Admin || app_change) && !read) || (applying.is_some() && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
         let caller = keys::caller().unwrap_or_default();
+        // ops: an agent's request, and what it said of itself.
+        let agent = who.as_ref().filter(|w| crate::ops::is_agent(w, Some(&caller))).map(|_| {
+            let mut a = crate::ops::agent_of(&caller).unwrap_or_else(|| json!({}));
+            if let Some(app) = &caller.app {
+                a["via"] = json!(app);
+            }
+            a
+        });
         let detail = match (&known, detail) {
             (Some((_, name, why)), None) => Some(format!("refused: the key {name} is {why}")),
             (_, d) => d,
@@ -937,7 +1009,12 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             object: change.object,
             before: change.before,
             after: change.after.or_else(|| failed.map(|e| json!({"error": &*e}))),
-            actor: change.actor.unwrap_or("person").into(),
+            actor: change.actor.unwrap_or(if agent.is_some() { "agent" } else { "person" }).into(),
+            agent,
+            on_behalf_of: who.as_ref().and_then(|w| w.on_behalf_of.as_deref().map(String::from)),
+            // Only a change request being applied now: the header alone
+            // could be any client's.
+            change_request: applying,
         }, !evented);
     }
     // A client's mistake (4xx), in one line at info, ten a second at most.
@@ -949,6 +1026,20 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         }
     }
     res
+}
+
+/// Whether a request is an agent's change of the server that does not
+/// say why ([`crate::ops`]): tier 1 and up, not a write of rows.
+fn agent_needs_reason(w: &Principal, method: &axum::http::Method, route: &str) -> bool {
+    let caller = keys::caller();
+    crate::ops::tier(method, route) >= 1
+        && !crate::ops::is_data(route)
+        // A change request carries its reason in its body; feedback is
+        // the command center's own data, triaged as any client does.
+        && !route.starts_with("/v1/admin/changes")
+        && !route.starts_with("/v1/feedback")
+        && crate::ops::is_agent(w, caller.as_ref())
+        && caller.as_ref().is_none_or(|c| c.reason.as_deref().is_none_or(|r| r.trim().is_empty()))
 }
 
 /// Why a request failed on the client's side (4xx), for [`auth`] to log.
@@ -989,7 +1080,7 @@ fn evented(mut r: Response) -> Response {
 
 /// The scope a route needs ([`crate::keys`]). What shows other clients'
 /// SQL (the running and latest queries, logs) is the admin's.
-fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
+pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
         // All a feed key may read: the feed, and whether it is up.
@@ -1079,7 +1170,7 @@ fn browsers(app: &App, req: &Request) -> Option<Response> {
     let headers = req.headers();
     let host = header_str(headers, header::HOST).or_else(|| req.uri().authority().map(|a| a.as_str()));
     let why = auth::browser_check(app.hosts.as_deref(), host, header_str(headers, header::ORIGIN), req.method().is_safe())?;
-    Some(ApiError { status: 403, message: why }.into_response())
+    Some(ApiError { code: None, status: 403, message: why }.into_response())
 }
 
 /// Builds a table's slice into the server's `--slices` directory
@@ -1202,7 +1293,7 @@ async fn slice_file(app: &App, table: &str, rel: &str, ty: &'static str) -> Resu
             let n = bytes.len() as u64;
             Ok((([(header::CONTENT_TYPE, ty), (header::CACHE_CONTROL, "no-cache")], bytes).into_response(), n))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ApiError { status: 404, message: format!("no {rel} in table {table}'s slice (build it with POST /v1/admin/slices)") }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ApiError { code: None, status: 404, message: format!("no {rel} in table {table}'s slice (build it with POST /v1/admin/slices)") }),
         Err(e) => Err(ApiError::internal(e)),
     }
 }
@@ -1626,7 +1717,7 @@ async fn feed(State(app): State<App>, w: Option<axum::Extension<Principal>>, sto
         return Err(ApiError::bad("since, whole and digests are a copy's (copy=true)"));
     }
     if copy.is_some() && only.is_some() {
-        return Err(ApiError { status: 403, message: "a key limited to tables follows the feed from a transaction (from=N); a copy (copy=true) is of every table".into() });
+        return Err(ApiError { code: None, status: 403, message: "a key limited to tables follows the feed from a transaction (from=N); a copy (copy=true) is of every table".into() });
     }
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
@@ -1899,6 +1990,14 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     let statement = body_str(&b, "sql")?;
+    // An agent does not drop a table, or delete every row, alone
+    // ([`crate::changes::sql_tier`]): it files a change request.
+    if crate::ops::is_agent(&w, keys::caller().as_ref()) {
+        let (tier, _) = crate::changes::sql_tier(statement, &app.svc.tables_listed().await);
+        if tier >= 3 {
+            return Err(ApiError::coded(403, "change_request_required", "an agent does not run this statement alone (it drops a table, a field, a rank profile or a function, or deletes or updates every row): dry run it (POST /v1/admin/changes/preview) and file a change request (POST /v1/admin/changes) for a person to approve"));
+        }
+    }
     // A write from the command center is audited whatever its answer.
     let writes = table_written(statement).is_some();
     if writes {
@@ -2371,7 +2470,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
 async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::collections::HashMap<String, String>, headers: HeaderMap, body: Bytes) -> Res {
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
         return Err(ApiError {
-            status: 415,
+            code: None, status: 415,
             message: "send the rows with their content type (text/csv, text/tab-separated-values, application/x-ndjson, application/json, application/vnd.sqlite3, application/vnd.apache.parquet or application/octet-stream), not text/plain or a form".into(),
         });
     }
@@ -2516,7 +2615,7 @@ async fn export(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
         return crate::export::rows(&app.svc, &crate::service::scroll_owner(&who), &table, f).await;
     }
     if who.limited() {
-        return Err(ApiError { status: 403, message: "an export of the database's files (format sqlite or parquet) is not for a key limited to tables: format jsonl, csv or arrow export a table's rows with read on it".into() });
+        return Err(ApiError { code: None, status: 403, message: "an export of the database's files (format sqlite or parquet) is not for a key limited to tables: format jsonl, csv or arrow export a table's rows with read on it".into() });
     }
     who.may(Scope::Admin, "an export of the database's files (format sqlite or parquet; format jsonl, csv or arrow export a table's rows with read on it)")?;
     match format.as_deref() {
@@ -2592,7 +2691,7 @@ async fn send_file(dir: tempfile::TempDir, path: &std::path::Path, content_type:
 /// the lines it counts applied.
 async fn stream(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, body: axum::body::Body) -> Result<Response, ApiError> {
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
-        return Err(ApiError { status: 415, message: "send the operations as application/x-ndjson, not text/plain or a form".into() });
+        return Err(ApiError { code: None, status: 415, message: "send the operations as application/x-ndjson, not text/plain or a form".into() });
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Json>();
     // From the command center, audited once it ends: what it wrote.
@@ -2629,6 +2728,9 @@ fn audit_ui_stream(svc: &Service, caller: &keys::Caller, w: &Principal, request_
     let list = tables.join(", ");
     let stopped = end.error.as_ref().map_or(String::new(), |e| format!("; it stopped: {}", e.message));
     svc.audit_add(keys::Entry {
+        agent: None,
+        on_behalf_of: None,
+        change_request: None,
         ts_ms: telemetry::now_ms(),
         who: keys::audit_name(w),
         key: w.key.clone(),
@@ -2745,7 +2847,7 @@ async fn read_lines(body: axum::body::Body, max: usize, lines: tokio::sync::mpsc
         }
         buf.drain(..at);
         if buf.len() > max {
-            let _ = lines.send(Err(ApiError { status: 413, message: format!("line {}: longer than the server takes ({max} bytes)", n + 1) })).await;
+            let _ = lines.send(Err(ApiError { code: None, status: 413, message: format!("line {}: longer than the server takes ({max} bytes)", n + 1) })).await;
             return;
         }
     }
@@ -2866,8 +2968,8 @@ async fn follow_pause(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"paused\"?: true}"))?;
     let paused = b.get("paused").map(|p| p.as_bool().ok_or_else(|| ApiError::bad("paused is true or false"))).transpose()?.unwrap_or(true);
     match follow_spec(&app, name, json!({"paused": paused})).await {
-        None => Err(ApiError { status: 409, message: format!("the follow process of {name} is not this cluster's operator's (no spec.follow names it): stop or start it where it runs") }),
-        Some(s) if s.get("error").is_some() => Err(ApiError { status: 502, message: format!("the Kubernetes API: {}", s["error"].as_str().unwrap_or_default()) }),
+        None => Err(ApiError { code: None, status: 409, message: format!("the follow process of {name} is not this cluster's operator's (no spec.follow names it): stop or start it where it runs") }),
+        Some(s) if s.get("error").is_some() => Err(ApiError { code: None, status: 502, message: format!("the Kubernetes API: {}", s["error"].as_str().unwrap_or_default()) }),
         Some(s) => {
             keys::note(format!("{} following {name}", if paused { "paused" } else { "resumed" }));
             Ok(AxJson(json!({"name": name, "paused": paused, "spec": s})))
@@ -2946,7 +3048,7 @@ async fn feed_promoted(State(app): State<App>) -> Res {
 fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {
     match w.root {
         true => Ok(()),
-        false => Err(ApiError { status: 403, message: format!("{what} takes the cluster's token, not a key") }),
+        false => Err(ApiError { code: None, status: 403, message: format!("{what} takes the cluster's token, not a key") }),
     }
 }
 
@@ -3602,14 +3704,14 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
         c.probe_new(&mut p).await;
         if p["ok"] != true {
             let why: Vec<&str> = p["preflight"].as_array().into_iter().flatten().filter(|x| x["ok"] == false).filter_map(|x| x["text"].as_str()).collect();
-            return Err(ApiError { status: 409, message: format!("the plan's checks fail: {}", why.join("; ")) });
+            return Err(ApiError { code: None, status: 409, message: format!("the plan's checks fail: {}", why.join("; ")) });
         }
         b = json!({"steps": p["steps"], "estimate_s": p["estimate_s"]});
     }
     // One plan at a time in the cluster: not while another coordinator
     // applies one.
     if let Some(why) = crate::coord::plan::busy_elsewhere(&plans_elsewhere(&app).await) {
-        return Err(ApiError { status: 409, message: why });
+        return Err(ApiError { code: None, status: 409, message: why });
     }
     let j = crate::coord::plan::apply(&app.svc, &b, plan_who(w))?;
     let r = &j["run"];
@@ -3755,7 +3857,7 @@ async fn finish_move(State(app): State<App>) -> Result<Response, ApiError> {
     // Not a move another coordinator is making: finishing it would give up
     // its copy under it.
     if let Some(why) = crate::coord::plan::moving_elsewhere(&moves_elsewhere(&app).await) {
-        return Err(ApiError { status: 409, message: why });
+        return Err(ApiError { code: None, status: 409, message: why });
     }
     let j = c.finish_move().await?;
     let detail = format!("finished the move left in the cluster map: {}", j["finished"]);
@@ -3781,8 +3883,9 @@ async fn agent_run(State(app): State<App>, w: Option<axum::Extension<Principal>>
 
 /// `POST /v1/mcp`: the Model Context Protocol, whose tools call this
 /// server's routes with the caller's credential ([`crate::mcp`]).
-async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
-    crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
+async fn mcp(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
+    let who = w.map(|axum::Extension(p)| p);
+    crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0), who: who.as_ref() }, &body).await
 }
 
 /// `POST /v1/admin/oncall`: the on-call agent looks into an alert or a
@@ -3834,7 +3937,7 @@ async fn oncall_runs(State(app): State<App>) -> Res {
 /// `GET /v1/admin/oncall/runs/:id`: one run in full, as it goes.
 async fn oncall_run_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
     app.svc.oncall.ready(&app.svc);
-    app.svc.oncall.run_json(&id).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no run {id}: the server keeps the latest {}", crate::oncall::RUNS) })
+    app.svc.oncall.run_json(&id).map(AxJson).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no run {id}: the server keeps the latest {}", crate::oncall::RUNS) })
 }
 
 /// `POST /v1/admin/oncall/runs/:id/stop`: stops a run before its next
@@ -3855,10 +3958,147 @@ async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
 /// `POST /v1/admin/oncall/proposals/:id/approve`: makes the proposal's
 /// request, as the approver.
 async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
-    let by = by(&who(w));
-    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by).await?;
+    let w = who(w);
+    let agent = crate::ops::is_agent(&w, keys::caller().as_ref());
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by(&w), agent).await?;
     keys::note(format!("approved on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
     Ok(AxJson(p))
+}
+
+/// The router [`crate::mcp::forward`] calls, for dry runs.
+fn routes_of(app: &App) -> Result<axum::Router, ApiError> {
+    app.mcp.clone().ok_or_else(|| ApiError::internal("the server's own routes are missing"))
+}
+
+/// `POST /v1/admin/changes/preview {method, path, body?}`: the dry run of
+/// any change ([`crate::changes::preview`]).
+async fn changes_preview(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let router = routes_of(&app)?;
+    let a = crate::changes::asked(&b)?;
+    let caller = crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0), who: Some(&w) };
+    Ok(AxJson(crate::changes::preview(&app.svc, &router, &caller, &a).await?))
+}
+
+/// `POST /v1/admin/changes {method, path, body?, reason, what?}`: files a
+/// change request, pending a person's approval.
+async fn changes_file(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let router = routes_of(&app)?;
+    let a = crate::changes::asked(&b)?;
+    let caller = crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0), who: Some(&w) };
+    let reason = b["reason"].as_str().map(String::from).or_else(|| keys::caller().and_then(|c| c.reason)).unwrap_or_default();
+    let agent = crate::ops::is_agent(&w, keys::caller().as_ref());
+    let j = crate::changes::file(&app.svc, &router, &caller, &by(&w), agent, a, &reason, b["what"].as_str()).await?;
+    keys::note(format!("filed change request {}: {}", j["id"].as_str().unwrap_or("?"), j["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(j))
+}
+
+/// `GET /v1/admin/changes?state=`: the change requests, newest first.
+async fn changes_list(State(app): State<App>, Query(q): Params) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    let state = q.get("state").map(String::as_str).filter(|s| !s.is_empty());
+    let changes: Vec<Json> = app.svc.oncall.list(state, None).into_iter().filter(|p| p["action"] == "change").collect();
+    let pending = changes.iter().filter(|p| p["state"] == "pending").count();
+    Ok(AxJson(json!({"changes": changes, "pending": pending})))
+}
+
+/// `GET /v1/admin/changes/:id`: one change request (or on-call proposal).
+async fn changes_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    app.svc.oncall.get(&id).map(AxJson).ok_or_else(|| ApiError::coded(404, "not_found", format!("no change request {id}")))
+}
+
+/// `POST /v1/admin/changes/:id/approve`: a person applies it, after it is
+/// dry run again ([`crate::oncall::approve`]).
+async fn changes_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let w = who(w);
+    let agent = crate::ops::is_agent(&w, keys::caller().as_ref());
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by(&w), agent).await?;
+    keys::note(format!("approved change request {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/changes/:id/reject {reason?}`: a person turns it down.
+async fn changes_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let w = who(w);
+    if crate::ops::is_agent(&w, keys::caller().as_ref()) {
+        return Err(ApiError::coded(403, "approval_refused", format!("{id} is decided by a person: an agent withdraws its own change requests (POST /v1/admin/changes/{id}/withdraw)")));
+    }
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    app.svc.oncall.ready(&app.svc);
+    let p = app.svc.oncall.reject(&id, &by(&w), &reason)?;
+    keys::note(format!("rejected change request {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/changes/:id/withdraw {reason?}`: whoever filed it
+/// takes it back.
+async fn changes_withdraw(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    app.svc.oncall.ready(&app.svc);
+    let p = app.svc.oncall.withdraw(&id, &by(&who(w)), &reason)?;
+    keys::note(format!("withdrew change request {id}"));
+    Ok(AxJson(p))
+}
+
+/// `GET /v1/catalog?q=`: every route with its scope, tier and tool, and
+/// every error code ([`crate::catalog`]).
+async fn catalog(Query(q): Params) -> AxJson<Json> {
+    AxJson(crate::catalog::answer(q.get("q").map(String::as_str)))
+}
+
+/// `GET /v1/runbooks?for=`: the runbook for an alert's rule or a fleet
+/// problem's id, or those that hold words ([`crate::runbooks`]).
+async fn runbooks(Query(q): Params) -> AxJson<Json> {
+    AxJson(crate::runbooks::find(q.get("for").or_else(|| q.get("q")).map(String::as_str).unwrap_or_default()))
+}
+
+/// `GET /v1/admin/jobs?kind=`: what runs in the background now, in one
+/// shape: `{kind, id, state, running, started_ms, done, of, eta_s, url}`,
+/// `url` the route that follows it (and `GET /v1/events?after=&wait_s=`
+/// waits for its next event). Kinds: `plan`, `moves`, `oncall`,
+/// `change`.
+async fn jobs(State(app): State<App>, Query(q): Params) -> Res {
+    let want = q.get("kind").map(String::as_str).filter(|s| !s.is_empty());
+    let pick = |k: &str| want.is_none_or(|w| w.split(',').any(|x| x.trim() == k));
+    let mut jobs: Vec<Json> = Vec::new();
+    let of = |kind: &str, j: &Json, id: Json, url: &str| -> Json {
+        let state = j["state"].clone();
+        json!({"kind": kind, "id": id, "state": state, "running": state == "running", "started_ms": j["started_ms"], "done": j["done"], "of": j["of"], "eta_s": j["eta_s"], "url": url})
+    };
+    if app.svc.coordinator().is_ok() {
+        if pick("plan") {
+            let v = crate::coord::plan::view(&app.svc);
+            if v["run"].is_object() {
+                jobs.push(of("plan", &v["run"], v["run"]["id"].clone(), "/v1/admin/plan/run"));
+            }
+        }
+        if pick("moves") {
+            let m = app.svc.coordinator()?.moves();
+            if m["job"].is_object() {
+                jobs.push(of("moves", &m["job"], m["job"]["id"].clone(), "/v1/admin/moves"));
+            }
+        }
+    }
+    app.svc.oncall.ready(&app.svc);
+    if pick("oncall") {
+        for r in app.svc.oncall.runs().into_iter().filter(|r| r["state"] == "running") {
+            let id = r["id"].as_str().unwrap_or_default().to_string();
+            jobs.push(of("oncall", &r, json!(id), &format!("/v1/admin/oncall/runs/{id}")));
+        }
+    }
+    if pick("change") {
+        for p in app.svc.oncall.list(None, None).into_iter().filter(|p| p["action"] == "change" && (p["state"] == "pending" || p["state"] == "applying")) {
+            let id = p["id"].as_str().unwrap_or_default().to_string();
+            let mut j = of("change", &json!({"state": p["state"], "started_ms": p["created_ms"]}), json!(id), &format!("/v1/admin/changes/{id}"));
+            j["what"] = p["what"].clone();
+            j["expires_ms"] = p["expires_ms"].clone();
+            jobs.push(j);
+        }
+    }
+    let running = jobs.iter().filter(|j| j["running"] == true).count();
+    Ok(AxJson(json!({"jobs": jobs, "running": running})))
 }
 
 /// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
@@ -4029,6 +4269,13 @@ async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal
         return Ok(evented(audited(r.json(), format!("contain rule {} {} (from the coordinator at {from})", r.id, r.what()))));
     }
     let name = by(&who);
+    // ops: an agent's rule lasts an hour at most.
+    if crate::ops::is_agent(&who, keys::caller().as_ref()) {
+        let asked = b.get("expires_s").and_then(Json::as_u64).unwrap_or(crate::contain::DEFAULT_EXPIRES_S);
+        if asked > crate::ops::AGENT_CONTAIN_S {
+            return Err(ApiError::coded(400, "limit_exceeded", format!("an agent's contain rule lasts {} s at most, not {asked}: ask a person for a longer one", crate::ops::AGENT_CONTAIN_S)));
+        }
+    }
     let r = app.svc.contain.add(&b, &name)?;
     tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
     app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
@@ -4057,7 +4304,7 @@ async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Princi
         if elsewhere {
             return Ok(audited(json!({"removed": {"id": id}, "coordinators": reach}), format!("removed contain rule {id} on the other coordinators")));
         }
-        return Err(ApiError { status: 404, message: format!("no contain rule {id}") });
+        return Err(ApiError { code: None, status: 404, message: format!("no contain rule {id}") });
     };
     app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
@@ -4072,7 +4319,7 @@ async fn cancel_query(State(app): State<App>, Query(params): Params, axum::extra
     // audited there.
     let at = match crate::peers::query_at(&app.svc, &id) {
         Some(Ok((p, n))) => Some((p, n)),
-        Some(Err(e)) => return Err(ApiError { status: 404, message: e }),
+        Some(Err(e)) => return Err(ApiError { code: None, status: 404, message: e }),
         None => None,
     };
     let id: u64 = match &at {
@@ -4081,14 +4328,14 @@ async fn cancel_query(State(app): State<App>, Query(params): Params, axum::extra
     };
     let other = match (at, params.get("coordinator").filter(|u| !u.is_empty() && Some(u.trim_end_matches('/')) != app.svc.peers.me())) {
         (Some((p, _)), _) => Some(p),
-        (None, Some(url)) => Some(crate::peers::other_at(&app.svc, url).ok_or_else(|| ApiError { status: 404, message: format!("no coordinator at {url} is known here") })?),
+        (None, Some(url)) => Some(crate::peers::other_at(&app.svc, url).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no coordinator at {url} is known here") })?),
         (None, None) => None,
     };
     if let Some(p) = other {
         return match crate::peers::delete(&app.svc, &p, &format!("/v1/queries/{id}")).await {
             Ok(j) => Ok(AxJson(j).into_response()),
-            Err(e) if e.contains(": 404 ") => Err(ApiError { status: 404, message: format!("query {id} is not running on {}", p.name) }),
-            Err(e) => Err(ApiError { status: 502, message: e }),
+            Err(e) if e.contains(": 404 ") => Err(ApiError { code: None, status: 404, message: format!("query {id} is not running on {}", p.name) }),
+            Err(e) => Err(ApiError { code: None, status: 502, message: e }),
         };
     }
     let q = app.svc.live.list().into_iter().find(|q| q["id"] == id).unwrap_or(Json::Null);
@@ -4108,7 +4355,7 @@ async fn cancel_query(State(app): State<App>, Query(params): Params, axum::extra
             let of = key.map_or(String::new(), |k| format!(" of key {k}"));
             Ok(audited(json!({"cancelled": true, "id": id}), format!("cancelled query {id}{of}: {}", sql.chars().take(200).collect::<String>())))
         }
-        false => Err(ApiError { status: 404, message: format!("query {id} is not running") }),
+        false => Err(ApiError { code: None, status: 404, message: format!("query {id} is not running") }),
     }
 }
 
@@ -4136,7 +4383,7 @@ async fn slow_queries(State(app): State<App>, Query(q): Params) -> Res {
 async fn finished_query(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<u64>) -> Res {
     match app.svc.query_log.finished(id) {
         Some(f) => Ok(AxJson(json!(f))),
-        None => Err(ApiError { status: 404, message: format!("query {id} is no longer kept: the server keeps the latest {} and the slowest {}", telemetry::RECENT, telemetry::SLOW) }),
+        None => Err(ApiError { code: None, status: 404, message: format!("query {id} is no longer kept: the server keeps the latest {} and the slowest {}", telemetry::RECENT, telemetry::SLOW) }),
     }
 }
 
@@ -4146,7 +4393,7 @@ async fn finished_query(State(app): State<App>, axum::extract::Path(id): axum::e
 async fn profile_settings(State(app): State<App>, Query(q): Params) -> Res {
     if let Some(peer) = settings_peer(&app, &q)? {
         // PROF-2: another coordinator's.
-        let mut j = crate::peers::get(&app.svc, &peer, "/v1/profile/settings").await.map_err(|e| ApiError { status: 502, message: e })?;
+        let mut j = crate::peers::get(&app.svc, &peer, "/v1/profile/settings").await.map_err(|e| ApiError { code: None, status: 502, message: e })?;
         (j["coordinator"], j["name"]) = (json!(peer.url), json!(peer.name));
         return Ok(AxJson(j));
     }
@@ -4163,7 +4410,7 @@ fn settings_peer(app: &App, q: &std::collections::HashMap<String, String>) -> Re
         .into_iter()
         .find(|p| p.url.trim_end_matches('/') == c || p.name == c)
         .map(Some)
-        .ok_or_else(|| ApiError { status: 404, message: format!("no other coordinator {c:?} answers now (GET /v1/coordinators lists them)") })
+        .ok_or_else(|| ApiError { code: None, status: 404, message: format!("no other coordinator {c:?} answers now (GET /v1/coordinators lists them)") })
 }
 
 /// A copy's profiling settings, set first from `b` when it sets any, with
@@ -4190,7 +4437,7 @@ async fn put_profile_settings(State(app): State<App>, w: Option<axum::Extension<
         if !b.is_object() {
             return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
         }
-        let mut j = crate::peers::put(&app.svc, &peer, "/v1/profile/settings", &b).await.map_err(|e| ApiError { status: 502, message: e })?;
+        let mut j = crate::peers::put(&app.svc, &peer, "/v1/profile/settings", &b).await.map_err(|e| ApiError { code: None, status: 502, message: e })?;
         (j["coordinator"], j["name"]) = (json!(peer.url), json!(peer.name));
         let did = [b.get("slow_ms").map(|v| format!("slow_ms {}", if v.is_null() { "off".to_string() } else { v.to_string() })), b.get("cpu_all").map(|v| format!("cpu_all {v}"))];
         return Ok(audited(j, format!("profiling on coordinator {}: {}", peer.name, did.into_iter().flatten().collect::<Vec<_>>().join(", "))));
@@ -4329,7 +4576,7 @@ async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::ex
     let (from, to) = window_param(&q)?;
     let st = &app.svc.query_log.statements;
     let mine = st.detail(&which, from, to);
-    let missing = || ApiError { status: 404, message: format!("no statement {which:?} in the last day") };
+    let missing = || ApiError { code: None, status: 404, message: format!("no statement {which:?} in the last day") };
     let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
     let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return mine.map(AxJson).ok_or_else(missing) };
     // R2-workload-1: what every coordinator ran of it.
@@ -4568,11 +4815,11 @@ async fn copies_load(State(app): State<App>, Query(q): Params) -> Res {
         let (gate, sql, params) = (gate.clone(), sql.clone(), params.clone());
         async move {
             let answer = async {
-                let _held = tokio::time::timeout_at(deadline.into(), gate.acquire_owned()).await.map_err(|_| ApiError { status: 504, message: "not asked within 10 s".into() })?.map_err(ApiError::internal)?;
+                let _held = tokio::time::timeout_at(deadline.into(), gate.acquire_owned()).await.map_err(|_| ApiError { code: None, status: 504, message: "not asked within 10 s".into() })?.map_err(ApiError::internal)?;
                 let req = crate::pb::QueryRequest { sql, params: crate::grpc::params_to_pb(&params), shard: false, timeout_ms: deadline.saturating_duration_since(Instant::now()).as_millis() as u32, ..Default::default() };
                 match tokio::time::timeout_at(deadline.into(), client.logs(tonic::Request::new(req))).await {
-                    Err(_) => Err(ApiError { status: 504, message: "no answer within 10 s".into() }),
-                    Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Err(ApiError { status: 501, message: "an older server, without a log store".into() }),
+                    Err(_) => Err(ApiError { code: None, status: 504, message: "no answer within 10 s".into() }),
+                    Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Err(ApiError { code: None, status: 501, message: "an older server, without a log store".into() }),
                     Ok(Err(s)) => Err(ApiError::from(s)),
                     Ok(Ok(a)) => crate::grpc::result_from_pb(a.into_inner()),
                 }
@@ -4709,7 +4956,7 @@ async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
                         url: p.url.clone(),
                         name: p.name.clone(),
                         ms,
-                        answer: a.map_err(|e| ApiError { status: 502, message: e }).and_then(|j| crate::logstore::from_partial_json(&j)),
+                        answer: a.map_err(|e| ApiError { code: None, status: 502, message: e }).and_then(|j| crate::logstore::from_partial_json(&j)),
                     })
                     .collect::<Vec<_>>()
             };
@@ -4761,7 +5008,7 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
 
 /// The tenants this server serves, or 404 when it serves none.
 fn tenants(app: &App) -> Result<Arc<crate::tenants::Tenants>, ApiError> {
-    app.svc.tenants.clone().ok_or_else(|| ApiError { status: 404, message: "this server serves no tenants (start it with --tenants URL; experimental)".into() })
+    app.svc.tenants.clone().ok_or_else(|| ApiError { code: None, status: 404, message: "this server serves no tenants (start it with --tenants URL; experimental)".into() })
 }
 
 /// A tenant's call: it reads and writes the object store, and blocks.
@@ -4847,7 +5094,7 @@ async fn tenant_delete(State(app): State<App>, axum::extract::Path(id): axum::ex
     let t = tenants(&app)?;
     match tenant_call(move || t.delete(&id)).await? {
         true => Ok(AxJson(json!({"deleted": true}))),
-        false => Err(ApiError { status: 404, message: "no tenant has this id".into() }),
+        false => Err(ApiError { code: None, status: 404, message: "no tenant has this id".into() }),
     }
 }
 
@@ -4890,7 +5137,7 @@ async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
 async fn kube(State(app): State<App>) -> Res {
     let mut j = match &app.svc.kube {
         None => json!({"managed": false}),
-        Some(l) => l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?,
+        Some(l) => l.get().await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?,
     };
     // core: the images the copies run, and how far a rollout is.
     if let crate::service::Backend::Cluster(c) = &app.svc.backend {
@@ -5046,7 +5293,7 @@ fn kube_patch(b: &Json, now: &Json) -> Result<Json, ApiError> {
 /// The patch body `b` asks for, the spec it makes, and the plan of the
 /// change ([`crate::operator::plan`]).
 async fn kube_planned(l: &crate::operator::kube::Link, b: &Json) -> Result<(Json, crate::operator::Spec, Json), ApiError> {
-    let now = l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let now = l.get().await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?;
     let patch = kube_patch(b, &now)?;
     let (old, new) = crate::operator::patched(&now["spec"], &patch).map_err(ApiError::bad)?;
     let mut plan = crate::operator::plan(&old, &new, old.shards, old.replicas);
@@ -5098,7 +5345,7 @@ async fn kube_change(State(app): State<App>, w: Option<axum::Extension<Principal
     if back.is_some() {
         notes.push((ROLLBACK, new.version()));
     }
-    let j = l.change(&patch, &notes).await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let j = l.change(&patch, &notes).await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?;
     let said: Vec<String> = plan["changes"].as_array().into_iter().flatten().map(|c| format!("{} {} -> {}", c["field"].as_str().unwrap_or("?"), c["from"], c["to"])).collect();
     let said = if said.is_empty() { "nothing".into() } else { said.join(", ") };
     Ok(audited(j, match back {
@@ -5117,7 +5364,7 @@ async fn kube_change(State(app): State<App>, w: Option<axum::Extension<Principal
 /// operator rolled back once is refused unless `force`.
 async fn kube_upgrade(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let l = kube_link(&app)?;
-    let now = l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let now = l.get().await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?;
     let up = &now["status"]["upgrade"];
     let image = match b.get("image") {
         Some(Json::String(i)) if !i.trim().is_empty() => i.trim().to_string(),
@@ -5154,7 +5401,7 @@ async fn kube_upgrade(State(app): State<App>, w: Option<axum::Extension<Principa
         return Err(ApiError::bad(why.to_string()));
     }
     use crate::operator::kube::CHANGED_BY;
-    let j = l.change(&patch, &[(CHANGED_BY, format!("{} {}", who(w).name, new.version()))]).await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let j = l.change(&patch, &[(CHANGED_BY, format!("{} {}", who(w).name, new.version()))]).await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?;
     Ok(audited(j, format!("upgraded the StrataCluster {}/{} from {from} to {image}", l.namespace, l.name)))
 }
 
@@ -5199,7 +5446,7 @@ async fn upgrade_estimates(app: &App, now: &Json, image: &str, plan: &mut Json) 
 /// operator's change; the gates count again from now.
 async fn kube_resume(State(app): State<App>) -> Result<Response, ApiError> {
     let l = kube_link(&app)?;
-    let held = l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?["status"]["rollout"]["held"]["text"].as_str().unwrap_or_default().to_string();
+    let held = l.get().await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?["status"]["rollout"]["held"]["text"].as_str().unwrap_or_default().to_string();
     let j = l.resume().await.map_err(ApiError::bad)?;
     Ok(audited(j, format!("resumed the change of the StrataCluster {}/{}, held as {held}", l.namespace, l.name)))
 }
@@ -5208,7 +5455,7 @@ async fn kube_resume(State(app): State<App>) -> Result<Response, ApiError> {
 /// is not made; its rules wait their cooldown before they suggest again.
 async fn autoscale_dismiss(State(app): State<App>) -> Result<Response, ApiError> {
     let l = kube_link(&app)?;
-    let now = l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let now = l.get().await.map_err(|e| ApiError { code: None, status: 502, message: format!("the Kubernetes API: {e}") })?;
     let text = now["status"]["autoscale"]["suggestion"]["text"].as_str().unwrap_or_default().to_string();
     let j = l.dismiss().await.map_err(ApiError::bad)?;
     Ok(audited(j, format!("dismissed the autoscaler's suggestion for the StrataCluster {}/{}: {text}", l.namespace, l.name)))
@@ -5322,7 +5569,7 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
 /// An AWS failure: 400 without credentials or for a region that is no
 /// region's name, else 502 (AWS's answer).
 fn aws_error(e: String) -> ApiError {
-    ApiError { status: if e.starts_with("no AWS credentials") || e.contains("is not a region") { 400 } else { 502 }, message: e }
+    ApiError { code: None, status: if e.starts_with("no AWS credentials") || e.contains("is not a region") { 400 } else { 502 }, message: e }
 }
 
 /// The cloud view's AWS state: the credentials as far as they may be shown (the
@@ -5338,7 +5585,7 @@ async fn aws_save(State(app): State<App>, w: Option<axum::Extension<Principal>>,
     let key = crate::aws::mask(&c.access_key_id);
     let who = who(w);
     // Refused or malformed credentials are the caller's; failing to write them, ours.
-    let i = app.svc.aws.set(c, &who.name).await.map_err(|e| ApiError { status: if e.starts_with("write ") { 500 } else { 400 }, message: e })?;
+    let i = app.svc.aws.set(c, &who.name).await.map_err(|e| ApiError { code: None, status: if e.starts_with("write ") { 500 } else { 400 }, message: e })?;
     let mut j = app.svc.aws.status();
     j["identity"] = json!(i);
     Ok(audited(j, format!("saved the AWS credentials {key} (account {}, {})", i.account, i.arn)))
@@ -5503,7 +5750,7 @@ async fn hub_follow(State(app): State<App>, w: Option<axum::Extension<Principal>
 async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>, req: Request) -> Result<Response, ApiError> {
     let rest = rest.trim_start_matches('/');
     if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
-        return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
+        return Err(ApiError { code: None, status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
     // The path as decoded: no dot segment (once or twice encoded) to climb
     // out of /v1, and no ? or # to start a query (audit D-B9).
@@ -5539,7 +5786,7 @@ async fn cloud_list(State(app): State<App>) -> AxJson<Json> {
 }
 
 async fn cloud_one(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<AxJson<Json>, ApiError> {
-    let m = app.svc.clouds.get(&id).ok_or_else(|| ApiError { status: 404, message: format!("no cluster {id}") })?;
+    let m = app.svc.clouds.get(&id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no cluster {id}") })?;
     Ok(AxJson(m.view()))
 }
 
@@ -5559,7 +5806,7 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     use crate::cloud::clusters::{Made, Phase};
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
     let plan = b["plan"].clone();
-    let refuse = |m: String| ApiError { status: 409, message: m };
+    let refuse = |m: String| ApiError { code: None, status: 409, message: m };
     cloud_durable(&app, &provider).map_err(refuse)?;
     let (j, nodes) = match provider.as_str() {
         "aws" => {
@@ -5712,7 +5959,7 @@ async fn cloud_expiry(State(app): State<App>, w: Option<axum::Extension<Principa
     let after = delete_after(&b["hours"])?;
     let by = who(w).name.clone();
     let at = after.map(|a| crate::operator::now_ms() + a);
-    let m = app.svc.clouds.delete_at(&id, at, &by).map_err(|e| ApiError { status: 409, message: e })?;
+    let m = app.svc.clouds.delete_at(&id, at, &by).map_err(|e| ApiError { code: None, status: 409, message: e })?;
     let detail = match at {
         Some(t) => format!("set the cluster {} to delete itself at {} UTC", m.cluster, crate::cloud::clusters::utc(t)),
         None => format!("kept the cluster {}: it no longer deletes itself", m.cluster),
@@ -5723,12 +5970,12 @@ async fn cloud_expiry(State(app): State<App>, w: Option<axum::Extension<Principa
 /// `{"confirm"}`: deletes a cluster made here: the StrataCluster and its
 /// volumes, then the cloud's cluster. `confirm` is its name.
 async fn cloud_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let m = app.svc.clouds.get(&id).ok_or_else(|| ApiError { status: 404, message: format!("no cluster {id}") })?;
+    let m = app.svc.clouds.get(&id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no cluster {id}") })?;
     if b["confirm"].as_str() != Some(m.cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {}, typed again: deleting it deletes its data", m.cluster)));
     }
     let who = who(w);
-    let m = app.svc.clouds.delete(&id, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
+    let m = app.svc.clouds.delete(&id, &who.name).map_err(|e| ApiError { code: None, status: 409, message: e })?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
     let detail = format!("deleting the cluster {} on {} in {}", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
     let mut r = audited(m.view(), detail);
@@ -5772,12 +6019,12 @@ async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Pr
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
     let id = b["cloud_id"].as_str().filter(|i| !i.is_empty()).ok_or_else(|| ApiError::bad("cloud_id is the cloud's id of the cluster, as /v1/admin/cloud/found lists it"))?;
     let c = found(&app, &provider, b["region"].as_str()).await?.into_iter().find(|c| c["cloud_id"] == id).ok_or_else(|| ApiError {
-        status: 404,
+        code: None, status: 404,
         message: format!("the account has no ChloeDB cluster {id} that this server does not follow already"),
     })?;
     let cluster = c["cluster"].as_str().unwrap_or_default().to_string();
     if c["here"] == true {
-        return Err(ApiError { status: 409, message: format!("this server runs on {cluster}: deleting it from here would stop it halfway; delete it from another server, or from the cloud's console") });
+        return Err(ApiError { code: None, status: 409, message: format!("this server runs on {cluster}: deleting it from here would stop it halfway; delete it from another server, or from the cloud's console") });
     }
     if b["confirm"].as_str() != Some(cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: deleting it deletes its data")));
@@ -5817,7 +6064,7 @@ async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Pr
         brought: None,
         found: true,
     };
-    let m = app.svc.clouds.adopt(m, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
+    let m = app.svc.clouds.adopt(m, &who.name).map_err(|e| ApiError { code: None, status: 409, message: e })?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
     let detail = format!("deleting the cluster {} on {} in {}, found in the account", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
     let mut r = audited(m.view(), detail);
@@ -5828,14 +6075,14 @@ async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Pr
 /// Forgets a cluster that is deleted, or that failed before the cloud
 /// made anything; 409 while it may still bill.
 async fn cloud_forget(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
-    let m = app.svc.clouds.forget(&id).map_err(|e| ApiError { status: if e.starts_with("no cluster") { 404 } else { 409 }, message: e })?;
+    let m = app.svc.clouds.forget(&id).map_err(|e| ApiError { code: None, status: if e.starts_with("no cluster") { 404 } else { 409 }, message: e })?;
     Ok(audited(json!({"forgot": m.view()}), format!("forgot the cluster {} ({:?})", m.cluster, m.phase)))
 }
 
 /// A DigitalOcean failure: 400 without a token or for a region that is no
 /// region's name, else 502 (DigitalOcean's answer).
 fn do_error(e: String) -> ApiError {
-    ApiError { status: if e.starts_with("no DigitalOcean token") || e.contains("is not a region") || e.starts_with("DOKS does not run") { 400 } else { 502 }, message: e }
+    ApiError { code: None, status: if e.starts_with("no DigitalOcean token") || e.contains("is not a region") || e.starts_with("DOKS does not run") { 400 } else { 502 }, message: e }
 }
 
 /// The cloud view's DigitalOcean state: the token as far as it may be
@@ -5850,7 +6097,7 @@ async fn do_save(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let token = b["token"].as_str().ok_or_else(|| ApiError::bad("the body is {\"token\": \"dop_v1_...\"}"))?.to_string();
     let masked = crate::aws::mask(token.trim());
     let who = who(w);
-    let a = app.svc.digitalocean.set(token, &who.name).await.map_err(|e| ApiError { status: if e.starts_with("write ") { 500 } else { 400 }, message: e })?;
+    let a = app.svc.digitalocean.set(token, &who.name).await.map_err(|e| ApiError { code: None, status: if e.starts_with("write ") { 500 } else { 400 }, message: e })?;
     let mut j = app.svc.digitalocean.status();
     j["account"] = json!(a);
     Ok(audited(j, format!("saved the DigitalOcean token {masked} (team {}, account {})", a.team, a.uuid)))
@@ -5930,9 +6177,19 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     // app its own token ([`crate::apps`]), as the operator asks before it
     // gives an app a key of its own. `own_keys`: a key with the admin
     // scope on tables makes keys within them (`/v1/keys/own`).
-    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true, "limited_feed": true});
+    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true, "limited_feed": true, "roles": true});
     j["cluster"] = app.svc.identity.json();
-    j["caller"] = json!(keys::caller());
+    let caller = keys::caller();
+    // ops: what this key may do, by tier ([`crate::ops::may`]); an agent
+    // by its requests (MCP, x-chloedb-agent-*) is one here too.
+    let mut may = crate::ops::may(&w);
+    if crate::ops::is_agent(&w, caller.as_ref()) {
+        may["agent"] = json!(true);
+        may["approve_changes"] = json!(false);
+        may["reason_required"] = json!(true);
+    }
+    j["may"] = may;
+    j["caller"] = json!(caller);
     // The presets a key limited to tables can be made from.
     j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
     AxJson(j)
@@ -5991,23 +6248,41 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
         tables = Some(g);
         allow = a;
     }
-    let scope = Scope::parse(b.get("scope").and_then(|v| v.as_str()).unwrap_or(if tables.is_some() { "admin" } else { "read" })).ok_or_else(|| ApiError::bad("scope is feed, read, write or admin"))?;
-    let expires = match b.get("expires_days") {
-        None | Some(Json::Null) => None,
-        Some(v) => Some(telemetry::now_ms() + v.as_f64().filter(|d| *d > 0.0).ok_or_else(|| ApiError::bad("expires_days is a number of days above 0"))?.mul_add(86_400_000.0, 0.0) as u64),
+    let asked = b.get("scope").and_then(|v| v.as_str()).unwrap_or(if tables.is_some() { "admin" } else { "read" });
+    // ops: `ops` and `propose` are roles over a read key ([`keys::Role`]).
+    let role = keys::Role::parse(asked);
+    let scope = match role {
+        Some(_) => Scope::Read,
+        None => Scope::parse(asked).ok_or_else(|| ApiError::bad("scope is feed, read, write, admin, ops or propose"))?,
+    };
+    let expires = match (b.get("expires_days"), b.get("expires_minutes")) {
+        (Some(d), Some(m)) if !d.is_null() && !m.is_null() => return Err(ApiError::bad("say expires_days or expires_minutes, not both")),
+        (Some(v), _) if !v.is_null() => Some(telemetry::now_ms() + v.as_f64().filter(|d| *d > 0.0).ok_or_else(|| ApiError::bad("expires_days is a number of days above 0"))?.mul_add(86_400_000.0, 0.0) as u64),
+        // An agent's key for one task: from 5 minutes.
+        (_, Some(v)) if !v.is_null() => Some(telemetry::now_ms() + v.as_f64().filter(|m| *m >= 5.0).ok_or_else(|| ApiError::bad("expires_minutes is a number of minutes, 5 at least"))?.mul_add(60_000.0, 0.0) as u64),
+        _ => None,
+    };
+    let agent = match b.get("agent") {
+        None | Some(Json::Null) => role.is_some(),
+        Some(v) => v.as_bool().ok_or_else(|| ApiError::bad("agent is true or false"))? || role.is_some(),
     };
     let open = !app.guarded() && app.svc.keys.is_empty();
     // A shard, or a copy in replication, whose callers send no credential.
     let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
-    let (key, secret) = app.svc.keys.create_allowed(name, scope, tables, Some(allow), expires, text("owner"), text("note"), app.guarded(), in_cluster)?;
-    let scope = key.scope;
+    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow) };
+    let (key, secret) = app.svc.keys.create_full(name, scope, tables, expires, text("owner"), text("note"), more, app.guarded(), in_cluster)?;
+    let scope = key.scope_name();
     let limits = key.tables.as_deref().map(keys::grants_json);
-    keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), after: Some(json!({"id": key.id, "scope": scope.name(), "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms})), ..Default::default() });
-    tracing::info!(key = %key.id, name = %key.name, scope = scope.name(), limited = key.tables.is_some(), "API key created");
+    keys::note_change(keys::Change {
+        object: Some(format!("key {}", key.name)),
+        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of})),
+        ..Default::default()
+    });
+    tracing::info!(key = %key.id, name = %key.name, scope, limited = key.tables.is_some(), agent = key.agent, "API key created");
     let detail = match &key.tables {
         Some(t) => format!("created key {} ({}, limited to {}{})", key.name, key.id, keys::grants_text(t), key.allow.as_ref().map_or(String::new(), |a| format!("{}{}{}", a.preset.as_ref().map_or(String::new(), |p| format!("; preset {p}")), if a.routes.is_empty() { String::new() } else { format!("; routes {}", a.routes.join(", ")) }, if a.apps.is_empty() { String::new() } else { format!("; apps {}", a.apps.join(", ")) }))),
-        None => format!("created key {} ({}, {})", key.name, key.id, scope.name()),
+        None => format!("created key {} ({}, {}{})", key.name, key.id, scope, if key.agent { ", an agent's" } else { "" }),
     };
     Ok(audited(json!({"key": key.json(), "secret": secret, "closed": open}), detail))
 }
@@ -6045,7 +6320,7 @@ async fn create_own_key(State(app): State<App>, w: Option<axum::Extension<Princi
 async fn revoke_own_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
     let by = who(w);
     let Some(k) = by.key.as_deref().and_then(|me| app.svc.keys.delegated(me).into_iter().find(|k| k.id == id)) else {
-        return Err(ApiError { status: 404, message: format!("no key {id} made by {:?}", by.name) });
+        return Err(ApiError { code: None, status: 404, message: format!("no key {id} made by {:?}", by.name) });
     };
     app.svc.keys.revoke_by(&id, app.guarded(), Some(keys::audit_name(&by)))?;
     keys::note_change(keys::Change { object: Some(format!("key {}", k.name)), before: Some(json!({"id": id})), ..Default::default() });
@@ -6061,7 +6336,7 @@ async fn revoke_key(State(app): State<App>, w: Option<axum::Extension<Principal>
             tracing::info!(key = %id, "API key revoked");
             Ok(audited(json!({"revoked": id}), format!("revoked key {id}")))
         }
-        false => Err(ApiError { status: 404, message: format!("no key {id}") }),
+        false => Err(ApiError { code: None, status: 404, message: format!("no key {id}") }),
     }
 }
 
@@ -6242,7 +6517,7 @@ async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
 /// silences unaudited.
 async fn alert_peer_merge(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     if !who(p).root {
-        return Err(ApiError { status: 403, message: "only another coordinator tells this, with the cluster's token: an API key may not".into() });
+        return Err(ApiError { code: None, status: 403, message: "only another coordinator tells this, with the cluster's token: an API key may not".into() });
     }
     let from = crate::peers::from_peer(&headers).ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
     let events = app.svc.alerts.merge(&b, &from)?;
@@ -6274,6 +6549,12 @@ async fn ack_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>
 async fn silence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let minutes = b.get("minutes").and_then(Json::as_u64).ok_or_else(|| ApiError::bad("the body needs \"minutes\""))?;
     let reason = b.get("reason").and_then(Json::as_str).unwrap_or_default().to_string();
+    // ops: an agent silences an alert for two hours at most.
+    if let Some(w) = p.as_ref().map(|e| &e.0) {
+        if crate::ops::is_agent(w, keys::caller().as_ref()) && minutes > crate::ops::AGENT_SILENCE_MIN {
+            return Err(ApiError::coded(400, "limit_exceeded", format!("an agent silences an alert for {} min at most, not {minutes}", crate::ops::AGENT_SILENCE_MIN)));
+        }
+    }
     let before = app.svc.alerts.one(&id)?;
     let e = app.svc.alerts.silence(&id, &by(&who(p)), minutes, &reason)?;
     keys::note(format!("silenced alert {id} for {minutes} min: {reason}"));
@@ -6347,7 +6628,7 @@ mod tests {
         let mut admin = steps();
         hide_hosts(&Principal::open(), &mut admin);
         assert_eq!(admin, steps());
-        let reader = Principal { name: "r".into(), key: Some("k".into()), scope: Scope::Read, root: false, tables: None, allow: None };
+        let reader = Principal { name: "r".into(), key: Some("k".into()), scope: Scope::Read, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
         let mut seen = steps();
         hide_hosts(&reader, &mut seen);
         assert_eq!((seen[0].detail.as_str(), seen[1].detail.as_str()), ("shard 0 query", "title, a, b"));

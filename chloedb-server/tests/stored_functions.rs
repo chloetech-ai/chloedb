@@ -45,7 +45,7 @@ fn service(db: Arc<Db>) -> Arc<Service> {
 }
 
 fn key_of(name: &str, scope: Scope) -> Principal {
-    Principal { name: name.into(), key: Some(format!("{name}-id")), scope, root: false, tables: None, allow: None }
+    Principal { name: name.into(), key: Some(format!("{name}-id")), scope, root: false, tables: None, role: None, agent: false, on_behalf_of: None, allow: None }
 }
 
 async fn sql_as(svc: &Arc<Service>, who: &Principal, s: &str) -> Result<SqlAnswer, String> {

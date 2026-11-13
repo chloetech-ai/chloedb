@@ -25,6 +25,7 @@ pub mod agent;
 pub mod answers;
 pub mod alerts;
 pub mod app_procs;
+pub mod admin_cli;
 pub mod apps;
 pub mod aws;
 pub mod cloud;
@@ -34,12 +35,15 @@ pub mod auth;
 pub mod autopilot;
 pub mod board;
 pub mod budget;
+pub mod catalog;
+pub mod changes;
 pub mod coord;
 pub mod copy;
 pub mod connectors;
 pub mod contain;
 pub mod cores;
 pub mod demo;
+pub mod errors;
 pub mod events;
 pub mod feedback;
 pub mod export;
@@ -64,6 +68,7 @@ pub mod media;
 pub mod metrics;
 pub mod obs;
 pub mod oncall;
+pub mod ops;
 pub mod otlp;
 pub mod operator;
 pub mod opensearch;
@@ -75,6 +80,7 @@ pub mod postgres;
 pub mod profiler;
 pub mod profiling;
 pub mod reads;
+pub mod runbooks;
 pub mod replication;
 pub mod scoped;
 pub mod server;
@@ -107,15 +113,30 @@ pub mod pb {
 pub struct ApiError {
     pub status: u16,
     pub message: String,
+    /// Its code ([`crate::errors`]); `None`: told by its status and
+    /// sentence ([`crate::errors::classify`]).
+    pub code: Option<&'static str>,
 }
 
 impl ApiError {
     pub fn bad(m: impl Into<String>) -> ApiError {
-        ApiError { status: 400, message: m.into() }
+        ApiError { code: None, status: 400, message: m.into() }
     }
 
     pub fn internal(e: impl std::fmt::Display) -> ApiError {
-        ApiError { status: 500, message: e.to_string() }
+        ApiError { code: None, status: 500, message: e.to_string() }
+    }
+
+    /// An error with its code ([`crate::errors::CODES`]).
+    pub fn coded(status: u16, code: &'static str, m: impl Into<String>) -> ApiError {
+        debug_assert!(crate::errors::lookup(code).is_some(), "{code} is not in errors::CODES");
+        ApiError { code: Some(code), status, message: m.into() }
+    }
+
+    /// Its code: its own, or as its status and sentence tell
+    /// ([`crate::errors::code_of`]).
+    pub fn code(&self) -> &'static str {
+        crate::errors::code_of(self)
     }
 }
 
@@ -137,7 +158,7 @@ impl From<chloedb::Error> for ApiError {
             chloedb::Error::Unavailable(_) => 503,
             chloedb::Error::Io(_) | chloedb::Error::Corrupt(_) => 500,
         };
-        ApiError { status, message: e.to_string() }
+        ApiError { code: None, status, message: e.to_string() }
     }
 }
 
@@ -155,9 +176,14 @@ impl From<tonic::Status> for ApiError {
             Code::Unimplemented => 501,
             _ => 502,
         };
-        ApiError { status, message: s.message().to_string() }
+        // The code another server's error had ([`crate::errors`]).
+        let code = s.metadata().get(ERROR_CODE).and_then(|v| v.to_str().ok()).and_then(crate::errors::lookup).map(|c| c.code);
+        ApiError { code, status, message: s.message().to_string() }
     }
 }
+
+/// The gRPC metadata that carries an error's code between servers.
+pub const ERROR_CODE: &str = "chloedb-error-code";
 
 impl From<ApiError> for tonic::Status {
     fn from(e: ApiError) -> tonic::Status {
@@ -186,7 +212,11 @@ impl From<ApiError> for tonic::Status {
         };
         // Whether a refused write was applied, as a code (protocol 19).
         let outcome = crate::cores::shard::Primary::write_outcome(&e);
+        let error_code = e.code;
         let mut s = tonic::Status::new(code, e.message);
+        if let Some(v) = error_code.and_then(|c| c.parse().ok()) {
+            s.metadata_mut().insert(ERROR_CODE, v);
+        }
         if let Some(v) = outcome.and_then(|o| o.parse().ok()) {
             s.metadata_mut().insert(crate::cores::shard::WRITE_OUTCOME, v);
         }

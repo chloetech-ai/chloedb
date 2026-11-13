@@ -361,7 +361,7 @@ fn gunzip(body: &[u8], max: usize) -> Result<Vec<u8>, ApiError> {
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(body).take(max as u64 + 1).read_to_end(&mut out).map_err(|e| ApiError::bad(format!("the body is not gzip: {e}")))?;
     if out.len() > max {
-        return Err(ApiError { status: 413, message: format!("the body is more than {max} bytes uncompressed") });
+        return Err(ApiError { code: None, status: 413, message: format!("the body is more than {max} bytes uncompressed") });
     }
     Ok(out)
 }

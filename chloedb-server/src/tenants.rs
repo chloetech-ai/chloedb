@@ -96,7 +96,7 @@ impl From<TenantError> for ApiError {
             TenantError::Exists | TenantError::NotWriter => 409,
             TenantError::InDoubt(_) => 503,
         };
-        ApiError { status, message: e.to_string() }
+        ApiError { code: None, status, message: e.to_string() }
     }
 }
 

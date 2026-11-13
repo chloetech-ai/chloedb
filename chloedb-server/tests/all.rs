@@ -14,6 +14,7 @@
 //! neither would not be built, and `every_file_is_built` below fails.
 
 mod access;
+mod agent_admin;
 mod alerts;
 mod apps;
 mod autopilot;

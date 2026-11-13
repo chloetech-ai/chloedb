@@ -95,6 +95,37 @@ impl Scope {
     }
 }
 
+/// What a key for operations may do beyond reading tables, the server's
+/// own views and changes by tier ([`crate::ops`]): `propose` reads every
+/// view an operator has and files change requests for a person to
+/// approve; `ops` also does what is bounded and undoes itself (a contain
+/// rule, a query cancelled, an alert silenced), with a reason. Neither
+/// writes a row: on tables such a key is a read key, and a server from
+/// before roles takes it for one (its `scope` is kept as `read`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Propose,
+    Ops,
+}
+
+impl Role {
+    pub fn parse(s: &str) -> Option<Role> {
+        match s.to_ascii_lowercase().as_str() {
+            "propose" => Some(Role::Propose),
+            "ops" => Some(Role::Ops),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Propose => "propose",
+            Role::Ops => "ops",
+        }
+    }
+}
+
 /// Who made a request, as its credential says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal {
@@ -111,6 +142,13 @@ pub struct Principal {
     /// and nothing on the server beyond them. `None`: every table, at
     /// `scope`.
     pub tables: Option<Arc<[Grant]>>,
+    /// A key for operations ([`Role`]).
+    pub role: Option<Role>,
+    /// A key made for an agent (`agent: true`), and the person it acts
+    /// for: the audit log names both, and an agent never approves a
+    /// change ([`crate::ops`]).
+    pub agent: bool,
+    pub on_behalf_of: Option<Arc<str>>,
     /// What a key limited to tables may do beyond its tables' routes
     /// ([`Allow`]); `None` for any other.
     pub allow: Option<Arc<Allow>>,
@@ -218,18 +256,23 @@ pub fn preset(name: &str, prefix: &str) -> Result<(Vec<Grant>, Allow), ApiError>
 
 impl Principal {
     pub fn open() -> Principal {
-        Principal { name: "open".into(), key: None, scope: Scope::Admin, root: true, tables: None, allow: None }
+        Principal::admin("open", true)
+    }
+
+    /// An admin of every table, by `name`: no key, no role, not an agent.
+    pub fn admin(name: &str, root: bool) -> Principal {
+        Principal { name: name.into(), key: None, scope: Scope::Admin, root, tables: None, role: None, agent: false, on_behalf_of: None, allow: None }
     }
 
     /// The `--token`'s holder: the root on a server without a cluster
     /// token (`root`), else an admin.
     fn token(root: bool) -> Principal {
-        Principal { name: "token".into(), key: None, scope: Scope::Admin, root, tables: None, allow: None }
+        Principal::admin("token", root)
     }
 
     /// Another server of the cluster, by the cluster's token.
     pub fn cluster() -> Principal {
-        Principal { name: "cluster".into(), key: None, scope: Scope::Admin, root: true, tables: None, allow: None }
+        Principal::admin("cluster", true)
     }
 
     /// Whether this is anyone, on a server with no credential to check.
@@ -241,12 +284,23 @@ impl Principal {
     pub fn may(&self, need: Scope, what: &str) -> Result<(), ApiError> {
         match self.scope >= need {
             true => Ok(()),
-            false => Err(ApiError { status: 403, message: format!("{what} needs a key with the {} scope; {:?} has {}", need.name(), self.name, self.scope.name()) }),
+            false => Err(ApiError { code: Some("scope_refused"), status: 403, message: format!("{what} needs a key with the {} scope; {:?} has {}", need.name(), self.name, self.scope_name()) }),
         }
     }
 
+    /// The scope as keys are made with it: `ops` or `propose` for a key
+    /// with a role, else its scope.
+    pub fn scope_name(&self) -> &'static str {
+        self.role.map_or(self.scope.name(), Role::name)
+    }
+
+    /// An agent: a key made for one, or a key with a role.
+    pub fn is_agent(&self) -> bool {
+        self.agent
+    }
+
     pub fn json(&self) -> Json {
-        let mut j = json!({"name": self.name, "key": self.key, "scope": self.scope.name(), "root": self.root});
+        let mut j = json!({"name": self.name, "key": self.key, "scope": self.scope_name(), "root": self.root});
         if let Some(t) = &self.tables {
             j["tables"] = grants_json(t);
             // What its scope means: its tables', not the server's.
@@ -257,6 +311,16 @@ impl Principal {
                 j["preset"] = json!(p);
             }
             j["allow"] = a.json();
+        }
+        if let Some(r) = self.role {
+            j["role"] = json!(r.name());
+            j["data_scope"] = json!(self.scope.name());
+        }
+        if self.agent {
+            j["agent"] = json!(true);
+        }
+        if let Some(p) = &self.on_behalf_of {
+            j["on_behalf_of"] = json!(&**p);
         }
         j
     }
@@ -296,8 +360,8 @@ impl Principal {
     pub fn may_table(&self, need: Scope, table: &str, what: &str) -> Result<(), ApiError> {
         match self.table_scope(table) {
             Some(s) if s >= need => Ok(()),
-            Some(s) => Err(ApiError { status: 403, message: format!("{what} needs the {} scope on table {table}; the key {:?} has {} there", need.name(), self.name, s.name()) }),
-            None => Err(ApiError { status: 403, message: format!("{what} touches table {table}, which the key {:?} may not: it is limited to {}", self.name, self.tables.as_deref().map(grants_text).unwrap_or_default()) }),
+            Some(s) => Err(ApiError { code: None, status: 403, message: format!("{what} needs the {} scope on table {table}; the key {:?} has {} there", need.name(), self.name, s.name()) }),
+            None => Err(ApiError { code: None, status: 403, message: format!("{what} touches table {table}, which the key {:?} may not: it is limited to {}", self.name, self.tables.as_deref().map(grants_text).unwrap_or_default()) }),
         }
     }
 
@@ -306,7 +370,7 @@ impl Principal {
     pub fn may_server(&self, what: &str) -> Result<(), ApiError> {
         match &self.tables {
             None => Ok(()),
-            Some(g) => Err(ApiError { status: 403, message: format!("{what} is not for a key limited to tables: the key {:?} may touch only {}", self.name, grants_text(g)) }),
+            Some(g) => Err(ApiError { code: None, status: 403, message: format!("{what} is not for a key limited to tables: the key {:?} may touch only {}", self.name, grants_text(g)) }),
         }
     }
 }
@@ -368,7 +432,7 @@ impl Principal {
     /// is never the root.
     pub fn narrowed(&self, grants: &str) -> Result<Principal, ApiError> {
         if self.limited() {
-            return Err(ApiError { status: 403, message: format!("{AS_TABLES} narrows a key of every table; the key {:?} is limited to tables already", self.name) });
+            return Err(ApiError { code: None, status: 403, message: format!("{AS_TABLES} narrows a key of every table; the key {:?} is limited to tables already", self.name) });
         }
         let mut g = Vec::new();
         for s in grants.split(',').filter(|s| !s.trim().is_empty()) {
@@ -521,12 +585,37 @@ pub struct Key {
     /// its own ([`DELEGATED`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// A key for operations ([`Role`]); its `scope` is then `read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    /// Made for an agent, and the person it acts for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
+}
+
+/// What a key made for an agent or for operations has beyond a plain key
+/// ([`Keys::create_full`]).
+#[derive(Clone, Debug, Default)]
+pub struct AgentKey {
+    pub role: Option<Role>,
+    pub agent: bool,
+    pub on_behalf_of: Option<String>,
+    /// What a key limited to tables reaches beyond them ([`Allow`]).
+    pub allow: Option<Allow>,
 }
 
 impl Key {
+    /// Its scope as the API shows it: `ops` or `propose` for a key with
+    /// a role.
+    pub fn scope_name(&self) -> &'static str {
+        self.role.map_or(self.scope.name(), Role::name)
+    }
+
     /// What the API shows of it.
     pub fn json(&self) -> Json {
-        let mut j = json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
+        let mut j = json!({"id": self.id, "name": self.name, "scope": self.scope_name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
             "owner": self.owner, "note": self.note, "last_addr": self.last_addr});
         if let Some(t) = &self.tables {
             j["tables"] = grants_json(t);
@@ -538,6 +627,15 @@ impl Key {
                 j["preset"] = json!(p);
             }
             j["allow"] = a.json();
+        }
+        if let Some(r) = self.role {
+            j["role"] = json!(r.name());
+        }
+        if self.agent {
+            j["agent"] = json!(true);
+        }
+        if let Some(p) = &self.on_behalf_of {
+            j["on_behalf_of"] = json!(p);
         }
         if let Some(p) = &self.parent {
             j["parent"] = json!(p);
@@ -562,10 +660,14 @@ impl Key {
             (None, false) => None,
             _ => return None,
         };
-        let scope = tables.as_deref().map_or(self.scope, |t| widest(t).min(self.scope));
+        let mut scope = tables.as_deref().map_or(self.scope, |t| widest(t).min(self.scope));
+        // A role reads tables, and writes none.
+        if self.role.is_some() {
+            scope = scope.min(Scope::Read);
+        }
         // An allowance is a limited key's alone.
         let allow = self.allow.clone().filter(|_| tables.is_some()).map(Arc::new);
-        Some(Principal { name: self.name.clone(), key: Some(self.id.clone()), scope, root: false, tables, allow })
+        Some(Principal { name: self.name.clone(), key: Some(self.id.clone()), scope, root: false, tables, role: self.role, agent: self.agent || self.role.is_some(), on_behalf_of: self.on_behalf_of.as_deref().map(Into::into), allow })
     }
 }
 
@@ -668,6 +770,19 @@ impl KeySet {
                     // Likewise its allowance, which such a server drops.
                     if x.allow.is_none() && k.allow.is_some() {
                         x.allow = k.allow.clone();
+                        changed = true;
+                    }
+                    // So do its role and whom it acts for.
+                    if x.role.is_none() && k.role.is_some() {
+                        x.role = k.role;
+                        changed = true;
+                    }
+                    if !x.agent && k.agent {
+                        x.agent = true;
+                        changed = true;
+                    }
+                    if x.on_behalf_of.is_none() && k.on_behalf_of.is_some() {
+                        x.on_behalf_of = k.on_behalf_of.clone();
                         changed = true;
                     }
                     // And without the key that made it.
@@ -819,7 +934,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, allow: None };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None, allow: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
@@ -916,18 +1031,25 @@ impl Keys {
     /// manage the server.
     #[allow(clippy::too_many_arguments)]
     pub fn create_limited(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
-        self.create_allowed(name, scope, tables, None, expires_ms, owner, note, token, in_cluster)
+        self.create_full(name, scope, tables, expires_ms, owner, note, AgentKey::default(), token, in_cluster)
     }
 
-    /// [`Self::create_limited`], a key limited to tables given `allow`
-    /// too ([`Allow`]; refused for a key of every table).
+    /// [`Self::create_limited`], for an agent or for operations
+    /// ([`AgentKey`]): a key with a role reads tables and writes none, and
+    /// is never a server's first.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_allowed(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, allow: Option<Allow>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
-        let allow = allow.filter(|a| !a.is_empty());
+    pub fn create_full(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, more: AgentKey, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        let allow = more.allow.clone().filter(|a| !a.is_empty());
         if allow.is_some() && tables.is_none() {
             return Err(ApiError::bad("routes, apps and presets are for a key limited to tables: a key of every table reaches every route its scope allows"));
         }
         let name = name.trim();
+        let scope = if more.role.is_some() { scope.min(Scope::Read) } else { scope };
+        if let Some(p) = &more.on_behalf_of {
+            if p.trim().is_empty() || p.chars().count() > 200 {
+                return Err(ApiError::bad("on_behalf_of names a person: 1 to 200 characters"));
+            }
+        }
         if name.starts_with("app:") {
             return Err(ApiError::bad("a key's name does not start with app: (the names of the keys a server makes for the apps it starts)"));
         }
@@ -940,21 +1062,38 @@ impl Keys {
         }
         if !token && in_cluster {
             return Err(ApiError {
-                status: 409,
+                code: None, status: 409,
                 message: "this server serves in a cluster and has no token: a key would close it to the servers that call it. Give the cluster's servers a --cluster-token, or make the key on the coordinator".into(),
             });
         }
         let mut set = self.lock();
-        if !token && set.keys.is_empty() && (scope != Scope::Admin || tables.is_some()) {
+        if !token && set.keys.is_empty() && (scope != Scope::Admin || tables.is_some() || more.agent) {
             return Err(ApiError::bad("this server has no token and no key: its first key turns on authentication, so it must be an admin key of every table"));
         }
         if set.keys.iter().any(|k| k.name == name) {
-            return Err(ApiError { status: 409, message: format!("a key named {name:?} exists") });
+            return Err(ApiError { code: None, status: 409, message: format!("a key named {name:?} exists") });
         }
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: stored_digest(&secret, tables.is_some(), false), last_used_ms: 0, owner, note, last_addr: None, tables, parent: None, allow };
+        let key = Key {
+            id,
+            name: name.to_string(),
+            scope,
+            created_ms: now_ms(),
+            expires_ms,
+            sha256: stored_digest(&secret, tables.is_some(), false),
+            last_used_ms: 0,
+            owner,
+            note,
+            last_addr: None,
+            tables,
+            parent: None,
+            role: more.role,
+            agent: more.agent || more.role.is_some(),
+            on_behalf_of: more.on_behalf_of.map(|p| p.trim().to_string()),
+            allow,
+        };
         let mut next = set.clone();
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {
@@ -988,9 +1127,9 @@ impl Keys {
             return Err(ApiError::bad("a key made by a key names 1 to 64 table grants"));
         }
         if in_cluster_without_token {
-            return Err(ApiError { status: 409, message: "this server serves in a cluster and has no token: make the key on the coordinator".into() });
+            return Err(ApiError { code: None, status: 409, message: "this server serves in a cluster and has no token: make the key on the coordinator".into() });
         }
-        let refuse = |m: String| ApiError { status: 403, message: m };
+        let refuse = |m: String| ApiError { code: None, status: 403, message: m };
         let Some(parent_id) = by.key.clone() else {
             return Err(refuse(format!("{:?} is not a key: a key makes keys of its own here; the token's holder makes keys with POST /v1/admin/keys", by.name)));
         };
@@ -1017,17 +1156,17 @@ impl Keys {
         }
         let before: Vec<Key> = set.keys.iter().filter(|k| k.parent.as_deref() == Some(parent_id.as_str()) && k.name == full_name).cloned().collect();
         if set.keys.iter().any(|k| k.name == full_name && k.parent.as_deref() != Some(parent_id.as_str())) {
-            return Err(ApiError { status: 409, message: format!("a key named {full_name:?} exists, made otherwise") });
+            return Err(ApiError { code: None, status: 409, message: format!("a key named {full_name:?} exists, made otherwise") });
         }
         if set.keys.iter().filter(|k| k.parent.as_deref() == Some(parent_id.as_str())).count() - before.len() >= DELEGATED_MAX {
-            return Err(ApiError { status: 409, message: format!("{:?} has made {DELEGATED_MAX} keys, the most: revoke some first", parent.name) });
+            return Err(ApiError { code: None, status: 409, message: format!("{:?} has made {DELEGATED_MAX} keys, the most: revoke some first", parent.name) });
         }
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let now = now_ms();
         let scope = widest(&tables);
-        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), allow: None };
+        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone(), allow: None };
         let mut next = set.clone();
         next.keys.retain(|k| !before.iter().any(|b| b.id == k.id));
         for b in before {
@@ -1080,11 +1219,12 @@ impl Keys {
                 true => by.clone(),
                 false => Some(format!("{} (revoked with the key that made it, {})", by.clone().unwrap_or_else(|| "?".into()), k.name)),
             };
-            next.revoked.push(Revoked { id: g.id, revoked_ms: at, name: Some(g.name), scope: Some(g.scope.name().into()), owner: g.owner, revoked_by: by, sha256: Some(g.sha256) });
+            let scope = Some(g.scope_name().into());
+            next.revoked.push(Revoked { id: g.id, revoked_ms: at, name: Some(g.name), scope, owner: g.owner, revoked_by: by, sha256: Some(g.sha256) });
         }
         if !token && !managed(&next.keys) {
             return Err(ApiError {
-                status: 409,
+                code: None, status: 409,
                 message: "this is the last admin key that never expires on a server without a token: revoking it would leave no one to manage the server once the others expire (or open it). Make another admin key without expires_days first".into(),
             });
         }
@@ -1109,9 +1249,9 @@ impl Keys {
     pub fn rotate(&self, id: &str, grace_ms: u64, token: bool) -> Result<(Key, String, Key), ApiError> {
         let mut set = self.lock();
         let now = now_ms();
-        let old = set.keys.iter().find(|k| k.id == id).cloned().ok_or_else(|| ApiError { status: 404, message: format!("no key {id}") })?;
+        let old = set.keys.iter().find(|k| k.id == id).cloned().ok_or_else(|| ApiError { code: None, status: 404, message: format!("no key {id}") })?;
         if old.expires_ms.is_some_and(|e| now >= e) {
-            return Err(ApiError { status: 409, message: format!("key {} has expired: make a new one instead", old.name) });
+            return Err(ApiError { code: None, status: 409, message: format!("key {} has expired: make a new one instead", old.name) });
         }
         let new_id = hex(&random(8)?);
         let secret = hex(&random(24)?);
@@ -1128,7 +1268,7 @@ impl Keys {
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {
             return Err(ApiError {
-                status: 409,
+                code: None, status: 409,
                 message: "this server has no token, so one of its admin keys must never expire; rotating this one would leave none. Make an admin key without expires_days first".into(),
             });
         }
@@ -1231,7 +1371,7 @@ impl Keys {
 
 /// Whether `keys` hold an admin key that never expires.
 fn managed(keys: &[Key]) -> bool {
-    keys.iter().any(|k| k.scope == Scope::Admin && k.tables.is_none() && k.expires_ms.is_none())
+    keys.iter().any(|k| k.scope == Scope::Admin && k.tables.is_none() && k.expires_ms.is_none() && !k.agent)
 }
 
 tokio::task_local! {
@@ -1285,6 +1425,18 @@ pub const COMMAND_CENTER: &str = "command-center";
 pub struct Caller {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
+    /// What an agent says of itself (`x-chloedb-agent-model`, `-session`,
+    /// `-run`), for the audit log ([`crate::ops::agent_of`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_run: Option<String>,
+    /// The change request a request applies (`x-chloedb-change`, set by
+    /// the server itself when a person approves one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1372,10 +1524,21 @@ pub struct Entry {
     pub before: Option<Json>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Json>,
-    /// Who acted: "person" (a request), or the server's own "operator",
+    /// Who acted: "person" (a request), "agent" (an agent's request,
+    /// [`crate::ops::is_agent`]), or the server's own "operator",
     /// "autoscaler" or "upgrader".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub actor: String,
+    /// An agent's request: what it said of itself (`{model?, session?,
+    /// run?, via?}`, [`crate::ops::agent_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Json>,
+    /// The person an agent's key acts for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
+    /// The change request this request applied ([`crate::changes`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_request: Option<String>,
 }
 
 impl Entry {

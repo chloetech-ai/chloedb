@@ -256,10 +256,10 @@ impl Coordinator {
 
     fn start_job(self: &Arc<Self>, kind: &str, plan: Vec<(Vec<usize>, usize, usize)>) -> Result<Json, ApiError> {
         let Ok(running) = self.moves.running.clone().try_lock_owned() else {
-            return Err(ApiError { status: 409, message: "a job of moves runs already: wait for it, or stop it (POST /v1/admin/moves/stop)".into() });
+            return Err(ApiError { code: None, status: 409, message: "a job of moves runs already: wait for it, or stop it (POST /v1/admin/moves/stop)".into() });
         };
         if let Some(m) = self.map().and_then(|m| m.moving().cloned()) {
-            return Err(ApiError { status: 409, message: format!("slots are moving already, from shard {} to {} ({}): finish that move first (POST /v1/admin/moves/finish)", m.from, m.to, m.state.name()) });
+            return Err(ApiError { code: None, status: 409, message: format!("slots are moving already, from shard {} to {} ({}): finish that move first (POST /v1/admin/moves/finish)", m.from, m.to, m.state.name()) });
         }
         let steps: Vec<Step> = plan.into_iter().map(|(slots, from, to)| Step { from, to, slots, phase: "planned", rows: 0, rounds: 0, busy: 0, held_ms: None, ms: None, error: None }).collect();
         let state = if steps.is_empty() { "done" } else { "running" };
@@ -351,7 +351,7 @@ impl Coordinator {
     /// up, is given up.
     pub async fn finish_move(&self) -> Result<Json, ApiError> {
         let Ok(_running) = self.moves.running.try_lock() else {
-            return Err(ApiError { status: 409, message: "a job of moves runs here: it finishes its own moves (stop it with POST /v1/admin/moves/stop)".into() });
+            return Err(ApiError { code: None, status: 409, message: "a job of moves runs here: it finishes its own moves (stop it with POST /v1/admin/moves/stop)".into() });
         };
         self.sync().await;
         let Some(now) = self.map() else { return Ok(json!({"finished": null})) };
@@ -473,7 +473,7 @@ impl Coordinator {
         loop {
             let chunk = tokio::time::timeout(Duration::from_secs(120), stream.message())
                 .await
-                .map_err(|_| ApiError { status: 504, message: format!("shard {}: no chunk of the export within 120 s", rep.url) })?
+                .map_err(|_| ApiError { code: None, status: 504, message: format!("shard {}: no chunk of the export within 120 s", rep.url) })?
                 .map_err(named)?
                 .ok_or_else(|| ApiError::internal(format!("shard {}: the export ended without its last chunk", rep.url)))?;
             if chunk.last {
@@ -524,7 +524,7 @@ impl Coordinator {
         let mut c = rep.client.clone();
         let a = tokio::time::timeout(Duration::from_secs(30), c.sources(pb::SourcesRequest { moving: true }))
             .await
-            .map_err(|_| ApiError { status: 504, message: format!("shard {}: no stream offsets of the moving slots within 30 s", rep.url) })?
+            .map_err(|_| ApiError { code: None, status: 504, message: format!("shard {}: no stream offsets of the moving slots within 30 s", rep.url) })?
             .map_err(|s| self.named(&rep.url, s))?;
         Ok(a.into_inner().sources.into_iter().map(|s| (s.name, s.offset)).collect())
     }
@@ -536,7 +536,7 @@ impl Coordinator {
         let rep = &t.replicas[i][src];
         let mut c = rep.client.clone();
         let r = pb::FreezeRequest { epoch: t.epoch(), ttl_ms: HOLD_TTL.as_millis() as u32, thaw };
-        let a = tokio::time::timeout(Duration::from_secs(60), c.freeze_slots(r)).await.map_err(|_| ApiError { status: 504, message: format!("shard {}: no answer to the hold within 60 s", rep.url) })?;
+        let a = tokio::time::timeout(Duration::from_secs(60), c.freeze_slots(r)).await.map_err(|_| ApiError { code: None, status: 504, message: format!("shard {}: no answer to the hold within 60 s", rep.url) })?;
         Ok(a.map_err(|s| self.named(&rep.url, s))?.into_inner().seq_no)
     }
 

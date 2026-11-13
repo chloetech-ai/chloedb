@@ -160,6 +160,7 @@ NAV = [
     ]),
     ("Server and cluster", [
         ("server", "chloedb-server", "docs/chloedb/server.md", "reference"),
+        ("runbooks", "Runbooks", "docs/chloedb/runbooks.md", "reference"),
         ("sqlite", "SQLite in and out", "docs/chloedb/sqlite.md", "reference"),
         ("parquet", "Parquet and S3", "docs/chloedb/parquet.md", "reference"),
         ("postgres", "Following Postgres", "docs/chloedb/postgres.md", "reference"),

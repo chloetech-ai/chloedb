@@ -86,6 +86,9 @@ async fn a_recommender_over_http() {
         scope: Scope::Read,
         root: false,
         tables: Some(tables.iter().map(|t| Grant::new(t, Scope::Read).unwrap()).collect::<Vec<_>>().into()),
+        role: None,
+        agent: false,
+        on_behalf_of: None,
         allow: None,
     };
     let q = "SELECT id FROM items ORDER BY recommend('shop', 'u1') DESC LIMIT 1";

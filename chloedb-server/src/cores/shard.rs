@@ -21,11 +21,11 @@ use crate::replication::{Acks, Elected, KeptRole, PrimaryOptions};
 use crate::{pb, ApiError};
 
 fn conflict(message: String) -> ApiError {
-    ApiError { status: 409, message }
+    ApiError { code: None, status: 409, message }
 }
 
 fn unavailable(message: String) -> ApiError {
-    ApiError { status: 503, message }
+    ApiError { code: None, status: 503, message }
 }
 
 /// What a copy keeps beside its database (`<db>.replication`), durably
@@ -1351,7 +1351,7 @@ impl Primary {
             return Ok(());
         }
         Err(ApiError {
-            status: 504,
+            code: None, status: 504,
             message: format!(
                 "the write is durable on the primary as sequence number {seq}, but {holding} of {} copies held it by its deadline, and --write-acks {} needs {}",
                 self.copies(),
