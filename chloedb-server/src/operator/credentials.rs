@@ -154,9 +154,10 @@ pub async fn make_key(admin: &super::Admin, app: &str, tables: &[String], old: O
             stale.push(o.to_string());
         }
     }
-    for id in &stale {
-        admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await?;
-    }
+    // The new key first: should making it fail, the app keeps the one it
+    // has. The old ones are revoked once it exists; the caller writes it
+    // to the Secret, whose key id on the pod template rolls the pod
+    // (`kube::rolled`, audit N-D4).
     let made = admin
         .post("/v1/admin/keys", json!({"name": name, "tables": tables, "owner": "operator", "note": format!("the key of the app {app} beside this cluster, made by the operator")}))
         .await?;
@@ -166,6 +167,13 @@ pub async fn make_key(admin: &super::Admin, app: &str, tables: &[String], old: O
         return Err("the coordinators made a key of every table for an app: they are from before keys limited to tables, so the app keeps the admin token".into());
     }
     let secret = made["secret"].as_str().ok_or("the coordinators' answer has no secret")?.to_string();
+    for old in stale.iter().filter(|s| **s != id) {
+        // A key left over is named the app's and listed: the next new key
+        // revokes it.
+        if let Err(e) = admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{old}"), None).await {
+            tracing::warn!(app, key = %old, error = %e, "could not revoke the app's old key");
+        }
+    }
     Ok((id, secret))
 }
 
