@@ -140,3 +140,36 @@ fn joins_stop_inside_a_segment() {
     let join = "SELECT x.id, y.id FROM t x JOIN t y ON x.c = y.c AND x.a < y.a - 2000";
     stops_midway(&db, join, &ExecOptions { engine: Engine::Operators, ..ExecOptions::default() });
 }
+
+/// One segment of `n` log lines, in `line` with a substring index and in
+/// `plain` without one.
+fn logs(dir: &std::path::Path, n: i64) -> Db {
+    let schema = Schema::new(
+        "t",
+        vec![Field::new("id", FieldType::Int), Field::new("line", FieldType::Keyword).substring(), Field::new("plain", FieldType::Keyword)],
+        Some("id"),
+    )
+    .unwrap();
+    let opts = DbOptions { segment_max_docs: 1 << 30, sync: false, ..DbOptions::default() };
+    let db = Db::create(&dir.join("l.strata"), schema, opts).unwrap();
+    db.load((0..n).map(|i| {
+        let line = format!("GET /api/v1/users/{} took {} ms from web-{:02}", i * 7919 % 100_003, i % 997, i % 40);
+        vec![Value::Int(i), Value::Str(line.clone()), Value::Str(line)]
+    }))
+    .unwrap();
+    assert_eq!(db.snapshot().segments().len(), 1, "the test needs every row in one segment");
+    db
+}
+
+#[test]
+fn like_scans_stop_inside_a_segment() {
+    let _alone = alone();
+    let dir = tempfile::tempdir().unwrap();
+    let db = logs(dir.path(), 1_500_000);
+    // A pattern of many candidates scans the part's values, a pattern with
+    // no literal scans them all, and a field without the index is read
+    // value by value.
+    stops_midway(&db, "SELECT COUNT(*) FROM t WHERE line ILIKE '%e%'", &ExecOptions::default());
+    stops_midway(&db, "SELECT COUNT(*) FROM t WHERE line LIKE '%__%'", &ExecOptions::default());
+    stops_midway(&db, "SELECT COUNT(*) FROM t WHERE plain LIKE '%users/9%'", &ExecOptions::default());
+}
