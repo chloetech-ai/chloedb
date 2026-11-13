@@ -25,6 +25,7 @@ mod chaos;
 mod cloud_clusters;
 mod cluster;
 mod cluster_keys;
+mod cluster_writes;
 mod command_center;
 mod correlated;
 mod date_cluster;

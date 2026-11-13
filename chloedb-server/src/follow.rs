@@ -1343,6 +1343,14 @@ impl Follow {
         if ops.is_empty() {
             return Ok(());
         }
+        // A change by key whose row the follower lacks (a delete replayed,
+        // a row not copied yet) passes, as it did before a coordinator
+        // refused one that names a routing.
+        for op in ops.iter_mut() {
+            if matches!(op.get("op").and_then(Json::as_str), Some("delete" | "set" | "add")) && op.get("if_missing").is_none() {
+                op["if_missing"] = json!("skip");
+            }
+        }
         let body = json!({"ops": std::mem::take(ops)});
         let j = loop {
             match self.dst.post("/v1/write", &body).await {

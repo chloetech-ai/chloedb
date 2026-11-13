@@ -35,6 +35,7 @@ pub mod contain;
 pub mod cores;
 pub mod demo;
 pub mod events;
+pub mod export;
 pub mod fleet;
 pub mod follow;
 pub mod grpc;
@@ -72,6 +73,7 @@ pub mod server;
 pub mod service;
 pub mod sim;
 pub mod slices;
+pub mod sql_check;
 pub mod slots;
 pub mod telemetry;
 pub mod traffic;
@@ -135,6 +137,7 @@ impl From<tonic::Status> for ApiError {
         use tonic::Code;
         let status = match s.code() {
             Code::InvalidArgument => 400,
+            Code::NotFound => 404,
             Code::FailedPrecondition => 409,
             Code::AlreadyExists => 422,
             Code::DeadlineExceeded => 504,
@@ -155,6 +158,8 @@ impl From<ApiError> for tonic::Status {
             401 => Code::Unauthenticated,
             // A credential's scope does not allow what the call does.
             403 => Code::PermissionDenied,
+            // A write by key whose row is not there (`"if_missing": "error"`).
+            404 => Code::NotFound,
             // Refused in the state the server is in: an older slot map, a
             // write with the same idempotency key still running.
             409 => Code::FailedPrecondition,

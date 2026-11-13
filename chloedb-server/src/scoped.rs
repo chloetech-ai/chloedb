@@ -53,6 +53,7 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // Rows, by their tables.
         "/v1/write" | "/v1/kv/get" | "/v1/import" => method == Method::POST,
         "/v1/kv/:table/:key" => get || method == Method::PUT || method == Method::DELETE,
+        "/v1/export" => get,
         // Embeddings of text, and the models that make them: no table.
         "/v1/embed" => method == Method::POST,
         "/v1/models" => get,

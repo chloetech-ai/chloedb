@@ -123,7 +123,7 @@ async fn writes_fetch_what_the_list_allows() {
     // SQL and imports resolve too.
     svc.sql(&Principal::open(), &format!("INSERT INTO photos (id, title, image) VALUES ('q', 'from sql', '{cdn}/a.png')"), &Params::new(), After::Any, 0).await.unwrap();
     let csv = format!("id,title,image\ni,imported,{cdn}/a.png\n");
-    assert_eq!(svc.import(None, axum::body::Bytes::from(csv), chloedb::ingest::Format::Csv).await.unwrap().0, 1);
+    assert_eq!(svc.import(None, axum::body::Bytes::from(csv), chloedb::ingest::Format::Csv, Default::default()).await.unwrap().0.rows, 1);
     let got = rows(&db);
     let ids: Vec<&str> = got.iter().map(|r| r.0.as_str()).collect();
     assert_eq!(ids, ["a", "b", "i", "q", "r", "s"]);

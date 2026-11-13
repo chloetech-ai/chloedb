@@ -1481,6 +1481,17 @@ message WriteResponse {
   // Protocol 6, WriteStream: the last offset of each source in this
   // message, committed with its rows.
   map<string, int64> offsets = 5;
+  // Protocol 21: what the operations found (receipt set): rows inserted,
+  // replaced, updated (set, add), deleted, collapsed (a key an earlier
+  // operation of the request wrote) and not found. An older server leaves
+  // receipt false, and its counts unknown.
+  bool receipt = 6;
+  uint64 inserted = 7;
+  uint64 replaced = 8;
+  uint64 updated = 9;
+  uint64 deleted = 10;
+  uint64 collapsed = 11;
+  uint64 not_found = 12;
 }
 
 message SourcesRequest {
