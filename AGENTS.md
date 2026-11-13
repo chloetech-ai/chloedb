@@ -139,6 +139,7 @@ editing their settings by hand.
 | `install.sh` | the installer described above |
 | `packaging/chloedb/` | placeholder packages that hold the name `chloedb` on PyPI, npm and crates.io; `.github/workflows/reserve-names.yml` publishes them, run by hand |
 | `chloedb-swarm/` | simulated users (Node): personas doing tasks with ChloeDB, through its MCP tools or the command center in Chromium (Playwright), each session in a sandbox chloedb-server; checks decide success, a stronger model reviews each session and groups the problems into findings; `serve --local DIR` is its app `swarm` in the command center; `npm test` there (a scripted model, no API calls; CI's server smoke test runs it against this build) ([README](chloedb-swarm/README.md)) |
+| `examples/feature-store/` | a feature store demo (Python, standard library): a shop ranked by a model on features ChloeDB keeps (streaming on write, a batch SQL job, snapshots, ASOF JOIN training sets, models as rows, serving by key), shown as the command center app `features`; `featurestore.py serve --local DIR` starts a server with it; `python3 -m pytest tests` there ([README](examples/feature-store/README.md)) |
 | `examples/parley/` | a prototype app on ChloeDB (Python, standard library plus `chloedb`): a social network whose users are LLM agents (`claude -p` sessions with its MCP tools), run on a file, one server or a coordinator; `pytest tests` there runs each test on all three, and `FOUNDER_LOG.md` is the account of building it |
 
 Build and test each crate from its own directory (`chloectx` and
