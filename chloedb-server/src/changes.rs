@@ -26,9 +26,12 @@
 //! (`x-chloedb-change`).
 //!
 //! A fingerprint is the SHA-256 of the request and of its plan, the plan
-//! without its times and estimates, its counts by their order of
-//! magnitude (`rows: 41200` reads as `1e4`), so a table that took a few
-//! rows meanwhile does not stale a plan, and one that grew tenfold does.
+//! without its times and estimates, its numbers from 100 by their order of
+//! magnitude (`rows: 41200` reads as `1e4`). When the fingerprints differ,
+//! the plans are compared ([`holds`]): a count of rows within twice or half
+//! of what it was, or 10 rows apart, is the same, so a table that took
+//! a few rows meanwhile does not stale a plan (a `DELETE` of 42 rows that
+//! is 44 now), and one that doubled does.
 
 use std::sync::Arc;
 
@@ -136,19 +139,17 @@ fn notes(method: &Method, route: &str, tier: Tier) -> (String, bool, Option<&'st
     (what, reversible, undo, blast)
 }
 
-/// A plan as it is fingerprinted: no times or estimates, counts by their
-/// order of magnitude, no fractions.
+/// Whether a plan's key is left out of its comparison: times and
+/// estimates.
+fn ignored(k: &str) -> bool {
+    k.ends_with("_ms") || k.ends_with("_s") || k.starts_with("took") || k.starts_with("estimate") || k.contains("seconds") || k == "fingerprint" || k == "plan_id" || k == "now" || k == "ts"
+}
+
+/// A plan as it is fingerprinted: no times or estimates, numbers from 100
+/// by their order of magnitude, no fractions.
 fn canonical(j: &Json) -> Json {
     match j {
-        Json::Object(m) => Json::Object(
-            m.iter()
-                .filter(|(k, _)| {
-                    let k = k.as_str();
-                    !(k.ends_with("_ms") || k.ends_with("_s") || k.starts_with("took") || k.starts_with("estimate") || k.contains("seconds") || k == "fingerprint" || k == "plan_id" || k == "now" || k == "ts")
-                })
-                .map(|(k, v)| (k.clone(), canonical(v)))
-                .collect(),
-        ),
+        Json::Object(m) => Json::Object(m.iter().filter(|(k, _)| !ignored(k)).map(|(k, v)| (k.clone(), canonical(v))).collect()),
         Json::Array(a) => Json::Array(a.iter().map(canonical).collect()),
         Json::Number(n) => match n.as_u64() {
             Some(x) if x < 100 => json!(x),
@@ -157,6 +158,36 @@ fn canonical(j: &Json) -> Json {
             None => Json::Null,
         },
         other => other.clone(),
+    }
+}
+
+/// Whether a plan's key holds a count of rows (or documents, records,
+/// bytes) rather than a name or a number of something else (a shard, a
+/// tier, a version).
+fn is_count(k: &str) -> bool {
+    matches!(k, "rows" | "n" | "count" | "docs" | "records" | "bytes") || ["_rows", "_docs", "_count", "_records", "_bytes"].iter().any(|s| k.ends_with(s))
+}
+
+/// Whether plan `now` is plan `was` still, for an approval: the same but
+/// for times and estimates, its counts within twice or half of what they
+/// were, or 10 apart (a table taking writes meanwhile; [`is_count`]), its
+/// other numbers as the fingerprint reads them ([`canonical`]).
+fn holds(key: &str, was: &Json, now: &Json) -> bool {
+    match (was, now) {
+        (Json::Object(a), Json::Object(b)) => {
+            let ka: std::collections::BTreeSet<&String> = a.keys().filter(|k| !ignored(k)).collect();
+            let kb: std::collections::BTreeSet<&String> = b.keys().filter(|k| !ignored(k)).collect();
+            ka == kb && ka.iter().all(|k| holds(k, &a[k.as_str()], &b[k.as_str()]))
+        }
+        (Json::Array(a), Json::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| holds(key, x, y)),
+        (Json::Number(x), Json::Number(y)) if is_count(key) => match (x.as_f64(), y.as_f64()) {
+            (Some(x), Some(y)) => {
+                let (lo, hi) = if x <= y { (x, y) } else { (y, x) };
+                hi - lo <= 10.0 || (lo > 0.0 && hi < 2.0 * lo)
+            }
+            _ => false,
+        },
+        (a, b) => canonical(a) == canonical(b),
     }
 }
 
@@ -332,8 +363,9 @@ pub async fn file(svc: &Arc<Service>, router: &Router, caller: &Caller<'_>, by: 
 }
 
 /// Whether the change request `p` still holds: its request dry run again
-/// by the approver, and the fingerprints compared. `Err` with the plan
-/// now when the cluster moved.
+/// by the approver, and the fingerprints compared, then the plans
+/// ([`holds`]: counts within twice or half, or 10 apart). `Err` with the
+/// plan now when the cluster moved.
 pub async fn still_holds(svc: &Arc<Service>, router: &Router, caller: &Caller<'_>, p: &Proposal) -> Result<(), Json> {
     let Some(was) = &p.fingerprint else { return Ok(()) };
     let Ok(method) = Method::from_bytes(p.method.as_bytes()) else { return Ok(()) };
@@ -341,6 +373,8 @@ pub async fn still_holds(svc: &Arc<Service>, router: &Router, caller: &Caller<'_
     let a = Asked { method, path: p.path.clone(), route, body: p.body.clone().unwrap_or(Json::Null) };
     match preview(svc, router, caller, &a).await {
         Ok(now) if now["fingerprint"].as_str() == Some(was.as_str()) => Ok(()),
+        // Its rows counted again on a table that takes writes.
+        Ok(now) if p.plan.as_ref().is_some_and(|old| ["plan", "affects"].iter().all(|k| holds(k, &old[*k], &now[*k]))) => Ok(()),
         Ok(now) => Err(now),
         Err(e) => Err(json!({"error": e.message})),
     }
@@ -382,6 +416,25 @@ mod tests {
         assert_ne!(f(41_200, 1.0), f(412_000, 1.0));
         assert_ne!(f(3, 1.0), f(4, 1.0));
         assert_ne!(fingerprint("POST", "/v1/sql", &json!({"sql": "DROP TABLE a"}), &Json::Null), fingerprint("POST", "/v1/sql", &json!({"sql": "DROP TABLE b"}), &Json::Null));
+    }
+
+    #[test]
+    fn plans_hold_while_their_counts_drift_a_little_but_not_twofold() {
+        let dry = |rows: u64, shard: u64| json!({"plan": {"statement": "delete", "table": "products", "shard": shard}, "affects": {"table": "products", "rows": rows}, "took_ms": rows});
+        let same = |a: &Json, b: &Json| ["plan", "affects"].iter().all(|k| holds(k, &a[*k], &b[*k]));
+        // A few rows more or less on a busy table: small counts too.
+        assert!(same(&dry(42, 1), &dry(44, 1)));
+        assert!(same(&dry(3, 1), &dry(9, 1)));
+        assert!(same(&dry(0, 1), &dry(4, 1)));
+        assert!(same(&dry(41_200, 1), &dry(43_900, 1)));
+        assert!(same(&dry(99, 1), &dry(101, 1)), "no edge at an order of magnitude");
+        // Twice or half the rows, another shard or table: stale.
+        assert!(!same(&dry(52, 1), &dry(120, 1)));
+        assert!(!same(&dry(41_200, 1), &dry(9_000, 1)));
+        assert!(!same(&dry(42, 1), &dry(42, 2)), "a shard is a name, not a count");
+        let mut other = dry(42, 1);
+        other["affects"]["table"] = json!("orders");
+        assert!(!same(&dry(42, 1), &other));
     }
 
     #[test]
