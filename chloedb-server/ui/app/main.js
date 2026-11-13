@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel } from "./core.js";
+import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, signInNeeded, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
@@ -235,7 +235,7 @@ const rangeSeg = seg(RANGES.map(([k, m]) => [m, k, `The last ${k.replace(/(\d)([
 const absBtn = h("button", { class: "abs" });
 absBtn.onclick = () => pickWindow();
 const zoomChip = h("button", { class: "chip hidden", "aria-pressed": "true", title: "Drag across a chart to zoom; this resets it", onclick: () => setZoom(null) }, icon("zout"), "zoomed", h("span", { class: "x" }, "×"));
-const liveBtn = h("button", { class: "btn sm live", onclick: () => setPaused(!state.paused) });
+const liveBtn = h("button", { class: "btn sm live", onclick: () => (signInNeeded() ? bus.emit("unauthorized") : setPaused(!state.paused)) });
 const shareBtn = h("button", { class: "btn sm", title: "Copy a link to exactly this: the view, its selection and this window as fixed times (it opens paused) (s)", onclick: () => share() }, icon("share"), h("span", { class: "lbl" }, "Share"));
 const bell = h("a", { class: "btn ghost icon", href: "#/alerts", title: "Alerts", style: { position: "relative" } }, icon("alerts"));
 const bellCount = h("span", { class: "count hidden bellc" });
@@ -330,6 +330,7 @@ function drawLive() {
   const f = fresh("series"), fh = fresh("health");
   let cls, ic, text, title;
   if (!c.ok) { cls = "down"; ic = "bad"; text = "Not answering"; title = `The server has not answered since ${when(c.since_ms)}: ${c.message}. Click to pause`; }
+  else if (signInNeeded()) { cls = "stale"; ic = "lock"; text = "Signed out"; title = hasToken() ? "The server refused this key: nothing is asked of it until you enter another (click to sign in)" : "This server needs a key: nothing is asked of it until you enter one (click to sign in)"; }
   else if (state.paused) { cls = "paused"; ic = "play"; text = state.from != null ? "Fixed window" : `Paused at ${when(state.pausedAt)}`; title = "Nothing redraws while paused. Click to go live (p)"; }
   else if ((!f.ok && !f.loading) || (!fh.ok && !fh.loading)) { cls = "stale"; ic = "clock"; text = "Stale"; title = `No fresh data: ${(!f.ok ? f.error : fh.error) || "the last answers are old"}`; }
   else { cls = "ok"; ic = null; text = "Live"; title = "Live: the data follows now. Click to pause (p)"; }
@@ -521,12 +522,37 @@ function askToken() {
       h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (feed, read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), save],
   });
-  const ok = () => { setToken(inp.value.trim()); m.close(); refreshWho(); toast("Key saved for this tab", "ok"); };
+  const said = h("div", { class: "small", role: "status", "aria-live": "polite" });
+  // The key is asked about before it is kept: a key the server refuses is
+  // said so here, and the dialog stays open.
+  const ok = async () => {
+    const t = inp.value.trim();
+    if (!t || save.disabled) return;
+    save.disabled = true; said.className = "small muted"; said.textContent = "Checking the key…";
+    let w = null;
+    try {
+      const r = await fetch(at("/v1/whoami"), { headers: { authorization: "Bearer " + t, "x-strata-client": "command-center" } });
+      if (r.status === 401 || r.status === 403) { save.disabled = false; said.className = "small bad"; said.textContent = "The server refused this key: check that it is whole, and that it was not revoked or expired."; inp.select(); return; }
+      if (r.ok) w = await r.json().catch(() => null);
+    } catch { /* not answering: kept, and the page says so */ }
+    setToken(t); m.close(); refreshWho();
+    toast(w?.name ? `Signed in as ${w.name} (${w.tables ? keyLabel(w) : w.scope})` : "Key kept for this tab", "ok");
+  };
   save.onclick = ok;
   inp.onkeydown = (e) => { if (e.key === "Enter") ok(); };
+  inp.oninput = () => { said.textContent = ""; };
+  m.el.querySelector(".bd").append(said);
 }
+// Asked once for a key the server refuses (or no key), until another key
+// is given: Cancel is an answer. A page's own "Enter a key" button always asks.
 let asked = false;
-bus.on("unauthorized", () => { if (!document.querySelector(".modal")) { if (!asked || !hasToken()) askToken(); asked = true; } });
+bus.on("token", () => { asked = false; });
+bus.on("unauthorized", (path) => {
+  if (document.querySelector(".modal")) return;
+  if (typeof path === "string" && asked) return;
+  asked = true;
+  askToken();
+});
 
 // ---------------------------------------------------------------- palette
 const go = (hash) => () => { location.hash = hash; };

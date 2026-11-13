@@ -12,7 +12,7 @@
 // run is marked and the Run button says its kind ("Run SELECT", "Check
 // UPDATE"); and every write waits for a check of the rows it changes.
 
-import { h, icon, clear, fmt, api, store, bus, toast, copy, modal, drawer, empty, seg, sqlBlock, debounce, ApiError, failure, tipOn } from "../core.js";
+import { h, icon, clear, fmt, api, store, bus, toast, copy, modal, drawer, empty, seg, sqlBlock, debounce, ApiError, failure, tipOn, signInNeeded, hasToken } from "../core.js";
 import { editor, quoteName, typeName } from "../sqledit.js";
 import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { folded, firstMine } from "../owners.js";
@@ -368,7 +368,8 @@ function render(page, r) {
     const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : isSandbox() ? h("span", { title: "The server names no environment and runs on this machine, so the workbench treats it as a sandbox" }, " · sandbox") : h("span", { title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
       ` · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"}`, w ? ` · ${w.name} · ${w.scope} key` : ""];
     let pillEl, note, action = null;
-    if (md.why === "key") { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only"); note = "this key can read only: writes need a write key"; }
+    if (md.why === "key" && signInNeeded()) { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Signed out"); note = hasToken() ? "the server refused this key" : "this server needs a key"; action = h("button", { class: "btn sm primary", onclick: () => bus.emit("unauthorized") }, "Enter a key"); }
+    else if (md.why === "key") { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only"); note = "this key can read only: writes need a write key"; }
     else if (md.readOnly) {
       pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only");
       note = "writes held for a check";

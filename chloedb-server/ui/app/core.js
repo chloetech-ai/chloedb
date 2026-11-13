@@ -270,6 +270,13 @@ export function refusedRoute(path) {
   return refusedFor.paths.get(routeOf(path)) || null;
 }
 
+// The key a 401 answered (null: no key), until another is given: the
+// polls hold meanwhile (`every`), so a tab without a valid key does not
+// ask the server every few seconds, nor fill its audit log with refusals.
+let refusedKey;
+/** Whether the server refused the key in use (or wants one): the views say "Sign in", the polls wait. */
+export const signInNeeded = () => refusedKey !== undefined && refusedKey === token;
+
 export async function api(path, opts = {}) {
   try { return await request(path, opts); }
   catch (e) {
@@ -313,6 +320,7 @@ async function request(path, opts) {
     throw new ApiError(0, why, null, false);
   }
   clearTimeout(timer);
+  if (r.status === 401 && !opts.hub) refusedKey = token;
   if (opts.blob) {
     if (r.ok) { answered(); return r; }
     const t = await r.text().catch(() => "");
@@ -891,7 +899,8 @@ export function every(ms, f, now = true, opts = {}) {
   let stopped = false, timer = null, running = false, first = true;
   const tick = async () => {
     if (stopped) return;
-    if (!document.hidden && !running && (first || opts.always || !ctx.paused)) { first = false; running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
+    // Paused, or without a valid key, a poll runs once (a view learns why it is empty) and then waits.
+    if (!document.hidden && !running && (first || opts.always || (!ctx.paused && !signInNeeded()))) { first = false; running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
     if (!stopped) timer = setTimeout(tick, ms);
   };
   if (now) tick(); else timer = setTimeout(tick, ms);

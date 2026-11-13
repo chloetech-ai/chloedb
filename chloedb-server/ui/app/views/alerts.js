@@ -11,7 +11,7 @@
 // ack or backtest) the same pages show what that server has and say what
 // it cannot do.
 
-import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow, failure, signInNeeded } from "../core.js";
 import { state, refreshAlerts, timeRange, isCoordinator, firesOn } from "../data.js";
 import { niceStep } from "../charts.js";
 import { pattern } from "./logs.js";
@@ -355,7 +355,7 @@ function listView(page, r) {
   function draw() {
     if (state.paused && m) return;
     m = current = model(state.alerts);
-    if (!m) { clear(firingBox, empty("alerts", "Loading the rules…")); return; }
+    if (!m) { clear(firingBox, signInNeeded() ? failure(new ApiError(401, "a key is needed"), "Alerts") : empty("alerts", "Loading the rules…")); return; }
     const adm = can("admin");
     newBtn.disabled = !adm; newBtn.title = adm ? "" : Needs("admin");
     clear(routesBtn, icon("route"), m.fleet ? `Routes: ${m.routes.length}` : m.routes.length ? "Route: one webhook" : "Routes: none");

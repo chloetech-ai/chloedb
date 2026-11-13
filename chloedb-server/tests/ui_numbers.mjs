@@ -95,4 +95,25 @@ assert.equal(core.roleOf(), null);
 core.provide({ whoami: null });
 core.provideRoutes(null);
 
+// CCW-3: after a 401 the polls hold (a poll runs once, then waits) until
+// another key is given.
+// (Another key makes data.js poll again: its answers here are empty.)
+console.warn = noop;
+let refuse = true;
+globalThis.fetch = async () => (refuse ? { status: 401, ok: false, text: async () => '{"error":"a key is needed"}' } : { status: 200, ok: true, text: async () => "{}" });
+await core.api("/v1/alerts").catch(() => {});
+assert.ok(core.signInNeeded());
+const ticks = [];
+const tick = () => new Promise((r) => setTimeout(r, 30));
+const stop = core.every(10, () => ticks.push(1));
+await tick(); await tick();
+assert.equal(ticks.length, 1, "a poll waits while the key is refused");
+refuse = false;
+core.setToken("another");
+assert.ok(!core.signInNeeded());
+await tick();
+assert.ok(ticks.length > 1, "it goes on once another key is given");
+stop();
+
 console.log("ok");
+process.exit(0);
