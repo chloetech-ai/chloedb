@@ -60,7 +60,7 @@ fn fill(db: &Db, rng: &mut StdRng, from: usize, to: usize, flush: usize) {
     }
 }
 
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 9] = [
     "date_trunc('day', at)",
     "date_trunc('week', at)",
     "date_trunc('MONTH', at)",
@@ -68,6 +68,8 @@ const KEYS: [&str; 7] = [
     "date_part('hour', at)",
     "EXTRACT(SECOND FROM at)",
     "strftime('%Y-%m', at)",
+    "time_bucket('6 hours', at)",
+    "time_bucket(INTERVAL '90 minutes', at)",
 ];
 
 fn queries() -> Vec<String> {
@@ -96,7 +98,8 @@ fn check(db: &Db, stage: &str) {
     for q in queries() {
         let got = db.query(&q, &Params::new()).unwrap_or_else(|e| panic!("{stage}: {q}: {e}"));
         let plan = db.explain(&q, &Params::new()).unwrap();
-        assert!(plan.features.iter().any(|f| f == "dates"), "{stage}: {q}: {:?}", plan.features);
+        let feature = if q.contains("time_bucket") { "time_bucket" } else { "dates" };
+        assert!(plan.features.iter().any(|f| f == feature), "{stage}: {q}: {:?}", plan.features);
         assert!(got.stats.plan.iter().any(|l| l.contains("aggregate") && l.contains("rows into groups")), "{stage}: {q}: {:?}", got.stats.plan);
         // A part that is a number is grouped by from the columns; text
         // (strftime) row by row.
@@ -159,8 +162,27 @@ fn values_of_rows() {
     );
     assert_eq!(rows, vec![vec![ts("1969-12-31"), Value::Float(30.0), Value::Float(30.0)], vec![ts("2026-11-05"), Value::Float(10.0), Value::Float(20.0)]]);
 
+    // time_bucket: buckets of a fixed width from 1970, before it too; the
+    // width as text or an INTERVAL.
+    let rows = sql(&db, "SELECT id, time_bucket('5 minutes', at), time_bucket(INTERVAL '1 hour', at), time_bucket('90s', at) FROM snaps ORDER BY id");
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::Int(1), ts("2026-11-05T07:30:00Z"), ts("2026-11-05T07:00:00Z"), ts("2026-11-05T07:31:30Z")],
+            vec![Value::Int(2), Value::Null, Value::Null, Value::Null],
+            vec![Value::Int(3), ts("1969-12-31T23:00:00Z"), ts("1969-12-31T23:00:00Z"), ts("1969-12-31T23:00:00Z")],
+        ]
+    );
+    assert_eq!(sql(&db, "SELECT time_bucket('1 minute', at) = date_trunc('minute', at) FROM snaps WHERE id = 1"), vec![vec![Value::Bool(true)]]);
+    assert_eq!(sql(&db, "SELECT id FROM snaps WHERE time_bucket('1 day', at) = TIMESTAMP '2026-11-05'"), vec![vec![Value::Int(1)]]);
+
     // What is wrong, said.
     for (q, says) in [
+        ("SELECT time_bucket('1 month', at) FROM snaps", "no fixed length"),
+        ("SELECT time_bucket('0 seconds', at) FROM snaps", "positive"),
+        ("SELECT time_bucket('5 fortnights', at) FROM snaps", "not a unit"),
+        ("SELECT time_bucket('5 minutes') FROM snaps", "two arguments"),
+        ("SELECT time_bucket('1 month', at) AS g, COUNT(*) FROM snaps GROUP BY g", "no fixed length"),
         ("SELECT date_trunc('fortnight', at) FROM snaps", "no unit \"fortnight\""),
         ("SELECT date_part('century', at) FROM snaps", "no part \"century\""),
         ("SELECT strftime('%Q', at) FROM snaps", "no %Q"),

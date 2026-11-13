@@ -1235,6 +1235,9 @@ enum Func {
   // same everywhere, for a seeded sample, split or shuffle of rows (plan
   // feature "hash").
   FUNC_HASH = 22;
+  // time_bucket('5 minutes', t): the start of a bucket of a fixed width of
+  // a TIMESTAMP (plan feature "time_bucket").
+  FUNC_TIME_BUCKET = 23;
 }
 
 message Match {

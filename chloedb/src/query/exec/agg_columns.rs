@@ -55,7 +55,7 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
                 times.push(None);
             }
             // A part of a time is a number; text (`strftime`) goes row by row.
-            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_)) && single(tc.field, &[FieldType::Int])) => {
+            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_) | TimeOf::Bucket(_)) && single(tc.field, &[FieldType::Int])) => {
                 groups.push(q.times[t].field);
                 times.push(Some(t));
             }

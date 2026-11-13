@@ -130,7 +130,7 @@ impl<'a> Raise<'a> {
     /// `strftime(format, field)` of an indexed single-valued TIMESTAMP
     /// field.
     fn time_of(&self, e: &Expr) -> Result<Option<TimeCol>> {
-        let Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } = e else { return Ok(None) };
+        let Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket), args } = e else { return Ok(None) };
         let (Some(Expr::Lit(Value::Str(how))), Some(Expr::Field(f)), 2) = (args.first(), args.get(1), args.len()) else {
             return Err(err(format!("a Search's {} reads a TIMESTAMP field, with the first argument given as text", func.name())));
         };
@@ -144,6 +144,7 @@ impl<'a> Raise<'a> {
         let of = match func {
             Func::DateTrunc => TimeOf::Trunc(crate::timestamp::Unit::parse(how).expect("checked")),
             Func::DatePart => TimeOf::Part(crate::timestamp::Part::parse(how).expect("checked")),
+            Func::TimeBucket => TimeOf::Bucket(crate::timestamp::bucket_width(how).expect("checked")),
             _ => TimeOf::Format(how.clone()),
         };
         Ok(Some(TimeCol { field, of }))
@@ -357,7 +358,7 @@ impl<'a> Raise<'a> {
         // A day, week or month a time is in is a time.
         for (t, (_, p)) in types.iter_mut().zip(&projection) {
             if let Projection::Time(i) = p {
-                if matches!(self.times[*i].of, TimeOf::Trunc(_)) {
+                if matches!(self.times[*i].of, TimeOf::Trunc(_) | TimeOf::Bucket(_)) {
                     *t = Some(crate::schema::Logical::Timestamp);
                 }
             }

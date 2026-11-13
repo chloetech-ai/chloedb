@@ -452,7 +452,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             let r = func.eval_f64(&xs);
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
-        Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
+        Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
         Func::Hash => hash(&one, args.get(1).unwrap_or(&Value::Int(0))),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
@@ -528,6 +528,10 @@ fn dates(func: Func, how: &Value, t: &Value) -> Result<Value> {
                 ts::PartValue::Int(x) => Value::Int(x),
                 ts::PartValue::Float(x) => Value::Float(x),
             }
+        }
+        Func::TimeBucket => {
+            let width = ts::bucket_width(how).map_err(err)?;
+            Value::Timestamp(ts::bucket(micros, width).ok_or_else(|| err(format!("time_bucket('{how}', {}): the start is outside the times a TIMESTAMP holds", sv(t))))?)
         }
         _ => Value::Str(ts::strftime(how, micros).map_err(err)?),
     })

@@ -773,7 +773,7 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
         }
         walk(&o.expr, &mut |x| {
             found |= match x {
-                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime"),
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "time_bucket"),
                 Expr::Extract { .. } => true,
                 _ => false,
             }
@@ -3368,6 +3368,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
+                "time_bucket" => Func::TimeBucket,
                 "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
@@ -3376,7 +3377,26 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 n if AGGREGATES.contains(&n) => return Err(err(format!("{}(...) is an aggregate: it needs GROUP BY or a SELECT of aggregates, not a value of one row", n.to_uppercase()))),
                 n => return Err(err(unknown_function(n))),
             };
-            let args: Vec<ir::Expr> = func_args(f).into_iter().map(go).collect::<Result<_>>()?;
+            let mut args: Vec<ir::Expr> = Vec::new();
+            for (i, a) in func_args(f).into_iter().enumerate() {
+                args.push(match (func, i) {
+                    // time_bucket(INTERVAL '5 minutes', t) or ('5 minutes', t): the width as text the evaluator reads.
+                    (Func::TimeBucket, 0) => match super::sql::interval(a) {
+                        Some(iv) => {
+                            let iv = iv?;
+                            if iv.months != 0 || iv.micros <= 0 {
+                                return Err(err(format!("{e}: a bucket's width is a positive length of time without months or years, such as INTERVAL '5 minutes'")));
+                            }
+                            ir::Expr::Lit(Value::Str(crate::timestamp::width_text(iv.micros)))
+                        }
+                        None => match go(a)? {
+                            ir::Expr::Lit(Value::Str(w)) => ir::Expr::Lit(Value::Str(crate::timestamp::width_text(crate::timestamp::bucket_width(&w).map_err(err)?))),
+                            x => x,
+                        },
+                    },
+                    _ => go(a)?,
+                });
+            }
             func.arity(args.len()).map_err(|a| err(format!("{}() takes {a}", func.name())))?;
             ir::Expr::Call { func, args }
         }
@@ -3419,7 +3439,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime and hash";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime, time_bucket and hash";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -3435,15 +3455,15 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 20] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "hash",
+    const ROW_FUNCTIONS: [&str; 21] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "time_bucket", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + INTERVAL '1 day' or now() - INTERVAL '15 minutes'"
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), time_bucket('5 minutes', at), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + INTERVAL '1 day' or now() - INTERVAL '15 minutes'"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",

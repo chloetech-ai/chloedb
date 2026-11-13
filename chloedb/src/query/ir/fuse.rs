@@ -80,7 +80,7 @@ fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, Read)> {
     };
     match e {
         Expr::Output(i) => Some((Expr::Field(field(*i)?), Read::Field)),
-        Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } => {
+        Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket), args } => {
             let [how @ Expr::Lit(Value::Str(_)), Expr::Output(i)] = args.as_slice() else { return None };
             let f = field(*i)?;
             let fld = schema.fields.get(f as usize)?;
