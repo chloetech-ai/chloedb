@@ -86,3 +86,43 @@ async fn packs_through_a_coordinator_as_one_database() {
     assert_eq!(a.rs.rows[0][0], Value::Str("m000".into()));
     assert!(a.rs.columns.ends_with(&["pack_tokens".to_string(), "pack_decision".to_string()]));
 }
+
+/// On a server, a pack is admitted once: a Contain rule that lets one
+/// query of a key run at a time refused its second read while its first
+/// held the turn (audit P3). Its reads hold one snapshot, a lease released
+/// after the pack unless the client asks to keep it (P4); `LIMIT 0`
+/// answers the pack's columns (N-B9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_admits_a_pack_once_and_reads_one_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), "local.strata");
+    let schema = (*db.schema()).clone();
+    let svc = Arc::new(Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(10)));
+    run(&svc, TABLE).await;
+    let values: Vec<String> = (0..400).map(|i| format!("('m{i:03}', {}, 'note {i} retry policy backoff capped at {} seconds', '[]')", 1000 - i, i % 7)).collect();
+    run(&svc, &format!("INSERT INTO memory (id, rank, text, links) VALUES {}", values.join(", "))).await;
+    svc.contain.add(&serde_json::json!({"match": {"key": "agent"}, "action": "limit", "concurrency": 1, "expires_s": 60, "reason": "one at a time"}), "test").unwrap();
+    let caller = Arc::new(chloedb_server::telemetry::Caller { key: Some("agent".into()), ..Default::default() });
+    // About 2,000 tokens of notes: more than the first read's 64 rows.
+    let sql = "SELECT id, text FROM memory ORDER BY rank DESC PACK 2000 TOKENS";
+    let a = chloedb_server::telemetry::calling(caller.clone(), svc.query(QueryReq { sql: sql.into(), timeout_ms: 3000, ..Default::default() })).await.unwrap_or_else(|e| panic!("{}: {}", e.status, e.message));
+    let line = a.rs.stats.plan.iter().find(|l| l.starts_with("pack: ")).unwrap();
+    assert!(!line.ends_with("1 query"), "{line}");
+    assert!(a.rs.rows.len() > 64, "{line}");
+    assert_eq!((a.lease, svc.sweep_leases()), (0, 0), "the pack's lease is released");
+    // Kept for the client with hold.
+    let a = chloedb_server::telemetry::calling(caller, svc.query(QueryReq { sql: sql.into(), hold: true, ..Default::default() })).await.unwrap();
+    assert!(a.lease != 0);
+    assert_eq!(svc.sweep_leases(), 1);
+    svc.release(&[a.lease]);
+    let a = svc.query(QueryReq { sql: "SELECT id, text FROM memory ORDER BY rank DESC PACK 100 TOKENS LIMIT 0".into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{}", e.message));
+    assert_eq!(a.rs.columns, vec!["id", "text", "pack_tokens", "pack_decision"]);
+    assert!(a.rs.rows.is_empty());
+    // The budget a parameter.
+    let a = svc.query(QueryReq { sql: "SELECT id, text FROM memory ORDER BY rank DESC PACK :n TOKENS".into(), params: Params::new().set("n", Value::Int(60)), ..Default::default() }).await.unwrap();
+    let spent: i64 = a.rs.rows.iter().map(|r| match r[2] {
+        Value::Int(n) => n,
+        _ => panic!("{r:?}"),
+    }).sum();
+    assert!(spent > 0 && spent <= 60, "{spent}");
+}
