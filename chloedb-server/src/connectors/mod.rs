@@ -865,7 +865,7 @@ fn push_key(svc: &Service, c: &mut Connector, caller: &Caller) -> Result<String,
         return Err("the server is open (no token and no key): a push needs no key".into());
     }
     let grants = vec![Grant::new(&c.target, Scope::Write).map_err(|e| e.message)?];
-    let name = format!("connector:{}", c.name);
+    let name = format!("{}{}", crate::keys::PUSH_KEY_PREFIX, c.name);
     // A key of that name left by a connector of that name deleted by SQL.
     for k in svc.keys.set().keys {
         if k.name == name {

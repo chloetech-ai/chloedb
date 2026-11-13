@@ -902,6 +902,13 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let refused = match &who {
         None => Some(ApiError { code: None, status: 401, message: "missing or wrong token".into() }),
         Some(_) if narrowing.is_some() => narrowing,
+        // A connector's push key writes its table and reads nothing, an
+        // app's included.
+        Some(w) if w.push_only() && !crate::scoped::push_route_ok(&method, route) => Some(ApiError {
+            code: Some("scope_refused"),
+            status: 403,
+            message: format!("{method} {route} is not for {:?}, a connector's push key: it writes its table through the connector's push, and reads nothing", w.name),
+        }),
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
         Some(_) if app_grants => None,

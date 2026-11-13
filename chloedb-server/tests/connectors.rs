@@ -285,6 +285,19 @@ async fn connectors_pull_and_take_pushes_into_tables_with_keys_of_their_own() {
     let rows = sql(&c, &base, "SELECT id, text FROM alertmanager_alerts WHERE MATCH(text, 'bgp') LIMIT 5").await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "f1-2026-11-13T03:00:00Z");
+    // A push key reads nothing, not even the table it writes: one leaked
+    // from the sending system reads no alert.
+    for (path, body) in [("/v1/query", json!({"sql": "SELECT COUNT(*) FROM alertmanager_alerts"})), ("/v1/sql", json!({"sql": "SELECT * FROM alertmanager_alerts"})), ("/v1/kv/get", json!({"table": "alertmanager_alerts", "keys": ["f1-2026-11-13T03:00:00Z"]}))] {
+        let (s, e) = post(&c, &format!("{base}{path}"), &am_key, body).await;
+        assert_eq!(s, 403, "{path}: {e}");
+        assert_eq!(e["error_code"], "scope_refused", "{e}");
+    }
+    for path in ["/v1/tables", "/v1/schema?table=alertmanager_alerts", "/v1/export?table=alertmanager_alerts"] {
+        let (s, e) = call(&c, reqwest::Method::GET, &format!("{base}{path}"), &am_key, None).await;
+        assert_eq!(s, 403, "{path}: {e}");
+    }
+    let (s, _) = call(&c, reqwest::Method::GET, &format!("{base}/v1/whoami"), &am_key, None).await;
+    assert_eq!(s, 200, "a push key may ask who it is");
 
     // A dry run shows the rows a config would make, writing nothing.
     let (s, t) = post(&c, &admin("/test"), ROOT, json!({"kind": "webhook", "target": "alertmanager_alerts", "config": {"records": "$.items", "map": {"id": "{n}", "text": {"path": "$.msg", "as": "upper"}, "nope": "$.n"}}, "sample": {"items": [{"n": "a", "msg": "hello"}]}})).await;
