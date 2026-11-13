@@ -2198,7 +2198,7 @@ impl Service {
     /// parameters with their vectors; `None` when it has none.
     async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
         use chloedb::query::embed_sql::{self, Request};
-        if !embed_sql::may_embed(sql) {
+        if !embed_sql::may_embed_with(sql, params) {
             return Ok(None);
         }
         let catalog = self.readable();
