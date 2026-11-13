@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: reap or image
+        description: reap, image or status
         default: reap
 
 permissions:
@@ -74,3 +74,20 @@ jobs:
         run: |
           toolchain=$(sed -n 's/^  RUST_TOOLCHAIN: "\(.*\)"/\1/p' .github/workflows/ci.yml)
           python3 .github/ci-runner/ci_runner.py image --toolchain "${toolchain:-1.100.0}"
+
+  # By hand: the droplet, its runners as GitHub sees them, and how busy
+  # GitHub's own runners are.
+  status:
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'status'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/ci-runner
+      - name: Status
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          GH_ADMIN_TOKEN: ${{ secrets.CI_RUNNER_ADMIN_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .github/ci-runner/ci_runner.py status

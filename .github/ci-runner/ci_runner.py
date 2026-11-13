@@ -274,6 +274,14 @@ def image(args):
         do(f"/snapshots/{s['id']}", "DELETE")
 
 
+def status(args):
+    for d in droplets():
+        print(f"droplet {d['id']} {d['name']} {d['size_slug']} {d['region']['slug']} {d['status']}, {int(age_s(d['created_at']))} s old")
+    for r in runners():
+        print(f"runner {r['name']}: {r['status']}{', busy' if r['busy'] else ''}")
+    print(f"GitHub's runners: {'%d busy, %d waiting' % hosted_load()}")
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -287,6 +295,7 @@ def main():
     r.add_argument("--max-age", type=int, default=12 * 3600)
     r.add_argument("--boot", type=int, default=360)
     r.add_argument("--patience", type=int, default=1200, help="seconds to keep checking")
+    sub.add_parser("status")
     i = sub.add_parser("image")
     i.add_argument("--toolchain", default="1.100.0")
     args = p.parse_args()
@@ -300,6 +309,8 @@ def main():
         if env("GITHUB_STEP_SUMMARY"):
             with open(env("GITHUB_STEP_SUMMARY"), "a") as f:
                 f.write(f"Heavy jobs run on **{label}**: {why}.\n")
+    elif args.cmd == "status":
+        status(args)
     elif args.cmd == "reap":
         reap(args)
     else:
