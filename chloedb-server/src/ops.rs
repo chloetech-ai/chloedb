@@ -61,7 +61,7 @@ pub const READ_POSTS: &[&str] = &[
 
 /// Routes that write rows (and the agents that spend Claude's tokens on
 /// a table's behalf): changes of data, tier 2, never an operation.
-const DATA: &[&str] = &["/v1/write", "/v1/import", "/v1/stream", "/v1/kv/:table/:key", "/v1/agent", "/v1/judge", "/v1/sql", "/v1/plan"];
+const DATA: &[&str] = &["/v1/write", "/v1/import", "/v1/stream", "/v1/kv/:table/:key", "/v1/agent", "/v1/judge", "/v1/sql", "/v1/plan", "/v1/connectors/:name/push"];
 
 /// Whether a request to `route` by `method` changes nothing.
 pub fn is_read(method: &Method, route: &str) -> bool {

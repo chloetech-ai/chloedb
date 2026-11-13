@@ -740,16 +740,34 @@ impl Keys {
         if tables.is_empty() {
             return Err(ApiError::bad("an app's key names one table grant at least"));
         }
-        let name = format!("app:{app}");
+        self.ephemeral_key(&format!("app:{app}"), format!("made by this server for the app {app} it starts"), tables)
+    }
+
+    /// A key named `name` that this server makes for work of its own (an
+    /// app it starts, a connector's run): limited to `tables`, kept in
+    /// memory only, in place of the last one of that name. Its secret, not
+    /// kept, is the answer.
+    pub fn ephemeral_key(&self, name: &str, note: String, tables: Vec<Grant>) -> Result<String, ApiError> {
+        if tables.is_empty() {
+            return Err(ApiError::bad("a key made by the server names one table grant at least"));
+        }
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.clone(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.clone()), note: Some(format!("made by this server for the app {app} it starts")), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
         Ok(full)
+    }
+
+    /// Ends the key named `name` that [`Self::ephemeral_key`] made.
+    pub fn end_ephemeral(&self, name: &str) -> bool {
+        let mut e = self.ephemeral();
+        let before = e.len();
+        e.retain(|k| k.name != name);
+        e.len() != before
     }
 
     /// Ends app `app`'s key ([`Self::app_key`]); whether it had one.

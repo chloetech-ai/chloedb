@@ -22,6 +22,7 @@
 //!   searched across a cluster.
 
 pub mod agent;
+pub mod answers;
 pub mod alerts;
 pub mod app_procs;
 pub mod admin_cli;
@@ -36,6 +37,7 @@ pub mod catalog;
 pub mod changes;
 pub mod coord;
 pub mod copy;
+pub mod connectors;
 pub mod contain;
 pub mod cores;
 pub mod demo;

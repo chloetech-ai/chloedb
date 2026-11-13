@@ -20,7 +20,7 @@
 //! In a binary without the allocator (a program of its own that uses this
 //! crate), nothing is counted and [`installed`] says so.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::future::Future;
@@ -32,7 +32,15 @@ use serde::Serialize;
 
 use crate::profiler::{clean, pool_name, Refused};
 
-/// The system's allocator, counting: see the module's documentation.
+/// The allocator [`Counting`] counts: mimalloc with the feature
+/// `mimalloc` (the default), else the system's.
+#[cfg(feature = "mimalloc")]
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(not(feature = "mimalloc"))]
+static INNER: std::alloc::System = std::alloc::System;
+
+/// The server's allocator ([`INNER`]), counting: see the module's
+/// documentation.
 pub struct Counting;
 
 // SAFETY: every call goes to the system's allocator with the same
@@ -42,7 +50,7 @@ pub struct Counting;
 // nor touches the memory it hands out.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc(l);
+        let p = INNER.alloc(l);
         if !p.is_null() {
             allocated(p, l.size());
         }
@@ -50,7 +58,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc_zeroed(l);
+        let p = INNER.alloc_zeroed(l);
         if !p.is_null() {
             allocated(p, l.size());
         }
@@ -59,11 +67,11 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         freed(p, l.size());
-        System.dealloc(p, l)
+        INNER.dealloc(p, l)
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new_size: usize) -> *mut u8 {
-        let q = System.realloc(p, l, new_size);
+        let q = INNER.realloc(p, l, new_size);
         if !q.is_null() {
             freed(p, l.size());
             allocated(q, new_size);

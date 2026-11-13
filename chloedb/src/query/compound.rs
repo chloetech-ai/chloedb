@@ -65,11 +65,12 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+pub(crate) const AGGREGATES: [&str; 9] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
 /// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
-/// ([`super::parse`]), and `PERCENTILE_DISC` alike.
-pub(crate) const PERCENTILES: [&str; 3] = ["median", "percentile_cont", "percentile_disc"];
+/// ([`super::parse`]), and `PERCENTILE_DISC` alike, and
+/// `approx_percentile(x, p)`.
+pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
 const RANKING: [&str; 18] = [
@@ -742,7 +743,7 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
         }
         walk(&o.expr, &mut |x| {
             found |= match x {
-                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime"),
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin"),
                 Expr::Extract { .. } => true,
                 _ => false,
             }
@@ -2370,7 +2371,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let fl = lt.fields.get(f as usize)?;
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
-                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -3106,6 +3107,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
+                "date_bin" => Func::DateBin,
                 "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
@@ -3173,15 +3175,15 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 20] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "hash",
+    const ROW_FUNCTIONS: [&str; 21] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "date_bin", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
-        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
+        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" | "time_bucket" => {
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), date_bin('5 minutes', at) (its bucket of a fixed width), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
@@ -3262,7 +3264,11 @@ fn percentile(f: &sql::Function, name: &str, distinct: bool, params: &Params) ->
         _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY x): p, from 0 to 1, of one value of each row"))),
     };
     let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
-    Ok(if name == "percentile_disc" { AggFn::PercentileDisc(p) } else { AggFn::PercentileCont(p) })
+    Ok(match name {
+        "percentile_disc" => AggFn::PercentileDisc(p),
+        "approx_percentile" => AggFn::ApproxPercentile(p),
+        _ => AggFn::PercentileCont(p),
+    })
 }
 
 /// A window function's call: its text (how other expressions name it) and

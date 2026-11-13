@@ -27,6 +27,7 @@ updates:
       - /chloedb-py
       - /chloedb-crawl
       - /chloedb-sheets
+      - /chloedb-netops
       - /chloedb-java
       - /chloedb-js
     schedule:

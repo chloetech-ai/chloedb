@@ -28,7 +28,7 @@ brew install chloetech-ai/tap/chloedb
 
 ```sh
 # install
-v=0.3.0 p=macos-arm64
+v=0.3.1 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -147,10 +147,8 @@ The Python package runs a database inside your process, the way `sqlite3` runs S
 ```sh
 # install
 python3 -m venv .venv && . .venv/bin/activate
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
+pip install chloedb
 ```
-
-The wheels come from the release: `chloedb` on PyPI is still a placeholder of version 0.0.1 that holds the name, and `pip install chloedb` alone installs that, which fails at `import chloedb`.
 
 ```sh
 python3 - <<'EOF'
@@ -183,7 +181,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.0
+  ghcr.io/chloetech-ai/chloedb-server:0.3.1
 ```
 
 Then every request sends the token, and the console asks for it once:

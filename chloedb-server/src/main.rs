@@ -261,6 +261,12 @@ struct Args {
     /// Queries running at once; more wait for a slot until their deadline.
     #[arg(long, default_value_t = 64)]
     max_concurrent: usize,
+    /// How long a client's query waits for a slot (--max-concurrent)
+    /// before it is refused with 429 and Retry-After, instead of waiting
+    /// until its deadline (0: until its deadline). A coordinator's calls to
+    /// its shards always wait until their deadline.
+    #[arg(long, default_value_t = 0)]
+    admission_wait_ms: u64,
     /// The most rows a query may reach, OFFSET included: a larger LIMIT
     /// plus OFFSET, or a query without a LIMIT that matches more, fails
     /// (0: no limit).
@@ -306,6 +312,11 @@ struct Args {
     /// (default: 64; 0: none kept).
     #[arg(long)]
     filter_cache_mb: Option<usize>,
+    /// Memory for answers kept between queries, in MiB: a read query asked
+    /// again on the same version of the data is answered from them, without
+    /// running (default: 64; 0: none kept). Every write moves the version on.
+    #[arg(long)]
+    answer_cache_mb: Option<usize>,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -582,6 +593,18 @@ struct Args {
     /// names (crawler,sheets,chloectx; looked for on the PATH too).
     #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
     start_apps: String,
+    /// Whether this server runs its connectors' pulls on their schedules
+    /// (https://chloetech-ai.github.io/chloedb/docs/connectors.html): auto
+    /// (on a server of its own or a coordinator; never on a replica or a
+    /// shard) or off. Pushes are taken either way.
+    #[arg(long, env = "CHLOEDB_CONNECTORS", default_value = "auto")]
+    connectors: String,
+    /// Where the connectors' secrets are kept (default:
+    /// DB.connectors.json beside --db, readable by this user only; a
+    /// coordinator without one keeps them in memory, so give it one, or
+    /// name secrets as env:VARIABLE).
+    #[arg(long)]
+    connector_secrets: Option<PathBuf>,
     /// A folder that holds each app's own token in a file of the app's
     /// name, read as it is sent (so a token written there later, as a
     /// Kubernetes Secret mounted there is, needs no restart).
@@ -1275,6 +1298,12 @@ async fn run() {
         let own_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(|p| p.to_path_buf()));
         chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e))
     };
+    // The connectors' pulls (crate::connectors): not on a replica or a shard.
+    let run_connectors = match a.connectors.as_str() {
+        "off" => false,
+        "auto" | "on" => !a.replica && !(cluster.is_some() && a.shards.is_empty() && a.replicas.is_empty()),
+        other => fail(&format!("--connectors is auto or off, not {other:?}")),
+    };
     let o = Options {
         db: a.db,
         schema: a.schema,
@@ -1314,12 +1343,14 @@ async fn run() {
         timeout_ms: a.timeout_ms,
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
+        admission_wait_ms: a.admission_wait_ms,
         max_result_window: a.max_result_window,
         max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
         filter_cache_mb: a.filter_cache_mb,
+        answer_cache_mb: a.answer_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
         otlp_retain: a.otlp_retain,
@@ -1352,6 +1383,8 @@ async fn run() {
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
         hub_file: a.hub_file,
+        connector_secrets: a.connector_secrets.clone(),
+        connectors: run_connectors,
         hub_device: a.hub_device,
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
@@ -1411,6 +1444,7 @@ async fn run() {
             digitalocean_file: None,
             cloud_file: None,
             hub_file: None,
+            connector_secrets: o.connector_secrets.clone().or_else(|| o.db.as_deref().map(chloedb_server::connectors::Connectors::file_of)),
             alerts: None,
             contain: None,
             backup_dir: None,
@@ -1421,7 +1455,7 @@ async fn run() {
         (addr, local, co)
     });
     let o = match beside {
-        Some(_) => Options { shards: Vec::new(), ..o },
+        Some(_) => Options { shards: Vec::new(), connectors: false, ..o },
         None => o,
     };
     let coordinator = !o.shards.is_empty();

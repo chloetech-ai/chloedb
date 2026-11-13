@@ -781,6 +781,8 @@ struct Read {
     after: Vec<u64>,
     /// Ask each shard for its steps' CPU time (`QueryRequest.profile`).
     profile: bool,
+    /// Ask each shard to answer without its steps (`QueryRequest.skip_steps`).
+    skip_steps: bool,
 }
 
 impl Read {
@@ -793,7 +795,7 @@ impl Read {
             (true, Some(p)) => Some(plan_pb::to_pb_plan(p)),
             (true, None) => Some(plan_pb::to_pb_plan(&typed()?)),
         };
-        Ok(Read { sql: sql.to_string(), params: params_to_pb(params), plan_json: plan_json(given)?, plan, epoch, after: Vec::new(), profile: false })
+        Ok(Read { sql: sql.to_string(), params: params_to_pb(params), plan_json: plan_json(given)?, plan, epoch, after: Vec::new(), profile: false, skip_steps: false })
     }
 
     /// The read, seeing the writes `after` names, one per shard.
@@ -804,6 +806,11 @@ impl Read {
     /// The read, its steps' CPU time measured on each shard.
     fn profiled(self, profile: bool) -> Read {
         Read { profile, ..self }
+    }
+
+    /// The read, answered by each shard without its steps.
+    fn stepless(self, skip_steps: bool) -> Read {
+        Read { skip_steps, ..self }
     }
 
     /// The number of the write shard `i`'s answer must see (0: none).
@@ -818,9 +825,9 @@ impl Read {
         match (&self.plan, protocol >= 2) {
             (Some(plan), true) => {
                 let epoch = if protocol >= 4 { self.epoch } else { 0 };
-                pb::QueryRequest { sql: self.sql.clone(), protocol, plan: Some(plan.clone()), epoch, min_seq_no, profile: self.profile, ..Default::default() }
+                pb::QueryRequest { sql: self.sql.clone(), protocol, plan: Some(plan.clone()), epoch, min_seq_no, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() }
             }
-            _ => pb::QueryRequest { sql: self.sql.clone(), params: self.params.clone(), plan_json: self.plan_json.clone(), protocol: 1, min_seq_no, profile: self.profile, ..Default::default() },
+            _ => pb::QueryRequest { sql: self.sql.clone(), params: self.params.clone(), plan_json: self.plan_json.clone(), protocol: 1, min_seq_no, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() },
         }
     }
 }
@@ -2228,7 +2235,7 @@ impl Coordinator {
             Some(p) => (&none, Some(p)),
             None => (&req.params, req.plan.as_deref()),
         };
-        let read = &Read::new(&req.sql, params, given, protocol, t.epoch(), || Ok(Plan::of_select(schema, select)))?.after(self.after(t, &req.after)?).profiled(req.profile);
+        let read = &Read::new(&req.sql, params, given, protocol, t.epoch(), || Ok(Plan::of_select(schema, select)))?.after(self.after(t, &req.after)?).profiled(req.profile).stepless(req.skip_steps);
         let start = self.turn.fetch_add(1, Ordering::Relaxed);
         // Per shard: the replica holding a lease for this query, and the lease.
         let mut leased: Vec<Option<(usize, u64)>> = vec![None; n];
@@ -2556,7 +2563,7 @@ impl Coordinator {
             if !keys[i].is_empty() {
                 let q = chloedb::cluster::fetch(select, schema, std::mem::take(&mut keys[i]))?;
                 let plan = Plan::of_select(schema, &q);
-                reads.push((i, r, lease, Read::new(sql, &Params::new(), Some(&plan), protocol, t.epoch(), || Ok(plan.clone()))?.after(query.after.clone()).profiled(query.profile)));
+                reads.push((i, r, lease, Read::new(sql, &Params::new(), Some(&plan), protocol, t.epoch(), || Ok(plan.clone()))?.after(query.after.clone()).profiled(query.profile).stepless(query.skip_steps)));
             } else {
                 self.release(t, [(i, r, lease)]);
             }

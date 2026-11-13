@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`chloedb::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, steps?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and with `steps` or `profile` in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`chloedb::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `chloedb::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
 //! | `DELETE /v1/query/cursors/:id` | | `{closed}`: a scroll ended before its last page |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`chloedb::rank_log::export`]) |
@@ -200,6 +200,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     let copy = |app: &App| api(app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
     let inner = copy(&app);
     let tools = copy(&App { mcp: Some(inner), ..app.clone() });
+    // connectors: their runs write through the same routes and checks.
+    crate::connectors::Connectors::start(&app.svc, tools.clone(), app.hosts.as_deref().and_then(|h| h.first().cloned()));
     let app = App { mcp: Some(tools), ..app };
     let api = api(&app);
     Router::new()
@@ -404,6 +406,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/cloud/clusters/:id/expiry", post(cloud_expiry))
         .route("/v1/admin/cloud/found", get(cloud_found))
         .route("/v1/admin/cloud/found/delete", post(cloud_found_delete))
+        // connectors: configs, runs and health (crate::connectors).
+        .route("/v1/admin/connectors", get(connectors_list).post(connectors_create))
+        .route("/v1/admin/connectors/test", post(connectors_test))
+        .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
+        .route("/v1/admin/connectors/:name/run", post(connectors_run))
+        .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
+        .route("/v1/connectors/:name/push", post(connectors_push).layer(rows.clone()))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -1036,6 +1045,8 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // All a feed key may read: the feed, and whether it is up.
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
+        // connectors: a system's push, written with its own key.
+        "/v1/connectors/:name/push" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
@@ -1493,6 +1504,17 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
+    // The answer cache knows the query by its SQL and the statistics it
+    // was sent ([`crate::answers`]); its parameters are added after they
+    // are read.
+    let cache_key = (!crate::answers::volatile(&req.sql)).then(|| {
+        let stats = b.get("stats").map(|s| s.to_string()).unwrap_or_default();
+        crate::answers::KeyBuilder::default().part(b"http").part(req.sql.as_bytes()).part(stats.as_bytes()).finish()
+    });
+    let req = QueryReq { cache_key, ..req };
+    // A client's answer has its steps when asked for ([`wants_steps`]); a
+    // shard's has them for its coordinator.
+    let req = QueryReq { skip_steps: !req.shard && !wants_steps(&b), ..req };
     if let Some(log) = b.get("log") {
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
@@ -1576,8 +1598,12 @@ async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
 /// answer gives them).
 async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = chloedb::rank_log::Log::from_json(log)?;
+    let skip = req.skip_steps;
     let (a, served, w) = app.svc.query_logged(who, req, log).await?;
     let mut j = answer(&a);
+    if skip {
+        without_steps(&mut j);
+    }
     if objects {
         as_objects(&mut j);
     }
@@ -1786,10 +1812,29 @@ async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principa
 /// (`"objects": true`; [`as_objects`]).
 fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
     let mut j = answer(a);
+    if !wants_steps(b) && !body_bool(b, "shard")? {
+        without_steps(&mut j);
+    }
     if body_bool(b, "objects")? {
         as_objects(&mut j);
     }
     Ok(j)
+}
+
+/// Whether a client asked for its answer's timed steps (`stats.steps`):
+/// `"steps": true`, or `"profile": true`, which measures their CPU time.
+/// Without, an answer leaves them out (they are most of its bytes), and
+/// the list of queries (`/v1/queries`) keeps them all the same.
+fn wants_steps(b: &Json) -> bool {
+    ["steps", "profile"].iter().any(|k| b.get(*k).and_then(|v| v.as_bool()) == Some(true))
+}
+
+/// An answer without its timed steps ([`wants_steps`]).
+fn without_steps(j: &mut Json) {
+    if let Some(s) = j.get_mut("stats").and_then(Json::as_object_mut) {
+        s.remove("steps");
+        s.remove("steps_dropped");
+    }
 }
 
 /// An answer's rows as objects, `{"id": "p1", "price": 9.5}`, in place of
@@ -6324,4 +6369,63 @@ mod tests {
         let direct = serde_json::to_string(&KeyRowsJson { got: &got, took_ms: 1.5 }).unwrap();
         assert_eq!(direct, serde_json::to_string(&tree).unwrap());
     }
+}
+
+// ----- connectors (crate::connectors)
+
+/// Who a connectors request is from, for the calls it makes with the
+/// caller's credential.
+fn connector_caller(app: &App, headers: &HeaderMap, w: &Principal) -> crate::connectors::Caller {
+    let auth = headers.get(header::AUTHORIZATION).cloned().or_else(|| headers.get(header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)).cloned());
+    let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
+    crate::connectors::Caller { auth, guarded: app.guarded(), in_cluster, who: w.name.clone() }
+}
+
+async fn connectors_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap) -> Res {
+    let c = connector_caller(&app, &headers, &who(w));
+    Ok(AxJson(crate::connectors::list_json(&app.svc, &c).await?))
+}
+
+async fn connectors_one(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::connectors::one_json(&app.svc, &name).await?))
+}
+
+async fn connectors_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::create(&app.svc, &c, &b).await?;
+    let detail = format!("created connector {} ({} into {})", r["connector"]["name"].as_str().unwrap_or_default(), r["connector"]["kind"].as_str().unwrap_or_default(), r["connector"]["target"].as_str().unwrap_or_default());
+    Ok(audited(r, detail))
+}
+
+async fn connectors_update(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::update(&app.svc, &c, &name, &b).await?;
+    Ok(audited(r, format!("changed connector {name}")))
+}
+
+async fn connectors_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::delete(&app.svc, &c, &name).await?;
+    Ok(audited(r, format!("deleted connector {name}")))
+}
+
+async fn connectors_rotate(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::rotate(&app.svc, &c, &name).await?;
+    Ok(audited(r, format!("rotated the push key of connector {name}")))
+}
+
+async fn connectors_run(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::connectors::run_now(&app.svc, &name).await?))
+}
+
+async fn connectors_test(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::connectors::test(&app.svc, &b).await?))
+}
+
+/// `POST /v1/connectors/:name/push`: any body (JSON, or a raw email).
+async fn connectors_push(State(app): State<App>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>, body: axum::body::Bytes) -> Res {
+    let auth = headers.get(header::AUTHORIZATION).cloned();
+    let ty = header_str(&headers, header::CONTENT_TYPE).unwrap_or("application/octet-stream").to_ascii_lowercase();
+    Ok(AxJson(crate::connectors::push(&app.svc, &name, auth.as_ref(), &ty, &body).await?))
 }

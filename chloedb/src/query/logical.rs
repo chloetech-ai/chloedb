@@ -834,10 +834,23 @@ pub enum AggFn {
     /// at least fraction p of the values are at most, one of the values.
     /// Needs [`crate::query::ir::PERCENTILES`].
     PercentileDisc(Fraction),
+    /// `approx_percentile(f, p)`: the value at fraction p of the values'
+    /// ranks within 1% of it, from a sketch of a few KB a group however
+    /// many values it has ([`crate::query::agg::sketch`]), a FLOAT. Needs
+    /// [`crate::query::ir::APPROX_PERCENTILES`].
+    ApproxPercentile(Fraction),
 }
 
 impl AggFn {
-    /// A percentile's fraction and whether it interpolates.
+    /// A percentile's fraction, exact or approximate.
+    pub fn fraction(self) -> Option<f64> {
+        match self {
+            AggFn::PercentileCont(p) | AggFn::PercentileDisc(p) | AggFn::ApproxPercentile(p) => Some(p.get()),
+            _ => None,
+        }
+    }
+
+    /// An exact percentile's fraction and whether it interpolates.
     pub fn percentile(self) -> Option<(f64, bool)> {
         match self {
             AggFn::PercentileCont(p) => Some((p.get(), true)),
@@ -937,6 +950,9 @@ pub enum TimeOf {
     Part(crate::timestamp::Part),
     /// `strftime`: text.
     Format(String),
+    /// `date_bin`: the start of the bucket of `width` microseconds the
+    /// time is in, buckets counted from `origin`, a TIMESTAMP.
+    Bin { width: i64, origin: i64 },
 }
 
 impl TimeCol {
@@ -955,6 +971,7 @@ impl TimeCol {
             },
             // The format was checked when the column was made.
             TimeOf::Format(f) => ts::strftime(f, micros).map_or(Value::Null, Value::Str),
+            TimeOf::Bin { width, origin } => ts::bin(micros, *width, *origin).map_or(Value::Null, Value::Int),
         }
     }
 }

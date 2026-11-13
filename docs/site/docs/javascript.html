@@ -58,12 +58,14 @@
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
       <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -87,7 +89,7 @@
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-js"><code>chloedb-js/</code></a>: a Node-API addon written in Rust (<a href="https://napi.rs">napi-rs</a>) and the JavaScript around it, an ES module, for Node 18 or later, Bun and Deno.</p>
 <h3 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h3>
 <p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler. The package is not on npm yet, so install the tarball for your platform:</p>
-<pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.0/chloedb-0.3.0-darwin-arm64.tgz</pre>
+<pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.1/chloedb-0.3.1-darwin-arm64.tgz</pre>
 <p>It imports as <code>"chloedb"</code>. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as <code>strata-db</code> and imports as <code>"strata-db"</code>.</p>
 <div class="doc-table"><table>
 <thead>

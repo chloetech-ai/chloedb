@@ -58,12 +58,14 @@
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html" aria-current="page">Versions and compatibility</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
       <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -200,7 +202,11 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   version or one that needs a feature it lacks, by name.
   0.3.0 added the plan feature <code>terms_syntax</code>, which only a search with
   query expansion (<code>bm25(.., expand =&gt; n)</code>) uses: a 0.2.x shard refuses
-  such a search by name, so upgrade the shards before using it.</li>
+  such a search by name, so upgrade the shards before using it.
+  0.3.1 added the plan features <code>asof_join</code> (<code>ASOF JOIN</code>), <code>date_bin</code> (a
+  <code>GROUP BY</code> of <code>date_bin</code> or <code>date_trunc</code> run on the columns) and
+  <code>approx_percentiles</code> (<code>approx_percentile</code>): a 0.3.0 shard refuses a
+  query that uses one by name, so upgrade the shards first here too.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
