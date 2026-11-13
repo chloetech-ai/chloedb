@@ -190,6 +190,8 @@ pub struct Daemon {
     /// they win over the daemon's own, which may have been started from a
     /// shell or the MCP server without them.
     from_hooks: Mutex<(String, Option<crate::deep::DeepConfig>)>,
+    /// `CHLOECTX_DISTILL` as the hooks saw it: 0 unset, 1 on, 2 off.
+    hook_distill: std::sync::atomic::AtomicU8,
     last_activity: AtomicI64,
     /// Receipts of recalls: opened when they are on or the file exists
     /// (a forget or redact scrubs it while they are off), unset when its
@@ -232,7 +234,7 @@ impl Daemon {
         let receipts_on = std::sync::atomic::AtomicBool::new(cfg.receipts.enabled);
         let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
-            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()),
+            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), last_activity: AtomicI64::new(now()),
             receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default() })
     }
 
@@ -782,7 +784,7 @@ impl Daemon {
     /// planned work it completed (marked done).
     #[allow(clippy::too_many_arguments)]
     pub fn distill_turn(&self, sid: &str, turn: i64, ts: i64, prompt: &str, answer: &str, commands: &[String], files: &[String]) {
-        if !self.cfg.distill.active() || (prompt.trim().is_empty() && answer.trim().is_empty()) {
+        if !self.distill_cfg().active() || (prompt.trim().is_empty() && answer.trim().is_empty()) {
             return;
         }
         self.pending.fetch_add(1, Ordering::AcqRel);
@@ -901,6 +903,12 @@ impl Daemon {
                 self.receipts_on.store(on, Ordering::Release);
             }
         }
+        if let Some(c) = req.get("claude").and_then(|v| v.as_str()) {
+            crate::llm::set_hook_cli(Path::new(c));
+        }
+        if let Some(on) = req.get("distill").and_then(|v| v.as_bool()) {
+            self.hook_distill.store(if on { 1 } else { 2 }, Ordering::Release);
+        }
         let model = req.get("distill_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let deep = req.get("deep").cloned().and_then(|d| serde_json::from_value::<crate::deep::DeepConfig>(d).ok());
         let mut h = self.from_hooks.lock().unwrap();
@@ -915,6 +923,11 @@ impl Daemon {
     /// The distiller's settings, with the model the hooks asked for.
     fn distill_cfg(&self) -> crate::distill::DistillConfig {
         let mut c = self.cfg.distill.clone();
+        // CHLOECTX_DISTILL=0 in Claude Code's environment turns it off,
+        // whichever process started the daemon.
+        if self.hook_distill.load(Ordering::Acquire) == 2 {
+            c.enabled = false;
+        }
         let h = self.from_hooks.lock().unwrap();
         if !h.0.is_empty() && std::env::var("CHLOECTX_DISTILL_MODEL").map_or(true, |m| m.is_empty()) {
             c.model = h.0.clone();
@@ -1879,6 +1892,13 @@ impl Daemon {
                 "bytes": self.snapshots.bytes(), "retention": self.cfg.receipts.snapshots,
             },
             "total_bytes": fs.file_bytes + fs.wal_bytes + receipt_file + receipt_wal + self.snapshots.bytes(),
+            // The model CLI as this daemon resolves it (its PATH is the one
+            // of whichever process started it), for doctor (CTX-3).
+            "claude": match crate::llm::resolve_cli(&self.distill_cfg().command) {
+                Ok(p) => json!({"path": p}),
+                Err(e) => json!({"error": e}),
+            },
+            "distill": self.distill_cfg().active(),
         }))
     }
 }

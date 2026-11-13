@@ -125,9 +125,16 @@ pub fn run(project: &Path) -> i32 {
         r.warn("CHLOECTX_DISABLE", "is 1 in this shell (or ENGRAM_DISABLE, its name before the rename): hooks started from here record nothing");
     }
 
-    match command_output("claude", &["--version"]) {
-        Some((true, v)) => r.ok("Claude Code CLI", v),
-        _ => r.fail("Claude Code CLI", "`claude` is not on PATH; install Claude Code (https://claude.com/claude-code)"),
+    // The CLI as the daemon finds it too: its PATH is the one of whichever
+    // process started it, so it also looks in the usual places (CTX-3).
+    let claude = crate::llm::resolve_cli("claude");
+    match claude.as_ref().ok().and_then(|p| command_output(&p.to_string_lossy(), &["--version"]).map(|o| (p, o))) {
+        Some((p, (true, v))) => {
+            let note = if crate::llm::on_path("claude").is_none() { "; not on this shell's PATH, found in a usual place" } else { "" };
+            r.ok("Claude Code CLI", format!("{v} ({}{note})", p.display()))
+        }
+        Some((p, (false, out))) => r.fail("Claude Code CLI", format!("{} --version failed: {}", p.display(), crate::llm::clip(&out, 200))),
+        None => r.fail("Claude Code CLI", format!("{}; install Claude Code (https://claude.com/claude-code)", claude.err().unwrap_or_default())),
     }
 
     // Where the hooks come from: the user settings, the project, or both.
@@ -205,7 +212,8 @@ pub fn run(project: &Path) -> i32 {
         }
         // The distiller runs `claude -p`, which needs the CLI's own login
         // (an interactive session can work while the CLI's has expired).
-        if let Some((_, out)) = command_output("claude", &["auth", "status"]) {
+        let claude_cmd = crate::llm::resolve_cli("claude").map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "claude".into());
+        if let Some((_, out)) = command_output(&claude_cmd, &["auth", "status"]) {
             if let Ok(st) = serde_json::from_str::<Json>(&out) {
                 match st.get("loggedIn").and_then(|v| v.as_bool()) {
                     Some(false) => r.fail("Claude Code login", "the `claude` CLI is logged out, so every distillation fails; run `claude auth login`"),
@@ -228,10 +236,23 @@ pub fn run(project: &Path) -> i32 {
     let t0 = Instant::now();
     if store.join("memory.strata").exists() {
         match daemon::request(&store, &project.to_string_lossy(), &json!({"op": "stats"}), Duration::from_secs(30)) {
-            Ok(s) if s.get("error").is_none() => r.ok(
-                "store",
-                format!("{} ({} records, {} sessions; daemon answered in {} ms)", store.display(), s["records"], s["sessions"], t0.elapsed().as_millis()),
-            ),
+            Ok(s) if s.get("error").is_none() => {
+                let n = |v: &Json| v.as_u64().unwrap_or(0);
+                let plural = |k: u64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
+                r.ok(
+                    "store",
+                    format!("{} ({}, {}; daemon answered in {} ms)", store.display(), plural(n(&s["records"]), "record"), plural(n(&s["sessions"]), "session"), t0.elapsed().as_millis()),
+                );
+                // The running daemon resolves the CLI with the environment
+                // of whatever started it (CTX-3).
+                if let Some(e) = s.pointer("/claude/error").and_then(|v| v.as_str()) {
+                    if s["distill"] != json!(false) {
+                        r.fail("daemon's Claude Code CLI", format!("the running daemon cannot run the model: {e}"));
+                    }
+                } else if let Some(p) = s.pointer("/claude/path").and_then(|v| v.as_str()) {
+                    r.ok("daemon's Claude Code CLI", p);
+                }
+            }
             Ok(s) => r.fail("store", format!("{}: {}", store.display(), s["error"])),
             Err(e) => r.fail("store", format!("{}: {e}; see {}", store.display(), store.join("daemon.log").display())),
         }

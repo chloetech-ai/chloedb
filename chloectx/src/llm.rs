@@ -81,11 +81,79 @@ pub fn scratch_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Where Claude Code's hooks found the CLI on their own PATH, last: a
+/// daemon started by a process without it on PATH (a shell, an editor's
+/// MCP server) still finds it (CTX-3).
+static HOOK_CLI: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Remembers where a hook found the CLI ([`resolve_cli`] tries it after
+/// `CHLOECTX_CLAUDE`).
+pub fn set_hook_cli(path: &std::path::Path) {
+    if path.is_absolute() && is_executable(path) {
+        *HOOK_CLI.lock().unwrap() = Some(path.to_path_buf());
+    }
+}
+
+fn is_executable(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// `name` on this process's PATH.
+pub fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| is_executable(p))
+}
+
+/// Where the CLI is usually installed, for a process whose PATH lacks it.
+fn usual_places(name: &str) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(h) = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
+        for d in [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", "bin"] {
+            v.push(h.join(d).join(name));
+        }
+    }
+    for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        v.push(PathBuf::from(d).join(name));
+    }
+    v
+}
+
+/// The program to run for `command`: a path as it is; for a bare name,
+/// `CHLOECTX_CLAUDE` (for `claude`), where the hooks found it, this
+/// process's PATH, then the usual install places. The daemon inherits the
+/// environment of whichever process started it, so its PATH alone is not
+/// enough (CTX-3).
+pub fn resolve_cli(command: &str) -> std::result::Result<PathBuf, String> {
+    if command.contains('/') {
+        return Ok(PathBuf::from(command));
+    }
+    if command == "claude" {
+        if let Some(p) = std::env::var_os("CHLOECTX_CLAUDE").filter(|p| !p.is_empty()).map(PathBuf::from) {
+            return if is_executable(&p) { Ok(p) } else { Err(format!("CHLOECTX_CLAUDE is {}, which is not an executable file", p.display())) };
+        }
+    }
+    let hint = HOOK_CLI.lock().unwrap().clone().filter(|p| p.file_name().is_some_and(|n| n == command) && is_executable(p));
+    if let Some(p) = hint.or_else(|| on_path(command)).or_else(|| usual_places(command).into_iter().find(|p| is_executable(p))) {
+        return Ok(p);
+    }
+    Err(format!(
+        "`{command}` was not found on this process's PATH nor in the usual places (~/.local/bin, ~/.claude/local, ~/.npm-global/bin, ~/.bun/bin, ~/.volta/bin, ~/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin); set CHLOECTX_CLAUDE to its path, or restart the daemon (`chloectx stop`) so that the next Claude Code hook starts it"
+    ))
+}
+
 /// Runs the model once on `prompt` with `system` as its system prompt.
 pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
     let t0 = Instant::now();
     let scratch = scratch_dir()?;
-    let mut cmd = Command::new(cli.command);
+    let exe = resolve_cli(cli.command).map_err(err)?;
+    let mut cmd = Command::new(&exe);
     cmd.args(["-p", "--system-prompt", system, "--tools", "", "--no-session-persistence", "--output-format", "json"]);
     if cli.isolated {
         cmd.args(["--setting-sources", "project", "--strict-mcp-config"]);

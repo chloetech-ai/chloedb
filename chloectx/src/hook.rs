@@ -55,7 +55,11 @@ pub fn run(event: &str, user: bool) -> i32 {
     // The session's settings travel with each request: the daemon may have
     // been started from elsewhere (a shell, the MCP server) without them.
     let distill_model = std::env::var("CHLOECTX_DISTILL_MODEL").unwrap_or_default();
-    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model, "receipts": daemon::receipts_env()});
+    // Where Claude Code's PATH has the CLI, and whether distillation is
+    // switched off in its environment (CTX-3).
+    let claude = crate::llm::on_path("claude");
+    let distill = std::env::var("CHLOECTX_DISTILL").ok().filter(|v| !v.is_empty()).map(|v| v != "0");
+    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model, "receipts": daemon::receipts_env(), "claude": claude, "distill": distill});
     let wait = budget(&event, &deep);
     match daemon::request(&dir, &project.to_string_lossy(), &req, wait) {
         Ok(resp) => {
