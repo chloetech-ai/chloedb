@@ -41,15 +41,51 @@ fn seeded_runs_keep_the_protocols_promises() {
 /// Seeds the nightly run found breaking a promise on `main`, kept here
 /// once fixed. 624036738 (the night of 10 November 2026, main at
 /// 768197e0): the primary elected for term 2 lacked 34 writes that the
-/// primary of term 1 had acknowledged. It fails so on 768197e0 and keeps
-/// its promises since release 0.2.0's replication fixes (which change of
-/// them fixed it was not bisected).
+/// primary of term 1 had acknowledged. Its trace there: s0 sends s1 a
+/// copy ending at transaction 60 at 4,601 ms, which a held-up call
+/// delivers at 5,906 ms; s1 meanwhile installed a newer copy (ending at
+/// 61) and applied and acknowledged 62 to 94; the late copy dropped them,
+/// and s1 won term 2 at 8,301 ms (`Bug::InstallsALateCopy`, now refused).
+/// From release 0.2.0 on, the seed still meets the late copy, but
+/// with the bug put back s0 sends s1 a third copy, ending at 94, 6 ms
+/// before the network cuts s0 off, and nothing is lost: it passed by that
+/// timing. The tests of late copies below find the bug again.
 const FOUND: &[u64] = &[624036738];
 
 #[test]
 fn seeds_the_nightly_run_found_keep_the_protocols_promises() {
     let failed: Vec<sim::Report> = FOUND.iter().flat_map(|&s| sim::run_seeds(s..s + 1, &Config::of, 1)).collect();
     assert!(failed.is_empty(), "{} of the seeds found before broke a promise again:{}", failed.len(), explain(&failed));
+}
+
+/// Copies of the primary arriving late, after a newer copy and the
+/// transactions that follow it (`Config::late_copies`): each is refused,
+/// and no seed loses a write or fails to settle.
+#[test]
+fn late_copies_are_refused_and_lose_nothing() {
+    let late = std::sync::atomic::AtomicU64::new(0);
+    let failed = std::sync::Mutex::new(Vec::new());
+    sim::on_seeds(0..400, jobs(), &|seed| {
+        let r = sim::run(Config::late_copies(seed), false);
+        late.fetch_add(r.stats.late_copies, std::sync::atomic::Ordering::Relaxed);
+        if !r.ok() {
+            failed.lock().unwrap().push(r);
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 400 seeds with late copies broke a promise:{}", failed.len(), explain(&failed));
+    let late = late.into_inner();
+    assert!(late > 50, "only {late} copies arrived late in 400 seeds: the setup no longer tests them");
+}
+
+/// Finding E-0g (seed 624036738 of the nightly run): a replica that
+/// installs a copy of its primary ending before transactions of the
+/// primary's term it holds since drops writes it acknowledged, and an
+/// election it then wins loses them.
+#[test]
+fn a_late_copy_installed_is_found_again() {
+    let r = finds_with(Bug::InstallsALateCopy, 1000, Config::late_copies).expect("a seed that loses an acknowledged write to a late copy");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
 }
 
 #[test]

@@ -625,6 +625,76 @@ fn a_replica_takes_a_copy_of_its_primary() {
     }
 }
 
+/// A copy delivered late (taken before a newer copy and the transactions
+/// shipped after it) is refused: it would drop transactions of its
+/// primary's term that the replica holds, and maybe acknowledged (finding
+/// E-0g). Refused, it changes nothing; one that ends where the replica
+/// does, or later, goes in, and `install_copy_over` installs the late one
+/// when asked.
+#[test]
+fn a_copy_taken_before_what_a_replica_holds_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let primary = Db::create(&dir.path().join("primary.strata"), schema(), options(Layout::SingleFile)).unwrap();
+    let replica = Db::create(&dir.path().join("replica.strata"), schema(), options(Layout::Directory)).unwrap();
+    for db in [&primary, &replica] {
+        db.create_table(other()).unwrap();
+        db.storage().start_seq_no().unwrap();
+    }
+    let mut rng = StdRng::seed_from_u64(7);
+    let copy_at = |name: &str| {
+        let to = dir.path().join(format!("{name}.strata"));
+        primary.storage().checkpoint(&to, &CheckpointOptions::default()).unwrap();
+        Db::open(&to, options(Layout::SingleFile)).unwrap()
+    };
+    for _ in 0..30 {
+        write(&primary, &mut rng, 100);
+    }
+    let late = copy_at("late");
+    for _ in 0..30 {
+        write(&primary, &mut rng, 100);
+    }
+    let newer = copy_at("newer");
+    assert_eq!(replica.install_copy(newer.storage()).unwrap(), last(&primary));
+    for _ in 0..10 {
+        write(&primary, &mut rng, 100);
+    }
+    assert!(ship(&primary, &replica, usize::MAX) > 0);
+    same(&primary, &replica, "copied and shipped to");
+
+    let (held, ends) = (last(&replica), last(&late));
+    assert!(ends.seq < held.seq && ends.term == held.term);
+    let e = replica.install_copy(late.storage()).unwrap_err().to_string();
+    assert!(e.contains(&format!("the copy ends at transaction {}, before this database's last ({} of term {}, the copy's term)", ends.seq, held.seq, held.term)), "{e}");
+    assert_eq!(last(&replica), held, "it keeps what it held");
+    same(&primary, &replica, "refused");
+    while write(&primary, &mut rng, 100).is_none() {}
+    assert_eq!(ship(&primary, &replica, usize::MAX), 1, "and applies what follows");
+    same(&primary, &replica, "refused, then shipped to");
+
+    // A copy of the primary as it is now goes in, also over the same
+    // transactions (it ends where the replica does).
+    let now = copy_at("now");
+    assert_eq!(replica.install_copy(now.storage()).unwrap(), last(&primary));
+    same(&primary, &replica, "a copy of now");
+
+    // Asked to, it installs one that ends before its last.
+    let lower = replica.install_copy_over(late.storage()).unwrap();
+    assert_eq!(lower, ends);
+    assert_eq!(last(&replica), ends);
+
+    // A copy of a newer term goes in over transactions of an older one
+    // that the copy does not hold (a replaced primary's).
+    for _ in 0..5 {
+        write(&replica, &mut rng, 100);
+    }
+    primary.storage().begin_term(2).unwrap();
+    while write(&primary, &mut rng, 100).is_none() {}
+    let newer_term = copy_at("newer-term");
+    assert_eq!(replica.install_copy(newer_term.storage()).unwrap(), last(&primary));
+    same(&primary, &replica, "a copy of a newer term");
+    replica.storage().check().unwrap();
+}
+
 /// A third table, which references the second.
 fn third() -> Schema {
     let mut uid = Field::new("uid", FieldType::Int);
