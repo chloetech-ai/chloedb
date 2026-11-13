@@ -66,6 +66,10 @@ const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim",
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
 pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+/// Statistical aggregates, which [`stats_as_sums`] writes as sums and
+/// counts: every path that aggregates (a shard's partial groups among
+/// them) computes those.
+pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "variance", "var_samp", "var_pop", "covar_samp", "covar_pop", "corr"];
 /// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
 /// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
 /// ([`super::parse`]), and `PERCENTILE_DISC` alike.
@@ -129,7 +133,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) {
         return true;
     }
     let mut found = false;
@@ -604,6 +608,39 @@ fn needs_rows(c: &Expr, schema: &Schema) -> bool {
 
 /// Whether a SELECT over one table filters by an [`of_rows_filter`]
 /// condition: then the row evaluator filters the scan's rows.
+/// Whether a SELECT aggregates a stored column that the executor's
+/// aggregates do not read, which take INT, FLOAT, KEYWORD and TIMESTAMP
+/// columns: `COUNT(body)`, `COUNT(DISTINCT title)` and `MIN(title)` of a
+/// TEXT column, or of a column kept without an index. The row evaluator
+/// aggregates its stored values.
+fn aggregates_rows(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
+    let mut found = false;
+    let mut check = |e: &Expr| {
+        walk(e, &mut |x| {
+            let Expr::Function(f) = x else { return };
+            if !is_aggregate(f) || PERCENTILES.contains(&fname(f).as_str()) {
+                return;
+            }
+            let name = match func_args(f).as_slice() {
+                [Expr::Identifier(id)] => id.value.clone(),
+                [Expr::CompoundIdentifier(ids)] => ids.last().expect("a name").value.clone(),
+                _ => return,
+            };
+            found |= schema.field(&name).is_some_and(|fd| fd.stored && !fd.multi && (matches!(fd.ty, FieldType::Text { .. }) || (!fd.indexed && matches!(fd.ty, FieldType::Keyword | FieldType::Int | FieldType::Float))));
+        })
+    };
+    for item in &s.projection {
+        if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = item {
+            check(e);
+        }
+    }
+    s.having.iter().for_each(&mut check);
+    if let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by {
+        es.iter().for_each(|o| check(&o.expr));
+    }
+    found
+}
+
 fn filters_rows(s: &sql::Select, schema: &Schema) -> bool {
     s.selection.as_ref().is_some_and(|w| split_and(w).iter().any(|c| of_rows_filter(c, schema)))
 }
@@ -827,6 +864,220 @@ fn func_args_mut(f: &mut sql::Function) -> Vec<&mut Expr> {
             _ => None,
         })
         .collect()
+}
+
+/// Writes every `agg(x) FILTER (WHERE c)` of `q` (and its subqueries, `WITH`
+/// queries and set operations' arms) as the aggregate of the values the
+/// condition keeps, `agg(CASE WHEN c THEN x END)`: an aggregate skips the
+/// NULL the other rows give, so the two are one in SQL. `COUNT(*) FILTER
+/// (WHERE c)` is `COUNT(CASE WHEN c THEN 1 END)`. A percentile's fraction
+/// stays as written; `CORR(y, x)` takes the condition on both values.
+/// FILTER on a call that is not an aggregate is refused, and a window's
+/// aggregate refuses it where it is bound ([`window_fn`]).
+pub(crate) fn filters_as_case(q: &mut sql::Query) -> Result<()> {
+    let mut failed = None;
+    let mut rewrite = |e: &mut Expr| {
+        let Expr::Function(f) = e else { return };
+        if f.filter.is_none() || f.over.is_some() {
+            return;
+        }
+        let name = fname(f);
+        if !AGGREGATES.contains(&name.as_str()) && !STATS.contains(&name.as_str()) {
+            failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..): FILTER applies to an aggregate ({}), and {name} is not one", AGGREGATES.join(", ").to_uppercase())));
+            return;
+        }
+        let cond = *f.filter.take().expect("a FILTER");
+        let case = |x: Expr| Expr::Case {
+            case_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+            end_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+            operand: None,
+            conditions: vec![sql::CaseWhen { condition: Expr::Nested(Box::new(cond.clone())), result: x }],
+            else_result: None,
+        };
+        let FunctionArguments::List(list) = &mut f.args else {
+            failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..) names no value to aggregate")));
+            return;
+        };
+        // Which arguments are values: a percentile's second is its fraction.
+        let values = match name.as_str() {
+            "percentile_cont" | "percentile_disc" => 1,
+            _ => list.args.len(),
+        };
+        for a in list.args.iter_mut().take(values) {
+            match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => *a = FunctionArg::Unnamed(FunctionArgExpr::Expr(case(Expr::value(sql::Value::Number("1".into(), false))))),
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) => *x = case(x.clone()),
+                _ => {
+                    failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..): the aggregate's value is an expression")));
+                }
+            }
+        }
+        if list.args.is_empty() {
+            // `COUNT()`, as `COUNT(*)`.
+            list.args.push(FunctionArg::Unnamed(FunctionArgExpr::Expr(case(Expr::value(sql::Value::Number("1".into(), false))))));
+        }
+    };
+    keep_names(q, &|e| {
+        let mut found = false;
+        walk(e, &mut |x| found |= matches!(x, Expr::Function(f) if f.filter.is_some() && f.over.is_none()));
+        found
+    });
+    filters_in(q, &mut rewrite);
+    failed.map_or(Ok(()), Err)?;
+    stats_as_sums(q)
+}
+
+/// Writes `STDDEV(x)`, `VARIANCE(x)` (and their `_SAMP` and `_POP` forms),
+/// `COVAR_SAMP(y, x)`, `COVAR_POP(y, x)` and `CORR(y, x)` as the sums and
+/// counts they are computed from, in one pass over the values (the sum of
+/// squares less the square of the sum over n): `COUNT`, `SUM` and
+/// arithmetic, which every path that aggregates computes, a shard's
+/// partial groups among them. As in PostgreSQL, the sample forms (and
+/// `STDDEV`, `VARIANCE`) are NULL for fewer than two values, the
+/// population forms for none, and `CORR` when either variable does not
+/// vary; `COVAR` and `CORR` take the rows where both values are there.
+fn stats_as_sums(q: &mut sql::Query) -> Result<()> {
+    let is_stat = |x: &Expr| matches!(x, Expr::Function(f) if f.over.is_none() && STATS.contains(&fname(f).as_str()));
+    keep_names(q, &|e| {
+        let mut found = false;
+        walk(e, &mut |x| found |= is_stat(x));
+        found
+    });
+    let mut failed = None;
+    let mut rewrite = |e: &mut Expr| {
+        if !is_stat(e) {
+            return;
+        }
+        let Expr::Function(f) = &*e else { return };
+        let name = fname(f);
+        match stat_sql(f, &name).and_then(|text| super::parse::parse_expr(&text)) {
+            Ok(x) => *e = Expr::Nested(Box::new(x)),
+            Err(x) => {
+                failed.get_or_insert(x);
+            }
+        }
+    };
+    filters_in(q, &mut rewrite);
+    failed.map_or(Ok(()), Err)
+}
+
+/// The SQL of a statistical aggregate's call `f` ([`stats_as_sums`]).
+fn stat_sql(f: &sql::Function, name: &str) -> Result<String> {
+    let upper = name.to_uppercase();
+    if matches!(&f.args, FunctionArguments::List(l) if l.duplicate_treatment == Some(sql::DuplicateTreatment::Distinct)) {
+        return Err(err(format!("{upper}(DISTINCT ..) is not supported")));
+    }
+    if !f.within_group.is_empty() {
+        return Err(err(format!("{upper}(..) takes no WITHIN GROUP")));
+    }
+    let args = func_args(f);
+    let two = matches!(name, "covar_samp" | "covar_pop" | "corr");
+    let (y, x) = match (two, args.as_slice()) {
+        (false, [x]) => (None, format!("({x})")),
+        (true, [y, x]) => (Some(format!("({y})")), format!("({x})")),
+        (false, _) => return Err(err(format!("{upper} takes one value: {upper}(price)"))),
+        (true, _) => return Err(err(format!("{upper} takes two values, y and x: {upper}(rating, price)"))),
+    };
+    // Sum of squared deviations: Σa·b − Σa·Σb / n.
+    let dev = |a: &str, b: &str, n: &str| format!("(SUM({a} * {b} * 1.0) - SUM({a} * 1.0) * SUM({b} * 1.0) / {n})");
+    let nonneg = |v: String| format!("(CASE WHEN {v} < 0 THEN 0.0 ELSE {v} END)");
+    Ok(match y {
+        None => {
+            let n = format!("COUNT({x})");
+            let ss = nonneg(dev(&x, &x, &n));
+            let (var, least) = match name {
+                "var_pop" | "stddev_pop" => (format!("{ss} / {n}"), 0),
+                _ => (format!("{ss} / ({n} - 1)"), 1),
+            };
+            let var = format!("CASE WHEN {n} > {least} THEN {var} END");
+            match name.starts_with("stddev") {
+                true => format!("sqrt({var})"),
+                false => var,
+            }
+        }
+        Some(y) => {
+            // The pairs with both values.
+            let (xp, yp) = (format!("(CASE WHEN {y} IS NOT NULL THEN {x} END)"), format!("(CASE WHEN {x} IS NOT NULL THEN {y} END)"));
+            let n = format!("COUNT({xp})");
+            let sxy = dev(&xp, &yp, &n);
+            match name {
+                "covar_pop" => format!("CASE WHEN {n} > 0 THEN {sxy} / {n} END"),
+                "covar_samp" => format!("CASE WHEN {n} > 1 THEN {sxy} / ({n} - 1) END"),
+                _ => {
+                    let (sxx, syy) = (dev(&xp, &xp, &n), dev(&yp, &yp, &n));
+                    format!("CASE WHEN {n} > 1 AND {sxx} > 0 AND {syy} > 0 THEN {sxy} / sqrt({sxx} * {syy}) END")
+                }
+            }
+        }
+    })
+}
+
+/// Names each column of `q`'s SELECTs (its set operations' arms, `WITH`
+/// queries and derived tables too) that `rewritten` says a rewrite will
+/// change, by its SQL as written, the name it has without an alias.
+fn keep_names(q: &mut sql::Query, rewritten: &dyn Fn(&Expr) -> bool) {
+    fn body(b: &mut sql::SetExpr, rewritten: &dyn Fn(&Expr) -> bool) {
+        match b {
+            sql::SetExpr::SetOperation { left, right, .. } => {
+                body(left, rewritten);
+                body(right, rewritten);
+            }
+            sql::SetExpr::Query(q) => keep_names(q, rewritten),
+            sql::SetExpr::Select(s) => {
+                for item in &mut s.projection {
+                    if let SelectItem::UnnamedExpr(e) = item {
+                        if rewritten(e) {
+                            let alias = sql::Ident::with_quote('"', super::sql::name_of(e));
+                            *item = SelectItem::ExprWithAlias { expr: e.clone(), alias };
+                        }
+                    }
+                }
+                for t in &mut s.from {
+                    if let TableFactor::Derived { subquery, .. } = &mut t.relation {
+                        keep_names(subquery, rewritten);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            keep_names(&mut cte.query, rewritten);
+        }
+    }
+    body(&mut q.body, rewritten);
+}
+
+/// [`query_mut`] over `q` and every arm of its set operations.
+fn filters_in(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
+    fn body(b: &mut sql::SetExpr, f: &mut dyn FnMut(&mut Expr)) {
+        match b {
+            sql::SetExpr::SetOperation { left, right, .. } => {
+                body(left, f);
+                body(right, f);
+            }
+            sql::SetExpr::Query(q) => filters_in(q, f),
+            sql::SetExpr::Select(_) => {}
+            _ => {}
+        }
+    }
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            filters_in(&mut cte.query, f);
+        }
+    }
+    if matches!(q.body.as_ref(), sql::SetExpr::Select(_)) {
+        // `query_mut` reads the WITH queries too: once is enough.
+        let with = q.with.take();
+        query_mut(q, f);
+        q.with = with;
+    } else {
+        body(&mut q.body, f);
+        if let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &mut q.order_by {
+            es.iter_mut().for_each(|o| walk_mut(&mut o.expr, f));
+        }
+    }
 }
 
 fn is_star(f: &sql::Function) -> bool {
@@ -1522,7 +1773,8 @@ impl<'a> Planner<'a> {
                 || reads_paths(&q, &s)
                 || windowed(&q, &s)
                 || filters_rows(&s, schema)
-                || orders_by_several(&q, &s, schema) =>
+                || orders_by_several(&q, &s, schema)
+                || aggregates_rows(&q, &s, schema) =>
             {
                 return self.join(&q, &s)
             }
@@ -2600,7 +2852,7 @@ pub(crate) fn query_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
 }
 
 /// [`walk`], changing the expressions, and into subqueries.
-fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     f(e);
     match e {
         Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk_mut(x, f),
@@ -2678,6 +2930,53 @@ fn is_score(e: &Expr) -> bool {
         }
     });
     found
+}
+
+/// Whether `q` ranks rows: one SELECT of one table, without groups,
+/// aggregates, `DISTINCT` or windows, whose first ORDER BY key (an alias
+/// or a position read as the column it names) is a column or calls a
+/// ranking function. Such a query's top rows have values they were ranked
+/// by ([`super::sql::with_features`]); any other ORDER BY sorts rows (or
+/// groups) by a value the row evaluator computes, and has none.
+pub(crate) fn ranks_rows(q: &sql::Query) -> bool {
+    let sql::SetExpr::Select(s) = q.body.as_ref() else { return false };
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return false };
+    let Some(first) = es.first() else { return false };
+    let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(g, _) if g.is_empty());
+    if s.from.len() != 1 || !s.from[0].joins.is_empty() || !matches!(s.from[0].relation, TableFactor::Table { .. }) || grouped || s.having.is_some() || s.distinct.is_some() || has_aggregate(s) {
+        return false;
+    }
+    let items: Vec<&Expr> = s
+        .projection
+        .iter()
+        .filter_map(|i| match i {
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => Some(e),
+            _ => None,
+        })
+        .collect();
+    if items.iter().any(|e| has_window(e)) {
+        return false;
+    }
+    // The key, through an alias or a position.
+    let key = match &first.expr {
+        Expr::Identifier(id) => s
+            .projection
+            .iter()
+            .find_map(|i| match i {
+                SelectItem::ExprWithAlias { expr, alias } if alias.value.eq_ignore_ascii_case(&id.value) => Some(expr),
+                _ => None,
+            })
+            .unwrap_or(&first.expr),
+        Expr::Value(v) => match v.value.to_string().parse::<usize>() {
+            Ok(n) if (1..=s.projection.len()).contains(&n) => match &s.projection[n - 1] {
+                SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => e,
+                _ => return false,
+            },
+            _ => return false,
+        },
+        e => e,
+    };
+    matches!(key, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) || ranks(key)
 }
 
 fn has_aggregate(s: &sql::Select) -> bool {
@@ -2890,6 +3189,30 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             op: CmpOp::Eq,
             left: typed(x, Some(crate::json::Kind::Bool))?,
             right: Box::new(ir::Expr::Lit(Value::Bool(matches!(e, Expr::IsTrue(_))))),
+        },
+        // A time moved by an interval: computed once when the time is a
+        // value (`now() - INTERVAL '1 hour'`), and over the rows when it is
+        // a column (`at + INTERVAL '2 days'`, in microseconds, which a
+        // month has no fixed number of).
+        e if super::sql::interval_shift(e).is_some() => {
+            let (t, iv) = super::sql::interval_shift(e).expect("an interval")?;
+            match go(t)? {
+                ir::Expr::Lit(Value::Null) => ir::Expr::Lit(Value::Null),
+                ir::Expr::Lit(v) => {
+                    let base = super::sql::time_of(&v, &|| e.to_string())?;
+                    ir::Expr::Lit(Value::Timestamp(iv.add_to(base).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?))
+                }
+                _ if iv.months != 0 => {
+                    return Err(err(format!("{e}: a month or a year has no fixed length, so it moves a time written as a value (now(), '2026-01-31'), not a column's; write days")))
+                }
+                x => ir::Expr::Arith { op: ArithOp::Add, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Int(iv.micros))) },
+            }
+        }
+        e if super::sql::time_plus_number(e).is_some() => return Err(super::sql::time_plus_number(e).expect("an error")),
+        Expr::Interval(_) => return Err(err(format!("{e} is a length of time: add it to a time or subtract it from one (now() - {e})"))),
+        Expr::TypedString(sql::TypedString { data_type, value, .. }) => match &value.value {
+            sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => ir::Expr::Lit(super::sql::cast_value(Value::Str(s.clone()), CastTo::of(data_type)?)?),
+            _ => return Err(err(format!("unsupported expression: {e}"))),
         },
         Expr::BinaryOp { left, op, right } => {
             use BinaryOperator as B;
@@ -3120,7 +3443,7 @@ fn unknown_function(n: &str) -> String {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + INTERVAL '1 day' or now() - INTERVAL '15 minutes'"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
@@ -3132,9 +3455,10 @@ fn unknown_function(n: &str) -> String {
         _ => "",
     };
     format!(
-        "unknown function {n}(){}: over rows ChloeDB computes {}{hint}",
-        hint::did_you_mean(n, ROW_FUNCTIONS),
-        ROW_FUNCTIONS.join(", ")
+        "unknown function {n}(){}: over rows ChloeDB computes {}, and over groups the aggregates {}{hint}",
+        hint::did_you_mean(n, ROW_FUNCTIONS.iter().chain(AGGREGATES.iter()).chain(STATS.iter()).copied()),
+        ROW_FUNCTIONS.join(", "),
+        AGGREGATES.iter().chain(STATS.iter()).map(|a| a.to_uppercase()).collect::<Vec<_>>().join(", ")
     )
 }
 

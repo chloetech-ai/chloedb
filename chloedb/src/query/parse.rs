@@ -31,7 +31,17 @@ pub fn parse(sql_text: &str) -> Result<Vec<Statement>> {
     let tokens = within_groups(per_caps(located))?;
     let plain: Vec<Token> = tokens.iter().map(|t| t.token.clone()).collect();
     check_depth(&plain)?;
-    Parser::new(&dialect).with_tokens_with_locations(tokens).parse_statements().map_err(|e| Error::Query(syntax_error(&e.to_string(), sql_text)))
+    let mut stmts = Parser::new(&dialect).with_tokens_with_locations(tokens).parse_statements().map_err(|e| Error::Query(syntax_error(&e.to_string(), sql_text)))?;
+    for s in &mut stmts {
+        match s {
+            Statement::Query(q) | Statement::Insert(sqlparser::ast::Insert { source: Some(q), .. }) => {
+                super::compound::filters_as_case(q)?;
+                super::rewrite::query(q);
+            }
+            _ => {}
+        }
+    }
+    Ok(stmts)
 }
 
 /// Parses `text` as one SQL expression (a condition given apart from its
