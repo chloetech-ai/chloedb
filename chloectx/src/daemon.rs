@@ -210,7 +210,7 @@ pub struct Daemon {
 }
 
 /// Work to do after the response is sent (so hooks return at once).
-type Deferred = Box<dyn FnOnce() + Send>;
+pub type Deferred = Box<dyn FnOnce() + Send>;
 
 impl Daemon {
     pub fn open(dir: &Path, project: &str) -> Result<Daemon> {
@@ -573,6 +573,13 @@ impl Daemon {
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
                 let mut text = self.recall_for(&sid, &prompt, false, "prompt")?.map(|x| x.0).unwrap_or_default();
+                // The previous turn's search, when it finished after that turn
+                // ended: offered now, once.
+                if let Some(t) = self.take_late_deep(&sid, turn - 1) {
+                    self.log(&json!({"ts": now(), "event": "deep_late", "session": sid, "turn": turn - 1, "chars": t.len()}));
+                    let t = format!("ChloeCtx's search for your previous request finished after that turn ended:\n{t}");
+                    text = if text.is_empty() { t } else { format!("{text}\n\n{t}") };
+                }
                 let deep = deep_cfg.wants(&prompt, self.store.len());
                 let deep_async = deep && mode == "async";
                 if deep && mode == "sync" {
@@ -656,7 +663,7 @@ impl Daemon {
                     let fixed = if fixes_on { s.fixes.observe(&tool, &input, &resp, &project) } else { Vec::new() };
                     (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed)
                 });
-                let mut text = self.take_deep(&sid, turn, false).unwrap_or_default();
+                let mut text = self.take_deep(&sid, turn, Duration::ZERO, false).unwrap_or_default();
                 if fixes_on && tool == "Bash" {
                     let fix = self.fix_for(&sid, &resp);
                     if !fix.is_empty() {
@@ -689,14 +696,19 @@ impl Daemon {
                 let answer = p.get("last_assistant_message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let active = p.get("stop_hook_active").and_then(|v| v.as_bool()).unwrap_or(false);
                 let cur = self.with_session(&sid, |s| s.turn);
-                // A search still running for this turn: wait for it, and if it
-                // found records the turn did not see, ask the model once to
-                // reconsider with them.
+                // By default the end of a turn neither waits for a search
+                // still running nor asks the model to go on: what the search
+                // finds is offered at the next prompt (CTX-1: waiting held
+                // short turns ~10 s, and the block that followed made Claude
+                // answer twice). With `stop_recheck` turned on, it waits a few
+                // seconds at most and, when the search found records the turn
+                // did not see, asks the model once to check its answer
+                // against them, without repeating it.
                 if !active && mode == "async" && deep_cfg.stop_recheck {
-                    if let Some(t) = self.take_deep(&sid, cur, true) {
+                    if let Some(t) = self.take_deep(&sid, cur, deep_cfg.stop_wait(), true) {
                         self.log(&json!({"ts": now(), "event": "deep_recheck", "session": sid, "turn": cur, "chars": t.len()}));
                         let reason = format!(
-                            "{t}\n\nBefore you finish: if these records change your answer or your changes, make the corrections now and then give your complete answer again. If they change nothing, repeat your previous answer unchanged."
+                            "{t}\n\nChloeCtx found these records for this request after the turn's last tool call (`stop_recheck` is on). If one of them changes your answer or your changes, make the correction now and say in a sentence or two what changed. If none does, end your turn with one short line saying so; do not repeat your answer."
                         );
                         return Ok((json!({"output": {"decision": "block", "reason": reason}}), None));
                     }
@@ -951,9 +963,6 @@ impl Daemon {
         (text, Some(res))
     }
 
-    /// The finished search of `turn` not delivered yet, once. With `wait`,
-    /// waits for a running one (up to `stop_wait_secs`) and returns it only
-    /// when its confidence is high or medium.
     /// The id of a turn's prompt record, which notes and fixes link to.
     fn prompt_of(&self, sid: &str, turn: i64) -> Option<String> {
         self.store
@@ -992,15 +1001,37 @@ impl Daemon {
         crate::fixes::render(&found)
     }
 
-    fn take_deep(&self, sid: &str, turn: i64, wait: bool) -> Option<String> {
-        let until = Instant::now() + Duration::from_secs(if wait { self.deep_cfg().stop_wait_secs } else { 0 });
+    /// A search of an earlier `turn` that finished after its turn ended and
+    /// was not delivered: its text, once, when the ranker was confident and
+    /// the session has not been shown all of its picks since.
+    fn take_late_deep(&self, sid: &str, turn: i64) -> Option<String> {
+        let ids = {
+            let jobs = self.deep_jobs.lock().unwrap();
+            let j = jobs.get(sid).filter(|j| j.turn == turn && j.done && !j.delivered && !j.text.is_empty())?;
+            j.ids.clone()
+        };
+        let seen = self.with_session(sid, |s| ids.iter().all(|i| s.injected.contains(i)));
+        if seen {
+            if let Some(j) = self.deep_jobs.lock().unwrap().get_mut(sid) {
+                j.delivered = true;
+            }
+            return None;
+        }
+        self.take_deep(sid, turn, Duration::ZERO, true)
+    }
+
+    /// The finished search of `turn` not delivered yet, once: waits up to
+    /// `wait` for one still running, and with `confident` returns it only
+    /// when the ranker's confidence is high or medium.
+    fn take_deep(&self, sid: &str, turn: i64, wait: Duration, confident: bool) -> Option<String> {
+        let until = Instant::now() + wait;
         loop {
             {
                 let mut jobs = self.deep_jobs.lock().unwrap();
                 let j = jobs.get_mut(sid).filter(|j| j.turn == turn && !j.delivered)?;
                 if j.done {
                     j.delivered = true;
-                    if j.text.is_empty() || (wait && !matches!(j.confidence.as_str(), "high" | "medium")) {
+                    if j.text.is_empty() || (confident && !matches!(j.confidence.as_str(), "high" | "medium")) {
                         return None;
                     }
                     let (text, ids) = (j.text.clone(), j.ids.clone());
