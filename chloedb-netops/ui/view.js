@@ -422,6 +422,7 @@ function render(el, ctx) {
     drawAlt(page);
     if (!ready) return;
     if (page !== "map") app.map = null;
+    app.wherePage?.(page);
     const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
   };
@@ -2855,7 +2856,10 @@ function whereState(app) {
     if (patch.sel || patch.place) app.where.off = false;
     if (JSON.stringify([app.where.place?.id, app.where.sel?.id]) !== before) for (const f of subs) f(app.where);
   };
-  app.scope = () => (app.where.off ? null : app.where.place);
+  app.wherePage = (page) => { app.page = page; for (const f of subs) f(app.where); };
+  // The place in view is the map's: it narrows the map and the dashboards
+  // that follow it, and no other page's search.
+  app.scope = () => (app.where.off || !["map", "dash"].includes(app.page) ? null : app.where.place);
   app.target = () => (app.where.off ? null : app.where.sel);
 }
 
