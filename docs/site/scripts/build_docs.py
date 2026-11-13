@@ -145,6 +145,7 @@ NAV = [
         ("rag", "Retrieval for RAG", "docs/guide/rag.md", "guide"),
         ("agent-memory", "Memory for an agent", "docs/guide/agent-memory.md", "guide"),
         ("crawl-to-search", "Crawl a site into search", "docs/guide/crawl-to-search.md", "guide"),
+        ("logs", "Search your logs", "docs/guide/logs.md", "guide"),
     ]),
     ("Clients", [
         ("python", "Python", "docs/chloedb/python.md", "reference"),

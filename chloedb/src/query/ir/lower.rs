@@ -73,6 +73,7 @@ fn col_expr(paths: &[PathCol], times: &[TimeCol], c: Col) -> Expr {
             let (func, how) = match &times[t].of {
                 TimeOf::Trunc(u) => (Func::DateTrunc, u.name().to_string()),
                 TimeOf::Part(p) => (Func::DatePart, p.name().to_string()),
+                TimeOf::Bucket(w) => (Func::TimeBucket, crate::timestamp::width_text(*w)),
                 TimeOf::Format(f) => (Func::Strftime, f.clone()),
             };
             Expr::Call { func, args: vec![Expr::Lit(Value::Str(how)), Expr::Field(times[t].field as u32)] }

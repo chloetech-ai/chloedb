@@ -77,7 +77,7 @@ const RESERVED: &[&str] = &[
     "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower",
     "ltrim", "match", "max", "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "position", "pow", "power", "ppr", "prefix", "rand",
     "random", "rank", "rank_profile", "ranked", "reachable", "replace", "reverse", "right", "round", "row_number", "rrf", "rtrim", "score", "seq_no", "sid_at", "sigmoid", "similarity", "sparse", "split_part",
-    "sqrt", "stddev", "stddev_pop", "stddev_samp", "strftime", "string_agg", "strpos", "substr", "substring", "sum", "tmm", "to_char", "trim", "trunc", "truncate", "ucase", "upper", "var_pop", "var_samp", "variance", "week", "weekday", "year", "zscore",
+    "sqrt", "stddev", "stddev_pop", "stddev_samp", "strftime", "string_agg", "strpos", "substr", "substring", "sum", "time_bucket", "tmm", "to_char", "trim", "trunc", "truncate", "ucase", "upper", "var_pop", "var_samp", "variance", "week", "weekday", "year", "zscore",
 ];
 
 /// A parameter: its name (lower case), type, and default as a SQL literal.

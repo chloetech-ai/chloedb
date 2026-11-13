@@ -937,6 +937,9 @@ pub enum TimeOf {
     Part(crate::timestamp::Part),
     /// `strftime`: text.
     Format(String),
+    /// `time_bucket`: the start of the bucket of this many microseconds
+    /// the time is in, a TIMESTAMP.
+    Bucket(i64),
 }
 
 impl TimeCol {
@@ -949,6 +952,7 @@ impl TimeCol {
         use crate::value::Value;
         match &self.of {
             TimeOf::Trunc(u) => ts::trunc(micros, *u).map_or(Value::Null, Value::Int),
+            TimeOf::Bucket(w) => ts::bucket(micros, *w).map_or(Value::Null, Value::Int),
             TimeOf::Part(p) => match ts::part(micros, *p) {
                 ts::PartValue::Int(x) => Value::Int(x),
                 ts::PartValue::Float(x) => Value::Float(x),

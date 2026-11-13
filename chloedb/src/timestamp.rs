@@ -168,6 +168,40 @@ pub fn trunc(micros: i64, unit: Unit) -> Option<i64> {
     start.checked_mul(MICROS_PER_DAY)
 }
 
+/// The start of the bucket `width` microseconds wide that `micros` is in
+/// (`time_bucket`), buckets counted from 1970-01-01 UTC, as TimescaleDB's
+/// `time_bucket` counts buckets of less than a week; `None` for a width
+/// that is not positive or a start outside the integers.
+pub fn bucket(micros: i64, width: i64) -> Option<i64> {
+    if width <= 0 {
+        return None;
+    }
+    micros.checked_sub(micros.rem_euclid(width))
+}
+
+/// The width of a bucket `text` writes (`'5 minutes'`, `'1 hour'`,
+/// `'90s'`), in microseconds: an interval of a fixed length, so not of
+/// months or years, which differ in length.
+pub fn bucket_width(text: &str) -> Result<i64, String> {
+    let iv = Interval::parse(text, None)?;
+    if iv.months != 0 {
+        return Err(format!("time_bucket('{text}', ...): a month or a year has no fixed length; date_trunc('month', t) cuts to months"));
+    }
+    if iv.micros <= 0 {
+        return Err(format!("time_bucket('{text}', ...): the width is a positive length of time, such as '5 minutes'"));
+    }
+    Ok(iv.micros)
+}
+
+/// A bucket width as text `bucket_width` reads back: in the largest unit
+/// that writes it whole (`'5 minutes'`, `'90 seconds'`).
+pub fn width_text(micros: i64) -> String {
+    const UNITS: [(i64, &str); 6] = [(MICROS_PER_DAY, "day"), (3_600_000_000, "hour"), (60_000_000, "minute"), (1_000_000, "second"), (1_000, "millisecond"), (1, "microsecond")];
+    let (per, name) = UNITS.into_iter().find(|(per, _)| micros % per == 0).unwrap_or((1, "microsecond"));
+    let n = micros / per;
+    format!("{n} {name}{}", if n == 1 { "" } else { "s" })
+}
+
 /// A part of a time that `EXTRACT` and `date_part` read, in UTC, as
 /// PostgreSQL names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

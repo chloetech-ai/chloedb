@@ -1991,7 +1991,7 @@ impl<'a> Binder<'a> {
                         None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
                         // Values of a row that the row evaluator computes,
                         // not a ranking with scores.
-                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "json_extract") => Err(err(format!(
+                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "time_bucket" | "json_extract") => Err(err(format!(
                             "{n}() is a value of each row, which a ranking with scores does not take: order by it on its own (ORDER BY {n}(...), a score after it), or select it and order by its name"
                         ))),
                         None => Err(err(format!(
