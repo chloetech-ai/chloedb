@@ -7,7 +7,7 @@
 // search (a stored function, an endpoint, an agent's tool) from here.
 // #/table lists the tables, the user's own first.
 
-import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, seg, gate, can, sqlBlock, store, debounce } from "../core.js";
+import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, seg, gate, can, sqlBlock, store, debounce, table } from "../core.js";
 import { tables, cached, table as tableOf, typeBadge, invalidate } from "../catalog.js";
 import { ownerOf, isMine, folded } from "../owners.js";
 import { quoteName } from "../sqledit.js";
@@ -101,11 +101,12 @@ function render(page, r) {
     h("div", { class: "small muted", style: { padding: "12px" } }, "Reading the tables…"));
     let ts;
     try { ts = await tables(true); } catch (e) { clear(body.lastChild, failure(e, "The tables")); return; }
-    const sizes = {};
-    try { const j = await api("/v1/index/tables", { timeout: 4000 }); for (const x of Array.isArray(j) ? j : j.tables || []) sizes[x.table] = x.docs; } catch { /* a server without the listing */ }
+    const sizes = {}, idx = {};
+    try { const j = await api("/v1/index/tables", { timeout: 4000 }); for (const x of Array.isArray(j) ? j : j.tables || []) { sizes[x.table] = x.docs; idx[x.table] = x; } } catch { /* a server without the listing */ }
     const mine = ts.filter((t) => isMine(t.table));
     await Promise.all(mine.filter((t) => sizes[t.table] == null).slice(0, 30).map((t) => api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(t.table)}` }, timeout: 4000 }).then((j) => { sizes[t.table] = j.rows?.[0]?.[0]; }).catch(() => {})));
     if (!alive || r.rest?.[0]) return;
+    const use = (x) => x ? [x.bytes != null ? fmt.bytes(x.bytes) : null, x.reads_per_min ? `${fmt.si(x.reads_per_min)} reads/min` : "no reads lately", x.writes_per_min ? `${fmt.si(x.writes_per_min)} writes/min` : x.last_write_ms ? `last write ${fmt.ago(x.last_write_ms)}` : null].filter(Boolean).join(" · ") : "";
     const tile = (t) => {
       const fs = t.short?.fields || [];
       const text = proseFields(t), vecs = meaningFields(t);
@@ -113,12 +114,33 @@ function render(page, r) {
       return h("a", { class: "tbl-tile", href: `#/table/${encodeURIComponent(t.table)}` },
         h("div", { class: "row nw" }, icon("table"), h("b", { class: "grow ellipsis" }, t.table), sizes[t.table] != null ? h("span", { class: "small muted" }, fmt.si(sizes[t.table]) + " rows") : null),
         h("div", { class: "small dim ellipsis" }, `${fmt.plural(fs.length, "field")}${text.length ? " · search " + text.map((f) => f.name).join(", ") : " · no text to search"}`),
+        idx[t.table] ? h("div", { class: "small muted ellipsis", title: "on disk, and the use of the last 5 minutes" }, use(idx[t.table])) : null,
         h("div", { class: "row nw small", style: { gap: "6px", marginTop: "4px" } },
           text.length ? h("span", { class: "badge" }, "words") : null, vecs.length ? h("span", { class: "badge accent" }, "meaning") : text.length ? h("span", { class: "badge muted", title: "Add vectors to search by meaning" }, "no meaning yet") : null,
           o ? h("span", { class: "badge", title: o.about }, o.owner) : null));
     };
-    const list = folded(ts, tile, { key: "tablehome", nameOf: (t) => t.table, label: "Tables of apps" });
-    clear(body.lastChild, ts.length ? h("div", { class: "tbl-tiles" }, list) : card({ body: empty("table", "No tables yet", "Import a file to make one, or design one.", h("div", { class: "row" }, h("a", { class: "btn primary", href: "#/import" }, icon("import"), "Import a file"), h("a", { class: "btn", href: "#/start" }, icon("rocket"), "Start here"))) }));
+    // The list: every table a row, sortable by size and use, apps' tables
+    // marked by their app rather than folded away.
+    const listView = () => table([
+      { key: "table", label: "Table", render: (t) => h("a", { href: `#/table/${encodeURIComponent(t.table)}`, class: "mono" }, t.table) },
+      { key: "owner", label: "Owner", sort: (t) => ownerOf(t.table)?.owner || "", render: (t) => { const o = ownerOf(t.table); return o ? h("span", { class: "badge", title: o.about }, o.owner) : h("span", { class: "muted" }, "yours"); } },
+      { key: "docs", label: "Rows", num: true, sort: (t) => sizes[t.table], render: (t) => fmt.n(sizes[t.table]) },
+      { key: "bytes", label: "On disk", num: true, sort: (t) => idx[t.table]?.bytes, render: (t) => fmt.bytes(idx[t.table]?.bytes) },
+      { key: "reads", label: "Reads/min", num: true, sort: (t) => idx[t.table]?.reads_per_min, render: (t) => idx[t.table] ? fmt.si(idx[t.table].reads_per_min || 0) : "–" },
+      { key: "writes", label: "Writes/min", num: true, sort: (t) => idx[t.table]?.writes_per_min, render: (t) => idx[t.table] ? fmt.si(idx[t.table].writes_per_min || 0) : "–" },
+      { key: "last", label: "Last write", num: true, sort: (t) => idx[t.table]?.last_write_ms, render: (t) => idx[t.table]?.last_write_ms ? fmt.ago(idx[t.table].last_write_ms) : "–" },
+      { key: "fields", label: "Fields", num: true, sort: (t) => (t.short?.fields || []).length, render: (t) => String((t.short?.fields || []).length) },
+      { key: "search", label: "Search", sortable: false, render: (t) => h("span", { class: "row nw", style: { gap: "4px" } }, proseFields(t).length ? h("span", { class: "badge" }, "words") : h("span", { class: "muted small" }, "none"), meaningFields(t).length ? h("span", { class: "badge accent" }, "meaning") : null) },
+    ], { rows: ts, sortKey: "docs", desc: true, onRow: (t) => { location.hash = `#/table/${encodeURIComponent(t.table)}`; } });
+    let how = store.get("tables.how", "tiles");
+    const host = h("div");
+    const draw = () => clear(host, how === "list" ? h("section", { class: "card" }, h("div", { class: "bd flush" }, listView())) : h("div", { class: "tbl-tiles" }, folded(ts, tile, { key: "tablehome", nameOf: (t) => t.table, label: "Tables of apps" })));
+    const total = Object.values(idx).reduce((a, x) => a + (x.bytes || 0), 0);
+    const head = h("div", { class: "row", style: { gap: "12px", flexWrap: "wrap" } },
+      h("span", { class: "small muted grow" }, `${fmt.plural(ts.length, "table")}${mine.length !== ts.length ? `, ${mine.length} yours` : ""}${total ? ` · ${fmt.bytes(total)} on disk` : ""}${Object.keys(idx).length ? " · use over the last 5 minutes" : ""}`),
+      seg([["tiles", "Tiles"], ["list", "List"]], how, (v) => { how = v; store.set("tables.how", v); draw(); }, { "aria-label": "Show as" }));
+    draw();
+    clear(body.lastChild, ts.length ? h("div", { class: "stack" }, head, host) : card({ body: empty("table", "No tables yet", "Import a file to make one, or design one.", h("div", { class: "row" }, h("a", { class: "btn primary", href: "#/import" }, icon("import"), "Import a file"), h("a", { class: "btn", href: "#/start" }, icon("rocket"), "Start here"))) }));
   }
 
   // ---------------------------------------------------------- one table
@@ -272,42 +294,143 @@ function render(page, r) {
   }
 
   // ---------------------------------------------------------- Data
+  // The rows, a page at a time: a condition to filter by (the WHERE of a
+  // statement), a field to sort on, a page size, and paging. A row opens
+  // with every field in full. Vectors, and fields made from others and
+  // not kept (a generated TEXT), are left out: they hold nothing to read.
   function dataTab(pane, t) {
-    const fs = (t.short?.fields || []).filter((f) => !["vector", "sparse"].includes(f.type)).map((f) => quoteName(f.name));
+    const all = t.short?.fields || [];
+    const shown = all.filter((f) => !["vector", "sparse", "edges"].includes(f.type) && !f.from);
+    const left = all.filter((f) => !shown.includes(f));
+    const sortable = shown.filter((f) => !["text"].includes(f.type) && !f.multi);
     const key = t.short?.key;
-    const sql = `SELECT ${fs.join(", ") || "*"} FROM ${quoteName(t.table)}${key ? ` ORDER BY ${quoteName(key)}` : ""} LIMIT 100`;
+    const tq = quoteName(t.table);
+    const saved = store.get(`table.data.${t.table}`, {}) || {};
+    let where = saved.where || "", by = sortable.some((f) => f.name === saved.by) ? saved.by : key || sortable[0]?.name || "", desc = !!saved.desc, size = [25, 50, 100].includes(saved.size) ? saved.size : 50, page = 0, total = null, seq = 0, last = null;
+    const keep = () => store.set(`table.data.${t.table}`, { where, by, desc, size });
+    const sqlOf = (n = size, off = page * size) => `SELECT ${shown.map((f) => quoteName(f.name)).join(", ") || "*"} FROM ${tq}${where.trim() ? ` WHERE ${where.trim()}` : ""}${by ? ` ORDER BY ${quoteName(by)}${desc ? " DESC" : ""}` : ""} LIMIT ${n}${off ? ` OFFSET ${off}` : ""}`;
+    const filter = h("input", { class: "input mono grow", value: where, placeholder: sortable.length ? `a condition, e.g. ${sortable.find((f) => f.type === "keyword")?.name || sortable[0].name} = '…'${sortable.find((f) => /int|float/.test(f.type)) ? ` AND ${sortable.find((f) => /int|float/.test(f.type)).name} > 10` : ""}` : "a condition, as after WHERE", "aria-label": "Filter: a condition, as after WHERE", spellcheck: "false", autocomplete: "off" });
+    const sortSel = h("select", { class: "input", "aria-label": "Sort by", title: "Sort by" }, h("option", { value: "" }, "no order"), sortable.map((f) => h("option", { value: f.name, selected: f.name === by }, f.name)));
+    const dirBtn = h("button", { class: "btn sm", title: "Ascending or descending" });
+    const sizeSeg = seg([[25, "25"], [50, "50"], [100, "100"]], size, (v) => { size = v; page = 0; keep(); load(); }, { "aria-label": "Rows a page" });
+    const prev = h("button", { class: "btn sm", title: "The page before" }, icon("left"), "Prev");
+    const next = h("button", { class: "btn sm", title: "The page after" }, "Next", icon("right"));
+    const count = h("span", { class: "small muted nowrap" });
+    const err = h("div", { class: "error small", hidden: true });
     const out = h("div", { class: "small muted", style: { padding: "12px" } }, "Reading rows…");
-    pane.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "The first rows"), h("span", { class: "sub" }, "vectors left out"), h("div", { class: "tools" }, h("a", { class: "btn sm", href: `#/sql?q=${encodeURIComponent(sql)}` }, icon("sql"), "Open in the workbench"), gate(h("a", { class: "btn sm", href: "#/import" }, icon("import"), "Add rows"), "write"))), h("div", { class: "bd flush" }, out)));
-    api("/v1/query", { body: { sql } }).then((j) => clear(out, j.rows?.length ? h("div", { class: "tbl-wrap" }, grid(j, { max: 100 })) : empty("table", "No rows yet", "Import a file into it, or write rows from code.", gate(h("a", { class: "btn", href: "#/import" }, icon("import"), "Import into it"), "write"))))
-      .catch((e) => clear(out, h("div", { class: "error" }, e.message)));
+    const wb = h("a", { class: "btn sm" }, icon("sql"), "Open in the workbench");
+    const exp = h("span", { class: "row nw", style: { gap: "4px" } });
+    const drawDir = () => clear(dirBtn, icon(desc ? "down" : "up"), desc ? "Desc" : "Asc");
+    drawDir();
+    filter.onkeydown = (e) => { if (e.key === "Enter") { where = filter.value; page = 0; keep(); load(); } };
+    filter.onchange = () => { if (filter.value !== where) { where = filter.value; page = 0; keep(); load(); } };
+    sortSel.onchange = () => { by = sortSel.value; page = 0; keep(); load(); };
+    dirBtn.onclick = () => { desc = !desc; drawDir(); page = 0; keep(); load(); };
+    prev.onclick = () => { if (page > 0) { page--; load(false); } };
+    next.onclick = () => { page++; load(false); };
+    pane.append(h("section", { class: "card" },
+      h("div", { class: "hd" }, h("h3", {}, "Rows"), h("span", { class: "sub" }, `click a row for every field in full${left.length ? ` · not shown: ${left.map((f) => `${f.name} (${f.from ? `made from ${f.from.join(", ")}` : f.type})`).join(", ")}` : ""}`),
+        h("div", { class: "tools" }, exp, wb, gate(h("a", { class: "btn sm", href: "#/import" }, icon("import"), "Add rows"), "write"))),
+      h("div", { class: "bd stack", style: { gap: "8px", paddingBottom: "8px" } },
+        h("div", { class: "row data-tools", style: { gap: "8px", flexWrap: "wrap" } }, h("span", { class: "small muted mono" }, "WHERE"), filter, h("span", { class: "small muted" }, "sort"), sortSel, dirBtn, sizeSeg),
+        err),
+      h("div", { class: "bd flush" }, out),
+      h("div", { class: "ft row", style: { gap: "8px", padding: "8px 14px" } }, count, h("span", { class: "sep grow" }), prev, next)));
+    async function load(recount = true) {
+      const my = ++seq;
+      const sql = sqlOf();
+      wb.href = `#/sql?q=${encodeURIComponent(sqlOf(size, page * size))}`;
+      prev.disabled = page === 0;
+      out.style.opacity = ".55";
+      try {
+        const [j, c] = await Promise.all([api("/v1/query", { body: { sql } }), recount || total == null ? api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${tq}${where.trim() ? ` WHERE ${where.trim()}` : ""}` } }).then((x) => x.rows?.[0]?.[0] ?? null).catch(() => null) : Promise.resolve(total)]);
+        if (my !== seq) return;
+        total = c; last = j;
+        err.hidden = true;
+        const n = j.rows?.length || 0;
+        const from = page * size + (n ? 1 : 0), to = page * size + n;
+        count.textContent = n ? `rows ${fmt.n(from)}–${fmt.n(to)}${total != null ? ` of ${fmt.n(total)}${where.trim() ? " matching" : ""}` : ""}` : where.trim() ? "no row matches" : "";
+        next.disabled = n < size || (total != null && to >= total);
+        clear(exp, n ? exportMenu(j, t.table) : null);
+        clear(out, n ? h("div", { class: "tbl-wrap" }, grid(j, { max: size })) : where.trim() ? empty("search", "No row matches", `Nothing in ${t.table} has ${where.trim()}.`, h("button", { class: "btn", onclick: () => { filter.value = where = ""; page = 0; keep(); load(); } }, "Clear the filter")) : empty("table", "No rows yet", "Import a file into it, or write rows from code.", gate(h("a", { class: "btn", href: "#/import" }, icon("import"), "Import into it"), "write")));
+      } catch (e) {
+        if (my !== seq) return;
+        err.hidden = false;
+        clear(err, icon("warn"), " ", e.message, where.trim() ? h("span", { class: "muted" }, " · a condition is what follows WHERE: brand = 'x' AND price > 10") : null);
+        if (!last) clear(out);
+      } finally { if (my === seq) out.style.opacity = ""; }
+    }
+    load();
   }
 
   // ---------------------------------------------------------- Quality
+  // Per field: how filled it is, and what is in it. Numbers and times
+  // their range and mean; keywords how many values and the commonest;
+  // text how long, and how many are empty strings; vectors how many rows
+  // have one. A field made from others is not kept, so it has no count.
   function qualityTab(pane, t) {
-    const fs = (t.short?.fields || []).filter((f) => !["edges", "vector"].includes(f.type));
+    const all = t.short?.fields || [];
+    const fs = all.filter((f) => !["edges", "vector", "sparse"].includes(f.type) && !f.from);
+    const made = all.filter((f) => f.from && !["vector", "sparse"].includes(f.type));
     const out = h("div", { class: "small muted", style: { padding: "12px" } }, "Counting…");
-    pane.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "How filled each field is"), h("span", { class: "sub" }, "the rows where it is set")), h("div", { class: "bd" }, out)));
+    pane.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Each field"), h("span", { class: "sub" }, "how filled it is, and what is in it")), h("div", { class: "bd" }, out)));
+    const q = (sql) => api("/v1/query", { body: { sql }, timeout: 8000 }).then((j) => j.rows || []).catch(() => null);
     (async () => {
       const tq = quoteName(t.table);
       const n = (await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${tq}` } })).rows?.[0]?.[0] || 0;
       if (!n) { clear(out, empty("table", "No rows to judge", "Quality shows once rows are in.")); return; }
-      const counts = await Promise.all(fs.map((f) => api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${tq} WHERE ${quoteName(f.name)} IS NOT NULL` }, timeout: 8000 }).then((j) => j.rows?.[0]?.[0] ?? null).catch(() => null)));
-      const distinct = await Promise.all(fs.map((f) => f.type === "keyword" && !f.multi ? api("/v1/query", { body: { sql: `SELECT ${quoteName(f.name)}, COUNT(*) AS n FROM ${tq} GROUP BY ${quoteName(f.name)} ORDER BY n DESC LIMIT 3` }, timeout: 8000 }).then((j) => j.rows || []).catch(() => null) : null));
+      const stats = await Promise.all(fs.map(async (f) => {
+        const c = quoteName(f.name);
+        const [filled, more] = await Promise.all([
+          q(`SELECT COUNT(*) FROM ${tq} WHERE ${c} IS NOT NULL`).then((r) => r?.[0]?.[0] ?? null),
+          /^(date|time)/.test(f.type) && !f.multi ? q(`SELECT MIN(${c}), MAX(${c}) FROM ${tq}`)
+            : /^(int|float)/.test(f.type) && !f.multi ? q(`SELECT MIN(${c}), MAX(${c}), AVG(${c}) FROM ${tq}`)
+            : f.type === "keyword" && !f.multi ? Promise.all([q(`SELECT COUNT(DISTINCT ${c}) FROM ${tq}`), q(`SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3`)])
+            : f.type === "keyword" ? q(`SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3`)
+            : f.type === "text" ? Promise.all([q(`SELECT AVG(LENGTH(${c})), MAX(LENGTH(${c})) FROM ${tq}`), q(`SELECT COUNT(*) FROM ${tq} WHERE ${c} = ''`)])
+            : Promise.resolve(null),
+        ]);
+        return { filled, more };
+      }));
       const notes = [];
+      const num = (v, f) => v == null ? "–" : /date|time/.test(f.type) && typeof v === "number" && v > 1e11 ? new Date(v).toISOString().slice(0, 10) : typeof v === "string" && /^\d{4}-\d\d-\d\dT/.test(v) ? v.replace(/T00:00:00(\.0+)?Z$/, "").replace("T", " ").replace(/(\.\d+)?Z$/, "") : typeof v === "number" ? (Number.isInteger(v) ? fmt.n(v) : fmt.n(Math.round(v * 100) / 100)) : String(v);
       const rowsEl = fs.map((f, i) => {
-        const c = counts[i];
+        const { filled: c, more } = stats[i];
         const share = c == null ? null : c / n;
         if (share != null && share < 0.5 && f.name !== t.short?.key) notes.push(`${f.name} is empty in ${fmt.pct(1 - share, 0)} of the rows`);
-        const top = distinct[i];
-        if (top?.length && top[0][1] / n > 0.9 && n > 20) notes.push(`${f.name} holds one value (${top[0][0]}) in ${fmt.pct(top[0][1] / n, 0)} of the rows`);
+        let what = "";
+        if (/^(int|float|date|time|timestamp)/.test(f.type) && more?.[0]) { const [mn, mx, av] = more[0]; what = `${num(mn, f)} to ${num(mx, f)}${av != null && f.name !== t.short?.key ? ` · mean ${num(av, f)}` : ""}`; if (mn === mx && n > 20) notes.push(`${f.name} is ${num(mn, f)} in every row`); }
+        else if (f.type === "keyword") {
+          const [d, top] = f.multi ? [null, more] : more || [];
+          const k = d?.[0]?.[0];
+          if (top?.length && top[0][1] / n > 0.9 && n > 20 && !f.multi) notes.push(`${f.name} holds one value (${top[0][0]}) in ${fmt.pct(top[0][1] / n, 0)} of the rows`);
+          if (k != null && k === n && f.name !== t.short?.key && n > 20) notes.push(`${f.name} is different in every row: an id, not a category to filter by`);
+          what = [k != null ? `${fmt.n(k)} values` : f.multi ? "a list a row" : null, top?.length ? "most: " + top.map((x) => `${x[0] ?? "null"} (${fmt.n(x[1])})`).join(", ") : null].filter(Boolean).join(" · ");
+        } else if (f.type === "text" && more) {
+          const [len, emptyN] = more; const av = len?.[0]?.[0], mx = len?.[0]?.[1], e = emptyN?.[0]?.[0];
+          if (e) notes.push(`${f.name} is an empty string in ${fmt.plural(e, "row")}`);
+          what = [av != null ? `about ${fmt.n(Math.round(av))} characters, at most ${fmt.n(mx)}` : null, e ? `${fmt.n(e)} empty` : null].filter(Boolean).join(" · ");
+        }
         return h("div", { class: "q-row" }, h("span", { class: "row nw" }, typeBadge(f), h("b", { class: "mono" }, f.name)),
           h("span", { class: "q-bar", title: share == null ? "could not count" : `${fmt.n(c)} of ${fmt.n(n)}` }, h("i", { style: { width: share == null ? "0" : Math.max(1, share * 100) + "%", background: share != null && share < 0.5 ? "var(--serious)" : "var(--accent)" } })),
           h("span", { class: "small mono" }, share == null ? "–" : fmt.pct(share, share < 1 && share > 0.99 ? 1 : 0)),
-          h("span", { class: "small muted ellipsis" }, top?.length ? "most: " + top.map((x) => `${x[0] ?? "null"} (${fmt.n(x[1])})`).join(", ") : ""));
+          h("span", { class: "small muted ellipsis", title: what }, what));
       });
-      for (const e of t.embeddings || []) if (e.backfill?.missing) notes.push(`${e.field} has no vector yet for ${fmt.n(e.backfill.missing)} rows (being filled in)`);
+      const vecs = (t.embeddings || []).map((e) => {
+        const b = e.backfill, miss = b?.missing || 0;
+        if (miss) notes.push(`${e.field} has no vector yet for ${fmt.n(miss)} rows (being filled in)`);
+        if (e.error) notes.push(`${e.field}: the model did not open (${e.error})`);
+        const share = miss ? Math.max(0, 1 - miss / n) : 1;
+        return h("div", { class: "q-row" }, h("span", { class: "row nw" }, typeBadge({ type: "vector" }), h("b", { class: "mono" }, e.field)),
+          h("span", { class: "q-bar", title: miss ? `${fmt.n(miss)} rows to go` : "every row has a vector" }, h("i", { style: { width: share * 100 + "%", background: miss ? "var(--serious)" : "var(--accent)" } })),
+          h("span", { class: "small mono" }, fmt.pct(share, 0)), h("span", { class: "small muted ellipsis" }, `by ${e.model}, from ${(e.from || []).join(", ")}`));
+      });
+      for (const f of made) notes.push(`${f.name} is made from ${f.from.join(", ")} and not kept: it is searched, not read`);
       if (!proseFields(t).length) notes.push("No text field to search: words search needs a TEXT field");
-      clear(out, notes.length ? h("ul", { class: "q-notes" }, notes.map((x) => h("li", {}, icon("warn"), " ", x))) : h("p", { class: "small", style: { marginTop: 0 } }, icon("okc"), " Every field is set in most rows."), h("div", { class: "q-rows" }, rowsEl));
+      const worry = notes.filter((x) => !/ is made from /.test(x));
+      clear(out, h("div", { class: "row small", style: { gap: "16px", marginBottom: "10px", flexWrap: "wrap" } }, h("span", {}, h("b", {}, fmt.n(n)), " rows"), h("span", {}, h("b", {}, fmt.n(fs.length + vecs.length)), " fields checked"), h("span", {}, worry.length ? h("b", { style: { color: "var(--serious)" } }, fmt.plural(worry.length, "thing")) : h("b", {}, "nothing"), " to look at")),
+        notes.length ? h("ul", { class: "q-notes" }, notes.map((x) => h("li", {}, icon(/ is made from /.test(x) ? "info" : "warn"), " ", x))) : h("p", { class: "small", style: { marginTop: 0 } }, icon("okc"), " Every field is set in most rows."),
+        h("div", { class: "q-rows" }, rowsEl, vecs));
     })().catch((e) => clear(out, h("div", { class: "error" }, e.message)));
   }
 
@@ -319,7 +442,10 @@ function render(page, r) {
     Promise.allSettled([api("/v1/functions"), can("admin") ? api("/v1/admin/keys") : Promise.reject(new Error("needs an admin key")), api("/v1/queries/stats?limit=500")]).then(([fn, ks, st]) => {
       const fns = fn.status === "fulfilled" ? (fn.value.functions || []).filter((f) => f.current != null && f.versions.some((v) => v.version === f.current && re.test(v.body || ""))) : [];
       const keys = ks.status === "fulfilled" ? (ks.value.keys || []).filter((k) => !k.revoked_ms && k.tables && Object.keys(k.tables).some((p) => p === "*" || (p.endsWith("*") ? t.table.startsWith(p.slice(0, -1)) : p === t.table))) : null;
-      const sts = st.status === "fulfilled" ? (Array.isArray(st.value) ? st.value : st.value.statements || []).filter((s) => re.test(s.sql || s.example || s.fingerprint || "")) : [];
+      const named = st.status === "fulfilled" ? (Array.isArray(st.value) ? st.value : st.value.statements || []).filter((s) => re.test(s.sql || s.example || s.fingerprint || "")) : [];
+      // The command center's own reads (this page's counts, the Data tab) are not a use of the table.
+      const ours = (s) => s.command_center && Object.keys(s.clients || {}).every((c) => c === "command-center");
+      const sts = named.filter((s) => !ours(s)), mineN = named.length - sts.length;
       const byKey = new Map();
       for (const s of sts) for (const k of s.keys || []) if (k.key) byKey.set(k.key, (byKey.get(k.key) || 0) + (k.calls || 0));
       const o = ownerOf(t.table);
@@ -327,7 +453,7 @@ function render(page, r) {
         o ? card({ title: "App", body: h("div", {}, h("b", {}, o.owner), h("span", { class: "dim" }, `: ${o.about}. Its writes come from the app, not from people.`)) }) : null,
         card({ title: "Saved searches", sub: `${fns.length} call this table`, body: fns.length ? h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, fns.map((f) => h("a", { class: "chip", href: `#/saved/${encodeURIComponent(f.name)}` }, icon("bookmark"), f.name))) : h("div", { class: "small muted" }, "None yet. ", h("a", { href: `#/table/${encodeURIComponent(t.table)}?tab=search` }, "Search it"), ", then save the search.") }),
         card({ title: "Keys limited to it", sub: keys == null ? "needs an admin key" : `${keys.length} keys`, body: keys == null ? h("div", { class: "small muted" }, "The key list needs an admin key; below are the keys seen calling it.") : keys.length ? h("div", { class: "stack", style: { gap: "4px" } }, keys.map((k) => h("div", { class: "row nw small" }, icon("key"), h("b", {}, k.name), h("span", { class: "muted" }, ` ${k.scope}${k.owner ? " · owner " + k.owner : ""} · ${k.last_used_ms ? "used " + fmt.ago(k.last_used_ms) : "never used"}`)))) : h("div", { class: "small muted" }, "No key is limited to this table; keys without limits read every table.") }),
-        card({ title: "Who queried it lately", sub: "the statements of the last 15 minutes that name it", flush: !!sts.length, body: sts.length ? h("div", { class: "stack", style: { gap: "0" } },
+        card({ title: "Who queried it lately", sub: `the statements of the last 15 minutes that name it${mineN ? `, besides ${fmt.plural(mineN, "statement")} of the command center itself` : ""}`, flush: !!sts.length, body: sts.length ? h("div", { class: "stack", style: { gap: "0" } },
           byKey.size ? h("div", { class: "row small", style: { gap: "6px", padding: "10px 14px", flexWrap: "wrap" } }, "Keys: ", [...byKey].sort((a, b) => b[1] - a[1]).map(([k, n]) => h("a", { class: "chip", href: `#/queries?key=${encodeURIComponent(k)}` }, icon("key"), `${k} · ${fmt.plural(n, "call")}`))) : null,
           sts.slice(0, 12).map((s) => h("a", { class: "used-st", href: `#/statement/${encodeURIComponent(s.fingerprint || s.sql)}` }, h("span", { class: "mono small ellipsis grow" }, s.sql || s.example || s.fingerprint), h("span", { class: "small muted" }, `${fmt.plural(s.calls || 0, "call")}${s.p99_ms != null ? " · p99 " + fmt.ms(s.p99_ms) : ""}`)))) : h("div", { class: "small muted" }, "No statement named it in the last 15 minutes.") }));
     });

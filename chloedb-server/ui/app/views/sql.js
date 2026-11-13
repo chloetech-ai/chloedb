@@ -18,7 +18,7 @@ import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { folded, firstMine } from "../owners.js";
 import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "../results.js";
 import { profileView } from "../profile.js";
-import { state, isProduction } from "../data.js";
+import { state, isProduction, isSandbox } from "../data.js";
 import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
 import { followsWho, writeThere, followBanner } from "../follows.js";
 
@@ -363,7 +363,7 @@ function render(page, r) {
       return;
     }
     const md = mode(), { name, env } = whereName(), r = reach(), w = state.whoami;
-    const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : h("span", { title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
+    const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : isSandbox() ? h("span", { title: "The server names no environment and runs on this machine, so the workbench treats it as a sandbox" }, " · sandbox") : h("span", { title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
       ` · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"}`, w ? ` · ${w.name} · ${w.scope} key` : ""];
     let pillEl, note, action = null;
     if (md.why === "key") { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only"); note = "this key can read only: writes need a write key"; }
@@ -376,7 +376,8 @@ function render(page, r) {
       pillEl = h("span", { class: "dt-pill on" }, icon("unlock"), `Writes on · ${left} min left`);
       note = h("span", { title: "Each write still waits for a check of the rows it changes" }, "why: ", h("i", {}, md.allowed.reason));
       action = h("button", { class: "btn sm", onclick: () => { endWrites(); drawMode(); mark(); toast("Writes are off again in this tab"); } }, icon("lock"), "End writes now");
-    } else { pillEl = h("span", { class: "dt-pill" }, icon("shield"), "Writes checked"); note = "each write waits for a check of the rows it changes"; }
+    } else if (isSandbox()) { pillEl = h("span", { class: "dt-pill on" }, icon("unlock"), "Sandbox"); note = "writes are on here: each one still shows the rows it changes first"; }
+    else { pillEl = h("span", { class: "dt-pill" }, icon("shield"), "Writes checked"); note = "each write waits for a check of the rows it changes"; }
     clear(modeBar, pillEl, h("span", { class: "dt-where ellipsis" }, where, h("span", { class: "muted" }, " · ", note)), h("span", { class: "sep" }), action);
     modeBar.classList.toggle("ro", md.readOnly);
   }

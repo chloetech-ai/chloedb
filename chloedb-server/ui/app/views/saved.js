@@ -18,6 +18,35 @@ let reshow = null;
 function onParams(r) { reshow?.(r); }
 
 const isVector = (ty) => /^vector/i.test(ty || "");
+/** The tables a definition reads (FROM and JOIN names). */
+const readsOf = (sql) => [...new Set([...(sql || "").matchAll(/\b(?:FROM|JOIN)\s+"?([A-Za-z_][\w]*)"?(?!\s*\()/gi)].map((m) => m[1]).filter((t) => !/^(select|unnest)$/i.test(t)))];
+/** Its calls over the last 15 minutes, from the statements that name it: {calls, errors, p99, keys}. */
+async function usage() {
+  try {
+    const st = await api("/v1/queries/stats?limit=500");
+    const list = Array.isArray(st) ? st : st.statements || [];
+    return (name) => {
+      const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`, "i");
+      const sts = list.filter((x) => re.test(x.sql || x.example || x.fingerprint || ""));
+      const keys = new Map();
+      for (const x of sts) for (const k of x.keys || []) if (k.key) keys.set(k.key, (keys.get(k.key) || 0) + (k.calls || 0));
+      return { calls: sts.reduce((a, x) => a + (x.calls || 0), 0), errors: sts.reduce((a, x) => a + (x.errors || 0), 0), p99: sts.length ? Math.max(...sts.map((x) => x.p99_ms ?? 0)) : null, keys, sts };
+    };
+  } catch { return null; }
+}
+/** A line diff of two texts: [kind, line] with kind " ", "-" or "+". */
+function diff(a, b) {
+  const x = (a || "").split("\n"), y = (b || "").split("\n");
+  const n = x.length, m = y.length, L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) { if (x[i] === y[j]) { out.push([" ", x[i]]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) out.push(["-", x[i++]]); else out.push(["+", y[j++]]); }
+  while (i < n) out.push(["-", x[i++]]);
+  while (j < m) out.push(["+", y[j++]]);
+  return out;
+}
+const diffView = (a, b) => h("pre", { class: "code diff" }, diff(a, b).map(([k, l]) => h("div", { class: k === "+" ? "add" : k === "-" ? "del" : "" }, `${k} ${l}`)));
 const origin = () => location.origin;
 const js = (v) => JSON.stringify(v);
 /** A parameter's sample value, for code. */
@@ -111,8 +140,9 @@ function render(page, r) {
   page.append(head, body);
   let list = null, alive = true;
 
+  let use = null;
   async function load() {
-    try { list = (await api("/v1/functions")).functions || []; } catch (e) { clear(body, failure(e, "The saved searches")); return; }
+    try { [list, use] = await Promise.all([api("/v1/functions").then((j) => j.functions || []), usage()]); } catch (e) { clear(body, failure(e, "The saved searches")); return; }
     if (alive) show(r);
   }
   function show(route) {
@@ -128,15 +158,17 @@ function render(page, r) {
     }
     const row = (f) => {
       const v = cur(f);
+      const u = use?.(f.name), reads = readsOf(v.sql || v.body);
       return h("a", { class: "saved-row", href: `#/saved/${encodeURIComponent(f.name)}` },
-        h("div", { class: "grow" }, h("div", {}, h("b", { class: "mono" }, f.name), h("span", { class: "small muted" }, ` · version ${f.current}${f.versions.length > 1 ? ` of ${f.versions.length}` : ""}`)),
+        h("div", { class: "grow", style: { minWidth: 0 } }, h("div", {}, h("b", { class: "mono" }, f.name), h("span", { class: "small muted" }, ` · version ${f.current}${f.versions.length > 1 ? ` of ${f.versions.length}` : ""}${reads.length ? ` · reads ${reads.join(", ")}` : ""}`)),
           h("div", { class: "small dim" }, v.description || h("i", {}, "No description: agents see only its signature")),
           h("div", { class: "small muted mono ellipsis" }, v.signature)),
-        h("div", { class: "small muted", style: { textAlign: "right" } }, v.created ? fmt.ago(Date.parse(v.created)) : "", v.created_by ? h("div", {}, "by " + v.created_by) : null),
+        u ? h("div", { class: "saved-use small", title: "over the last 15 minutes" }, h("div", {}, h("b", {}, fmt.n(u.calls)), " calls"), h("div", { class: u.errors ? "bad" : "muted" }, `${fmt.n(u.errors)} failed`), h("div", { class: "muted" }, u.p99 != null ? `p99 ${fmt.ms(u.p99)}` : "")) : null,
+        h("div", { class: "small muted", style: { textAlign: "right", minWidth: "90px" } }, v.created ? fmt.ago(Date.parse(v.created)) : "", v.created_by ? h("div", {}, "by " + v.created_by) : null),
         icon("right"));
     };
     clear(body,
-      tablesFns.length ? card({ title: "Searches", sub: `${tablesFns.length} · each one is also the MCP tool fn_<name>`, flush: true, body: h("div", { class: "saved-list" }, tablesFns.map(row)) }) : null,
+      tablesFns.length ? card({ title: "Searches", sub: `${tablesFns.length} · each one is also the MCP tool fn_<name>${use ? " · calls over the last 15 minutes" : ""}`, flush: true, body: h("div", { class: "saved-list" }, tablesFns.map(row)) }) : null,
       scalars.length ? card({ title: "Other stored functions", sub: "functions that return a value, used inside queries (a boost, a score)", flush: true, body: h("div", { class: "saved-list" }, scalars.map(row)) }) : null);
   }
   reshow = (route) => { if (list) show(route); };
@@ -191,8 +223,19 @@ function render(page, r) {
     const versions = h("div", { class: "saved-versions" }, [...f.versions].reverse().map((x) => h("details", { open: x.version === f.current },
       h("summary", {}, h("b", {}, `Version ${x.version}`), x.version === f.current ? h("span", { class: "badge accent" }, "current") : null, x.dropped ? h("span", { class: "badge" }, "dropped") : null,
         h("span", { class: "small muted" }, ` ${x.created ? fmt.ago(Date.parse(x.created)) : ""}${x.created_by ? " by " + x.created_by : ""}`), h("span", { class: "grow" }),
+        x.version !== f.current && !x.dropped && v.sql && x.sql ? h("button", { class: "btn xs", title: "The lines that differ from the current version", onclick: (e) => { e.preventDefault(); const d = e.currentTarget.closest("details"); d.open = true; const box = d.querySelector(".ver-body"); box.dataset.diff = box.dataset.diff === "1" ? "" : "1"; clear(box, box.dataset.diff ? [h("div", { class: "small muted" }, `version ${x.version} (−) against the current, ${f.current} (+)`), diffView(x.sql, v.sql)] : sqlBlock(x.sql)); } }, icon("layers"), "Compare") : null,
         x.version !== f.current && !x.dropped ? gate(h("button", { class: "btn xs", title: "Make this version the current one again: saved as a new version with its definition", onclick: (e) => { e.preventDefault(); back(x.version); } }, icon("refresh"), "Bring back"), "admin") : null),
-      x.sql ? sqlBlock(x.sql) : h("div", { class: "small muted" }, "A drop: the function was removed here."))));
+      h("div", { class: "ver-body" }, x.sql ? sqlBlock(x.sql) : h("div", { class: "small muted" }, "A drop: the function was removed here.")))));
+    function usageCard() {
+      const u = use?.(name);
+      if (!u) return null;
+      const reads = readsOf(v.sql || v.body);
+      const tile = (label, val, sub, cls = "") => h("div", { class: "dt-tile " + cls }, h("div", { class: "small muted" }, label), h("div", { class: "big" }, val), sub ? h("div", { class: "small muted" }, sub) : null);
+      return card({ title: "Its use", sub: "the last 15 minutes, from the statements that call it", body: h("div", { class: "stack", style: { gap: "10px" } },
+        h("div", { class: "saved-tiles" }, tile("Calls", fmt.n(u.calls)), tile("Failed", fmt.n(u.errors), u.calls ? fmt.pct(u.errors / u.calls) : null, u.errors ? "bad" : ""), tile("p99", u.p99 != null ? fmt.ms(u.p99) : "–"), tile("Reads", reads.length ? reads.join(", ") : "–", reads.length === 1 ? h("a", { href: `#/table/${encodeURIComponent(reads[0])}` }, "its table") : null)),
+        u.keys.size ? h("div", { class: "row small", style: { gap: "6px", flexWrap: "wrap" } }, "Called by: ", [...u.keys].sort((a, b) => b[1] - a[1]).map(([k, n]) => h("a", { class: "chip", href: `#/queries?key=${encodeURIComponent(k)}` }, icon("key"), `${k} · ${fmt.plural(n, "call")}`))) : h("div", { class: "small muted" }, u.calls ? "" : "Not called lately. Agents call it as the MCP tool ", h("span", { class: "mono" }, `fn_${name}`), u.calls ? null : "; code calls it as below."),
+        u.sts.length ? h("div", { class: "stack", style: { gap: "0" } }, u.sts.slice(0, 5).map((x) => h("a", { class: "used-st", href: `#/statement/${encodeURIComponent(x.fingerprint || x.sql)}` }, h("span", { class: "mono small ellipsis grow" }, x.sql || x.example || x.fingerprint), h("span", { class: "small muted" }, `${fmt.plural(x.calls || 0, "call")}${x.p99_ms != null ? " · p99 " + fmt.ms(x.p99_ms) : ""}`)))) : null) });
+    }
     async function back(n) {
       const ok = await confirm({ title: `Bring back version ${n} of ${name}?`, body: `Calls use version ${n}'s definition from now on, saved as version ${Math.max(...f.versions.map((x) => x.version)) + 1}. The current one stays, so this can be undone the same way.`, ok: "Bring it back", reason: isProduction() ? "Why: kept in the audit log" : false });
       if (!ok) return;
@@ -207,8 +250,9 @@ function render(page, r) {
       h("div", { class: "row" }, h("a", { class: "btn ghost sm", href: "#/saved" }, icon("left"), "All saved searches")),
       card({ title: h("span", { class: "mono" }, name), sub: v.description || "no description", tools: [h("button", { class: "btn sm", onclick: () => copy(callSql(Object.fromEntries(params.map((p) => [p.name, 1]))), "SQL copied") }, icon("copy"), "Copy the call"), gate(h("button", { class: "btn sm danger", onclick: drop }, icon("trash"), "Remove"), "admin")],
         body: h("div", { class: "stack" }, h("div", { class: "small muted mono" }, v.signature), form, h("div", { class: "row" }, h("button", { class: "btn primary", onclick: run }, icon("play"), "Try it")), out) }),
+      usageCard(),
       card({ title: "Use it", sub: "the same search from anywhere", body: codeBox }),
-      card({ title: "Versions", sub: `${f.versions.length} kept · a version never changes`, body: versions }));
+      card({ title: "Versions", sub: `${f.versions.length} kept · a version never changes`, tools: v.sql ? [gate(h("a", { class: "btn sm", title: "Open its definition in the SQL workbench: running it saves the next version", href: `#/sql?q=${encodeURIComponent(v.sql.replace(/^\s*CREATE\s+FUNCTION/i, "CREATE OR REPLACE FUNCTION"))}` }, icon("edit"), "Edit as a new version"), "admin")] : null, body: versions }));
     drawCode();
     if (params.every((p) => p.default != null || inputs[p.name].value || isVector(p.ty))) run();
   }

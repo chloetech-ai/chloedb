@@ -50,6 +50,8 @@ function nodeShort(name) {
 }
 const coordinator = () => isCoordinator() || !!state.cluster?.shards?.length;
 const allCopies = () => (state.cluster?.shards || []).reduce((a, sh) => a + (sh.replicas?.length || 0), 0);
+/** One server, no cluster: "each copy" is this server. */
+const single = () => !coordinator() && !allCopies();
 const range = () => timeRange();
 /** Asks before a change, with a required reason: resolves {reason} or false. */
 const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
@@ -253,6 +255,7 @@ function whereText(r, x) {
   if (w.length === 1) { const c = copyOf(w[0].copy || w[0].short); return `${names[0]}${c ? ` · shard ${c.shard}` : ""}${more}`; }
   if (r.scope === "each_copy") {
     const total = Math.max(all.length, allCopies());
+    if (single()) return "this server";
     if (!w.length) return x.state === "no_data" ? "no copy reports it" : `each copy (${fmt.n(total)})`;
     return `${w.length} of ${fmt.n(total)} copies: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}${more}`;
   }
@@ -260,7 +263,7 @@ function whereText(r, x) {
   return r.builtin ? "the cluster" : scopeText(r)[0];
 }
 function scopeText(r) {
-  if (r.scope === "each_copy") return ["each copy", `${fmt.n(allCopies())} copies`];
+  if (r.scope === "each_copy") return single() ? ["this server", "its own points"] : ["each copy", `${fmt.n(allCopies())} copies`];
   if (r.builtin) return ["from the cluster state", "on this coordinator"];
   const coord = coordinator();
   const n = state.fleet?.coordinators?.length;
@@ -883,7 +886,7 @@ function alertHub(page, id, r) {
     const w = (x.where || []).filter((c) => c.state === "firing");
     const cause = x.held_by ? m.rules.find((y) => y.id === x.held_by) : null;
     const pg = pagerOf(m), dt = differsText(x);
-    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, (rule.metric === "key_error_ratio" || rule.metric === "key_busy_ratio") && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
+    clear(line, cond(rule), " · ", rule.scope === "each_copy" && !single() ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, (rule.metric === "key_error_ratio" || rule.metric === "key_busy_ratio") && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
       x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((rule.window_s || 0) + (rule.for_s || 0)) * 1000)} it judges still include the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
@@ -1179,7 +1182,7 @@ function editRule(rule, opts = {}) {
   setTimeout(syncSql, 0);
   const hintMetric = () => { const d = METRICS[x.metric]; metricHint.textContent = d ? `${d[0]}${d[2] === "copy" ? " (copies only)" : ""} · unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : "a value of the server's points"; };
   hintMetric();
-  const scopeSeg = seg([["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
+  const scopeSeg = seg(single() ? [["self", "this server"], ["each_copy", "this server's copy", "On one server, its own copy: the same points"]] : [["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
   const evalSeg = seg(Object.entries(EVAL).map(([k, l]) => [k, l]), x.eval || "all", (v) => { x.eval = v; run(); }, { "aria-label": "Value" });
   // The window keeps its seconds: a 10 s or 30 s window must not round to a minute on save.
   const w0 = x.window_s || 300, inMin = w0 % 60 === 0;

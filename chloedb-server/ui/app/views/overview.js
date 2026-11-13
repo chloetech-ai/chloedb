@@ -126,9 +126,17 @@ function render(page, r0) {
   const whereSub = h("span", { class: "sub" });
   const lensSeg = seg([["health", "Health"], ["p99", "p99"], ["errors", "Errors"], ["disk", "Disk"], ["lag", "Lag"]], lens, (v) => { lens = v; store.set("home.lens", v); writeHash(); drawWhere(); }, { "aria-label": "Colour by" });
   const groupSeg = seg([["shard", "Shard"], ["node", "Node"], ["zone", "Zone"]], group, (v) => { group = v; store.set("home.group", v); writeHash(); drawWhere(); }, { "aria-label": "Group by" });
+  const whereTitle = h("h3", {}, "Where");
+  const whereTools = h("div", { class: "tools" }, lensSeg, groupSeg, h("a", { class: "btn ghost sm", href: link("cluster") }, "Cluster", icon("right")));
   const whereCard = h("section", { class: "card span2 home-wherecard" },
-    h("div", { class: "hd" }, h("h3", {}, "Where"), whereSub, h("div", { class: "tools" }, lensSeg, groupSeg, h("a", { class: "btn ghost sm", href: link("cluster") }, "Cluster", icon("right")))),
+    h("div", { class: "hd" }, whereTitle, whereSub, whereTools),
     h("div", { class: "bd" }, whereBody));
+  // One server, not a cluster: no shards, copies or replicas to show, so
+  // Home shows its tables instead (rows, disk, reads and writes), from
+  // /v1/index/tables, read every 30 s.
+  const one = () => !isCoordinator() && !(state.cluster?.shards || []).some((x) => (x.replicas || []).length > 1) && (state.cluster?.shards || []).length <= 1;
+  let tix = null;
+  const loadTix = () => one() ? api("/v1/index/tables", { timeout: 5000 }).then((j) => { tix = j.tables || []; drawWhere(); drawKpis(); }).catch(() => {}) : null;
   const probBody = h("div", { class: "stack home-probs" });
   const probTitle = h("h3", {}, "Problems");
   const probSub = h("span", { class: "sub" });
@@ -207,7 +215,7 @@ function render(page, r0) {
     ].filter(Boolean);
     const seen = m.total ? `${m.up} of ${m.total} copies answered at the last look${m.at ? ", " + fmt.ago(m.at) : ""}` : "";
     const fr = fresh("cluster");
-    clear(head, h("div", {}, h("h1", {}, "Fleet health"), h("p", {}, parts.join(" · "))),
+    clear(head, h("div", {}, h("h1", {}, one() ? "Health" : "Fleet health"), h("p", {}, parts.join(" · "))),
       h("div", { class: "tools" }, !fr.ok && !fr.loading ? h("span", { class: "stale-age" }, icon("clock"), staleText("cluster")) : null, seen ? h("span", { class: "small muted" }, seen) : null));
   }
 
@@ -297,7 +305,7 @@ function render(page, r0) {
       out.push({ key: "shards", label: "Shards fully serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" && s.sh.majority === false ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
     } else {
       out.push({ key: "qps", label: coords.length > 1 ? "Queries, fleet" : "Queries", icon: "queries", val: [fmt.si(qpsFleet), h("small", {}, "/s")], spark: ps.map((p) => p.qps), color: SERIES[0],
-        sub: coords.length > 1 ? `${now}${answered.length} of ${coords.length} coordinators, over 5 min` : f?.derived ? "this coordinator, now" : `${now}its one coordinator, now`, link: link("performance") });
+        sub: coords.length > 1 ? `${now}${answered.length} of ${coords.length} coordinators, over 5 min` : f?.derived ? "this coordinator, now" : one() ? `${now}this server, now` : `${now}its one coordinator, now`, link: link("performance") });
     }
     // The last minute when the server says it (NEW-scenarios-2), else the window.
     const p99Recent = p9?.recent?.value_ms != null;
@@ -318,6 +326,16 @@ function render(page, r0) {
     out.push({ key: "copies", label: "Copies answering", icon: "db", val: tot ? [String(upN), h("small", {}, "/" + tot)] : ["–"], tone: cp ? tone(cp.status) : upN < tot ? "warn" : "", sub: downNames.length ? `${downNames.slice(0, 3).join(", ")}${downNames.length > 3 ? ` +${downNames.length - 3}` : ""} down` : tot ? "every copy answers" : "no copies listed", why: downNames.length ? `${fmt.plural(downNames.length, "copy", "copies")} do not answer` : null, link: link("cluster") });
     const lagV = lg?.max_txn ?? null;
     out.push({ key: "lag", label: "Replication lag, max", icon: "layers", val: lagV == null ? ["–"] : [fmt.si(lagV), h("small", {}, "txn")], tone: lg ? tone(lg.status) : "", sub: lagV == null ? "no replica reports one" : lagV === 0 ? "every replica in step" : `${lg.where || ""}${lg.max_s != null ? ` · reads up to ${fmt.dur(lg.max_s)} old` : ""}`, why: lagV ? `${lg.where} is ${fmt.si(lagV)} transactions behind` : null, link: link("cluster", { lens: "lag" }) });
+    if (one() && tix) {
+      // One server: copies and replicas say nothing; its rows and writes do.
+      const rows = tix.reduce((a, x) => a + (x.docs || 0), 0), bytes = tix.reduce((a, x) => a + (x.bytes || 0), 0);
+      const wr = tix.reduce((a, x) => a + (x.writes_per_min || 0), 0), rd = tix.reduce((a, x) => a + (x.reads_per_min || 0), 0);
+      const lastW = Math.max(0, ...tix.map((x) => x.last_write_ms || 0));
+      const i = out.findIndex((d) => d.key === "copies");
+      out.splice(i, 2,
+        { key: "rows", label: "Rows", icon: "table", val: [fmt.si(rows)], sub: `${fmt.plural(tix.length, "table")} · ${fmt.bytes(bytes)} on disk`, link: "#/table" },
+        { key: "rw", label: "Reads and writes", icon: "db", val: [fmt.si(rd), h("small", {}, "/min")], sub: `${fmt.si(wr)} writes/min${lastW ? ` · last write ${fmt.ago(lastW)}` : ""}`, link: "#/table" });
+    }
     const dkV = dk?.max ?? null;
     out.push({ key: "disk", label: "Fullest disk", icon: "disk", val: dkV == null ? ["–"] : [fmt.n(dkV * 100, 0), h("small", {}, "%")], tone: dk ? tone(dk.status) : "", sub: dkV == null ? "not known" : `${now}${dk.where || ""}${dk.over?.length > 1 ? ` and ${dk.over.length - 1} more over 85%` : ""}${dk.days_to_full != null ? ` · full in about ${fmt.fills(dk.days_to_full)}` : ""}${dk.median != null ? ` · median ${fmt.pct(dk.median, 0)}` : ""}`, why: dkV != null ? `${dk.where}'s disk is ${fmt.pct(dkV, 0)} full` : null, link: link("cluster", { tab: "capacity" }) });
     if (shc && !dark.length && shc.status !== "ok") out[0].tone = tone(shc.status);
@@ -335,7 +353,25 @@ function render(page, r0) {
 
   // ------------------------------------------------------------ where
   let lastModel = null, showAll = false;
+  function drawTables() {
+    whereTitle.textContent = "Tables";
+    whereTools.style.display = "none";
+    if (!tix) { clear(whereBody, empty("table", "Reading the tables…")); whereSub.textContent = ""; return; }
+    const list = tix.slice().sort((a, b) => (b.reads_per_min || 0) - (a.reads_per_min || 0) || (b.docs || 0) - (a.docs || 0));
+    const mine = list.filter((x) => isMine(x.table));
+    const shown = (mine.length ? mine : list).slice(0, 8);
+    whereSub.textContent = `${fmt.plural(tix.length, "table")}${mine.length !== tix.length ? `, ${mine.length} yours` : ""} · busiest first, over the last 5 minutes`;
+    clear(whereBody, shown.length ? [h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Table"), h("th", { class: "num" }, "Rows"), h("th", { class: "num" }, "On disk"), h("th", { class: "num" }, "Reads/min"), h("th", { class: "num" }, "Writes/min"), h("th", { class: "num" }, "Last write"))),
+      h("tbody", {}, shown.map((x) => h("tr", { class: "click", onclick: () => { location.hash = `#/table/${encodeURIComponent(x.table)}`; } },
+        h("td", {}, h("a", { class: "mono", href: `#/table/${encodeURIComponent(x.table)}` }, x.table)), h("td", { class: "num" }, fmt.n(x.docs)), h("td", { class: "num" }, fmt.bytes(x.bytes)),
+        h("td", { class: "num" }, fmt.si(x.reads_per_min || 0)), h("td", { class: "num" }, fmt.si(x.writes_per_min || 0)), h("td", { class: "num muted" }, x.last_write_ms ? fmt.ago(x.last_write_ms) : "–")))))),
+      h("div", { class: "row small", style: { marginTop: "8px" } }, h("a", { href: "#/table" }, "Every table", icon("right")), h("span", { class: "sep" }), h("span", { class: "muted" }, "One server: its health is the numbers above."))] : empty("table", "No tables yet", "Import a file to make one.", h("a", { class: "btn", href: "#/start" }, icon("rocket"), "Start here")));
+  }
   function drawWhere() {
+    if (one()) { if (!tix) loadTix(); return drawTables(); }
+    whereTitle.textContent = "Where";
+    whereTools.style.display = "";
     const m = lastModel = model();
     whereCard.classList.toggle("stale", !fresh("cluster").ok && !fresh("cluster").loading);
     if (!m.shards.length) {
@@ -672,7 +708,7 @@ function render(page, r0) {
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
     bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
     bus.on("answering", () => { drawBanner(); drawHead(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),
-    every(15000, loadEvents), every(30000, loadStats),
+    every(15000, loadEvents), every(30000, loadStats), every(30000, loadTix),
   ];
   return () => offs.forEach((f) => f());
 }
