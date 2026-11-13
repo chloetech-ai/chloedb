@@ -14,6 +14,7 @@ export const OWNERS = [
   [/^crawl_/, "Crawler", "the crawler's frontier, pages and crawls", true],
   [/^swarm_/, "Swarm", "simulated users' runs, sessions and findings", true],
   [/^strata_sim$|^chloedb_sim$/, "Simulator", "the traffic simulator's data", true],
+  [/^chloedb_connector/, "Connectors", "each connector's config, runs and cursor (the data goes to its target table)", true],
   [/^cc_/, "Command center", "feedback sent from the command center", true],
   [/^_/, "System", "the database's own tables", true],
 ];

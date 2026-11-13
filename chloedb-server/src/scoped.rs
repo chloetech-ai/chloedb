@@ -63,6 +63,8 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // Embeddings of text by a table's model, and the models that make
         // them (the fields of tables it reads).
         "/v1/embed" => method == Method::POST,
+        // A connector's push: written with the key, so by its tables.
+        "/v1/connectors/:name/push" => method == Method::POST,
         "/v1/models" => get,
         // A schema checked (no table is touched), and a plan, by its tables
         // ([`check_plan`]).
