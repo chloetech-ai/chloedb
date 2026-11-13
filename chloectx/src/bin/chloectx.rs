@@ -1,26 +1,8 @@
 //! chloectx: automatic long-term context for Claude Code, stored in ChloeDB.
 //! (`engram`, its name before the rename, is a link to it for a release.)
 //!
-//!   chloectx install [--project DIR] [--shared]   wire hooks + MCP into a project
-//!   chloectx install --user                        ... or into every Claude Code session
-//!   chloectx uninstall [--user]                    remove them again (stores are kept)
-//!   chloectx hook [--user] <Event>                 (called by Claude Code hooks)
-//!   chloectx mcp                                   (MCP stdio server, started by Claude Code)
-//!   chloectx search "query" | sql "SELECT ..." | stats | briefing | stop [--all]
-//!   chloectx remember <kind> "text"
-//!   chloectx ingest-transcript <file.jsonl>        back-fill from a Claude Code transcript
-//!   chloectx redact [--all] [--dry-run]            redact secrets a store recorded before
-//!   chloectx fetch-model [static|bert]             download the embedding model
-//!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
-//!   chloectx blame path[:line]                     the edit behind a line, and what memory had recalled before it
-//!   chloectx receipts | receipt ID                 what each recall showed and why, replayed
-//!   chloectx snapshot keep NAME | list | drop NAME snapshots of the store that receipts replay on
-//!   chloectx doctor                                check the install and the project's store
-//!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
-//!   chloectx pack OUT [--kinds ..] [--since-days N] cut a capsule another agent can mount
-//!   chloectx mount DIR...                          serve capsules as MCP tools (stdio)
-//!   chloectx rpc '{"op": ...}'                     send one raw request to the daemon
-//!   chloectx serve --dir D --project P             (the daemon; started on demand)
+//! `chloectx --help` lists the everyday commands; the others are hidden
+//! from it and named in [`MORE`], which a test keeps complete.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -30,8 +12,20 @@ use serde_json::{json, Value as Json};
 
 use chloectx::{daemon, doctor, embed, hook, install, mcp, paths, transcript, ui};
 
+/// The commands `--help` does not list, by what they are for.
+const MORE: &str = "\
+Once installed, ChloeCtx works on its own: start Claude Code in a project and work
+as usual; it records each session, recalls what bears on each prompt and writes
+down decisions and rules. `chloectx doctor` says whether that is happening.
+
+More commands (`chloectx help <command>` explains each):
+  look into memory   blame, receipts, receipt, snapshot, sql, stats, briefing
+  maintain a store   redact, distill, consolidate, backup, fetch-model, ingest-transcript
+  share memory       sync, pack, mount, app
+  run by Claude Code (not by hand): hook, mcp, serve, rpc";
+
 #[derive(Parser)]
-#[command(name = "chloectx", version, about = "Automatic long-term context for Claude Code, stored in ChloeDB")]
+#[command(name = "chloectx", version = env!("CHLOECTX_VERSION_LINE"), about = "Automatic long-term context for Claude Code, stored in ChloeDB", after_help = MORE)]
 struct Cli {
     /// Project directory (default: $CLAUDE_PROJECT_DIR or the current directory).
     #[arg(long, global = true)]
@@ -42,7 +36,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Install hooks and the MCP server into the project's Claude Code settings.
+    /// Wire ChloeCtx into Claude Code (a project's, or with --user every session)
+    #[command(display_order = 1)]
     Install {
         /// Write hooks to .claude/settings.json (committed) instead of settings.local.json.
         #[arg(long)]
@@ -58,12 +53,16 @@ enum Cmd {
         #[arg(long)]
         distill_model: Option<String>,
     },
-    /// Remove what `install` wrote (the project's, or with --user the user-level one); stores are kept.
+    /// Remove what `install` wrote (stores are kept)
+    ///
+    /// The project's install, or with --user the user-level one.
+    #[command(display_order = 2)]
     Uninstall {
         #[arg(long)]
         user: bool,
     },
     /// Handle a Claude Code hook event (payload on stdin).
+    #[command(hide = true)]
     Hook {
         /// Called from the user settings: step aside in a project with its own install.
         #[arg(long)]
@@ -71,13 +70,16 @@ enum Cmd {
         event: String,
     },
     /// Run the MCP server on stdio.
+    #[command(hide = true)]
     Mcp,
     /// Run the daemon in the foreground.
+    #[command(hide = true)]
     Serve {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
     /// Search the project's memory.
+    #[command(display_order = 7)]
     Search {
         query: String,
         #[arg(long, default_value_t = 8)]
@@ -85,8 +87,11 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         kinds: Vec<String>,
     },
-    /// Answer a question about earlier work: the rules, notes, replies and
-    /// messages that bear on it, found by search alone and packed for it.
+    /// Answer a question about earlier work
+    ///
+    /// The rules, notes, replies and messages that bear on it, found by
+    /// search alone and packed for it.
+    #[command(display_order = 6)]
     Ask {
         question: String,
         /// A model plans several searches and a second call picks the records.
@@ -100,14 +105,17 @@ enum Cmd {
         json: bool,
     },
     /// Run read-only SQL over the memory table.
+    #[command(hide = true)]
     Sql { sql: String },
     /// Store a decision, preference, fact, todo or note.
+    #[command(display_order = 8)]
     Remember { kind: String, text: String },
     /// The edit behind a line of code (`path:line`) or a file: its session,
     /// prompt and tool calls, the notes written from its turn, the records
     /// memory had recalled into the agent's context before it (with their
     /// scores and what became of them), and that recall replayed on the
     /// snapshot kept at the time and on today's store.
+    #[command(hide = true)]
     Blame {
         target: String,
         /// Do not replay the recall.
@@ -121,6 +129,7 @@ enum Cmd {
     /// `on` or `off`, turns receipts and automatic snapshots on or off for
     /// this project's store (in its config.json, which wins over
     /// $CHLOECTX_RECEIPTS).
+    #[command(hide = true)]
     Receipts {
         #[arg(value_parser = ["on", "off"])]
         switch: Option<String>,
@@ -134,6 +143,7 @@ enum Cmd {
     },
     /// One receipt: every candidate's scores, tokens and decision, and the
     /// recall replayed on the snapshot kept at its commit and on today's store.
+    #[command(hide = true)]
     Receipt {
         id: String,
         #[arg(long)]
@@ -146,27 +156,34 @@ enum Cmd {
     },
     /// Snapshots of the store kept by name, which receipts replay on
     /// (others are kept after recalls and pruned by age).
+    #[command(hide = true)]
     Snapshot {
         #[command(subcommand)]
         what: SnapCmd,
     },
     /// Counts and sizes.
+    #[command(hide = true)]
     Stats,
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
     /// log. To restore, run `chloectx stop` and copy the files back.
+    #[command(hide = true)]
     Backup { dest: PathBuf },
     /// Print the session-start briefing.
+    #[command(hide = true)]
     Briefing,
     /// Write down the decisions, rules, requirements and facts of every
     /// stored turn (for a store recorded before distillation existed).
+    #[command(hide = true)]
     Distill,
     /// Merge related notes now (it also runs on its own every few turns).
+    #[command(hide = true)]
     Consolidate,
     /// Redact the secrets a store recorded before redaction knew their shape:
     /// rewrites the project's records (with --all, every store's), session
     /// state and event log, compacts the store, and replaces the records on
     /// the sync's server. Prints how many changed, never the secrets.
+    #[command(hide = true)]
     Redact {
         #[arg(long)]
         all: bool,
@@ -174,14 +191,58 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Stop the daemon (with --all, every running daemon, e.g. after an upgrade).
+    /// Stop the project's daemon (with --all, every one); hooks start it again
+    #[command(display_order = 11)]
     Stop {
         #[arg(long)]
         all: bool,
     },
-    /// Check that ChloeCtx is wired into Claude Code and the project's daemon answers.
+    /// Check that ChloeCtx works here, and say how to fix what does not
+    #[command(display_order = 3)]
     Doctor,
-    /// Serve the inspector over every ChloeCtx store on this machine.
+    /// Install the newest version from the checkout ChloeCtx was built from
+    ///
+    /// Pulls the checkout (fast forward only), builds and installs it over
+    /// this binary, stops the old daemons, wires the user-level hooks again
+    /// (a version may add some), moves the store folder from its name
+    /// before the rename, and runs doctor.
+    #[command(display_order = 4)]
+    Upgrade {
+        /// Only say whether a newer version is there.
+        #[arg(long)]
+        check: bool,
+        /// Build the checkout as it is, without `git pull`.
+        #[arg(long)]
+        no_pull: bool,
+        /// Build and install even when nothing changed.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List every store on this machine: its project, size and last use
+    #[command(display_order = 9)]
+    Stores {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the stores nothing will use again
+    ///
+    /// Those whose project folder is gone, or is a temporary folder unused
+    /// for a day, or that name no project and were unused for a month.
+    /// Lists them and asks first (or pass --yes).
+    #[command(display_order = 10)]
+    Prune {
+        /// Also remove stores not used for this many days.
+        #[arg(long)]
+        older_than: Option<f64>,
+        /// Remove them without asking.
+        #[arg(long, short)]
+        yes: bool,
+        /// Only list what would be removed.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Browse what ChloeCtx stored, in the inspector (a local web page)
+    #[command(display_order = 5)]
     Ui {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -200,6 +261,7 @@ enum Cmd {
     /// chloectx=URL`): memory spaces any agent writes to and asks for
     /// context, kept in the cluster's tables, and Seen before, the cluster's
     /// firing alerts beside the past incidents they look like.
+    #[command(hide = true)]
     App {
         /// The chloedb-server (a coordinator) the spaces live in.
         #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
@@ -233,6 +295,7 @@ enum Cmd {
     /// the selected records (default: distilled notes, entities and the
     /// conversation, no raw tool output), redacted again, with a manifest.
     /// Another agent mounts it with `chloectx mount`.
+    #[command(hide = true)]
     Pack {
         /// The capsule's directory (must not exist).
         out: PathBuf,
@@ -255,6 +318,7 @@ enum Cmd {
     },
     /// Serve capsules to Claude Code as an MCP server on stdio
     /// (capsule_ask, capsule_search, capsule_timeline, capsule_sql).
+    #[command(hide = true)]
     Mount {
         /// Capsule directories.
         #[arg(required = true)]
@@ -268,19 +332,23 @@ enum Cmd {
     },
     /// Send one raw JSON request to the daemon and print its JSON response
     /// (the demo inspector's transport).
+    #[command(hide = true)]
     Rpc {
         request: String,
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
     /// Back-fill records from a Claude Code transcript.
+    #[command(hide = true)]
     IngestTranscript { path: PathBuf },
     /// Copy the project's memory to a ChloeDB server or cluster, and back.
+    #[command(hide = true)]
     Sync {
         #[command(subcommand)]
         what: SyncCmd,
     },
     /// Download an embedding model (static: potion-retrieval-32M; bert: bge-small-en-v1.5).
+    #[command(hide = true)]
     FetchModel {
         #[arg(default_value = "static")]
         which: String,
@@ -507,6 +575,9 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
+        Cmd::Upgrade { check, no_pull, force } => std::process::exit(chloectx::version::upgrade(&project, &chloectx::version::UpgradeOptions { check, no_pull, force })),
+        Cmd::Stores { json: as_json } => std::process::exit(chloectx::stores::list(&paths::home(), as_json)),
+        Cmd::Prune { older_than, yes, dry_run } => std::process::exit(chloectx::stores::prune(&paths::home(), &chloectx::stores::PruneOptions { older_than_days: older_than, yes, dry_run })),
         Cmd::Pack { out, kinds, since_days, max_records, title, json: as_json } => {
             let t0 = std::time::Instant::now();
             let out = std::path::absolute(&out).unwrap_or(out);
@@ -631,5 +702,29 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Every command is either in `--help` or named in [`MORE`].
+    #[test]
+    fn every_command_is_listed_somewhere() {
+        let cmd = Cli::command();
+        let mut visible = Vec::new();
+        for c in cmd.get_subcommands() {
+            let name = c.get_name();
+            if c.is_hide_set() {
+                assert!(MORE.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-')).any(|w| w == name), "`{name}` is hidden from --help and not named in MORE");
+            } else {
+                visible.push((c.get_display_order(), name.to_string()));
+            }
+        }
+        visible.sort();
+        let visible: Vec<String> = visible.into_iter().map(|v| v.1).collect();
+        assert_eq!(visible, ["install", "uninstall", "doctor", "upgrade", "ui", "ask", "search", "remember", "stores", "prune", "stop"]);
     }
 }

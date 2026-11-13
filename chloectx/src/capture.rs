@@ -158,9 +158,14 @@ fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-/// A user prompt: the prompt itself plus any preference sentences.
+/// A user prompt: the prompt itself plus any preference sentences. A
+/// harness's envelopes around it ([`crate::envelope`]) are left out, so
+/// that a reminder's "never ..." is not taken for the user's rule.
 pub fn prompt_drafts(prompt: &str) -> Vec<Draft> {
-    let prompt = redact(prompt);
+    let prompt = redact(&crate::envelope::clean(prompt));
+    if prompt.trim().is_empty() {
+        return Vec::new();
+    }
     let files = paths_in(&prompt);
     let mut out: Vec<Draft> = chunk(&prompt, CHUNK_CHARS).into_iter().map(|c| Draft::new(Kind::Prompt, c).files(files.clone())).collect();
     for s in preference_sentences(&prompt) {

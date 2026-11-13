@@ -1,0 +1,358 @@
+//! Which commit this binary is built from, how far behind its checkout's
+//! upstream branch that is, and `chloectx upgrade`, which pulls the checkout
+//! and installs the new build.
+//!
+//! ChloeCtx is built from a checkout of the repository (`install.sh`), so
+//! the checkout is where a newer version comes from. A binary built
+//! outside one (no `.git` at build time) knows no commit, and these checks
+//! say nothing.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value as Json};
+
+/// The commit the binary was built from (`build.rs`).
+pub const BUILD_COMMIT: Option<&str> = option_env!("CHLOECTX_BUILD_COMMIT");
+
+/// The paths whose commits change the binary: ChloeCtx and the database it
+/// is built on.
+const PATHS: [&str; 2] = ["chloectx", "chloedb"];
+
+/// How long a check of the checkout (without fetching) is reused.
+pub const CHECK_EVERY: i64 = 6 * 3600;
+
+/// The checkout the binary was built from: `$CHLOECTX_SOURCE`, else the
+/// repository that held the crate at build time, when it is still there.
+pub fn source_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("CHLOECTX_SOURCE").filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf))?;
+    (dir.join("chloectx/Cargo.toml").is_file() && dir.join(".git").exists()).then_some(dir)
+}
+
+/// Runs git in `dir`, with a deadline; its trimmed stdout when it succeeds.
+pub fn git(dir: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                let mut out = String::new();
+                std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+                return st.success().then(|| out.trim().to_string());
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// The branch the checkout follows (`@{upstream}`), else `origin/main`.
+pub fn upstream(src: &Path) -> String {
+    git(src, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], Duration::from_secs(5)).filter(|u| u.contains('/')).unwrap_or_else(|| "origin/main".into())
+}
+
+/// How this build stands against the checkout's upstream branch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Standing {
+    /// The build's commit.
+    pub build: String,
+    /// The upstream branch (`origin/main`).
+    pub upstream: String,
+    /// Commits on the upstream branch since the build that change ChloeCtx
+    /// or ChloeDB.
+    pub behind: u64,
+    /// When the upstream branch was last fetched, by this check or anyone.
+    pub fetched: bool,
+}
+
+impl Standing {
+    pub fn json(&self) -> Json {
+        json!({"build": self.build, "upstream": self.upstream, "behind": self.behind})
+    }
+
+    fn of(v: &Json) -> Option<Standing> {
+        Some(Standing { build: v["build"].as_str()?.into(), upstream: v["upstream"].as_str()?.into(), behind: v["behind"].as_u64()?, fetched: false })
+    }
+
+    /// One line for a person: where this build stands.
+    pub fn line(&self) -> String {
+        let short = &self.build[..self.build.len().min(10)];
+        match self.behind {
+            0 => format!("built from {short}, up to date with {}", self.upstream),
+            1 => format!("built from {short}; 1 commit on {} changes ChloeCtx since; `chloectx upgrade` installs it", self.upstream),
+            n => format!("built from {short}; {n} commits on {} change ChloeCtx since; `chloectx upgrade` installs them", self.upstream),
+        }
+    }
+}
+
+/// Where `build` stands in the checkout `src`, fetching the upstream branch
+/// first when `fetch` (which may fail offline: the last fetch's view is
+/// used then).
+pub fn standing(src: &Path, build: &str, fetch: bool) -> Option<Standing> {
+    let up = upstream(src);
+    let mut fetched = false;
+    if fetch {
+        if let Some((remote, branch)) = up.split_once('/') {
+            fetched = git(src, &["fetch", "--quiet", remote, branch], Duration::from_secs(20)).is_some();
+        }
+    }
+    let range = format!("{build}..{up}");
+    let mut args = vec!["rev-list", "--count", range.as_str(), "--"];
+    args.extend(PATHS);
+    let behind = git(src, &args, Duration::from_secs(10))?.parse().ok()?;
+    Some(Standing { build: build.to_string(), upstream: up, behind, fetched })
+}
+
+fn cache_path(home: &Path) -> PathBuf {
+    home.join("version-check.json")
+}
+
+fn read_cache(home: &Path) -> Json {
+    std::fs::read_to_string(cache_path(home)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Json::Null)
+}
+
+fn write_cache(home: &Path, v: &Json) {
+    let p = cache_path(home);
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, v.to_string()).is_ok() {
+        let _ = std::fs::rename(tmp, p);
+    }
+}
+
+/// The last check of this build, when it is newer than `max_age` seconds.
+pub fn cached(home: &Path, max_age: i64) -> Option<Standing> {
+    let v = read_cache(home);
+    let fresh = crate::now() - v["checked_at"].as_i64()? <= max_age;
+    (fresh && BUILD_COMMIT == v["build"].as_str()).then(|| Standing::of(&v)).flatten()
+}
+
+/// Checks the checkout again (fetching when `fetch`) and keeps the result
+/// for [`cached`]; `None` when there is no commit or checkout to check.
+pub fn check(home: &Path, fetch: bool) -> Option<Standing> {
+    let build = BUILD_COMMIT?;
+    let s = standing(&source_dir()?, build, fetch)?;
+    let mut v = read_cache(home);
+    if v["build"].as_str() != Some(build) {
+        v = json!({});
+    }
+    for (k, x) in s.json().as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v["checked_at"] = json!(crate::now());
+    write_cache(home, &v);
+    Some(s)
+}
+
+/// Whether to tell the person about a newer version now (at most once a
+/// day): marks it told.
+pub fn notify_due(home: &Path) -> bool {
+    let mut v = read_cache(home);
+    if v["build"].as_str() != BUILD_COMMIT || v["behind"].as_u64().unwrap_or(0) == 0 {
+        return false;
+    }
+    if crate::now() - v["notified_at"].as_i64().unwrap_or(0) < 24 * 3600 {
+        return false;
+    }
+    v["notified_at"] = json!(crate::now());
+    write_cache(home, &v);
+    true
+}
+
+// ---------------------------------------------------------------- upgrade
+
+pub struct UpgradeOptions {
+    /// Only say where this build stands.
+    pub check: bool,
+    /// Build the checkout as it is, without pulling.
+    pub no_pull: bool,
+    /// Build and install even when the build is the checkout's commit.
+    pub force: bool,
+}
+
+/// `chloectx upgrade`: pulls the checkout the binary was built from (fast
+/// forward only), installs the new build over this one with `install.sh
+/// --no-wire`, wires the user-level install again (new hooks a version
+/// adds), moves the store folder from its name before the rename, and
+/// runs `doctor` with the new binary.
+pub fn upgrade(project: &Path, o: &UpgradeOptions) -> i32 {
+    let Some(src) = source_dir() else {
+        eprintln!(
+            "chloectx upgrade: this binary does not know the checkout it was built from (or it is gone).\n\
+             Upgrade from a checkout: git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh\n\
+             (or set CHLOECTX_SOURCE to the checkout and run chloectx upgrade again)"
+        );
+        return 1;
+    };
+    let build = BUILD_COMMIT.unwrap_or("");
+    println!("ChloeCtx {}, built from {} in {}", env!("CARGO_PKG_VERSION"), if build.is_empty() { "an unknown commit" } else { &build[..build.len().min(10)] }, src.display());
+    if !build.is_empty() {
+        match standing(&src, build, true) {
+            Some(s) => {
+                println!("{}", s.line());
+                let mut v = s.json();
+                v["checked_at"] = json!(crate::now());
+                write_cache(&crate::paths::home(), &v);
+                if o.check {
+                    return 0;
+                }
+            }
+            None if o.check => {
+                eprintln!("chloectx upgrade: could not compare the build with the checkout's upstream branch");
+                return 1;
+            }
+            None => {}
+        }
+    } else if o.check {
+        println!("the build's commit is unknown; `chloectx upgrade` builds the checkout");
+        return 0;
+    }
+    let run = |cmd: &mut Command| -> bool { cmd.stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) };
+    if !o.no_pull {
+        if git(&src, &["symbolic-ref", "-q", "HEAD"], Duration::from_secs(5)).is_none() {
+            eprintln!("chloectx upgrade: {} is not on a branch (a detached HEAD); check out main there, or pass --no-pull to build it as it is", src.display());
+            return 1;
+        }
+        println!("==> git pull --ff-only in {}", src.display());
+        if !run(Command::new("git").arg("-C").arg(&src).args(["pull", "--ff-only", "--quiet"])) {
+            eprintln!("chloectx upgrade: git pull --ff-only failed in {} (local commits or changes in the way?); fix it there, or pass --no-pull", src.display());
+            return 1;
+        }
+    }
+    let head = git(&src, &["rev-parse", "HEAD"], Duration::from_secs(5)).unwrap_or_default();
+    if !o.force && !build.is_empty() && head == build {
+        println!("ChloeCtx is up to date (the checkout is at the commit this binary was built from).");
+        return 0;
+    }
+    // Daemons of the old build stop; they start again, new, on the next hook.
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("chloectx"));
+    let _ = Command::new(&exe).args(["stop", "--all"]).stdout(Stdio::null()).status();
+    match move_old_home() {
+        Ok(Some((from, to))) => println!("==> moved the stores from {} to {} (its name before the rename is a link to it)", from.display(), to.display()),
+        Ok(None) => {}
+        Err(e) => println!("==> the stores stay where they are: {e}"),
+    }
+    let bin_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    let prefix = if bin_dir.file_name().is_some_and(|n| n == "bin") { bin_dir.parent().map(Path::to_path_buf).unwrap_or_default() } else { bin_dir.clone() };
+    println!("==> building and installing (install.sh --no-wire --prefix {}); the first build takes several minutes", prefix.display());
+    if !run(Command::new("sh").arg(src.join("install.sh")).args(["--no-wire", "--prefix"]).arg(&prefix)) {
+        eprintln!("chloectx upgrade: install.sh failed (see above); this binary is unchanged");
+        return 1;
+    }
+    let new = prefix.join("bin/chloectx");
+    let new = if new.is_file() { new } else { exe.clone() };
+    // A version may add hook events: the user-level install is written
+    // again (it keeps the settings' distillation model).
+    let user_hooks = std::fs::read_to_string(crate::paths::user_settings()).map(|s| s.contains(" hook --user ")).unwrap_or(false);
+    if user_hooks {
+        let _ = run(Command::new(&new).args(["install", "--user"]).stdout(Stdio::null()));
+    }
+    println!("==> checking");
+    Command::new(&new).arg("--project").arg(project).arg("doctor").status().ok().and_then(|s| s.code()).unwrap_or(1)
+}
+
+/// Moves `<data>/engram`, the store folder's name before the rename, to
+/// `<data>/chloectx` and leaves a link by the old name. Only when
+/// `$CHLOECTX_HOME` is not set, the old folder is the one in use, and no
+/// daemon answers in it. Returns what moved where.
+pub fn move_old_home() -> std::result::Result<Option<(PathBuf, PathBuf)>, String> {
+    if std::env::var_os("CHLOECTX_HOME").is_some_and(|h| !h.is_empty()) {
+        return Ok(None);
+    }
+    move_old_home_in(&crate::paths::data_dir())
+}
+
+/// [`move_old_home`] in the data folder `data`.
+pub fn move_old_home_in(data: &Path) -> std::result::Result<Option<(PathBuf, PathBuf)>, String> {
+    let old = crate::paths::home_in(data);
+    if old.file_name().is_none_or(|n| n != crate::paths::OLD_HOME) || std::fs::symlink_metadata(&old).map(|m| m.file_type().is_symlink()).unwrap_or(true) {
+        return Ok(None);
+    }
+    let new = data.join(crate::paths::HOME);
+    if new.exists() {
+        return Ok(None);
+    }
+    if let Some(s) = crate::ui::list_stores(&old).iter().find(|s| std::os::unix::net::UnixStream::connect(crate::paths::StorePaths::new(&s.dir).socket).is_ok()) {
+        return Err(format!("a daemon still runs in {} (run `chloectx stop --all` and try again)", s.dir.display()));
+    }
+    std::fs::rename(&old, &new).map_err(|e| format!("{} to {}: {e}", old.display(), new.display()))?;
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(crate::paths::HOME, &old);
+    Ok(Some((old, new)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sh(dir: &Path, args: &[&str]) {
+        let st = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    fn commit(dir: &Path, file: &str) -> String {
+        let p = dir.join(file);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("{}\n", crate::now())).unwrap();
+        sh(dir, &["add", "-A"]);
+        sh(dir, &["commit", "-q", "-m", file]);
+        git(dir, &["rev-parse", "HEAD"], Duration::from_secs(5)).unwrap()
+    }
+
+    /// Commits upstream count when they change ChloeCtx or ChloeDB, and
+    /// only once they are fetched.
+    #[test]
+    fn counts_the_upstream_commits_that_change_chloectx() {
+        if git(Path::new("."), &["--version"], Duration::from_secs(5)).is_none() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let up = t.path().join("up");
+        std::fs::create_dir(&up).unwrap();
+        sh(&up, &["init", "-q", "-b", "main"]);
+        let built = commit(&up, "chloectx/Cargo.toml");
+        sh(t.path(), &["clone", "-q", up.to_str().unwrap(), "co"]);
+        let co = t.path().join("co");
+        let s = standing(&co, &built, false).unwrap();
+        assert_eq!((s.behind, s.upstream.as_str()), (0, "origin/main"));
+        assert!(s.line().contains("up to date"), "{}", s.line());
+
+        commit(&up, "chloectx/src/a.rs");
+        commit(&up, "docs/a.md");
+        commit(&up, "chloedb/src/b.rs");
+        assert_eq!(standing(&co, &built, false).unwrap().behind, 0, "not fetched yet");
+        let s = standing(&co, &built, true).unwrap();
+        assert_eq!(s.behind, 2, "the docs commit does not count");
+        assert!(s.line().contains("2 commits on origin/main") && s.line().contains("chloectx upgrade"), "{}", s.line());
+    }
+
+    /// The old store folder moves to the new name, once, and the old name
+    /// still leads to it.
+    #[test]
+    fn the_old_store_folder_moves_once() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path();
+        assert_eq!(move_old_home_in(data).unwrap(), None, "nothing to move");
+        std::fs::create_dir_all(data.join("engram/projects/app-1")).unwrap();
+        std::fs::write(data.join("engram/projects/app-1/project.txt"), "/w/app\n").unwrap();
+        let (from, to) = move_old_home_in(data).unwrap().unwrap();
+        assert_eq!((from, to.clone()), (data.join("engram"), data.join("chloectx")));
+        assert!(to.join("projects/app-1/project.txt").is_file());
+        assert!(data.join("engram/projects/app-1/project.txt").is_file(), "the old name is a link to the new folder");
+        assert_eq!(crate::paths::home_in(data), data.join("chloectx"));
+        assert_eq!(move_old_home_in(data).unwrap(), None, "moved already");
+    }
+}

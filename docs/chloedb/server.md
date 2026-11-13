@@ -98,6 +98,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--filter-cache-mb N` | 64 | memory for filters kept between queries, per segment ([limits](#limits)); 0: none kept |
 | `--max-queued-writes N` | 1024 | write requests held at once; more are refused with 429 ([limits](#limits)); 0: no limit |
 | `--max-body-mb N` | 256 | the largest body of a write or an import, and of a gRPC message; other requests take up to 16 MiB |
+| `--otlp-retain PERIOD` | none (kept for ever) | how long a table [OpenTelemetry logs](#opentelemetry-logs) make keeps its rows (`'30 days'`, `'12h'`); tables already there keep theirs |
 | `--model ID` | `claude-haiku-5-5` | the agent's default model |
 | `--models DIR` | `$CHLOEDB_MODELS`, else `~/.local/share/strata/models` | where the models of [embedded vector fields](#embedded-vector-fields), [ranking models](query-language.md#ranking-models-gbdtmodel-features) (`<name>/gbdt.json`) and [cross-encoders](query-language.md#cross-encoders-cross_encodermodel-fields-query) (`<name>/config.json`, `tokenizer.json`, `model.safetensors`) are |
 | `--no-backfill` | off | leave the rows stored while their embedded field had no model open without vectors; by default they [get them](#embedded-vector-fields) once the model opens |
@@ -758,7 +759,7 @@ CREATE TABLE otel_logs (ts TIMESTAMP NOT NULL, observed_ts TIMESTAMP, severity K
 - `attributes` holds the record's attributes, its event name as `event_name`, and bytes as base64, in a [JSON field](query-language.md#json-fields-keys-no-schema-names) whose paths filters read from its index.
 - `batch` is a random number per request: through a [coordinator](#sharding-one-coordinator-many-shards) it places the table's rows (`shard_by`), so that a request's rows go to one shard and requests spread over all of them. A log has no key, and the table has none.
 
-A table made beforehand takes the columns of these that it has, by name, so make it first for another retention (`retain = '30 days'`), more columns indexed or fewer kept. Its doc store is compressed with [zstd](query-language.md#tables): on four of Loghub's logs sent this way, `otel_logs` took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/log-bytes)). The rows are searched as any are:
+`--otlp-retain PERIOD` (`'30 days'`, `'12h'`) makes the table with that retention (`retain = '30 days'`), so its rows older than that are dropped, a window of segments at a time ([tables](query-language.md#tables)); without it they are kept. A table made beforehand takes the columns of these that it has, by name, so make it first for another retention, more columns indexed or fewer kept. Its doc store is compressed with [zstd](query-language.md#tables): on four of Loghub's logs sent this way, `otel_logs` took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/log-bytes)). The rows are searched as any are:
 
 ```sql
 SELECT ts, service, severity, body FROM otel_logs
