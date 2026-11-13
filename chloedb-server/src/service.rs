@@ -4032,7 +4032,7 @@ impl Service {
     }
 
     /// Imports rows of `format` from `body` ([`chloedb::ingest`]): upserted
-    /// through the writer (or routed to the shards) [`IMPORT_OPS`] rows a
+    /// (inserted, into a table without a key) through the writer (or routed to the shards) [`IMPORT_OPS`] rows a
     /// request, so the rows before a failed request stay written. Every
     /// row is read once first, so that a bad one writes nothing; then read
     /// again a request's worth at a time, the next while the last is
@@ -4051,9 +4051,11 @@ impl Service {
             let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?;
             check.by_ref().try_for_each(|d| d.map(drop))?;
             let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?;
+            // A table without a key (log lines) takes its rows as inserts.
+            let kind = if schema.primary_key.is_some() { "upsert" } else { "insert" };
             loop {
                 let op = |d: chloedb::value::Document| {
-                    let mut op = json!({"op": "upsert", "doc": js::document_json(&schema, &d)});
+                    let mut op = json!({"op": kind, "doc": js::document_json(&schema, &d)});
                     if let Some(t) = &named {
                         op["table"] = json!(t);
                     }

@@ -248,6 +248,47 @@ async fn presets_are_grants_and_routes() {
     assert_eq!((s, &made["key"]["allow"]["routes"]), (200, &json!(["fleet"])), "{made}");
 }
 
+/// The logs quickstart (docs/guide/logs.md): an `oncall` key imports JSON
+/// lines into a log table without a key (inserted, as a log has none),
+/// and reads them by the last minutes and per minute.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oncall_key_imports_and_searches_log_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), Vec::new()).await;
+    ok(&base, "CREATE TABLE logs_syslog (ts TIMESTAMP NOT NULL, severity KEYWORD, host KEYWORD OPTIONS(substring = true), body TEXT OPTIONS(substring = true), attributes JSON) OPTIONS(retain = '30 days')").await;
+    let k = key(&base, json!({"name": "netops", "preset": "oncall", "prefix": "logs_*"})).await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as i64;
+    let at = |ago_s: i64| chloedb::timestamp::format(now - ago_s * 1_000_000);
+    let mut lines = String::new();
+    for i in 0..30 {
+        let (sev, body) = if i % 3 == 0 { ("error", "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down") } else { ("info", "%SYS-5-CONFIG_I: Configured from console") };
+        lines += &format!("{}\n", json!({"ts": at(i * 60 + 5), "severity": sev, "host": "core-rtr-02", "body": body, "attributes": {"iface": "Gi0/1"}}));
+    }
+    let c = chloedb_server::http_client().build().unwrap();
+    // Twice: a table without a key keeps each line it is sent.
+    for _ in 0..2 {
+        let r = c.post(format!("{base}/v1/import?table=logs_syslog&format=jsonl")).bearer_auth(&k).header("content-type", "application/x-ndjson").body(lines.clone()).send().await.unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    }
+    let rows = |sql: &str| {
+        let (c, base, k, sql) = (c.clone(), base.clone(), k.clone(), sql.to_string());
+        async move {
+            let r = c.post(format!("{base}/v1/sql")).bearer_auth(&k).json(&json!({"sql": sql})).send().await.unwrap();
+            let j: Json = r.json().await.unwrap();
+            j["rows"].as_array().unwrap_or_else(|| panic!("{sql}: {j}")).clone()
+        }
+    };
+    assert_eq!(rows("SELECT count(*) FROM logs_syslog").await, vec![json!([60])]);
+    // The last 15 minutes' errors: the lines 5, 185, 365, 545 and 725 s ago, twice.
+    assert_eq!(rows("SELECT count(*) FROM logs_syslog WHERE severity = 'error' AND body LIKE '%GigabitEthernet0/1,%' AND ts > now() - INTERVAL '15 minutes'").await, vec![json!([10])]);
+    // Per minute: one bucket a line, 30 of them, a minute apart.
+    let per = rows("SELECT time_bucket('1 minute', ts) AS m, count(*) AS n FROM logs_syslog GROUP BY m").await;
+    assert_eq!(per.len(), 30, "{per:?}");
+    assert!(per.iter().all(|r| r[1] == json!(2) && chloedb::timestamp::parse(r[0].as_str().unwrap()).unwrap() % 60_000_000 == 0),"{per:?}");
+    let (s, j) = call(&base, "POST", "/v1/sql", Some(&k), Some(json!({"sql": "SELECT count(*) FROM products"}))).await;
+    assert_eq!(s, 403, "{j}");
+}
+
 /// Apps: one that checks its callers takes a key limited to tables and a
 /// write key's changes; one that does not takes neither, but lets a key
 /// given it that reads every table read through it.
