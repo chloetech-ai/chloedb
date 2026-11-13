@@ -93,6 +93,10 @@ pub struct Options {
     /// `timeout_ms` and 60 s).
     pub max_timeout_ms: u64,
     pub max_concurrent: usize,
+    /// How long a client's query waits for a slot before it is refused
+    /// with 429 ([`crate::service::Service::admission_wait`]; 0: until its
+    /// deadline).
+    pub admission_wait_ms: u64,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
     /// The rows the open scrolls may hold between them
@@ -459,6 +463,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.admission_wait = (o.admission_wait_ms > 0).then(|| Duration::from_millis(o.admission_wait_ms));
     svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);

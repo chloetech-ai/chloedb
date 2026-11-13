@@ -261,6 +261,12 @@ struct Args {
     /// Queries running at once; more wait for a slot until their deadline.
     #[arg(long, default_value_t = 64)]
     max_concurrent: usize,
+    /// How long a client's query waits for a slot (--max-concurrent)
+    /// before it is refused with 429 and Retry-After, instead of waiting
+    /// until its deadline (0: until its deadline). A coordinator's calls to
+    /// its shards always wait until their deadline.
+    #[arg(long, default_value_t = 0)]
+    admission_wait_ms: u64,
     /// The most rows a query may reach, OFFSET included: a larger LIMIT
     /// plus OFFSET, or a query without a LIMIT that matches more, fails
     /// (0: no limit).
@@ -1183,6 +1189,7 @@ async fn run() {
         timeout_ms: a.timeout_ms,
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
+        admission_wait_ms: a.admission_wait_ms,
         max_result_window: a.max_result_window,
         max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,

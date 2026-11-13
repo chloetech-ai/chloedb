@@ -603,6 +603,14 @@ pub struct Service {
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
+    /// How long a client's query waits for a slot before it is refused
+    /// with 429 (`--admission-wait-ms`); `None`: until its deadline. A
+    /// query that waits its whole deadline in a queue only holds a client
+    /// longer, so past saturation a short wait keeps the latency of the
+    /// queries that run near the latency of an idle server, and the
+    /// throughput at its peak. A shard's calls from its coordinator always
+    /// wait until their deadline: the coordinator's own slots bound them.
+    pub admission_wait: Option<Duration>,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
     /// Models queries named in `embed('model', ..)`, opened from the models
@@ -765,6 +773,7 @@ impl Service {
             stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
+            admission_wait: None,
             embedding: Arc::new(Semaphore::new(cores)),
             named_models: Mutex::new(HashMap::new()),
             cores,
@@ -2803,7 +2812,7 @@ impl Service {
                         return Ok((no_rows(), Vec::new()));
                     }
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await.ok_or_else(too_many);
+                    let permit = self.admit(self.admission_budget(timeout, req.shard)).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
                     let permit = permit?;
                     lease = self.held(&req, &snap, timeout)?;
@@ -2880,7 +2889,7 @@ impl Service {
             Backend::Cluster(c) => {
                 LiveQueries::run(&live, async {
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await;
+                    let permit = self.admit(self.admission_budget(timeout, false)).await;
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
@@ -3168,6 +3177,15 @@ impl Service {
     fn rejected(&self, kind: &'static str, t0: Instant) -> ApiError {
         self.metrics.query(kind, "refused", t0.elapsed().as_secs_f64());
         too_many()
+    }
+
+    /// How long a query with deadline `timeout` may wait for a slot: until
+    /// its deadline, or [`Self::admission_wait`] for a client's query.
+    fn admission_budget(&self, timeout: Duration, shard: bool) -> Duration {
+        match self.admission_wait {
+            Some(w) if !shard => w.min(timeout),
+            _ => timeout,
+        }
     }
 
     /// A query slot, waited for until `timeout`; `None` (counted as
@@ -5850,6 +5868,31 @@ mod tests {
         changed.borrow_and_update();
         svc.reopen_models();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    // Past saturation every query waited for a slot until its deadline, so
+    // a server under ten times its capacity answered all of them seconds
+    // late. With an admission wait, a client's query that finds no slot in
+    // time is refused at once (429), while a shard's call from its
+    // coordinator still waits until its deadline.
+    #[tokio::test]
+    async fn a_query_finding_no_slot_within_the_admission_wait_is_refused_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), chloedb::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let deadline = Duration::from_secs(10);
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 1, deadline);
+        assert_eq!(svc.admission_budget(deadline, false), deadline, "no wait set: until the deadline");
+        svc.admission_wait = Some(Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, false), Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, true), deadline, "a shard's call waits until its deadline");
+        assert_eq!(svc.admission_budget(Duration::from_millis(20), false), Duration::from_millis(20), "never past the deadline");
+        let held = svc.admission.clone().acquire_owned().await.unwrap();
+        let t0 = Instant::now();
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_none());
+        assert!(t0.elapsed() < Duration::from_secs(2), "refused after {:?}", t0.elapsed());
+        drop(held);
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_some(), "a free slot is taken at once");
     }
 
     // A primary fenced by a call of the new primary as it kept its vote
