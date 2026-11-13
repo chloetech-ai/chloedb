@@ -5,10 +5,14 @@ standard library."""
 from __future__ import annotations
 
 import base64
+import http.client
+import io
 import json
 import os
 import re
+import select
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
@@ -44,6 +48,64 @@ def _default(o: Any) -> Any:
 
 def _rows(rows: Any) -> list:
     return [rows] if isinstance(rows, Mapping) else list(rows)
+
+
+def _json_body(body: Any) -> bytes:
+    """A request's JSON. A float that is not a number (NaN, infinity) is
+    sent as null, as a database in this process stores it: JSON has no
+    such number, and the server refuses one."""
+    try:
+        return json.dumps(body, default=_default, allow_nan=False).encode()
+    except ValueError:
+        text = json.dumps(body, default=_default)
+        return json.dumps(json.loads(text, parse_constant=lambda _: None)).encode()
+
+
+# A connection idle longer than this is not used again: a server, a proxy
+# or a load balancer may have closed it meanwhile.
+_IDLE_REUSE_S = 4.0
+
+# Requests that change nothing, which may be sent again on a new
+# connection when a kept one turns out closed before it answered.
+_READ_PATHS = ("/v1/query", "/v1/kv/get", "/v1/explain", "/v1/embed", "/v1/schema/check", "/v1/sid/next")
+
+
+class _Kept:
+    """One thread's connection to a server, kept alive between requests."""
+
+    __slots__ = ("conn", "pid", "idle_since")
+
+    def __init__(self, conn: http.client.HTTPConnection):
+        self.conn = conn
+        self.pid = os.getpid()
+        self.idle_since = time.monotonic()
+
+
+class _Answer:
+    """A response read through a kept connection: `urlopen`'s answer as
+    `_call` and `_stream` read it (`read`, lines, `headers`), which gives
+    the connection back for the next request once it has been read to its
+    end, and drops it otherwise."""
+
+    def __init__(self, client: "Client", kept: _Kept, resp: http.client.HTTPResponse):
+        self._client, self._kept, self._resp = client, kept, resp
+        self.headers = resp.headers
+        self.status = resp.status
+
+    def read(self, *n: int) -> bytes:
+        return self._resp.read(*n)
+
+    def readinto(self, b: Any) -> int:
+        return self._resp.readinto(b)
+
+    def __iter__(self) -> Iterator[bytes]:
+        return iter(self._resp)
+
+    def __enter__(self) -> "_Answer":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._client._done(self._kept, self._resp)
 
 
 def _retry_after(headers: Any) -> float:
@@ -137,13 +199,113 @@ class Client(Search, FrameStore):
         self.retry_for = retry_for
         self._schema: dict | None = None
         self._json_only = False  # a server that answers no Arrow
+        self._conns = threading.local()
+
+    # Connections. Each thread keeps one connection to the server alive
+    # between its requests, rather than a TLS handshake and a socket per
+    # request; through a proxy ($HTTPS_PROXY, $HTTP_PROXY) a request goes
+    # by urllib, which knows how to use one.
+
+    def _proxied(self) -> bool:
+        parts = urllib.parse.urlsplit(self.url)
+        return bool(urllib.request.getproxies().get(parts.scheme)) and not urllib.request.proxy_bypass(parts.hostname or "")
+
+    def _new_connection(self) -> http.client.HTTPConnection:
+        parts = urllib.parse.urlsplit(self.url)
+        if parts.scheme == "https":
+            return http.client.HTTPSConnection(parts.hostname, parts.port, timeout=self.timeout, context=ssl.create_default_context())
+        return http.client.HTTPConnection(parts.hostname, parts.port, timeout=self.timeout)
+
+    def _kept(self) -> tuple[_Kept, bool]:
+        """This thread's connection, and whether it served a request
+        before."""
+        kept = getattr(self.__dict__.get("_conns"), "kept", None)
+        if kept is not None:
+            sock = kept.conn.sock
+            fresh = kept.pid == os.getpid() and sock is not None and time.monotonic() - kept.idle_since < _IDLE_REUSE_S
+            # A connection the server closed reads as ready (its end).
+            try:
+                if fresh and not select.select([sock], [], [], 0)[0]:
+                    return kept, True
+            except (OSError, ValueError):
+                pass  # closed here
+            kept.conn.close()
+        kept = _Kept(self._new_connection())
+        if "_conns" not in self.__dict__:
+            self._conns = threading.local()
+        self._conns.kept = kept
+        return kept, False
+
+    def _done(self, kept: _Kept, resp: http.client.HTTPResponse) -> None:
+        """After a response: the connection is kept when the response was
+        read to its end, and closed otherwise."""
+        if resp.isclosed() and not resp.will_close:
+            kept.idle_since = time.monotonic()
+        else:
+            kept.conn.close()
+            if getattr(self._conns, "kept", None) is kept:
+                self._conns.kept = None
+
+    def _open(self, method: str, path: str, data: Any, headers: Mapping[str, str]) -> Any:
+        """Sends a request and returns its answer, as `urlopen` does: an
+        error status raises `urllib.error.HTTPError`, a server that cannot
+        be reached `urllib.error.URLError`."""
+        if self._proxied():
+            req = urllib.request.Request(self.url + path, data=data, method=method, headers=dict(headers))
+            return urllib.request.urlopen(req, timeout=self.timeout)
+        prefix = urllib.parse.urlsplit(self.url).path.rstrip("/")
+        replayable = isinstance(data, (bytes, type(None)))
+        reads = method in ("GET", "HEAD", "DELETE") or path.split("?", 1)[0] in _READ_PATHS
+        for attempt in (0, 1):
+            kept, reused = self._kept()
+            try:
+                kept.conn.request(method, prefix + path, body=data, headers=dict(headers))
+            except (ConnectionError, http.client.HTTPException, OSError) as e:
+                kept.conn.close()
+                self._conns.kept = None
+                # Nothing was answered, so nothing was done: a kept
+                # connection found closed is tried again on a new one.
+                if reused and replayable and attempt == 0 and not isinstance(e, TimeoutError):
+                    continue
+                raise urllib.error.URLError(e) from None
+            try:
+                resp = kept.conn.getresponse()
+            except (ConnectionError, http.client.HTTPException, OSError) as e:
+                kept.conn.close()
+                self._conns.kept = None
+                # A kept connection closed after the request went: sent
+                # again only if it changed nothing.
+                if reused and replayable and reads and attempt == 0 and isinstance(e, (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)):
+                    continue
+                raise urllib.error.URLError(e) from None
+            if resp.status >= 400:
+                try:
+                    raw = resp.read()
+                finally:
+                    self._done(kept, resp)
+                raise urllib.error.HTTPError(self.url + path, resp.status, resp.reason, resp.headers, io.BytesIO(raw))
+            return _Answer(self, kept, resp)
+        raise AssertionError("unreachable")
+
+    def __getstate__(self) -> dict:
+        # Connections stay with the process and thread that made them.
+        state = dict(self.__dict__)
+        state.pop("_conns", None)
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._conns = threading.local()
+        if isinstance(self, Session):
+            self._lock = threading.Lock()
 
     def _call(self, method: str, path: str, body: Any = None, *, data: Any = None, headers: Mapping[str, str] | None = None, text: bool = False, out: Any = None) -> Any:
         """The answer's JSON, or its text with `text`; with `out`, a binary
         file, the answer is copied into it and its headers returned."""
         h = dict(headers or {})
         if body is not None:
-            data = json.dumps(body, default=_default).encode()
+            data = _json_body(body)
             h["content-type"] = "application/json"
         if self.token:
             h["authorization"] = f"Bearer {self.token}"
@@ -152,9 +314,8 @@ class Client(Search, FrameStore):
         keyed = isinstance(body, Mapping) and bool(body.get("idempotency_key"))
         give_up = time.monotonic() + self.retry_for
         while True:
-            req = urllib.request.Request(self.url + path, data=data, method=method, headers=h)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                with self._open(method, path, data, h) as r:
                     if out is not None:
                         shutil.copyfileobj(r, out)
                         return r.headers
@@ -278,7 +439,16 @@ class Client(Search, FrameStore):
         leaving the loop early ends it. A server from before scrolls
         answers in one page. `min_seq_no(s)` apply to the version the first
         page reads, which every page then reads."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), "page_size": int(page_size), **self._after(min_seq_no, min_seq_nos)}
+        pages = self._pages(sql, _params(params, kw), page_size=page_size, arrow=arrow, keep_alive_ms=keep_alive_ms, timeout_ms=timeout_ms, after=self._after(min_seq_no, min_seq_nos))
+        try:
+            for page, _ in pages:
+                yield page
+        finally:
+            pages.close()  # leaving early closes the cursor
+
+    def _pages(self, sql: str, params: Mapping[str, Any], *, page_size: int, arrow: bool = False, keep_alive_ms: int | None = None, timeout_ms: int | None = None, after: Mapping[str, Any] | None = None) -> Iterator[tuple[Any, bool]]:
+        """`scroll`'s pages, each with whether more follow it."""
+        body: dict[str, Any] = {"sql": sql, "params": params, "page_size": int(page_size), **(self._after() if after is None else after)}
         more: dict[str, Any] = {}
         if keep_alive_ms:
             more["keep_alive_ms"] = int(keep_alive_ms)
@@ -293,7 +463,7 @@ class Client(Search, FrameStore):
                 else:
                     j = self._call("POST", "/v1/query", body)
                     page, cursor = Result._of(j), j.get("cursor")
-                yield page
+                yield page, bool(cursor)
                 if not cursor:
                     return
                 body = {"cursor": cursor, **more}
@@ -485,10 +655,9 @@ class Client(Search, FrameStore):
         h = {"content-type": "application/x-ndjson"}
         if self.token:
             h["authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(self.url + "/v1/stream", data=chunks, method="POST", headers=h)
         last: dict = {}
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with self._open("POST", "/v1/stream", chunks, h) as r:
                 for raw in r:
                     if raw.strip():
                         try:

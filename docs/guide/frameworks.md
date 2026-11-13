@@ -276,5 +276,12 @@ saver = ChloeDBSaver("https://search.example.com")
 conn = chloedb.dbapi.connect("https://search.example.com")
 ```
 
+Each adapter reads through a session of its own, so its reads see its own
+writes from any copy: start the servers with `--seq-no`, and a LangGraph thread
+resumed a moment after its last step reads the checkpoint that step wrote,
+also through a coordinator, where the checkpoints of a thread sit on one
+shard. A DB-API read through a server is fetched a page at a time, past the
+server's result window.
+
 [Run a server](../chloedb/server.md) says how to start one, and the server's
 vector fields embed with the same models.

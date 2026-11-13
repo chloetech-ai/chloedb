@@ -22,7 +22,10 @@
 //! ([`crate::storage::Database::apply_shipped`]) or not at all.
 //!
 //! The format is experimental until the design it belongs to is accepted
-//! (`docs/design/0.7.0-file-per-agent.md`).
+//! (`docs/design/0.7.0-file-per-agent.md`). Version 1 is the experimental
+//! one, and stays that: 0.3.0 wrote it. The accepted format begins at
+//! version 2 (`docs/design/0.6.0-cluster.md`), so an object written
+//! before then is never taken for one of it.
 
 use std::sync::Arc;
 
@@ -30,6 +33,7 @@ use crate::error::{corrupt, Error, Result};
 use crate::storage::manifest::SeqNo;
 
 const MAGIC: &[u8; 8] = b"STRARC01";
+/// The experimental version: the accepted format begins at 2.
 const VERSION: u32 = 1;
 /// Magic, version, flags, stream, db id, generation, first, last, count,
 /// features' length.
@@ -202,6 +206,21 @@ mod tests {
         let mut longer = b.clone();
         longer.push(0);
         assert!(LogObject::decode(&longer).is_err());
+    }
+
+    /// What is written while the format is experimental says so, and is
+    /// not what the accepted format's readers take for theirs.
+    #[test]
+    fn an_experimental_log_object_is_version_1_and_no_other_is_read() {
+        let mut bytes = LogObject::default().encode().unwrap();
+        assert_eq!(bytes[8..12], 1u32.to_le_bytes());
+        LogObject::decode(&bytes).unwrap();
+        bytes[8] = 2;
+        let n = bytes.len();
+        let crc = crc32fast::hash(&bytes[..n - FOOTER]);
+        bytes[n - FOOTER..n - 8].copy_from_slice(&crc.to_le_bytes());
+        let e = LogObject::decode(&bytes).unwrap_err();
+        assert!(e.to_string().contains("version 2"), "{e}");
     }
 
     #[test]
