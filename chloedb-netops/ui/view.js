@@ -2708,7 +2708,7 @@ function inspectorTabs(app, j, detailP, overview, hooks) {
   const metrics = () => {
     if (d.core) {
       const m = pts(d.metrics || []);
-      const cpu = charts.timeChart({ height: 120, fmt: (v) => pct(v), max: 1, series: [{ name: "CPU", color: "var(--s1)", get: (p) => p.cpu }, { name: "Memory", color: "var(--s2)", get: (p) => p.mem }] });
+      const cpu = charts.timeChart({ height: 120, fmt: (v) => v.toFixed(0) + "%", max: 100, series: [{ name: "CPU", color: "var(--s1)", get: (p) => p.cpu }, { name: "Memory", color: "var(--s2)", get: (p) => p.mem }] });
       const temp = charts.timeChart({ height: 90, fmt: (v) => v.toFixed(0) + " °C", series: [{ name: "Temperature", color: "var(--s4)", area: true, get: (p) => p.temp_c }] });
       const lm = by(pts(d.link_metrics || []), "link");
       const names = Object.keys(lm).slice(0, 6);
@@ -3256,7 +3256,7 @@ function dashPage(body, app) {
       panel("Link utilisation", "the six busiest links, a point a minute", chart(j.links.util, (v) => pct(v), { max: 1 }), true),
       panel("Packet loss", "the links that lost the most", chart(j.links.loss, (v) => v.toFixed(2) + "%")),
       panel("Received optical power", "the same links: a falling level is a dirty or failing optic", chart(j.links.rx, (v) => v.toFixed(1) + " dBm", { auto: true })),
-      panel("Device CPU", "the busiest devices", chart(j.devices.cpu, (v) => pct(v), { max: 1 })),
+      panel("Device CPU", "the busiest devices", chart(j.devices.cpu, (v) => v.toFixed(0) + "%", { max: 100 })),
       j.services.top.length ? panel("Service latency, p95", "the services with the worst", chart(j.services.p95, (v) => v.toFixed(0) + " ms")) : null,
       panel("Not ok, by metro", "down, degraded and behind a fault", charts.barList(Object.entries(metros).sort((a, b) => (b[1].down + b[1].degraded + b[1].impacted) - (a[1].down + a[1].degraded + a[1].impacted)).slice(0, 10).map(([m, v]) => ({ name: m.replace(/^m-/, "").toUpperCase() + (v.down ? ` · ${v.down} down` : ""), value: v.down + v.degraded + v.impacted, color: v.down ? "var(--crit)" : v.degraded ? "var(--warn)" : "var(--serious)" })), { fmtv: C.fmt.n })),
       panel("Not ok, by kind", null, charts.barList(Object.entries(kinds).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => ({ name: KIND_NAME[k] || k, value: v })), { fmtv: C.fmt.n })),
