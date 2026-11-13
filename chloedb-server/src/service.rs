@@ -596,6 +596,9 @@ pub struct Service {
     /// The largest body `/v1/write` and `/v1/import` (and a gRPC message)
     /// may have, in bytes; other routes take [`SMALL_BODY`].
     pub max_body: usize,
+    /// How long a table OTLP's logs make keeps its rows, in seconds
+    /// (`--otlp-retain`; `None`: for ever).
+    pub otlp_retain: Option<i64>,
     pub lease_ttl: Duration,
     leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
@@ -772,6 +775,7 @@ impl Service {
             engine: Engine::from_env(),
             max_queued_writes: usize::MAX,
             max_body: 256 << 20,
+            otlp_retain: None,
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
@@ -2170,7 +2174,7 @@ impl Service {
     /// parameters with their vectors; `None` when it has none.
     async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
         use chloedb::query::embed_sql::{self, Request};
-        if !embed_sql::may_embed(sql) {
+        if !embed_sql::may_embed_with(sql, params) {
             return Ok(None);
         }
         let catalog = self.readable();

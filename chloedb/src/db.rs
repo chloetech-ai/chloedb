@@ -612,6 +612,14 @@ impl Db {
         r
     }
 
+    /// [`Db::install_copy`] by [`Database::install_copy_over`].
+    pub fn install_copy_over(&self, copy: &Database) -> Result<SeqNo> {
+        let before = self.catalog();
+        let r = self.storage.install_copy_over(copy);
+        self.tables_changed(&before);
+        r
+    }
+
     /// Opens the models of the tables made since the catalog was `before`,
     /// as [`Db::create_table`] does, and forgets those of the tables gone.
     /// Those of a table whose columns changed follow them, as they do on
@@ -1548,7 +1556,7 @@ impl Db {
     /// embedded, and the parameters that hold their vectors
     /// ([`crate::query::embed_sql`]); `q` as it is when it has none.
     fn embed_texts(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params) -> Result<(Arc<qsql::Parsed>, Option<Params>)> {
-        if !crate::query::embed_sql::may_embed(sql) {
+        if !crate::query::embed_sql::may_embed_with(sql, params) {
             return Ok((q, None));
         }
         let catalog: Vec<&Schema> = snap.schemas().collect();
@@ -2061,7 +2069,7 @@ impl Db {
             let functions = self.functions_at(&snap)?;
             // Texts embedded where vectors go, as the query runs them.
             let text = q.to_string();
-            let embedded = match crate::query::embed_sql::may_embed(&text) {
+            let embedded = match crate::query::embed_sql::may_embed_with(&text, params) {
                 true => crate::query::embed_sql::rewrite(q, &snap.schemas().collect::<Vec<_>>(), params, self)?,
                 false => None,
             };

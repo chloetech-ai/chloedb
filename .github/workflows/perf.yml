@@ -1,0 +1,167 @@
+name: Perf
+
+# The speed gate (scripts/perf-gate.py). The relevance gates in CI keep the
+# quality of rankings from moving unnoticed; nothing kept their speed until
+# this workflow. A shared runner's speed moves from run to run by more than
+# most regressions, so the gate never compares a time with a number written
+# on another day: it builds two commits, runs them in turns on one runner and
+# compares them, and a measure fails only when the head is more than 10%
+# slower on its median and slower in every round.
+#
+# - Every night: main against main as it was 24 hours earlier (the last
+#   commit on its first-parent line from before then), so a day's merges are
+#   measured together. BM25 through SQL on the relevance gate's three BEIR
+#   collections (plain and fuzzy), each collection's load, and the server's
+#   latency per query kind over HTTP on SciFact with its Cohere vectors
+#   (chloedb-server-bench: vector, hybrid, filters, by key, through a
+#   coordinator over 2 shards). A failed night opens an issue
+#   (nightly-report.yml).
+# - A pull request labelled `perf`: the pull request against its base, BM25
+#   and loads only. Not a required check.
+# - By hand: any two refs (`gh workflow run perf.yml -f base=<ref> -f head=<ref>`).
+#
+# Both builds use the release profile (as the benchmarks in results/ do)
+# with the relevance gate's target-cpu, so the numbers are comparable with
+# no other run: only the base and head of one run are compared.
+on:
+  schedule:
+    - cron: "7 2 * * *"
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "The commit to compare against (default: main 24 hours ago)"
+        required: false
+        default: ""
+      head:
+        description: "The commit to measure (default: the ref the run is on)"
+        required: false
+        default: ""
+      server:
+        description: "Also run chloedb-server-bench (adds about 40 minutes)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
+
+jobs:
+  speed:
+    name: speed gate
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf')
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: |
+            chloedb
+            chloedb-server
+          key: perf
+      - name: Commits
+        id: refs
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_BASE: ${{ inputs.base }}
+          IN_HEAD: ${{ inputs.head }}
+          IN_SERVER: ${{ inputs.server }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          server=false
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            schedule) base=$(git rev-list -1 --first-parent --before="24 hours ago" HEAD); server=true ;;
+            workflow_dispatch)
+              [ -n "$IN_HEAD" ] && head=$(git rev-parse "$IN_HEAD^{commit}")
+              if [ -n "$IN_BASE" ]; then base=$(git rev-parse "$IN_BASE^{commit}")
+              else base=$(git rev-list -1 --first-parent --before="24 hours ago" "$head"); fi
+              server="$IN_SERVER" ;;
+          esac
+          if [ "$(git rev-parse "$base")" = "$(git rev-parse "$head")" ]; then
+            echo "Nothing to compare: base and head are both $head." >> "$GITHUB_STEP_SUMMARY"
+            echo "same=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "server=$server" >> "$GITHUB_OUTPUT"
+          echo "same=false" >> "$GITHUB_OUTPUT"
+          echo "base $base: $(git log -1 --format=%s "$base")"
+          echo "head $head: $(git log -1 --format=%s "$head")"
+      - name: Build base and head
+        if: steps.refs.outputs.same == 'false'
+        env:
+          BASE: ${{ steps.refs.outputs.base }}
+          HEAD_SHA: ${{ steps.refs.outputs.head }}
+          SERVER: ${{ steps.refs.outputs.server }}
+        run: |
+          # Each commit is built in its own worktree, into the main
+          # checkout's target directories, so the cache's dependencies serve
+          # both; the binaries are copied out before the next build.
+          for side in base head; do
+            sha=$BASE; [ "$side" = head ] && sha=$HEAD_SHA
+            git worktree add --detach "$RUNNER_TEMP/src-$side" "$sha"
+            mkdir -p "$RUNNER_TEMP/bin-$side"
+            (cd "$RUNNER_TEMP/src-$side/chloedb" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb/target" cargo build --locked --release --bin chloedb-bm25-eval)
+            cp chloedb/target/release/chloedb-bm25-eval "$RUNNER_TEMP/bin-$side/"
+            if [ "$SERVER" = true ]; then
+              (cd "$RUNNER_TEMP/src-$side/chloedb-server" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb-server/target" cargo build --locked --release --bin chloedb-server-bench)
+              cp chloedb-server/target/release/chloedb-server-bench "$RUNNER_TEMP/bin-$side/"
+            fi
+          done
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: steps.refs.outputs.same == 'false'
+        with:
+          path: ~/beir
+          key: beir-${{ hashFiles('chloedb/tests/fixtures/beir/fetch.sh') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: steps.refs.outputs.server == 'true'
+        with:
+          path: ~/beir-vectors
+          key: beir-vectors-scifact-${{ hashFiles('chloedb/scripts/prepare_beir.py') }}
+      - name: Collections
+        if: steps.refs.outputs.same == 'false'
+        env:
+          SERVER: ${{ steps.refs.outputs.server }}
+        run: |
+          chloedb/tests/fixtures/beir/fetch.sh "$HOME/beir"
+          if [ "$SERVER" = true ] && [ ! -f "$HOME/beir-vectors/scifact/meta.json" ]; then
+            pip install pyarrow numpy
+            python3 chloedb/scripts/prepare_beir.py "$HOME/beir-vectors" scifact
+          fi
+      - name: Speed gate
+        if: steps.refs.outputs.same == 'false'
+        env:
+          BASE: ${{ steps.refs.outputs.base }}
+          HEAD_SHA: ${{ steps.refs.outputs.head }}
+          SERVER: ${{ steps.refs.outputs.server }}
+        run: |
+          vectors=()
+          [ "$SERVER" = true ] && vectors=(--vectors "$HOME/beir-vectors")
+          python3 -I scripts/perf-gate.py --base "$RUNNER_TEMP/bin-base" --head "$RUNNER_TEMP/bin-head" \
+            --beir "$HOME/beir" "${vectors[@]}" --rounds 3 --threshold 0.10 \
+            --base-label "${BASE:0:8}" --head-label "${HEAD_SHA:0:8}" \
+            --out "$RUNNER_TEMP/perf-gate" --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always() && steps.refs.outputs.same == 'false'
+        with:
+          name: perf-gate
+          path: ${{ runner.temp }}/perf-gate
+          retention-days: 30

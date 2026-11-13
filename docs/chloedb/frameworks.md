@@ -9,7 +9,9 @@ The [Python package](python.md) plugs ChloeDB into the frameworks agents and ret
 | `chloedb.llama_index` | `ChloeDBVectorStore`, a LlamaIndex vector store, and `ChloeDBEmbedding` | `pip install "chloedb[llama-index]"` |
 | `chloedb.dbapi` | a [PEP 249](https://peps.python.org/pep-0249/) driver: `connect()`, cursors, `pandas.read_sql` | nothing more |
 
-Each of them takes where the data is in the same way: a database's path (opened in the process, and made at the first write when it does not exist), the `http://` or `https://` URL of a [chloedb-server](server.md) or a coordinator (with `token=`, or `$CHLOEDB_TOKEN`), or a `chloedb.Database` or `chloedb.Client` already open. Adapters given the same path in one process share one open database (a process opens a database once to write it), so a checkpointer and a store can both name `"agent.chloedb"`; a database opened by `chloedb.open` is passed as itself. The same code runs on a file on a laptop and on a cluster, and one database can hold an agent's vectors, checkpoints, memories and its other tables side by side, each in a table of its own.
+Each of them takes where the data is in the same way: a database's path (opened in the process, and made at the first write when it does not exist), the `http://` or `https://` URL of a [chloedb-server](server.md) or a coordinator (with `token=`, or `$CHLOEDB_TOKEN`), or a `chloedb.Database` or `chloedb.Client` already open. Adapters given the same path in one process share one open database (a process opens a database once to write it), so a checkpointer and a store can both name `"agent.chloedb"`; a database opened by `chloedb.open` is passed as itself. A DB-API connection to that path shares it too, and closing the connection closes the database only when no adapter or other connection holds it.
+
+Through a server, each adapter reads with a [`Session`](python.md#reading-your-own-writes) of its own, so that its reads see its own writes whichever copy answers: a LangGraph thread resumed a moment after its last step reads the checkpoint that step wrote, also through a coordinator and from a replica. Start the servers with `--seq-no` for that ([reads that see a write](server.md#reads-that-see-a-write)); without it, a write answers no number and the reads are a plain client's. A `chloedb.Client` given to an adapter is used through its session too. The same code runs on a file on a laptop and on a cluster, and one database can hold an agent's vectors, checkpoints, memories and its other tables side by side, each in a table of its own.
 
 ## LangChain
 
@@ -46,7 +48,7 @@ store = ChloeDBVectorStore("docs.chloedb", model="potion-retrieval-32M")
 | `distance` | `"cosine"` | `"cosine"` makes vectors unit length, so the score is the cosine similarity; `"dot"` keeps them as the model writes them |
 | `mode` | `"vector"` | how a search ranks unless it says: `"vector"`, `"text"` (BM25) or `"hybrid"` |
 
-The store has LangChain's methods: `add_texts`, `add_documents` (a document's `id` is kept), `get_by_ids`, `delete(ids)` or `delete(filter=...)`, `similarity_search`, `similarity_search_with_score` (higher is closer: the cosine similarity, the BM25 score or the fused score), `similarity_search_with_relevance_scores`, `similarity_search_by_vector`, `max_marginal_relevance_search`, `from_texts`, `as_retriever` and the async forms of each. A text written again under its id replaces the one before.
+The store has LangChain's methods: `add_texts`, `add_documents` (a document's `id` is kept), `get_by_ids`, `delete(ids)` or `delete(filter=...)`, `similarity_search`, `similarity_search_with_score` (higher is closer: the cosine similarity, the BM25 score or the fused score), `similarity_search_with_relevance_scores` (by vector the cosine similarity, negative ones as 0, which is what Chroma, FAISS and PGVector report for cosine; hybrid, the fused score over the best it can be, a document first in both rankings, so 1; by words it raises `NotImplementedError`, since BM25 has no scale from 0 to 1; a search's own `mode=` decides, else the store's), `similarity_search_by_vector`, `max_marginal_relevance_search`, `from_texts`, `as_retriever` and the async forms of each. A text written again under its id replaces the one before.
 
 ### Filters
 
@@ -69,7 +71,7 @@ Filters are written as MongoDB's, as LangChain's other stores take them, and eac
 
 ### The checkpointer
 
-`ChloeDBSaver` keeps a graph's checkpoints, and the writes pending on each, as rows of two tables (`langgraph_checkpoints` and `langgraph_writes`, made when missing), so that a thread goes on after a restart, from another process, or, through a server, from another machine. It has the methods LangGraph calls, synchronous and async alike (the async ones run the same calls on a worker thread): `get_tuple`, `list` (with `filter` on the metadata, `before` and `limit`), `put`, `put_writes`, `delete_thread` and `copy_thread`.
+`ChloeDBSaver` keeps a graph's checkpoints, and the writes pending on each, as rows of two tables (`langgraph_checkpoints` and `langgraph_writes`, made when missing, [placed](server.md#tables-on-shards) and clustered by `thread_id`, so that on a cluster a thread's rows sit on one shard, a thread is read from it alone, and a task's writes go in one transaction; tables made by 0.3.0 or earlier keep the placement by key they were made with), so that a thread goes on after a restart, from another process, or, through a server, from another machine. It has the methods LangGraph calls, synchronous and async alike (the async ones run the same calls on a worker thread): `get_tuple`, `list` (with `filter` on the metadata, `before` and `limit`), `put`, `put_writes`, `delete_thread` and `copy_thread`.
 
 ```python
 from chloedb.langgraph import ChloeDBSaver
@@ -81,7 +83,7 @@ graph.get_state(config)
 list(graph.get_state_history(config))          # time travel
 ```
 
-Interrupts, resumes (`Command(resume=...)`), forks from an old checkpoint and subgraphs work as with LangGraph's own savers. Checkpoints and writes are written by the graph's serializer (LangGraph's `JsonPlusSerializer` unless `serde=` says otherwise), as base64 text in fields that are stored and not indexed; the metadata is also kept in a JSON field, so that `list(filter={"source": "input"})` runs from its index.
+Interrupts, resumes (`Command(resume=...)`), forks from an old checkpoint and subgraphs work as with LangGraph's own savers. Checkpoints and writes are written by the graph's serializer (LangGraph's `JsonPlusSerializer` unless `serde=` says otherwise), as base64 text in fields that are stored and not indexed; the metadata is also kept in a JSON field, so that `list(filter={"source": "input"})` runs from its index. Metadata past what a JSON field takes (16 levels, 1,000 values, paths of 256 bytes) is indexed in part: its top-level values first, then each object or list that fits whole; a filter on a part left out does not find the checkpoint.
 
 ### The store
 
@@ -99,10 +101,11 @@ store.list_namespaces(prefix=("users",))
 graph = builder.compile(checkpointer=ChloeDBSaver("agent.chloedb"), store=store)
 ```
 
-- **Filters** on items' values run from a JSON field's index, with the operators above (LangGraph's own are `$eq`, `$ne`, `$gt`, `$gte`, `$lt` and `$lte`).
+- **Filters** on items' values run from a JSON field's index, with the operators above (LangGraph's own are `$eq`, `$ne`, `$gt`, `$gte`, `$lt` and `$lte`). A value past what the field takes is kept whole and indexed in part, as a checkpoint's metadata is: an item holding a long transcript is still found by its `kind`.
 - **Search by meaning**: `index={"dims": 1536, "embed": OpenAIEmbeddings(), "fields": ["text"]}` (or `"embed": "openai:text-embedding-3-small"`), as LangGraph's stores take it, embeds in Python; `index={"model": "potion-retrieval-32M", "fields": [...]}` has ChloeDB embed each item's text as it is written, and each query's. `fields` are the paths of the text in a value (`["$"]`, the whole value, by default), and `put(..., index=False)` or `index=[paths]` overrides them for one item. An item's texts are embedded together, as one text.
 - **Time to live**: `ttl={"default_ttl": 60, "refresh_on_read": True}` (minutes), or `put(..., ttl=...)`. The table [expires each row](query-language.md#tables) at its time (`expire_by`), so an expired item is gone from every read at once, and a read moves an item's time on when `refresh_on_read` is on.
 - **Without a query**, a search returns the newest items first.
+- **Namespaces**: `list_namespaces` groups the items by namespace in the server; past the most groups a query may make (`--max-groups`, 65,536), it reads the namespaces a page at a time in their order instead.
 
 ## LlamaIndex
 
@@ -118,7 +121,7 @@ index.as_retriever(similarity_top_k=4).retrieve("where do vectors live?")
 index.as_query_engine(vector_store_query_mode="hybrid", similarity_top_k=4)
 ```
 
-Queries rank in the modes `default` (by vector), `text_search` and `sparse` (by BM25) and `hybrid` (both, fused by reciprocal rank), among the nodes that `MetadataFilters` keep (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `nin`, `any`, `all`, `contains`, `is_empty`, with `and`, `or` and `not`), `doc_ids` and `node_ids`. The store also has `get_nodes`, `delete_nodes` and `clear`.
+Queries rank in the modes `default` (by vector), `text_search` and `sparse` (by BM25) and `hybrid` (both, fused by reciprocal rank), among the nodes that `MetadataFilters` keep (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `nin`, `any`, `all`, `contains`, `is_empty`, with `and`, `or` and `not`), `doc_ids` and `node_ids`. The store also has `get_nodes`, `delete_nodes` and `clear`. An empty list of ids names no node in `get_nodes` and `delete_nodes`, with filters or without, as in LlamaIndex's own stores, and `delete_nodes` with filters that hold no condition deletes nothing (`clear()` deletes every node); in a query an empty list limits nothing, as LlamaIndex's retrievers pass it.
 
 With `model="potion-retrieval-32M"` the table embeds the nodes that come without a vector, and every query's text; `store.embed_model` is that model as LlamaIndex's, so the index needs no other:
 
@@ -146,9 +149,11 @@ import pandas
 pandas.read_sql("SELECT genre, COUNT(*) AS n FROM books GROUP BY genre", conn)
 ```
 
-- `paramstyle` is `"named"`: `:name` in the SQL, bound from a mapping, with ChloeDB's own parameters too (a vector, `{"embed": text}`). A `datetime` or `date` binds as ISO 8601 text.
-- A read (`SELECT`, `WITH`, `EXPLAIN`) keeps its rows for `fetchone`, `fetchmany` and `fetchall`, and `rowcount` is how many; a write sets `rowcount` to the rows it wrote.
-- ChloeDB commits each statement as it runs: `commit()` has nothing to do, and `rollback()` raises `NotSupportedError`.
-- `description`'s type codes are the columns' ChloeDB types (`"text"`, `"keyword"`, `"int"`, `"float"`, `"bool"`, `"timestamp"`, ...), which compare equal to the module's `STRING`, `NUMBER` and `DATETIME`.
+- `paramstyle` is `"named"`: `:name` in the SQL, bound from a mapping, with ChloeDB's own parameters too (a vector, `{"embed": text}`). A `datetime` or `date` binds as ISO 8601 text (a naive one as UTC), and a NaN as NULL, in a file and through a server alike. ChloeDB has no binary type: `Binary()` and a `bytes` parameter raise `NotSupportedError` (keep bytes as base64 text).
+- A read (`SELECT`, `WITH`, `EXPLAIN`) keeps its rows for `fetchone`, `fetchmany` and `fetchall`. Through a server, a `SELECT` or `WITH` is read a page of 10,000 rows at a time as the rows are fetched (a [scroll](server.md#reading-past-the-window-scrolls)), so it reads past the server's result window as a file does; `rowcount` is how many rows it answered once that is known (they came in one page, or were all fetched), -1 until then. A write sets `rowcount` to the rows it wrote.
+- A ranked query without `LIMIT` answers its best 100 rows: the cursor then warns (a `UserWarning`) and holds a `Warning` in `cursor.messages`.
+- A `TIMESTAMP` column comes back as a `datetime` in UTC.
+- ChloeDB commits each statement as it runs: `commit()` has nothing to do, and `rollback()` raises `NotSupportedError`. `with conn:` commits at its end and leaves the connection open, as `sqlite3` and psycopg do; `contextlib.closing(conn)` closes it.
+- `description`'s type codes are the columns' ChloeDB types (`"text"`, `"keyword"`, `"int"`, `"float"`, `"bool"`, `"timestamp"`, ...), which compare equal to the module's `STRING`, `NUMBER` and `DATETIME`. A connection reads the tables' types once, and again after a `CREATE`, `ALTER` or `DROP` it ran.
 - Errors are the module's PEP 249 classes (`ProgrammingError` for a bad statement, `OperationalError` for a busy, overloaded or unreachable database, `IntegrityError` for a conflict), each with the ChloeDB error's `code` and the original error as its `__cause__`.
 - `connect(path, read_only=True)` opens a database another process writes, to read it.

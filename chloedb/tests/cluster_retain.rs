@@ -229,3 +229,65 @@ fn options_are_checked() {
     assert_eq!(back, s);
     assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
 }
+
+/// Each segment's (least, greatest) time.
+fn spans(db: &Db) -> Vec<(i64, i64)> {
+    let snap = db.storage().snapshot().table("events").unwrap();
+    let key = snap.schema().key_of("ts").unwrap();
+    let mut s: Vec<(i64, i64)> = snap
+        .segments()
+        .iter()
+        .map(|v| {
+            let c = chloedb::forward::NumericColumn::open(&v.file, &key).unwrap();
+            (c.min().unwrap() as i64, c.max().unwrap() as i64)
+        })
+        .collect();
+    s.sort_unstable();
+    s
+}
+
+#[test]
+fn a_kept_table_merges_within_windows_of_time() {
+    // Kept 15 seconds: windows of half a second.
+    let dir = tempfile::tempdir().unwrap();
+    let opts = DbOptions { memtable_max_docs: usize::MAX, ..DbOptions::default() };
+    let db = Db::create(&dir.path().join("w.strata"), events(r#""retain": "15 seconds","#), opts).unwrap();
+    let now = chloedb::timestamp::now();
+    let old = now - 14_000_000;
+    // Three flushes of old rows and three of new ones, in turn.
+    for k in 0..6i64 {
+        let ts = if k % 2 == 0 { old + k } else { now + k };
+        write(&db, (k * 10..k * 10 + 10).map(|i| row(i, &usr(i), Some(ts))));
+        db.storage().flush().unwrap();
+    }
+    let policy = MergePolicy { merge_factor: 3, floor_docs: 1, ..MergePolicy::default() };
+    let stats = db.storage().merge(&policy).unwrap();
+    // The old rows merge with each other and the new with each other: two
+    // segments, neither spanning both times.
+    assert_eq!(stats.merges, 2, "{stats:?}");
+    assert_eq!(spans(&db), vec![(old, old + 4), (now + 1, now + 5)]);
+    // Once the old rows are past the retention, their segment is dropped
+    // with no row read or rewritten; the new one stays as it is.
+    std::thread::sleep(Duration::from_millis(1500));
+    let stats = db.storage().merge(&policy).unwrap();
+    assert_eq!((stats.merges, stats.docs_expired, stats.docs_merged), (1, 30, 0), "{stats:?}");
+    // What is written is the record of the change, not a segment.
+    assert!(stats.bytes_written < 4096, "{stats:?}");
+    assert_eq!(spans(&db), vec![(now + 1, now + 5)]);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM events"), 30);
+}
+
+#[test]
+fn a_table_without_retention_merges_across_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = DbOptions { memtable_max_docs: usize::MAX, ..DbOptions::default() };
+    let db = Db::create(&dir.path().join("n.strata"), events(""), opts).unwrap();
+    let now = chloedb::timestamp::now();
+    for k in 0..3i64 {
+        write(&db, (k * 10..k * 10 + 10).map(|i| row(i, &usr(i), Some(now - k * DAY))));
+        db.storage().flush().unwrap();
+    }
+    let policy = MergePolicy { merge_factor: 3, floor_docs: 1, ..MergePolicy::default() };
+    assert_eq!(db.storage().merge(&policy).unwrap().merges, 1);
+    assert_eq!(spans(&db), vec![(now - 2 * DAY, now)]);
+}
