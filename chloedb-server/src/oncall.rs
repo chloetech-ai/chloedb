@@ -1008,7 +1008,7 @@ pub async fn approve(svc: &Arc<Service>, router: Option<Router>, headers: &Heade
     if p.fingerprint.is_some() {
         if let Err(now) = crate::changes::still_holds(svc, &router, &caller, &p).await {
             let was = p.plan.clone().unwrap_or(Json::Null);
-            svc.oncall.decide(&p.id, "failed", by, json!({"code": "plan_stale", "error": "the cluster changed since the change was planned", "was": was, "now": now}));
+            svc.oncall.decide(&p.id, "failed", by, json!({"error_code": "plan_stale", "error": "the cluster changed since the change was planned", "was": was, "now": now}));
             return Err(ApiError::coded(409, "plan_stale", format!("{}: the cluster changed since it was planned (its dry run differs now); it was not applied: file it again", p.id)));
         }
     }

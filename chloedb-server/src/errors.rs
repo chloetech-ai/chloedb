@@ -2,13 +2,14 @@
 //! without reading its sentence.
 //!
 //! Every error answer carries, beside the sentence it always had
-//! (`error`), a stable `code`, whether sending the same request again
+//! (`error`), a stable `error_code` (not `code`, which the released
+//! clients read as their own class of error), whether sending the same request again
 //! later can succeed (`retryable`), and for most codes a `hint` (what to
 //! do next) and the section of the documentation that explains it
 //! (`docs`):
 //!
 //! ```json
-//! {"error": "no such table: orders", "code": "table_not_found", "retryable": false,
+//! {"error": "no such table: orders", "error_code": "table_not_found", "retryable": false,
 //!  "hint": "list the tables the key may read (GET /v1/tables, or the list_tables tool)",
 //!  "docs": "https://chloetech-ai.github.io/chloedb/site/docs/server.html#schemas"}
 //! ```
@@ -123,8 +124,8 @@ pub fn code_of(e: &ApiError) -> &'static str {
 pub fn fields(e: &ApiError) -> Json {
     let code = code_of(e);
     match lookup(code) {
-        Some(c) => json!({"code": c.code, "retryable": c.retryable, "hint": c.hint, "docs": format!("{DOCS}#{}", c.docs)}),
-        None => json!({"code": code, "retryable": false}),
+        Some(c) => json!({"error_code": c.code, "retryable": c.retryable, "hint": c.hint, "docs": format!("{DOCS}#{}", c.docs)}),
+        None => json!({"error_code": code, "retryable": false}),
     }
 }
 
@@ -195,7 +196,9 @@ mod tests {
     fn a_coded_error_answers_its_code() {
         let e = ApiError::coded(409, "plan_stale", "the cluster changed");
         let j = answer(&e);
-        assert_eq!(j["code"], "plan_stale");
+        assert_eq!(j["error_code"], "plan_stale");
+        // `code` is the released clients' own class of error: never sent.
+        assert!(j.get("code").is_none(), "{j}");
         assert_eq!(j["retryable"], false);
         assert_eq!(j["error"], "the cluster changed");
         assert!(j["docs"].as_str().unwrap().starts_with("https://"));

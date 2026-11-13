@@ -830,7 +830,7 @@ pub(crate) async fn forward_with(router: &Router, caller: &Caller<'_>, method: M
             None => j.to_string(),
         };
         // errors: the code and what to do, for the model to act on.
-        let code = match j.get("code").and_then(|c| c.as_str()) {
+        let code = match j.get("error_code").and_then(|c| c.as_str()) {
             Some(c) => format!(" [code {c}{}]", j.get("hint").and_then(|h| h.as_str()).map(|h| format!(": {h}")).unwrap_or_default()),
             None => String::new(),
         };

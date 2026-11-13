@@ -38,7 +38,7 @@ For: `errors`, `availability`, `5xx`, `error_ratio`, `error_ratio_recovered`, `p
 
 1. Read which statements fail and where: `GET /v1/queries/recent?outcome=error`
    and `GET /v1/logs?level=error` (tools `queries`, `logs`). Each error
-   answer carries a `code` (`GET /v1/catalog` lists them): `query_invalid`
+   answer carries an `error_code` (`GET /v1/catalog` lists them): `query_invalid`
    and `table_not_found` are a client's, `unavailable` and `internal` the
    cluster's.
 2. Errors of one client (`key-failing`): tell the key's owner; nothing to

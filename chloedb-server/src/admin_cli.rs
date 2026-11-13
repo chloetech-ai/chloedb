@@ -6,7 +6,7 @@
 //! | exit | when |
 //! |---|---|
 //! | 0 | answered 2xx |
-//! | 1 | refused or failed otherwise (the answer's `code` says why) |
+//! | 1 | refused or failed otherwise (the answer's `error_code` says why) |
 //! | 2 | refused for who the key is: `unauthenticated`, `scope_refused`, `table_refused`, `reason_required`, `limit_exceeded`, `change_request_required`, `approval_refused` |
 //! | 3 | stale: `plan_stale`, `change_not_pending` (look again, file again) |
 //! | 4 | retry later: the code is `retryable` (`overloaded`, `unavailable`, ...) |
@@ -84,7 +84,7 @@ pub fn exit_code(status: u16, answer: &Json) -> i32 {
     if (200..300).contains(&status) {
         return 0;
     }
-    let code = answer["code"].as_str().unwrap_or_else(|| crate::errors::classify(status, answer["error"].as_str().unwrap_or_default()));
+    let code = answer["error_code"].as_str().unwrap_or_else(|| crate::errors::classify(status, answer["error"].as_str().unwrap_or_default()));
     match code {
         "unauthenticated" | "scope_refused" | "table_refused" | "reason_required" | "limit_exceeded" | "change_request_required" | "approval_refused" => 2,
         "plan_stale" | "change_not_pending" => 3,
@@ -139,12 +139,12 @@ mod tests {
     #[test]
     fn exit_codes_say_what_to_do() {
         assert_eq!(exit_code(200, &json!({})), 0);
-        assert_eq!(exit_code(403, &json!({"code": "scope_refused"})), 2);
+        assert_eq!(exit_code(403, &json!({"error_code": "scope_refused"})), 2);
         assert_eq!(exit_code(403, &json!({"error": "POST /v1/sql needs a key with the admin scope"})), 2);
-        assert_eq!(exit_code(409, &json!({"code": "plan_stale"})), 3);
-        assert_eq!(exit_code(503, &json!({"code": "unavailable", "retryable": true})), 4);
+        assert_eq!(exit_code(409, &json!({"error_code": "plan_stale"})), 3);
+        assert_eq!(exit_code(503, &json!({"error_code": "unavailable", "retryable": true})), 4);
         assert_eq!(exit_code(429, &json!({"error": "too many queries running"})), 4);
-        assert_eq!(exit_code(400, &json!({"code": "query_invalid"})), 1);
+        assert_eq!(exit_code(400, &json!({"error_code": "query_invalid"})), 1);
     }
 
     #[test]

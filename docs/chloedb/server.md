@@ -1866,15 +1866,15 @@ An agent administers ChloeDB the way a person does, through the same routes, wit
 
 **Reasons and caps.** An agent's tier 1 request and up says why in `x-chloedb-reason` (or is refused `reason_required`), and an agent's contain rule lasts an hour at most, its silence two hours (`limit_exceeded`). The audit log names an agent's entries `actor: "agent"`, with its model, session, run and app (`agent`), and the person it acts for (`on_behalf_of`).
 
-**Error codes.** Every error answer carries, beside its sentence (`error`), a stable `code`, whether the same request may succeed later (`retryable`), a `hint` and the section of this page that explains it (`docs`):
+**Error codes.** Every error answer carries, beside its sentence (`error`), a stable `error_code`, whether the same request may succeed later (`retryable`), a `hint` and the section of this page that explains it (`docs`):
 
 ```json
-{"error": "no such table: orders", "code": "table_not_found", "retryable": false,
+{"error": "no such table: orders", "error_code": "table_not_found", "retryable": false,
  "hint": "list the tables the key may read (GET /v1/tables, or the list_tables tool)",
  "docs": "https://chloetech-ai.github.io/chloedb/site/docs/server.html#schemas"}
 ```
 
-The codes are `unauthenticated`, `scope_refused`, `table_refused`, `reason_required`, `limit_exceeded`, `change_request_required`, `approval_refused`, `change_not_pending`, `plan_stale`, `table_not_found`, `column_not_found`, `query_invalid`, `schema_invalid`, `idempotency_conflict`, `contained`, `overloaded`, `deadline_exceeded`, `cancelled`, `unavailable`, and a general one for each status (`not_found`, `conflict`, `too_large`, `unsupported_media_type`, `unprocessable`, `rate_limited`, `not_implemented`, `bad_request`, `internal`, `upstream`). A code is never renamed or reused, only added; `GET /v1/catalog` lists them with their hints. Over gRPC the code travels in the metadata `chloedb-error-code`.
+The codes are `unauthenticated`, `scope_refused`, `table_refused`, `reason_required`, `limit_exceeded`, `change_request_required`, `approval_refused`, `change_not_pending`, `plan_stale`, `table_not_found`, `column_not_found`, `query_invalid`, `schema_invalid`, `idempotency_conflict`, `contained`, `overloaded`, `deadline_exceeded`, `cancelled`, `unavailable`, and a general one for each status (`not_found`, `conflict`, `too_large`, `unsupported_media_type`, `unprocessable`, `rate_limited`, `not_implemented`, `bad_request`, `internal`, `upstream`). The field is `error_code`, not `code`, which the Python and JavaScript clients read as their own class of error. A code is never renamed or reused, only added; `GET /v1/catalog` lists them with their hints. Over gRPC the code travels in the metadata `chloedb-error-code`.
 
 **Dry runs.** `POST /v1/admin/changes/preview {"method": "POST", "path": "/v1/admin/plan/apply", "body": {...}}` answers, for a change of any route, without changing anything: its `tier`, what it `would` do, whether it is `reversible` and its `undo`, its `blast` (what clients feel meanwhile), what it `affects` (for SQL, the rows a `DELETE` or `UPDATE` matches and a `DROP` loses, counted by the statement's own `WHERE`), the route's own `plan` where it has one (a plan of the cluster's shape, a Kubernetes spec, an upgrade, a statement bound against the tables), a `plan_id` and a `fingerprint`.
 

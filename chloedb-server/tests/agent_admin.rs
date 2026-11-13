@@ -84,20 +84,20 @@ async fn role_keys_act_by_tier_with_reasons_and_caps() {
     let (s, j) = call(&base, "GET", "/v1/admin/audit", &propose, &[], None).await;
     assert_eq!(s, 200, "{j}");
     let (s, j) = call(&base, "POST", "/v1/write", &ops, &[], Some(json!({"rows": [{"id": "x"}]}))).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("scope_refused")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("scope_refused")), "{j}");
     assert!(j["hint"].as_str().unwrap().contains("change request"), "{j}");
     assert!(j["docs"].as_str().unwrap().starts_with("https://"), "{j}");
 
     // A contain rule: refused to a proposer, needs a reason, capped.
     let rule = json!({"match": {"fingerprint": "ab12"}, "action": "refuse", "expires_s": 600});
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &propose, &[("x-chloedb-reason", "x")], Some(rule.clone())).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("scope_refused")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("scope_refused")), "{j}");
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &ops, &[], Some(rule.clone())).await;
-    assert_eq!((s, j["code"].as_str()), (400, Some("reason_required")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (400, Some("reason_required")), "{j}");
     let mut long = rule.clone();
     long["expires_s"] = json!(7200);
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &ops, &[("x-chloedb-reason", "it holds every core")], Some(long)).await;
-    assert_eq!((s, j["code"].as_str()), (400, Some("limit_exceeded")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (400, Some("limit_exceeded")), "{j}");
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &ops, &[("x-chloedb-reason", "it holds every core"), ("x-chloedb-agent-run", "run-7")], Some(rule)).await;
     assert_eq!(s, 200, "{j}");
 
@@ -124,9 +124,9 @@ async fn agents_file_changes_people_approve_them_and_stale_plans_fail() {
 
     // An agent's admin key does not drop a table, or delete every row, alone.
     let (s, j) = call(&base, "POST", "/v1/sql", &agent_admin, &[("x-chloedb-reason", "clean up")], Some(json!({"sql": "DELETE FROM products"}))).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("change_request_required")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{j}");
     let (s, j) = call(&base, "POST", "/v1/sql", &agent_admin, &[("x-chloedb-reason", "clean up")], Some(json!({"sql": "DROP TABLE products"}))).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("change_request_required")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{j}");
 
     // The dry run says what a DELETE would touch.
     let (s, d) = call(&base, "POST", "/v1/admin/changes/preview", &propose, &[], Some(json!({"method": "POST", "path": "/v1/sql", "body": {"sql": "DELETE FROM products"}}))).await;
@@ -150,14 +150,14 @@ async fn agents_file_changes_people_approve_them_and_stale_plans_fail() {
 
     // A reason is needed; a proposer may not approve; nor may an agent's admin key.
     let (s, j) = call(&base, "POST", "/v1/admin/changes", &propose, &[], Some(one.clone())).await;
-    assert_eq!((s, j["code"].as_str()), (400, Some("reason_required")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (400, Some("reason_required")), "{j}");
     let (s, _) = call(&base, "POST", &format!("/v1/admin/changes/{cid}/approve"), &propose, &[], None).await;
     assert_eq!(s, 403);
     let (s, j) = call(&base, "POST", &format!("/v1/admin/changes/{cid}/approve"), &agent_admin, &[], None).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("approval_refused")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("approval_refused")), "{j}");
     // Nor an admin key through MCP's headers.
     let (s, j) = call(&base, "POST", &format!("/v1/admin/changes/{cid}/approve"), ROOT, &[("x-chloedb-agent-session", "s1")], None).await;
-    assert_eq!((s, j["code"].as_str()), (403, Some("approval_refused")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("approval_refused")), "{j}");
 
     // It shows as a job, and in the list.
     let (_, jobs) = call(&base, "GET", "/v1/admin/jobs?kind=change", &propose, &[], None).await;
@@ -170,7 +170,7 @@ async fn agents_file_changes_people_approve_them_and_stale_plans_fail() {
     assert_eq!(s, 200, "{a}");
     assert_eq!(a["state"], "applied", "{a}");
     let (s, j) = call(&base, "POST", &format!("/v1/admin/changes/{cid}/approve"), ROOT, &[], None).await;
-    assert_eq!((s, j["code"].as_str()), (409, Some("change_not_pending")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (409, Some("change_not_pending")), "{j}");
     let (_, audit) = call(&base, "GET", "/v1/admin/audit?limit=200", ROOT, &[], None).await;
     let entries = audit["entries"].as_array().or(audit.as_array()).cloned().unwrap_or_default();
     let e = entries.iter().find(|e| e["change_request"] == cid.as_str()).unwrap_or_else(|| panic!("{audit}"));
@@ -186,10 +186,10 @@ async fn agents_file_changes_people_approve_them_and_stale_plans_fail() {
     let (s, j) = call(&base, "POST", "/v1/sql", ROOT, &[], Some(json!({"sql": "DELETE FROM products"}))).await;
     assert_eq!(s, 200, "{j}");
     let (s, j) = call(&base, "POST", &format!("/v1/admin/changes/{stale}/approve"), ROOT, &[], None).await;
-    assert_eq!((s, j["code"].as_str()), (409, Some("plan_stale")), "{j}");
+    assert_eq!((s, j["error_code"].as_str()), (409, Some("plan_stale")), "{j}");
     let (_, got) = call(&base, "GET", &format!("/v1/admin/changes/{stale}"), &propose, &[], None).await;
     assert_eq!(got["state"], "failed", "{got}");
-    assert_eq!(got["result"]["code"], "plan_stale", "{got}");
+    assert_eq!(got["result"]["error_code"], "plan_stale", "{got}");
 
     // Withdrawn by whoever filed it, and no one else.
     let mut again = one;
