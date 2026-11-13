@@ -404,6 +404,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
             Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
         };
+        // Copies a transfer left when this server was stopped during it.
+        if replicating || o.seq_no {
+            crate::replication::sweep_copies(&path);
+        }
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
         }
