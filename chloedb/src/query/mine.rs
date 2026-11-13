@@ -30,7 +30,7 @@ use serde::Serialize;
 use crate::text::analyzer::{for_each_word, Analyzer};
 
 /// What mining reads and keeps.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// The rows of text read at most.
     pub max_rows: usize,
@@ -51,6 +51,33 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options { max_rows: 50_000, max_words: 3000, min_df: 3, min_cos: 0.6, per_word: 3, window: 60, min_support: 2 }
+    }
+}
+
+/// The most rows of text a mining reads ([`Options::bounded`]).
+pub const MAX_ROWS: usize = 200_000;
+/// The most words a mining embeds and compares ([`Options::bounded`]):
+/// the comparisons grow as their square.
+pub const MAX_WORDS: usize = 5_000;
+/// The least cosine a mining takes ([`Options::bounded`]): below it nearly
+/// every pair of words passes.
+pub const MIN_COS: f32 = 0.3;
+/// The most proposals for one word ([`Options::bounded`]).
+pub const MAX_PER_WORD: usize = 10;
+
+impl Options {
+    /// These options within the bounds a mining keeps to, whoever asks:
+    /// [`MAX_ROWS`], [`MAX_WORDS`], [`MIN_COS`] and [`MAX_PER_WORD`].
+    pub fn bounded(&self) -> Options {
+        Options {
+            max_rows: self.max_rows.clamp(1, MAX_ROWS),
+            max_words: self.max_words.clamp(1, MAX_WORDS),
+            min_df: self.min_df.max(1),
+            min_cos: if self.min_cos.is_nan() { MIN_COS } else { self.min_cos.clamp(MIN_COS, 1.0) },
+            per_word: self.per_word.clamp(1, MAX_PER_WORD),
+            window: self.window.max(0),
+            min_support: self.min_support.max(1),
+        }
     }
 }
 
@@ -177,30 +204,67 @@ pub fn spelled_alike(a: &str, b: &str) -> bool {
     if a.starts_with(b) || b.starts_with(a) {
         return true;
     }
-    let grams = |w: &str| -> HashSet<String> {
-        let cs: Vec<char> = format!("^{w}$").chars().collect();
-        cs.windows(3).map(|g| g.iter().collect()).collect()
-    };
-    let (x, y) = (grams(a), grams(b));
-    2.0 * x.intersection(&y).count() as f32 >= (x.len() + y.len()) as f32 * 0.5
+    alike_by(a, b, &grams(a), &grams(b))
+}
+
+/// The letter trigrams of `w` that [`spelled_alike`] compares.
+fn grams(w: &str) -> HashSet<String> {
+    let cs: Vec<char> = format!("^{w}$").chars().collect();
+    cs.windows(3).map(|g| g.iter().collect()).collect()
+}
+
+/// [`spelled_alike`] of `a` and `b`, their trigrams `x` and `y` given.
+fn alike_by(a: &str, b: &str, x: &HashSet<String>, y: &HashSet<String>) -> bool {
+    if a.starts_with(b) || b.starts_with(a) {
+        return true;
+    }
+    2.0 * x.intersection(y).count() as f32 >= (x.len() + y.len()) as f32 * 0.5
 }
 
 /// Pairs of `words` whose `vectors` (one a word, in order) are close:
 /// equivalences, each word in at most `per_word` of them, closest first.
+///
+/// Each word keeps its `2 * per_word` closest words (a short list, not
+/// every pair that passes `min_cos`), so what it holds grows with the
+/// words and not their square; the closest pairs of those lists are taken.
 pub fn by_vectors(words: &[Word], vectors: &[Vec<f32>], opts: &Options) -> Vec<Proposal> {
+    let opts = opts.bounded();
     let vs: Vec<Vec<f32>> = vectors.iter().map(|v| normalized(v)).collect();
-    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    let gs: Vec<HashSet<String>> = words.iter().map(|w| grams(&w.word)).collect();
+    let keep = opts.per_word * 2;
+    // Each word's closest: (cosine, other word), the least close first.
+    let mut best: Vec<Vec<(f32, usize)>> = vec![Vec::new(); words.len()];
+    let least = |l: &Vec<(f32, usize)>| if l.len() < keep { f32::NEG_INFINITY } else { l[0].0 };
+    let put = |l: &mut Vec<(f32, usize)>, c: f32, j: usize| {
+        let at = l.partition_point(|&(d, _)| d < c);
+        l.insert(at, (c, j));
+        if l.len() > keep {
+            l.remove(0);
+        }
+    };
     for i in 0..words.len() {
         for j in i + 1..words.len() {
             if words[i].term == words[j].term || vs[i].len() != vs[j].len() {
                 continue;
             }
             let c: f32 = vs[i].iter().zip(&vs[j]).map(|(a, b)| a * b).sum();
-            if c >= opts.min_cos && !spelled_alike(&words[i].word, &words[j].word) {
-                pairs.push((c, i, j));
+            if c < opts.min_cos || (c <= least(&best[i]) && c <= least(&best[j])) {
+                continue;
+            }
+            if alike_by(&words[i].word, &words[j].word, &gs[i], &gs[j]) {
+                continue;
+            }
+            if c > least(&best[i]) {
+                put(&mut best[i], c, j);
+            }
+            if c > least(&best[j]) {
+                put(&mut best[j], c, i);
             }
         }
     }
+    let mut pairs: Vec<(f32, usize, usize)> = best.iter().enumerate().flat_map(|(i, l)| l.iter().map(move |&(c, j)| (c, i.min(j), i.max(j)))).collect();
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| (a.1, a.2).cmp(&(b.1, b.2))));
+    pairs.dedup_by(|a, b| (a.1, a.2) == (b.1, b.2));
     pairs.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| (a.1, a.2).cmp(&(b.1, b.2))));
     let mut used = vec![0usize; words.len()];
     let mut terms: HashSet<(&str, &str)> = HashSet::new();
@@ -283,6 +347,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn options_keep_to_their_bounds() {
+        let o = Options { max_rows: 10_000_000, max_words: 20_000, min_df: 0, min_cos: -1.0, per_word: 100, window: -5, min_support: 0 }.bounded();
+        assert_eq!((o.max_rows, o.max_words, o.min_df, o.per_word, o.window, o.min_support), (MAX_ROWS, MAX_WORDS, 1, MAX_PER_WORD, 0, 1));
+        assert_eq!(o.min_cos, MIN_COS);
+        assert_eq!(Options { min_cos: f32::NAN, ..Options::default() }.bounded().min_cos, MIN_COS);
+        assert_eq!(Options::default().bounded(), Options::default());
+    }
+
+    #[test]
     fn vocabulary_counts_rows_by_term() {
         let texts = ["Blue sofa and two sofas", "a sofa bed", "Couch, blue", "the couch 2024", "couch"];
         let opts = Options { min_df: 2, ..Options::default() };
@@ -290,6 +363,21 @@ mod tests {
         assert_eq!(rows, 5);
         let got: Vec<(&str, usize)> = words.iter().map(|w| (w.word.as_str(), w.df)).collect();
         assert_eq!(got, [("couch", 3), ("blue", 2), ("sofa", 2)]);
+    }
+
+    #[test]
+    fn each_word_keeps_its_closest_and_no_more() {
+        let w = |word: &str| Word { word: word.into(), term: term(Analyzer::English, word).unwrap(), df: 3 };
+        // Two groups of three; within each, the first two closest.
+        let words = [w("sofa"), w("couch"), w("settee"), w("lamp"), w("light"), w("lantern")];
+        let vectors = vec![vec![1.0, 0.0, 0.0], vec![0.99, 0.1, 0.0], vec![0.9, 0.3, 0.0], vec![0.0, 0.0, 1.0], vec![0.0, 0.1, 0.99], vec![0.0, 0.3, 0.9]];
+        let one = Options { per_word: 1, min_cos: 0.5, ..Options::default() };
+        let ps = by_vectors(&words, &vectors, &one);
+        assert_eq!(ps.iter().map(|p| p.rule.as_str()).collect::<Vec<_>>(), ["sofa, couch", "lamp, light"], "{ps:?}");
+        let two = Options { per_word: 2, ..one };
+        let rules: Vec<String> = by_vectors(&words, &vectors, &two).into_iter().map(|p| p.rule).collect();
+        assert_eq!(rules.len(), 6, "each word in two pairs: {rules:?}");
+        assert!(rules.iter().all(|r| !(r.contains("sofa") && r.contains("lamp"))), "{rules:?}");
     }
 
     #[test]

@@ -151,3 +151,29 @@ fn an_int8_static_model_ranks_as_its_original() {
     }
     assert_eq!(ranked[0], ranked[1]);
 }
+
+#[test]
+fn embed_of_no_text_and_hash_out_of_range_are_errors_not_panics() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = notes(dir.path(), "hash:64", 64);
+    let none = Params::new();
+    // embed(*) and a named argument: one argument, no expression.
+    for sql in ["SELECT id FROM notes ORDER BY similarity(emb, embed(*)) DESC LIMIT 2", "SELECT id FROM notes ORDER BY similarity(emb, embed(q => 'codes')) DESC LIMIT 2", "SELECT id FROM notes ORDER BY similarity(raw, embed(*)) DESC LIMIT 2"] {
+        let e = fails(&db, sql, &none);
+        assert!(e.contains("embed(..) takes text"), "{sql}: {e}");
+    }
+    // hash:N with N of 0, past the vector limit, or past usize.
+    for n in ["0", "65537", "99999999999", "999999999999999999999999"] {
+        let sql = format!("SELECT embed('hash:{n}', 'x') AS v FROM notes LIMIT 1");
+        let e = fails(&db, &sql, &none);
+        assert!(e.contains("hash:N") || e.contains("hash:<dimensions>"), "{sql}: {e}");
+    }
+    assert!(chloedb::embed::open("hash:0", dir.path()).is_err());
+    assert!(chloedb::embed::open("hash:65537", dir.path()).is_err());
+    assert!(chloedb::embed::open(&format!("hash:{}", chloedb::schema::MAX_VECTOR_DIM), dir.path()).is_ok());
+    // The largest is still served.
+    run(&db, "SELECT embed('hash:65536', 'x') AS v FROM notes LIMIT 1", &none);
+    // A new field has the same limit.
+    let e = fails(&db, "CREATE TABLE big (id KEYWORD PRIMARY KEY, v VECTOR(65537))", &none);
+    assert!(e.contains("from 1 to 65536"), "{e}");
+}
