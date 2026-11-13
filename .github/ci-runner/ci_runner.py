@@ -3,10 +3,11 @@
 it and destroyed when CI has been idle, so it bills only while CI runs.
 
   ci_runner.py want     ci.yml's job `runner`: prints `label=<runs-on>`
-                        for $GITHUB_OUTPUT: the droplet's label when one of
-                        its runners is free (making the droplet, and waiting
-                        for it to come up, when there is none), otherwise
-                        ubuntu-latest. It never fails: whatever goes wrong,
+                        for $GITHUB_OUTPUT: ubuntu-latest while GitHub's
+                        free runners have room; when they are full, the
+                        droplet's label if one of its runners is free
+                        (making the droplet, and waiting for it to come up,
+                        when there is none). It never fails: whatever goes wrong,
                         the jobs run on GitHub's runners as before.
   ci_runner.py reap     ci-runner.yml: destroys the droplet once no CI run
                         has been queued or running for --idle seconds, or
@@ -61,7 +62,8 @@ def log(*a):
 def call(url, token, method="GET", body=None, ok=(200, 201, 202, 204)):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
     try:
@@ -136,11 +138,37 @@ def create(region, size, count):
     return d
 
 
+def hosted_load():
+    """(Linux jobs on GitHub's runners now, those queued for one over a
+    minute), over every workflow of this repository."""
+    running = queued = 0
+    for status in ("in_progress", "queued"):
+        for run in gh(f"/repos/{REPO}/actions/runs?status={status}&per_page=100").get("workflow_runs", []):
+            for job in gh(f"/repos/{REPO}/actions/runs/{run['id']}/jobs?per_page=100").get("jobs", []):
+                labels = set(job.get("labels") or [])
+                if LABEL in labels or any(l.startswith("macos") for l in labels):
+                    continue
+                if job["status"] == "in_progress" and job.get("runner_group_name") == "GitHub Actions":
+                    running += 1
+                elif job["status"] == "queued" and age_s(job["created_at"]) > 60:
+                    queued += 1
+    return running, queued
+
+
 def want(args):
     if env("CI_RUNNER") == "off":
         return FALLBACK, "turned off (variable CI_RUNNER)"
     if not env("DIGITALOCEAN_TOKEN") or not env("GH_ADMIN_TOKEN"):
         return FALLBACK, "no DIGITALOCEAN_TOKEN or CI_RUNNER_ADMIN_TOKEN secret (a fork's pull request has neither)"
+    # GitHub's runners cost nothing: the droplet only takes the overflow,
+    # when they are full (jobs waiting for one), or nearly (fewer than
+    # --headroom of the --limit free, since this run is about to start a
+    # dozen jobs of its own).
+    limit = int(env("CI_RUNNER_HOSTED_LIMIT", str(args.limit)))
+    running, queued = hosted_load()
+    if not queued and running + args.headroom < limit:
+        return FALLBACK, f"GitHub's runners have room ({running} of {limit} busy, none waiting)"
+    log(f"GitHub's runners are full: {running} of {limit} busy, {queued} jobs waiting")
     deadline = time.time() + args.wait
     made = False
     while True:
@@ -252,6 +280,8 @@ def main():
     w = sub.add_parser("want")
     w.add_argument("--wait", type=int, default=240, help="seconds to wait for a new droplet's runners")
     w.add_argument("--boot", type=int, default=360, help="a droplet older than this without a runner is broken")
+    w.add_argument("--limit", type=int, default=60, help="jobs GitHub runs at once for the account (CI_RUNNER_HOSTED_LIMIT)")
+    w.add_argument("--headroom", type=int, default=6, help="overflow when fewer slots than this are free")
     r = sub.add_parser("reap")
     r.add_argument("--idle", type=int, default=900)
     r.add_argument("--max-age", type=int, default=12 * 3600)

@@ -50,10 +50,11 @@ env:
 # repository: ubuntu-latest (4 cores, 16 GB) and macos-latest (3 cores,
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
-# The exception is the on-demand runner (job `runner`): a DigitalOcean
-# droplet of 16 cores that exists only while CI is busy, for the two longest
-# jobs of a change to the engine or the server, which fall back to
-# ubuntu-latest whenever it is not there.
+# The exception is the on-demand runner (job `runner`): when GitHub's
+# runners are full, the two longest jobs of a change to the engine or the
+# server go to a DigitalOcean droplet of 16 cores, which exists only while
+# it is needed; otherwise, and whenever it is not there, they run on
+# ubuntu-latest.
 #
 # macOS jobs are the scarcest: the account runs five at once. A pull
 # request, the merge queue and a push to main run only ChloeDB's tests on
@@ -120,10 +121,11 @@ jobs:
           python3 .github/scripts/ci_changes.py < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
 
   # Where the longest jobs run (chloedb-server's binary and its tests): on
-  # the on-demand runner, a DigitalOcean droplet made when CI needs it and
-  # destroyed once CI has been idle 15 minutes (.github/ci-runner/, and
-  # ci-runner.yml, which destroys it), or on GitHub's runners as before when
-  # it is off, busy, not set up or does not come up in 4 minutes. A pull
+  # GitHub's runners while they have room; when they are full, on the
+  # on-demand runner, a DigitalOcean droplet made then and destroyed once CI
+  # has been idle 15 minutes (.github/ci-runner/, and ci-runner.yml, which
+  # destroys it), unless it is off, busy, not set up or does not come up in
+  # 4 minutes. A pull
   # request from a fork never gets it: the secrets are not passed to it,
   # and the runner's job-started hook refuses its jobs (job-started.sh).
   runner:
@@ -132,6 +134,10 @@ jobs:
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # Reads how busy GitHub's runners are (the repository's runs and jobs).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       label: ${{ steps.want.outputs.label }}
     steps:
@@ -148,6 +154,8 @@ jobs:
           CI_RUNNER_SIZE: ${{ vars.CI_RUNNER_SIZE }}
           CI_RUNNER_REGION: ${{ vars.CI_RUNNER_REGION }}
           CI_RUNNER_COUNT: ${{ vars.CI_RUNNER_COUNT }}
+          CI_RUNNER_HOSTED_LIMIT: ${{ vars.CI_RUNNER_HOSTED_LIMIT }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ "$SAME_REPO" != true ]; then echo "label=ubuntu-latest" >> "$GITHUB_OUTPUT"; exit 0; fi
           python3 .github/ci-runner/ci_runner.py want >> "$GITHUB_OUTPUT"
