@@ -11,6 +11,125 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.0
+
+Apps on by default, each with a key limited to its own tables, and new
+ways to search: `chloedb-server-v0.3.0`, `chloedb-py-v0.3.0` and
+`chloedb-js-v0.3.0` (the Java package and ChloeCtx are built from source).
+The file format stays 3. Five features are new, and a database carries one
+only once it uses it: `analyzer:<name>:1` (a field of one of the new
+analyzers), `substring:1` (a substring index), `sparse_embed` (a SPARSE
+field a model fills), `derive_keyword` (a KEYWORD field derived from a
+text) and, in a plan sent to shards, `terms_syntax` (query expansion). A
+0.2.x build refuses each by name and opens or runs everything else, so a
+database that uses none of them goes back to 0.2.1 unchanged. The shard
+protocol stays 20: upgrade the shards before the coordinators, since a
+0.2.x shard refuses an expanded search by name. A key limited to tables is
+marked in the keys file so that a 0.2.x server never admits it. Tenants
+and the blackboard are experimental and off unless asked for.
+
+### What changes by default
+
+- The container image (`ghcr.io/chloetech-ai/chloedb-server`), run on its
+  own or as a coordinator outside Kubernetes, now starts three more
+  processes, as root as the image's own user is: the crawler, Sheets and
+  ChloeCtx (`--start-apps auto`; `--start-apps off` or
+  `CHLOEDB_START_APPS=off` keeps the old behaviour). On its first start ChloeCtx downloads its 129 MB embedding
+  model from huggingface.co into the container's home, again after every
+  `docker rm` unless that folder is a volume. The release archive, the
+  installer and Homebrew ship `chloedb-server` alone, so they start
+  nothing, unless `chloedb-crawl`, `chloedb-sheets` or `chloectx` sits in
+  the same folder (as in `~/.local/bin` of a ChloeCtx user). Shards,
+  replicas, TLS servers and pods in Kubernetes start none.
+- A crawl the server starts names its tables with the prefix `crawl_`.
+- Each started app holds a key limited to its own tables, never the
+  server's admin token.
+- Known gap, not a change: after the operator is upgraded to 0.2.1 or
+  later, the pods of a cluster that already existed keep running as root
+  until the cluster's settings change, because the operator runs as user
+  10001 only the pods it makes from a new template.
+- New format features, each written only by a database that uses one:
+  `analyzer:<name>:1`, `substring:1`, `sparse_embed` and `derive_keyword`.
+  A database that has one does not open in 0.2.x.
+
+### Known issues
+
+Found by the audit of 13 November 2026 and not fixed in this release; the
+fixes are planned for 0.3.1. Until then:
+
+- A key limited to tables can read the vectors of any table through a
+  `vector_of` parameter, and can move the source offset of any stream so
+  that its later events are dropped. Applying a relevance autopilot
+  proposal runs the statement stored in `relevance_proposals`, a table any
+  writer can write. Give limited keys only to programs you trust with
+  every table's vectors, and apply only proposals you made.
+- An app the server starts (`--start-apps`) is given a loopback port that
+  the server chose and released: on a machine with other local users, a
+  process that binds that port first receives the app's token and the
+  requests sent to it. Run `--start-apps off` on a shared machine.
+- A key with read scope can stop a server: `similarity(field, embed(*))`
+  panics, `embed('hash:0', ..)` divides by zero and a very large `hash:N`
+  asks for that much memory, and a `LIKE` scan is not stopped by the
+  query's deadline inside a segment.
+- `chloectx blame` (and its tab in the command center, with
+  `--local-stores`) reads any file the daemon can read, of any size.
+- `chunks_of` reads up to a million source rows whatever the query's
+  `LIMIT`, outside `--max-rows`, and `POST /v1/synonyms/mine` takes its
+  bounds from the caller with read scope.
+- Tenants: a conditional put that landed but was answered as refused is
+  taken as not committed, and a blackboard call without a `key` can then
+  be applied twice.
+- The query understanding, learned sparse fields, the relevance autopilot,
+  `PACK`, tenants and the blackboard are experimental: their options and
+  answers may change in a minor release.
+
+### Apps
+
+- chloedb-server: a server of its own or a coordinator starts the crawler,
+  Sheets and ChloeCtx itself, as child processes, when `chloedb-crawl`,
+  `chloedb-sheets` and `chloectx` are installed beside it
+  (`--start-apps`, default `auto`; `off` starts none). Each listens on a
+  loopback port, takes requests only with a token made for it at each
+  start, and calls the server back with an ephemeral key scoped to its own
+  tables, never with the server's token; it is started again when it
+  exits, and stopped when the server stops. `GET /v1/apps` lists each
+  one's process (pid, restarts, last exit, its last lines).
+- chloedb-crawl: `serve --table-prefix crawl_` names every table a crawl
+  fills with that prefix.
+- ChloeCtx: the app has an **Inspector** page in the command center: the
+  memory that `chloectx sync` copied into the cluster (`chloectx_memory`),
+  by project, each session read as the conversation it recorded, filtered
+  by kind and searched (BM25), as `chloectx ui` shows a local store
+  (`GET /v1/memory`, `/v1/memory/sessions`, `/v1/memory/records`).
+
+### Security
+
+- `chloedb-server`: keys limited to tables, and no app holds the cluster's
+  admin token (audit A1, A2, D-B10). `POST /v1/admin/keys` takes
+  `"tables": {"crawl_*": "admin", "*": "read"}`: such a key reads, writes
+  and creates only the tables its grants name, at their scope, never has
+  the server's own admin, and is refused on every route that does not
+  check tables (gRPC, OpenSearch and `/v1/mcp` too). Statements are
+  checked by every table they name, with ChloeDB's own parser, and what
+  names cannot show (table functions, `llm()`, `encode()`) is refused.
+  Its digest is marked in the keys file, so a server from before limits
+  never admits it. A server can make such a key for an app it starts,
+  in memory only (`Keys::app_key`).
+- The app proxy sends each app its own token (`--app-token-dir`, or
+  `CHLOEDB_APP_TOKEN_<NAME>`; `CHLOEDB_APP_TOKEN` stays the fallback) and
+  tells it who called: `x-chloedb-principal`, `x-chloedb-key`,
+  `x-chloedb-scope`, `x-chloedb-tables`, set by the server alone.
+- The operator gives each app beside a cluster (`spec.crawler`,
+  `spec.sheets`, `spec.chloectx`, `spec.apps`) a key limited to its tables
+  (`spec.<app>.tables`, with defaults per app) and a token of its own, in
+  a Secret `<cluster>-<app>-credentials`, once the coordinators make such
+  keys. The crawler that grows the cluster (`grow`, the default) keeps the
+  admin token as its key. The operator's role may now create, change and
+  delete Secrets, and the coordinators restart once to mount the apps'
+  tokens. An operator whose ClusterRole is older (it upgrades neither
+  itself nor its role) makes no such keys: its apps keep the admin token,
+  and it logs that `operator.yaml` should be applied again.
+
 ### Added
 
 - ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
@@ -30,6 +149,142 @@ changes collect under "Unreleased".
   new column `query` of the request's first row. A log table made before
   it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
   query KEYWORD OPTIONS(indexed = false)` adds it).
+- ChloeCtx: receipts and `chloectx blame`. Every recall (a prompt's context, the records a compaction gets back, a `memory_search` answer) writes a receipt: the store commit it read, its inputs, and each candidate's score parts, tokens and decision (`take`, `excerpt`, `knowledge`, `listed`, `skip: <reason>`, the words of ChloeDB's `PACK` receipts), with the text the agent was shown. After a recall that showed records the daemon keeps a snapshot of the store (a hard-linked checkpoint, pruned after 30 days), so `chloectx receipt ID` replays the recall exactly on the data it read, and on today's store. `chloectx blame path:line` finds the stored edit behind a line, its prompt and tool calls, and the records recalled before it, each checked against the store now (superseded, deleted, from the web). `chloectx snapshot keep|list|drop` keeps snapshots by name. Receipts are in their own file, `receipts.strata`; the store's file and format are unchanged. `memory_forget` and `chloectx redact` scrub receipts and drop the automatic snapshots. [Docs](docs/chloectx/receipts.md).
+- ChloeCtx in the command center: Receipts and Blame tabs on its page (receipts with their candidates and replay, kept snapshots, blame of a line), over this machine's Claude Code stores when `chloectx app` runs with `--local-stores` (off by default: the stores are transcripts).
+- ChloeDB and `chloedb-server`: query and content understanding.
+  - **Did you mean.** `Db::correct` and `POST /v1/correct` give the words of
+    a search that look like typos of a TEXT field's terms, and the text
+    with each replaced by the word it most likely meant.
+  - **Query expansion.** `bm25(field, :q, expand => n)` ranks by the query
+    widened with the terms of its top `n` rows (RM3), read through the
+    query's own filter; a coordinator reads them from every shard.
+  - **Understanding a search.** `bm25(field, :q, understand => 'boost' |
+    'filter', understand_fields => '...')` turns the words that name a
+    value of a KEYWORD field (a brand, a category) or a range of a number
+    ("under 300") into a boost or a filter, and ranks by the rest.
+    `Db::understand` and `POST /v1/understand` say what the words name.
+  - **Derived KEYWORD fields.** `KEYWORD OPTIONS (derive = 'body', model =
+    ...)` fills a field from a text when a row is written: `builtin:lang`
+    (the language), `builtin:keyphrases`, `builtin:minhash` (near-duplicate
+    bands), `dict:<table>.<field>` (the values of another table found in the
+    text) and `classifier:<name>`. A database with one has the feature
+    `derive_keyword`, which 0.2.x refuses by name; one without opens as
+    before. `POST /v1/derive/preview` shows what a built-in model makes of a
+    text.
+  - **Classifiers.** `CREATE [OR REPLACE] CLASSIFIER name ON table(vector)
+    LABELS column [OPTIONS (method = 'logistic' | 'centroid', ...)] [WHERE
+    ...]` trains on the table's rows and keeps the classifier as a stored
+    function `name(v)`: a row's class as a column, a query's class (computed
+    before planning, so it works in `WHERE` and boosts), and `DROP
+    CLASSIFIER`. `Db::classify`, `POST /v1/classify`, `GET
+    /v1/classifiers`. A coordinator trains on every shard's rows.
+  - **Chunks.** `SELECT ... FROM chunks_of(table, field, max_tokens => n,
+    overlap => m)` splits each row's text at headings, paragraphs and
+    sentences; `INSERT INTO t (...) SELECT ... FROM chunks_of(...)` writes
+    the chunks to a table.
+  - **A table's own synonyms.** `CREATE [OR REPLACE] SYNONYMS ON table AS
+    'rules'` and `DROP SYNONYMS ON table`: rules that `synonyms => 1` uses on
+    that table after the server's list, kept as a versioned stored function
+    that every shard holds. `GET /v1/synonyms` lists them.
+  - **Mined synonyms.** `Db::mine_synonyms` and `POST /v1/synonyms/mine`
+    propose synonyms from the vectors of a field's words or from one-word
+    rewrites in a table of searches. They are proposals only.
+  - The command center's Labs > Query understanding explores a search,
+    previews what the components make of a row, and configures classifiers
+    and synonym lists.
+  - Measured (Intel Xeon @ 2.10GHz, 4 cores): expansion raised BEIR nDCG@10
+    on NFCorpus from 0.329 to 0.346 and ArguAna from 0.362 to 0.369;
+    understanding as a boost raised WANDS from 0.707 to 0.731, and as a
+    filter lowered it to 0.631; `builtin:lang` named 96.1% of papluca's 20
+    languages right; a classifier named the class of 62.9% of WANDS's
+    queries and, as a boost, raised nDCG@10 from 0.433 to 0.439 (p =
+    0.002); mined synonyms made no measurable difference on WANDS.
+- `chloedb-server`: feedback on the command center. Any view is taken as a
+  picture in the browser (a copy of the page drawn onto a canvas, or the
+  browser's screen capture), marked up with numbered boxes, arrows, a pen,
+  text and black boxes over what must not be kept, and sent with a note
+  (`f`, or the speech bubble in the top bar). Each item is a row of table
+  `cc_feedback` with the picture, the marks and what was under each on the
+  page, the view, and its status and priority; the **Feedback** view lists
+  and triages them. `POST /v1/feedback`, `GET /v1/feedback`,
+  `GET`/`PATCH`/`DELETE /v1/feedback/:id`, `GET /v1/feedback/:id/shot`, and
+  the MCP tools `list_feedback`, `get_feedback` (the screenshot as an
+  image) and `update_feedback`, whose `if_status` lets one agent take an
+  item.
+
+### Query and indexes
+
+- Text in other languages: 24 analyzers beside `english` and `simple`,
+  chosen per field with `OPTIONS(analyzer = '...')`. `standard` reads any
+  script: it normalizes (NFKC, lowercase), takes Chinese, Japanese, Thai,
+  Lao, Khmer and Burmese words from ICU's dictionaries, makes pairs of
+  syllables the terms of Korean, and folds the accents of Latin and Greek
+  letters. `cjk` is `standard` with pairs of characters as the terms of
+  Chinese and Japanese. 22 languages add what each needs to `standard`: a
+  Snowball stemmer for 17 of them (`french`, `german`, `spanish`,
+  `arabic`, `russian` and others), a light stemmer for `hindi`, `bengali`
+  and `telugu`, and `persian` and `chinese`. On MIRACL's dev queries,
+  nDCG@10 from `english` to the best analyzer: Thai 0.289 to 0.457, Korean
+  0.262 to 0.374, Japanese 0.048 to 0.295, Chinese 0.000 to 0.197
+  ([`results/miracl`](chloedb/results/miracl/README.md), a 4-vCPU cloud
+  VM, Intel Xeon @ 2.10GHz). `english` stays the default, and its terms
+  and `simple`'s do not change. A database with a field of a new analyzer
+  carries the format feature `analyzer:<name>:1`, which a version from
+  before this one refuses by name; other databases are written as before
+  ([docs](docs/chloedb/index.md#text-in-other-languages)).
+- A substring index: a stored `TEXT` or `KEYWORD` column with one value a
+  row, declared with `OPTIONS(substring = true)`, answers `LIKE` and
+  `ILIKE` with any pattern from an FM-index of its values in each segment
+  (the Burrows-Wheeler transform of their bytes in a wavelet tree, with a
+  sample of the suffix array), where a pattern with `%` or `_` before its
+  end tested every row. The rows are the ones that test gives. On three
+  of Loghub's logs a pattern in few rows takes 0.02 to 2 ms where the
+  test of every row takes 0.6 to 4 s; the index is about as large as the
+  text it indexes, and loading and merging take 1.3 to 3.6 times as long
+  ([`results/substring`](chloedb/results/substring/README.md), a 4-core
+  cloud VM, Intel Xeon @ 2.10GHz). A database with such a column carries the
+  format feature `substring:1`, which a version from before this one
+  refuses by name; other databases are written as before. `ESCAPE` is not
+  taken on a pattern the index answers
+  ([docs](docs/chloedb/query-language.md#substrings-like-and-ilike-anywhere-in-a-value),
+  [format](chloedb/notes/substring.md)).
+- **Learned sparse fields embedded by a model.** A `SPARSE` field can name a learned sparse model (`"embed": {"from": ["body"], "model": "..."}`; `sp SPARSE OPTIONS(embed = 'body', model = '...')`), as a `VECTOR` field names an embedding model: writes that leave it out get their text's term weights, an `UPDATE` of a source weighs it again, rows stored before the model opened are filled in, and `{"embed": "text", "field": "sp"}` (`Db::embed_query_in`) gives a query's weights from the model's IDF table, with no model run at query time. The model is an ONNX export with an `idf.json` (`chloedb::embed::SparseEncoder`, feature `onnx`; `research/cpu-encoders/sparse_onnx_export.py` writes OpenSearch's doc-v3-distill in int8). Fused with BM25 it came within 1.2 to 1.8 points of nDCG@10 of granite-small-r2's dense vectors on SciFact, NFCorpus and ArguAna, at 50 to 80 times their queries a second ([docs](docs/chloedb/server.md#term-weights-of-a-learned-sparse-model)).
+- **ONNX embedding models.** A models directory holding `model.onnx` (an encoder's export, such as ModernBERT's granite-embedding-small-english-r2 in int8) opens as an embedding model (`OnnxEmbedder`, feature `onnx`), with CLS or mean pooling and the query prompt from its sentence-transformers files.
+- **Static models in int8, f16 and bf16.** `StaticEmbedder` reads Model2Vec tables stored in int8 (with a scale), f16 or bf16, and Model2Vec's token weights and mapping: potion-retrieval-32M in int8 is 30 MB instead of 129, within 0.002 nDCG@10 on SciFact (0.6315 against 0.6331).
+
+### Static embeddings
+
+- SQL embeds the text it gives where a vector goes. On a field a model
+  embeds, `ORDER BY similarity(emb, 'some words') DESC` (or `:q` bound to
+  a string, `distance`, `maxsim`, `similarity(emb, embed(:q))`) embeds
+  the text as a query by the field's own model when the query is planned:
+  in the database from Rust, Python and JavaScript, and on a server's
+  embedding cores, as `{"embed": "text"}` parameters are. Before, text
+  there was refused. `embed('model', text)` is the query vector of a
+  text by a model named, wherever a vector goes; it takes a model's name
+  (as `llm()` does, never a path), and a model behind an API only when a
+  field uses it. A stored function can no longer be named `embed`.
+- `potion-retrieval-32M-int8` and `potion-base-8M-int8`: the Model2Vec
+  models with their tables in int8, 31 MB and 7 MB instead of 123 MB and
+  29 MB, within 0.004 nDCG@10 of the originals on SciFact, NFCorpus and
+  ArguAna. `chloedb-server fetch-model` fetches the pinned original and
+  writes the copy; `chloedb-server quantize-model` (and
+  `chloedb::embed::quantize_static`) writes any Model2Vec model in int8 or
+  F16, the same bytes on every machine.
+- The static embedder reads tables in F16, BF16 and I8 besides F32, and
+  Model2Vec's `weights` and `mapping` tensors, without which a newer
+  Model2Vec model was embedded wrongly.
+- The command center's **Models** page (Data): each vector field's model,
+  how it makes vectors (static, transformer, late interaction, hosted) and
+  how the field is searched and stored, and the models on the server with
+  their size, precision and the fields that use them. A field changes
+  model or technique without stopping searches: a new field is added
+  beside it and filled in, the two are compared on the same words, then
+  renamed into place, and the old vectors are dropped (or the switch
+  undone). `GET /v1/models` says each model's technique, precision, size
+  and fields; `POST /v1/admin/models/fetch` and
+  `POST /v1/admin/models/convert` fetch a model, or write a static one's
+  table in int8, in the background.
 
 ### App engine
 
@@ -58,6 +313,48 @@ changes collect under "Unreleased".
 - App engine: `GET /api/events?after=N` gives the studio's live events to a
   page that cannot hold a stream open (chloedb-server forwards whole
   answers), and `GET /api/kit` the frames' runtime and policy.
+- App engine: a published app stays open when a read of the published apps
+  fails (it kept closing every one, answering 401, while the cluster was
+  slow), and a visitor can do less: a visitor's `/error`, or a function
+  that fails on a visitor's call, starts no repair; `/people` gives
+  visitors names and roles but no emails; a visitor's `/fetch` takes none
+  of their options and adds no host to the owner's list, and `/ask` takes
+  only `json`; a public sign-up is a member, never the owner.
+
+### Experimental
+
+- Tenants: a database kept whole in an object store (a directory, or S3
+  and the stores that speak its API), committed by replacing one `HEAD`
+  object on the condition that it is unchanged, so that of two nodes
+  writing one tenant the store refuses the later. `chloedb::tenant` in
+  the engine, and `chloedb-server --tenants URL` with admin routes under
+  `/v1/admin/tenants`. It is a first slice of the 0.7.0 design
+  ([docs/design/0.7.0-file-per-agent.md](docs/design/0.7.0-file-per-agent.md)),
+  off unless asked for, and its layout (`layout: 0`) may change without a
+  migration ([docs/chloedb/tenants.md](docs/chloedb/tenants.md)).
+  Writes of one handle that wait for a commit share the next one; a
+  handle takes its working copy up again after a restart; the server
+  closes idle tenants (`--tenant-idle-s`, `--tenant-open-max`), lists
+  them (`GET /v1/admin/tenants`), and has `chloedb-server tenants
+  check-store URL` and `tenants list URL`.
+- A blackboard for agents, on a tenant: tasks claimed under leases,
+  findings kept once, a timeline, and calls applied once when sent again
+  with their key. `chloedb::blackboard` in the engine; on the server a
+  tenant made with `"template": "blackboard"`, its tools at
+  `POST /v1/admin/tenants/:id/board/:tool` and as an MCP server at
+  `POST /v1/admin/tenants/:id/mcp?agent=NAME`
+  ([docs/chloedb/tenants.md](docs/chloedb/tenants.md#a-blackboard-for-agents)).
+- `chloedb::storage::ObjectStore` has conditional writes, whole-object
+  reads and listing (`put_if_absent`, `put_if_version`, `get`, `list`,
+  `list_dirs`, `get_file`), on the directory store and on S3. A store written outside
+  this repository keeps compiling: the new methods default to an error.
+
+### Fixed
+
+- `chloedb-server`: its own reads (a classifier's training rows, the rows
+  `chunks_of` splits) are not held to `--max-rows`, and a query that
+  computes a classifier or `llm()` per row reads no more rows than
+  `--max-rows`.
 
 ## 0.2.1
 

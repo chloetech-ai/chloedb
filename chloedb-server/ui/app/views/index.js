@@ -39,12 +39,14 @@ import autopilot from "./autopilot.js";
 import recsys from "./recsys.js";
 import sid from "./sid.js";
 import autocomplete from "./autocomplete.js";
+import understand from "./understand.js";
 import media from "./media.js";
 import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
+import feedback from "./feedback.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, feedback];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -79,6 +81,7 @@ export const NAV = [
     { id: "connections", title: "Connections", icon: "key", scope: "admin" },
     { id: "clusters", title: "All clusters", icon: "cluster", scope: "admin" },
     { id: "follow", title: "Follow", icon: "share", scope: "admin" },
+    { id: "feedback", title: "Feedback", icon: "feedback", key: "f", scope: "write" },
   ]],
   ["Data", [
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
@@ -97,6 +100,7 @@ export const NAV = [
     { id: "recsys", title: "Recsys eval", icon: "recsys" },
     { id: "sid", title: "Semantic IDs", icon: "sid" },
     { id: "autocomplete", title: "Autocomplete", icon: "autocomplete" },
+    { id: "understand", title: "Query understanding", icon: "sparkle" },
     { id: "media", title: "Media search", icon: "media" },
     { id: "graph", title: "Graph explorer", icon: "graph" },
     // CON-1: the old console (#/classic) is out of the nav: its tools are

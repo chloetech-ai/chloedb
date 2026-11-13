@@ -9,6 +9,11 @@
 //   #/app/chloectx/space/<name> one space: ask it (what went in and why), its notes,
 //                               and apps made from it by the cluster's app engine
 //   #/app/chloectx/seen         Seen before: firing alerts beside past incidents
+//   #/app/chloectx/inspector    Inspector: Claude Code's memory that chloectx sync
+//                               copied here (table chloectx_memory), by project
+//   #/app/chloectx/inspector/<project>[/<session>]
+//                               a project's sessions, kinds and search; a session
+//                               read as the conversation it recorded
 //   #/app/chloectx/receipts[/<store>[/<id>]]
 //                               Receipts: what each recall of a Claude Code
 //                               store showed and why, replayed on its snapshot
@@ -138,7 +143,27 @@ const CSS = `
 .cx-blameq input.input { flex: 1 1 320px; font-family: var(--mono); }
 .cx-causes { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
 .cx-cost { padding: 10px 12px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 13px; line-height: 1.45; }
+.cx-insp { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cx-sess { list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow: auto; }
+.cx-sess > li > a { display: grid; gap: 2px; padding: 8px 10px; border-radius: var(--r-sm); text-decoration: none; color: inherit; border: 1px solid transparent; }
+.cx-sess > li > a:hover { background: var(--surface-2); }
+.cx-sess > li > a.on { border-color: var(--accent); background: var(--accent-soft); }
+.cx-sess .mono { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-sess .cx-why { margin: 0; }
+.cx-filter { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.cx-filter input.input { flex: 1 1 220px; min-width: 0; }
+.cx-rec { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.cx-rec:first-child { border-top: 0; }
+.cx-rec:hover .cx-text { color: var(--accent); }
+.cx-rec .cx-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.cx-rec.tool .cx-text { font-family: var(--mono); font-size: 12px; -webkit-line-clamp: 2; color: var(--text-2); }
+.cx-rec.turn { margin-top: 10px; border-top: 1px solid var(--line-2); }
+.cx-full { font-family: var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; margin: 0; }
+.cx-dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; margin: 12px 0; }
+.cx-dl dt { color: var(--muted); }
+.cx-dl dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 900px) {
+  .cx-insp { grid-template-columns: minmax(0, 1fr); }
   .cx-split, .cx-alert { grid-template-columns: minmax(0, 1fr); }
   .cx-form .cx-two { grid-template-columns: minmax(0, 1fr); }
 }`;
@@ -167,6 +192,7 @@ function render(el, ctx) {
     const main = el.closest("main");
     if (main) main.scrollTop = 0;
     stop = path[0] === "seen" ? seenPage(root, ctx)
+      : path[0] === "inspector" ? (path[1] ? projectPage(root, ctx, path[1], path[2]) : inspectorPage(root, ctx))
       : path[0] === "receipts" ? receiptsPage(root, ctx, path[1], path[2])
       : path[0] === "blame" ? blamePage(root, ctx, path[1], path[2])
       : path[0] === "space" && path[1] ? spacePage(root, ctx, path[1]) : homePage(root, ctx);
@@ -180,7 +206,7 @@ function render(el, ctx) {
 
 function tabs(ctx, on) {
   const { seg } = ctx.core;
-  return seg([["context", "Context"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]], on,
+  return seg([["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]], on,
     (v) => { location.hash = v === "context" ? ctx.href() : v === "receipts" || v === "blame" ? ctx.href(v, ...(pickedStore() ? [pickedStore()] : [])) : ctx.href(v); });
 }
 
@@ -755,13 +781,125 @@ function incidentForm(ctx, old, done, from) {
   };
 }
 
+// ---------------------------------------------------------------- Inspector: Claude Code's memory
+
+// What each kind of record is, and its colour: as `chloectx ui` shows a local store.
+const REC = {
+  prompt: ["var(--s1)", "Prompt"], answer: ["var(--s2)", "Answer"], tool_call: ["var(--line-2)", "Tool call"], tool_result: ["var(--line-2)", "Tool result"],
+  error: ["var(--crit)", "Error"], episode: ["var(--s3)", "Episode"], summary: ["var(--s3)", "Summary"], decision: ["var(--s4)", "Decision"],
+  preference: ["var(--s7)", "Rule"], fact: ["var(--s5)", "Fact"], todo: ["var(--s6)", "To do"], note: ["var(--s5)", "Note"], entity: ["var(--muted)", "Entity"],
+};
+const when = (secs) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–");
+
+function inspectorPage(root, ctx) {
+  const { h, empty, failure, fmt, sqlBlock } = ctx.core;
+  root.append(header(ctx, "inspector", "Inspector",
+    "What Claude Code sessions remembered, as chloectx sync copies each machine's memory into this cluster: by project, session by session, with the decisions, rules and facts the distiller wrote down. It only reads."));
+  const list = h("div", { class: "cx-spaces" }, h("div", { class: "muted small" }, "Loading the projects…"));
+  root.append(list);
+  (async () => {
+    let j;
+    try { j = await ctx.api("/v1/memory"); }
+    catch (e) { list.replaceChildren(failure(e, "The memory")); return; }
+    const server = location.origin;
+    if (!j.exists || !j.projects.length) {
+      list.style.display = "block";
+      list.replaceChildren(empty("layers", j.exists ? "No project synced yet" : "Nothing synced to this cluster yet",
+        "On a machine where ChloeCtx records Claude Code, point its sync at this server once; the daemon then sends what it records every 30 seconds.",
+        h("pre", { class: "code cx-code", style: { textAlign: "left" } }, `chloectx sync setup --url ${server} --token-stdin <<< "$KEY"\nchloectx sync push`)));
+      return;
+    }
+    list.replaceChildren(...j.projects.map((p) => h("a", { class: "card cx-space", href: ctx.href("inspector", p.project) },
+      h("div", { class: "row", style: { justifyContent: "space-between", gap: "8px" } }, h("h4", { class: "mono" }, p.project)),
+      h("p", {}, p.last ? "last recorded " + when(p.last) : ""),
+      h("div", { class: "cx-counts" }, h("span", {}, fmt.plural(p.sessions, "session")), h("span", {}, fmt.plural(p.records, "record"))))));
+    root.append(ctx.core.card({ title: "In SQL", sub: `the rows of ${j.table}`, body: sqlBlock(`SELECT project, session, kind, content, ts FROM ${j.table} WHERE kind IN ('decision', 'preference', 'fact') ORDER BY ts DESC LIMIT 20`) }));
+  })();
+  return null;
+}
+
+function projectPage(root, ctx, project, session) {
+  const { h, empty, failure, fmt, card } = ctx.core;
+  root.append(header(ctx, "inspector", project, null, null, [h("a", { href: ctx.href("inspector") }, "Inspector"), " / ", h("span", { class: "mono" }, project)]));
+  const sessions = h("ul", { class: "cx-sess" }, h("li", { class: "muted small" }, "Loading…"));
+  const q = h("input", { class: "input", type: "search", placeholder: "Search this project's memory (BM25), and press Enter" });
+  const kinds = h("div", { class: "cx-kinds" });
+  const out = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
+  const more = h("div", { style: { marginTop: "8px" } });
+  let kind = "", oldest = null;
+  const title = h("span");
+  root.append(h("div", { class: "cx-insp" },
+    card({ title: "Sessions", sub: "the latest first", body: sessions }),
+    card({ title, body: h("div", {}, h("div", { class: "cx-filter" }, q, kinds), out, more) })));
+  const base = () => `/v1/memory/records?project=${encodeURIComponent(project)}` + (session ? `&session=${encodeURIComponent(session)}` : "") + (kind ? `&kind=${kind}` : "");
+  async function records(append) {
+    const text = q.value.trim();
+    title.textContent = text ? `Best matches for “${text}”` : session ? `Session ${session.slice(0, 12)}, as recorded` : kind ? `The latest ${(REC[kind] || [, kind])[1].toLowerCase()} records` : "The latest records";
+    let j;
+    try { j = await ctx.api(base() + (text ? `&q=${encodeURIComponent(text)}` : "") + (append && oldest != null ? `&before=${oldest}` : "") + "&limit=200"); }
+    catch (e) { out.replaceChildren(failure(e, "The records")); return; }
+    const rs = j.records || [];
+    if (!append) out.replaceChildren();
+    if (!rs.length && !append) out.append(empty("search", "Nothing", text ? "No record matches." : "No record of this kind."));
+    let lastTurn = null;
+    for (const r of rs) {
+      const [color, label] = REC[r.kind] || ["var(--muted)", r.kind];
+      const tool = r.kind === "tool_call" || r.kind === "tool_result";
+      const newTurn = session && !text && lastTurn != null && r.turn !== lastTurn;
+      lastTurn = r.turn;
+      out.append(h("div", { class: "cx-rec" + (tool ? " tool" : "") + (newTurn ? " turn" : ""), onclick: () => recordDrawer(ctx, project, r) },
+        h("i", { class: "cx-sw", style: { background: color } }),
+        h("div", {}, h("div", { class: "cx-text" + (r.tag === "superseded" ? " old" : "") }, r.text),
+          h("div", { class: "cx-why" }, h("span", { class: "badge" }, label), h("span", {}, when(r.ts)), session ? h("span", {}, `turn ${r.turn}`) : h("a", { href: ctx.href("inspector", project, r.session), onclick: (e) => e.stopPropagation(), class: "mono" }, r.session.slice(0, 12)),
+            r.tag && r.tag !== "-" ? h("span", {}, r.tag) : null, r.files ? h("span", { class: "mono" }, r.files.split(/[,\n]/)[0]) : null))));
+    }
+    oldest = rs.length ? rs.reduce((m, r) => Math.min(m, r.seq), Infinity) : oldest;
+    more.replaceChildren(j.more && !text && !session ? h("button", { class: "btn sm", onclick: () => records(true) }, "Older records") : j.more ? h("div", { class: "cx-hint" }, "Showing the first 200.") : "");
+  }
+  q.onkeydown = (e) => { if (e.key === "Enter") { oldest = null; records(false); } };
+  q.onsearch = () => { if (!q.value) { oldest = null; records(false); } };
+  (async () => {
+    let j;
+    try { j = await ctx.api(`/v1/memory/sessions?project=${encodeURIComponent(project)}`); }
+    catch (e) { sessions.replaceChildren(h("li", {}, failure(e, "The sessions"))); return; }
+    const by = j.by_kind || {};
+    const chip = (k, label) => h("button", { class: "chip", "aria-pressed": String(kind === k), onclick: () => { kind = k; oldest = null; for (const c of kinds.children) c.setAttribute("aria-pressed", String(c.dataset.k === k)); records(false); }, "data-k": k }, label);
+    kinds.replaceChildren(chip("", "All"), ...Object.keys(REC).filter((k) => by[k]).map((k) => chip(k, `${REC[k][1]} ${fmt.n(by[k])}`)));
+    const ss = j.sessions || [];
+    sessions.replaceChildren(
+      h("li", {}, h("a", { href: ctx.href("inspector", project), class: session ? "" : "on" }, h("b", {}, "Every session"), h("div", { class: "cx-why" }, fmt.plural(ss.length, "session")))),
+      ...ss.map((s) => h("li", {}, h("a", { href: ctx.href("inspector", project, s.session), class: s.session === session ? "on" : "" },
+        h("span", { class: "mono" }, s.session), h("div", { class: "cx-why" }, h("span", {}, when(s.last)), h("span", {}, fmt.plural(s.turns, "turn")), h("span", {}, fmt.plural(s.records, "record")))))));
+  })();
+  records(false);
+  return null;
+}
+
+/** One record in full, in a drawer. */
+function recordDrawer(ctx, project, r) {
+  const { h, drawer } = ctx.core;
+  const [, label] = REC[r.kind] || [null, r.kind];
+  const row = (k, v) => (v || v === 0 ? [h("dt", {}, k), h("dd", {}, v)] : null);
+  drawer({
+    title: label,
+    sub: `${project} · ${when(r.ts)}`,
+    body: h("div", {},
+      h("pre", { class: "cx-full" }, r.text + (r.cut ? "\n…" : "")),
+      h("dl", { class: "cx-dl" },
+        row("Session", h("a", { href: ctx.href("inspector", project, r.session), class: "mono" }, r.session)),
+        row("Turn", `${r.turn} (record ${r.seq})`), row("Tag", r.tag && r.tag !== "-" ? r.tag : null), row("Importance", r.importance ? r.importance.toFixed(2) : null),
+        row("Files", r.files ? h("span", { class: "mono" }, r.files) : null), row("Id", h("span", { class: "mono" }, r.id)),
+        row("Links", r.links?.length ? r.links.map((l) => `${l.label} ${l.to}`).join(", ") : null)),
+      r.context ? [h("div", { class: "cx-sub" }, "Context"), h("pre", { class: "cx-full", style: { color: "var(--text-2)", fontSize: "12px" } }, r.context)] : null),
+  });
+}
+
 // ---------------------------------------------------------------- Receipts and Blame (local stores)
 
 const STORE_KEY = "chloectx.store";
 function pickedStore() { try { return localStorage.getItem(STORE_KEY) || ""; } catch { return ""; } }
 function pickStore(id) { try { localStorage.setItem(STORE_KEY, id); } catch { /* private window */ } }
 const short = (s, n = 8) => (s || "").slice(0, n);
-const when = (secs) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–");
 const SHOWN = new Set(["take", "excerpt", "knowledge", "listed", "briefing"]);
 const DEC_TITLE = {
   take: "Shown whole", excerpt: "Shown as a snippet", knowledge: "A rule, decision or fact shown on its own text, ahead of the gate",
