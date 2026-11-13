@@ -309,6 +309,7 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <li><strong>Ask</strong>: a question, answered as an agent would be: the note that answers it first, the rules that apply, what else bears on it and what past conversations said, then the scores behind each (BM25, cosine, section, tokens), what was left out and why, and the context as the agent gets it. A link carries the question (<code>…/ask/&lt;question&gt;</code>). A synced project, which has no store to build a context from, answers with its records ranked by BM25.</li>
 <li><strong>Memories</strong>: every note, by kind, current or with its history; a note opens on the versions it replaced and those that replaced it. A team space's notes can be replaced or retired here.</li>
 <li><strong>Sessions</strong>: each session titled by its first prompt, read as the conversation it recorded: turn by turn, the prompt, the tool calls (folded), the answer and the notes written down from the turn. <em>Every record</em> searches all of them (BM25) and filters by kind. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id.</li>
+<li><strong>Graph</strong>: how its memory is connected: each note (a circle, by kind; a replaced one hollow), the subjects it is about (entities, larger the more notes name them), the files it touched, the session it came from (off by default) and the note it replaced (a dashed link). A click lights up a node's neighbours and lists them, with its history, its session, <em>Ask about it</em> or <em>Blame it</em>; a search finds a subject, file or note; the link carries the selected node (<code>…/graph/e:refund</code>).</li>
 <li><strong>Connect</strong>: how to use the space. A team space: the <code>claude mcp add</code> line with a key limited to its table, the HTTP calls and the SQL that read it, and apps built from it. A Claude Code project: its MCP tools, its CLI, and how to sync it here.</li>
 <li><strong>Receipts</strong>, <strong>Blame</strong>, <strong>Snapshots and capsules</strong>: a store of this machine only (<a href="chloectx-receipts.html#in-the-command-center">Receipts and blame</a>).</li>
 </ul>
@@ -336,12 +337,16 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <td><code>{records, more}</code>: a session's in order, else the latest first (<code>before</code>, a <code>seq</code>, pages back), or the best matches for <code>q</code> (BM25); at most 500</td>
 </tr>
 <tr>
+<td><code>GET /v1/spaces/:s/graph</code></td>
+<td><code>{nodes, edges}</code>: nodes <code>{id, type, label}</code> of type <code>note</code> (with <code>kind</code>, <code>text</code>, <code>tag</code>, <code>current</code>, <code>ts</code>, <code>session</code>), <code>entity</code>, <code>file</code> (<code>f:&lt;path&gt;</code>) and <code>session</code> (<code>s:&lt;id&gt;</code>, its title); edges <code>{s, t, label}</code>: <code>about</code>, <code>touches</code>, <code>from</code> (the session) and <code>supersedes</code>; the newest 1,500 notes</td>
+</tr>
+<tr>
 <td><code>GET /v1/memory</code></td>
 <td><code>{table, exists, projects: [{project, records, sessions, last}], create}</code> (<code>create</code>: the table's <code>CREATE TABLE</code>)</td>
 </tr>
 <tr>
-<td><code>GET /v1/memory/overview?project=</code>, <code>/v1/memory/notes?project=&amp;kind=&amp;all=1</code></td>
-<td>a synced project's overview and notes, as a space's</td>
+<td><code>GET /v1/memory/overview?project=</code>, <code>/v1/memory/notes?project=&amp;kind=&amp;all=1</code>, <code>/v1/memory/graph?project=</code></td>
+<td>a synced project's overview, notes and graph, as a space's</td>
 </tr>
 <tr>
 <td><code>GET /v1/memory/sessions?project=</code>, <code>/v1/memory/records?project=&amp;…</code></td>
