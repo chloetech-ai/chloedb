@@ -974,3 +974,114 @@ Each part first builds its UI on fixtures in the levels mock
 (`ui/dev/levels-mock.mjs`) and screenshots it dark and light at 1440x900
 into `/mnt/project-files/workbench/fourth/` (`<n>-<name>-{dark,light}.png`),
 then the backend, then the UI against the real API.
+
+### Health as built (rows 4 and 5)
+
+**Capture.** `testruns::after_hook` runs after each hook is recorded
+(`server.rs`'s `hook`, one line): a Bash `PostToolUse` or
+`PostToolUseFailure` whose command `flow::is_test` takes for a test run is
+parsed on a thread; an Edit, Write, MultiEdit or NotebookEdit becomes a row
+of `file_edits`; each hook's `transcript_path` is remembered for the
+tokens. Claude Code fires no `PostToolUse` for a failed Bash call, and
+Workbench's sessions do not register `PostToolUseFailure`, so at `Stop`
+the turn's test calls that had none are read from the transcript's
+`tool_result` (with `is_error`) instead. Parsers: cargo test and nextest
+(`test x ... ok|FAILED|ignored`, `<0.012s>` from `--report-time`, the
+`---- x stdout ----` sections as the error), pytest (`-v` lines, `PASSED
+[ 50%]`, `--durations`, the short summary, the `___ name ___` sections),
+jest and vitest (✓ ✕ ↓ lines under their file and describe blocks, `●`
+sections), go test (`--- PASS: TestX (0.01s)` as `pkg › TestX`). A command
+none parses is one row named by the command, passed when it exited 0. A
+test's `ms` is its own when the output gives it, else the run's (PreToolUse
+to Post), and `own_ms` says which.
+
+**Tables** (in `db.rs`): `test_runs` (one row per test per run: `run`,
+`repo`, `agent`, `"commit"` (quoted: `commit` is a reserved word), `tree`
+(a hash of `git diff HEAD` and the untracked files, `clean` without them),
+`runner`, `command`, `test`, `outcome` passed|failed|skipped, `passed`,
+`ms`, `own_ms`, `run_ms`, `exit_code`, `error`, `use_id`, `ts`, `seq` (the
+PreToolUse's event, which Story's steps carry)); `file_edits` (`repo`,
+`agent`, `file` relative to the agent's checkout, so worktrees compare,
+`tool`, `ts`, `seq`); `token_use` (one row per assistant message of a
+transcript, keyed by its id: `input` (with cache writes), `output`,
+`cache_read`, `ts`; read incrementally before each evaluation, the last
+16 MiB the first time); `alert_rules`; `alert_firings` (`rule`, `entity`,
+`agent`, `file`, `value`, `summary`, `state` firing|silenced|resolved,
+`started`, `last_seen`, `ended`, `misses`, `agents`, `incident`);
+`incidents` (`title`, `severity`, `state` open|resolved, `agents`, `files`,
+`rules`, `actions` as JSON, `needs_you`).
+
+**Rules.** A rule is one SELECT (or WITH … SELECT, no `;`) whose rows name
+`entity` and `v`, and may name `agent`, `file`, `repo`, `detail`; `:since`
+(now minus the window), `:now` and `:repo` are bound when the SQL names
+them. A row whose `v` passes `cmp` (`> >= < <= = !=`) and `threshold` is a
+firing keyed by rule, entity and agent; one not seen in 2 runs in a row is
+resolved. The rules run every 30 s, and on `POST /api/alerts/check`.
+Built-ins (switched off, not deleted): `test-refail` (a test failing 5
+times in an hour for one agent; ask), `tokens-hour` (input and output
+tokens over 400k in an hour; notify), `same-file` (2 agents editing a path
+in 30 min; notify), `idle-asked` (an agent idle or waiting while its
+question has been open 10 min; notify). A firing joins an open incident of
+its repository that still fires or changed in the last 10 min and shares
+an agent or a file with it (one that names neither joins one of the same
+rule), else opens one; an incident resolves when none of its firings
+fires. Actions run once per incident and rule: **notify** sets
+`needs_you`, and app.js lists those incidents in Needs you after the
+agents (a click opens the board); **ask** writes a question of kind
+`alert` for the agent (Pause it / Tell it to stop and report / Let it carry
+on), and its answer is carried out (Esc, a steer, nothing; other words are
+steered as they are); **pause** sends Esc to the agent's terminal. You
+resolving an incident silences its firings until they stop, so it does not
+open again at once, and expires its open questions.
+
+**Endpoints.** `GET /api/incidents?state=open|resolved|all&repo=`
+(`incidents`, `counts`, `agents`, `eval_every_s`, `last_eval_ms`);
+`GET /api/incidents/:id` (`incident`, `board`: `firings`, `sentences` (each
+agent's narration), `events` (the agents' events from 6 min before it to
+its end, an alert's as kind `fired`), `tests` (the tests its test rules
+named, with their last 20 runs), `error`, `related` (ChloeCtx's decisions,
+preferences and facts naming its files, by `chloectx sql --json`, asked at
+most once a minute), `window`, `missing`); `POST /api/incidents/:id/resolve`;
+`POST /api/incidents/:id/act {kind: notify|ask|pause, agent?}`;
+`GET|POST /api/alerts/rules`, `PATCH|DELETE /api/alerts/rules/:id` (a
+built-in answers 409 to DELETE; SQL that does not run is refused with 400);
+`POST /api/alerts/test {sql, cmp, threshold, window_s, repo?}` (`ok`,
+`columns`, `rows` (200 at most), `count`, `ms`, `would_fire`, `params`,
+`note`, `error`); `POST /api/alerts/check`. `GET /api/tests?repo=&days=7`
+(`totals`, `tests` (per test: runs, pass rate, `p50_ms`, `p99_ms`, `flaky`
+and why, `newly_failing`, `slow`, `last`, the last 20 runs), `commands`,
+`agents`, `percentiles`, `missing`); `GET /api/tests/history?repo=&test=`;
+`GET /api/tests/runs?agent=` (Story's chip). Without `repo`, the
+repository most agents work in.
+
+**Verdicts.** Flaky: passed and failed on one commit with the same tree,
+or two flips within a day with no new commit. Newly failing: its last run
+failed and one before it passed. Slow: p99 at least 5 s, or at least 1 s
+and three times its p50.
+
+**MCP.** `list_incidents {state?}` and `test_history {test?, days?}`
+answer text, for the caller's repository.
+
+**UI.** `ui/levels/health.js` (`#/health`, level 1, a count of open
+incidents on the nav as `lvn-health`): Incidents (open and resolved; the
+board: what fires with a meter against the threshold, what the agents say,
+the error, the tests in it, Done about it, the events around it, what
+ChloeCtx knows of its files; Pause, Ask me in Decide, Resolve), Rules (the
+SQL, the tables it may read, comparison, threshold, window, severity,
+action; ⌘↵ tests it now and highlights the rows it would fire on), Tests
+(a radar of p50 against failure rate, the flaky, newly failing and slow
+lists, every test with its runs, the recent commands). `1` `2` `3` switch
+tabs. `ui/levels/test-chip.js`, mounted on Story's `run` steps: "41 passed ·
+2 failed · 1 flaky" for the runs of that step, opening Health's Tests.
+Fixtures: `ui/dev/fixtures/health.mjs`.
+
+**Deviations.** p50 and p99 come from `approx_percentile(ms, 0.5)` and
+`(ms, 0.99)` over `test_runs` grouped by test; when that form is not there
+(an older ChloeDB) they are computed in Rust from the rows (nearest rank),
+and `percentiles` says `rust`. Incidents group by a shared agent or file,
+not by repository alone (that grouped every firing of a busy repository
+into one). `tokens-hour` reads tokens from transcripts, so an agent
+without one counts none. Firings in a repository Workbench has no agent in
+carry the rule's repository, or none. Workbench's sessions do not register
+`PostToolUseFailure`; adding it to `supervisor::settings_json` would let a
+failed run be recorded as it ends rather than at `Stop`.

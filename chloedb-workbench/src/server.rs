@@ -133,6 +133,9 @@ pub fn router(app: App) -> Router {
         .merge(crate::flow::routes())
         .merge(crate::levels::routes())
         .merge(crate::ctxwire::routes())
+        // Health: alerts, incidents and the test radar.
+        .merge(crate::alerts::routes())
+        .merge(crate::testruns::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -182,6 +185,8 @@ const LEVELS: &[(&str, &str)] = &[
     ("flow.js", include_str!("../ui/levels/flow.js")),
     ("away.js", include_str!("../ui/levels/away.js")),
     ("setup.js", include_str!("../ui/levels/setup.js")),
+    ("health.js", include_str!("../ui/levels/health.js")),
+    ("test-chip.js", include_str!("../ui/levels/test-chip.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -346,6 +351,7 @@ async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiRes
     // "Delivery"): `output` is the hook's JSON output, or null.
     let output = blocking(move || {
         sup.hook(&id, v.clone())?;
+        crate::testruns::after_hook(&sup, &id, &v);
         Ok(crate::levels::after_hook(&sup, &lv, &id, &v))
     })
     .await?;
@@ -486,6 +492,7 @@ async fn ask(State(app): State<App>, body: Bytes) -> ApiResult {
 /// Serves until SIGINT or SIGTERM, then stops the agents and exits.
 pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Result<()> {
     let sup = app.sup.clone();
+    crate::alerts::start(app.sup.clone(), app.lv.clone());
     let router = router(app);
     let server = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
     tokio::select! {

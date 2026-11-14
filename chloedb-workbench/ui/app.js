@@ -2704,8 +2704,8 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
 // between Intent, Plan, Story, Changes and Terminal for what is in focus.
 
-const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away"];
-const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, story: 2, map: 3, preview: 3, grid: 4, zoom: 4 };
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health"];
+const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, story: 2, map: 3, preview: 3, grid: 4, zoom: 4 };
 const L = { screen: null, param: null, view: null, req: 0, recent: [], focus: null };
 
 function levelCtx(param) {
@@ -2883,9 +2883,38 @@ function renderLevels() {
   const badge = $("lvn-decide");
   badge.hidden = !waiting;
   badge.textContent = String(waiting);
+  renderHealth();
   if (L.view) {
     try { L.view.update(levelState()); } catch (err) { console.error(err); }
   }
+}
+
+// Health (SPEC.md, "Fourth build", row 4): the open incidents' count on
+// the Health link, and those a rule's notify or ask put in Needs you as
+// items of the rail, after the agents'. Fetched at most every 15 s.
+const HL = { at: 0, busy: false, open: [] };
+function renderHealth() {
+  if (!S.token) return;
+  if (!HL.busy && Date.now() - HL.at > 15000) {
+    HL.busy = true;
+    api("/api/incidents?state=open").then((j) => { HL.open = j.incidents || []; }, () => {}).finally(() => { HL.at = Date.now(); HL.busy = false; renderHealth(); });
+  }
+  const badge = $("lvn-health");
+  if (badge) { badge.hidden = !HL.open.length; badge.textContent = String(HL.open.length); }
+  const ol = $("rail-list");
+  if (!ol) return;
+  for (const el of ol.querySelectorAll("li.hl-rail")) el.remove();
+  const need = HL.open.filter((i) => i.needs_you);
+  for (const i of need) {
+    const ago = h("span", { class: "ago" });
+    since(ago, i.updated || i.started);
+    ol.append(h("li", { class: "hl-rail" }, h("button", {
+      class: "ritem waiting",
+      title: "Open its board in Health",
+      onclick: () => route(`#/health/${i.id}`, { push: true }),
+    }, h("span", { class: "dot" }), h("span", { class: "nm", text: `▲ ${i.severity || "alert"}` }), ago, h("span", { class: "why", text: i.title }))));
+  }
+  if (need.length) $("rail-empty").hidden = true;
 }
 
 // ----------------------------------------------------------------- start

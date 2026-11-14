@@ -70,6 +70,19 @@ const LEVEL_TABLES: [&str; 6] = [
     "CREATE TABLE IF NOT EXISTS seen (id KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP)",
 ];
 
+/// Health's tables (SPEC.md, "Fourth build", rows 4 and 5): alert rules as
+/// rows (SQL over these tables), what they fired on, the incidents the
+/// firings group into, every test an agent ran, every file an agent edited,
+/// and the tokens each agent's transcript says it used.
+const HEALTH_TABLES: [&str; 6] = [
+    "CREATE TABLE IF NOT EXISTS alert_rules (id KEYWORD PRIMARY KEY, repo KEYWORD, name TEXT, description TEXT, sql_text TEXT OPTIONS(indexed = false), cmp KEYWORD, threshold FLOAT, window_s INT, severity KEYWORD, action KEYWORD, builtin BOOL, enabled BOOL, created TIMESTAMP, updated TIMESTAMP, last_eval TIMESTAMP, last_ms FLOAT, last_rows INT, last_error TEXT, firing INT)",
+    "CREATE TABLE IF NOT EXISTS alert_firings (id KEYWORD PRIMARY KEY, rule KEYWORD, repo KEYWORD, entity KEYWORD, agent KEYWORD, file KEYWORD, detail TEXT, value FLOAT, summary TEXT, state KEYWORD, started TIMESTAMP, last_seen TIMESTAMP, ended TIMESTAMP, incident KEYWORD, misses INT, agents TEXT)",
+    "CREATE TABLE IF NOT EXISTS incidents (id KEYWORD PRIMARY KEY, repo KEYWORD, title TEXT, severity KEYWORD, state KEYWORD, agents TEXT, files TEXT, rules TEXT, actions TEXT, needs_you BOOL, started TIMESTAMP, updated TIMESTAMP, resolved TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS test_runs (id KEYWORD PRIMARY KEY, run KEYWORD, repo KEYWORD, agent KEYWORD, \"commit\" KEYWORD, tree KEYWORD, runner KEYWORD, command TEXT, test KEYWORD, outcome KEYWORD, passed BOOL, ms INT, own_ms BOOL, run_ms INT, exit_code INT, error TEXT, use_id KEYWORD, ts TIMESTAMP, seq INT)",
+    "CREATE TABLE IF NOT EXISTS file_edits (id KEYWORD PRIMARY KEY, repo KEYWORD, agent KEYWORD, file KEYWORD, tool KEYWORD, ts TIMESTAMP, seq INT)",
+    "CREATE TABLE IF NOT EXISTS token_use (id KEYWORD PRIMARY KEY, repo KEYWORD, agent KEYWORD, input INT, output INT, cache_read INT, ts TIMESTAMP)",
+];
+
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
   seq INT,
@@ -268,6 +281,9 @@ impl StateDb {
             db.sql(t, &Params::new()).map_err(e)?;
         }
         db.sql(EVENTS, &Params::new()).map_err(e)?;
+        for t in HEALTH_TABLES {
+            db.sql(t, &Params::new()).map_err(e)?;
+        }
         let db = Arc::new(db);
         db.spawn_flusher();
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
@@ -277,6 +293,15 @@ impl StateDb {
     /// Runs a statement of the levels' tables: its rows, or none for a write.
     pub fn query(&self, sql: &str, params: &Params) -> Result<Vec<Vec<Value>>> {
         self.rows(sql, params)
+    }
+
+    /// Runs a statement and answers its columns' names with its rows (Health's
+    /// rules, whose columns are whatever their SQL names).
+    pub fn query_cols(&self, sql: &str, params: &Params) -> Result<(Vec<String>, Vec<Vec<Value>>)> {
+        match self.db.sql(sql, params).map_err(e)? {
+            SqlResult::Rows(r) => Ok((r.columns, r.rows)),
+            SqlResult::Written(_) => Ok((Vec::new(), Vec::new())),
+        }
     }
 
     fn rows(&self, sql: &str, params: &Params) -> Result<Vec<Vec<Value>>> {

@@ -114,6 +114,27 @@ fn tools() -> Value {
                 },
                 "required": ["id"]
             }
+        },
+        {
+            "name": "list_incidents",
+            "description": "Health's incidents in your repository: alert rules that fired on agents (a test failing again and again, tokens over a budget, two agents editing one file, an agent idle while asked), grouped by the agents and files they share, with what fires now.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "state": { "type": "string", "enum": ["open", "resolved", "all"], "description": "open (the default), resolved or all." }
+                }
+            }
+        },
+        {
+            "name": "test_history",
+            "description": "The test radar of your repository: each test's runs by every agent, pass rate, p50 and p99 duration, and which are flaky (passed and failed on the same code), newly failing or slow. With test, that test's runs, newest first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "test": { "type": "string", "description": "A test's name as the radar lists it, such as tests::totals::applies_coupon." },
+                    "days": { "type": "integer", "minimum": 1, "maximum": 90, "description": "How far back, in days (default 7)." }
+                }
+            }
         }
     ])
 }
@@ -149,6 +170,18 @@ impl Client {
 
     fn get(&self, path: &str) -> Result<Value, String> {
         self.call("GET", path, None, Duration::from_secs(15))
+    }
+}
+
+/// `&repo=` with the caller's repository, or nothing (the server takes
+/// the one most agents work in).
+fn repo_param(c: &Client) -> String {
+    if c.env.agent.is_empty() {
+        return String::new();
+    }
+    match c.get(&format!("/api/agents/{}", enc(&c.env.agent))) {
+        Ok(v) => v["agent"]["repo"].as_str().map(|r| format!("&repo={}", enc(r))).unwrap_or_default(),
+        Err(_) => String::new(),
     }
 }
 
@@ -338,6 +371,25 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             let all = c.get(&format!("/api/outcomes?goal={}", enc(s(o, "goal"))))?;
             let lines: Vec<String> = all["outcomes"].as_array().into_iter().flatten().map(outcome_line).collect();
             Ok(format!("{}\ngoal {}'s outcomes:\n{}", outcome_line(o), s(o, "goal"), lines.join("\n")))
+        }
+        "list_incidents" => {
+            let state = match s(args, "state") {
+                "" => "open",
+                x => x,
+            };
+            let v = c.get(&format!("/api/incidents?state={}{}", enc(state), repo_param(c)))?;
+            Ok(crate::alerts::incidents_text(&v))
+        }
+        "test_history" => {
+            let test = s(args, "test").trim();
+            if test.is_empty() {
+                let days = args.get("days").and_then(Value::as_i64).unwrap_or(7);
+                let v = c.get(&format!("/api/tests?days={days}{}", repo_param(c)))?;
+                Ok(crate::testruns::radar_text(&v))
+            } else {
+                let v = c.get(&format!("/api/tests/history?test={}{}", enc(test), repo_param(c)))?;
+                Ok(crate::testruns::history_text(&v))
+            }
         }
         other => Err(format!("no tool {other}")),
     }

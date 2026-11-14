@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -1911,4 +1911,241 @@ fn sessions_get_chloectx_and_without_it_the_setup_check_says_how() {
     let args = args_of(ctx.path(), "wiring");
     assert_eq!(args[0], a["cwd"].as_str().unwrap(), "{args:?}");
     assert!(args.iter().any(|x| x == "--project") && args.iter().any(|x| x == a["cwd"].as_str().unwrap()), "{args:?}");
+}
+
+// Fourth build: Health (SPEC.md, rows 4 and 5): test runs from the Bash
+// hooks and the radar, alert rules as SQL, incidents and their actions.
+
+/// Posts a hook's JSON as the agent's hook command would.
+fn hook_as(s: &Server, id: &str, body: Value) {
+    let mut r = http().post(format!("{}/api/hook", s.url)).header("authorization", format!("Bearer {TOKEN}")).header("x-workbench-agent", id).send_json(body).unwrap();
+    let status = r.status().as_u16();
+    assert_eq!(status, 200, "{}", r.body_mut().read_to_string().unwrap_or_default());
+}
+
+/// A Bash call of `command` that printed `out`: PreToolUse, then
+/// PostToolUse (or PostToolUseFailure with exit code 101).
+fn bash_as(s: &Server, id: &str, use_id: &str, command: &str, out: &str, failed: bool) {
+    hook_as(s, id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": use_id, "tool_input": { "command": command } }));
+    if failed {
+        hook_as(s, id, json!({ "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": use_id, "tool_input": { "command": command }, "error": format!("Exit code 101\n{out}") }));
+    } else {
+        hook_as(s, id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": use_id, "tool_input": { "command": command }, "tool_response": { "stdout": out, "stderr": "", "interrupted": false } }));
+    }
+}
+
+fn cargo_out(coupon_ok: bool) -> String {
+    let coupon = if coupon_ok { "ok" } else { "FAILED" };
+    let tail = if coupon_ok {
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s".to_string()
+    } else {
+        "failures:\n\n---- totals::coupon stdout ----\nthread 'totals::coupon' panicked at tests/totals.rs:88:5:\nassertion `left == right` failed\n  left: 1799\n right: 1800\n\nfailures:\n    totals::coupon\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s".to_string()
+    };
+    format!("running 2 tests\ntest totals::rounds ... ok\ntest totals::coupon ... {coupon}\n\n{tail}\n")
+}
+
+#[test]
+fn health_records_test_runs_and_the_radar_finds_flaky_and_newly_failing() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "cart", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.until(&id, "started", |a| a["session_id"].is_string());
+    let radar = format!("/api/tests?repo={}", r.display());
+    // Passed, then failed on the same commit with the same tree: flaky,
+    // and newly failing.
+    bash_as(&s, &id, "tu1", "cargo test totals", &cargo_out(true), false);
+    s.get_until(&radar, "the first run", |v| v["totals"]["commands"] == 1);
+    bash_as(&s, &id, "tu2", "cargo test totals", &cargo_out(false), true);
+    let v = s.get_until(&radar, "the second run", |v| v["totals"]["commands"] == 2);
+    assert_eq!(v["totals"]["tests"], 2, "{v}");
+    assert_eq!(v["totals"]["runs"], 4, "{v}");
+    let coupon = find(&v["tests"], "/test", "totals::coupon");
+    assert_eq!((coupon["runner"].as_str(), coupon["runs"].as_i64(), coupon["passed"].as_i64(), coupon["failed"].as_i64()), (Some("cargo"), Some(2), Some(1), Some(1)), "{coupon}");
+    assert_eq!(coupon["flaky"], true, "{coupon}");
+    assert!(coupon["flaky_why"].as_str().unwrap().contains("same code"), "{coupon}");
+    assert_eq!(coupon["newly_failing"], true, "{coupon}");
+    assert_eq!(coupon["last"]["outcome"], "failed");
+    assert!(coupon["p50_ms"].as_i64().is_some(), "{coupon}");
+    let rounds = find(&v["tests"], "/test", "totals::rounds");
+    assert_eq!((rounds["pass_rate"].as_f64(), rounds["flaky"].as_bool()), (Some(1.0), Some(false)));
+    assert_eq!(v["totals"]["flaky"], 1);
+    assert_eq!(v["totals"]["newly_failing"], 1);
+    assert!(matches!(v["percentiles"].as_str(), Some("approx_percentile" | "rust")), "{v}");
+    let cmds = v["commands"].as_array().unwrap();
+    assert_eq!((cmds[0]["exit_code"].as_i64(), cmds[0]["failed"].as_i64(), cmds[0]["passed"].as_i64()), (Some(101), Some(1), Some(1)), "{v}");
+    assert_eq!(cmds[1]["exit_code"], 0);
+
+    // One test's runs, newest first, with its error.
+    let (status, h) = s.get(&format!("/api/tests/history?repo={}&test=totals::coupon", r.display()));
+    assert_eq!(status, 200, "{h}");
+    let runs = h["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!((runs[0]["outcome"].as_str(), runs[1]["outcome"].as_str()), (Some("failed"), Some("passed")));
+    assert!(runs[0]["error"].as_str().unwrap().contains("left: 1799"), "{h}");
+    assert_eq!(runs[0]["commit"], runs[1]["commit"]);
+    assert_eq!(s.get(&format!("/api/tests/history?repo={}&test=nosuch", r.display())).0, 404);
+
+    // The agent's runs, for Story's chip: each at the seq of its PreToolUse.
+    let (_, ar) = s.get(&format!("/api/tests/runs?agent={id}"));
+    let runs = ar["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{ar}");
+    assert_eq!(runs[0]["failed_tests"], json!(["totals::coupon"]));
+    assert_eq!(runs[0]["newly_failing"], json!(["totals::coupon"]));
+    let evs = s.events(&id);
+    let pre = evs.iter().find(|e| e["kind"] == "PreToolUse" && e["data"].as_str().is_some_and(|d| d.contains("\"tu2\""))).unwrap();
+    assert_eq!(runs[0]["seq"], pre["seq"]);
+
+    // A runner it does not parse: one row for the command, with its exit code.
+    bash_as(&s, &id, "tu3", "make check", "all good\n", false);
+    let v = s.get_until(&radar, "make check", |v| v["totals"]["commands"] == 3);
+    let mk = find(&v["tests"], "/test", "make check");
+    assert_eq!((mk["runner"].as_str(), mk["passed"].as_i64()), (Some("other"), Some(1)), "{mk}");
+
+    // A failed run with no PostToolUse (Claude Code fires none then) is
+    // read from the transcript when the turn ends.
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "FAIL error: could not compile calc" }));
+    s.wait(&id, "idle");
+    let v = s.get_until(&radar, "the failed run from the transcript", |v| v["totals"]["commands"] == 4);
+    let calc = find(&v["tests"], "/test", "cargo test -p calc");
+    assert_eq!(calc["last"]["outcome"], "failed", "{calc}");
+
+    // Other agents' MCP: the radar and one test's history as text.
+    let mut m = Mcp::start(&s, &id);
+    m.send("initialize", json!({}));
+    m.notify("notifications/initialized");
+    let (text, err) = m.tool("test_history", json!({}));
+    assert!(!err, "{text}");
+    assert!(text.contains("totals::coupon") && text.contains("FLAKY") && text.contains("NEWLY FAILING"), "{text}");
+    let (text, err) = m.tool("test_history", json!({ "test": "totals::coupon" }));
+    assert!(!err && text.contains("failed") && text.contains("by cart"), "{text}");
+    assert_eq!(s.get("/api/tests/runs").0, 400);
+}
+
+#[test]
+fn health_rules_open_an_incident_with_a_board_and_act_on_it() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "worktree": false }))["id"].as_str().unwrap().to_string();
+    let checkout = s.spawn(json!({ "repo": r, "name": "checkout", "worktree": false }))["id"].as_str().unwrap().to_string();
+    s.until(&cart, "started", |a| a["session_id"].is_string());
+    s.until(&checkout, "started", |a| a["session_id"].is_string());
+
+    // The built-in rules, each of whose SQL runs.
+    let (status, rs) = s.get("/api/alerts/rules");
+    assert_eq!(status, 200, "{rs}");
+    let ids: Vec<&str> = rs["rules"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["test-refail", "tokens-hour", "same-file", "idle-asked"], "{rs}");
+    for rule in rs["rules"].as_array().unwrap() {
+        let (status, t) = s.post("/api/alerts/test", json!({ "sql": rule["sql"], "cmp": rule["cmp"], "threshold": rule["threshold"], "window_s": rule["window_s"] }));
+        assert_eq!(status, 200);
+        assert_eq!(t["ok"], true, "{}: {t}", rule["id"]);
+        assert_eq!(t["columns"][0], "entity", "{t}");
+    }
+    let (_, t) = s.post("/api/alerts/test", json!({ "sql": "DELETE FROM agents" }));
+    assert_eq!(t["ok"], false, "{t}");
+    let (_, t) = s.post("/api/alerts/test", json!({ "sql": "SELECT x FROM nosuch" }));
+    assert_eq!(t["ok"], false, "{t}");
+    assert!(t["error"].is_string(), "{t}");
+
+    // Two agents edit one file: an incident, and Needs you.
+    for (who, n) in [(&cart, 2), (&checkout, 1)] {
+        for _ in 0..n {
+            hook_as(&s, who, json!({ "hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": { "file_path": r.join("src/totals.rs"), "old_string": "a", "new_string": "b" }, "tool_response": {} }));
+        }
+    }
+    let (status, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!(status, 200, "{c}");
+    assert_eq!(c["counts"]["open"], 1, "{c}");
+    let inc = &c["incidents"][0];
+    let iid = inc["id"].as_str().unwrap().to_string();
+    assert_eq!(inc["title"], "cart and checkout both edit src/totals.rs", "{inc}");
+    assert_eq!(inc["files"], json!(["src/totals.rs"]));
+    assert_eq!(inc["needs_you"], true);
+    assert_eq!(inc["firings"][0]["rule"], "same-file");
+    assert!(inc["firings"][0]["summary"].as_str().unwrap().contains("cart (2 edits), checkout (1 edit)"), "{inc}");
+    assert_eq!(inc["actions"][0]["kind"], "notify");
+    // Run again: the same firing, no second incident.
+    let (_, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!((c["counts"]["open"].as_i64(), c["started"].as_i64()), (Some(1), Some(0)), "{c}");
+
+    // cart's test fails five times: that joins the incident (it shares cart)
+    // and asks you in Decide.
+    let radar = format!("/api/tests?repo={}", r.display());
+    for i in 0..5 {
+        bash_as(&s, &cart, &format!("tf{i}"), "cargo test totals", &cargo_out(false), true);
+        s.get_until(&radar, "the run", |v| v["totals"]["commands"] == i + 1);
+    }
+    let (_, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!(c["counts"]["open"], 1, "{c}");
+    let inc = &c["incidents"][0];
+    assert_eq!(inc["rules"], json!(["same-file", "test-refail"]), "{inc}");
+    assert_eq!(inc["severity"], "major");
+    let ask = inc["actions"].as_array().unwrap().iter().find(|a| a["kind"] == "ask").unwrap_or_else(|| panic!("no ask: {inc}")).clone();
+    assert_eq!(ask["state"], "open");
+    let qid = ask["ref"].as_str().unwrap().to_string();
+    let (_, qs) = s.get("/api/questions?state=open");
+    let q = find(&qs["questions"], "/id", &qid);
+    assert_eq!(q["kind"], "alert");
+    assert_eq!(q["agent"], json!(cart));
+    assert!(q["text"].as_str().unwrap().contains("totals::coupon failed 5 times"), "{q}");
+    assert_eq!(q["options"][0]["label"], "Pause cart");
+
+    // The board.
+    let (status, b) = s.get(&format!("/api/incidents/{iid}"));
+    assert_eq!(status, 200, "{b}");
+    let board = &b["board"];
+    assert_eq!(board["firings"].as_array().unwrap().len(), 2, "{b}");
+    assert_eq!(board["tests"][0]["test"], "totals::coupon", "{b}");
+    assert!(board["error"].as_str().unwrap().contains("left: 1799"), "{b}");
+    assert_eq!(board["sentences"].as_array().unwrap().len(), 2);
+    let kinds: Vec<&str> = board["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"fired") && kinds.contains(&"PostToolUseFailure"), "{kinds:?}");
+    assert!(board["missing"][0].as_str().unwrap().contains("ChloeCtx is not installed"), "{b}");
+    assert_eq!(s.get("/api/incidents/i00000000").0, 404);
+
+    // Answering "Pause cart" sends Esc to cart.
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0 }));
+    assert_eq!(status, 200, "{v}");
+    let l = s.get_until("/api/incidents?state=open", "the pause", |v| v["incidents"][0]["actions"].as_array().is_some_and(|a| a.iter().any(|x| x["kind"] == "pause")));
+    let acts = l["incidents"][0]["actions"].as_array().unwrap();
+    let pause = acts.iter().find(|a| a["kind"] == "pause").unwrap();
+    assert_eq!((pause["state"].as_str(), pause["detail"].as_str()), (Some("done"), Some("Paused cart (Esc)")), "{l}");
+    assert_eq!(acts.iter().find(|a| a["kind"] == "ask").unwrap()["state"], "answered");
+    // And by hand: notify, or a kind it does not know.
+    let (status, v) = s.post(&format!("/api/incidents/{iid}/act"), json!({ "kind": "notify", "agent": checkout }));
+    assert_eq!((status, v["action"]["kind"].as_str()), (200, Some("notify")), "{v}");
+    assert_eq!(s.post(&format!("/api/incidents/{iid}/act"), json!({ "kind": "reboot" })).0, 400);
+
+    // MCP's list_incidents.
+    let mut m = Mcp::start(&s, &checkout);
+    m.send("initialize", json!({}));
+    m.notify("notifications/initialized");
+    let (text, err) = m.tool("list_incidents", json!({}));
+    assert!(!err && text.contains(&iid) && text.contains("both edit src/totals.rs") && text.contains("▲ A test re-run failing 5 times"), "{text}");
+
+    // Resolved by you: its firings are silenced, so the next run opens nothing.
+    let (status, v) = s.post(&format!("/api/incidents/{iid}/resolve"), json!({}));
+    assert_eq!((status, v["incident"]["state"].as_str()), (200, Some("resolved")), "{v}");
+    let (_, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!((c["counts"]["open"].as_i64(), c["started"].as_i64()), (Some(0), Some(0)), "{c}");
+
+    // Rules are rows: made, changed, switched off, deleted (a built-in is not).
+    let body = json!({ "name": "Many edits", "sql": "SELECT agent AS entity, agent, COUNT(*) AS v FROM file_edits WHERE ts >= :since GROUP BY agent", "cmp": ">=", "threshold": 2, "window_s": 600, "action": "none" });
+    let (status, v) = s.post("/api/alerts/rules", body);
+    assert_eq!(status, 201, "{v}");
+    let rid = v["rule"]["id"].as_str().unwrap().to_string();
+    assert_eq!(s.post("/api/alerts/rules", json!({ "name": "bad", "sql": "SELECT FROM" })).0, 400);
+    let (_, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!(c["counts"]["open"], 1, "{c}");
+    assert_eq!(c["incidents"][0]["rules"], json!([rid]), "{c}");
+    let (status, v) = s.patch(&format!("/api/alerts/rules/{rid}"), json!({ "enabled": false, "threshold": 50 }));
+    assert_eq!((status, v["rule"]["enabled"].as_bool(), v["rule"]["threshold"].as_f64()), (200, Some(false), Some(50.0)), "{v}");
+    let (_, c) = s.post("/api/alerts/check", json!({}));
+    assert_eq!(c["counts"]["open"], 0, "{c}");
+    assert_eq!(s.patch(&format!("/api/alerts/rules/{rid}"), json!({ "cmp": "~" })).0, 400);
+    let del = |id: &str| http().delete(format!("{}/api/alerts/rules/{id}", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap().status().as_u16();
+    assert_eq!(del("same-file"), 409);
+    assert_eq!(del(&rid), 200);
+    assert_eq!(del(&rid), 404);
 }

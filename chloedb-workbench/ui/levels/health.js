@@ -245,13 +245,13 @@ export function mount(root, ctx) {
       h("ul", { class: "hl-fl" }, fs.map((f) => {
         const ratio = f.threshold ? Math.min(1.6, f.value / f.threshold) : 1;
         return h("li", { class: `hl-f ${f.state}` },
-          h("div", { class: "hl-f-h" }, h("b", null, f.rule_name), f.state === "firing" ? pill("firing", sevTone(f.severity)) : pill("cleared", "mut")),
+          h("div", { class: "hl-f-h" }, h("b", null, f.rule_name), f.state === "firing" ? pill("firing", sevTone(f.severity)) : pill(f.state === "silenced" ? "silenced" : "cleared", "mut")),
           h("div", { class: "hl-f-s" }, inlineCode(f.summary || f.entity)),
           h("div", { class: "hl-f-v" },
             h("div", { class: "hl-meter", title: `${fmtNum(f.value)} ${f.cmp} ${fmtNum(f.threshold)}` },
               h("b", { style: { width: `${Math.round((Math.max(0, ratio) / 1.6) * 100)}%` } }), h("i", { style: { left: `${100 / 1.6}%` } })),
             h("span", { class: "hl-f-n" }, `${fmtNum(f.value)} ${f.cmp} ${fmtNum(f.threshold)}`),
-            h("span", { class: "lv-sub" }, f.state === "firing" ? `since ${fmtClock(f.started_ms)}` : `${fmtClock(f.started_ms)} – ${fmtClock(f.ended_ms)}`)),
+            h("span", { class: "lv-sub" }, f.state === "firing" || !f.ended_ms ? `since ${fmtClock(f.started_ms)}` : `${fmtClock(f.started_ms)} – ${fmtClock(f.ended_ms)}`)),
           h("button", { class: "lv-link hl-f-r", onclick: () => { S.ruleSel = f.rule; S.draft = null; setTab("rules"); } }, "Open the rule"));
       })));
   }

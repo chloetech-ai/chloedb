@@ -21,6 +21,9 @@ mod levels;
 mod narrate;
 mod questions;
 mod story;
+// Health (SPEC.md, "Fourth build", rows 4 and 5).
+mod alerts;
+mod testruns;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
