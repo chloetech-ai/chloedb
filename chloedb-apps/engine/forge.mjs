@@ -915,7 +915,11 @@ async function putRows(engine, appId, specs, batches) {
 function gateScreens(plan, code, view, stored, accessOf) {
   const specOf = (t) => stored.get(t) || view.tables.find((x) => x.spec.name === t)?.spec || null;
   const access = (t) => accessOf.get(t) || specOf(t)?.access || null;
-  const opts = (title) => ({ name: plan.name || view.app?.name || '', welcome: plan.welcome || null, ux: plan.ux || briefOf(view.app) || null, title });
+  // who may call each function (ALLOW CALL), for a screen whose data calls
+  // one kept to signed-in people
+  const calls = new Map([...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n, rs]) => [n, rs.find((r) => r.call).who]));
+  const callerOf = (slug) => calls.get(slug) || (view.functions || []).find((f) => f.slug === slug)?.spec?.callers || null;
+  const opts = (title) => ({ name: plan.name || view.app?.name || '', welcome: plan.welcome || null, ux: plan.ux || briefOf(view.app) || null, title, callerOf });
   for (const v of plan.views || []) {
     if (!v) continue;
     if (!v.screen || typeof v.screen !== 'object') {

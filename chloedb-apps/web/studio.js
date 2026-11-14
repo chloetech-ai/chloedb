@@ -686,8 +686,16 @@ function renderApp() {
   const st = S.app;
   applyDesign();
   if (BARE) {
-    document.title = st.app.name;
-    $('.brand').replaceChildren(h('span', { class: 'mark' }), h('span', { class: 'name' }, st.app.name));
+    // A site's name is the one its front page's header gives (the bar of
+    // its other screens says the same), else the app's.
+    const siteName = (() => {
+      for (const v of st.views || []) {
+        try { const b = (JSON.parse(v.code || '{}').body || []).find((x) => x && typeof x.nav === 'string' && !x.nav.startsWith('=')); if (b) return b.nav; } catch { /* not a screen */ }
+      }
+      return null;
+    })();
+    document.title = siteName || st.app.name;
+    $('.brand').replaceChildren(h('span', { class: 'mark' }), h('span', { class: 'name' }, siteName || st.app.name));
     renderLook();
   } else {
     $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, st.version.trying ? `trying v${st.version.trying} (live v${st.version.live})` : `v${st.version.n}`) : null,

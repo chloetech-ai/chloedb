@@ -268,3 +268,12 @@ test('a figure says a day condition (before today) and is checked with it; an un
   assert.deepEqual(checkFigure(overdue, cols), []);
   assert.match(checkFigure({ ...overdue, where: { due: { earlier: 'today' } } }, cols)[0], /where\.due uses earlier/);
 });
+
+test('sign-in entry: a screen whose data calls a function kept to signed-in people gets one', async () => {
+  const { gateOf } = await import('../engine/data.mjs');
+  const screen = { data: { cert: "=app.call('certificate-status').catch(() => null)" }, body: [] };
+  const open = () => null;
+  assert.equal(gateOf(screen, open, { title: 'Certificate' }), null);
+  assert.ok(gateOf(screen, open, { title: 'Certificate', callerOf: (s) => (s === 'certificate-status' ? 'members' : null) }));
+  assert.equal(gateOf(screen, open, { title: 'Certificate', callerOf: () => 'everyone' }), null);
+});

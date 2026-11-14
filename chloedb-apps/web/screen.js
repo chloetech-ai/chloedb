@@ -360,7 +360,7 @@ window.__sa_numbers = (() => {
       if (x == null) return '';
       if (typeof x === 'number' && !Number.isFinite(x)) return '';
       const str = String(x);
-      if (typeof v === 'string' && v.startsWith('=') && /\bNaN\b|\bundefined\b|\[object Object\]/.test(str)) return '';
+      if (str !== v && /\bNaN\b|\bundefined\b|\[object Object\]/.test(str)) return '';
       return str;
     };
 

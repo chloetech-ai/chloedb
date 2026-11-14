@@ -488,16 +488,21 @@ export function visitorsRead(access) {
 
 // The sign-in entry a screen shows a visitor when the data it reads is kept
 // to signed-in people: {title, text, points, note}, or null when it needs none.
-export function gateOf(screen, accessOf, { name = '', welcome = null, ux = null, title = '' } = {}) {
+export function gateOf(screen, accessOf, { name = '', welcome = null, ux = null, title = '', callerOf = null } = {}) {
   if (!screen || typeof screen !== 'object' || screen.page === 'front') return null;
   const reads = new Set();
+  // and the functions its data calls that only signed-in people may call
+  // (ALLOW CALL ... TO members): signed out it could show nothing true
+  let signedInCalls = false;
   for (const q of Object.values(screen.data || {})) {
     // (A view written in JavaScript comes as {data: {code}}: its SQL strings are read the same way.)
     const sql = typeof q === 'string' ? q : q && typeof q === 'object' ? q.sql : null;
     if (typeof sql === 'string') for (const t of tablesIn(sql)) reads.add(t);
+    const text = typeof q === 'string' ? q : q && typeof q === 'object' ? JSON.stringify(q) : '';
+    if (callerOf) for (const m of text.matchAll(/app\.call\(\s*\\?["'`]([a-z0-9-]+)/g)) if (['members', 'admins', 'owner'].includes(callerOf(m[1]))) signedInCalls = true;
   }
   const closed = [...reads].filter((t) => accessOf(t) && !visitorsRead(accessOf(t)));
-  if (!closed.length) return null;
+  if (!closed.length && !signedInCalls) return null;
   const w = welcome && typeof welcome === 'object' ? welcome : {};
   const points = (Array.isArray(w.points) ? w.points : []).map(String).filter(Boolean).slice(0, 4);
   return {
