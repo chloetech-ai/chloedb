@@ -2427,6 +2427,29 @@ test('beside a cluster the studio lets in chloedb-server, a session from a one-t
   assert.equal(login.sameOrigin(req({ origin: 'https://elsewhere.example' })), false);
 });
 
+test('an agent\'s MCP server signs in with the agent token, beside a cluster and on a laptop (audit 4, X-G7)', async () => {
+  const { Login } = await import('../engine/login.mjs');
+  const store = { setting: async () => null, putSetting: async () => {} };
+  const req = (headers = {}) => ({ headers: { host: 'h', ...headers } });
+  const at = (p) => new URL(`http://h${p}`);
+  const agent = { authorization: 'Bearer the-agent-token' };
+  const cluster = new Login({ store, appToken: 'the-app-token', agentToken: 'the-agent-token' });
+  assert.equal(await cluster.check(req(agent), at('/api/apps')), null, 'the agent token is a studio sign-in');
+  assert.equal(cluster.fromAgent(req(agent)), true);
+  assert.equal(cluster.fromServer(req(agent)), false, 'and not chloedb-server\'s');
+  assert.equal((await cluster.check(req({ authorization: 'Bearer stale' }), at('/api/apps'))).status, 401);
+  assert.equal((await cluster.check(req(), at('/api/apps'))).status, 401);
+  const laptop = new Login({ store, agentToken: 'the-agent-token' });
+  assert.equal(laptop.on, false);
+  assert.equal(await laptop.check(req(agent), at('/api/apps')), null);
+  assert.equal(await laptop.check(req(), at('/api/apps')), null, 'the studio\'s own page, as before');
+  const wrong = await laptop.check(req({ authorization: 'Bearer stale' }), at('/api/apps'));
+  assert.equal(wrong.status, 401, 'a wrong token is refused even with no login');
+  assert.match(wrong.json.error, /agent token/);
+  assert.equal(await laptop.check(req({ authorization: 'Bearer stale' }), at('/healthz')), null);
+  assert.equal(new Login({ store }).fromAgent(req(agent)), false, 'no agent token: nobody is the agent');
+});
+
 test('the engine\'s own browser opens the app with its cookie', async (t) => {
   const { openViews, loadPlaywright, useSelfCookie } = await import('../engine/checks.mjs');
   if (!loadPlaywright()) return t.skip('no Playwright');

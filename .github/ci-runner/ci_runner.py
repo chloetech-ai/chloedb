@@ -27,7 +27,7 @@ Environment: DIGITALOCEAN_TOKEN (the DigitalOcean API), GH_ADMIN_TOKEN (a
 token with this repository's Administration permission, read and write,
 which registering runners takes), GITHUB_TOKEN (reads the workflow runs);
 CI_RUNNER_SIZE (c-16), CI_RUNNER_REGION (nyc1), CI_RUNNER_COUNT (2, the
-runners on the droplet), CI_RUNNER_VOLUME_GB (100), CI_RUNNER ("off" turns
+runners on the droplet), CI_RUNNER_VOLUME_GB (250), CI_RUNNER ("off" turns
 it all off, "overflow" uses it only when GitHub's runners are full). No token is ever printed.
 """
 import argparse
@@ -114,7 +114,7 @@ def volume(region):
         return vs[0]
     log(f"creating volume {VOLUME} in {region}")
     return do("/volumes", "POST", {
-        "name": VOLUME, "region": region, "size_gigabytes": int(env("CI_RUNNER_VOLUME_GB", "100")),
+        "name": VOLUME, "region": region, "size_gigabytes": int(env("CI_RUNNER_VOLUME_GB", "250")),
         "filesystem_type": "ext4", "description": "CI runner build folders (.github/ci-runner)", "tags": [TAG],
     })["volume"]
 
