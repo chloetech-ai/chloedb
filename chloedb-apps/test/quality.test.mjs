@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM, planWatcher } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, bigLabels, honourSize } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -178,4 +178,18 @@ test('the plan is handed on once its </plan> has streamed in, before the stateme
   planWatcher((p) => bad.push(p))({}, '<plan>{"name": </plan>');
   assert.equal(bad.length, 0);
   planWatcher(null)({}, '<plan>{}</plan>');
+});
+
+test('a button the request calls big is drawn big and first in its group', () => {
+  assert.deepEqual(bigLabels('Add a big "Find the truck" button linking to https://instagram.com/davestacos.'), ['find the truck']);
+  assert.deepEqual(bigLabels('Add a \u201cBook now\u201d button, nice and large'), ['book now']);
+  assert.deepEqual(bigLabels('Add a "Find the truck" button.'), []);
+  assert.deepEqual(bigLabels('Make the photo big and add "Hours" to the footer'), []);
+  const screen = { page: 'front', body: [{ hero: 'Tacos', actions: [{ label: 'See the menu', href: '#menu' }, { label: 'Find the truck', href: 'https://instagram.com/x' }] }, { button: 'Find the truck', do: '=() => 1' }] };
+  assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), true);
+  assert.deepEqual(screen.body[0].actions.map((a) => a.label), ['Find the truck', 'See the menu']);
+  assert.equal(screen.body[0].actions[0].size, 'big');
+  assert.equal(screen.body[1].class, 'big');
+  assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), false);
+  assert.equal(honourSize(screen, 'Rename the heading'), false);
 });

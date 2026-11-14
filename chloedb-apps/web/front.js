@@ -100,7 +100,7 @@
       const style = a.style || a.class || (i === 0 ? 'primary' : 'secondary');
       const label = tx(a.label, s, path);
       const kids = [label, style === 'link' ? h('span', { class: 'fp-chev', 'aria-hidden': 'true' }, '›') : null];
-      const cls = `fp-btn ${style}`;
+      const cls = `fp-btn ${style}${a.size === 'big' ? ' big' : ''}`;
       const href = a.href !== undefined ? tx(a.href, s, path) : '';
       if (href && /^https?:/i.test(href)) return h('a', { class: cls, href, target: '_blank', rel: 'noopener' }, kids);
       const go = async () => {
@@ -146,14 +146,22 @@
       const links = list(b.links, s, `${path}.links`);
       let el;
       const close = () => el && el.classList.remove('open');
-      el = h('header', { class: 'fp-nav' }, h('div', { class: 'fp-nav-in' },
+      // A long name and a long action do not both fit a phone's bar beside
+      // the menu button: there the action moves into the menu (the hero
+      // shows it too), and the bar keeps the name and the menu.
+      const act = b.action !== undefined ? val(b.action, s, `${path}.action`) : undefined;
+      const label = (x) => String(x && typeof x === 'object' ? x.label ?? '' : x ?? '');
+      const tight = act !== undefined && String(tx(b.nav, s, path) ?? '').length + label(act).length > 25;
+      const inMenu = tight ? action(typeof act === 'object' && act ? { ...act, style: 'navlink' } : { label: label(act), style: 'navlink' }, s, `${path}.action`, 1) : null;
+      if (inMenu) { inMenu.classList.add('fp-menu-act'); inMenu.addEventListener('click', close); }
+      el = h('header', { class: `fp-nav${tight ? ' tight' : ''}` }, h('div', { class: 'fp-nav-in' },
         h('a', { class: 'fp-brand', href: '#', onclick: (e) => { e.preventDefault(); scrollTo({ top: 0, behavior: still() ? 'auto' : 'smooth' }); } }, h('span', { class: 'fp-mark', 'aria-hidden': 'true' }), tx(b.nav, s, path)),
         h('nav', { class: 'fp-links' }, links.map((l, i) => {
           const a = action(typeof l === 'string' ? { label: l } : { ...l, style: 'navlink' }, s, `${path}.links[${i}]`, 1);
           a && a.addEventListener('click', close);
           return a;
-        })),
-        b.action !== undefined ? action(val(b.action, s, `${path}.action`), s, `${path}.action`, 0) : null,
+        }), inMenu),
+        act !== undefined ? action(act, s, `${path}.action`, 0) : null,
         h('button', { class: 'fp-menu', type: 'button', 'aria-label': 'Menu', onclick: () => el.classList.toggle('open') }, h('i'), h('i'))));
       return el;
     };

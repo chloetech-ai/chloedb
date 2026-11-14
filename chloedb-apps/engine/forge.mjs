@@ -325,7 +325,7 @@ Its blocks (they work in any screen; on a front page each is a section of its ow
 - {"faq": [{"q", "a"}]}; {"steps": [{"title", "text", "icon"}]}: how it works, numbered.
 - {"footer": "Brand", "text": "...", "columns": [{"title", "links": [action, ...]}], "note": "..."}: last in the body.
 Section blocks (carousel, gallery, features, stats, quotes, pricing, faq, steps) take "title", "eyebrow" and "sub" for their heading. Any block takes "id" (the target of an "#id" link) and "tint": true (a tinted section). Plain blocks between them (h, text, grid, each, form, table, ui...) are gathered in a section of their own, so a booking form or today's menu from the data fits on a front page too.
-An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link"}; the first action of a group is primary, the others secondary.
+An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link", "size": "big"}; the first action of a group is primary, the others secondary. A button the request calls big, large or prominent is "size": "big" and comes first in its group (on a screen, a button with "class": "primary big").
 Photos: "photo": a few plain words, the subject first, as you would search a photo library ("barista pouring latte art", "yoga class in a bright studio", "bride and groom on a beach", "modern living room"). The engine finds each photo when the version is stored and adds "src" (and a "credit" when its license asks for one); never write "src" for such a photo yourself. A photo the app's data holds is "src": "=item.image" (a URL or a stored file's id). Example rows may hold "photo:a query" in a text column (a product's image), which becomes a photo's URL: name the thing itself, plainly, the kind first ("croissant", "pie pumpkin", "bread rye loaf", "coffee beans dark roast"), never a brand or place name.
 
 {"page": "front", "layout": "hero", "body": [
@@ -431,6 +431,50 @@ export function budgetOf(screen) {
   return out;
 }
 export const isBudget = (p) => /^over budget: /.test(p);
+
+// A request that asks for a big button by its label ("Add a big \"Find the
+// truck\" button") gets it: each action or button of a screen with that
+// label is drawn big ("size": "big"), and an action moves to the front of
+// its group, where it is the primary one. Returns whether it changed any.
+const BIG_WORDS = /\b(big|bigger|biggest|large|larger|huge|giant|prominent|oversized)\b/i;
+export function bigLabels(text) {
+  const t = String(text || '');
+  if (!BIG_WORDS.test(t) || !/\bbuttons?\b/i.test(t)) return [];
+  const out = [];
+  for (const m of t.matchAll(/["\u201c\u201d\u2018\u2019']([^"\u201c\u201d\u2018\u2019']{2,40})["\u201c\u201d\u2018\u2019']/g)) {
+    // A quoted label near the size word and the word "button".
+    const near = t.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40);
+    if (BIG_WORDS.test(near) && /\bbutton/i.test(near)) out.push(m[1].trim().toLowerCase());
+  }
+  return out;
+}
+export function honourSize(screen, text) {
+  const labels = bigLabels(text);
+  if (!labels.length) return false;
+  const same = (x) => typeof x === 'string' && labels.includes(x.trim().toLowerCase());
+  let changed = false;
+  const walk = (x) => {
+    if (Array.isArray(x)) {
+      x.forEach(walk);
+      return;
+    }
+    if (!x || typeof x !== 'object') return;
+    // A front page's action: {label, href | open | do}.
+    if (same(x.label) && (x.href !== undefined || x.open !== undefined || x.do !== undefined) && x.size !== 'big') { x.size = 'big'; changed = true; }
+    // A screen's button: {button: "label", do}.
+    if (same(x.button) && !/\bbig\b/.test(String(x.class || ''))) { x.class = `${x.class ? `${x.class} ` : ''}big`; changed = true; }
+    for (const k of ['actions', 'links']) {
+      const xs = x[k];
+      if (k === 'actions' && Array.isArray(xs)) {
+        const i = xs.findIndex((a) => a && typeof a === 'object' && same(a.label));
+        if (i > 0) { xs.unshift(...xs.splice(i, 1)); changed = true; }
+      }
+    }
+    for (const v of Object.values(x)) if (v && typeof v === 'object') walk(v);
+  };
+  walk(screen);
+  return changed;
+}
 export function overBudget(slug, now, before) {
   const out = [];
   const grew = (k) => now[k] > BUDGET[k] && (!before || now[k] > before[k]);
@@ -1843,6 +1887,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const err = new Error(`the model's answer did not pass the checks: ${problems.join('; ')}`);
     err.cost = cost;
     throw err;
+  }
+  // Size words in the request ("a big \"Find the truck\" button") hold for
+  // the button they name, whatever the model drew.
+  for (const v of plan.views || []) {
+    if (v.screen && typeof v.screen === 'object' && honourSize(v.screen, request.text)) code[v.slug] = JSON.stringify(v.screen, null, 1);
   }
   progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
   // The photos the screens and example rows name are searched for while the
