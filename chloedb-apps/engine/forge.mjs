@@ -17,7 +17,7 @@ import { checkAccess, parseAccessList, allowText, wantsAccess } from './access.m
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
-import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
+import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews, emptyTables } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
 import { ABILITIES, usesOf } from './reach.mjs';
 import { parseEvery, everyWords, ScheduleError } from './schedule.mjs';
@@ -36,6 +36,7 @@ export function keysIn(code) {
   return out;
 }
 import { madeUp, tidyTitle } from './taste.mjs';
+import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn } from './data.mjs';
 import { ART_DOC, TASTE_DOC, LAYOUT_NAMES, LAYOUT_SHORT, parseLayout } from './quality.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -217,7 +218,10 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "upgrade": [],
   "remove": [],
   "reuse": [{"id": "abc123/view/board@2", "slug": "board", "title": "Board", "order": 2}],
-  "seed": {"tasks": [{"title": "...", "status": "open"}]},
+  "seed": {"projects": [{"id": "p1", "name": "..."}], "tasks": [{"title": "...", "status": "open", "project": "p1", "due": "2026-11-20"}]},
+  "import": {"Sheet name": "table"},
+  "figures": [{"label": "...", "view": "dashboard", "data": "top_customers", "table": "invoices", "sum": "amount", "by": "customer", "top": 5}],
+  "welcome": {"title": "...", "text": "...", "points": ["..."]},
   "suggestions": [{"text": "...", "why": "..."}]
 }
 
@@ -231,7 +235,10 @@ ${ART_DOC}
 - upgrade: names of components or helpers this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
 - reuse: capabilities from the library to copy, by id.
-- seed: example rows, only for a new app, and only when examples help the person see the app working (3 to 8 rows per table, realistic, dated near today). Leave it out when the app holds the person's own data from the start (an expense log, a journal), unless they asked for examples.
+- seed: example rows for a new app, so that every screen opens looking finished, never empty: 4 to 8 rows for every table a screen lists or counts, realistic and specific to the request's domain and words (real-sounding names, amounts and states, a mix of states so every filter and badge shows something, a few overdue or due soon), dated around today (see "Today" above). Rows that other rows refer to carry an "id" ("p1", "p2") and the rows referring to them use it (a task's "project": "p1"), so lists, counts and joins line up across tables. Never put the attached data's rows here: the engine imports them. Leave seed out only for a log of the person's own entries (a journal, an expense log), and then give that first screen a designed empty state that says what goes there and how to add the first.
+- import: for attached data (see "The attached data"), which table each sheet goes to.
+- figures: every figure a screen computes from rows that the request is about (a total, a count, a top N, a sum per group, aging buckets), declared so the engine can work it out from the rows itself and check that the screen's query gives the same: [{"label": "Top 5 customers by revenue", "view": "<view slug>", "data": "<the screen's data entry that computes it>", "table": "<table>", "sum": "<column>" (or "count": true, or "avg" / "min" / "max": "<column>"), "by": "<column to group by>" (optional), "top": 5 (optional, the biggest first), "where": {"<column>": "value" | ["values"] | {"not": ["values"]}} (optional), "age": {"of": "<a day column>", "buckets": [[null, 0], [1, 30], [31, 60], [61, 90], [91, null]]} (optional: sums per range of days past that day, today counted as 0, each row in exactly one range)}]. The data entry returns the figure's rows: one row for a single number, a row per group (its name and its number) for "by", a row per bucket (or one row with a column per bucket) for "age". 1 to 6 of them, for a new app with attached data and for a change that adds or changes such a figure; none otherwise.
+- welcome: when access keeps a screen's data to signed-in people, what a visitor sees there before signing in: {"title": "the app's name or promise", "text": "one or two sentences: what it is and who it is for", "points": ["2 to 3 short lines on what signing in gives"]}.
 - suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded above; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked, and not one of the suggestions made before (listed above with what became of them).
 - Each screen has a budget: at most ${BUDGET.parts} parts, ${BUDGET.kpis} big numbers, ${BUDGET.fields} fields in a form (more go under {"section"} headings), and ${BUDGET.code.toLocaleString('en-US')} characters of code in its expressions and code blocks. A change that would go past one folds what it adds into what is there (a column, a filter, an action on the row), moves it to a later screen, or says it with a part instead of code.
 - An app has one to five views. Do not split what belongs together across views.`;
@@ -709,6 +716,146 @@ export async function dryRunScreens(db, appId, names, plan) {
   return problems;
 }
 
+// One data entry of a screen, run as the screen runs it when it opens (its
+// parameters from its first state); undefined when it cannot be run here.
+async function runData(db, appId, names, screen, name, today = new Date().toISOString().slice(0, 10)) {
+  const q = (screen.data || {})[name];
+  const sql = typeof q === 'string' ? q : q && q.sql;
+  if (typeof sql !== 'string' || sql.startsWith('=')) return undefined;
+  const nothing = new Proxy(() => null, { get: () => nothing, apply: () => null });
+  const state = screen.state || {};
+  const params = {};
+  for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) {
+    if (typeof x !== 'string' || !x.startsWith('=')) { params[k] = x; continue; }
+    try { params[k] = new Function('s', `with (s) { return (${x.slice(1)}\n); }`)({ state, today, params: {}, app: { today: () => today, now: () => new Date().toISOString(), me: () => null }, lib: nothing }) ?? null; } catch { params[k] = null; }
+    if (params[k] == null) return undefined;
+  }
+  const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
+  return db.query(phys, params);
+}
+
+// The figures a plan declares, worked out from the rows of their tables and
+// compared with what the screens' data entries give: the ones that differ.
+export async function figureProblems(db, appId, names, plan, figures, today = new Date().toISOString().slice(0, 10), live = null) {
+  const out = [];
+  const rowsOf = new Map();
+  for (const f of figures) {
+    let v = (plan.views || []).find((x) => x && x.slug === f.view && x.screen);
+    if (!v) {
+      // A screen this version keeps as it is: checked as it is.
+      const cap = live?.views?.find((x) => x.slug === f.view && x.spec?.screen);
+      try { v = cap ? { slug: cap.slug, screen: JSON.parse(cap.code), kept: true } : null; } catch { v = null; }
+    }
+    if (!v || !(v.screen.data || {})[f.data]) { if (!v?.kept) out.push(`figure "${f.label || f.data}": the view ${f.view} has no data entry ${f.data}; name the screen's data entry that computes it`); continue; }
+    if (!rowsOf.has(f.table)) rowsOf.set(f.table, await db.query(`SELECT * FROM ${physical(appId, f.table)} LIMIT 5000`).catch(() => []));
+    const rows = rowsOf.get(f.table);
+    if (!rows.length) continue;
+    let got;
+    try { got = await runData(db, appId, names, v.screen, f.data, today); } catch { continue; /* a failing query is reported by the dry run */ }
+    if (got === undefined) continue;
+    const bad = compareFigure(f, computeFigure(f, rows, today), got);
+    if (bad && !v.kept) out.push(`view ${v.slug}: data.${f.data} gives the wrong figure: ${bad}`);
+  }
+  return out;
+}
+
+// The declared figures each screen's words fail to show, worked out from
+// the rows its tables hold now: [{cap, message}], one per screen.
+async function figuresNotShown(engine, appId, live, opened, figures) {
+  if (!live) return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const out = new Map();
+  for (const f of figures) {
+    const cap = live.views.find((x) => x.slug === f.view);
+    const seen = cap && opened.find((o) => o.tab && o.tab.trim().toLowerCase() === String(cap.title).trim().toLowerCase());
+    if (!seen || typeof seen.text !== 'string') continue;
+    try { if (JSON.parse(cap.code).gate) continue; } catch { /* a code view */ }
+    const rows = await engine.db.query(`SELECT * FROM ${physical(appId, f.table)} LIMIT 5000`).catch(() => []);
+    if (!rows.length) continue;
+    const lacks = figureNotShown(computeFigure(f, rows, today), seen.text);
+    if (!lacks.length) continue;
+    const prev = out.get(cap.id);
+    const line = `"${f.label || f.data}" should show ${lacks.slice(0, 5).join(', ')} (worked out from the rows), but the screen does not show ${lacks.length === 1 ? 'it' : 'them'}; check that the part showing it gets the rows of data.${f.data} with the props or columns it reads`;
+    out.set(cap.id, { cap: cap.id, message: prev ? `${prev.message}; ${line}` : line });
+  }
+  return [...out.values()];
+}
+
+// The rows a build adds: the attached data, then (for a new app) the
+// example rows, each for a table this version creates.
+function rowsOfBuild(plan, data, fresh, first) {
+  const out = data.imports.filter((i) => fresh.has(i.table)).map((i) => ({ table: i.table, rows: i.rows, imported: true }));
+  if (first && plan.seed && typeof plan.seed === 'object') {
+    for (const [table, rows] of Object.entries(plan.seed)) if (fresh.has(table) && Array.isArray(rows) && rows.length) out.push({ table, rows: rows.slice(0, 50), imported: false });
+  }
+  return out;
+}
+
+// Writes rows straight to their tables (no triggers), typed as the
+// engine types them. Returns how many went in.
+async function putRows(engine, appId, specs, batches) {
+  let n = 0;
+  for (const { table, rows } of batches) {
+    const spec = specs.get(table);
+    if (!spec) continue;
+    const docs = [];
+    for (const r of rows) {
+      try {
+        const doc = engine.makeDoc(spec, Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'id' && k !== 'created')));
+        for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+        doc.id = r.id ? String(r.id) : Math.random().toString(36).slice(2, 12);
+        docs.push(doc);
+      } catch { /* a row the table refuses is left out */ }
+    }
+    for (let i = 0; i < docs.length; i += 500) await engine.db.write(docs.slice(i, i + 500).map((doc) => ({ op: 'insert', table: physical(appId, table), doc })));
+    n += docs.length;
+  }
+  return n;
+}
+
+// Puts a sign-in entry (spec.gate) on each screen whose data visitors may
+// not read, and takes it off one whose data they may: the plan's screens,
+// and the app's other screens when this version changes who reads what.
+function gateScreens(plan, code, view, stored, accessOf) {
+  const specOf = (t) => stored.get(t) || view.tables.find((x) => x.spec.name === t)?.spec || null;
+  const access = (t) => accessOf.get(t) || specOf(t)?.access || null;
+  const opts = (title) => ({ name: plan.name || view.app?.name || '', welcome: plan.welcome || null, ux: plan.ux || briefOf(view.app) || null, title });
+  for (const v of plan.views || []) {
+    if (!v) continue;
+    if (!v.screen || typeof v.screen !== 'object') {
+      // A view written in JavaScript: its gate goes in its spec, and the
+      // studio draws it before the view (web/studio.js).
+      if (typeof code[v.slug] !== 'string') continue;
+      const gate = gateOf({ data: { code: code[v.slug] } }, access, opts(v.title));
+      if (gate) { v.gate = gate; if (!/\bui\.signIn\b/.test(code[v.slug])) code[v.slug] += `\n// A visitor sees the sign-in entry first (ui.signIn), from the app's access.\n`; } else delete v.gate;
+      continue;
+    }
+    const gate = gateOf(v.screen, access, opts(v.title));
+    if (gate) v.screen.gate = gate; else delete v.screen.gate;
+    code[v.slug] = JSON.stringify(v.screen, null, 1);
+  }
+  if (!accessOf.size) return;
+  const planned = new Set((plan.views || []).map((v) => v && v.slug));
+  plan.regated = [];
+  for (const cap of view.views || []) {
+    if (planned.has(cap.slug)) continue;
+    if (!cap.spec?.screen) {
+      const gate = gateOf({ data: { code: cap.code } }, access, opts(cap.title));
+      if (JSON.stringify(gate || null) === JSON.stringify(cap.spec?.gate || null)) continue;
+      const spec = { ...cap.spec };
+      if (gate) spec.gate = gate; else delete spec.gate;
+      plan.regated.push({ cap, code: gate && !/\bui\.signIn\b/.test(cap.code) ? `${cap.code}\n// A visitor sees the sign-in entry first (ui.signIn), from the app's access.\n` : cap.code, spec });
+      continue;
+    }
+    let screen;
+    try { screen = JSON.parse(cap.code); } catch { continue; }
+    const gate = gateOf(screen, access, opts(cap.title));
+    if (JSON.stringify(gate || null) === JSON.stringify(screen.gate || null)) continue;
+    if (gate) screen.gate = gate; else delete screen.gate;
+    plan.regated.push({ cap, code: JSON.stringify(screen, null, 1) });
+  }
+}
+
 // Front-page blocks first: a footer has "text", a band "title".
 const FRONT_BLOCKS = ['nav', 'hero', 'band', 'marquee', 'footer', 'features', 'stats', 'quotes', 'gallery', 'pricing', 'faq', 'steps', 'media', 'carousel'];
 // (checks before table: a checks block names the table its checks are rows of)
@@ -998,6 +1145,11 @@ export async function buildContext(engine, appId, request) {
     capIndex = parts.length;
     parts.push(`# Library: screens, rules and functions other apps have that fit this request best\n\nThe best first, found by the request's words and by what it means. Reuse or fork one when it does what the request asks; leave them otherwise.\n\n${entries.join('\n\n')}`);
   }
+  // Today, for example rows dated near it; and the sheets the request
+  // attaches, which the engine imports itself (engine/data.mjs).
+  const sheets = parseAttached(request.text);
+  parts.push(`# Today\n\nToday is ${new Date().toISOString().slice(0, 10)}.`);
+  if (sheets.length) parts.push(dataPart(sheets));
   const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library', evolve: 'nobody asked: the engine saw this in how people use the app, and builds it as a version they can try beside the live one and keep or drop. Make it small, in the app\'s own style, and change nothing it does not need' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
   // The same context for one piece's writer: of the library's shared pieces,
@@ -1018,7 +1170,7 @@ export async function buildContext(engine, appId, request) {
     return copy.filter(Boolean).join('\n\n');
   };
   const found = new Map(lib.map((c) => [c.id, c.found]));
-  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps.map((c) => ({ ...c, found: found.get(c.id) })), shared, system: systemWith(shared), request };
+  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps.map((c) => ({ ...c, found: found.get(c.id) })), shared, system: systemWith(shared), request, sheets };
 }
 
 // The system prompt with the whole library of shared pieces, by name and
@@ -1379,7 +1531,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary"${SUGGEST_AFTER ? ' and "seed"' : ', "seed" and "suggestions"'} as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
+- Keep "summary"${SUGGEST_AFTER ? ', "seed", "import", "figures" and "welcome"' : ', "seed", "import", "figures", "welcome" and "suggestions"'} as always (for a new app, the seed is not optional).${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 // First versions written in parallel: the plan names every screen and rule
 // with a spec and no statement, and each is then written by its own writer
@@ -1610,7 +1762,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const started = Date.now();
   progress('Reading the app and its history from ChloeDB', { step: 'read' });
   const context = await tr.span('strata', 'Read the app, its data and the library from ChloeDB', () => buildContext(engine, appId, request));
-  const { prompt, view, library, shared, system } = context;
+  const { prompt, view, library, shared, system, sheets = [] } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => `${c.title} (${c.found === 'meaning' ? 'by meaning' : c.found === 'both' ? 'by words and meaning' : 'by words'})`).join(', ')}`);
   let answer;
   let plan;
@@ -1664,6 +1816,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
   let storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
 
+  // What the app holds when it opens (engine/data.mjs): the attached sheets
+  // go to tables whose columns hold them, typed; example rows line up.
+  const today = new Date().toISOString().slice(0, 10);
+  const data = prepareData(plan, view, sheets, today);
+  for (const n of data.notes) progress(n);
   // Tables first: data the new code reads must exist when it goes live.
   const caps = new Map(view.comp.caps.map((id) => {
     const c = store.capCache.get(id);
@@ -1707,15 +1864,27 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   if (accessOf.size) progress(`Access: ${[...accessOf.values()].flat().join('; ')}`);
   // Screens: their queries run now against the tables as they are, and the
   // model gets one try to fix the screens whose queries fail.
+  // The tables this version creates hold their rows (the attached data, the
+  // example rows) while the screens' queries run and the figures are
+  // checked against them, and are emptied again before the tests.
+  const freshTables = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  const rowsToAdd = rowsOfBuild(plan, data, freshTables, !view.comp.n);
+  const checkFigures = (plan.views || []).some((v) => v.screen) && data.figures.length;
+  if (checkFigures) await tr.span('strata', 'Put the rows in, to check the figures', () => putRows(engine, appId, stored, rowsToAdd));
   if ((plan.views || []).some((v) => v.screen)) {
     const names = [...new Set([...view.tables.map((t) => t.spec.name), ...(plan.tables || []).map((t) => t.name)])];
-    const run = (label) => tr.span('check', label, async (c) => { const p = await dryRunScreens(engine.db, appId, names, plan); c.problems = p.slice(0, 8); return p; });
+    const run = (label) => tr.span('check', label, async (c) => {
+      const p = await dryRunScreens(engine.db, appId, names, plan);
+      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view));
+      c.problems = p.slice(0, 8);
+      return p;
+    });
     let failed = await run("Run the screens' queries");
     if (failed.length) {
       tr.end(storing);
       progress(`Running the screens' queries: ${failed.length} failed (${failed.slice(0, 2).join('; ').slice(0, 300)}); asking the model to fix them`);
       const span = tr.start('fix', 'The model fixes the screens whose queries fail', { problems: failed.slice(0, 4) });
-      const fixPrompt = `${prompt}\n\n# Your plan\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>\n\n# These queries failed when run against the app's tables\n\n${failed.map((p) => `- ${p}`).join('\n')}\n\n# This step\n\nAnswer with a <plan> holding only "views": each screen view above whose queries failed, whole, with its queries fixed (the same slug, title and order). No code blocks, nothing else.`;
+      const fixPrompt = `${prompt}\n\n# Your plan\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>\n\n# These queries failed, or gave figures other than the ones worked out from the rows, when run against the app's tables\n\n${failed.map((p) => `- ${p}`).join('\n')}\n\n# This step\n\nAnswer with a <plan> holding only "views": each screen view above whose queries failed, whole, with its queries fixed (the same slug, title and order; a figure's data entry gives the figure's rows, as \"figures\" says). No code blocks, nothing else.`;
       try {
         const answer = await ask({ system, prompt: fixPrompt, onWrite: writing(progress) });
         tr.call(span, answer, system.length + fixPrompt.length);
@@ -1735,8 +1904,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       failed = await run("Run the screens' queries again");
       progress(failed.length ? `Still failing, stored as they are (the runtime reports them): ${failed.slice(0, 2).join('; ').slice(0, 300)}` : "The screens' queries run");
       storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
-    }
+    } else if (checkFigures) progress(`The figures check out: ${data.figures.map((f) => f.label || f.data).join(', ')}`);
   }
+  if (checkFigures) await emptyTables(engine, appId, freshTables);
+  // A screen whose data only signed-in people may read shows a visitor a
+  // sign-in entry instead (web/screen.js draws spec.gate).
+  gateScreens(plan, code, view, stored, accessOf);
   // Photos the screens name by what they show become pictures (engine/photos.mjs).
   const photos = await tr.span('strata', 'Find the photos the screens name', () => placePhotos(plan, code));
   if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
@@ -1745,7 +1918,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       // The patterns a screen was expanded from, for the graph: this
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -1762,6 +1935,16 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     written.push(id);
     progress(`Reused ${src.title} from the library (${src.id})`);
   }
+  // Screens this version did not rewrite whose sign-in entry changes with the access.
+  for (const { cap, code: c, spec } of plan.regated || []) {
+    const id = await store.putCapability({ app: appId, slug: cap.slug, kind: 'view', title: cap.title, description: cap.description || '', code: c, spec: spec || cap.spec, forked_from: cap.forked_from || null, author: 'forge' });
+    caps.set(`view/${cap.slug}`, id);
+    written.push(id);
+    let gated = !!spec?.gate;
+    try { if (!spec) gated = !!JSON.parse(c).gate; } catch { /* a code view */ }
+    progress(`The screen ${cap.title} shows visitors a sign-in entry${gated ? '' : ' no more'}`);
+  }
+  delete plan.regated;
   for (const s of plan.remove || []) {
     caps.delete(`view/${s}`);
     caps.delete(`function/${s}`);
@@ -1804,7 +1987,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '', { head: !candidate });
   // The live version's name and brief are the app's.
   if (!candidate) {
-    const named = typeof plan.name === 'string' && plan.name.trim() && !(await store.setting(appId, 'named')) ? { name: appTitle(plan.name, view.app) } : {};
+    // A change that renames the main heading renames the app, whose name the header shows.
+    const renamed = view.comp.n ? renameIn(request.text) : null;
+    if (renamed) plan.name = renamed;
+    const named = typeof plan.name === 'string' && plan.name.trim() && !(await store.setting(appId, 'named')) ? { name: renamed || appTitle(plan.name, view.app) } : {};
     const brief = briefToKeep(plan, view.app);
     const ux = brief ? { ux: JSON.stringify(brief) } : {};
     if (named.name || ux.ux) await store.updateApp(appId, { ...named, ...ux });
@@ -1835,7 +2021,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const problemsLeft = [];
   // The app's tests run on the tables this version creates, while they are
   // empty; a failure goes to the repair like an error a person saw.
-  const fresh = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  const fresh = freshTables;
   if (TESTS && Array.isArray(plan.tests) && plan.tests.length && fresh.size) {
     const testing = tr.start('check', "Run the app's tests");
     const results = await runTests(engine, appId, plan.tests.slice(0, 5), fresh).catch((e) => [{ name: 'tests', ok: false, problem: e.message }]);
@@ -1850,23 +2036,43 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     }
   }
   // Example rows go in once the tables are part of the live version.
-  if (!view.comp.n && plan.seed) {
-    const seeding = tr.start('strata', 'Add example rows');
+  if (rowsToAdd.length) {
+    const seeding = tr.start('strata', 'Add the attached data and example rows');
     let added = 0;
-    for (const [table, rows] of Object.entries(plan.seed)) {
-      for (const row of (rows || []).slice(0, 20)) {
-        try { await engine.insert(appId, table, row, { depth: 1 }); added++; } catch (e) { progress(`Example row skipped: ${e.message}`); }
+    let skipped = 0;
+    for (const { table, rows, imported } of rowsToAdd) {
+      // Many imported rows go in by the batch (no triggers); a few, one by one.
+      if (imported && rows.length > 200) { added += await putRows(engine, appId, stored, [{ table, rows }]); continue; }
+      for (const row of rows) {
+        try { await engine.insert(appId, table, row, { depth: 1 }); added++; } catch (e) { if (skipped++ < 3) progress(`${imported ? 'An imported row' : 'An example row'} was skipped: ${e.message}`); }
       }
     }
-    if (added) progress(`Added ${added} example rows`);
+    if (added) progress(`Added ${added} rows (${rowsToAdd.map((r) => `${r.rows.length} ${r.imported ? 'imported into' : 'examples in'} ${r.table}`).join(', ')})`);
     tr.end(seeding, { rows: added });
   }
   // Every view is opened in a headless browser, when one is installed; an
   // error there reaches the engine as a person's would, and is repaired.
   // (A candidate's views are opened before it is offered: its errors are its own.)
-  const opening = openViews(engine.baseUrl, appId, { v: candidate ? n : null }).then((r) => {
+  const shownFigures = data.figures.filter((f) => f.view);
+  const opening = openViews(engine.baseUrl, appId, { v: candidate ? n : null, withText: shownFigures.length > 0 }).then(async (r) => {
     const bad = r.views.filter((v) => v.errors.length);
     if (r.ran) engine.log(`[${appId}] opened ${r.views.length} view${r.views.length === 1 ? '' : 's'} after version ${n}${bad.length ? `: errors in ${bad.map((v) => `${v.tab || 'the app'} (${v.errors[0]})`).join('; ')}` : ', no errors'}`);
+    // The declared figures must show on their screens as worked out from the
+    // rows; one that does not goes to the repair, as an error would.
+    if (r.ran && shownFigures.length && !candidate) {
+      const live = await store.resolve(appId).catch(() => null);
+      let missing = await figuresNotShown(engine, appId, live, r.views, shownFigures).catch(() => []);
+      // A screen still loading its data reads as one that does not show it:
+      // looked at again, slower, before anything goes to the repair.
+      if (missing.length) {
+        const again = await openViews(engine.baseUrl, appId, { withText: true, wait: 4000 }).catch(() => null);
+        if (again?.ran) missing = await figuresNotShown(engine, appId, live, again.views, shownFigures).catch(() => []);
+      }
+      // Only while this version is still the live one.
+      if (missing.length && (await store.resolve(appId).catch(() => null))?.comp.n !== n) missing = [];
+      for (const m of missing) engine.reportError(appId, m.cap, m.message, 'in the figures check');
+      if (missing.length) engine.log(`[${appId}] figures not shown: ${missing.map((m) => m.message).join('; ').slice(0, 400)}`);
+    }
     return bad;
   }).catch((e) => { engine.log(`[${appId}] opening the views: ${e.message}`); return []; });
   // The drawn-page check (look.mjs): the live version drawn on a phone and a
