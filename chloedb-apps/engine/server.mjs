@@ -27,6 +27,7 @@ import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
 import { STEP_DEFAULTS, expectedSteps } from './trace.mjs';
 import { Publish, forVisitor, strangerOf } from './publish.mjs';
+import { forVisitors } from './audience.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -608,7 +609,8 @@ async function publicState(appId, access) {
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
-    views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    // A visitor never gets the owner's views (engine/audience.mjs).
+    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),

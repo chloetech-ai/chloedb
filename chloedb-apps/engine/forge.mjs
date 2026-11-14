@@ -4,6 +4,7 @@
 
 import { sqlFunctionsDoc } from './sqlfns.mjs';
 import vm from 'node:vm';
+import path from 'node:path';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical, briefOf } from './store.mjs';
@@ -11,7 +12,9 @@ import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql, checkReads } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc, PATTERNS, BUILTIN, usePatterns, checkPattern, PATTERN_ADD_DOC } from './patterns.mjs';
-import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
+import { assignLayouts } from './layouts.mjs';
+import { audienceOf } from './audience.mjs';
+import { placePhotos, placeScreenPhotos, photoIds, warmPhotos, photoCache } from './photos.mjs';
 import { withPhotos } from './source.mjs';
 import { checkAccess, parseAccessList, allowText, wantsAccess } from './access.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
@@ -226,7 +229,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 ${ART_DOC}
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - access: ALLOW statements (see Access) for the tables whose access is new or changes; leave it out otherwise (a table keeps the access it has).
-- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
+- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
 - upgrade: names of components or helpers this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
@@ -390,6 +393,8 @@ export function prepareScreens(plan, code, view) {
   const written = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view)];
   for (const v of plan?.views || []) if (v && v.screen && typeof v.screen === 'object') BUDGETS.set(v, budgetOf(v.screen));
   const problems = [...written, ...expandPlan(plan, withPlanPatterns(plan))];
+  // Every screen gets a page structure, chosen or the one that fits it.
+  assignLayouts(plan, cleanArt(plan?.art) || briefOf(view?.app)?.art || null);
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
@@ -1592,6 +1597,15 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
 }
 
 // Runs a request through the model and applies its answer as the next version.
+// Where found photos go: the app's files (when the engine has them), the
+// shared cache beside them, and the art direction's accent for a drawing.
+function photoOptions(engine, appId, plan, view) {
+  const files = engine.services?.filesDir;
+  if (files) photoCache(path.join(files, '..', 'photo-cache'));
+  const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta)).id : null;
+  return { save, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
+}
+
 export async function forge(engine, appId, request, progress = () => {}) {
   const tr = new Trace();
   try {
@@ -1661,6 +1675,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     throw err;
   }
   progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
+  // The photos the screens and example rows name are searched for while the
+  // tables are made and the queries run (engine/photos.mjs).
+  const photoOpts = photoOptions(engine, appId, plan, view);
+  warmPhotos(plan).catch(() => {});
   // A new app's three designs are made from its art direction, beside the
   // storing (the server's hook; the drawn-page check waits for them).
   const art = !view.comp.n && !request.candidate ? cleanArt(plan.art) : null;
@@ -1744,14 +1762,14 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     }
   }
   // Photos the screens name by what they show become pictures (engine/photos.mjs).
-  const photos = await tr.span('strata', 'Find the photos the screens name', () => placePhotos(plan, code));
+  const photos = await tr.span('strata', 'Find the photos the screens name', () => placePhotos(plan, code, photoOpts));
   if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
       // The patterns a screen was expanded from, for the graph: this
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -2081,7 +2099,7 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (photos && !ex.problems.length) withPhotos(ex.screen, photos);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
   // A photo the edit names is found as for a built screen.
-  if (!problems.length) await placeScreenPhotos(ex.screen, { used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
+  if (!problems.length) await placeScreenPhotos(ex.screen, { ...photoOptions(engine, appId, null, view), used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);
