@@ -2376,7 +2376,15 @@ impl<'a> Binder<'a> {
                     Some(sql::Value::SingleQuotedString(c)) if c.chars().count() == 1 => c.chars().next(),
                     Some(c) => return Err(err(format!("LIKE's ESCAPE takes one character, not {c}"))),
                 };
-                let pattern = self.literal(pattern)?;
+                let pattern = match self.literal(pattern)? {
+                    // A NULL pattern matches no value, nor does NOT LIKE it:
+                    // UNKNOWN, as `f IN (NULL)` is.
+                    Value::Null => {
+                        let p = Pred::In { field: f, values: vec![Value::Null] };
+                        return Ok(if *negated { Pred::Not(Box::new(p)) } else { p });
+                    }
+                    p => p,
+                };
                 let pattern = pattern.as_str().ok_or_else(|| err("LIKE's pattern must be text"))?;
                 let p = match like_prefix(pattern, escape)? {
                     LikePrefix::Exact(v) => Pred::In { field: f, values: vec![Value::Str(v)] },
@@ -2784,7 +2792,11 @@ impl<'a> Binder<'a> {
                     Some(sql::Value::SingleQuotedString(c)) if c.chars().count() == 1 => c.chars().next(),
                     Some(c) => return Err(err(format!("LIKE's ESCAPE takes one character, not {c}"))),
                 };
-                let pattern = self.literal(pattern)?;
+                let pattern = match self.literal(pattern)? {
+                    // UNKNOWN for every value, as `IN (NULL)` is.
+                    Value::Null => return Ok(Some(not(*negated, Pred::Path { field, path, test: PathTest::In(vec![Value::Null]) }))),
+                    p => p,
+                };
                 let pattern = pattern.as_str().ok_or_else(|| err("LIKE's pattern must be text"))?;
                 let p = match like_prefix(pattern, escape)? {
                     LikePrefix::Exact(v) => PathTest::In(vec![Value::Str(v)]),
@@ -2902,7 +2914,13 @@ impl<'a> Binder<'a> {
             return if terms { Ok(None) } else { Err(err(format!("LIKE on {}'s substring index does not take ESCAPE", fld.name))) };
         }
         let what = if ci { "ILIKE" } else { "LIKE" };
-        let pattern = self.literal(pattern)?;
+        let pattern = match self.literal(pattern)? {
+            // A NULL pattern matches no value, nor does NOT LIKE it (finding
+            // N-B10): UNKNOWN, as `f IN (NULL)` is, on a field with the
+            // index as on one without.
+            Value::Null => return Ok(Some(Pred::In { field: f, values: vec![Value::Null] })),
+            p => p,
+        };
         let pattern = pattern.as_str().ok_or_else(|| err(format!("{what}'s pattern must be text")))?;
         if terms && like_prefix(pattern, None).is_ok() {
             return Ok(None);

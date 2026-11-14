@@ -291,3 +291,35 @@ fn the_option_is_declared_and_refused() {
     db.load_into("logs", (0..50).map(doc)).unwrap();
     assert_eq!(ids(&db, "SELECT id FROM logs WHERE host LIKE 'cache!%%' ESCAPE '!'"), ids(&db, "SELECT id FROM logs WHERE host LIKE 'cache_1'"));
 }
+
+/// A NULL pattern matches no value and neither does its negation, as in
+/// SQL (finding N-B10): on a field with the index as on one without, for
+/// LIKE, NOT LIKE, ILIKE and NOT ILIKE, written out or as a parameter. It
+/// was an error on a field with the index ("LIKE's pattern must be text").
+#[test]
+fn a_null_pattern_matches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(&dir.path().join("n.strata"));
+    run(&db, "CREATE TABLE plain (id KEYWORD PRIMARY KEY, line TEXT, host KEYWORD)");
+    let docs: Vec<Document> = (0..300).map(doc).collect();
+    db.load_into("logs", docs.iter().cloned()).unwrap();
+    db.storage().flush().unwrap();
+    db.load_into("logs", (300..400).map(doc)).unwrap();
+    run(&db, "INSERT INTO plain VALUES ('a', 'GET /api', 'web-01.eu'), ('b', NULL, NULL)");
+    let null = Params::new().set("p", Value::Null);
+    for table in ["logs", "plain"] {
+        for field in ["line", "host"] {
+            for op in ["LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"] {
+                if op.contains("ILIKE") && table == "plain" && field == "host" {
+                    continue; // a KEYWORD field's index takes no ILIKE
+                }
+                for (sql, params) in [(format!("SELECT id FROM {table} WHERE {field} {op} NULL"), Params::new()), (format!("SELECT id FROM {table} WHERE {field} {op} :p"), null.clone())] {
+                    let rs = db.query(&sql, &params).unwrap_or_else(|e| panic!("{sql}: {e}"));
+                    assert!(rs.rows.is_empty(), "{sql}: {:?}", rs.rows);
+                    let sql = format!("SELECT id FROM {table} WHERE NOT ({field} {op} :p)");
+                    assert!(db.query(&sql, &null).unwrap_or_else(|e| panic!("{sql}: {e}")).rows.is_empty(), "{sql}");
+                }
+            }
+        }
+    }
+}
