@@ -779,7 +779,7 @@ const routes = [
   // Companies (services.mjs): the ones the signed-in person works in and the
   // one they work in now (x-sa-company, else their first); made by a member,
   // who becomes its admin; its admins add people who have an account.
-  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { if (!cx.public && url.searchParams.get('all') === '1') return { companies: await services.allCompanies(id) }; const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => ({ company: await services.createCompany(id, (await cx.user(id))?.id, b) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members$/, async (b, [id], url, cx) => {
     const user = await cx.user(id);
@@ -800,7 +800,6 @@ const routes = [
     }
     return { person: await services.setRole(id, b.person, String(b.role || '')) };
   }],
-  // People: one account for every app here; joining an app on first use.
   // The app's builders (builders.mjs): invite by address with a role, a
   // fresh link for an invitation, a role changed, someone removed.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/builders$/, async (b, [id], url, cx) => { await engine.view(id); return { builders: await builders.list(id), me: cx.builder ? { id: cx.builder.id, role: cx.builder.role } : { role: 'owner' } }; }],
@@ -816,6 +815,7 @@ const routes = [
   }],
   // An invitation taken, from the studio or another client: the key to use.
   ['POST', /^\/api\/builders\/join$/, async (b, m, url, cx) => { const out = await builders.join(b.token, { name: b.name }); setBuilderCookie(cx.res, out.key); return out; }],
+  // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],

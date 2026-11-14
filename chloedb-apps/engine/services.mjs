@@ -199,6 +199,15 @@ export class Services {
     return ms.map((m, i) => (rows[i] ? { id: rows[i].id, name: rows[i].name, role: m.role } : null)).filter(Boolean);
   }
 
+  // Every company of an app with who works in it, for the studio (which
+  // sees the whole app, not one person's).
+  async allCompanies(appId) {
+    const cs = await this.db.query('SELECT id, name, created FROM sa_companies WHERE app = :a ORDER BY created LIMIT 500', { a: appId });
+    if (!cs.length) return [];
+    const ms = await this.db.query('SELECT company, person, role FROM sa_memberships WHERE app = :a LIMIT 5000', { a: appId });
+    return cs.map((c) => ({ id: c.id, name: c.name, created: c.created, members: ms.filter((m) => m.company === c.id).map((m) => ({ person: m.person, role: m.role })) }));
+  }
+
   // The company a person works in now: the one asked for (x-sa-company)
   // when they belong to it, else their first; null when they have none.
   async companyOf(appId, personId, wanted) {

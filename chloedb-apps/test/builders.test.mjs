@@ -156,6 +156,15 @@ test('builders over a real server: invited, joined once, held to their app and r
     assert.deepEqual(list.body.builders.map((b) => [b.email, b.role, b.status]), [['vic@example.com', 'admin', 'joined']]);
     assert.equal((await call(`/api/apps/${other}/builders/${vicId}/remove`, {})).status, 404, 'a builder of another app');
 
+    // The studio sees every company of the app with who works in it.
+    const signed = await fetch(`${base}/api/apps/${app}/signup`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ email: 'olive@example.com', name: 'Olive', password: 'correct horse' }) });
+    assert.equal(signed.status, 200);
+    const olive = signed.headers.get('set-cookie').split(';')[0];
+    const made = await fetch(`${base}/api/apps/${app}/companies`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, cookie: olive }, body: JSON.stringify({ name: 'Acme' }) });
+    assert.equal(made.status, 200, await made.clone().text());
+    const all = await call(`/api/apps/${app}/companies?all=1`);
+    assert.deepEqual(all.body.companies.map((c) => [c.name, c.members.map((m) => m.role)]), [['Acme', ['admin']]]);
+
     // Deleting the app removes its builders too.
     assert.equal((await call(`/api/apps/${app}/delete`, {})).status, 200);
     assert.equal((await call(`/api/apps/${other}`, undefined, vicKey)).status, 401);
