@@ -53,11 +53,12 @@ env:
 # repository: ubuntu-latest (4 cores, 16 GB) and macos-latest (3 cores,
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
-# The exception is the on-demand runner (job `runner`): when GitHub's
-# runners are full, the two longest jobs of a change to the engine or the
-# server go to a DigitalOcean droplet of 16 cores, which exists only while
-# it is needed; otherwise, and whenever it is not there, they run on
-# ubuntu-latest.
+# The exception is the on-demand runner (job `runner`): the longest jobs
+# of a change to the engine or the server (the server's binary, ChloeDB's
+# and the server's tests) go to a DigitalOcean droplet of 16 cores, which
+# exists only while CI is busy; whenever it is not there, they run on
+# ubuntu-latest. The variable CI_RUNNER=overflow sends them there only
+# when GitHub's runners are full, and CI_RUNNER=off never.
 #
 # macOS jobs are the scarcest: the account runs five at once. A pull
 # request and the merge queue run nothing on macOS (since 13 November: a
@@ -124,10 +125,9 @@ jobs:
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
           python3 .github/scripts/ci_changes.py < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
 
-  # Where the longest jobs run (chloedb-server's binary and its tests): on
-  # GitHub's runners while they have room; when they are full, on the
-  # on-demand runner, a DigitalOcean droplet made then and destroyed once CI
-  # has been idle 15 minutes (.github/ci-runner/, and ci-runner.yml, which
+  # Where the longest jobs run (chloedb-server's binary, ChloeDB's and the
+  # server's tests): on the on-demand runner, a DigitalOcean droplet made
+  # when a run needs it and destroyed once CI has been idle 15 minutes (.github/ci-runner/, and ci-runner.yml, which
   # destroys it), unless it is off, busy, not set up or does not come up in
   # 4 minutes. A pull
   # request from a fork never gets it: the secrets are not passed to it,
@@ -234,9 +234,9 @@ jobs:
         # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
         crate: ${{ fromJSON(needs.changes.outputs.run).crates }}
-    # chloedb-server's tests, the longest job, run on the on-demand runner
-    # when it is up (job `runner`).
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.crate == 'chloedb-server' && needs.runner.outputs.label || matrix.os }}
+    # chloedb-server's and ChloeDB's tests, the longest jobs, run on the
+    # on-demand runner when it is up (job `runner`).
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (matrix.crate == 'chloedb-server' || matrix.crate == 'chloedb') && needs.runner.outputs.label || matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: chloedb-server's tests took
     # 59 minutes from a cold build on the macOS runner on 11-08, and Clippy
