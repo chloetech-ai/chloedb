@@ -17,6 +17,10 @@ test('builders: what each role may do in the studio', () => {
   assert.equal(builderRefusal(null, 'POST', '/api/apps/abc123/delete'), null, 'the owner');
   assert.equal(builderRefusal(viewer, 'GET', '/api/apps/abc123'), null);
   assert.equal(builderRefusal(viewer, 'GET', '/api/apps/abc123/builders'), null);
+  for (const rest of ['activity', 'outbox', 'payments', 'secrets']) {
+    assert.match(builderRefusal(editor, 'GET', `/api/apps/abc123/${rest}`), /owner and admins/, rest);
+    assert.equal(builderRefusal(admin, 'GET', `/api/apps/abc123/${rest}`), null, rest);
+  }
   assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/sql'), null, 'a query only reads');
   for (const rest of ['requests', 'screens/home', 'designs', 'restore', 'insert', 'publish', 'rename', 'schedules/x/run']) {
     assert.match(builderRefusal(viewer, 'POST', `/api/apps/abc123/${rest}`), /viewer can look/, rest);

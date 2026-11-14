@@ -141,7 +141,8 @@ each other in a graph that ChloeDB walks.
   gives a builder key (the `sa_builder` cookie, or the `x-sa-builder`
   header), and every studio request with that key is held to its app and
   role: another app, a new app or the shared graph is a 403, a viewer's
-  writes are a 403, and a removed builder's key is a 401 at once. The studio
+  writes are a 403, the app's activity, outbox, payments and secrets are
+  for admins, and a removed builder's key is a 401 at once. The studio
   reached without a key is the owner, as before; only hashes of links and
   keys are kept. Links say `STRATA_APPS_PUBLIC_URL` when it is set, else the
   address the request came to.

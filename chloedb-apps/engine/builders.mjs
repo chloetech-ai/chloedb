@@ -38,6 +38,9 @@ export function keyOf(req) {
   return m ? m[1] : null;
 }
 
+// What the app's people did and what it holds for them (their activity, the
+// mail sent them, their payments, the app's keys): for its owner and admins.
+const ADMIN_READS = new Set(['activity', 'outbox', 'payments', 'secrets']);
 // Studio POSTs that only read (a query, file names, usage counted).
 const READS = new Set(['sql', 'files/info', 'track', 'error']);
 // Routes of no one app that a builder key may call.
@@ -53,6 +56,7 @@ export function builderRefusal(b, method, pathname) {
   if (m) {
     if (m[1] !== b.app) return 'this builder key is for another app';
     const rest = m[2] || '';
+    if (ADMIN_READS.has(rest) && RANK[b.role] < RANK.admin) return 'only the app\'s owner and admins see this';
     if (get) return null;
     if (READS.has(rest)) return null;
     if (b.role === 'viewer') return 'a viewer can look at this app but not change it; ask its owner to make you an editor';
