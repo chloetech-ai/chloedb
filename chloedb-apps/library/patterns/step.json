@@ -1,0 +1,57 @@
+{
+  "title": "One step of a course or a path, with its check and the way on",
+  "about": "The page of one lesson (a module, a step of an onboarding path, a chapter) opened from its list with its id: its title and number, its text in full, its questions answered one by one with right or wrong and the explanation, then the one main action: mark it done (a row of PROGRESS, once) and go on to the next one, or back to the list after the last. It can always be marked done: a question got wrong says so and shows the answer, it never locks the way on. Content people pay for comes through CONTENT, a rule or function called with {id} that checks they may have it and returns {body, questions: [{question, choices, answer, explanation}]}; open content is a column of the table (BODY).",
+  "params": {
+    "table": {"about": "the table of lessons (or steps)", "need": true},
+    "progress": {"about": "the table of ones done: one row per person and lesson", "need": true},
+    "item": {"about": "the progress column holding the lesson's id", "default": "lesson"},
+    "key": {"about": "names the pattern's data", "default": "{{table}}_one"},
+    "content": {"about": "the rule or function that gives one lesson's {body, questions} for {id}, refusing those who may not have it"},
+    "body": {"about": "the lessons column with the text (Markdown), when anyone may read it"},
+    "name": {"about": "the lessons' title column", "default": "title"},
+    "order": {"about": "SQL ORDER BY for the lessons", "default": "position"},
+    "back": {"about": "the view of the whole list (the course), opened after the last one and from Back"},
+    "noun": {"about": "what one is called", "default": "lesson"},
+    "done": {"about": "the main action's words", "default": "Mark as done"}
+  },
+  "example": {"use": "step", "table": "lessons", "progress": "completions", "item": "lesson", "content": "lesson-content", "name": "title", "order": "position", "back": "course"},
+  "screen": {
+    "state": {"{{key}}_picked": {}, "{{key}}_saving": false},
+    "data": {
+      "{{key}}_all": "SELECT id, {{name}} FROM {{table}} ORDER BY {{order}} LIMIT 500",
+      "{{key}}_row": {"sql": "SELECT * FROM {{table}} WHERE id = :id LIMIT 1", "params": {"id": "=params.id || ''"}},
+      "{{key}}_c": {"$when": "content", "$value": "=params.id ? app.call({{content|json}}, {id: params.id}).catch(e => ({ error: e && e.message ? e.message : String(e) })) : null"},
+      "{{key}}_done": "=app.me() ? app.sql('SELECT {{item}} AS one FROM {{progress}} LIMIT 2000') : []"
+    },
+    "let": {
+      "{{key}}_l": "=({{key}}_row || [])[0] || null",
+      "{{key}}_err": "={{content|json}} ? (({{key}}_c && {{key}}_c.error) || null) : null",
+      "{{key}}_text": "=String(({{content|json}} ? ({{key}}_c && {{key}}_c.body) : ({{key}}_l && {{body|json}} ? {{key}}_l[{{body|json}}] : '')) || '')",
+      "{{key}}_qs": "=(({{content|json}} && {{key}}_c && Array.isArray({{key}}_c.questions)) ? {{key}}_c.questions : []).map((q, i) => { const raw = q.choices; const list = Array.isArray(raw) ? raw.map(String) : String(raw ?? '').split(/\\n|\\s*\\|\\s*/).map(s => s.trim()).filter(Boolean); const ans = String(q.answer ?? ''); return { id: q.id ?? i, question: String(q.question ?? ''), choices: list.map((c, k) => ({ text: c, correct: c === ans || String(k) === ans })), explanation: q.explanation || undefined }; })",
+      "{{key}}_word": "={{noun|json}}.charAt(0).toUpperCase() + {{noun|json}}.slice(1)",
+      "{{key}}_i": "=({{key}}_all || []).findIndex(x => String(x.id) === String(params.id))",
+      "{{key}}_next": "=({{key}}_i >= 0 && {{key}}_i + 1 < ({{key}}_all || []).length) ? {{key}}_all[{{key}}_i + 1] : null",
+      "{{key}}_is": "=({{key}}_done || []).some(d => String(d.one) === String(params.id))",
+      "{{key}}_right": "=Object.values(state.{{key}}_picked).filter(p => p.correct).length",
+      "{{key}}_go": "=async () => { if (state.{{key}}_saving) return; set({ {{key}}_saving: true }); try { if (!{{key}}_is) await app.insert({{progress|json}}, { {{item}}: params.id }); } finally { set({ {{key}}_saving: false }); } if ({{key}}_next) app.open(app.view, { id: {{key}}_next.id }); else if ({{back|json}}) app.open({{back|json}}); }"
+    },
+    "body": [
+      {"$when": "back", "button": "Back", "class": "ghost small", "do": "=() => app.open({{back|json}})"},
+      {"if": "=!params.id || !{{key}}_l", "then": [{"text": "=`Pick a {{noun}} from the list first.`", "muted": true}], "else": [
+        {"text": "={{key}}_word + ' ' + ({{key}}_i + 1) + ' of ' + ({{key}}_all || []).length", "muted": true, "small": true},
+        {"h": "={{key}}_l.{{name}}"},
+        {"$when": "content", "if": "={{key}}_err", "then": [{"card": [{"text": "={{key}}_err"}, {"$when": "back", "button": "Back", "class": "primary", "do": "=() => app.open({{back|json}})"}]}]},
+        {"if": "={{key}}_text", "then": [{"ui": "markdown", "props": {"text": "={{key}}_text"}}]},
+        {"if": "={{key}}_qs.length > 0", "then": [
+          {"h": "Check yourself", "level": 3},
+          {"each": "={{key}}_qs", "as": "q", "class": "col", "body": [{"ui": "quizQuestion", "props": {"question": "=(index + 1) + '. ' + q.question", "choices": "=q.choices", "explanation": "=q.explanation", "picked": "=state.{{key}}_picked[q.id] ? state.{{key}}_picked[q.id].i : undefined", "onAnswer": "=(i, correct) => { if (state.{{key}}_picked[q.id]) return; set({ {{key}}_picked: { ...state.{{key}}_picked, [q.id]: { i, correct: !!correct } } }); }"}}]},
+          {"if": "=Object.keys(state.{{key}}_picked).length === {{key}}_qs.length", "then": [{"text": "=`${{{key}}_right} of ${{{key}}_qs.length} right` + ({{key}}_right === {{key}}_qs.length ? ': well done.' : '. The answers are shown above.')"}]}
+        ]},
+        {"if": "=!{{key}}_err", "then": [{"card": [
+          {"if": "={{key}}_is", "then": [{"text": "=`Done: this {{noun}} counts in your progress.`", "muted": true, "small": true}]},
+          {"button": "=({{key}}_is ? '' : {{done|json}} + ': ') + ({{key}}_next ? 'next {{noun}}' : 'back to the list')", "class": "primary big", "do": "={{key}}_go"}
+        ]}]}
+      ]}
+    ]
+  }
+}

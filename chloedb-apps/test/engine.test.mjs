@@ -3484,3 +3484,24 @@ test('OFFERS: an ACTION line that also says CALL, PAY, CHARGE and PAID is split 
   assert.equal(list.actions[0].label, 'Done');
   assert.deepEqual(list.actions[0].sets, { done: true });
 });
+
+test('STEP: one lesson\'s page with its text, its questions and one way on that marks it done and opens the next', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN lesson TITLE 'Lesson'\nSTEP lessons\n  PROGRESS completions  ITEM lesson  CONTENT lesson-content  NAME title  ORDER BY position  BACK course").screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.data.lessons_one_c, /app\.call\("lesson-content", \{id: params\.id\}\)/);
+  assert.match(e.screen.data.lessons_one_done, /SELECT lesson AS one FROM completions/);
+  // the questions come as the rule gives them: choices a list or lines, the answer a text or an index
+  const qs = new Function('lessons_one_c', `return ${e.screen.let.lessons_one_qs.slice(1)}`)({ questions: [{ question: 'Q1', choices: 'a\nb\nc', answer: 'b' }, { question: 'Q2', choices: ['x', 'y'], answer: 0 }] });
+  assert.deepEqual(qs.map((q) => q.choices.map((c) => c.correct)), [[false, true, false], [true, false]]);
+  // done: a row of the progress table once, then the next lesson
+  const calls = [];
+  const app = { insert: async (t, row) => calls.push(['insert', t, row]), open: (v, p) => calls.push(['open', v, p]), view: 'lesson' };
+  const go = new Function('app', 'state', 'set', 'params', 'lessons_one_is', 'lessons_one_next', `return ${e.screen.let.lessons_one_go.slice(1)}`)(app, { lessons_one_saving: false }, () => {}, { id: 'l1' }, false, { id: 'l2' });
+  await go();
+  assert.deepEqual(calls, [['insert', 'completions', { lesson: 'l1' }], ['open', 'lesson', { id: 'l2' }]]);
+  // without BODY or CONTENT nothing is read from a missing column
+  const open = expandWith(compileStatement("CREATE SCREEN s TITLE 'Step'\nSTEP steps\n  PROGRESS done_steps  ITEM step  BODY text").screen);
+  assert.deepEqual(open.problems, []);
+  assert.equal(open.screen.data.steps_one_c, undefined);
+});
