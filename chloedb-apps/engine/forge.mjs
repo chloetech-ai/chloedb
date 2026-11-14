@@ -1112,6 +1112,10 @@ export async function buildContext(engine, appId, request) {
     const brief = briefOf(view.app);
     if (brief) parts.push(`## Its UX brief\n${BRIEF.map((k) => `- ${k}: ${brief[k]}`).join('\n')}\n\nKeep to it: the first screen stays the one where the job is done, and a change goes where its use belongs (what is done as often as the job, on the first screen; looking back, on a later one; setting up, last). Give "ux" again only when the request changes who uses the app or how.`);
     if (brief?.art) parts.push(`## Its art direction\n${ART.map((k) => `- ${k}: ${brief.art[k] || '-'}`).join('\n')}\n\nWhat you add keeps to it (its words, its photos). Give "art" again only when the request asks for another feel.`);
+    // What the person uploaded to the app (photos, documents): the model
+    // sees them by id and name, and uses them where the request names them.
+    const uploads = await store.db.query('SELECT id, name, type FROM sa_files WHERE app = :a ORDER BY created DESC LIMIT 60', { a: appId }).catch(() => []);
+    if (uploads.length) parts.push(`## Files the person uploaded to the app\n${uploads.map((f) => `- ${f.id}: ${f.name || 'unnamed'} (${f.type || 'file'})`).join('\n')}\n\nThese are the person's own: where the request names them, or asks for their photos (a gallery, the hero, a team), show them by id ("src": "<id>" in a block, app.fileUrl(id) in code), never a searched "photo" in their place.`);
     const tables = [];
     for (const t of view.tables) {
       const name = physical(appId, t.spec.name);
