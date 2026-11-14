@@ -3405,3 +3405,27 @@ test('ASK: a panel where the model reads the rows a query gives and answers a st
   assert.equal(e.screen.data.ask, 'SELECT category, amount FROM spending');
   assert.deepEqual(e.screen.body[0], { ui: 'askPanel', props: { title: 'A read of your month', rows: '=ask', prompt: 'Say where the money went.', button: 'Read my month', input: 'Anything it should know (optional)', web: true } });
 });
+
+test('designs: an answer wrapped or short is read as far as it goes, and what lacks is filled in the accent', async () => {
+  const { makeDesigns, designsIn } = await import('../engine/designs.mjs');
+  const one = { name: 'Linen', light: { bg: '#faf6f5', card: '#ffffff', fg: '#221a1c', accent: '#a8485f' } };
+  assert.equal(designsIn('```json\n{"designs": [' + JSON.stringify(one) + ']}\n```').length, 1);
+  const app = { id: 'a2', name: 'Shop', head: 0 };
+  let asks = 0;
+  const out = await makeDesigns(app, null, { direction: { art: { accent: 'deep indigo' } }, ask: async () => { asks++; return { text: JSON.stringify([one]) }; } });
+  assert.ok(asks >= 2, 'asked once more');
+  assert.equal(out.designs.length, 3);
+  assert.equal(out.designs[0].name, 'Linen');
+  assert.notEqual(out.source, 'presets');
+});
+
+test("the request's own name for the business wins over a coined one", async () => {
+  const { appTitle, namedIn } = await import('../engine/forge.mjs');
+  assert.equal(namedIn('An online shop for Wick & Wax where people buy candles'), 'Wick & Wax');
+  assert.equal(namedIn('I make ceramics under the name Sable & Stone. Using my price list'), 'Sable & Stone');
+  assert.equal(namedIn('Quiero una web para Peluquería Lucía con mis servicios'), 'Peluquería Lucía');
+  assert.equal(namedIn('A tool for my 12-person agency'), null);
+  assert.equal(appTitle('Wickery', { description: 'An online shop for Wick & Wax where people can buy my candles' }), 'Wick & Wax');
+  assert.equal(appTitle('Wick & Wax Candles', { description: 'An online shop for Wick & Wax' }), 'Wick & Wax Candles');
+  assert.equal(appTitle('Stackwise', { description: 'A supplement tracker that tells me what is good' }), 'Stackwise');
+});

@@ -4,7 +4,8 @@
 // person using the app on its own can pick their own. Picking one swaps a
 // block of CSS variables in each view: no code changes, nothing is rebuilt.
 import { ask } from './llm.mjs';
-import { CHOICES, checkDesign, presetDesigns, hslOf, typeOf, pairFor, PRESETS } from '../web/design.js';
+import { CHOICES, checkDesign, presetDesigns, hslOf, fromHsl, typeOf, pairFor, PRESETS } from '../web/design.js';
+import { accentHue } from './photos.mjs';
 
 export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haiku-5-5';
 
@@ -112,12 +113,35 @@ export function shapeDesigns(designs, direction = null, app = null) {
   return out;
 }
 
+// The designs an answer holds: a JSON array of them (fenced or not), or an
+// object holding one ({"designs": [...]}); each design object is kept.
+export function designsIn(text) {
+  const t = String(text || '').replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
+  let v = null;
+  try { v = JSON.parse(t); } catch {
+    const a = t.indexOf('['), b = t.lastIndexOf(']');
+    if (a >= 0 && b > a) { try { v = JSON.parse(t.slice(a, b + 1)); } catch { /* none */ } }
+    if (v === null) { const c = t.indexOf('{'), d = t.lastIndexOf('}'); if (c >= 0 && d > c) { try { v = JSON.parse(t.slice(c, d + 1)); } catch { /* none */ } } }
+  }
+  const list = Array.isArray(v) ? v : v && typeof v === 'object' ? (Array.isArray(v.designs) ? v.designs : Object.values(v).find(Array.isArray) || []) : [];
+  return list.filter((d) => d && typeof d === 'object' && (d.light || d.dark || d.name)).slice(0, 3).map((d) => checkDesign(d));
+}
 const parse = (text) => {
-  const m = String(text).match(/\[[\s\S]*\]/);
-  const list = JSON.parse(m ? m[0] : text);
-  if (!Array.isArray(list) || list.length < 3) throw new Error('the answer held fewer than three designs');
-  return list.slice(0, 3).map((d) => checkDesign(d));
+  const list = designsIn(text);
+  if (list.length < 3) throw Object.assign(new Error('the answer held fewer than three designs'), { found: list, raw: String(text || '').slice(0, 800) });
+  return list;
 };
+
+// Presets in the art direction's accent: what fills the designs a model did
+// not give, so they still carry the app's color.
+export function presetsInAccent(appId, accent, n) {
+  const hue = accent ? accentHue(accent) : null;
+  return presetDesigns(appId).slice(0, n).map((d) => {
+    if (hue == null) return d;
+    const tint = (c) => { const [, sat, l] = hslOf(c); return fromHsl(hue, Math.max(0.45, sat), l); };
+    return checkDesign({ ...d, light: { ...d.light, accent: tint(d.light.accent) }, dark: { ...d.dark, accent: tint(d.dark.accent) }, gradient: null });
+  });
+}
 
 // Three designs for an app. A model that fails or answers nonsense gives way
 // to three of the presets, so an app always has its three.
@@ -126,8 +150,21 @@ export async function makeDesigns(app, view, { ask: askFn = ask, model = DESIGN_
   try {
     const prompt = designPrompt(app, view, direction);
     const r = await askFn({ system: DESIGN_SYSTEM, prompt, model, timeoutMs: 90_000, idleMs: 45_000 });
-    let designs = parse(r.text);
     let cost = r.cost || 0;
+    let designs = designsIn(r.text);
+    // Fewer than three: asked once more; what still lacks is filled with
+    // presets in the art direction's accent, and the answer is logged.
+    if (designs.length < 3) {
+      console.log(`designs ${app.id}: the answer held ${designs.length} design${designs.length === 1 ? '' : 's'}; asking again. It began: ${String(r.text || '').slice(0, 600).replace(/\s+/g, ' ')}`);
+      try {
+        const again = await askFn({ system: DESIGN_SYSTEM, prompt: `${prompt}\n\nYour last answer held ${designs.length} usable design${designs.length === 1 ? '' : 's'}. Answer with a JSON array of exactly three designs, each with "light" and "dark" palettes, and nothing else.`, model, timeoutMs: 90_000, idleMs: 45_000 });
+        cost += again.cost || 0;
+        const more = designsIn(again.text);
+        if (more.length > designs.length) designs = more;
+      } catch { /* what there is stands */ }
+      if (!designs.length) throw new Error('the answer held no designs');
+      if (designs.length < 3) designs = [...designs, ...presetsInAccent(app.id, direction?.art?.accent, 3 - designs.length)];
+    }
     // A palette and shapes checked in code, not only asked for: one more try
     // when they miss, and the second answer is kept whatever it holds.
     const problems = [...paletteProblems(designs, app), ...shapeDesigns(designs, direction, app)];
@@ -141,7 +178,7 @@ export async function makeDesigns(app, view, { ask: askFn = ask, model = DESIGN_
     }
     return { designs, source: model, ms: Date.now() - t0, cost, problems, directed: !!direction?.art };
   } catch (e) {
-    const designs = presetDesigns(app.id);
+    const designs = presetsInAccent(app.id, direction?.art?.accent, 3);
     shapeDesigns(designs, direction, app);
     return { designs, source: 'presets', ms: Date.now() - t0, cost: 0, error: e.message };
   }
