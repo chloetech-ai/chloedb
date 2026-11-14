@@ -1083,10 +1083,17 @@ fn main() {
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
     chloedb::env::adopt_old_names();
-    run();
+    // As #[tokio::main] builds it, with a larger stack for each worker and
+    // blocking thread, where queries are planned and run: the statements
+    // the parser takes fit in 2 MiB, and this leaves room for more.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(chloedb::query::parse::QUERY_STACK)
+        .build()
+        .expect("start the tokio runtime")
+        .block_on(run());
 }
 
-#[tokio::main]
 async fn run() {
     let a = Args::parse();
     chloedb::query::llm::set_limits(chloedb::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });

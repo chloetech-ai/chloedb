@@ -31,6 +31,7 @@ mod command_center;
 mod connectors;
 mod correlated;
 mod date_cluster;
+mod deep_statements;
 mod digitalocean;
 mod edge_tables;
 mod empty_database;

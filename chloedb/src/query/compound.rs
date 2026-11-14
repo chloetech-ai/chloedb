@@ -1715,31 +1715,44 @@ impl<'a> Planner<'a> {
         }
         match body.as_ref() {
             sql::SetExpr::Query(_) => self.side(body),
-            sql::SetExpr::SetOperation { op, set_quantifier, left, right } => {
-                let all = match set_quantifier {
-                    sql::SetQuantifier::All => true,
-                    sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
-                    by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
-                };
-                let kind = match op {
-                    sql::SetOperator::Union => ir::SetOp::Union,
-                    sql::SetOperator::Intersect => ir::SetOp::Intersect,
-                    sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
-                };
-                let l = self.side(left)?;
-                let r = self.side(right)?;
-                if l.columns.len() != r.columns.len() {
-                    return Err(err(format!(
-                        "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
-                        kind.name(),
-                        l.columns.len(),
-                        if l.columns.len() == 1 { "" } else { "s" },
-                        r.columns.len(),
-                        kind.name()
-                    )));
+            sql::SetExpr::SetOperation { .. } => {
+                // `a UNION b UNION c ...` parses left-deep: its queries are
+                // planned from the first on, along the chain rather than
+                // down it, so that a long chain neither recurses once per
+                // query nor copies the queries before each.
+                let mut chain = Vec::new();
+                let mut first = body.as_ref();
+                while let sql::SetExpr::SetOperation { op, set_quantifier, left, right } = first {
+                    chain.push((op, set_quantifier, right.as_ref()));
+                    first = left;
                 }
-                let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
-                Ok(Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi })
+                let mut l = self.side(first)?;
+                for (op, set_quantifier, right) in chain.into_iter().rev() {
+                    let all = match set_quantifier {
+                        sql::SetQuantifier::All => true,
+                        sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
+                        by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
+                    };
+                    let kind = match op {
+                        sql::SetOperator::Union => ir::SetOp::Union,
+                        sql::SetOperator::Intersect => ir::SetOp::Intersect,
+                        sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
+                    };
+                    let r = self.side(right)?;
+                    if l.columns.len() != r.columns.len() {
+                        return Err(err(format!(
+                            "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
+                            kind.name(),
+                            l.columns.len(),
+                            if l.columns.len() == 1 { "" } else { "s" },
+                            r.columns.len(),
+                            kind.name()
+                        )));
+                    }
+                    let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
+                    l = Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi };
+                }
+                Ok(l)
             }
             _ => unreachable!("a set operation or a query"),
         }
