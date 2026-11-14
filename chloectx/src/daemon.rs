@@ -150,6 +150,21 @@ pub struct Session {
     /// Empty for a session whose hooks predate it: the daemon's project.
     #[serde(default)]
     pub worktree: String,
+    /// The branch checked out in the worktree when its hooks last ran.
+    #[serde(default)]
+    pub branch: String,
+    /// Who wrote the current turn's prompt ([`crate::record::Source`]):
+    /// `user` unless Workbench said otherwise (`CHLOECTX_PROMPT_SOURCE`,
+    /// `CHLOECTX_PROMPT_LOG`).
+    #[serde(default)]
+    pub source: String,
+    /// The session's agent name, when Workbench gave one (`CHLOECTX_AGENT_NAME`).
+    #[serde(default)]
+    pub agent: String,
+    /// The end of the assistant's last answer: a prompt may answer a
+    /// question it asked (a rule asked for, [`crate::capture::standing_rule`]).
+    #[serde(default)]
+    pub prev_answer: String,
     /// When each tool call of the turn was made, by `tool_use_id`, from the
     /// transcript, kept until its result arrives ([`crate::report`]).
     #[serde(skip)]
@@ -353,7 +368,17 @@ impl Daemon {
             "hook" => {
                 self.note_hook_settings(req);
                 let payload = req.get("payload").unwrap_or(&Json::Null);
-                self.note_worktree(payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown"), req);
+                let sid = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                self.note_worktree(sid, req);
+                if let Some(a) = req.get("agent").and_then(|v| v.as_str()).filter(|a| !a.is_empty()) {
+                    let mut st = self.state.lock().unwrap();
+                    if let crate::record::Source::Agent(n) = crate::record::Source::parse(&format!("agent:{a}")) {
+                        st.sessions.entry(sid.to_string()).or_default().agent = n;
+                    }
+                }
+                if req.get("event").and_then(|v| v.as_str()) == Some("UserPromptSubmit") {
+                    self.note_source(sid, req);
+                }
                 self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), payload)
             }
             "search" => self.op_search(req).map(|r| (r, Some(self.after(|me| me.keep_after_recall())))),
@@ -616,7 +641,8 @@ impl Daemon {
                         if due {
                             me.keep_after_recall();
                         }
-                        if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts(&prompt)) {
+                        let by = me.source_of(&sid);
+                        if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts_by(&prompt, &by)) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "UserPromptSubmit"}));
                         }
                         if !due {
@@ -694,7 +720,32 @@ impl Daemon {
                 Ok((
                     ctx_out(event, text),
                     Some(self.after(move |me| {
-                        let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        // A file the call read or changed is anchored: its
+                        // branch, commit and content hash now, so a later
+                        // recall into another worktree can tell its code
+                        // from this one's ([`anchor::Checker::label_record`]).
+                        let file = ["file_path", "notebook_path"].iter().find_map(|k| input.get(*k).and_then(|v| v.as_str())).unwrap_or("");
+                        let rel = file.strip_prefix(project.as_str()).map(|x| x.trim_start_matches('/')).unwrap_or("");
+                        let aline = if matches!(tool.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit") && !rel.is_empty() {
+                            anchor::of_file(Path::new(&project), rel).to_line()
+                        } else {
+                            String::new()
+                        };
+                        let agent = me.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
+                        let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project)
+                            .into_iter()
+                            .map(|d| {
+                                let mut c = ctx.clone();
+                                for extra in [d.ctx.as_str(), if d.kind == Kind::ToolCall || d.kind == Kind::ToolResult { aline.as_str() } else { "" }] {
+                                    if !extra.is_empty() {
+                                        c = format!("{c}\n{extra}");
+                                    }
+                                }
+                                let memo = d.tag == capture::MEMORY_FILE_TAG;
+                                let d = d.ctx(c);
+                                if memo { d.by(&crate::record::Source::Assistant(agent.clone())) } else { d }
+                            })
+                            .collect();
                         // How long the call took: from its PreToolUse, else
                         // from its message in the transcript.
                         let started = started.or_else(|| tpath.as_deref().and_then(|t| crate::transcript::call_ts(Path::new(t), &call_id)));
@@ -735,10 +786,16 @@ impl Daemon {
                         return Ok((json!({"output": {"decision": "block", "reason": reason}}), None));
                     }
                 }
-                let (turn, ep, first) = self.with_session(&sid, |s| {
+                let (turn, ep, first, ex) = self.with_session(&sid, |s| {
                     let first = !s.episode_stored;
                     s.episode_stored = true;
-                    (s.turn, s.episode.clone(), first)
+                    let ex = crate::distill::Exchange { by: Some(crate::record::Source::parse(&s.source)), agent: s.agent.clone(), prev_answer: s.prev_answer.clone() };
+                    if first {
+                        // Redacted: the state is a file too.
+                        let tail: Vec<char> = crate::redact::redact(&answer).chars().collect();
+                        s.prev_answer = tail[tail.len().saturating_sub(800)..].iter().collect();
+                    }
+                    (s.turn, s.episode.clone(), first, ex)
                 });
                 if !first {
                     return Ok((json!({"output": null}), None));
@@ -758,7 +815,7 @@ impl Daemon {
                         }
                         me.store.warm();
                         let files: Vec<String> = ep.files.iter().cloned().collect();
-                        me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files);
+                        me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files, &ex);
                     })),
                 ))
             }
@@ -829,7 +886,7 @@ impl Daemon {
     /// already noted, replacements (the old item is marked superseded), and
     /// planned work it completed (marked done).
     #[allow(clippy::too_many_arguments)]
-    pub fn distill_turn(&self, sid: &str, turn: i64, ts: i64, prompt: &str, answer: &str, commands: &[String], files: &[String]) {
+    pub fn distill_turn(&self, sid: &str, turn: i64, ts: i64, prompt: &str, answer: &str, commands: &[String], files: &[String], ex: &crate::distill::Exchange) {
         if !self.cfg.distill.active() || (prompt.trim().is_empty() && answer.trim().is_empty()) {
             return;
         }
@@ -851,7 +908,7 @@ impl Daemon {
         known.sort_by_key(|r| -r.seq);
         let listed: Vec<(String, Kind, String)> = known.iter().rev().map(|r| (r.id.clone(), r.kind, r.text.clone())).collect();
         let t0 = Instant::now();
-        match crate::distill::distill(&self.distill_cfg(), prompt, answer, commands, &listed, ts) {
+        match crate::distill::distill_exchange(&self.distill_cfg(), prompt, answer, commands, &listed, ts, ex) {
             Ok(d) => {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
@@ -885,14 +942,30 @@ impl Daemon {
                     }
                 }
                 let kept = drafts.len();
-                if !drafts.is_empty() {
-                    if let Err(e) = self.store.append(sid, turn, ts, drafts) {
-                        self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                let stored = if drafts.is_empty() {
+                    Vec::new()
+                } else {
+                    match self.store.append(sid, turn, ts, drafts) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                            Vec::new()
+                        }
                     }
-                }
-                for id in &replaced {
-                    let _ = self.store.retag(id, "superseded");
-                }
+                };
+                // A note is superseded only by a stored note that names it
+                // and says the same thing anew ([`successor_of`]); one whose
+                // replacement was dropped, or does not cover it, stays.
+                let replaced: Vec<String> = replaced
+                    .into_iter()
+                    .filter(|id| {
+                        let Some(old) = known.iter().find(|r| &r.id == id) else { return false };
+                        match successor_of(old, &stored) {
+                            Some(new) => self.store.supersede(id, &new).unwrap_or(false),
+                            None => false,
+                        }
+                    })
+                    .collect();
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
@@ -978,7 +1051,7 @@ impl Daemon {
 
     /// A checker of notes against the files of `tree` (a worktree).
     fn checker_in(&self, tree: &str) -> Checker {
-        Checker::new(Path::new(tree))
+        Checker::new(Path::new(tree)).with_sessions(anchor::session_branches(&self.store))
     }
 
     /// The folder session `sid` runs in: the worktree its hooks named,
@@ -1008,11 +1081,55 @@ impl Daemon {
             }
             changed
         };
-        if changed {
+        // The branch is looked at on every hook (two small file reads): a
+        // session can switch it.
+        let (head, branch) = anchor::git_head(Path::new(wt));
+        let moved = {
+            let mut st = self.state.lock().unwrap();
+            let s = st.sessions.entry(sid.to_string()).or_default();
+            let moved = !branch.is_empty() && s.branch != branch;
+            if moved {
+                s.branch = branch.clone();
+            }
+            moved
+        };
+        if changed || moved {
             self.dirty.store(true, Ordering::Release);
-            let (head, branch) = anchor::git_head(Path::new(wt));
             self.log(&json!({"ts": now(), "event": "worktree", "session": sid, "worktree": wt, "branch": branch, "head": head}));
         }
+        if moved {
+            // Kept with the records, so that every record of the session
+            // has a branch and a commit: its session's at the time
+            // ([`anchor::Checker::with_sessions`]).
+            let turn = self.state.lock().unwrap().sessions.get(sid).map_or(0, |s| s.turn);
+            let d = Draft::new(Kind::Event, anchor::Anchor { head, branch, files: Vec::new(), idents: Vec::new() }.to_line()).tag(anchor::WORKTREE_TAG).ctx(format!("Worktree: {wt}"));
+            if let Err(e) = self.store.append(sid, turn, now(), vec![d]) {
+                self.log(&json!({"ts": now(), "error": e.to_string(), "event": "worktree"}));
+            }
+        }
+    }
+
+    /// Who wrote the prompt a hook carries: a source Workbench noted for
+    /// its text (`source`, from `CHLOECTX_PROMPT_LOG`), else for the
+    /// session's first prompt the source of the task it was started with
+    /// (`session_source`, `CHLOECTX_PROMPT_SOURCE`), else the user.
+    fn note_source(&self, sid: &str, req: &Json) {
+        let noted = req.get("source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let first = req.get("session_source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let mut st = self.state.lock().unwrap();
+        let s = st.sessions.entry(sid.to_string()).or_default();
+        let src = match (noted, first) {
+            (Some(n), _) => n.to_string(),
+            (None, Some(f)) if s.turn == 0 => f.to_string(),
+            _ => "user".to_string(),
+        };
+        s.source = crate::record::Source::parse(&src).as_str();
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Who wrote the current turn's prompt.
+    fn source_of(&self, sid: &str) -> crate::record::Source {
+        crate::record::Source::parse(&self.state.lock().unwrap().sessions.get(sid).map(|s| s.source.clone()).unwrap_or_default())
     }
 
     /// Runs query understanding for a prompt of a session: the context
@@ -1027,7 +1144,7 @@ impl Daemon {
         let tree = self.tree(sid);
         let project = Path::new(&tree);
         let res = crate::deep::run(&self.store, &self.deep_cfg(), &self.distill_cfg(), prompt, recent, &filter, Some(project), now());
-        let text = crate::deep::format(&res, &shown, now(), Some(project));
+        let text = crate::deep::format(&res, &shown, now(), Some(self.checker_in(&tree)));
         let mut log = crate::deep::log_json(&res);
         log["ts"] = json!(now());
         log["event"] = json!("deep");
@@ -1159,7 +1276,7 @@ impl Daemon {
             let r = crate::deep::rank(&self.store, &cfg, &distill, &q, &cands, &HashMap::new(), false, now());
             res.adopt(r, cands);
         }
-        let mut text = crate::deep::format(&res, &HashSet::new(), now(), Some(project));
+        let mut text = crate::deep::format(&res, &HashSet::new(), now(), Some(self.checker_in(&tree)));
         if text.is_empty() {
             text = format!("ChloeCtx found nothing relevant in memory ({} searches over {} candidates).", res.plan.queries.len() + 2, res.candidates.len());
         }
@@ -1206,7 +1323,7 @@ impl Daemon {
         let n = turns.len();
         for ((sid, turn), (p, a, c, ts, files)) in turns {
             if !p.trim().is_empty() {
-                self.distill_turn(&sid, turn, ts, p.trim(), a.trim(), &c, &files);
+                self.distill_turn(&sid, turn, ts, p.trim(), a.trim(), &c, &files, &crate::distill::Exchange::default());
             }
         }
         Ok((n, (self.store.len() - before) as usize))
@@ -1363,7 +1480,7 @@ impl Daemon {
         let mut ck = self.checker_in(&self.tree(sid));
         for r in recs.iter().take(2) {
             let snip: String = r.text.chars().take(500).collect();
-            let label = if r.kind.is_knowledge() { ck.check_record(&r).label() } else { String::new() };
+            let label = ck.label_record(&r);
             s += &format!("\n{}\n", recall::fmt_record_labeled(r, &snip, now(), &label));
         }
         Ok(s)
@@ -1405,7 +1522,7 @@ impl Daemon {
             let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id))).collect();
             if let Some(r) = recs.iter().find(|r| r.kind.is_knowledge()).or(recs.first()).cloned() {
                 let snip: String = r.text.chars().take(300).collect();
-                let label = if r.kind.is_knowledge() { ck.check_record(&r).label() } else { String::new() };
+                let label = ck.label_record(&r);
                 let one = format!("\nChloeCtx note on {f}:\n{}\n", recall::fmt_record_labeled(&r, &snip, now(), &label));
                 shown += &one;
                 s += &one;
@@ -1673,26 +1790,40 @@ impl Daemon {
         let (sid, _) = self.active_session();
         let sid = if sid.is_empty() { "manual".to_string() } else { sid };
         let turn = self.with_session(&sid, |s| s.turn);
-        let mut replaced = None;
-        if let Some(old) = req.get("supersedes").and_then(|v| v.as_str()) {
-            if let Some(mut r) = self.store.get(&[old.to_string()])?.pop() {
-                r.tag = "superseded".into();
-                r.importance *= 0.3;
-                self.store.insert(&[r])?;
-                replaced = Some(old.to_string());
+        let old = match req.get("supersedes").and_then(|v| v.as_str()).filter(|o| !o.is_empty()) {
+            Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede")))?),
+            None => None,
+        };
+        // Who asks to keep it: `by` (the CLI says `user`: a person ran it,
+        // or Workbench for one); else the memory tool, which the session's
+        // agent calls.
+        let by = match req.get("by").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
+            Some(b) => crate::record::Source::parse(b),
+            None => {
+                let agent = self.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
+                crate::record::Source::Assistant(agent)
             }
-        }
+        };
         let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
-        let mut d = Draft::new(kind, text).files(files).tag("remembered");
+        let mut d = Draft::new(kind, text).files(files).tag("remembered").by(&by);
         if !a.is_empty() {
             d = d.ctx(a.to_line());
         }
         // What it replaced, as a distilled replacement links it.
-        if let Some(old) = replaced {
-            d = d.link("supersedes", old);
+        if let Some(o) = &old {
+            d = d.link("supersedes", o.id.clone());
         }
         let recs = self.store.append(&sid, turn, now(), vec![d])?;
-        Ok(json!({"id": recs[0].id, "text": format!("Stored {} as {}.", kind.as_str(), recs[0].id)}))
+        let mut replaced = None;
+        if let Some(o) = &old {
+            if self.store.supersede(&o.id, &recs[0].id)? {
+                replaced = Some(o.id.clone());
+            }
+        }
+        let place = self.paths.dir.join("memory.strata");
+        Ok(json!({"id": recs[0].id, "supersedes": replaced, "store": place, "by": by.as_str(),
+            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where Workbench and every later session see it.", kind.as_str(), recs[0].id,
+                replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display())}))
     }
 
     fn op_forget(&self, req: &Json) -> Result<Json> {
@@ -1986,6 +2117,26 @@ impl Daemon {
 
 /// One hybrid search of `store`, as `memory_search` shows it: the first
 /// `limit` hits with a snippet each, their ids, and the search's evidence.
+/// The stored note that replaces `old`: one of `stored` that links to it
+/// with `supersedes` and says the same thing anew, sharing a fair part of
+/// its words (a replacement keeps what still holds, [`crate::distill`]).
+/// A note about something else that names `old` replaces nothing: half a
+/// ruling is not superseded by the other half.
+pub fn successor_of(old: &Record, stored: &[Record]) -> Option<String> {
+    let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+    let o = terms(&old.text);
+    stored
+        .iter()
+        .filter(|r| r.linked("supersedes").any(|t| t == old.id))
+        .find(|r| {
+            let n = terms(&r.text);
+            let shared = o.intersection(&n).count() as f64;
+            let least = o.len().min(n.len()).max(1) as f64;
+            o.is_empty() || shared / least >= 0.3
+        })
+        .map(|r| r.id.clone())
+}
+
 pub fn search_text(store: &Store, q: &str, f: &Filter, rank: &RankParams, limit: usize) -> Result<(String, Vec<String>, Json)> {
     let (hits, ev) = recall::search(store, q, f, rank)?;
     let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();

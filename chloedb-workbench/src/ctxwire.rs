@@ -148,6 +148,94 @@ pub fn wire(bin: &str, required: bool, cwd: &Path, settings: Json, mcp: Json) ->
     Ok((merge_settings(settings, &w["settings"]), merge_mcp(mcp, &w["mcp"])))
 }
 
+/// [`wire`], also telling ChloeCtx who the session is ([`Who`]): its
+/// agent name, who wrote its task, and where later prompts' sources are
+/// noted. The task is noted before the session starts.
+// Called from spawn and Supervisor::input once those take it (SPEC.md,
+// "Sixth build: ChloeCtx remembers the right things", integration).
+pub fn wire_as(bin: &str, required: bool, cwd: &Path, settings: Json, mcp: Json, who: &Who) -> Result<(Json, Json), ApiError> {
+    let settings = merge_settings(settings, &json!({ "env": who.env() }));
+    let out = wire(bin, required, cwd, settings, mcp)?;
+    who.started();
+    Ok(out)
+}
+
+/// What Workbench tells ChloeCtx about a session, so that it records who
+/// said what (SPEC.md, "Sixth build: ChloeCtx remembers the right
+/// things"): the agent's name (`CHLOECTX_AGENT_NAME`), who wrote the task
+/// it starts with (`CHLOECTX_PROMPT_SOURCE`), and a file where Workbench
+/// notes, before typing it, who wrote each later prompt that is not the
+/// user's (`CHLOECTX_PROMPT_LOG`, see [`note_prompt`]). ChloeCtx never takes
+/// an agent's or Workbench's words for the user's preferences.
+// Called from spawn and Supervisor::input once those take it (SPEC.md,
+// "Sixth build: ChloeCtx remembers the right things", integration).
+#[derive(Clone, Debug)]
+pub struct Who {
+    pub agent: String,
+    /// `user`, `workbench` or `agent:<name>`.
+    pub source: String,
+    pub log: PathBuf,
+    pub task: Option<String>,
+}
+
+// Called from spawn and Supervisor::input once those take it (SPEC.md,
+// "Sixth build: ChloeCtx remembers the right things", integration).
+impl Who {
+    /// The session `session_dir` of the agent `name`: its task written by
+    /// `parent` (another agent's name) when one started it; by Workbench
+    /// for a goal's lead (its brief is Workbench's text); else by the user.
+    pub fn new(name: &str, session_dir: &Path, parent: Option<&str>, lead_of_goal: bool, task: Option<&str>) -> Who {
+        let source = match parent {
+            Some(p) => format!("agent:{p}"),
+            None if lead_of_goal => "workbench".into(),
+            None => "user".into(),
+        };
+        Who { agent: name.to_string(), source, log: prompt_log(session_dir), task: task.map(String::from) }
+    }
+
+    pub fn env(&self) -> Json {
+        json!({
+            "CHLOECTX_AGENT_NAME": self.agent,
+            "CHLOECTX_PROMPT_SOURCE": self.source,
+            "CHLOECTX_PROMPT_LOG": self.log.to_string_lossy(),
+        })
+    }
+
+    /// Notes the task the session starts with, when it is not the user's.
+    fn started(&self) {
+        if let Some(t) = self.task.as_deref().filter(|_| self.source != "user") {
+            note_prompt(&self.log, t, &self.source);
+        }
+    }
+}
+
+/// The file of a session's prompt sources.
+// Called from spawn and Supervisor::input once those take it (SPEC.md,
+// "Sixth build: ChloeCtx remembers the right things", integration).
+pub fn prompt_log(session_dir: &Path) -> PathBuf {
+    session_dir.join("prompt-sources.jsonl")
+}
+
+/// Notes, before Workbench types `text` into a session, who wrote it
+/// (`agent:<name>` for `send_to_agent`, `workbench` for its own briefs):
+/// ChloeCtx's hook matches the prompt's start against the newest lines.
+/// The user's own prompts need no line. Best effort: a prompt it could
+/// not note is taken for the user's, as it was before.
+// Called from spawn and Supervisor::input once those take it (SPEC.md,
+// "Sixth build: ChloeCtx remembers the right things", integration).
+pub fn note_prompt(log: &Path, text: &str, source: &str) {
+    use std::io::Write;
+    let start: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+    if start.is_empty() {
+        return;
+    }
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let line = json!({ "ts": ts, "text": start, "source": source });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// The answer to a spawn without ChloeCtx: why, and the fix.
 pub fn missing(why: String) -> ApiError {
     ApiError::new(409, "chloectx_missing", format!("{why}. Workbench needs it; run {FIX}"))
@@ -186,5 +274,30 @@ mod tests {
         let m = merge_mcp(crate::supervisor::mcp_json("/wb", "http://x", "t", "a1"), &json!({"chloectx": {"command": "/c", "args": ["mcp"]}}));
         assert_eq!(m["mcpServers"]["workbench"]["command"], "/wb");
         assert_eq!(m["mcpServers"]["chloectx"]["command"], "/c");
+    }
+
+    #[test]
+    fn sessions_say_who_wrote_their_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        // An agent the lead started: its task is the lead's, noted before it runs.
+        let who = Who::new("freeship", dir.path(), Some("lead"), false, Some("Add free shipping.\nShipping is 499 by default."));
+        let (s, _) = wire_as("chloectx", false, dir.path(), json!({}), json!({}), &who).unwrap();
+        assert_eq!(s["env"]["CHLOECTX_AGENT_NAME"], "freeship");
+        assert_eq!(s["env"]["CHLOECTX_PROMPT_SOURCE"], "agent:lead");
+        assert_eq!(s["env"]["CHLOECTX_PROMPT_LOG"], prompt_log(dir.path()).to_string_lossy().as_ref());
+        let log = std::fs::read_to_string(prompt_log(dir.path())).unwrap();
+        let line: Json = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        assert_eq!(line["text"], "Add free shipping. Shipping is 499 by default.");
+        assert_eq!(line["source"], "agent:lead");
+        // A goal's lead gets Workbench's brief; the user's own task is not noted.
+        assert_eq!(Who::new("lead", dir.path(), None, true, None).source, "workbench");
+        let other = tempfile::tempdir().unwrap();
+        let mine = Who::new("cents", other.path(), None, false, Some("Fix the cent bug."));
+        assert_eq!(mine.source, "user");
+        wire_as("chloectx", false, other.path(), json!({}), json!({}), &mine).unwrap();
+        assert!(!prompt_log(other.path()).exists());
+        // A later message from another agent.
+        note_prompt(&prompt_log(other.path()), "  Stop after   the tests pass. ", "agent:lead");
+        assert!(std::fs::read_to_string(prompt_log(other.path())).unwrap().contains("\"text\":\"Stop after the tests pass.\""));
     }
 }

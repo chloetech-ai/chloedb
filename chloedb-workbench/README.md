@@ -33,6 +33,25 @@ ChloeCtx is missing or too old, `serve` still starts, the UI shows what to
 run, and starting an agent is refused (`chloectx_missing`) until it is
 fixed. `--no-chloectx` (hidden) turns this off; the tests use it.
 
+What ChloeCtx keeps, and what it shows you as a rule, follows who said it:
+
+- An instruction you give one agent ("don't touch money.py or cart.py")
+  is kept for that agent's task only. It becomes a standing rule, shown on
+  Ship and Map and given to later agents, only when you say so: "always",
+  "never", "from now on", "by default", or an answer to a question that
+  asked for a rule. The Rules panel adds one directly.
+- What a lead tells the agents it starts, a goal's brief and what agents
+  conclude are labelled as theirs ("The agent lead said: …"), never as your
+  preference or as fact. Workbench tells ChloeCtx who wrote each prompt.
+- "My decision: …" (or "We decided …") typed to an agent, a steer included,
+  is kept at once as your decision, in ChloeCtx's store for the repository,
+  where Decisions, Ship and Trace read it. `chloectx remember` says where
+  that store is.
+- Worktrees share one memory but not their code. A record from another
+  agent's branch that is not merged into this one is labelled "from branch
+  wb/paybutton, not merged here" when it is shown to an agent, and a note
+  is marked superseded only when a named note replaced it.
+
 From a checkout, for development:
 
 ```bash

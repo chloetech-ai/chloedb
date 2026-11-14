@@ -2581,3 +2581,141 @@ or Tab takes a suggestion, and a folder opens its children.
 - The repository box needs part D's `/api/repos/dirs`. Without it (a 404)
   it completes from the recent repositories only. For the screenshots, the
   test harness answered that route from the real scratch folder.
+
+## Sixth build: ChloeCtx remembers the right things
+
+Five simulated users found that ChloeCtx kept the wrong things, or kept the
+right things under the wrong name: a one-off instruction became a standing
+rule, a lead's brief became "User preference", an agent's guess became a
+fact, one worktree's reading of the code was given to another, and a ruling
+was half superseded by nothing. The fixes are in ChloeCtx (`chloectx/`),
+plus what Workbench tells it about each session (`src/ctxwire.rs`).
+
+1. **One-off instructions stay with their task.** The distiller says, for
+   each rule, whether it is standing or for the task, and the daemon
+   decides with `capture::standing_rule`. A rule stays a `preference` only
+   when the user said so, in a sentence about the same thing: "always",
+   "never", "from now on", "by default", "every time", a convention or a
+   policy. An answer to the assistant's question asking for a rule also
+   counts (the end of its previous message goes to the distiller). Any other
+   instruction becomes a `note` tagged `task`, worded "For cents's task only
+   (the user said, not a standing rule): …". The store's filter keeps a
+   `task` note out of every other session's search, recall, briefing,
+   consolidation and capsule (`Filter::conds`). Workbench's Map, Ship and
+   Trace read only decisions, preferences and facts, so they no longer show
+   it. Rules added in Workbench's Rules panel are `chloectx remember`
+   records, as before.
+2. **Who said it.** Every record can carry a `By:` line: `user`,
+   `workbench`, `agent:<name>` or `assistant[:<name>]` (`record::Source`).
+   - Preference cues ("User preference: …") come only from a person's
+     prompt. An agent's or Workbench's prompt is stored with its source and
+     gives no cue.
+   - The distiller is told when the request was written by another agent or
+     by Workbench. Each item says whether the requester stated it or the
+     assistant found it. `distill::attribute` then makes:
+     - an agent's or Workbench's rule a task note;
+     - an agent's or Workbench's decision or fact "The agent lead said: …";
+     - what a named Workbench agent concluded "The agent cents said: …".
+   - `memory_remember` (the agent's tool) records the assistant as its
+     author. `chloectx remember` (a person, or Workbench for one) records
+     the user.
+   - `memory_ask` heads its notes "Notes from earlier sessions", not "from
+     earlier conversations with the user". It shows "(the agent lead
+     said)" after the kind, and the role of an excerpt is the prompt's
+     author ("agent lead", "Workbench's brief", "user").
+   - The hook reads `CHLOECTX_AGENT_NAME`, `CHLOECTX_PROMPT_SOURCE` (who
+     wrote the session's first prompt, its task) and `CHLOECTX_PROMPT_LOG`.
+     That is a JSON-lines file of `{ts, text, source}` that Workbench
+     appends to before it types a prompt that is not the user's. The newest
+     line of the last hour whose text starts the prompt wins
+     (`hook::prompt_source`). A prompt nothing names is the user's.
+   - `ctxwire::Who` builds those three variables. Its source is
+     `agent:<parent name>` for a spawned agent, `workbench` for a goal's
+     lead and `user` otherwise. `ctxwire::wire_as` merges them into the
+     session's settings and notes a task that is not the user's.
+     `ctxwire::note_prompt` adds a line.
+3. **Branches.**
+   - When a session's hooks first name its worktree, and whenever its
+     branch changes, the daemon stores an event (tag `worktree`, an
+     `Anchor:` line with branch and commit). Every record therefore has a
+     branch: its own anchor's, else its session's at the time.
+   - A file the agent read or changed (Read, Edit, MultiEdit, Write,
+     NotebookEdit) anchors the call's records: commit, branch and content
+     hash.
+   - `Checker::label_record` labels a record from another branch. Git gives
+     the merge base of that branch with this worktree's HEAD. A record
+     written after that commit's time describes work this worktree does not
+     have, so it is labelled "[from branch wb/paybutton, not merged here: …
+     not a description of this worktree's code]". The label is left off
+     when the record's anchored files hash the same here.
+   - Every place a record is shown uses it: recall, the knowledge block,
+     file notes, the briefing and the query engine. The briefing moves such
+     notes to its "may be out of date or from another branch" section.
+     The ranker's prompt says never to present them as the current code
+     (Maya's "to_cents still uses banker's rounding" reading came from
+     paybutton's Read of money.py).
+   - Branch-merged records (the branch committed after the record and is
+     an ancestor of HEAD) and records older than the fork are shown as
+     before.
+4. **Superseded only by a successor.** `Store::supersede(old, new)` marks
+   `old` superseded only when `new` is stored, and adds a `superseded_by`
+   link to it, so every view can show what replaced it. The distiller's
+   replacements count only after the new note is stored, links to the old
+   one and shares at least 30% of its words (`daemon::successor_of`). A
+   replacement dropped as a near-copy, or one about the other half of a
+   ruling, leaves the old note live. `remember --supersedes` refuses an id
+   that does not exist and supersedes after storing. Consolidation
+   supersedes with the merged note.
+5. **Decisions visible where Workbench looks.**
+   - A person's prompt line that states a decision ("My decision: …",
+     "Decision: …", "We decided …") is stored at once as a `decision` by
+     the user ("The user decided: …", tag `stated`). It does not wait for
+     the distiller, and the distiller sees it as already noted.
+   - An agent's write to a memory file outside the repository (a path
+     with a `memory` folder, `.md`) is kept as a note that names the file
+     (tag `memory-file`, `Lives: <path>`).
+   - The briefing tells agents to keep decisions with `memory_remember`,
+     not in memory files of their own.
+   - `remember` answers with the store's path ("Stored decision as … in
+     ChloeCtx (…/memory.strata), where Workbench and every later session
+     see it").
+
+For Ship's capsule (part C): `chloectx pack` keeps only the records of the
+sessions in `--sessions a,b` or `CHLOECTX_PACK_SESSIONS`, and the entities
+they link to. It names them in the manifest as `sessions`, which a capsule
+of every session leaves out.
+
+Also: `chloectx --help` names `wiring` in its list of commands. Its test
+failed at the start commit.
+
+### Integration left for the merge
+
+Workbench's `spawn` and `Supervisor::input` belong to other parts, so
+these two calls are not made yet. Until they are, `Who`, `wire_as` and
+`note_prompt` are marked `allow(dead_code)`, and Workbench's sessions are
+recorded as before: every prompt the user's, but with the other fixes.
+
+- In `spawn`, replace `ctxwire::wire(...)` with
+  `ctxwire::wire_as(..., &who)`, where `who` is
+  `ctxwire::Who::new(&name, &session_dir, parent_name.as_deref(), req.goal.is_some() && req.outcome.is_none() && req.parent.is_none(), task.as_deref())`
+  and `parent_name` is the parent agent's name.
+- In `Supervisor::input`, before the text is written, when `by` names
+  another agent, call
+  `ctxwire::note_prompt(&ctxwire::prompt_log(&data_dir.join("sessions").join(id)), text, &format!("agent:{}", by_name))`.
+
+### Left out
+
+- Task scope is the session. A restarted agent with a new session id does
+  not see its earlier task notes; Workbench's Restart (part E) continues
+  the session when it can.
+- `standing_rule` reads words, not meaning. "We use semicolons in CSV
+  exports" with no standing word becomes a task note. A rule the user meant
+  as standing can be added in the Rules panel, or said with "always".
+- Records written before this build have no `By:` line and are taken as
+  the user's. Old cue preferences from agents' briefs stay until consolidated
+  or forgotten.
+- The branch check needs git and the record's branch to still exist. A
+  record from a deleted branch is shown without a branch label.
+- Workbench's own views (Ship, Map, Trace, capsule) show the record text,
+  which now carries the attribution. They do not yet read the `By:` line
+  or `superseded_by` themselves (parts C and D).

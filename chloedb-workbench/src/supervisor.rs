@@ -551,7 +551,12 @@ impl Supervisor {
         // Bash prefixes allowed from Flow's suggestions, for this repository.
         // A key of its own, which cannot decide a change request (src/guarded.rs).
         let token = crate::guarded::agent_token(&id);
-        let (settings_v, mcp_v) = crate::ctxwire::wire(
+        // Who writes this session's prompts, for ChloeCtx (SPEC.md, "Sixth
+        // build: ChloeCtx remembers the right things"): an agent's brief is
+        // not the user's preference.
+        let parent_name = req.parent.as_deref().and_then(|p| self.agent_row(p)).map(|a| a.name);
+        let who = crate::ctxwire::Who::new(&name, &session_dir, parent_name.as_deref(), req.goal.is_some() && req.outcome.is_none() && req.parent.is_none(), task.as_deref());
+        let (settings_v, mcp_v) = crate::ctxwire::wire_as(
             &self.cfg.chloectx_bin,
             self.cfg.chloectx_required,
             &cwd,
@@ -564,6 +569,7 @@ impl Supervisor {
                 }
             },
             mcp_json(&exe, &self.cfg.url, &token, &id),
+            &who,
         )?;
         write_private(&settings, &settings_v)?;
         write_private(&mcp, &mcp_v)?;
@@ -779,6 +785,13 @@ impl Supervisor {
     /// `by` is the agent that typed it (`send_to_agent`), or `None` for you.
     pub fn input(&self, id: &str, text: &str, enter: bool, by: Option<&str>) -> Result<(), ApiError> {
         let term = self.term(id)?;
+        // Another agent's words, so ChloeCtx records them as that agent's,
+        // not the user's.
+        if let Some(b) = by.filter(|b| *b != id && !text.is_empty()) {
+            if let Some(from) = self.agent_row(b) {
+                crate::ctxwire::note_prompt(&crate::ctxwire::prompt_log(&self.cfg.data_dir.join("sessions").join(id)), text, &format!("agent:{}", from.name));
+            }
+        }
         term.write(text.as_bytes()).map_err(|e| ApiError::internal(format!("cannot write to the terminal: {e}")))?;
         if enter {
             if !text.is_empty() {

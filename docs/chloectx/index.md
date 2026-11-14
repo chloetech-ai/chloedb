@@ -98,10 +98,13 @@ After each `Stop`, off the prompt's path, the daemon gives the turn (request, co
 | rule, constraint, convention | `preference` | `distilled` |
 | requirement of work planned but not done | `todo` | `planned` |
 | fact about the project or its environment, failed approaches | `fact` | `distilled` |
-| `replaces: id` | the old item is retagged | `superseded` |
+| an instruction for the task at hand ("don't touch cart.py") | `note`, kept to its session | `task` |
+| `replaces: id` | the old item is retagged, and names its successor (`superseded_by`) | `superseded` |
 | `done: id` | the planned item is retagged | `done` |
 
-A new item whose analysed terms overlap an existing one by a Jaccard index J ≥ 0.6 is dropped. Distillation costs about **$0.0013 a turn** and 8 s with a small model, and never delays a prompt.
+A new item whose analysed terms overlap an existing one by a Jaccard index J ≥ 0.6 is dropped. A note is superseded only by a stored note that names it and shares at least 30% of its words; when the replacement was dropped or is about something else, the old note stays live.
+
+**Who said it.** Every item says whether the request stated it or the assistant found it, and the record keeps its source in a `By:` line: `user`, `workbench` (a brief Workbench wrote), `agent:<name>` (another agent's brief or message) or `assistant[:<name>]`. Only the user makes rules: a rule stays a `preference` only when the user stated it as standing ("always", "never", "from now on", "by default", a convention, in a sentence about the same thing) or answered the assistant's question asking for one. Any other instruction, and anything an agent or Workbench told an agent to do, becomes a note for that session's task, which other sessions, the briefing and recall never see. A decision or fact another agent stated, or a Workbench agent concluded, reads "The agent lead said: …"; it is that agent's claim, not a fact. A person's prompt that states a decision ("My decision: …", "We decided …") is kept at once as the user's decision, whether or not the distiller runs. Workbench tells ChloeCtx who wrote each prompt with `CHLOECTX_PROMPT_SOURCE` (the session's task), `CHLOECTX_PROMPT_LOG` (later prompts it typed) and `CHLOECTX_AGENT_NAME`; a prompt nothing names is the user's. Distillation costs about **$0.0013 a turn** and 8 s with a small model, and never delays a prompt.
 
 Each note also carries **the situations it will matter in** (`when`), written at the same time: "choosing a library or standard-library module", "parsing a config file" for a note that the client machines run Python 3.8. A later request rarely uses the words of the note it needs; it uses the words of the task. The situations join the note's lexical key and its embedding, so "add a settings.toml loader" finds the Python 3.8 note although they share no word. This is document expansion (doc2query) done once, when the note is written.
 
@@ -120,6 +123,8 @@ A note about code goes stale when the code changes. Each note records what it wa
 | the file is gone, or an identifier it names no longer occurs | **may be out of date**: moved to its own briefing section | **the code may now break it**: stays with the rules, with "the code changed since this was stated; check that it still follows it" |
 
 A rule does not go stale because the code moved away from it: a teammate who switched invoices to banker's rounding did not cancel the client's requirement, so the rule stays where the model will see it, with a warning that the code may now break it.
+
+**Branches.** Worktrees of one repository share one store, but not their code. Each session's worktree, branch and commit are kept as an event when its hooks first name them and whenever the branch changes, so every record has a branch: its anchor's, else its session's at the time. A file an agent read or changed is anchored too (commit, branch, content hash). When a record is shown in another worktree, ChloeCtx asks git for the merge base of the record's branch with this HEAD: a record written after that commit came from work this worktree does not have, and is labelled "from branch wb/paybutton, not merged here: not a description of this worktree's code", unless its anchored files are the same here. The briefing moves such notes to the section of notes that may be out of date, and the query engine's ranker is told never to present them as the current code.
 
 ## When to load
 

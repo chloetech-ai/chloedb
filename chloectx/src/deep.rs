@@ -233,7 +233,7 @@ const RANK_PROMPT: &str = r#"<request>
 {request}
 </request>
 
-Records found in the memory of earlier sessions (id in brackets; a label in square brackets after a note says the code it describes changed since):
+Records found in the memory of earlier sessions (id in brackets; a label in square brackets after a record says the code it describes changed since, or that it came from another branch whose work is not merged here: such a record never describes the code of this worktree, so never present it as the current code):
 
 {cands}
 
@@ -647,13 +647,11 @@ pub fn run(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str, 
     }
     let mut labels = HashMap::new();
     if let Some(p) = project {
-        let mut ck = Checker::new(p);
+        let mut ck = Checker::new(p).with_sessions(crate::anchor::session_branches(store));
         for c in &cands {
-            if c.record.kind.is_knowledge() {
-                let l = ck.check_record(&c.record).label();
-                if !l.is_empty() {
-                    labels.insert(c.record.id.clone(), l);
-                }
+            let l = ck.label_record(&c.record);
+            if !l.is_empty() {
+                labels.insert(c.record.id.clone(), l);
             }
         }
     }
@@ -686,21 +684,21 @@ impl DeepResult {
 /// The context block for a result: the picked records not shown already
 /// (`shown`), why each matters, and the ranker's reading. Empty when there
 /// is nothing new.
-pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, project: Option<&Path>) -> String {
+pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, check: Option<Checker>) -> String {
     let new: Vec<&(Record, String)> = res.picks.iter().filter(|(r, _)| !shown.contains(&r.id)).collect();
     if new.is_empty() || res.confidence == "none" {
         return String::new();
     }
-    let mut ck = project.map(Checker::new);
+    let mut ck = check;
     let mut s = format!(
         "ChloeCtx searched the memory of earlier sessions for this request ({} searches) and judged these records relevant, most important first. They may be outdated; the current files take precedence.\n",
         res.plan.queries.len() + 2
     );
     let terms: HashSet<String> = HashSet::new();
     for (r, why) in &new {
-        let label = match (&mut ck, r.kind.is_knowledge()) {
-            (Some(c), true) => c.check_record(&r).label(),
-            _ => String::new(),
+        let label = match &mut ck {
+            Some(c) => c.label_record(r),
+            None => String::new(),
         };
         s += &format!("\n{}", describe(r, &terms, now, &label, 700));
         if !why.is_empty() {
