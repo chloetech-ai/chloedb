@@ -723,7 +723,11 @@ function renderApp() {
   // a list, with the row's id) is reached from its list, not a tab beside it.
   const tabs = $('#tabs');
   const tabbed = BARE ? views.filter((v) => !isDetailOnly(v, views)) : views;
-  tabs.replaceChildren(...(tabbed.length ? tabbed : views).map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  // (on the app's own page, a tab that would repeat the name in the bar
+  // beside it is the home it is: "Home")
+  const brandName = BARE ? String(document.title || '').trim().toLowerCase() : '';
+  const tabTitle = (v) => (brandName && String(v.title || '').trim().toLowerCase() === brandName ? 'Home' : v.title);
+  tabs.replaceChildren(...(tabbed.length ? tabbed : views).map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(tabTitle(v)), h('span', { class: 'tlabel' }, tabTitle(v)), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length && BARE && st.public && st.version?.n) tabs.replaceChildren();
   else if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
@@ -952,7 +956,9 @@ function renderLook() {
   }
   renderWho(right);
   const d = S.app?.design;
-  btn.hidden = !d;
+  // A published app's visitors (and its owner on it) get the design its owner
+  // chose: picking among the three is the studio's, not a stray "Aa".
+  btn.hidden = !d || !!S.app?.public;
   $('#lookmenu')?.remove();
   if (!d) return;
   const own = ownLook();
@@ -978,7 +984,15 @@ async function renderWho(right) {
   $('#who')?.remove();
   $('#whomenu')?.remove();
   const me = S.me;
-  if (!me) return;
+  $('#whoin')?.remove();
+  if (!me) {
+    // Nobody signed in, in an app with screens or actions for its members:
+    // a way in from every screen, not only from a front page's header.
+    const st = S.app;
+    const needs = !!st?.public && ((st.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (st.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'));
+    if (needs) right.prepend(h('button', { id: 'whoin', class: 'who-out', type: 'button', onclick: () => openSignIn() }, 'Sign in'));
+    return;
+  }
   const name = String(me.name || me.email || 'You');
   const initials = name.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
   const btn = h('button', { id: 'who', class: 'who', type: 'button', title: `Signed in as ${name}`, 'aria-label': `Signed in as ${name}: account menu`,
@@ -1091,7 +1105,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
   const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title, for: x.spec?.for || null }));
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (S.app?.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1229,12 +1243,21 @@ function renderFrames() {
   }
 }
 
+// The same sign-in over whatever screen is showing (the bar's "Sign in").
+function openSignIn() {
+  if ($('#signinover')) return;
+  const box = signInScreen(true);
+  const over = h('div', { id: 'signinover', class: 'signin-over', onclick: (e) => { if (e.target === over) over.remove(); } }, box);
+  document.body.append(over);
+  over.querySelector('input[name=email]')?.focus();
+}
+
 // The sign-in of an app on its own page when nothing in it is open to a
 // visitor: sign in, or create an account (the first one is the owner's).
-function signInScreen() {
+function signInScreen(over = false) {
   const st = S.app;
   const base = `/api/apps/${S.appId}`;
-  if (S.me) {
+  if (S.me && !over) {
     const who = String(S.me.name || S.me.email || 'you');
     return h('div', { class: 'building signin' }, h('div', { class: 'box' }, h('h2', st.app.name),
       h('p', { class: 'hint' }, `Signed in as ${who}. Nothing here is open to your account yet: the app's owner decides who sees what.`),
@@ -1254,12 +1277,14 @@ function signInScreen() {
     try {
       await api('POST', `${base}/${create ? 'signup' : 'signin'}`, create ? { email: email.value, password: pass.value, name: name.value || email.value } : { email: email.value, password: pass.value });
       S.meFor = null;
+      $('#signinover')?.remove();
       window.dispatchEvent(new CustomEvent('sa-signed', { detail: true }));
       authChanged();
     } catch (err) { msg.textContent = String(err.message || err); } finally { go.disabled = false; }
   } }, name, email, pass, h('div', { class: 'signin-row' }, go, flip), msg);
-  return h('div', { class: 'building signin' }, h('div', { class: 'box' },
-    h('h2', st.app.name), h('p', { class: 'hint' }, 'Sign in to continue.'), form));
+  return h('div', { class: `building signin${over ? ' card' : ''}` }, h('div', { class: 'box' },
+    h('h2', st.app.name), h('p', { class: 'hint' }, 'Sign in to continue.'), form,
+    over ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => $('#signinover')?.remove() }, 'Not now') : null));
 }
 
 function buildingScreen() {

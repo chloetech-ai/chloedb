@@ -1820,7 +1820,7 @@ const SEED_PLAN_NOTE = `
 
 const SEED_STEP = `# This step: the example rows
 
-Write the example rows ("seed") of the plan above, as the system prompt describes them, for its tables as they are given (their columns, and the values a choice or status column takes), and as each table's "examples" line says: those rows, written out whole and realistic, content in full (an article's text, a recipe's steps). The rest of the plan and its screens are written at the same time, from the same plan. Answer with one <code slug="seed">...</code> block holding the seed's JSON object (each table's name to its rows), and nothing else; {} when the app holds only the person's own entries.`;
+Write the example rows ("seed") of the plan above, as the system prompt describes them, for its tables as they are given (their columns, and the values a choice or status column takes), and as each table's "examples" line says: those rows, written out whole and realistic, content in full (an article's text, a recipe's steps). The rest of the plan and its screens are written at the same time, from the same plan. A column that says who someone is (who a job is for, an author, a crew) has no accounts behind it yet: write the example people's names there (a list of names in a list column), the same few people across the tables, so every such column shows who. Answer with one <code slug="seed">...</code> block holding the seed's JSON object (each table's name to its rows), and nothing else; {} when the app holds only the person's own entries.`;
 
 // Calls fn once with the plan's keys up to its "tables" (name, ux, art,
 // locale and the tables), as soon as that list has streamed in.

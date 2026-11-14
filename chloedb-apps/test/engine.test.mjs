@@ -3332,7 +3332,7 @@ test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule, more
   const calls = [];
   const app = { call: async (f, input) => { calls.push([f, input]); return 'o1'; }, toast: () => {} };
   const act = new Function('app', 'products_left', `return ${e.screen.let.products_act.slice(1)}`)(app, left);
-  await assert.rejects(act({ id: 'p1', stock: 4 }).do(9), (err) => err.refused === true && /Only 4 left: order 4 or fewer/.test(err.message));
+  await assert.rejects(act({ id: 'p1', stock: 4 }).do(9), (err) => err.refused === true && /Not enough left: there are only 4\. Order 4 or fewer\./.test(err.message));
   await act({ id: 'p1', stock: 4 }).do(2);
   assert.deepEqual(calls, [['buy', { id: 'p1', qty: 2 }]]);
   // without QTY or COUNT, cards are as before

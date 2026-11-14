@@ -9,7 +9,7 @@
   const post = (msg) => parent.postMessage({ __sa: 1, ...msg }, '*');
   const rpc = (method, args) => new Promise((resolve, reject) => {
     const id = ++seq;
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve, reject, method });
     post({ kind: 'rpc', id, method, args });
   });
 
@@ -73,6 +73,11 @@
       if (m.error !== undefined) {
         // a rule's refusal ("Sorry, only 6 left") is kept for the button whose tap caused it (screen.js)
         if (m.refused) window.__sa_refusal = m.error;
+        // An action (a call or a write) refused until someone signs in offers
+        // the sign-in sheet even when the screen's own code catches the
+        // refusal and only says it ("Could not book: Sign in first"). Reads
+        // never do: a page that reads what it may not shows what it can.
+        if (m.auth && ['call', 'insert', 'update', 'remove', 'pay'].includes(p.method) && typeof window.__sa_askSignIn === 'function') window.__sa_askSignIn();
         p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.auth ? { auth: true } : {}));
       }
       else p.resolve(m.value);

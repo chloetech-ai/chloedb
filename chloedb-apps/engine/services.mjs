@@ -90,7 +90,9 @@ export class Services {
       if (rules.some((r) => r.actions.includes('read') && !r.scope.length)) continue;
       const cols = [...new Set(rules.filter((r) => r.actions.includes('read')).flatMap((r) => r.scope.filter((x) => x.by === 'user').map((x) => x.col)))].slice(0, 1);
       for (const col of cols) {
-        const rows = await this.db.query(`SELECT id FROM ${physical(appId, t.spec.name)} WHERE ${col} IS NULL LIMIT 500`).catch(() => []);
+        // (empty, or an example person's name: nobody had an account yet)
+        const rows = (await this.db.query(`SELECT id, ${col} AS who FROM ${physical(appId, t.spec.name)} LIMIT 500`).catch(() => []))
+          .filter((r) => r.who == null || r.who === '' || (typeof r.who === 'string' && r.who !== String(personId)));
         if (rows.length) await this.db.write(rows.map((r) => ({ op: 'set', table: physical(appId, t.spec.name), key: String(r.id), field: col, value: String(personId) })));
       }
     }

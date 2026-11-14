@@ -89,16 +89,16 @@ button.danger { color: var(--bad); }
 button.danger:hover { background: color-mix(in srgb, var(--bad) 9%, transparent); border-color: color-mix(in srgb, var(--bad) 35%, var(--line-2)); }
 button.danger.primary { background: var(--bad); border-color: var(--bad); color: #fff; }
 button.big { font-size: calc(var(--text) * 1.25); padding: .85em 1.6em; min-height: 52px; font-weight: 700; }
-button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--fg); font-weight: 600; }
 button.ghost:hover { background: var(--soft); color: var(--fg); }
-button.small { min-height: calc(var(--control) - 6px); padding: 0 9px; font-size: calc(var(--text) * .86); border-radius: max(calc(var(--radius-control) - 1px), 4px); }
+button.small { min-height: max(32px, calc(var(--control) - 6px)); padding: 0 9px; font-size: calc(var(--text) * .86); border-radius: max(calc(var(--radius-control) - 1px), 4px); }
 button.link { background: transparent; border: 0; box-shadow: none; min-height: 0; padding: 0; text-align: left; font-weight: 500; color: var(--fg); border-radius: 4px; justify-content: flex-start; }
 button.link:hover { background: transparent; color: var(--accent); }
 button.link:active { transform: none; }
 .lead { flex: 0 0 180px; min-width: 0; }
 button.icon { width: var(--control); padding: 0; }
 /* row actions stay quiet until the row is pointed at */
-td.right > button.ghost { color: var(--muted); }
+td.right > button.ghost { color: var(--fg); }
 tr:hover td.right > button.ghost { color: var(--fg); }
 
 /* fields: hairline boxes, one height, a soft ring on focus */
@@ -797,3 +797,9 @@ em.sa-em { font-style: italic; }
 /* a table wider than its page's column (web/screen.js): as wide as it needs,
    up to the window, centred on the column */
 .tablewrap.bleed { position: relative; left: 50%; transform: translateX(-50%); width: min(var(--want, 100%), calc(100vw - 48px)); max-width: none; }
+
+/* A control a finger presses: 44 px tall on a phone, small ones too (the
+   look stays; the hit area grows). */
+@media (max-width: 760px) {
+  button.small:not(.link), button.ghost:not(.link) { min-height: 40px; padding-inline: 12px; }
+}

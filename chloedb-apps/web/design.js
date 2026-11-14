@@ -205,14 +205,19 @@ const WIDTH = { narrow: '760px', regular: '1040px', wide: '1280px' };
 const STATUS = { light: { ok: '#18794e', warn: '#b4560a', bad: '#c4302b', info: '#2563c9' }, dark: { ok: '#3fcf8e', warn: '#f2a33a', bad: '#ff8a80', info: '#7cb4ff' } };
 
 // Secondary text: the design's grey, darkened (or lightened) until it reads
-// at 4.5:1 on the page and on a card (WCAG AA), however pale the design.
-export function mutedOf(p, start = 55) {
+// at 5.5:1 on the page, a card and the tinted grounds small grey words sit
+// on (bands, filled cells), however pale the design: AA's 4.5 read as faint
+// in small labels.
+export const MUTED_RATIO = 5.5;
+export function mutedOf(p, start = 55, grounds = [], ratio = MUTED_RATIO) {
+  const on = [p.bg, p.card, ...grounds];
   for (let k = start; k <= 100; k++) {
     const m = mix(p.bg, p.fg, k / 100);
-    if (contrast(m, p.bg) >= 4.6 && contrast(m, p.card) >= 4.6) return m;
+    if (on.every((g) => contrast(m, g) >= ratio)) return m;
   }
   return p.fg;
 }
+const rgba = (h, a) => `rgba(${rgb(h).map((v) => Math.round(v)).join(', ')}, ${a})`;
 
 // The color pair of the bold look, from the accent: deep (a band and the
 // main buttons, white text on it at 8:1) and pop (a light tint of the same
@@ -256,6 +261,12 @@ export function designVars(input, which = 'light') {
   const s = STATUS[isDark ? 'dark' : 'light'];
   const b = boldColors(p, isDark);
   const bold = d.look === 'bold';
+  // Grounds as plain colors (not color-mix), so what reads on them can be
+  // worked out here and by anything that measures the page.
+  const page = bold ? b.wash : p.bg;
+  const band = mix(page, p.fg, isDark ? 0.05 : 0.035);
+  const fillSolid = mix(p.card, p.fg, isDark ? 0.1 : 0.06);
+  const muted = mutedOf({ ...p, bg: page }, isDark ? 58 : 55, [band, fillSolid, mix(p.card, p.fg, isDark ? 0.08 : 0.05)]);
   return {
     '--bg': bold ? b.wash : p.bg, '--card': p.card, '--fg': p.fg, '--accent': p.accent, '--accent-fg': onColor(p.accent),
     '--ok': s.ok, '--warn': s.warn, '--bad': s.bad, '--info': s.info,
@@ -264,15 +275,19 @@ export function designVars(input, which = 'light') {
     '--text': n.text, '--space': n.space, '--pad': n.pad, '--row': n.row, '--control': n.control, '--page': WIDTH[d.width],
     '--card-border': border, '--card-shadow': shadow, '--field-border': 'var(--line-2)',
     '--field-bg': isDark ? 'color-mix(in srgb, var(--fg) 3%, var(--card))' : 'var(--card)',
-    '--muted': mutedOf(p, isDark ? 58 : 55),
+    '--muted': muted,
+    '--band': band, '--btn2': mix(p.card, p.fg, isDark ? 0.1 : 0.06), '--btn2-hover': mix(p.card, p.fg, isDark ? 0.16 : 0.12),
+    '--muted-band': muted,
+    '--accent-tint': mix(p.card, p.accent, isDark ? 0.2 : 0.1), '--accent-ink': readable(p.accent, mix(p.card, p.accent, isDark ? 0.2 : 0.1), 4.6, p.fg), '--bad-tint': mix(p.card, s.bad, isDark ? 0.22 : 0.12),
+    '--nav-bg': rgba(page, 0.86),
     '--line': `color-mix(in srgb, var(--fg) ${isDark ? 11 : 10}%, transparent)`,
     '--line-2': `color-mix(in srgb, var(--fg) ${isDark ? 19 : 17}%, transparent)`,
-    '--soft': `color-mix(in srgb, var(--fg) ${isDark ? 6 : 4}%, transparent)`,
-    '--fill': `color-mix(in srgb, var(--fg) ${isDark ? 8 : 5}%, var(--card))`,
-    '--fill-solid': mix(p.card, p.fg, isDark ? 0.1 : 0.06),
-    '--head': `color-mix(in srgb, var(--fg) ${isDark ? 3 : 2.5}%, var(--card))`,
-    '--accent-soft': `color-mix(in srgb, var(--accent) ${isDark ? 20 : 12}%, transparent)`,
-    '--seg-on': isDark ? 'color-mix(in srgb, var(--fg) 14%, var(--card))' : 'var(--card)',
+    '--soft': rgba(p.fg, isDark ? 0.06 : 0.04),
+    '--fill': mix(p.card, p.fg, isDark ? 0.08 : 0.05),
+    '--fill-solid': fillSolid,
+    '--head': mix(p.card, p.fg, isDark ? 0.03 : 0.025),
+    '--accent-soft': rgba(p.accent, isDark ? 0.2 : 0.12),
+    '--seg-on': isDark ? mix(p.card, p.fg, 0.14) : 'var(--card)',
     '--shadow': shadow,
     '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
     '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',

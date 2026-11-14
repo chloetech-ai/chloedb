@@ -682,7 +682,7 @@ async function publicState(appId, role = null) {
     // A visitor never gets the owner's views (engine/audience.mjs).
     // ...but its owner and admins, signed in on its own page, get theirs.
     views: (role === 'owner' || role === 'admin' ? view.views : forVisitors(view.views)).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
-    functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
+    functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title, callers: c.spec?.callers || null })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
     tables: [], labels: labelsOf(view).filter((l) => mayRead(view, l.table, role)), people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,

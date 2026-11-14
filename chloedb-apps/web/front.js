@@ -164,12 +164,16 @@
     };
     const screenLinks = (links, s, path, close, taken = new Set()) => {
       const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
-      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()) && !taken.has(`open:${x.slug}`) && !taken.has(`label:${String(x.title).trim().toLowerCase()}`));
       // a screen for the owner (or admins) shows only to them, once the page
       // knows who is signed in: never in a visitor's header
       const staff = (x) => x.for === 'owner' || x.for === 'admins';
+      const named = (x) => String(x.title).trim().toLowerCase();
+      // A staff screen whose title a link here already says (the page's own
+      // "Races" section) is still offered, as what it is for: "Manage races".
+      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !taken.has(`open:${x.slug}`) && (staff(x) || (!said.has(named(x)) && !taken.has(`label:${named(x)}`))));
       const out = screens.map((x, i) => {
-        const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1);
+        const clash = said.has(named(x)) || taken.has(`label:${named(x)}`);
+        const a = action({ label: clash ? `Manage ${String(x.title).trim().replace(/^./, (c) => c.toLowerCase())}` : x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1);
         if (!a) return a;
         a.addEventListener('click', close);
         if (staff(x)) {
@@ -341,7 +345,10 @@
       // A short shelf (five cards or fewer) fits a wide screen as a row
       // that wraps, so no card is cut at the edge; a phone still swipes.
       const fit = cards.length <= 5;
-      return h('div', { class: `fp-carousel cards${fit ? ' fit' : ''}`, style: `--n: ${cards.length}` }, track,
+      // A short shelf (six or fewer) is a stack on a phone: every card, with
+      // its price and action, in view as the page scrolls, not one at a time.
+      const short = cards.length <= 6;
+      return h('div', { class: `fp-carousel cards${fit ? ' fit' : ''}${short ? ' short' : ''}`, style: `--n: ${cards.length}` }, track,
         cards.length > 1 ? h('div', { class: 'fp-ctrl' },
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'Back', onclick: () => by(-1) }, icon('arrow', 'fp-ico flip')),
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'More', onclick: () => by(1) }, icon('arrow'))) : null);
@@ -486,7 +493,11 @@
     };
 
     F.gallery = (b, s, path) => {
-      const xs = items(b, 'gallery', s, path).map((x) => (typeof x === 'string' ? { src: x } : x || {}));
+      // Only the tiles that have a picture: a gallery of none is no section
+      // at all, never a wall of colour blocks.
+      const xs = items(b, 'gallery', s, path).map((x) => (typeof x === 'string' ? { src: x } : x || {}))
+        .filter((x, i) => { const src = x.src !== undefined ? val(x.src, s, `${path}[${i}].src`) : null; return typeof src === 'string' && !!src.trim(); });
+      if (!xs.length) return null;
       const look = b.look || 'mosaic';
       // A mosaic: the first photo large, then as many wide ones as it takes
       // to end on a full row (of four columns, or two on a phone).

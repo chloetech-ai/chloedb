@@ -123,7 +123,8 @@ The request attaches ${sheets.length === 1 ? 'a sheet' : `${sheets.length} sheet
 ${sheets.map((s) => `- "${s.name}": ${s.rows.length} row${s.rows.length === 1 ? '' : 's'}; columns ${cols(s)}`).join('\n')}
 
 - Give each sheet a table in "tables", with a column for every one of its columns (named as the header in snake_case unless you map it otherwise) and of the type shown: money and numbers as float or int (never keyword, so sums and formats work), days as keyword "YYYY-MM-DD". Then say which table each sheet goes to: "import": {"Sheet name": "table"} (or {"Sheet name": {"table": "t", "columns": {"Header": "column"}}} when a column is named otherwise). Show money in the sheet's currency: app.fmt.money(n, '${sheets.flatMap((s) => s.columns).find((c) => c.currency)?.currency || 'USD'}').
-- Every figure a screen computes from these rows (a total, a count, a top N, a sum per group, a count per range) is declared in "figures" (see the plan's fields), so the engine checks the screen's query against the rows.`;
+- Every figure a screen computes from these rows (a total, a count, a top N, a sum per group, a count per range) is declared in "figures" (see the plan's fields), so the engine checks the screen's query against the rows.
+- These rows are the person's own records, and they go on: a report built on them still lets its owner add a row and change or remove one (a LIST of the table with its FORM, on the report's screen or a screen of its own), so next month's figures and new entries go in through the app, unless the request says the data is only to be read.`;
 }
 
 // ---- which table each sheet goes to

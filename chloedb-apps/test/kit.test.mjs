@@ -111,3 +111,17 @@ test('a frame may load the kit\'s typefaces from the engine and nothing else', (
   for (const f of kit.match(/\/fonts\/[a-z-]+\.woff2/g)) assert.ok(readFileSync(new URL(`../web${f}`, import.meta.url)).length > 10000, `${f} ships`);
 });
 
+
+test('small grey words read at 5.5:1 on every ground they sit on, and the grounds are plain colors a page measure can read', () => {
+  for (const p of PRESETS) {
+    for (const which of ['light', 'dark']) {
+      for (const look of ['native', 'bold', 'plain']) {
+        const v = designVars({ ...p, look }, which);
+        const page = v['--bg'];
+        for (const g of [page, v['--card'], v['--band'], v['--fill'], v['--fill-solid']]) assert.ok(contrast(v['--muted'], g) >= 5.5, `${p.name} ${which} ${look}: muted on ${g}`);
+        for (const k of ['--fill', '--head', '--band', '--btn2', '--accent-tint', '--bad-tint']) assert.match(v[k], /^#[0-9a-f]{6}$/i, `${k} is a plain color`);
+        assert.ok(contrast(v['--accent-ink'], v['--accent-tint']) >= 4.5, `${p.name} ${which}: the accent reads on its tint`);
+      }
+    }
+  }
+});

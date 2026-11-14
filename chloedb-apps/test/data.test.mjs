@@ -166,11 +166,11 @@ test('sign-in entry: a screen whose data visitors may not read gets one; open an
   assert.ok(gateOf({ data: { code: "async function render(root, app) { const rows = await app.sql('SELECT * FROM tasks ORDER BY due LIMIT 50'); }" } }, of, { name: 'Agency' }));
 });
 
-test('the owner takes the example rows of tables that show each person their own rows', async () => {
+test('the owner takes the example rows of tables that show each person their own rows, empty or naming an example person', async () => {
   const { Services } = await import('../engine/services.mjs');
   const writes = [];
   const db = {
-    query: async (sql) => (/WHERE owner_id IS NULL/.test(sql) ? [{ id: 'r1' }, { id: 'r2' }] : []),
+    query: async (sql) => (/owner_id AS who FROM app_app1_tasks/.test(sql) ? [{ id: 'r1', who: null }, { id: 'r2', who: 'Maya Ortiz' }, { id: 'r3', who: 'p9' }] : []),
     write: async (ops) => { writes.push(...ops); },
   };
   const store = { resolve: async () => ({ tables: [

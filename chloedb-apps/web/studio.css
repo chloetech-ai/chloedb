@@ -516,3 +516,6 @@ body.bare.designed.look-bold .top .look { background: transparent; border-color:
 .signin-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .signin-msg:empty { display: none; }
 .signin-msg { color: var(--bad, #b42318); }
+
+.signin-over { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.38); display: grid; place-items: center; padding: 16px; }
+.signin-over > .building.signin { flex: none; width: min(420px, 100%); background: var(--card, #fff); border-radius: 16px; box-shadow: 0 24px 60px -20px rgba(0,0,0,.45); padding: 24px; }
