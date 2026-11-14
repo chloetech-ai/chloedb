@@ -31,7 +31,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with c
 ~/.local/bin/chloectx doctor
 ```
 
-Release 0.3.0 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which builds ChloeCtx from a checkout.
+Release 0.3.1 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.
 
 ## Install in one command, from source
 
@@ -41,7 +41,7 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh
 
 `install.sh` does five things and can be run again at any time:
 
-1. builds `chloectx` in release mode (a few minutes the first time);
+1. builds `chloectx` in release mode (a few minutes the first time), or takes the release's prebuilt one (below);
 2. copies it to `~/.local/bin/chloectx`, the path the hooks call;
 3. stops any running ChloeCtx daemons, so they restart on the new binary;
 4. downloads the embedding model (potion-retrieval-32M) unless it is already there;
@@ -52,7 +52,14 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh
 | `--project DIR` | install into one project's `.claude/settings.local.json` and `.mcp.json` instead of every session |
 | `--distill-model NAME` | the model that writes down decisions and rules after each turn (default `haiku`; `--distill-model ""` uses the CLI's default model) |
 | `--prefix DIR` | install the binary to `DIR/bin` (default `~/.local`) |
-| `--no-wire` | build and install the binary only, and leave Claude Code's settings alone |
+| `--no-wire` | install the binary only, and leave Claude Code's settings alone |
+| `--no-model` | do not download the embedding model (run `chloectx fetch-model` later) |
+| `--prebuilt` | take the release's prebuilt `chloectx`, never build |
+| `--source` | build from the checkout, never download the binary |
+
+From the release after 0.3.2, `install.sh` can take the binary that release carries instead of building it. Without `--prebuilt` or `--source`, it takes the prebuilt binary of release `chloedb-server-v<version>` (the version in `chloectx/Cargo.toml`), checked against the release's SHA-256, in two cases: when the checkout is that release's (the tag, with `chloectx/` and `chloedb/` unchanged since), and when there is no Rust on the machine (then it says the checkout may be newer than the release). Otherwise it builds, so a checkout of main, or one you changed, runs what is in it. To install such a release with nothing to compile, clone its tag: `git clone --branch chloedb-server-v<version> https://github.com/chloetech-ai/chloedb`, then `./install.sh` in it. (A checkout of 0.3.2 or earlier has the `install.sh` that always builds.)
+
+A prebuilt binary does not know the checkout it came with, so `chloectx upgrade` asks for it: `CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade`, or `git pull && ./install.sh` there.
 
 Sessions that were already open pick ChloeCtx up when they restart.
 

@@ -134,12 +134,12 @@
 ~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
 ~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session
 ~/.local/bin/chloectx doctor</pre>
-<p>Release 0.3.0 and earlier have no prebuilt <code>chloectx</code>: build it from source, below. This installer (the website's <code>install.sh</code>) is not the repository's <code>./install.sh</code>, which builds ChloeCtx from a checkout.</p>
+<p>Release 0.3.1 and earlier have no prebuilt <code>chloectx</code>: build it from source, below. This installer (the website's <code>install.sh</code>) is not the repository's <code>./install.sh</code>, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.</p>
 <h2 id="install-in-one-command-from-source">Install in one command, from source<a class="anchor" href="#install-in-one-command-from-source" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">git clone https://github.com/chloetech-ai/chloedb &amp;&amp; cd chloedb &amp;&amp; ./install.sh</pre>
 <p><code>install.sh</code> does five things and can be run again at any time:</p>
 <ol>
-<li>builds <code>chloectx</code> in release mode (a few minutes the first time);</li>
+<li>builds <code>chloectx</code> in release mode (a few minutes the first time), or takes the release's prebuilt one (below);</li>
 <li>copies it to <code>~/.local/bin/chloectx</code>, the path the hooks call;</li>
 <li>stops any running ChloeCtx daemons, so they restart on the new binary;</li>
 <li>downloads the embedding model (potion-retrieval-32M) unless it is already there;</li>
@@ -167,10 +167,24 @@
 </tr>
 <tr>
 <td><code>--no-wire</code></td>
-<td>build and install the binary only, and leave Claude Code's settings alone</td>
+<td>install the binary only, and leave Claude Code's settings alone</td>
+</tr>
+<tr>
+<td><code>--no-model</code></td>
+<td>do not download the embedding model (run <code>chloectx fetch-model</code> later)</td>
+</tr>
+<tr>
+<td><code>--prebuilt</code></td>
+<td>take the release's prebuilt <code>chloectx</code>, never build</td>
+</tr>
+<tr>
+<td><code>--source</code></td>
+<td>build from the checkout, never download the binary</td>
 </tr>
 </tbody>
 </table></div>
+<p>From the release after 0.3.2, <code>install.sh</code> can take the binary that release carries instead of building it. Without <code>--prebuilt</code> or <code>--source</code>, it takes the prebuilt binary of release <code>chloedb-server-v&lt;version&gt;</code> (the version in <code>chloectx/Cargo.toml</code>), checked against the release's SHA-256, in two cases: when the checkout is that release's (the tag, with <code>chloectx/</code> and <code>chloedb/</code> unchanged since), and when there is no Rust on the machine (then it says the checkout may be newer than the release). Otherwise it builds, so a checkout of main, or one you changed, runs what is in it. To install such a release with nothing to compile, clone its tag: <code>git clone --branch chloedb-server-v&lt;version&gt; https://github.com/chloetech-ai/chloedb</code>, then <code>./install.sh</code> in it. (A checkout of 0.3.2 or earlier has the <code>install.sh</code> that always builds.)</p>
+<p>A prebuilt binary does not know the checkout it came with, so <code>chloectx upgrade</code> asks for it: <code>CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade</code>, or <code>git pull &amp;&amp; ./install.sh</code> there.</p>
 <p>Sessions that were already open pick ChloeCtx up when they restart.</p>
 <h2 id="or-let-your-agent-do-it">Or let your agent do it<a class="anchor" href="#or-let-your-agent-do-it" aria-label="Link to this section">#</a></h2>
 <p>Tell Claude Code (or another coding agent) in any session:</p>
