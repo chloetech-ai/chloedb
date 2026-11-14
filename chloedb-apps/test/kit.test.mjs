@@ -77,6 +77,11 @@ test('type pairings: each design gets one that fits its titles and its subject',
   const designs = [checkDesign({ look: 'native', titles: 'serif' }), checkDesign({ look: 'bold' }), checkDesign({ look: 'plain' })];
   shapeDesigns(designs, { art: { type: 'serif', concept: 'a quiet ledger for the board' } }, { name: 'Northwind', description: 'revenue variance and aging' });
   assert.equal(designs[0].type, 'ledger');
+  // and a serif design is set on paper: a cool grey page turns warm white
+  const grey = [checkDesign({ look: 'native', titles: 'serif', light: { bg: '#f5f6f8', card: '#ffffff', fg: '#111111', accent: '#1d4e89' } }), checkDesign({ look: 'bold' }), checkDesign({ look: 'plain' })];
+  shapeDesigns(grey, { art: { type: 'serif' } }, { name: 'Ledger', description: 'board report' });
+  assert.equal(grey[0].light.bg, '#f8f6f1');
+  assert.equal(grey[0].light.card, '#ffffff');
 });
 
 test('the native look keeps the design\'s own page and cards, readable', () => {

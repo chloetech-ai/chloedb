@@ -20,7 +20,8 @@ function component(props) {
 .sa-donut-legend .v{font-variant-numeric:tabular-nums}
 .sa-donut-legend .p{color:var(--muted);font-size:12px;min-width:36px;text-align:right}
 `);
-  const PALETTE = ['var(--accent)', '#e8590c', '#2f9e44', '#ae3ec9', '#1098ad', '#f08c00', '#d6336c', '#5c7cfa', '#82c91e', '#868e96'];
+  // tones of the app's own accent, so a chart is in its design (a part may still give its color)
+  const PALETTE = ['var(--accent)', 'color-mix(in srgb, var(--accent) 55%, var(--card))', 'color-mix(in srgb, var(--accent) 62%, var(--fg))', 'color-mix(in srgb, var(--accent) 30%, var(--card))', 'color-mix(in srgb, var(--accent) 35%, var(--fg))', 'color-mix(in srgb, var(--accent) 16%, var(--card))', 'color-mix(in srgb, var(--fg) 45%, var(--card))', 'color-mix(in srgb, var(--fg) 25%, var(--card))'];
   const parts = (props.data || []).map((d, i) => ({ ...d, v: Number(d.value) || 0, color: d.color || PALETTE[i % PALETTE.length] })).filter((d) => d.v > 0);
   const total = parts.reduce((a, d) => a + d.v, 0);
   const fmt = props.format || ((v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }));

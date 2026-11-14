@@ -89,6 +89,13 @@ export function shapeDesigns(designs, direction = null, app = null) {
   const art = direction?.art;
   const subject = `${app?.name || ''} ${app?.description || ''} ${art?.concept || ''} ${art?.mood || ''}`;
   Object.assign(designs[0], pairFor(designs[0], `${designs[0].name || ''} ${designs[0].about || ''} ${subject}`));
+  // A serif design is set on paper: a cool grey page under serif titles
+  // turns a faint warm white (the cards stay white).
+  const d0 = designs[0];
+  if (['ledger', 'classic', 'elegant'].includes(d0.type) && d0.light && /^#[0-9a-f]{6}$/i.test(d0.light.bg || '')) {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(d0.light.bg.slice(i, i + 2), 16));
+    if (b >= r && Math.max(r, g, b) - Math.min(r, g, b) < 14 && r > 225) d0.light = { ...d0.light, bg: '#f8f6f1' };
+  }
   for (const d of designs.slice(1)) d.type = typeOf(d, `${d.name || ''} ${d.about || ''} ${subject}`);
   // The art direction's layout sets the first design's width: a reading
   // column for an editorial page, the full width for a dashboard.

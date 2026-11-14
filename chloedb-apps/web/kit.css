@@ -714,3 +714,25 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
 .layout-tool > .lay-head > .kpis { align-self: stretch; }
 .layout-tool > .lay-head .kpi { text-align: left; }
 .lay-panel:not(:has(> .lay-group:not(.lay-empty))) { display: none; }
+/* the first number of a screen leads: a wider card, a larger figure */
+@media (min-width: 900px) {
+  .kpis.sumcards.first[data-n="3"] { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); }
+  .kpis.sumcards.first[data-n="4"] { grid-template-columns: minmax(0, 1.45fr) repeat(3, minmax(0, 1fr)); }
+  .kpis.sumcards.first:is([data-n="3"], [data-n="4"]) > .kpi:first-child .value { font-size: clamp(34px, 3.6vw, 48px); }
+  .kpis.sumcards.first:is([data-n="3"], [data-n="4"]) > .kpi { justify-content: flex-end; }
+}
+/* on a phone the numbers stay compact, so the screen's job shows early */
+@media (max-width: 560px) {
+  .kpis.sumcards > .kpi .hint { display: none; }
+  .kpis.sumcards > .kpi .value { font-size: 22px !important; }
+  .kpis.sumcards.first > .kpi:first-child:nth-last-child(odd) .value { font-size: 28px !important; }
+}
+/* a screen's head breathes before its numbers */
+.lay-head > :is(h1, h2):first-child + .kpis, .lay-head > .row:first-child + .kpis { margin-top: 6px; }
+@media (max-width: 560px) {
+  .kpis.sumcards[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .kpis.sumcards[data-n="3"] > .kpi { padding: 10px 10px 11px; }
+  .kpis.sumcards[data-n="3"] > .kpi:first-child { grid-column: auto; }
+  .kpis.sumcards[data-n="3"] > .kpi .value, .kpis.sumcards.first[data-n="3"] > .kpi:first-child .value { font-size: 19px !important; letter-spacing: -.02em; }
+  .kpis.sumcards[data-n="3"] > .kpi .label { font-size: 12px; }
+}

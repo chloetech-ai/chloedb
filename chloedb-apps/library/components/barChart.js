@@ -21,7 +21,8 @@ function component(props) {
 .sa-bars-h .track{display:flex;height:16px;border-radius:4px;overflow:hidden;background:var(--soft)}
 .sa-bars-h .val{font-variant-numeric:tabular-nums;color:var(--fg)}
 `);
-  const PALETTE = ['var(--accent)', '#e8590c', '#2f9e44', '#ae3ec9', '#1098ad', '#f08c00', '#d6336c', '#5c7cfa'];
+  // tones of the app's own accent, so a chart is in its design (a part may still give its color)
+  const PALETTE = ['var(--accent)', 'color-mix(in srgb, var(--accent) 55%, var(--card))', 'color-mix(in srgb, var(--accent) 62%, var(--fg))', 'color-mix(in srgb, var(--accent) 30%, var(--card))', 'color-mix(in srgb, var(--accent) 35%, var(--fg))', 'color-mix(in srgb, var(--accent) 16%, var(--card))', 'color-mix(in srgb, var(--fg) 45%, var(--card))', 'color-mix(in srgb, var(--fg) 25%, var(--card))'];
   const data = (props.data || []).map((d) => ({ ...d, vals: Array.isArray(d.values) ? d.values.map((v) => Number(v) || 0) : [Number(d.value) || 0] }));
   const nSeries = Math.max(1, ...data.map((d) => d.vals.length));
   const series = Array.from({ length: nSeries }, (_, i) => ({ name: props.series?.[i]?.name || '', color: props.series?.[i]?.color || (nSeries === 1 ? props.color || PALETTE[0] : PALETTE[i % PALETTE.length]) }));

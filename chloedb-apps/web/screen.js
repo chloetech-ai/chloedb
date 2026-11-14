@@ -314,9 +314,11 @@ window.__sa_numbers = (() => {
           // in the bad tone, a change coloured by its sign.
           const first = heroAt === null || heroAt === path;
           if (first) heroAt = path;
+          // one number in the alarm color: the first that needs doing
+          let alarmed = false;
           const kpiTone = (k) => {
             if (zero(k)) return '';
-            if (URGENT.test(String(k.label || ''))) return ' attn';
+            if (URGENT.test(String(k.label || ''))) { if (alarmed) return ''; alarmed = true; return ' attn'; }
             const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || '') }], [[k.raw]])[0], k.raw);
             return t ? ` ${t}` : '';
           };
@@ -841,7 +843,7 @@ window.__sa_numbers = (() => {
             : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, `’${month.year.slice(2)}`), h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
             // initials only for a name of a person or a firm ("Bramble & Co"), never "1D" for "1-30 days"
-            : tone || /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))*$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•')
+            : tone || /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))+$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•')
             : null;
           const end = main || (figText && !lead ? h('span', { class: 'rc-val' }, figText) : null);
           return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}${icon ? '' : ' noicon'}`,
