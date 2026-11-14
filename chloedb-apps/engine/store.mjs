@@ -62,6 +62,10 @@ const SYSTEM_TABLES = {
   // so a row scope by :company_id (access.mjs) means what the engine says.
   sa_companies: `CREATE TABLE sa_companies (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_memberships: `CREATE TABLE sa_memberships (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, company KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Who builds an app beside its owner, with a role (builders.mjs): only
+  // hashes of their invitation tokens and keys.
+  sa_builders: `CREATE TABLE sa_builders (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, email KEYWORD, name TEXT, role KEYWORD, status KEYWORD,
+    token_hash KEYWORD, key_hash KEYWORD, expires TIMESTAMP, invited TIMESTAMP, joined TIMESTAMP)`,
   sa_sessions: `CREATE TABLE sa_sessions (id KEYWORD PRIMARY KEY, person KEYWORD NOT NULL, expires TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_files: `CREATE TABLE sa_files (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, type KEYWORD, size INT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Each app's three designs (designs.mjs) and the one in use.
@@ -274,7 +278,7 @@ export class Store {
       }
     }
     let rows = 0;
-    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox', 'sa_payments', 'sa_rowmakers']) {
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_builders', 'sa_files', 'sa_outbox', 'sa_payments', 'sa_rowmakers']) {
       for (;;) {
         let ids;
         try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }

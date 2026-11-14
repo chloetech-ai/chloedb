@@ -128,6 +128,22 @@ each other in a graph that ChloeDB walks.
   table. On a laptop with no login every caller is the studio, so access
   applies to a published app's public beside a cluster and to "See it as a
   stranger".
+- **Builders.** People who work on an app beside its owner, in the studio
+  (`engine/builders.mjs`, table `sa_builders`), not the app's own people: a
+  viewer reads the app (screens, data, versions) and changes nothing, an
+  editor changes it as the owner does, an admin also decides who builds it.
+  `GET /api/apps/<id>/builders`, `POST .../builders {emails, role}` (each
+  result has a link, valid 14 days; the engine sends no email for this),
+  `POST .../builders/<b> {role}`, `.../builders/<b>/link` (a fresh link, the
+  old one stops working), `.../builders/<b>/remove`. A link opened
+  (`GET /join?token=`) or taken through `POST /api/builders/join {token}`
+  gives a builder key (the `sa_builder` cookie, or the `x-sa-builder`
+  header), and every studio request with that key is held to its app and
+  role: another app, a new app or the shared graph is a 403, a viewer's
+  writes are a 403, and a removed builder's key is a 401 at once. The studio
+  reached without a key is the owner, as before; only hashes of links and
+  keys are kept. Links say `STRATA_APPS_PUBLIC_URL` when it is set, else the
+  address the request came to.
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request

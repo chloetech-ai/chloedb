@@ -36,6 +36,7 @@ import { currencyOf } from './data.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
+import { Builders, builderRefusal, keyOf as builderKeyOf, COOKIE as BUILDER_COOKIE } from './builders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -132,6 +133,8 @@ await engine.changes.init().catch((e) => { log(`changes: ${e.message}`); engine.
 await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
+// Who builds each app beside its owner, and what their key lets them do.
+const builders = new Builders(engine.db);
 // A model and the web for apps, each switched on per app (reach.mjs).
 // Apps' secrets (API keys) are sealed with STRATA_APPS_SECRET_KEY, or with a
 // key kept in DATA/secret.key, made on first start.
@@ -177,6 +180,15 @@ function tokenOf(req) {
 }
 function setSession(res, token) {
   res.setHeader('set-cookie', `${COOKIE}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_DAYS * 86400 : 0}`);
+}
+function setBuilderCookie(res, key) {
+  res.setHeader('set-cookie', `${BUILDER_COOKIE}=${key}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
+}
+// Where people reach this engine, for links handed out (invitations).
+function baseOf(req) {
+  if (process.env.STRATA_APPS_PUBLIC_URL) return process.env.STRATA_APPS_PUBLIC_URL;
+  const host = String(req.headers.host || 'localhost').replace(/[^A-Za-z0-9.:[\]-]/g, '');
+  return `http://${host}`;
 }
 // Someone not signed in is told apart by a cookie of their own, so what
 // people do can be counted per person.
@@ -261,7 +273,7 @@ const eventWaiters = new Set();
 const PUBLIC_EVENTS = new Set(['data', 'app', 'design']);
 function broadcast(type, payload) {
   const line = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const [res, only] of clients) if (!only || (payload?.app === only.app && PUBLIC_EVENTS.has(type))) res.write(line);
+  for (const [res, only] of clients) if (!only || (payload?.app === only.app && (only.builder || PUBLIC_EVENTS.has(type)))) res.write(line);
   events.push({ seq: ++eventSeq, type, data: payload });
   if (events.length > EVENTS_KEPT) events.splice(0, events.length - EVENTS_KEPT);
   for (const w of eventWaiters) w();
@@ -649,7 +661,7 @@ const routes = [
   ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
     // A key limited to tables lists the apps whose tables it reads.
-    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
+    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id) && (!cx.builder || cx.builder.app === a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
   }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
@@ -789,6 +801,21 @@ const routes = [
     return { person: await services.setRole(id, b.person, String(b.role || '')) };
   }],
   // People: one account for every app here; joining an app on first use.
+  // The app's builders (builders.mjs): invite by address with a role, a
+  // fresh link for an invitation, a role changed, someone removed.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/builders$/, async (b, [id], url, cx) => { await engine.view(id); return { builders: await builders.list(id), me: cx.builder ? { id: cx.builder.id, role: cx.builder.role } : { role: 'owner' } }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders$/, async (b, [id], url, cx) => { await engine.view(id); return builders.invite(id, b.emails, b.role, { base: baseOf(cx.req) }); }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)\/link$/, async (b, [id, bid], url, cx) => builders.link(id, bid, { base: baseOf(cx.req) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)\/remove$/, async (b, [id, bid], url, cx) => {
+    if (cx.builder && cx.builder.id === bid) throw Object.assign(new Error('to leave, ask the owner or an admin to remove you'), { status: 400 });
+    return builders.remove(id, bid);
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)$/, async (b, [id, bid], url, cx) => {
+    if (cx.builder && cx.builder.id === bid) throw Object.assign(new Error('a builder does not change their own role'), { status: 400 });
+    return { builder: await builders.setRole(id, bid, b.role) };
+  }],
+  // An invitation taken, from the studio or another client: the key to use.
+  ['POST', /^\/api\/builders\/join$/, async (b, m, url, cx) => { const out = await builders.join(b.token, { name: b.name }); setBuilderCookie(cx.res, out.key); return out; }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -1014,6 +1041,29 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(refused.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(refused.html);
     }
+    // A builder's key holds them to their app and role (builders.mjs); the
+    // studio without one is its owner, as before. Not on a published app's
+    // public path, which publish.mjs judges.
+    let builder = null;
+    if (!cx0.public) {
+      const key = builderKeyOf(req);
+      if (key) {
+        builder = await builders.ofKey(key);
+        if (!builder) return send(res, 401, { error: 'this builder key is not valid any more; ask the app\'s owner for a new invitation' });
+        const no = builderRefusal(builder, req.method, url.pathname);
+        if (no) return send(res, 403, { error: no });
+      }
+    }
+    cx0.builder = builder;
+    // An invitation link opened in a browser: taken, then the app in the studio.
+    if (req.method === 'GET' && url.pathname === '/join') {
+      try {
+        const out = await builders.join(url.searchParams.get('token'));
+        setBuilderCookie(res, out.key);
+        res.writeHead(302, { location: `/#/app/${out.app}`, 'cache-control': 'no-store' });
+        return res.end();
+      } catch (e) { return send(res, e.status || 400, { error: e.message }); }
+    }
     // An app on its own, without the studio around it (for phones and sharing).
     // On a published app's own host, / is the app.
     const hostApp = req.method === 'GET' && url.pathname === '/' ? publish.appForHost(req) : null;
@@ -1042,7 +1092,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
       res.write(`event: hello\ndata: ${JSON.stringify({ feed: engine.feed })}\n\n`);
-      clients.set(res, cx0.public ? { app: cx0.public } : null);
+      clients.set(res, cx0.public ? { app: cx0.public } : cx0.builder ? { app: cx0.builder.app, builder: true } : null);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => { clearInterval(ping); clients.delete(res); });
       return;
