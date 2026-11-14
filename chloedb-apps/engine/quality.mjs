@@ -27,11 +27,12 @@ export const LAYOUTS = {
   dashboard: 'the numbers that matter in a band at the top, then cards in a two or three column grid (status, charts, recent rows)',
   gallery: 'photos or cards first, in a tight grid of tiles (products, rooms, works, dishes)',
   tool: 'one focused tool in a centered panel: the input or the main action large and first, results under it (a calculator, a quick add, a check-in)',
+  report: 'a finished report read top to bottom, as a board or an accountant would be handed it: its title and when it was prepared, then numbered sections (1. Revenue variance, 2. Receivables aging) with strong headings, each its figures, its table and a short note (variance, aging, a monthly pack)',
 };
 export const LAYOUT_NAMES = Object.keys(LAYOUTS);
 // The same, in a few words each, for the statement's reference.
-export const LAYOUT_SHORT = { hero: 'a photo or color band with the headline and the main action, then the rest', split: 'main part wide on the left, a column beside it', editorial: 'a narrow reading column, rows as a ruled list', dashboard: 'numbers in a band, then a grid of cards', gallery: 'photos or cards first, in tiles', tool: 'one centered panel, the main input first' };
-const LAYOUT_ALIASES = { landing: 'hero', photo: 'hero', columns: 'split', sidebar: 'split', list: 'editorial', article: 'editorial', magazine: 'editorial', menu: 'editorial', board: 'dashboard', stats: 'dashboard', grid: 'gallery', tiles: 'gallery', cards: 'gallery', single: 'tool', focus: 'tool', 'single-tool': 'tool', calculator: 'tool' };
+export const LAYOUT_SHORT = { hero: 'a photo or color band with the headline and the main action, then the rest', split: 'main part wide on the left, a column beside it', editorial: 'a narrow reading column, rows as a ruled list', dashboard: 'numbers in a band, then a grid of cards', gallery: 'photos or cards first, in tiles', tool: 'one centered panel, the main input first', report: 'a finished report: numbered sections with strong headings, one column' };
+const LAYOUT_ALIASES = { landing: 'hero', photo: 'hero', columns: 'split', sidebar: 'split', list: 'editorial', article: 'editorial', magazine: 'editorial', menu: 'editorial', board: 'dashboard', stats: 'dashboard', grid: 'gallery', tiles: 'gallery', cards: 'gallery', single: 'tool', focus: 'tool', 'single-tool': 'tool', calculator: 'tool', briefing: 'report', pack: 'report', statement: 'report' };
 
 // A layout's name from what a statement or a plan says ("Split", "single-tool",
 // "a gallery of the dishes"), or null.

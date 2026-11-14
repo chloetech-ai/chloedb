@@ -1045,7 +1045,7 @@ window.__sa_numbers = (() => {
     // kit draws (kit.css, front.css), and for a working screen its parts
     // arranged: the title and numbers as its head, then the screen's groups
     // (each starts at a heading or a row of numbers) placed as the layout says.
-    const LAYOUTS = ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool'];
+    const LAYOUTS = ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool', 'report'];
     const layout = LAYOUTS.includes(spec.layout) ? spec.layout : null;
     if (layout) { document.body.classList.add(`layout-${layout}`); document.documentElement.dataset.layout = layout; }
     const flatNodes = (x) => (Array.isArray(x) ? x.flatMap(flatNodes) : x instanceof Node ? [x] : []);
@@ -1065,6 +1065,22 @@ window.__sa_numbers = (() => {
         } else list.push(el);
       }
       if (!layout || list.length < 2) return [...quiet, ...list];
+      // a report: its title and the day it was prepared, then a numbered
+      // section at each heading after it (kit.css numbers them)
+      if (layout === 'report') {
+        const isHeading = (el) => el.nodeType === 1 && (el.matches('h1, h2, h3') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2, :scope > h3')));
+        let i = 0;
+        const head = [];
+        if (isHeading(list[0])) head.push(list[i++]);
+        while (i < list.length && list[i].nodeType === 1 && list[i].matches('p')) head.push(list[i++]);
+        head.push(h('p', { class: 'report-date' }, `Prepared ${new Date(app.today() + 'T12:00:00Z').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}`));
+        const secs = [];
+        for (; i < list.length; i++) {
+          if (!secs.length || (isHeading(list[i]) && secs.at(-1).length)) secs.push([]);
+          secs.at(-1).push(list[i]);
+        }
+        return [...quiet, h('div', { class: 'lay-head' }, head), ...secs.map((g) => h('div', { class: `lay-group report-sec${isHeading(g[0]) ? '' : ' unnamed'}` }, g))];
+      }
       const head = [];
       let i = 0;
       while (i < list.length && (headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('p') && head.length))) head.push(list[i++]);

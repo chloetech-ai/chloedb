@@ -12,6 +12,8 @@ test('a screen that names no layout gets the one that fits it', () => {
   assert.equal(layoutFor({ page: 'front', body: [{ hero: 'Hi', look: 'split' }] }), 'split');
   assert.equal(layoutFor({ page: 'front', body: [{ hero: 'Hi' }] }, { art: { structure: 'dashboard' } }), 'hero', 'a front page is not a dashboard');
   assert.equal(layoutFor({ body: [] }, { patterns: ['trend'] }), 'dashboard');
+  assert.equal(layoutFor({ body: [] }, { patterns: ['variance'] }), 'report');
+  assert.equal(layoutFor({ body: [] }, { patterns: ['variance', 'summary'] }), 'dashboard');
   assert.equal(layoutFor({ body: [] }, { patterns: ['checks'] }), 'tool');
   assert.equal(layoutFor({ body: [] }, { patterns: ['detail'] }), 'editorial');
   assert.equal(layoutFor({ body: [] }, { patterns: ['board'] }), null, 'a board needs the width');

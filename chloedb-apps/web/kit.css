@@ -565,6 +565,16 @@ td.acts .rc-more > summary { width: 30px; height: 30px; }
 @media (max-width: 860px) { .lay-split { grid-template-columns: minmax(0, 1fr); } .lay-aside { position: static; } }
 /* editorial: a reading column, large titles, rows as a ruled list */
 body.layout-editorial #root { max-width: min(var(--page), 760px); }
+/* a report: one column, its title and date, numbered sections with strong headings */
+body.layout-report #root { max-width: min(var(--page), 980px); counter-reset: rsec; }
+.layout-report > .lay-head :is(h1, h2) { font-family: var(--font-title); font-size: clamp(30px, 4.6vw, 46px); line-height: 1.05; letter-spacing: -.025em; }
+.layout-report > .lay-head .report-date { color: var(--muted); font-size: calc(var(--text) * .95); margin: 0; }
+.layout-report > .lay-head { border-bottom: 2px solid var(--fg); padding-bottom: calc(var(--space) * .9); margin-bottom: calc(var(--space) * .5); }
+.layout-report .report-sec { display: flex; flex-direction: column; gap: var(--space); }
+.layout-report .report-sec:not(.unnamed) { counter-increment: rsec; }
+.layout-report .report-sec + .report-sec { border-top: 1px solid var(--line); padding-top: calc(var(--space) * 1.6); margin-top: calc(var(--space) * .6); }
+.layout-report .report-sec > :is(h1, h2, h3):first-child { font-family: var(--font-title); font-size: clamp(22px, 3vw, 30px); letter-spacing: -.02em; margin: 0; }
+.layout-report .report-sec > :is(h1, h2, h3):first-child::before { content: counter(rsec) ". "; color: var(--accent); }
 .layout-editorial > .lay-head :is(h1, h2) { font-family: var(--font-title); font-size: clamp(30px, 5.4vw, 52px); line-height: 1.05; letter-spacing: -.03em; }
 .layout-editorial > .lay-head p { font-size: calc(var(--text) * 1.15); max-width: 60ch; }
 .layout-editorial :is(.list > .item, .list > li, tbody tr) { padding-block: calc(var(--row) * 1.6); }

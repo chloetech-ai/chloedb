@@ -122,7 +122,8 @@
       "ui": "barChart",
       "props": {
        "data": "={{key}}_rows.map(r => ({label: r.period, value: r.value}))",
-       "format": "={{key}}_fmt"
+       "format": "={{key}}_fmt",
+       "labels": "=innerWidth > 560"
       }
      },
      {
@@ -131,7 +132,8 @@
       "props": {
        "data": "={{key}}_rows.map(r => ({label: r.period, values: [r.value, r.compare || 0]}))",
        "series": "=[{name: {{label|json}}}, {name: {{compareLabel|json}}}]",
-       "format": "={{key}}_fmt"
+       "format": "={{key}}_fmt",
+       "labels": "=innerWidth > 560"
       }
      }
     ],

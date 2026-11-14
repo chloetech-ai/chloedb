@@ -4,6 +4,7 @@
 // for, from its patterns and blocks:
 // - a front page: the art direction's layout when it is one a front page
 //   draws (hero, split, editorial, gallery), else what its hero says;
+// - periods compared on their own (variance): report, numbered sections;
 // - numbers over time (dashboard, trend, summary), or a row of big numbers
 //   over charts: dashboard;
 // - one thing to do (the daily check-off, flashcards, a quiz, a form alone):
@@ -48,6 +49,8 @@ export function layoutFor(screen, { patterns = [], art = null } = {}) {
     return 'hero';
   }
   if (['board', 'calendar', 'week'].some((p) => used.has(p))) return null;
+  // periods compared on their own read as a report; beside charts of other things, a dashboard
+  if (used.has('variance') && !['dashboard', 'trend', 'summary'].some((p) => used.has(p))) return 'report';
   if (['dashboard', 'trend', 'summary'].some((p) => used.has(p))) return 'dashboard';
   if (['checks', 'flashcards', 'quiz'].some((p) => used.has(p))) return 'tool';
   if (used.has('detail')) return 'editorial';

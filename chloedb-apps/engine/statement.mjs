@@ -659,6 +659,8 @@ Say what you can with the parts and their words, and keep JavaScript for what th
 
 A dashboard (a request to see how the business, the money or the numbers are doing) leads with its headline and its charts, not a wall of number cards and a table: first the period's comparison with its total as the headline and its chart (VARIANCE, COMPARE costs against revenue when the data has both), then a breakdown that names the best (SUMMARY ... GROUP BY customer, top customers, as bars), then what needs doing (what is owed, a LIST); at most one row of KPIs of its own, and a table only below the charts.
 
+A report the owner reads or hands on (variance, aging, a board or monthly pack, a statement) reads like a finished report, not a dashboard: LAYOUT report, a HEADING naming it, then each section starting with its own heading (a part's TITLE), numbered in that order; its sections are the ones the request names, in its order.
+
 A screen that is mostly custom (a game, a chart of its own) may be a CREATE SCREEN with a BLOCKS part, or a JSON "screen" in the plan as described above.
 
 The statement is the screen's source: the app keeps it and shows it to you (format="statement"). To change such a screen, give "edits" in its plan entry, [{"old": "text copied exactly from the statement, occurring once", "new": "its replacement"}], or a new statement in its code block when most of it changes. A screen shown as JSON (format="screen") takes a "patch" as described above.`;

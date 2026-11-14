@@ -121,7 +121,8 @@ test('the static fallback reads screens stored as JSON in a view\'s code', () =>
 });
 
 test('layouts: parsed from what a statement or a plan says', () => {
-  assert.deepEqual(LAYOUT_NAMES, ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool']);
+  assert.deepEqual(LAYOUT_NAMES, ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool', 'report']);
+  assert.equal(parseLayout('a monthly briefing'), 'report');
   assert.equal(parseLayout('split'), 'split');
   assert.equal(parseLayout('Editorial, the menu as a chalkboard list'), 'editorial');
   assert.equal(parseLayout('single-tool'), 'tool');
@@ -145,7 +146,7 @@ test('CREATE SCREEN: LAYOUT and PAGE front LAYOUT, and back to a statement', () 
   assert.match(back, /^LAYOUT split$/m);
   assert.deepEqual(compileStatement(back).screen, a.screen);
   assert.equal(screenStatement('x', 'X', { body: [], layout: 'bento' }), null);
-  assert.match(STATEMENT_DOC, /LAYOUT <hero \| split \| editorial \| dashboard \| gallery \| tool>/);
+  assert.match(STATEMENT_DOC, /LAYOUT <hero \| split \| editorial \| dashboard \| gallery \| tool \| report>/);
 });
 
 test('the art direction: layout, type, accent, imagery and the one main action', () => {
