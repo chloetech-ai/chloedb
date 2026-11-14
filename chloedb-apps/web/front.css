@@ -226,6 +226,7 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-card-pic img, .fp-card-pic .fp-ph { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 1s var(--ease); }
 .fp-card-pic .fp-ph { display: grid; place-items: center; }
 /* initials where a photo is missing: on a dark chip, so they read on any part of the gradient */
+.fp-card-pic .fp-ph.fp-ph-pattern { background-color: color-mix(in srgb, var(--accent) 10%, var(--card)); background-image: radial-gradient(color-mix(in srgb, var(--accent) 30%, transparent) 1.2px, transparent 1.6px), linear-gradient(135deg, transparent 0 60%, color-mix(in srgb, var(--accent) 14%, transparent) 60% 100%); background-size: 14px 14px, 100% 100%; }
 .fp-ph-init { font-size: clamp(2rem, 4vw, 3rem); font-weight: 600; letter-spacing: .02em; color: #fff; background: rgba(0,0,0,.58); padding: .12em .45em; border-radius: 14px; }
 .fp-card:hover .fp-card-pic img { transform: scale(1.06); }
 .fp-card-foot { margin-top: auto; padding-top: 8px; display: flex; align-items: center; gap: 12px; justify-content: space-between; }

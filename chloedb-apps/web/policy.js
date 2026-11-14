@@ -23,7 +23,7 @@ export const PHOTO_HOSTS = ['https://images.unsplash.com', 'https://upload.wikim
 export function frameCsp(origin, { hosts = [] } = {}) {
   const web = hosts.includes('*') ? ['https:'] : [...PHOTO_HOSTS, ...hosts.filter((x) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(x)).flatMap((x) => [`https://${x}`, `https://*.${x}`])];
   const media = ['data:', 'blob:', origin, ...web].join(' ');
-  return `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${media}; media-src ${media}; font-src data:; form-action 'none'`;
+  return `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${media}; media-src ${media}; font-src data: ${origin}/fonts/; form-action 'none'`;
 }
 
 export const FRAME_SANDBOX = 'allow-scripts allow-forms allow-modals allow-downloads';

@@ -921,6 +921,15 @@ const server = http.createServer(async (req, res) => {
   let visiting = false;
   try {
     if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+    // The kit's typefaces (web/fonts, SIL Open Font License): open to any
+    // page, a view's sandboxed frame included (it has no origin of its own).
+    let fm;
+    if (req.method === 'GET' && (fm = url.pathname.match(/^\/fonts\/([a-z-]+)\.woff2$/))) {
+      const bytes = await readFile(path.join(ROOT, 'web', 'fonts', `${fm[1]}.woff2`)).catch(() => null);
+      if (!bytes) return send(res, 404, { error: 'no such font' });
+      res.writeHead(200, { 'content-type': 'font/woff2', 'content-length': bytes.length, 'cache-control': 'public, max-age=604800', 'access-control-allow-origin': '*' });
+      return res.end(bytes);
+    }
     // Caddy asks before it gets a certificate for a host (the operator's
     // spec.apps.publish): only for published apps' hosts.
     if (req.method === 'GET' && url.pathname === '/api/tls/ask') {

@@ -449,3 +449,26 @@ body.bare.designed { background: var(--bg); }
 .reach-item .send { font-size: 12px; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .reach-item .send.on { color: #b45309; }
 .reach-item .inp { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg, transparent); color: inherit; }
+
+/* ---- an app on its own: the design's type pairing (web/fonts, SIL Open Font License),
+   chrome a finger can use (44 px), and its colors as plain values */
+@font-face { font-family: "Fraunces"; src: url("/fonts/fraunces.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/fonts/playfair-display.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Instrument Serif"; src: url("/fonts/instrument-serif.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url("/fonts/bricolage-grotesque.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Nunito"; src: url("/fonts/nunito.woff2") format("woff2"); font-weight: 200 1000; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
+body.bare.designed .top { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; height: 60px; }
+body.bare.designed .brand { min-height: 44px; font-size: 20px; font-weight: var(--title-weight, 650); letter-spacing: var(--title-track, -.02em); }
+body.bare.designed .look { width: 44px; height: 44px; background: transparent; border: 1px solid var(--line-2); border-radius: 12px; color: var(--fg); }
+body.bare.designed .look:hover { background: var(--card); }
+body.bare.designed #tabs .tab { min-height: 44px; min-width: 44px; justify-content: center; }
+body.bare.designed.nav-segmented #tabs { background: var(--fill-solid, var(--fill)); }
+body.bare.designed.look-bold .top { background: var(--deep); }
+body.bare.designed.look-bold .top .look { background: transparent; border-color: var(--deep-fg); color: var(--deep-fg); }
+@media (max-width: 560px) {
+  body.bare.designed.look-native #tabs { background: var(--card); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  body.bare.designed .top { height: 56px; padding: 0 12px; }
+  body.bare.designed .brand { font-size: 18px; }
+}

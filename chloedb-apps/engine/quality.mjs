@@ -57,7 +57,7 @@ export const ART_DOC = `- art: the app's art direction, for a new app, decided w
   "action": the one main action and its words, a concrete verb ("Order tacos", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)
-- Pages are white or genuinely dark; no beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.
+- Pages are white, a faint paper tint or genuinely dark; no strong beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.
 - Text reads at 4.5:1 against what is behind it (3:1 for large titles), button words included; white words only on a deep color or a dark photo.
 - Every control and link people tap is at least 44 by 44 px on a phone; nothing scrolls sideways at 390 px.
 - The main action (the art's "action") shows on the first phone screen, without scrolling: a short hero, never a marketing-height introduction.

@@ -277,12 +277,12 @@
       return [head(b, s, path), look === 'carousel' ? shelf(cards, b, path) : h('div', { class: 'fp-quotes' }, cards.map((c, i) => rv(c, `${path}[${i}]`, i)))];
     };
 
-    // A card; in a row where other cards have photos, one without gets the
-    // design's gradient with its initials, so the row stays even.
+    // A card; in a row where other cards have photos, one without gets a
+    // quiet pattern in the design's tint (no letters), so the row stays even.
     const card = (it, s, path, row = false) => {
       const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1) : null;
       const has = it.src || it.photo;
-      const ph = () => h('div', { class: 'fp-ph', role: 'img', 'aria-label': String(it.title || '') }, h('span', { class: 'fp-ph-init' }, initials(it.title)));
+      const ph = () => h('div', { class: 'fp-ph fp-ph-pattern', role: 'img', 'aria-label': String(it.title || '') });
       const el = h('div', { class: `fp-card${has || row ? ' has-pic' : ''}` },
         has || row ? h('figure', { class: 'fp-card-pic' }, has ? pic(it, s, path) : ph(), it.badge ? h('span', { class: 'fp-badge' }, String(it.badge)) : null, credit(it)) : null,
         h('div', { class: 'fp-card-body' },

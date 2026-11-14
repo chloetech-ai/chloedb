@@ -4,7 +4,7 @@
 // person using the app on its own can pick their own. Picking one swaps a
 // block of CSS variables in each view: no code changes, nothing is rebuilt.
 import { ask } from './llm.mjs';
-import { CHOICES, checkDesign, presetDesigns, hslOf } from '../web/design.js';
+import { CHOICES, checkDesign, presetDesigns, hslOf, typeOf, pairFor } from '../web/design.js';
 
 export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haiku-5-5';
 
@@ -19,14 +19,15 @@ Answer with a JSON array of exactly three designs and nothing else. Each design:
 {"name": "one or two words", "about": "the mood in under 12 words", "scheme": "auto",
  "light": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
  "dark": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
- "look": "native", "font": "system", "titles": "system", "corners": "soft", "density": "regular", "surface": "grouped", "nav": "tabs", "width": "wide",
+ "look": "native", "font": "system", "titles": "serif", "type": "ledger", "corners": "soft", "density": "regular", "surface": "grouped", "nav": "tabs", "width": "wide",
  "gradient": ["#rrggbb", "#rrggbb", "#rrggbb"], "motion": "calm"}
 
 The tokens and their values:
 ${choices}
 
 The accent is the app's identity: the one color for its buttons, links and the current selection, and nothing else is saturated. Choose its hue for this subject and the people who use it, as you would for a brand of its own. Green and teal are not a default: use them only when the subject itself is green (plants, gardens, farming, the outdoors, money), and never for more than one of the three.
-Pages are white or genuinely dark: in light, card white and bg white or a faint cool gray; in dark, bg near black and card a little lighter. No beige, cream or pastel page wash. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more, in light and in dark (a lighter tint of it in dark). gradient is the accent and two neighbours that flatter it, for front pages: vivid, never neon.
+Pages are white, a faint paper tint or genuinely dark: in light, card white and bg white, a faint cool gray or, for a warm subject (food, craft, finance reports, salons, studios), a faint warm paper (#faf8f4 to #f7f3ec, never a strong beige, cream or pastel wash); in dark, bg near black and card a little lighter.
+The type is the app's voice: "type" is a pairing of a display face for titles and big numbers with plain body text; choose it for this product (a board report or a ledger: ledger; a salon: classic; a design studio: elegant; a data tool: grotesk; a running club or a food truck: bricolage), and give "titles" the family it belongs to (serif for ledger, classic and elegant; system for system, grotesk and bricolage; rounded; mono). Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more, in light and in dark (a lighter tint of it in dark). gradient is the accent and two neighbours that flatter it, for front pages: vivid, never neon.
 
 The three differ in more than color: their accents come from three different hue families, and each pair differs in at least two of look, titles, nav, density, corners and surface. Each fits the app's subject and its people:
 1. The natural one, look "native": the hue the subject suggests first (the art direction's accent and type when the app has one), regular density (compact when the app is mostly tables), tabs.
@@ -78,12 +79,24 @@ Design three looks for it.`;
 // fixes hold"): the first design has the native look (the studio's default),
 // and when the three share one look the second is bold; a first design with
 // an art direction takes its type. Returns pairs still too alike, in words.
-export function shapeDesigns(designs, direction = null) {
+export function shapeDesigns(designs, direction = null, app = null) {
   if (!designs.length) return [];
   designs[0].look = 'native';
   if (designs.length > 1 && designs.every((d) => d.look === designs[0].look)) designs[1].look = 'bold';
   const type = direction?.art?.type;
   if (type && CHOICES.titles[type]) designs[0].titles = type;
+  // Each design's type pairing fits its titles and the app's subject.
+  const art = direction?.art;
+  const subject = `${app?.name || ''} ${app?.description || ''} ${art?.concept || ''} ${art?.mood || ''}`;
+  Object.assign(designs[0], pairFor(designs[0], `${designs[0].name || ''} ${designs[0].about || ''} ${subject}`));
+  // A serif design is set on paper: a cool grey page under serif titles
+  // turns a faint warm white (the cards stay white).
+  const d0 = designs[0];
+  if (['ledger', 'classic', 'elegant'].includes(d0.type) && d0.light && /^#[0-9a-f]{6}$/i.test(d0.light.bg || '')) {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(d0.light.bg.slice(i, i + 2), 16));
+    if (b >= r && Math.max(r, g, b) - Math.min(r, g, b) < 14 && r > 225) d0.light = { ...d0.light, bg: '#f8f6f1' };
+  }
+  for (const d of designs.slice(1)) d.type = typeOf(d, `${d.name || ''} ${d.about || ''} ${subject}`);
   // The art direction's layout sets the first design's width: a reading
   // column for an editorial page, the full width for a dashboard.
   const width = { editorial: 'narrow', tool: 'narrow', dashboard: 'wide', gallery: 'wide' }[direction?.art?.structure];
@@ -114,19 +127,19 @@ export async function makeDesigns(app, view, { ask: askFn = ask, model = DESIGN_
     let cost = r.cost || 0;
     // A palette and shapes checked in code, not only asked for: one more try
     // when they miss, and the second answer is kept whatever it holds.
-    const problems = [...paletteProblems(designs, app), ...shapeDesigns(designs, direction)];
+    const problems = [...paletteProblems(designs, app), ...shapeDesigns(designs, direction, app)];
     if (problems.length) {
       try {
         const again = await askFn({ system: DESIGN_SYSTEM, prompt: `${prompt}\n\nYour last answer:\n${JSON.stringify(designs.map(({ name, light, dark, ...rest }) => ({ name, light, dark, ...Object.fromEntries(SHAPE.map((k) => [k, rest[k]])) })))}\nWhat is wrong with it: ${problems.join('; ')}. Answer again with all three designs.`, model, timeoutMs: 90_000, idleMs: 45_000 });
         cost += again.cost || 0;
         designs = parse(again.text);
-        shapeDesigns(designs, direction);
+        shapeDesigns(designs, direction, app);
       } catch { /* the first answer stands */ }
     }
     return { designs, source: model, ms: Date.now() - t0, cost, problems, directed: !!direction?.art };
   } catch (e) {
     const designs = presetDesigns(app.id);
-    shapeDesigns(designs, direction);
+    shapeDesigns(designs, direction, app);
     return { designs, source: 'presets', ms: Date.now() - t0, cost: 0, error: e.message };
   }
 }
