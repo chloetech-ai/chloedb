@@ -14,7 +14,10 @@ const base = (p) => (p || "").split("/").filter(Boolean).pop() || p || "";
 const names = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-export function mount(root, ctx) {
+// Time travel: the scrubber above the screen (ui/levels/timebar.js).
+import { timeTravel } from "./timebar.js";
+export const mount = timeTravel(mountMission, { screen: "mission" });
+function mountMission(root, ctx) {
   const S = {
     repo: repoOf(ctx), goal: null, detail: null, questions: [], rules: [], loaded: false, error: null,
     stream: (ctx.state && ctx.state.agents) || [], stories: new Map(), used: new Set(), allLearned: false, flash: new Map(), steered: new Set(), sending: false, seen: "",

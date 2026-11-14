@@ -1002,6 +1002,8 @@ $("f-name").addEventListener("input", (e) => {
   branchHelp();
 });
 $("f-wt").addEventListener("change", branchHelp);
+// Model routing: which model tasks like this one did best on (ui/levels/route-hint.js).
+import("/levels/route-hint.js").then((m) => m.attach($("new-dialog"), { api })).catch(() => {});
 $("f-task").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("new-form").requestSubmit(); }
 });

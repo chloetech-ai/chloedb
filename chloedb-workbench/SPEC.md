@@ -1212,3 +1212,133 @@ Both default to the calling agent.
   rather than git's hunk headers, which name the enclosing function of
   the context and miss new ones.
 - `test_runs` is read only if Health created it.
+
+### Time and guard as built (rows 8, 9 and 6)
+
+**Tables** (`src/db.rs`, `TIME_GUARD_TABLES`): `time_snapshots` (id, ts,
+reason `timer`|`goal`|`manual`, detail, txn, heads: JSON), `change_requests`
+(id, agent, repo, cwd, branch, command, why, rule, risk, risk_why, diff,
+precedent, state `open`|`running`|`done`|`failed`|`declined`, output,
+exit_code, ms, decided_by, reason, told `typed`|`queued`, created, decided),
+`task_features` (id = the agent's, repo, name, task, files, model, input,
+output, cache_read, cost_usd, minutes, redo, done, outcome, exit_code,
+ended). A repository's guarded list is the mark `guarded:<repo>`.
+`StateDb::checkpoint(dest, link_from)` and `StateDb::open_read_only(dir)`
+are new.
+
+**Time travel** (`src/timetravel.rs`). A thread looks at goals' and
+outcomes' states every 5 s: a change is a snapshot (`goal`, detail such as
+"goal set: …", "outcome done: …", "outcome needs you: …"); every 10 minutes
+a snapshot (`timer`) when events were written since the last one, the
+first one 10 minutes after the server starts; `POST /api/time/snapshot` takes
+one by hand (201 `{snapshot}`). A snapshot is ChloeDB's checkpoint in the
+directory layout at `<data-dir>/snapshots/<id>/`, hard-linking the
+unchanged segments of the one before; snapshots older than a day and
+folders no row names are removed (at start and every 5 minutes). Its row's
+`heads` holds, per agent on the map then: branch, HEAD, `tree` (the
+worktree's uncommitted state as a commit on HEAD that no ref names, written
+through a copy of its index with `git add -A`/`write-tree`/`commit-tree
+--no-gpg-sign`, so the agent's own index is untouched; git keeps such
+objects until a prune), its diff from its base and what it had read.
+- `GET /api/time?repo=` → `{available, repo, now_ms, from_ms, keep_ms,
+  every_ms, snapshots: [{id, ts_ms, reason, detail}], events: [[minute_ms,
+  count]]}` (the repository's agents' events per minute, last day).
+- `GET /api/time?at=<ms|s|ISO>&repo=` opens the nearest snapshot read-only
+  (by absolute distance; kept open for the next request) →
+  `{available, at_ms, repo, snapshot, distance_ms, heads: [{agent, name,
+  branch, head, tree, dirty, files: n}], agents: [Agent as then], mission:
+  {goals, detail (the active goal's), details: {goal id: detail}, questions,
+  rules}, map, missing}`; `{available: false, why}` before any snapshot.
+  Mission's detail has Mission's shape (`goals::detail`); its `pulse` comes
+  from the live events up to `at` (events are only added), `learned` from
+  ChloeCtx filtered to `ts_ms <= at`. `map` is `map::map_of` over the work
+  the snapshot kept, with pins of records made by then; the tree is the
+  repository's files now.
+- Refactors, minimal: `goals.rs` and `questions.rs` make `Goal::of`,
+  `Outcome::of`, `Question::of`, `Rule::of` and their column lists
+  `pub(crate)` (read from a snapshot's tables); `map::map` is split into
+  `map` and `map_of(sup, main, work, until_ms)`.
+
+**Guarded actions** (`src/guarded.rs`).
+- Agents' keys: each agent's hooks and MCP server get a token of their own
+  (`guarded::agent_token`, in `supervisor.rs`'s spawn); the server's guard
+  takes it on every route, but approve, decline and `PUT /api/guarded`
+  answer 403 to anything but the user's token.
+- The guarded list, `GET /api/guarded?repo=` → `{repo, default_branch,
+  rules: [{id, kind: builtin|prefix, label, detail, on}]}`; `PUT
+  /api/guarded {repo, rules}` keeps the built-ins' `on` and the prefix
+  rules (a command whose first words are the label's). Built-ins:
+  `migrations` (prisma migrate deploy/reset/dev, prisma db push, sqlx
+  migrate run/revert, diesel migration run/redo, alembic upgrade/downgrade,
+  rails/rake db:migrate, knex migrate:latest, flyway migrate, manage.py
+  migrate, goose up, dbmate up, sequelize db:migrate, typeorm
+  migration:run, drizzle-kit push/migrate, liquibase update, a package
+  script whose name holds "migrat"), `deploy` (a `deploy*` script,
+  kubectl apply/delete, terraform/tofu apply, terraform destroy, fly
+  deploy, helm upgrade/install, npm/pnpm/yarn/cargo publish, twine upload,
+  docker push, serverless/sls/cdk/wrangler/firebase deploy, vercel or
+  netlify with --prod, gcloud … deploy, a `deploy`/`release` package
+  script), `push-default` (a git push whose refspec names the default
+  branch, a `+` refspec, --force*, --mirror, --all, --prune, or a plain
+  push from the default branch), `rm-outside` (a recursive rm of a path
+  outside the agent's worktree: `~`, `$VAR`, or resolved outside it;
+  temporary folders are allowed). Commands are split as a shell splits
+  them (quotes, `&&`, `||`, `;`, `|`), `sudo`/`env`/`VAR=1`/`npx`/`pnpm
+  exec` are looked past, `cd` is followed, and `bash -c`/`eval` are read.
+- PreToolUse (in the server's hook handler, after `levels::after_hook`):
+  a guarded Bash call answers `{"hookSpecificOutput": {"hookEventName":
+  "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason":
+  "… propose_change …"}}` and records a `guarded` event.
+- `POST /api/changes {command, why, risk?}` (from an agent: its key's, or
+  the `x-workbench-agent` header) → 201 `{request}`: its rule, the risk
+  (high for a push to the default branch, a deploy, an rm outside; medium
+  for a migration or a prefix rule, high when the diff adds DROP TABLE,
+  DROP COLUMN, TRUNCATE or DELETE FROM or the command may lose data; the
+  agent's own word only raises it) and why, the agent's diff (12 files, 60
+  lines each, migrations first); ChloeCtx's precedent (`trail::ask`) comes
+  in later. `GET /api/changes?repo=&state=` (newest first), `GET
+  /api/changes/:id`.
+- `POST /api/changes/:id/approve` (user only; 409 unless open): runs `bash
+  -c <command>` in the agent's worktree, stdin closed, `CI=1`, at most 10
+  minutes, the last 64 KiB of output kept; answers when it ends or after
+  8 s (`running`); the agent is told through `levels::steer` (typed when
+  idle, else at its next hook), and `told` says which. `POST
+  /api/changes/:id/decline {reason}` (user only) tells it why. Events
+  `change_request`, `change_approved`, `change_declined`.
+- MCP `propose_change {command, why, risk}`.
+
+**Model routing** (`src/routing.rs`). A thread on the stream of changes
+records an agent's `task_features` when it exits, or ends a turn (Stop)
+with its outcome done; at start, agents that ended before without a row.
+Model: haiku, sonnet, opus (by name), another name as given, `default`
+when none. Tokens from its transcripts (`narrate::tokens`); cost at Haiku
+5.5 $0.10/$0.50, Sonnet 5.5 $2/$10, Opus 5.5 $4/$20 per million input and
+output tokens (cache reads $0.01, $0.10, $0.20), `default` and other names
+priced as Opus 5.5. `redo`: prompts after the first plus steers. `done`:
+its outcome is done; without an outcome, its last turn ended (a Stop after
+its last prompt or notification).
+- `GET /api/route?repo=&task=` → `{available, similar, apply, suggestion:
+  {model, n, done, rate, avg_cost_usd, avg_minutes, avg_tokens}, why,
+  alternatives: [same], examples: [{agent, name, task, model, done,
+  cost_usd, minutes, ended, score}], default, missing}`. Similar: the
+  repository's past tasks ranked by `bm25(task, :words, syntax => 'plain',
+  min => 2)` (1 when the task has under 3 content words), within 30% of
+  the best score. Per model, the rate of finishing with Laplace's rule; the
+  suggestion is the cheapest model within 0.1 of the best rate. Under 3
+  words: `similar: 0`, no suggestion. `apply` is `similar >= 5`.
+- MCP `spawn_agent` without `model` asks `/api/route` and takes the
+  suggestion when `apply` (and it is not `default`).
+
+**UI**: `ui/levels/timebar.js` wraps Mission's and Map's `mount` (one line
+each); in the past it remounts the screen with an `api` that answers
+`/api/goals`, `/api/goals/:id`, `/api/questions`, `/api/rules`,
+`/api/outcomes`, `/api/map`, `/api/agents[/:id]` from `/api/time?at=` and
+refuses changes. `ui/levels/change-requests.js` is a section of Decide (one
+import, one mount); `ui/levels/route-hint.js` attaches to the New agent
+dialog from `app.js` (one line). Fixtures: `ui/dev/fixtures/timeguard.mjs`.
+
+**Deviations and limits.** The screens still count "ago" and ETAs from the
+real now while showing the past. The map's tree is today's files. A
+snapshot's worktree commits are not kept by a ref. Precedents need
+ChloeCtx; without it a request has none. `rm-outside` lets a recursive rm
+of a temporary folder through.

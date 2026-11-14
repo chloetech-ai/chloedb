@@ -96,7 +96,8 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
             None if takes_query_token(&path) => query_token(req.uri()),
             None => None,
         };
-        if !given.is_some_and(|g| same_bytes(&g, token)) {
+        // The user's token, or an agent's (src/guarded.rs: it cannot decide).
+        if !given.is_some_and(|g| same_bytes(&g, token) || crate::guarded::is_agent_token(&g)) {
             return ApiError::new(401, "unauthenticated", "this route needs the token: Authorization: Bearer <token>").into_response();
         }
     }
@@ -139,6 +140,10 @@ pub fn router(app: App) -> Router {
         // Health: alerts, incidents and the test radar.
         .merge(crate::alerts::routes())
         .merge(crate::testruns::routes())
+        // Fourth build: time travel, guarded actions, model routing.
+        .merge(crate::timetravel::routes())
+        .merge(crate::guarded::routes())
+        .merge(crate::routing::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -192,6 +197,9 @@ const LEVELS: &[(&str, &str)] = &[
     ("setup.js", include_str!("../ui/levels/setup.js")),
     ("health.js", include_str!("../ui/levels/health.js")),
     ("test-chip.js", include_str!("../ui/levels/test-chip.js")),
+    ("timebar.js", include_str!("../ui/levels/timebar.js")),
+    ("change-requests.js", include_str!("../ui/levels/change-requests.js")),
+    ("route-hint.js", include_str!("../ui/levels/route-hint.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -357,7 +365,9 @@ async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiRes
     let output = blocking(move || {
         sup.hook(&id, v.clone())?;
         crate::testruns::after_hook(&sup, &id, &v);
-        Ok(crate::levels::after_hook(&sup, &lv, &id, &v))
+        let out = crate::levels::after_hook(&sup, &lv, &id, &v);
+        // Guarded actions (src/guarded.rs): a guarded Bash command is denied.
+        Ok(crate::guarded::check(&sup, &id, &v).or(out))
     })
     .await?;
     Ok(Json(json!({ "ok": true, "output": output })).into_response())
@@ -498,6 +508,9 @@ async fn ask(State(app): State<App>, body: Bytes) -> ApiResult {
 pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Result<()> {
     let sup = app.sup.clone();
     crate::alerts::start(app.sup.clone(), app.lv.clone());
+    // Time travel's snapshots and routing's recorder (src/timetravel.rs, src/routing.rs).
+    crate::timetravel::start(&sup);
+    crate::routing::start(&sup);
     let router = router(app);
     let server = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
     tokio::select! {

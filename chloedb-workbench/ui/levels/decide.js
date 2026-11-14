@@ -14,6 +14,8 @@ const names = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", 
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const isToday = (t) => { const d = new Date(toMs(t) || 0); return d.toDateString() === new Date().toDateString(); };
 const PERM_LABELS = ["Yes", "Always", "No"];
+// Change requests (guarded actions): a section of its own (ui/levels/change-requests.js).
+import { changeRequests } from "./change-requests.js";
 
 export function mount(root, ctx) {
   let wanted = routeParam(ctx, "question");
@@ -131,7 +133,7 @@ export function mount(root, ctx) {
     if (!S.loaded) return h("div", { class: "de-wrap" }, head, h("div", { class: "de-skel" }));
     if (S.error) return h("div", { class: "de-wrap" }, head, h("div", { class: "lv-card de-err" }, h("b", {}, "Decide could not load."), h("div", { class: "muted" }, S.error), h("button", { class: "btn sm", "data-key": "retry", onclick: load }, "Try again")));
     const q = [...S.open, ...S.answered].find((x) => x.id === S.sel) || null;
-    return h("div", { class: "de-wrap" }, head,
+    return h("div", { class: "de-wrap" }, head, changeRequests(ctx),
       h("div", { class: "de-grid" },
         h("div", { class: "de-left" }, openList(), answeredCard()),
         h("div", { class: "de-right" }, banner(), q ? (q.state === "open" ? detail(q) : answeredDetail(q)) : nothingOpen(), rulesCard())));

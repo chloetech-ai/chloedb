@@ -514,12 +514,14 @@ impl Supervisor {
         let mcp = session_dir.join("mcp.json");
         let exe = self.cfg.exe.to_string_lossy().to_string();
         // Bash prefixes allowed from Flow's suggestions, for this repository.
+        // A key of its own, which cannot decide a change request (src/guarded.rs).
+        let token = crate::guarded::agent_token(&id);
         let (settings_v, mcp_v) = crate::ctxwire::wire(
             &self.cfg.chloectx_bin,
             self.cfg.chloectx_required,
             &cwd,
             crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy())),
-            mcp_json(&exe, &self.cfg.url, &self.cfg.token, &id),
+            mcp_json(&exe, &self.cfg.url, &token, &id),
         )?;
         write_private(&settings, &settings_v)?;
         write_private(&mcp, &mcp_v)?;
@@ -547,7 +549,7 @@ impl Supervisor {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("CHLOEDB_WORKBENCH_URL", &self.cfg.url);
-        cmd.env("CHLOEDB_WORKBENCH_TOKEN", &self.cfg.token);
+        cmd.env("CHLOEDB_WORKBENCH_TOKEN", &token);
         cmd.env("CHLOEDB_WORKBENCH_AGENT", &id);
         // A server started from inside a Claude Code session must not make
         // its agents look nested in it.

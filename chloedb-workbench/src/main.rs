@@ -26,6 +26,10 @@ mod story;
 // Health (SPEC.md, "Fourth build", rows 4 and 5).
 mod alerts;
 mod testruns;
+// Fourth build: time and guard (SPEC.md, rows 8, 9 and 6).
+mod guarded;
+mod routing;
+mod timetravel;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -83,6 +83,16 @@ const HEALTH_TABLES: [&str; 6] = [
     "CREATE TABLE IF NOT EXISTS token_use (id KEYWORD PRIMARY KEY, repo KEYWORD, agent KEYWORD, input INT, output INT, cache_read INT, ts TIMESTAMP)",
 ];
 
+/// Time and guard (SPEC.md, "Fourth build", rows 8, 9 and 6): the state
+/// database's snapshots (src/timetravel.rs), guarded commands' change
+/// requests (src/guarded.rs), and each finished task's features
+/// (src/routing.rs).
+const TIME_GUARD_TABLES: [&str; 3] = [
+    "CREATE TABLE IF NOT EXISTS time_snapshots (id KEYWORD PRIMARY KEY, ts TIMESTAMP, reason KEYWORD, detail TEXT, txn INT, heads TEXT)",
+    "CREATE TABLE IF NOT EXISTS change_requests (id KEYWORD PRIMARY KEY, agent KEYWORD, repo KEYWORD, cwd KEYWORD, branch KEYWORD, command TEXT, why TEXT, rule KEYWORD, risk KEYWORD, risk_why TEXT, diff TEXT, precedent TEXT, state KEYWORD, output TEXT, exit_code INT, ms INT, decided_by KEYWORD, reason TEXT, told KEYWORD, created TIMESTAMP, decided TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS task_features (id KEYWORD PRIMARY KEY, repo KEYWORD, name KEYWORD, task TEXT, files TEXT, model KEYWORD, input INT, output INT, cache_read INT, cost_usd FLOAT, minutes FLOAT, redo INT, done BOOL, outcome KEYWORD, exit_code INT, ended TIMESTAMP)",
+];
+
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
   seq INT,
@@ -280,6 +290,9 @@ impl StateDb {
         for t in LEVEL_TABLES {
             db.sql(t, &Params::new()).map_err(e)?;
         }
+        for t in TIME_GUARD_TABLES {
+            db.sql(t, &Params::new()).map_err(e)?;
+        }
         db.sql(EVENTS, &Params::new()).map_err(e)?;
         for t in HEALTH_TABLES {
             db.sql(t, &Params::new()).map_err(e)?;
@@ -427,6 +440,30 @@ impl StateDb {
         Ok(())
     }
 
+    /// Opens a snapshot (a checkpoint [`StateDb::checkpoint`] made) to read
+    /// it and nothing else: no tables are made, no flusher or merger runs.
+    pub fn open_read_only(path: &Path) -> Result<StateDb> {
+        let mut opts = DbOptions::default();
+        opts.read_only = true;
+        let db = Db::open(path, opts).map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+        Ok(StateDb { db: Arc::new(db) })
+    }
+
+    /// Copies the database to `dest` (a new directory) in ChloeDB's
+    /// directory layout, hard-linking the segments `link_from` (an earlier
+    /// copy) holds unchanged; answers the commit the copy holds.
+    pub fn checkpoint(&self, dest: &Path, link_from: Option<&Path>) -> Result<u64> {
+        use chloedb::storage::{CheckpointOptions, Layout};
+        let opts = |l: Option<&Path>| CheckpointOptions { layout: Layout::Directory, link_from: l.map(Path::to_path_buf) };
+        let stats = match self.db.storage().checkpoint(dest, &opts(link_from)) {
+            // The copy it would link from does not read: a full copy.
+            Err(_) if link_from.is_some() && !dest.exists() => self.db.storage().checkpoint(dest, &opts(None)),
+            r => r,
+        }
+        .map_err(e)?;
+        Ok(if stats.source_txn > 0 { stats.source_txn } else { stats.txn })
+    }
+
     /// Writes what is in memory to the file.
     pub fn close(&self) {
         let _ = self.db.close();
@@ -487,7 +524,7 @@ mod tests {
         assert_eq!(b.preview_url.as_deref(), Some("http://127.0.0.1:5173"));
         assert_eq!((b.goal.as_deref(), b.outcome.as_deref(), b.narration.as_deref(), b.narration_ts), (Some("g1"), Some("o1"), Some("Editing src/a.rs"), Some(1_700_000_000_000)));
         // The levels' tables are there.
-        for t in ["goals", "outcomes", "questions", "rules", "deliveries", "seen"] {
+        for t in ["goals", "outcomes", "questions", "rules", "deliveries", "seen", "time_snapshots", "change_requests", "task_features"] {
             s.query(&format!("SELECT * FROM {t} LIMIT 1"), &Params::new()).unwrap();
         }
         s.close();

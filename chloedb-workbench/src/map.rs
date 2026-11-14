@@ -473,8 +473,15 @@ fn ident_line(main: &Path, rel: &str, idents: &[String]) -> Option<usize> {
 /// `GET /api/map`.
 pub fn map(sup: &Supervisor, repo: Option<&str>) -> Result<Json, ApiError> {
     let main = trail::repo_dir(repo)?;
-    let mut missing: Vec<String> = Vec::new();
     let work = territory(sup, &main);
+    map_of(sup, &main, work, None)
+}
+
+/// The map of `work`; with `until_ms`, only the pins of records made by
+/// then (Time travel, src/timetravel.rs: the work a snapshot kept).
+pub fn map_of(sup: &Supervisor, main: &Path, work: Vec<Work>, until_ms: Option<i64>) -> Result<Json, ApiError> {
+    let main = main.to_path_buf();
+    let mut missing: Vec<String> = Vec::new();
     let list = counted(&main).map_err(ApiError::internal)?;
     let tracked: HashSet<&str> = list.iter().map(|(p, _)| p.as_str()).collect();
 
@@ -485,7 +492,8 @@ pub fn map(sup: &Supervisor, repo: Option<&str>) -> Result<Json, ApiError> {
     let changed: HashSet<&str> = work.iter().flat_map(|w| w.files.iter().map(|f| f.0.as_str())).collect();
     match file_records(sup, &main) {
         Ok(recs) => {
-            for r in recs.iter().filter(|r| r.tag != "superseded") {
+            let made_by = |r: &Record| until_ms.is_none_or(|u| r.ts.as_str().and_then(chloedb::timestamp::parse).is_none_or(|t| t / 1000 <= u));
+            for r in recs.iter().filter(|r| r.tag != "superseded" && made_by(r)) {
                 for f in &r.files {
                     let (path, line) = split_line(f);
                     if !tracked.contains(path.as_str()) && !changed.contains(path.as_str()) {

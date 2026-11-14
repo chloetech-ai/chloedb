@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -2387,4 +2387,263 @@ fn ship_without_chloectx_still_says_the_blast_radius_and_drafts_the_pr() {
     assert_eq!(status, 200, "{p}");
     assert!(p["body"].as_str().unwrap().contains("ChloeCtx holds no decision"), "{p}");
     assert!(p["gh"].as_str().unwrap().contains("--head wb/solo"));
+}
+
+// Fourth build: Time and guard (SPEC.md, rows 8, 9 and 6).
+
+/// A request with another token, as an agent's hooks and MCP server send.
+fn call_as(s: &Server, method: &str, path: &str, token: &str, agent: Option<&str>, body: Option<Value>) -> (u16, Value) {
+    let url = format!("{}{path}", s.url);
+    let auth = format!("Bearer {token}");
+    let mut r = match (method, body) {
+        ("GET", _) => http().get(&url).header("authorization", &auth).call().unwrap(),
+        ("PUT", b) => http().put(&url).header("authorization", &auth).send_json(b.unwrap_or(json!({}))).unwrap(),
+        (_, b) => {
+            let req = http().post(&url).header("authorization", &auth);
+            let req = match agent {
+                Some(a) => req.header("x-workbench-agent", a),
+                None => req,
+            };
+            req.send_json(b.unwrap_or(json!({}))).unwrap()
+        }
+    };
+    let status = r.status().as_u16();
+    (status, r.body_mut().read_json().unwrap_or(Value::Null))
+}
+
+/// The token an agent was started with (its MCP config's).
+fn agent_token(s: &Server, id: &str) -> String {
+    let mcp: Value = serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(id).join("mcp.json")).unwrap()).unwrap();
+    mcp["mcpServers"]["workbench"]["env"]["CHLOEDB_WORKBENCH_TOKEN"].as_str().unwrap().to_string()
+}
+
+fn pre_bash(s: &Server, token: &str, id: &str, cmd: &str) -> Value {
+    let (status, v) = call_as(s, "POST", "/api/hook", token, Some(id), Some(json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": { "command": cmd }, "session_id": "s" })));
+    assert_eq!(status, 200, "{v}");
+    v["output"].clone()
+}
+
+#[test]
+fn guarded_commands_are_denied_proposed_and_decided_only_by_the_user() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "mig", "task": "say hi" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let cwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    s.wait(&id, "idle");
+    // Its key is its own, and opens the API.
+    let key = agent_token(&s, &id);
+    assert_ne!(key, TOKEN);
+    assert_eq!(call_as(&s, "GET", "/api/agents", &key, None, None).0, 200);
+    assert_eq!(call_as(&s, "GET", "/api/agents", "not-a-token", None, None).0, 401);
+
+    // The guarded list: the built-ins, on.
+    let (status, g) = s.get(&format!("/api/guarded?repo={}", r.display()));
+    assert_eq!(status, 200, "{g}");
+    let ids: Vec<&str> = g["rules"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["migrations", "deploy", "push-default", "rm-outside"]);
+    assert!(g["rules"][2]["detail"].as_str().unwrap().contains("main"), "{g}");
+
+    // PreToolUse: a guarded Bash command is denied, pointing to propose_change.
+    let out = pre_bash(&s, &key, &id, "npx prisma migrate deploy");
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(out["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("propose_change"), "{out}");
+    for cmd in ["git push origin main", "rm -rf /srv/elsewhere", "cd / && rm -r srv", "./scripts/deploy.sh"] {
+        assert_eq!(pre_bash(&s, &key, &id, cmd)["hookSpecificOutput"]["permissionDecision"], "deny", "{cmd}");
+    }
+    assert_eq!(pre_bash(&s, &key, &id, "cargo test && rm -rf target"), Value::Null);
+    assert!(s.events(&id).iter().any(|e| e["kind"] == "guarded" && e["summary"].as_str().unwrap().contains("prisma migrate deploy")));
+
+    // The list is the user's to change: a prefix added, migrations off.
+    let mut rules = g["rules"].as_array().unwrap().clone();
+    rules[0]["on"] = json!(false);
+    rules.push(json!({ "kind": "prefix", "label": "make seed", "on": true }));
+    assert_eq!(call_as(&s, "PUT", "/api/guarded", &key, None, Some(json!({ "repo": r, "rules": rules }))).0, 403);
+    let (status, g2) = s.put("/api/guarded", json!({ "repo": r, "rules": rules }));
+    assert_eq!(status, 200, "{g2}");
+    assert_eq!(g2["rules"][0]["on"], false);
+    assert_eq!(g2["rules"][4]["label"], "make seed");
+    assert_eq!(pre_bash(&s, &key, &id, "npx prisma migrate deploy"), Value::Null);
+    assert_eq!(pre_bash(&s, &key, &id, "make seed")["hookSpecificOutput"]["permissionDecision"], "deny");
+    s.put("/api/guarded", json!({ "repo": r, "rules": g["rules"] }));
+
+    // A proposal, from the agent's key: a row with its rule and risk.
+    let (status, v) = call_as(&s, "POST", "/api/changes", &key, None, Some(json!({ "command": "npx prisma migrate deploy", "why": "the saved_at column" })));
+    assert_eq!(status, 201, "{v}");
+    let c1 = v["request"].clone();
+    assert_eq!((c1["state"].as_str(), c1["rule"].as_str(), c1["risk"].as_str(), c1["agent"].as_str()), (Some("open"), Some("migrations"), Some("medium"), Some(id.as_str())));
+    assert_eq!(c1["rule_label"], "Database migrations");
+    assert_eq!(c1["agent_name"], "mig");
+
+    // Only the user declines; the agent is told why.
+    let c1id = c1["id"].as_str().unwrap();
+    assert_eq!(call_as(&s, "POST", &format!("/api/changes/{c1id}/decline"), &key, None, Some(json!({}))).0, 403);
+    let (status, v) = s.post(&format!("/api/changes/{c1id}/decline"), json!({ "reason": "not before the backup" }));
+    assert_eq!(status, 200, "{v}");
+    // It is working (its hooks said so): told at its next hook, or typed
+    // when its turn ends.
+    assert_eq!((v["request"]["state"].as_str(), v["request"]["told"].as_str()), (Some("declined"), Some("queued")));
+    call_as(&s, "POST", "/api/hook", &key, Some(&id), Some(json!({ "hook_event_name": "Stop", "session_id": "s" })));
+    let screen = ws_read_until(&s, &id, "not before the backup", &[]);
+    assert!(screen.contains("declined your change request"), "{screen}");
+    s.wait(&id, "idle");
+
+    // Approve runs it in the agent's worktree, keeps its output and tells it.
+    let (status, v) = call_as(&s, "POST", "/api/changes", &key, None, Some(json!({ "command": "echo applied | tee applied.txt", "why": "a test" })));
+    assert_eq!(status, 201, "{v}");
+    let c2id = v["request"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["request"]["risk"], "low");
+    let (status, v) = call_as(&s, "POST", &format!("/api/changes/{c2id}/approve"), &key, None, Some(json!({})));
+    assert_eq!(status, 403, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("only the user"), "{v}");
+    let (status, v) = s.post(&format!("/api/changes/{c2id}/approve"), json!({}));
+    assert_eq!(status, 200, "{v}");
+    let c2 = &v["request"];
+    assert_eq!((c2["state"].as_str(), c2["exit_code"].as_i64(), c2["decided_by"].as_str()), (Some("done"), Some(0), Some("user")), "{c2}");
+    assert_eq!(c2["output"].as_str().unwrap().trim(), "applied");
+    assert_eq!(std::fs::read_to_string(cwd.join("applied.txt")).unwrap(), "applied\n");
+    assert_eq!(c2["told"], "typed");
+    ws_read_until(&s, &id, "succeeded (exit 0)", &[]);
+    assert_eq!(s.post(&format!("/api/changes/{c2id}/approve"), json!({})).0, 409);
+
+    // A failing one fails, and says so.
+    let (_, v) = call_as(&s, "POST", "/api/changes", &key, None, Some(json!({ "command": "echo nope >&2; exit 4" })));
+    let c3id = v["request"]["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let (_, v) = s.post(&format!("/api/changes/{c3id}/approve"), json!({}));
+    assert_eq!((v["request"]["state"].as_str(), v["request"]["exit_code"].as_i64()), (Some("failed"), Some(4)), "{v}");
+    assert_eq!(v["request"]["output"].as_str().unwrap().trim(), "nope");
+
+    // The list, newest first; by state.
+    let (_, l) = s.get(&format!("/api/changes?repo={}", r.display()));
+    let states: Vec<&str> = l["requests"].as_array().unwrap().iter().map(|x| x["state"].as_str().unwrap()).collect();
+    assert_eq!(states, ["failed", "done", "declined"]);
+    let (_, l) = s.get("/api/changes?state=declined");
+    assert_eq!(l["requests"].as_array().unwrap().len(), 1);
+    // A request comes from an agent.
+    assert_eq!(s.post("/api/changes", json!({ "command": "x" })).0, 400);
+}
+
+#[test]
+fn time_travel_answers_mission_and_map_as_they_were() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let (status, t) = s.get(&format!("/api/time?repo={}", r.display()));
+    assert_eq!(status, 200, "{t}");
+    assert_eq!((t["keep_ms"].as_i64(), t["every_ms"].as_i64()), (Some(86_400_000), Some(600_000)));
+    assert_eq!(t["snapshots"], json!([]));
+    assert_eq!(s.get(&format!("/api/time?repo={}&at={}", r.display(), t["now_ms"])).1["available"], false);
+
+    // A goal set is a snapshot.
+    let (status, v) = s.post("/api/goals", json!({ "repo": r, "text": "Make refunds idempotent", "worktree": false }));
+    assert_eq!(status, 201, "{v}");
+    let gid = v["goal"]["id"].as_str().unwrap().to_string();
+    let t = s.get_until(&format!("/api/time?repo={}", r.display()), "a goal snapshot", |t| t["snapshots"].as_array().is_some_and(|l| l.iter().any(|k| k["reason"] == "goal")));
+    let k1 = t["snapshots"].as_array().unwrap().iter().find(|k| k["reason"] == "goal").unwrap().clone();
+    assert_eq!(k1["detail"], "goal set: Make refunds idempotent");
+    assert!(s.data.join("snapshots").join(k1["id"].as_str().unwrap()).is_dir());
+
+    // An agent's uncommitted work, kept by a manual snapshot.
+    let w = s.spawn(json!({ "repo": r, "name": "notes", "task": "WRITE notes.txt hello" }));
+    let wid = w["id"].as_str().unwrap().to_string();
+    s.wait(&wid, "idle");
+    let wcwd = PathBuf::from(w["cwd"].as_str().unwrap());
+    let head = git(&wcwd, &["rev-parse", "HEAD"]);
+    // Events per minute, for the scrubber.
+    let t = s.get(&format!("/api/time?repo={}", r.display())).1;
+    assert!(t["events"].as_array().unwrap().iter().map(|e| e[1].as_i64().unwrap()).sum::<i64>() > 0, "{t}");
+    let (status, v) = s.post("/api/time/snapshot", json!({}));
+    assert_eq!(status, 201, "{v}");
+    let k2 = v["snapshot"].clone();
+    assert_eq!(k2["reason"], "manual");
+    let at2 = k2["ts_ms"].as_i64().unwrap();
+    // Then the goal is done and the file is gone.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(s.patch(&format!("/api/goals/{gid}"), json!({ "state": "done" })).0, 200);
+    std::fs::remove_file(wcwd.join("notes.txt")).unwrap();
+    s.get_until(&format!("/api/time?repo={}", r.display()), "a second goal snapshot", |t| t["snapshots"].as_array().is_some_and(|l| l.iter().any(|k| k["detail"] == "goal done: Make refunds idempotent")));
+    assert_eq!(s.get(&format!("/api/goals/{gid}")).1["goal"]["state"], "done");
+
+    // As of the manual snapshot: the goal was active, the file was there.
+    let (status, p) = s.get(&format!("/api/time?repo={}&at={at2}", r.display()));
+    assert_eq!(status, 200, "{p}");
+    assert_eq!(p["available"], true);
+    assert_eq!(p["snapshot"]["id"], k2["id"]);
+    assert_eq!(p["distance_ms"], 0);
+    assert_eq!(p["mission"]["goals"][0]["id"], json!(gid));
+    assert_eq!(p["mission"]["goals"][0]["state"], "active");
+    assert_eq!(p["mission"]["detail"]["goal"]["state"], "active");
+    assert_eq!(p["mission"]["details"][&gid]["goal"]["text"], "Make refunds idempotent");
+    assert!(p["agents"].as_array().unwrap().iter().any(|a| a["id"] == json!(wid)));
+    let hd = p["heads"].as_array().unwrap().iter().find(|h| h["agent"] == json!(wid)).unwrap_or_else(|| panic!("{p}")).clone();
+    assert_eq!((hd["head"].as_str(), hd["dirty"].as_bool(), hd["files"].as_i64()), (Some(head.as_str()), Some(true), Some(1)), "{hd}");
+    // Its uncommitted changes, as a commit on its HEAD.
+    let tree = hd["tree"].as_str().unwrap();
+    assert_ne!(tree, head);
+    assert_eq!(git(&wcwd, &["show", &format!("{tree}:notes.txt")]), "hello");
+    assert_eq!(git(&wcwd, &["rev-parse", &format!("{tree}^")]), head);
+    let m = &p["map"];
+    let notes = m["agents"].as_array().unwrap().iter().find(|x| x["agent"]["id"] == json!(wid)).unwrap();
+    assert_eq!(notes["files"][0]["path"], "notes.txt");
+    // Live, the file is gone.
+    let (_, live) = s.get(&format!("/api/map?repo={}", r.display()));
+    let now_files = live["agents"].as_array().unwrap().iter().find(|x| x["agent"]["id"] == json!(wid)).unwrap()["files"].clone();
+    assert_eq!(now_files, json!([]));
+    // Long before any snapshot: the nearest, the first.
+    let (_, p0) = s.get(&format!("/api/time?repo={}&at={}", r.display(), k1["ts_ms"].as_i64().unwrap() - 3_600_000));
+    assert_eq!(p0["snapshot"]["id"], k1["id"]);
+    assert_eq!(s.get(&format!("/api/time?repo={}&at=yesterday", r.display())).0, 400);
+}
+
+#[test]
+fn routing_suggests_the_model_similar_tasks_did_best_on() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // Past tasks: five like it on haiku, finished; one other on opus.
+    let tasks = [
+        ("fix the flaky cart sync test", "haiku"),
+        ("fix the flaky cart total test", "haiku"),
+        ("fix flaky cart sync retry test", "haiku"),
+        ("fix the cart sync test timeout", "haiku"),
+        ("make the flaky cart test pass", "haiku"),
+        ("design the refunds service schema", "opus"),
+    ];
+    for (i, (task, model)) in tasks.iter().enumerate() {
+        let a = s.spawn(json!({ "repo": r, "name": format!("past-{i}"), "task": task, "model": model, "worktree": false }));
+        let id = a["id"].as_str().unwrap().to_string();
+        s.wait(&id, "idle");
+        s.post(&format!("/api/agents/{id}/input"), json!({ "text": "exit" }));
+        s.wait(&id, "exited");
+    }
+    let q = |task: &str| format!("/api/route?repo={}&task={}", r.display(), task.replace(' ', "%20"));
+    let v = s.get_until(&q("fix the flaky cart sync test again"), "five similar tasks", |v| v["similar"].as_u64().unwrap_or(0) >= 5);
+    assert_eq!(v["apply"], true, "{v}");
+    assert_eq!(v["suggestion"]["model"], "haiku", "{v}");
+    assert_eq!((v["suggestion"]["n"].as_u64(), v["suggestion"]["done"].as_u64()), (Some(5), Some(5)), "{v}");
+    assert!(v["suggestion"]["avg_tokens"].as_i64().unwrap() > 0, "{v}");
+    assert!(v["why"].as_str().unwrap().contains("Haiku"), "{v}");
+    assert_eq!(v["examples"][0]["model"], "haiku");
+    assert!(v["examples"][0]["task"].as_str().unwrap().contains("cart"));
+    // Too few words, another repository's tasks, nothing alike.
+    let (_, few) = s.get(&q("fix it"));
+    assert_eq!((few["similar"].as_u64(), few["suggestion"].is_null()), (Some(0), true));
+    let (_d2, r2) = repo();
+    let (_, other) = s.get(&format!("/api/route?repo={}&task=fix%20the%20flaky%20cart%20sync%20test", r2.display()));
+    assert_eq!((other["similar"].as_u64(), other["apply"].as_bool()), (Some(0), Some(false)), "{other}");
+    let (_, unlike) = s.get(&q("write the quarterly billing report"));
+    assert_eq!(unlike["apply"], false, "{unlike}");
+
+    // spawn_agent without a model takes the suggestion; with one, its own.
+    let lead = s.spawn(json!({ "repo": r, "name": "lead", "worktree": false }));
+    let mut m = Mcp::start(&s, lead["id"].as_str().unwrap());
+    m.send("initialize", json!({}));
+    let (text, err) = m.tool("spawn_agent", json!({ "task": "fix the flaky cart sync test once more", "name": "routed", "worktree": false }));
+    assert!(!err, "{text}");
+    let routed = s.get("/api/agents").1["agents"].as_array().unwrap().iter().find(|a| a["name"] == "routed").unwrap().clone();
+    assert_eq!(routed["model"], "haiku");
+    let (text, err) = m.tool("spawn_agent", json!({ "task": "write the quarterly billing report", "name": "plain", "worktree": false }));
+    assert!(!err, "{text}");
+    let plain = s.get("/api/agents").1["agents"].as_array().unwrap().iter().find(|a| a["name"] == "plain").unwrap().clone();
+    assert_eq!(plain["model"], Value::Null);
 }

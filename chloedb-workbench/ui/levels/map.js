@@ -49,7 +49,10 @@ const parentOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 const under = (p, dir) => !dir || p === dir || p.startsWith(dir + "/");
 const nameOf = (a) => (a && (a.name || a.id)) || "?";
 
-export function mount(root, ctx) {
+// Time travel: the scrubber above the screen (ui/levels/timebar.js).
+import { timeTravel } from "./timebar.js";
+export const mount = timeTravel(mountMap, { screen: "map" });
+function mountMap(root, ctx) {
   const S = { data: null, err: null, path: "", sel: null, focus: null, sent: new Map(), busy: new Set() };
   const I = { nodes: new Map(), changed: new Map(), read: new Map(), coll: new Map(), pins: new Map(), agents: new Map(), agg: new Map() };
   const tip = tooltip();

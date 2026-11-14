@@ -45,10 +45,10 @@ pub struct Question {
     pub answered: Option<i64>,
 }
 
-const Q_COLS: &str = "id, agent, outcome, repo, kind, text, context, options, recommended, precedent, state, answer, answered_by, rule, created, answered";
+pub(crate) const Q_COLS: &str = "id, agent, outcome, repo, kind, text, context, options, recommended, precedent, state, answer, answered_by, rule, created, answered";
 
 impl Question {
-    fn of(r: &[Value]) -> Question {
+    pub(crate) fn of(r: &[Value]) -> Question {
         let js = |v: &Value| get_str(v).and_then(|s| serde_json::from_str::<Json>(&s).ok());
         Question {
             id: get_str(&r[0]).unwrap_or_default(),
@@ -124,10 +124,10 @@ pub struct Rule {
     pub created: i64,
 }
 
-const R_COLS: &str = "id, repo, text, question, ctx_id, active, created";
+pub(crate) const R_COLS: &str = "id, repo, text, question, ctx_id, active, created";
 
 impl Rule {
-    fn of(r: &[Value]) -> Rule {
+    pub(crate) fn of(r: &[Value]) -> Rule {
         Rule {
             id: get_str(&r[0]).unwrap_or_default(),
             repo: get_str(&r[1]).unwrap_or_default(),

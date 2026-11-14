@@ -145,6 +145,19 @@ fn tools() -> Value {
             "name": "prepare_pr",
             "description": "Draft the pull request for your branch: packs a capsule of the decisions behind it (chloectx pack) and writes the body (summary, decisions with their ids, blast radius, tests run, how to ask the capsule) to a file. It does not push or open the pull request: it answers the body and the gh command for the user.",
             "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "The agent; you when left out." }, "capsule": { "type": "boolean", "description": "Pack the capsule first (default true)." } } }
+        },
+        {
+            "name": "propose_change",
+            "description": "Propose a command Workbench guards in this repository (a migration, a deploy script, a push to the default branch, a recursive rm outside your worktree, or one on its guarded list), which you may not run yourself: the user sees it in Workbench with your diff and approves or declines it. On approval Workbench runs it in your worktree and tells you its exit code and output; on decline, why. Carry on with what does not need it meanwhile.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "The command, as you would run it in your worktree." },
+                    "why": { "type": "string", "description": "Why it is needed now, and what it changes, in a sentence or two the user can decide on." },
+                    "risk": { "type": "string", "enum": ["low", "medium", "high"], "description": "How risky you think it is (Workbench judges too)." }
+                },
+                "required": ["command", "why"]
+            }
         }
     ])
 }
@@ -274,6 +287,17 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             }
             if !c.env.agent.is_empty() {
                 body["parent"] = json!(c.env.agent);
+            }
+            // Without a model: the one tasks like this did best on, once 5
+            // past tasks are similar (src/routing.rs); else the default.
+            if body.get("model").is_none() {
+                if let Ok(r) = c.get(&format!("/api/route?repo={}&task={}", enc(&repo), enc(task))) {
+                    if r["apply"] == true {
+                        if let Some(m) = r["suggestion"]["model"].as_str().filter(|m| *m != "default") {
+                            body["model"] = json!(m);
+                        }
+                    }
+                }
             }
             let v = c.call("POST", "/api/agents", Some(body), Duration::from_secs(60))?;
             let a = &v["agent"];
@@ -424,6 +448,27 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
                 s(&p, "push"),
                 s(&p, "gh"),
                 s(&p, "body")
+            ))
+        }
+        "propose_change" => {
+            if c.env.agent.is_empty() {
+                return Err("propose_change is for an agent of Workbench: CHLOEDB_WORKBENCH_AGENT is not set".into());
+            }
+            let command = s(args, "command");
+            if command.trim().is_empty() {
+                return Err("command is required".into());
+            }
+            let mut body = json!({ "command": command, "why": s(args, "why") });
+            if !s(args, "risk").is_empty() {
+                body["risk"] = json!(s(args, "risk"));
+            }
+            let v = c.call("POST", "/api/changes", Some(body), Duration::from_secs(30))?;
+            let r = &v["request"];
+            Ok(format!(
+                "Proposed as change request {} ({} risk{}). The user sees it in Workbench and approves or declines it; you will be told the result here, with the command's output. Carry on with what does not depend on it.",
+                s(r, "id"),
+                s(r, "risk"),
+                if s(r, "rule_label").is_empty() { String::new() } else { format!(", guarded by: {}", s(r, "rule_label")) }
             ))
         }
         other => Err(format!("no tool {other}")),

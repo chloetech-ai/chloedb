@@ -31,10 +31,10 @@ pub struct Goal {
     pub done: Option<i64>,
 }
 
-const GOAL_COLS: &str = "id, repo, text, state, lead, created, done";
+pub(crate) const GOAL_COLS: &str = "id, repo, text, state, lead, created, done";
 
 impl Goal {
-    fn of(r: &[Value]) -> Goal {
+    pub(crate) fn of(r: &[Value]) -> Goal {
         Goal {
             id: get_str(&r[0]).unwrap_or_default(),
             repo: get_str(&r[1]).unwrap_or_default(),
@@ -88,10 +88,10 @@ pub struct Outcome {
     pub updated: i64,
 }
 
-const OUTCOME_COLS: &str = "id, goal, title, detail, state, agent, ord, after, progress, created, updated";
+pub(crate) const OUTCOME_COLS: &str = "id, goal, title, detail, state, agent, ord, after, progress, created, updated";
 
 impl Outcome {
-    fn of(r: &[Value]) -> Outcome {
+    pub(crate) fn of(r: &[Value]) -> Outcome {
         Outcome {
             id: get_str(&r[0]).unwrap_or_default(),
             goal: get_str(&r[1]).unwrap_or_default(),
