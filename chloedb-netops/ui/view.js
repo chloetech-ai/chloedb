@@ -517,14 +517,17 @@ function logLines(app, lines, mark) {
   return h("div", { class: "no-log" }, lines.map((l) => h("div", { class: "ln s" + (l.sev ?? 6) }, h("span", { class: "muted", title: l.ts }, C.when(T(l.ts))), h("span", {}, l.device ? h("a", { class: "no-link", onclick: () => deviceDrawer(app, l.device) }, l.device) : (l.severity || "")), h("span", { class: "m" }, hl(l.message)))));
 }
 
-/** An agent's steps: what it asked, what it found, and the SQL on a click. */
-function steps(app, list) {
+/** An agent's steps: what it asked, what it found, and the SQL on a click.
+ * `open`, when given, is a Set of the steps shown open, kept by the caller so
+ * that a step stays open when the list is drawn again. */
+function steps(app, list, open) {
   const { h, C } = app;
   if (!list.length) return C.empty("agent", "No steps kept");
   return h("div", {}, list.map((st) => {
     const code = st.sql_text ? C.sqlBlock(st.sql_text) : null;
-    if (code) code.style.display = "none";
-    const top = h("div", { class: "top", title: st.sql_text ? "Show the SQL" : null, onclick: () => { if (code) code.style.display = code.style.display === "none" ? "" : "none"; } },
+    const key = `${st.n}:${st.tool}:${st.title}`;
+    if (code && !open?.has(key)) code.style.display = "none";
+    const top = h("div", { class: "top", title: st.sql_text ? "Show the SQL" : null, onclick: () => { if (!code) return; const show = code.style.display === "none"; code.style.display = show ? "" : "none"; if (open) { if (show) open.add(key); else open.delete(key); } } },
       h("span", { class: "n" }, st.n), h("span", { class: "no-tool " + st.tool }, st.tool === "reason" ? "think" : st.tool), h("b", {}, st.title),
       h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, st.tool === "reason" ? "" : `${C.fmt.n(st.row_count)} rows · ${C.fmt.ms(st.ms)}`));
     return h("div", { class: "no-step" }, top, st.detail ? h("div", { class: "find" }, st.detail) : null, code);
@@ -715,6 +718,16 @@ function mapLegend(app, mode) {
 
 /** replaceChildren that takes nested lists and skips what is absent. */
 function put(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false)); }
+
+/** Draw into el only when what it shows changed: a page that refreshes keeps
+ * what was opened, scrolled or hovered in a piece whose rows are the same. */
+function putIf(el, rows, build) {
+  const sig = JSON.stringify(rows ?? null);
+  if (el._sig === sig) return false;
+  el._sig = sig;
+  put(el, build());
+  return true;
+}
 
 
 /** Fetch a path now and every `ms`; draw(answer, first). Returns its stop. */
@@ -921,6 +934,10 @@ function incidentRoom(body, app, path) {
   const map = topoMap(app, { mode: "live" });
   const causeEl = h("div"), actionsEl = h("div"), chartsEl = h("div", { class: "no-mini" }), stepsEl = h("div"), rcptEl = h("div"), logsEl = h("div");
   const replayEl = h("div"), keyEl = h("div");
+  // The right column, a holder per card, each drawn again only when its rows change.
+  const R = Object.fromEntries(["timeline", "alerts", "blast", "change", "runbook", "similar", "judgments"].map((k) => [k, h("div")]));
+  right.append(...Object.values(R));
+  const openSteps = new Set();
   const mapCard = C.card({ title: "Where it is", sub: "the devices the incident touches, their neighbours dimmed", body: [replayEl, map, mapLegend(app, "live")] });
   const stepsSub = h("span", { class: "sub" });
   const board = boardCard(app, id);
@@ -1018,7 +1035,7 @@ function incidentRoom(body, app, path) {
     const rc = j.runs.filter((r) => r.agent === "root-cause").pop();
     const last = j.steps[j.steps.length - 1];
     const because = last && last.tool === "reason" && last.detail.includes("Because:") ? last.detail.split("Because:")[1].split(";").map((x) => x.trim().replace(/\.$/, "")).filter(Boolean) : [];
-    put(causeEl, i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
+    putIf(causeEl, [i.root_cause, i.confidence, because, rc], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
       h("div", { class: "no-conf", style: { marginTop: "10px" } }, h("div", { class: "meter" }, h("i", { style: { width: i.confidence * 100 + "%", background: i.confidence >= 0.8 ? "var(--good)" : i.confidence >= 0.5 ? "var(--warn)" : "var(--crit)" } })), h("b", {}, pct(i.confidence) + " confident")),
       because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
       rc ? runFacts(app, rc) : null)
@@ -1028,7 +1045,7 @@ function incidentRoom(body, app, path) {
     else if (!keyEl.firstChild) put(keyEl, h("button", { class: "btn xs", style: { marginTop: "10px" }, title: "The simulator knows what it broke. The agent is never shown this.", onclick: () => checkKey(i) }, C.icon("eye"), "Check against the simulator's answer key"));
     stepsSub.textContent = rc ? `${rc.queries ?? j.steps.length - 1} queries, ${C.fmt.ms(rc.ms)} in the database. Click a step for its SQL.` : "";
     // Actions.
-    put(actionsEl, j.actions.length ? j.actions.map((a) => actionCard(app, a, () => stop.run())) : C.empty("bolt", "No actions proposed"));
+    putIf(actionsEl, j.actions, () => j.actions.length ? j.actions.map((a) => actionCard(app, a, () => stop.run())) : C.empty("bolt", "No actions proposed"));
     focusMap();
     // Charts: rebuilt only when the set of series changes.
     const mark = () => [{ t: T(i.started), label: "detected" }, i.resolved ? { t: T(i.resolved), label: "resolved" } : null].filter(Boolean);
@@ -1052,24 +1069,24 @@ function incidentRoom(body, app, path) {
       for (const r of rows) { const t = T(r.ts); const p = at.get(t) || { t }; p[r[c.key]] = c.get(r); at.set(t, p); }
       c.ch.update([...at.values()].sort((a, b) => a.t - b.t));
     }
-    put(stepsEl, steps(app, j.steps));
-    put(rcptEl, receipt(app, j.receipts));
-    put(logsEl, logLines(app, j.logs));
+    // What was opened or scrolled stays so: a piece is drawn again only when its rows change.
+    putIf(stepsEl, j.steps, () => steps(app, j.steps, openSteps));
+    putIf(rcptEl, j.receipts, () => receipt(app, j.receipts));
+    putIf(logsEl, j.logs, () => logLines(app, j.logs));
     // The right column.
-    put(right, 
-      C.card({ title: "Timeline", body: timeline(app, j.timeline) }),
-      C.card({ title: "Alerts", sub: `${j.alerts.length} grouped into this incident`, body: h("ul", { class: "no-list" }, j.alerts.map((a) => h("li", {}, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, a.rule_name), sevPill(app, a.severity)),
-        h("div", { class: "small muted" }, h("a", { class: "no-link", onclick: () => (a.entity_kind === "link" ? linkDrawer(app, a.entity) : a.entity_kind === "device" ? deviceDrawer(app, a.entity) : a.entity_kind === "service" ? serviceDrawer(app, a.entity) : null) }, a.entity), ` · ${C.fmt.n(a.reading)} ${a.unit} against ${C.fmt.n(a.threshold)} · ${a.status === "firing" ? "firing since " + hhmm(T(a.started)) : "cleared " + hhmm(T(a.ended))}`)))) }),
-      C.card({ title: "Blast radius", sub: "one graph walk from the alerting devices", body: [
+    putIf(R.timeline, j.timeline, () => C.card({ title: "Timeline", body: timeline(app, j.timeline) }));
+    putIf(R.alerts, j.alerts, () => C.card({ title: "Alerts", sub: `${j.alerts.length} grouped into this incident`, body: h("ul", { class: "no-list" }, j.alerts.map((a) => h("li", {}, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, a.rule_name), sevPill(app, a.severity)),
+        h("div", { class: "small muted" }, h("a", { class: "no-link", onclick: () => (a.entity_kind === "link" ? linkDrawer(app, a.entity) : a.entity_kind === "device" ? deviceDrawer(app, a.entity) : a.entity_kind === "service" ? serviceDrawer(app, a.entity) : null) }, a.entity), ` · ${C.fmt.n(a.reading)} ${a.unit} against ${C.fmt.n(a.threshold)} · ${a.status === "firing" ? "firing since " + hhmm(T(a.started)) : "cleared " + hhmm(T(a.ended))}`)))) }));
+    putIf(R.blast, [j.blast, j.customers], () => C.card({ title: "Blast radius", sub: "one graph walk from the alerting devices", body: [
         h("div", { class: "no-sec" }, "Services that ride on them"), h("ul", { class: "no-list" }, j.blast.map((s) => h("li", { class: "row between nw" }, h("a", { class: "no-link", onclick: () => serviceDrawer(app, s.id) }, s.name, h("span", { class: "muted small" }, ` · tier ${s.tier} · ${s.customers} customers`)), h("span", { class: "num small" }, money(s.revenue_per_min) + "/min")))),
-        j.customers.length ? [h("div", { class: "no-sec" }, "Customers attached there"), h("ul", { class: "no-list" }, j.customers.slice(0, 6).map((c) => h("li", { class: "row between nw" }, h("span", { class: "ellipsis" }, c.name, h("span", { class: "muted small" }, ` · ${c.tier} · ${c.device}`)), h("span", { class: "num small" }, money(c.mrr) + "/mo"))))] : null] }),
-      j.change ? C.card({ title: "The change", sub: j.change.id, body: [h("b", {}, j.change.title), h("div", { class: "small dim", style: { margin: "4px 0 8px" } }, j.change.description),
-        kv(app, [["Owner", j.change.owner], ["Approved by", j.change.approver], ["Executed", C.when(T(j.change.executed))], ["Risk declared", j.change.risk], ["Roll back with", j.change.rollback_plan]]), h("div", { class: "no-sec" }, "What it changed"), diffBlock(app, j.change.diff)] }) : null,
-      j.runbook ? C.card({ title: "Runbook", sub: `${j.runbook.id} · closed ${j.runbook.wins} of the ${j.runbook.uses} incidents it was used on`, body: [h("b", {}, j.runbook.title), h("div", { class: "small", style: { whiteSpace: "pre-wrap", marginTop: "6px", color: "var(--text-2)", lineHeight: 1.5 } }, j.runbook.body)],
-        foot: h("button", { class: "btn sm", onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), "It worked") }) : null,
-      C.card({ title: "It looks like", sub: "past incidents, by words and meaning", body: j.similar.length ? h("ul", { class: "no-list" }, j.similar.map((s) => h("li", {}, h("a", { class: "no-link", href: app.ctx.href("incidents", s.id) }, s.title),
-        h("div", { class: "small muted" }, `${s.id} · ${KIND[s.category] || s.category} · ${C.fmt.ago(T(s.started))} · resolved in ${mins(s.mttr_min)}${s.runbook ? " with " + s.runbook : ""}`)))) : C.empty("search", "Nothing similar") }),
-      j.judgments.length ? C.card({ title: "Judgments", sub: "who said which runbook worked", body: h("ul", { class: "no-list" }, j.judgments.map((g) => h("li", { class: "small" }, `${g.judge || g.who || "Someone"}: ${g.runbook || g.doc_id} graded ${g.grade}`))) }) : null);
+        j.customers.length ? [h("div", { class: "no-sec" }, "Customers attached there"), h("ul", { class: "no-list" }, j.customers.slice(0, 6).map((c) => h("li", { class: "row between nw" }, h("span", { class: "ellipsis" }, c.name, h("span", { class: "muted small" }, ` · ${c.tier} · ${c.device}`)), h("span", { class: "num small" }, money(c.mrr) + "/mo"))))] : null] }));
+    putIf(R.change, j.change, () => j.change ? C.card({ title: "The change", sub: j.change.id, body: [h("b", {}, j.change.title), h("div", { class: "small dim", style: { margin: "4px 0 8px" } }, j.change.description),
+        kv(app, [["Owner", j.change.owner], ["Approved by", j.change.approver], ["Executed", C.when(T(j.change.executed))], ["Risk declared", j.change.risk], ["Roll back with", j.change.rollback_plan]]), h("div", { class: "no-sec" }, "What it changed"), diffBlock(app, j.change.diff)] }) : null);
+    putIf(R.runbook, [j.runbook, j.similar, i.resolved], () => j.runbook ? C.card({ title: "Runbook", sub: `${j.runbook.id} · closed ${j.runbook.wins} of the ${j.runbook.uses} incidents it was used on`, body: [h("b", {}, j.runbook.title), h("div", { class: "small", style: { whiteSpace: "pre-wrap", marginTop: "6px", color: "var(--text-2)", lineHeight: 1.5 } }, j.runbook.body)],
+        foot: h("button", { class: "btn sm", onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), "It worked") }) : null);
+    putIf(R.similar, j.similar, () => C.card({ title: "It looks like", sub: "past incidents, by words and meaning", body: j.similar.length ? h("ul", { class: "no-list" }, j.similar.map((s) => h("li", {}, h("a", { class: "no-link", href: app.ctx.href("incidents", s.id) }, s.title),
+        h("div", { class: "small muted" }, `${s.id} · ${KIND[s.category] || s.category} · ${C.fmt.ago(T(s.started))} · resolved in ${mins(s.mttr_min)}${s.runbook ? " with " + s.runbook : ""}`)))) : C.empty("search", "Nothing similar") }));
+    putIf(R.judgments, j.judgments, () => j.judgments.length ? C.card({ title: "Judgments", sub: "who said which runbook worked", body: h("ul", { class: "no-list" }, j.judgments.map((g) => h("li", { class: "small" }, `${g.judge || g.who || "Someone"}: ${g.runbook || g.doc_id} graded ${g.grade}`))) }) : null);
   }, 12000);
   return () => { stop(); stopTopo(); stopReplay(); board.stop(); };
 }
