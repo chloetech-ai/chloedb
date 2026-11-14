@@ -1162,7 +1162,17 @@ window.__sa_numbers = (() => {
       const top = [...quiet, ...(head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [])];
       if (!groups.length) return top;
       const cells = groups.map((g, k) => box(`lay-group lay-g${k}`, g));
-      if (layout === 'split' && cells.length > 1) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
+      // A wide table (four columns or more) never shares a row: in a column
+      // beside another part it is cut off at its right while the other
+      // leaves a hole under it. It takes the page's width, the narrower
+      // parts the split above it.
+      const wide = (c) => [...c.querySelectorAll('table')].some((t) => ((t.tHead && t.tHead.rows[0]) || t.rows[0])?.cells.length >= 4);
+      if (layout === 'split' && cells.length > 1) {
+        const narrow = cells.filter((c) => !wide(c));
+        if (narrow.length === cells.length) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
+        const rest = cells.filter((c) => wide(c));
+        return [...top, ...(narrow.length > 1 ? [box('lay-split', [box('lay-main', [narrow[0]]), box('lay-aside', narrow.slice(1))])] : narrow), ...rest];
+      }
       if (layout === 'tool') return [...top, box('lay-main lay-panel', [cells[0]]), ...cells.slice(1)];
       if (layout === 'dashboard') return [...top, box('lay-grid', cells)];
       return [...top, ...cells];
