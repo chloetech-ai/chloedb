@@ -741,3 +741,14 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
   .row:has(> :is(h1, h2)) > :is(h1, h2) { flex: 1 1 100%; }
   .row:has(> :is(h1, h2)) > button.right, .row:has(> :is(h1, h2)) > button { margin-left: 0; }
 }
+/* numbers that start a group of a grid take the whole row, as a row of cards */
+.lay-grid > .lay-group:has(> .kpis:first-child) { grid-column: 1 / -1; background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+/* a tool's title row keeps its title left and its button right */
+.layout-tool > .lay-head:has(> .row) { align-items: stretch; text-align: left; }
+.layout-tool > .lay-head > .row { justify-content: space-between; }
+/* the dashboard grid wraps like words: a card alone on its row takes the row,
+   tables and numbers take a row of their own */
+.lay-grid { display: flex; flex-wrap: wrap; align-items: flex-start; }
+.lay-grid > .lay-group { flex: 1 1 min(100%, 380px); }
+.lay-grid > .lay-group:is(:has(table), :has(> .kpis:first-child), .lay-actions) { flex-basis: 100%; }
+.lay-grid > .lay-group:has(> .card:only-child) > .card { flex: 1; }

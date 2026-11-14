@@ -13,7 +13,7 @@ function component(props) {
 .sa-donut-mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none}
 .sa-donut-total{font-weight:650;font-size:20px;letter-spacing:-.02em}
 .sa-donut-sub{font-size:11.5px;color:var(--muted)}
-.sa-donut-legend{display:flex;flex-direction:column;gap:5px;min-width:140px;flex:1;font-size:13px}
+.sa-donut-legend{display:flex;flex-direction:column;gap:5px;min-width:min(100%,220px);max-width:440px;flex:1;font-size:13px}
 .sa-donut-legend .it{display:grid;grid-template-columns:10px 1fr auto auto;gap:8px;align-items:center;background:none;border:0;padding:0;box-shadow:none;text-align:left;font:inherit;color:inherit}
 .sa-donut-legend button.it{cursor:pointer}
 .sa-donut-legend i{width:10px;height:10px;border-radius:3px}
