@@ -133,6 +133,8 @@ FROM daily;
 - **`time_bucket(width, t)`** is another name for `date_bin(width, t)`, as TimescaleDB spells it: `time_bucket('5 minutes', ts)` gives 03:00, 03:05, 03:10. The width can also be an `INTERVAL '5 minutes'`.
 - **`strftime(format, t)`** is text, written as SQLite's `strftime` writes it: `%Y` year, `%m` month 01-12, `%d` day 01-31, `%H` hour 00-23, `%M` minute, `%S` second, `%f` seconds with milliseconds (`SS.SSS`), `%j` day of the year 001-366, `%w` day of the week 0-6 from Sunday, `%u` 1-7 from Monday, `%W` week of the year 00-53 from the first Monday, `%V` the ISO week 01-53 and `%G` its year, `%s` seconds since 1970, `%F` for `%Y-%m-%d`, `%T` for `%H:%M:%S`, and `%%` for a `%`.
 
+- **A day.** `CAST(t AS DATE)`, `DATE(t)` and `date_trunc('day', t)` are the same, the start of the time's day; ChloeDB keeps it a `TIMESTAMP` (there is no separate `DATE` type). **`CURRENT_DATE`** is the start of today, `date_trunc('day', now())`, so `WHERE at >= CURRENT_DATE - INTERVAL '7 days'` keeps the last seven days and today, and `GROUP BY CAST(at AS DATE)` counts by day.
+
 They all read times in UTC. A `NULL` time gives `NULL`, text is read as a time (`date_trunc('month', '2026-11-05')`), and any other value is an error, as are a unit, part or directive they do not have (the message lists the ones they do).
 
 A **`GROUP BY` of one of them over a `TIMESTAMP` field of the table** (indexed, one value per row) runs in the executor, as a `GROUP BY` of a column does: it reads the field's column, has no limit on the number of rows, and over shards each shard groups its own rows and the coordinator merges the groups. The rows without a time form the group `NULL`. Anywhere else, in `SELECT`, `WHERE` and over joined or derived rows, they are computed row by row; in `WHERE` they are a [condition the indexes cannot answer](#statement-shape), so a range of times is faster written on the field (`at >= '2026-11-01' AND at < '2026-12-01'`) than as `EXTRACT(month FROM at) = 11`. A plan that uses them needs the plan feature `dates`, which shards of a version without these functions refuse, and one with `date_bin` also needs the plan feature `date_bin`.
@@ -1032,9 +1034,17 @@ FROM logs WHERE ts >= '2026-11-12' GROUP BY b, service;
 - **A few KB a group, however many rows.** A sketch counts each value in a bucket of values within 1% of each other, and keeps at most 1,024 buckets of each sign (4 KB): the bound holds for values up to about 10⁸ times apart, as latencies are, and past that the least ones are folded together, so the low percentiles of such a spread lose it first. A p99 over 100 million rows holds a few KB rather than 800 MB.
 - **Exact merges.** Sketches of segments, threads and shards add up to the sketch of all the values, so the answer does not depend on how rows were split: a coordinator's answer is one server's. A shard sends a group's sketch as versioned bytes (base64 text), which a coordinator reads only in the version it knows. Plans with one carry the plan feature `approx_percentiles`, which a version of ChloeDB from before it refuses by name.
 
-### Rollups: `CREATE ROLLUP`
+### Rollups: `CREATE ROLLUP`, a materialized view of counts over time
 
-A rollup is a table of counts, sums, least and greatest values per bucket of time and per group, kept up to date from another table as rows arrive: a time-bucket query over weeks of logs reads a few thousand rows of the rollup instead of millions of the table.
+A rollup is a table of counts, sums, least and greatest values per bucket of time and per group, kept up to date from another table as rows arrive: ChloeDB's materialized view (a continuous aggregate) of a `GROUP BY` of time. Precomputed daily or hourly counts, kept up to date without a job of your own, are one: a time-bucket query over weeks of logs reads a few thousand rows of the rollup instead of millions of the table.
+
+```sql
+-- Orders per day and status, kept up to date as orders arrive.
+CREATE ROLLUP orders_daily ON orders AS SELECT date_trunc('day', created_at), status, COUNT(*);
+SELECT bucket, status, count FROM orders_daily ORDER BY bucket DESC;
+```
+
+It needs an admin key that is not limited to tables, and `check_sql` checks one without making it.
 
 ```sql
 CREATE ROLLUP logs_5m ON logs OPTIONS(lateness = '10 minutes', retain = '400 days') AS
@@ -1506,7 +1516,13 @@ From Rust, `Db::query` takes a `SELECT` and a `Params` map, and `Db::sql` takes 
 
 ## Tables
 
-A database starts with the table it was created with, and `CREATE TABLE` adds more. Each table has its own columns, primary key, indexes and merges; the tables share the file, its write-ahead log and transactions.
+A database starts with the table it was created with, and `CREATE TABLE` adds more. An example, a table of orders:
+
+```sql
+CREATE TABLE orders (id KEYWORD PRIMARY KEY, customer KEYWORD, status KEYWORD, total FLOAT, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+```
+
+`KEYWORD` holds exact values (ids, statuses), `TEXT` words searched with `MATCH`, `INT` and `FLOAT` numbers, `TIMESTAMP` times, and `VECTOR` embeddings; a type followed by `[]` holds a list. It needs an admin key. A larger example: Each table has its own columns, primary key, indexes and merges; the tables share the file, its write-ahead log and transactions.
 
 ```sql
 CREATE TABLE authors (
@@ -1603,6 +1619,14 @@ DELETE FROM products WHERE stock = 0 ORDER BY price LIMIT 100;
 - **`SET`** takes a value or any expression of the row: arithmetic, `||`, `CASE`, `NOT`, comparisons, `lower`, `upper`, `length`, `abs`, `round` and `coalesce` over the row's columns, and in `ON CONFLICT DO UPDATE` over `excluded.column` too. Every expression reads the row as it was, so `SET a = b, b = a` swaps two fields. The result is stored as the field's type: a whole number fits an `INT` (`clicks = price * 2`), but `7 / 2` is 3.5 and an error there (`round(clicks / 2)` fits); one value set to a multi-valued field becomes a list of it. NULL in gives NULL out, as in SQL, except `field + number` and `field - number`, which count a NULL as zero, as a counter does; `coalesce(field, 0) + other` does the same elsewhere. A multi-valued field without values is NULL to `coalesce` and `IS NULL`. Searches, scores and aggregates (`MATCH`, `bm25`, `score()`, `COUNT`) are errors in `SET`. A statement that cannot set one of its rows sets none.
 - **`DELETE`** takes any `WHERE`, and `ORDER BY` with `LIMIT` to delete the first rows in that order.
 - `RETURNING`, `UPDATE ... FROM`, `DELETE ... USING`, `INSERT ... SELECT`, `ON DUPLICATE KEY UPDATE` and `DO UPDATE ... WHERE` are errors.
+
+### Loading a file: CSV, TSV, JSON lines
+
+Many rows at once come from a file rather than `INSERT`s: `POST /v1/import?table=orders` with the file as the body and its content type (`text/csv`, `text/tab-separated-values`, `application/x-ndjson` or `application/json`), or the MCP tool `import` with the file's text in `data` (or the rows as objects in `rows`). A CSV's first line names the columns; columns the table does not have are skipped and named in the answer, and an empty cell is the column's `DEFAULT` (`?empty=null` makes it `NULL`). The table must exist first (`CREATE TABLE`, above). Parquet and SQLite files load the same way ([server](server.md#loading-rows)), and the command center's Import page takes a file dropped on it.
+
+```bash
+curl -X POST "$URL/v1/import?table=orders" -H "authorization: Bearer $KEY" -H "content-type: text/csv" --data-binary @orders.csv
+```
 
 Each statement is one transaction, and returns the number of rows it wrote. From Rust, the transaction API (`Database::begin`, `WriteTxn::insert`, `upsert`, `set`, `delete`, `commit`, and `WriteTxn::table` for the other tables) groups several writes into one, across tables too; `WriteTxn::upsert_if_newer` keeps whichever version of a row has the highest version number, for replaying a feed out of order.
 

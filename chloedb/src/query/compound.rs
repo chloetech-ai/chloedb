@@ -3471,6 +3471,13 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         },
         Expr::Function(_) if outer_field(e).is_some() => ir::Expr::Outer(outer_field(e).expect("a field")),
         e if super::sql::is_now(e) => ir::Expr::Lit(Value::Timestamp(crate::timestamp::now())),
+        e if super::sql::is_today(e) => ir::Expr::Lit(super::sql::day_of(Value::Timestamp(crate::timestamp::now()), &|| e.to_string())?),
+        // DATE(t): the start of t's day, as date_trunc('day', t) and
+        // CAST(t AS DATE) are.
+        Expr::Function(f) if fname(f) == "date" && f.over.is_none() && func_args(f).len() == 1 => match go(func_args(f)[0])? {
+            ir::Expr::Lit(v) => ir::Expr::Lit(super::sql::day_of(super::sql::cast_value(v, CastTo::Timestamp)?, &|| e.to_string())?),
+            x => ir::Expr::Call { func: Func::DateTrunc, args: vec![ir::Expr::Lit(Value::Str("day".into())), x] },
+        },
         Expr::Function(f) if fname(f) == "prefix" => {
             let [x, p] = func_args(f)[..] else { return Err(err("PREFIX(text, prefix) takes two arguments")) };
             ir::Expr::Prefix { expr: typed(x, Some(crate::json::Kind::Str))?, prefix: bx(p)?, edits: 0 }
@@ -3550,8 +3557,12 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         // rows by the arithmetic and functions that make the type.
         Expr::Cast { expr, data_type, format: None, .. } => {
             let to = CastTo::of(data_type)?;
+            let day = super::sql::is_date(data_type);
             match go(expr)? {
+                ir::Expr::Lit(v) if day => ir::Expr::Lit(super::sql::day_of(super::sql::cast_value(v, to)?, &|| e.to_string())?),
                 ir::Expr::Lit(v) => ir::Expr::Lit(super::sql::cast_value(v, to)?),
+                // A column's day: date_trunc('day', at).
+                x if day => ir::Expr::Call { func: Func::DateTrunc, args: vec![ir::Expr::Lit(Value::Str("day".into())), x] },
                 x => match to {
                     CastTo::Float => ir::Expr::Arith { op: ArithOp::Mul, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Float(1.0))) },
                     CastTo::Int => ir::Expr::Call { func: Func::Round, args: vec![x] },
@@ -3562,7 +3573,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                     },
                     CastTo::Bool | CastTo::Timestamp => {
                         return Err(err(format!(
-                            "{e}: a column of the rows casts to INT, FLOAT or TEXT; BOOL and TIMESTAMP take a value, such as CAST('2026-11-02' AS TIMESTAMP)"
+                            "{e}: a column of the rows casts to INT, FLOAT, TEXT or DATE (its day, as date_trunc('day', at)); BOOL and TIMESTAMP take a value, such as CAST('2026-11-02' AS TIMESTAMP)"
                         )))
                     }
                 },

@@ -155,7 +155,7 @@ function runner(body) {
     if (!fp) return;
     const to = Date.now(), from = to - 3600e3;
     const [st, rules] = await Promise.all([
-      api(`/v1/queries/stats/${encodeURIComponent(fp)}?from=${from}&to=${to}`).catch(() => null),
+      can("admin") ? api(`/v1/queries/stats/${encodeURIComponent(fp)}?from=${from}&to=${to}`).catch(() => null) : null,
       containRules().catch(() => null)]);
     if (!linked || linked.fp !== fp) return;
     linked.stat = st?.statement || null;

@@ -87,7 +87,8 @@ function render(page, r0) {
       events = await fallbackEvents(from, to);
       source = "fallback";
     }
-    try {
+    // The statements' statistics are an admin's: another key's timeline has the events alone.
+    if (can("admin")) try {
       const j = await api(`/v1/queries/stats?from=${from}&to=${to}&limit=500`, { timeout: 10000 });
       stats = (Array.isArray(j) ? j : j.statements || []);
       statsSince = Array.isArray(j) ? null : j.since_ms ?? null;

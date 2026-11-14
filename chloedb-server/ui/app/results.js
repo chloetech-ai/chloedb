@@ -75,7 +75,8 @@ export function grid(j, { max = 1000, onRow } = {}) {
   const thead = h("thead"), tbody = h("tbody");
   const tbl = h("table", { class: "t rgrid" }, thead, tbody);
   const more = h("div", { class: "row", style: { padding: "8px 10px" } });
-  const wrap = h("div", { class: "grid-wrap" }, tbl, more);
+  // What the server says of a ranked answer's scores (score() is 0 without a ranking).
+  const wrap = h("div", { class: "grid-wrap" }, j.hint && (j.rows || []).length ? h("div", { class: "notice small", style: { margin: "8px 10px" } }, j.hint) : null, tbl, more);
   const maxScore = Math.max(1e-12, ...(j.scores || []).filter(isNum).map(Math.abs));
 
   function head() {
@@ -114,7 +115,7 @@ export function grid(j, { max = 1000, onRow } = {}) {
       return tr;
     }));
     clear(more, shown < order.length ? [h("span", { class: "small muted" }, `${fmt.n(shown)} of ${fmt.n(order.length)} rows shown`), h("button", { class: "btn sm", onclick: () => { shown = Math.min(order.length, shown + 500, max); body(); } }, "Show more")] : null);
-    if (!order.length) clear(tbody, h("tr", {}, h("td", { colspan: cols.length + 2 }, empty("table", "No rows", "The query ran and matched nothing."))));
+    if (!order.length) clear(tbody, h("tr", {}, h("td", { colspan: cols.length + 2 }, empty("table", "No rows", j.hint || "The query ran and matched nothing."))));
   }
   head(); body();
   return wrap;
