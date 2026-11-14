@@ -1062,7 +1062,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
   const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title }));
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1737,6 +1737,16 @@ window.addEventListener('message', async (e) => {
   if (m.kind === 'tap') { if (!entry.preview) S.taps = (S.taps || 0) + 1; return; }
   if ((m.kind === 'ready' || m.kind === 'error') && S.frames.get(entry.slug)?.incoming) settleFrame();
   if (m.kind === 'ready') return;
+  // The screen's content edges, so the app's own bar and tabs line up with
+  // a centred, narrower page (web/frame.js __sa_bounds).
+  if (m.kind === 'bounds') {
+    if (!BARE || entry.slug !== S.view) return;
+    const f = S.frames.get(entry.slug)?.iframe?.getBoundingClientRect();
+    if (!f) return;
+    document.body.style.setProperty('--content-left', `${Math.max(0, Math.round(f.left + Number(m.left) || 0))}px`);
+    document.body.style.setProperty('--content-right', `${Math.max(0, Math.round(window.innerWidth - f.right + Number(m.right) || 0))}px`);
+    return;
+  }
   if (m.kind === 'gate') {
     const f = S.frames.get(entry.slug);
     if (f) f.gated = !!m.on;

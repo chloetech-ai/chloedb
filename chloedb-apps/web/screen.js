@@ -1237,6 +1237,7 @@ window.__sa_numbers = (() => {
           }
           if (front) front.after(root);
           window.__sa_gated?.(gated);
+          window.__sa_bounds?.();
           restore(f);
           tidy();
         } while (again);

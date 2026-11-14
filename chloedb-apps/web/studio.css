@@ -485,3 +485,10 @@ body.bare.designed.look-bold .top .look { background: transparent; border-color:
 .who-out { min-height: 44px; padding: 0 6px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
 .who-out:hover { color: var(--fg); text-decoration: underline; }
 @media (max-width: 560px) { .who { padding: 4px; } .who-name, .who-out { display: none; } }
+
+/* The app's own bar and tabs line up with its screen's content (a centred,
+   narrower page reports its edges: --content-left, --content-right) */
+@media (min-width: 861px) {
+  body.bare:not(.nav-sidebar) .top { padding-left: max(16px, var(--content-left, 16px)); padding-right: max(16px, var(--content-right, 16px)); }
+  body.bare:not(.nav-sidebar) #tabs { padding-left: max(12px, var(--content-left, 12px)); padding-right: max(12px, var(--content-right, 12px)); }
+}
