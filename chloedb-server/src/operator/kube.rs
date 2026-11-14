@@ -1263,6 +1263,9 @@ pub struct Creds {
     /// on the pod template, so that a new key rolls the app's pod, which
     /// reads its key from the environment once (audit N-D4).
     pub key_id: Option<String>,
+    /// No key yet, because making one failed ([`super::credentials::PENDING`]):
+    /// the app is given no key rather than the admin token (audit X-E2).
+    pub pending: bool,
 }
 
 /// `d`, an app's Deployment, its pod template marked with the id of the
@@ -1298,6 +1301,7 @@ impl Cluster {
         let mut env = Vec::new();
         match (creds.key, admin) {
             (true, _) => env.push(own(key, super::credentials::KEY)),
+            (false, _) if creds.pending => {}
             (false, Some(t)) => env.push(secret_env(key, t)),
             (false, None) => {}
         }
@@ -1315,7 +1319,8 @@ impl Cluster {
         let e = s.as_ref().map(super::credentials::entries).unwrap_or_default();
         let has = |k: &str| e.get(k).is_some_and(|v| !v.is_empty());
         let key_id = s.as_ref().and_then(|s| s["metadata"]["annotations"][super::credentials::KEY_ID].as_str()).map(str::to_string);
-        Ok(Creds { key: has(super::credentials::KEY) && super::credentials::keyed(spec, app), token: has(super::credentials::TOKEN), key_id })
+        let pending = super::credentials::keyed(spec, app) && s.as_ref().is_some_and(|s| s["metadata"]["annotations"][super::credentials::PENDING] == "true");
+        Ok(Creds { key: has(super::credentials::KEY) && super::credentials::keyed(spec, app), token: has(super::credentials::TOKEN), key_id, pending })
     }
 
     fn credentials_path(&self, app: &str) -> String {
@@ -1541,12 +1546,29 @@ impl Platform for Cluster {
             let mut key = e.get(cr::KEY).filter(|k| !k.is_empty()).cloned();
             let mut id = old_id.clone();
             let keyed = cr::keyed(spec, app);
+            let mut pending = false;
             if keyed && (key.is_none() || old_hash.as_deref() != Some(hash.as_str())) {
                 match cr::make_key(admin, app, &tables, old_id.as_deref()).await {
                     Ok((i, k)) => (id, key) = (Some(i), Some(k)),
-                    Err(e) => {
+                    // Coordinators from before keys limited to tables: the
+                    // admin token, as before such keys.
+                    Err(cr::KeyError::BeforeLimits(e)) => {
                         failed.push(format!("{app}: {e}"));
                         (id, key) = (None, None);
+                    }
+                    // A timeout, a 5xx, coordinators rolling: make_key makes
+                    // the new key before it revokes the old one, so the old
+                    // one still works. The Secret is left as it is, its old
+                    // key and tables' hash with it (the pod does not roll),
+                    // and the next reconcile tries again (audit X-E2).
+                    Err(cr::KeyError::Failed(e)) => {
+                        failed.push(format!("{app}: {e} (it keeps the key it has; tried again at the next reconcile)"));
+                        if key.is_some() {
+                            continue;
+                        }
+                        // No key yet: none until one is made, never the
+                        // admin token.
+                        (id, pending) = (None, true);
                     }
                 }
             }
@@ -1558,7 +1580,8 @@ impl Platform for Cluster {
                 }
                 (id, key) = (None, None);
             }
-            let unchanged = have.is_some() && e.get(cr::TOKEN) == Some(&token) && e.get(cr::KEY) == key.as_ref() && old_id == id && (old_hash.as_deref() == Some(hash.as_str()) || key.is_none());
+            let was_pending = have.as_ref().is_some_and(|h| h["metadata"]["annotations"][cr::PENDING] == "true");
+            let unchanged = have.is_some() && e.get(cr::TOKEN) == Some(&token) && e.get(cr::KEY) == key.as_ref() && old_id == id && (old_hash.as_deref() == Some(hash.as_str()) || key.is_none()) && was_pending == pending;
             if unchanged {
                 continue;
             }
@@ -1573,13 +1596,16 @@ impl Platform for Cluster {
                 notes.insert(cr::KEY_ID.into(), json!(i));
                 notes.insert(cr::TABLES.into(), json!(hash));
             }
+            if pending {
+                notes.insert(cr::PENDING.into(), json!("true"));
+            }
             meta["annotations"] = Json::Object(notes);
             self.kube.apply(&path, &json!({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque", "data": data})).await?;
             tracing::info!(app, keyed = key.is_some(), "the app's credentials changed");
         }
         match failed.is_empty() {
             true => Ok(()),
-            false => Err(format!("an app keeps the admin token for now: {}", failed.join("; "))),
+            false => Err(format!("an app's own key was not made: {}", failed.join("; "))),
         }
     }
 
@@ -2207,7 +2233,7 @@ mod tests {
     fn a_new_app_key_rolls_its_pod() {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "sheets": {}}));
         let with = |id: Option<&str>| {
-            let creds = Creds { key: true, token: true, key_id: id.map(String::from) };
+            let creds = Creds { key: true, token: true, key_id: id.map(String::from), pending: false };
             rolled(c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), creds.clone()), &creds)
         };
         let (a, b) = (with(Some("k1")), with(Some("k2")));
@@ -2226,14 +2252,14 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "crawler": {"grow": false}, "sheets": {}, "chloectx": {}, "apps": {}}));
         let env = |d: &Json| d["spec"]["template"]["spec"]["containers"][0]["env"].clone();
         let from = |d: &Json, name: &str| env(d).as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
-        let own = Creds { key: true, token: true, key_id: None };
+        let own = Creds { key: true, token: true, key_id: None, pending: false };
         let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), own.clone());
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "orders-sheets-credentials", "key": "key"})));
         assert_eq!(from(&d, "STRATA_SHEETS_TOKEN"), Some(json!({"name": "orders-sheets-credentials", "key": "token"})));
         assert!(!env(&d).to_string().contains("\"admin\""), "{}", env(&d));
         let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), Creds::default());
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
-        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds { key: false, token: true, key_id: None });
+        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds { key: false, token: true, key_id: None, pending: false });
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
         assert_eq!(from(&d, "STRATA_CRAWL_TOKEN"), Some(json!({"name": "orders-crawler-credentials", "key": "token"})));
         let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap(), own.clone());
@@ -2353,7 +2379,7 @@ mod tests {
         // The admin token until the app has its own key and token.
         assert_eq!(secret(&d, "CHLOEDB_KEY"), Some(json!({"name": "admin", "key": "token"})));
         assert_eq!(secret(&d, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "admin", "key": "token"})));
-        let own = c.netops_deployment(n, Creds { key: true, token: true, key_id: None });
+        let own = c.netops_deployment(n, Creds { key: true, token: true, key_id: None, pending: false });
         assert_eq!(secret(&own, "CHLOEDB_KEY"), Some(json!({"name": "orders-netops-credentials", "key": "key"})));
         assert_eq!(secret(&own, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "orders-netops-credentials", "key": "token"})));
         let s = c.netops_service();
@@ -2871,5 +2897,112 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert!(!seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "no key is made: {seen:?}");
         assert!(seen.iter().any(|(m, p)| m == "PATCH" && p.contains("/secrets/")), "{seen:?}");
+    }
+
+    /// A fake Kubernetes API that keeps the Secrets it is sent, and
+    /// coordinators whose key creation answers `keys` (status, body).
+    async fn keeping_secrets(keys: (u16, Json), have: Option<Json>) -> (String, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        use std::sync::{Arc, Mutex};
+        let secrets: Arc<Mutex<std::collections::BTreeMap<String, Json>>> = Arc::default();
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        if let Some(h) = have {
+            secrets.lock().unwrap().insert("/api/v1/namespaces/db/secrets/orders-sheets-credentials".into(), h);
+        }
+        let (k, s2) = (secrets.clone(), seen.clone());
+        let app = axum::Router::new().fallback(move |method: axum::http::Method, uri: axum::http::Uri, body: axum::body::Bytes| {
+            let (k, s2, keys) = (k.clone(), s2.clone(), keys.clone());
+            async move {
+                let path = uri.path().to_string();
+                s2.lock().unwrap().push((method.to_string(), path.clone()));
+                let ok = |j: Json| (axum::http::StatusCode::OK, axum::Json(j));
+                match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/whoami") => ok(json!({"auth": {"app_keys": true}})),
+                    ("GET", "/v1/admin/keys") => ok(json!({"keys": [{"id": "k-old", "name": "sheets-app", "revoked_ms": null}]})),
+                    ("POST", "/v1/admin/keys") => (axum::http::StatusCode::from_u16(keys.0).unwrap(), axum::Json(keys.1)),
+                    ("GET", p) if p.contains("/secrets/") => match k.lock().unwrap().get(p) {
+                        Some(s) => ok(s.clone()),
+                        None => (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({"message": "not found"}))),
+                    },
+                    (_, p) if p.contains("/secrets/") => {
+                        let j: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                        k.lock().unwrap().insert(p.to_string(), j.clone());
+                        ok(j)
+                    }
+                    _ => ok(json!({})),
+                }
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        (url, secrets, seen)
+    }
+
+    /// Audit X-E2: when making an app's new key fails (its tables changed
+    /// while the coordinators roll, a 5xx, a timeout), the Secret keeps
+    /// its old key, key id and tables' hash, so the pod neither rolls nor
+    /// falls back to the admin token; the next reconcile tries again.
+    #[tokio::test]
+    async fn a_failed_key_keeps_the_old_one() {
+        let old = json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "orders-sheets-credentials", "annotations": {super::super::credentials::KEY_ID: "k-old", super::super::credentials::TABLES: "an-older-hash"}},
+            "data": {"key": base64_encode(b"sk_old"), "token": base64_encode(b"t1")}});
+        let (url, secrets, seen) = keeping_secrets((503, json!({"error": "the coordinators are rolling"})), Some(old.clone())).await;
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        let e = c.app_credentials(&spec, &admin).await.unwrap_err();
+        assert!(e.contains("keeps the key it has"), "{e}");
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "a key was asked for: {seen:?}");
+        assert!(!seen.iter().any(|(m, p)| m != "GET" && p.contains("/secrets/")), "the Secret is not written: {seen:?}");
+        assert!(!seen.iter().any(|(m, _)| m == "DELETE"), "nothing is revoked: {seen:?}");
+        assert_eq!(secrets.lock().unwrap().values().next().unwrap(), &old);
+        // The app keeps its own key, and its pod's template is unchanged.
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.key_id.as_deref(), creds.pending), (true, Some("k-old"), false));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(!env.iter().any(|v| v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+    }
+
+    /// Audit X-E2: an app with no key yet whose key could not be made is
+    /// given none, rather than the admin token; coordinators from before
+    /// keys limited to tables still give it the admin token.
+    #[tokio::test]
+    async fn an_app_without_a_key_gets_none_rather_than_the_admin_token() {
+        let (url, kept, _) = keeping_secrets((503, json!({"error": "the coordinators are rolling"})), None).await;
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        assert!(c.app_credentials(&spec, &admin).await.is_err());
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.token, creds.pending), (false, true, true));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(!env.iter().any(|v| v["name"] == "STRATA_KEY"), "no key, not the admin token: {env:?}");
+        assert!(!env.iter().any(|v| v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+
+        // Coordinators from before limited keys: the admin token, as before.
+        let pending = kept.lock().unwrap().values().next().cloned();
+        assert_eq!(pending.as_ref().unwrap()["metadata"]["annotations"][super::super::credentials::PENDING], "true");
+        let every = json!({"key": {"id": "k1", "tables": {}}, "secret": "sk_k1_x"});
+        let (url, _, _) = keeping_secrets((200, every), pending.clone()).await;
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let e = c.app_credentials(&spec, &admin).await.unwrap_err();
+        assert!(e.contains("from before keys limited"), "{e}");
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.pending), (false, false));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(env.iter().any(|v| v["name"] == "STRATA_KEY" && v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+
+        // Once a key is made, the pending mark goes.
+        let made = json!({"key": {"id": "k2", "tables": {"sheets_*": "admin"}}, "secret": "sk_k2_x"});
+        let (url, _, _) = keeping_secrets((200, made), pending).await;
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        c.app_credentials(&spec, &admin).await.unwrap();
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.key_id.as_deref(), creds.pending), (true, Some("k2"), false));
     }
 }
