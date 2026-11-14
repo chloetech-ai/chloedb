@@ -29,9 +29,11 @@
   // kept to signed-in people): the app's own page then shows no tabs.
   let gatedNow = null;
   window.__sa_gated = (on) => { if (gatedNow === !!on) return; gatedNow = !!on; post({ kind: 'gate', on: gatedNow }); };
+  // A pick (below) is the builder's click, not a tap.
+  let pickingNow = false;
   // Every tap in the app is counted (the studio sends the count with the
   // next write): how many taps it takes to do something is a measure of use.
-  document.addEventListener('click', (e) => { if (e.isTrusted && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
+  document.addEventListener('click', (e) => { if (e.isTrusted && !pickingNow && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
   window.addEventListener('error', (e) => report(e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => report(e.reason));
 
@@ -82,6 +84,114 @@
       }
     }
   });
+
+  // Picking an element (for a builder that edits a screen by clicking it):
+  // the page around the frame asks with {kind: 'pick', on}; while on, the
+  // frame outlines what is under the pointer, a click is a pick and not a
+  // tap, and the pick is posted as {kind: 'picked', el} with what the
+  // element is, shows and where it sits in the frame. {kind: 'pick-edit'}
+  // lets the words of the picked element be typed in place, posted back as
+  // {kind: 'pick-edited', ok, oldText, newText}; the frame always puts the
+  // element back as it was, since the screen's statement is what changes.
+  (() => {
+    let on = false, hover = null, lock = null, editing = null, box = null, lockBox = null;
+    const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+    const outline = (color) => {
+      const d = document.createElement('div');
+      d.setAttribute('data-sa-pick', '');
+      d.style.cssText = `position:fixed;pointer-events:none;z-index:2147483647;border:2px solid ${color};border-radius:3px;display:none;box-sizing:border-box`;
+      document.documentElement.append(d);
+      return d;
+    };
+    const place = (d, el) => {
+      if (!d) return;
+      if (!el || !el.isConnected) { d.style.display = 'none'; return; }
+      const r = el.getBoundingClientRect();
+      Object.assign(d.style, { display: 'block', left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+    };
+    const pickable = (el) => el && el.nodeType === 1 && !el.closest('[data-sa-pick]') && !['HTML', 'BODY', 'SCRIPT', 'STYLE'].includes(el.tagName);
+    const selector = (el) => {
+      const parts = [];
+      for (let n = el; n && n.nodeType === 1 && n !== document.body && parts.length < 8; n = n.parentElement) {
+        if (n.id && /^[A-Za-z][\w-]*$/.test(n.id)) { parts.unshift(`#${n.id}`); break; }
+        const sib = n.parentElement ? [...n.parentElement.children].filter((c) => c.tagName === n.tagName) : [];
+        parts.unshift(`${n.tagName.toLowerCase()}${sib.length > 1 ? `:nth-of-type(${sib.indexOf(n) + 1})` : ''}`);
+      }
+      return parts.join(' > ');
+    };
+    const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; };
+    const about = (el) => {
+      const leaf = el.children.length === 0 ? norm(el.textContent).slice(0, 4000) : '';
+      let occurrences = 0;
+      if (leaf) for (const n of document.querySelectorAll(el.tagName)) { if (!n.children.length && norm(n.textContent) === leaf) occurrences++; if (occurrences > 1) break; }
+      const cs = getComputedStyle(el);
+      const attrs = {};
+      for (const k of ['id', 'class', 'href', 'src', 'alt', 'aria-label', 'title', 'placeholder', 'role', 'type', 'name']) { const v = el.getAttribute(k); if (v) attrs[k] = v.slice(0, 500); }
+      return { tag: el.tagName.toLowerCase(), selector: selector(el), text: norm(el.innerText || el.textContent).slice(0, 240), leafText: leaf, textOccurrences: occurrences,
+        attrs, rect: rectOf(el), styles: { color: cs.color, backgroundColor: cs.backgroundColor, fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '') } };
+    };
+    const moved = () => { place(box, null); place(lockBox, lock); if (lock) post({ kind: 'pick-rect', rect: lock.isConnected ? rectOf(lock) : null }); };
+    const onMove = (e) => { if (!editing && pickable(e.target) && e.target !== hover) { hover = e.target; place(box, hover); } };
+    const onClick = (e) => {
+      if (editing) { if (editing.el.contains(e.target)) return; e.preventDefault(); e.stopPropagation(); commit(); return; }
+      e.preventDefault(); e.stopPropagation();
+      if (!pickable(e.target)) return;
+      lock = e.target; place(lockBox, lock); place(box, null);
+      post({ kind: 'picked', el: about(lock) });
+    };
+    const onKey = (e) => {
+      if (editing && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (editing) cancel(); else post({ kind: 'pick-exit' }); }
+    };
+    const finish = () => { const { el, before, editable } = editing; editable == null ? el.removeAttribute('contenteditable') : el.setAttribute('contenteditable', editable); el.textContent = before; el.blur(); editing = null; moved(); };
+    const commit = () => {
+      if (!editing) return;
+      const { el, before, editId } = editing;
+      const next = norm(el.textContent);
+      finish();
+      post(next === norm(before) ? { kind: 'pick-edited', editId, ok: false, reason: 'unchanged' } : { kind: 'pick-edited', editId, ok: true, oldText: norm(before), newText: next });
+    };
+    const cancel = () => { if (!editing) return; const { editId } = editing; finish(); post({ kind: 'pick-edited', editId, ok: false, reason: 'cancelled' }); };
+    const start = () => {
+      if (on) return;
+      on = true; pickingNow = true; box = outline('rgba(0,113,227,.55)'); lockBox = outline('#0071e3');
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('click', onClick, true);
+      document.addEventListener('keydown', onKey, true);
+      window.addEventListener('scroll', moved, true);
+      window.addEventListener('resize', moved);
+    };
+    const stop = () => {
+      if (!on) return;
+      if (editing) finish();
+      on = false; pickingNow = false; hover = lock = null; box?.remove(); lockBox?.remove(); box = lockBox = null;
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', moved, true);
+      window.removeEventListener('resize', moved);
+    };
+    window.addEventListener('message', (e) => {
+      if (e.source !== parent) return;
+      const m = e.data;
+      if (!m || !m.__sa) return;
+      if (m.kind === 'pick') m.on ? start() : stop();
+      else if (m.kind === 'pick-clear') { if (editing) finish(); lock = null; place(lockBox, null); }
+      else if (m.kind === 'pick-edit') {
+        const editId = m.editId;
+        if (!on || !lock || editing || lock.children.length) { post({ kind: 'pick-edited', editId, ok: false, reason: 'not-found' }); return; }
+        editing = { el: lock, before: lock.textContent, editId, editable: lock.getAttribute('contenteditable') };
+        lock.setAttribute('contenteditable', 'plaintext-only');
+        lock.focus({ preventScroll: true });
+        const range = document.createRange(); range.selectNodeContents(lock); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        lock.addEventListener('input', moved);
+      } else if (m.kind === 'pick-commit') commit();
+      else if (m.kind === 'pick-cancel') cancel();
+      else if (m.kind === 'pick-applied' && lock && !editing && norm(lock.textContent) === norm(m.oldText)) { lock.textContent = String(m.newText || ''); moved(); }
+    });
+    // A frame drawn again while picking (a new screen) asks to be told.
+    post({ kind: 'pick-ready' });
+  })();
 
   // A form never navigates the frame: views handle submit themselves.
   document.addEventListener('submit', (e) => e.preventDefault(), true);
