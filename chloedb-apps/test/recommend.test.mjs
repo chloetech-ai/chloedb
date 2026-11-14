@@ -1,7 +1,7 @@
 // The next-edit recommender (engine/recommend.mjs, engine/recsources.mjs):
 // its sources over synthetic use, its ranking and learning, and a refresh
 // over a store kept in memory; then, with a chloedb-server and a copy of
-// built apps (STRATA_APPS_RECOMMEND_DATA, else the benchmark's), one app
+// built apps (STRATA_APPS_RECOMMEND_DATA; skipped without it), one app
 // with use given to it and one without, over the real engine.
 
 import test from 'node:test';
@@ -205,12 +205,12 @@ test('every source is general: none of them names a kind of app', () => {
 
 // ---- over the real engine, on a copy of built apps
 
-const DATA = process.env.STRATA_APPS_RECOMMEND_DATA || '/Users/rkonow/code2/doable-vs-chloedb-bench/rounds/r2-fixes/engine-data';
+const DATA = process.env.STRATA_APPS_RECOMMEND_DATA || '';
 
 test('live: an app with use gets a suggestion from it, one without gets cold-start ones, and a dismissal is learned', async (t) => {
   const { findServerBinary } = await import('../engine/strata.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin || !existsSync(join(DATA, 'apps.strata'))) return t.skip('needs chloedb-server and a copy of built apps (STRATA_APPS_RECOMMEND_DATA)');
+  if (!bin || !DATA || !existsSync(join(DATA, 'apps.strata'))) return t.skip('needs chloedb-server and a copy of built apps (STRATA_APPS_RECOMMEND_DATA)');
   const dir = mkdtempSync('/tmp/sa-recommend-');
   cpSync(DATA, join(dir, 'data'), { recursive: true });
   const env = { ...process.env, STRATA_SERVER_BIN: bin, STRATA_APPS_SCHEDULES: 'off', STRATA_APPS_AUTOREPAIR: '0', STRATA_APPS_EVOLVE: 'off', STRATA_APPS_RECOMMEND_MODEL: 'off', STRATA_APPS_RECOMMEND_GAP_S: '0', STRATA_APPS_LOOK: 'off', STRATA_APPS_TILES: 'off', STRATA_APPS_GEOCODER: 'off' };
