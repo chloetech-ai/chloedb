@@ -29,6 +29,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fullBleedProblems } from './photoqc.mjs';
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'library');
 const UNSPLASH_KEY = process.env.STRATA_APPS_UNSPLASH_KEY || '';
@@ -381,13 +382,32 @@ async function keep(r, save) {
 // and has none yet. Returns the photos placed. A block nothing is found for
 // is drawn: a hero or band on the design's gradient (the page's own), a
 // card or photo with a drawn picture.
-export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true } = {}) {
+export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true, judge = fullBleedProblems, fetchBytes = photoBytes } = {}) {
   const placed = [];
   const jobs = photoJobs(screen);
   if (find === findPhoto) await prefetchPhotos(jobs);
   const found = [];
   for (const j of jobs) {
-    const r = await find(j.query, { use: j.use, used });
+    let r = await find(j.query, { use: j.use, used });
+    // A photo found on the web for a full-width place (a hero, a band) is
+    // looked at first: too small, too dark or washed out, flat or blurred,
+    // and the next one is tried, then the built-in set's (chosen by eye).
+    if (judge && (j.kind === 'hero' || j.kind === 'band')) {
+      let tries = 0;
+      while (r && r.remote) {
+        const bytes = await fetchBytes(r.src).catch(() => null);
+        const problems = bytes ? await judge(bytes).catch(() => []) : ['could not be fetched'];
+        if (!problems.length) break;
+        used.add(r.id);
+        if (++tries >= 3) { r = null; break; }
+        const next = await find(j.query, { use: j.use, used });
+        r = next && next.id !== r.id ? next : null;
+      }
+      if (!r) {
+        const [b] = matchBuiltin(j.query, { used });
+        r = b ? { id: b.id, src: unsplashUrl(b.id, j.use), credit: null, href: null, source: 'builtin', tone: b.tone } : null;
+      }
+    }
     if (r) used.add(r.id);
     found.push(r);
   }

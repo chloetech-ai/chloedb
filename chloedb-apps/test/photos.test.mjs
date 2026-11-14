@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { queryOf, commonsQueries, commonsCandidate, findPhoto, placePhotos, matchBuiltin, drawnPicture, accentHue, photoCache } from '../engine/photos.mjs';
+import { queryOf, commonsQueries, commonsCandidate, findPhoto, placePhotos, placeScreenPhotos, matchBuiltin, drawnPicture, accentHue, photoCache } from '../engine/photos.mjs';
+import { imageSize, fullBleedProblems } from '../engine/photoqc.mjs';
 
 const page = (pageid, title, { w = 3000, h = 2000, license = 'CC BY-SA 4.0', artist = '<a href="x">Ana Ruiz</a>', desc = '', mime = 'image/jpeg', index = 1 } = {}) => ({
   pageid, index, title: `File:${title}.jpg`,
@@ -158,4 +159,28 @@ test('the footer keeps one credits line across versions', async () => {
     await placePhotos(plan, {}, {});
     assert.equal(plan.views[0].screen.body[0].note, 'Open daily · Photos: Old one by B, CC BY 2.0; Suadero tacos by Ana Ruiz, CC BY-SA 4.0 (Wikimedia Commons)');
   } finally { web.restore(); }
+});
+
+test('a photo for a full-width place: its size from its header, its light and sharpness measured, a poor one replaced', async () => {
+  // a PNG's header: 640 x 480
+  const png = Buffer.alloc(32); png[0] = 0x89; png.write('PNG', 1, 'latin1'); png.writeUInt32BE(640, 16); png.writeUInt32BE(480, 20);
+  assert.deepEqual(imageSize(png), { width: 640, height: 480, type: 'png' });
+  // a JPEG's start of frame: 2400 x 1600
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x06, 0x40, 0x09, 0x60, 0x03, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(imageSize(jpg), { width: 2400, height: 1600, type: 'jpeg' });
+  assert.deepEqual(await fullBleedProblems(png, { stats: async () => null }), ['only 640 px wide']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.19, contrast: 0.12, sharp: 2.5 }) }), ['blurred']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.05, contrast: 0.03, sharp: 30 }) }), ['too dark', 'flat']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.45, contrast: 0.25, sharp: 30 }) }), []);
+  // placing a hero: the web's first photo fails, the next one is used; a card is not judged
+  const results = [{ id: 'w1', src: 'https://x/1.jpg', remote: true, source: 'commons' }, { id: 'w2', src: 'https://x/2.jpg', remote: true, source: 'commons' }];
+  const find = async (q, { used }) => results.find((r) => !used.has(r.id)) || null;
+  const judge = async (bytes) => (String(bytes) === 'https://x/1.jpg' ? ['blurred'] : []);
+  const screen = { page: 'front', body: [{ hero: 'Hi', photo: 'harbour at dawn' }] };
+  await placeScreenPhotos(screen, { find, judge, fetchBytes: async (u) => Buffer.from(u), drawn: false });
+  assert.equal(screen.body[0].src, 'https://x/2.jpg');
+  // every web photo poor: the built-in set's, never a poor one full-width
+  const poor = { page: 'front', body: [{ band: ['x'], photo: 'harbour at dawn' }] };
+  await placeScreenPhotos(poor, { find, judge: async () => ['too dark'], fetchBytes: async (u) => Buffer.from(u), drawn: false });
+  assert.ok(!/https:\/\/x\//.test(String(poor.body[0].src || '')), String(poor.body[0].src));
 });
