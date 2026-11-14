@@ -427,6 +427,10 @@ fn inserts_racing_alter_table_write_their_rows() {
                 while let Err(e) = db.sql(&sql, &Params::new()) {
                     assert!(matches!(e, chloedb::Error::Busy(_)), "{sql}: {e}");
                 }
+                // As a client sends them, one after the other: back to back,
+                // this thread takes the writer again before the INSERTs
+                // waiting for it wake.
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
         assert!(k > 1, "{k} rounds of changes");

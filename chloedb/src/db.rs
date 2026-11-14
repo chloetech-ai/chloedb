@@ -55,8 +55,9 @@ pub enum SqlResult {
 const ALTERED: &str = "while the statement ran; run it again";
 
 /// How many times a write whose table was altered as it ran is bound again
-/// and run ([`altered_while_running`]) before its error is answered.
-pub const ALTERED_TRIES: usize = 3;
+/// and run ([`altered_while_running`]) before its error is answered: each
+/// time lost is an `ALTER TABLE` that committed meanwhile.
+pub const ALTERED_TRIES: usize = 10;
 
 /// Whether the error `message` says that the write's table was altered
 /// after the write was bound, so that the same statement bound again may
