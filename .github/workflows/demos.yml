@@ -170,6 +170,11 @@ jobs:
           CHLOEDB_SERVER: ${{ github.workspace }}/.server-bin/chloedb-server
         run: |
           chmod +x "$CHLOEDB_SERVER_BIN"
+          # Parley's posts are searched by meaning with a static model on
+          # the server, which must be there before the tests write rows.
+          if [ "${{ matrix.demo }}" = parley ]; then
+            for i in 1 2 3; do "$CHLOEDB_SERVER_BIN" fetch-model potion-base-8M && break; sleep 10; done
+          fi
           python3 -m pip install pytest
           python3 -m pytest -q tests
 
