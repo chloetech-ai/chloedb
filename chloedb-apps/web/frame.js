@@ -129,12 +129,14 @@
       for (const k of ['id', 'class', 'href', 'src', 'alt', 'aria-label', 'title', 'placeholder', 'role', 'type', 'name']) { const v = el.getAttribute(k); if (v) attrs[k] = v.slice(0, 500); }
       return { tag: el.tagName.toLowerCase(), selector: selector(el), text: norm(el.innerText || el.textContent).slice(0, 240), leafText: leaf, textOccurrences: occurrences,
         attrs, rect: rectOf(el), styles: { color: cs.color, backgroundColor: cs.backgroundColor, fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '') },
-        tokens: tokensOf(cs) };
+        tokens: tokensOf(el) };
     };
     // Which of the design's color tokens the element's text and background
     // are drawn with, so a builder changes the token, not the element.
-    const TOKENS = ['accent', 'fg', 'bg', 'card', 'accent-fg'];
-    const tokensOf = (cs) => {
+    // Text on the accent is told before white cards: the same white is both.
+    const TOKENS = ['accent', 'accent-fg', 'fg', 'bg', 'card'];
+    const tokensOf = (el) => {
+      const cs = getComputedStyle(el);
       const probe = document.createElement('i');
       probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
       document.documentElement.append(probe);
@@ -142,7 +144,10 @@
       for (const k of TOKENS) { probe.style.color = `var(--${k})`; value[k] = getComputedStyle(probe).color; }
       probe.remove();
       const match = (c) => (c && !/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(c) ? TOKENS.find((k) => value[k] === c) || null : null);
-      return { text: match(cs.color), background: match(cs.backgroundColor) };
+      // The background seen behind the element: its own, else the nearest one under it.
+      let back = null;
+      for (let n = el; n && n.nodeType === 1 && !back; n = n.parentElement) back = match(getComputedStyle(n).backgroundColor) || (/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(getComputedStyle(n).backgroundColor) ? null : 'other');
+      return { text: match(cs.color), background: back === 'other' ? null : back };
     };
     const moved = () => { place(box, null); place(lockBox, lock); if (lock) post({ kind: 'pick-rect', rect: lock.isConnected ? rectOf(lock) : null }); };
     const onMove = (e) => { if (!editing && pickable(e.target) && e.target !== hover) { hover = e.target; place(box, hover); } };
