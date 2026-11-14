@@ -9,16 +9,10 @@ import { can, h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tip
 import { tables as catalogTables } from "../catalog.js";
 import { isMine } from "../owners.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState } from "../data.js";
+import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus } from "../data.js";
 
-export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render, badge };
-
-/** Problems on Home, for the navigation. */
-function badge() {
-  const f = state.fleet; if (!f) return null;
-  const n = (f.problems || []).length;
-  return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")}, worst first on Home` } : null;
-}
+export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render };
+// Its count in the navigation is the shell's (main.js), from homeProblems() as here.
 
 const SLO_ERR = 0.01, SLO_P99 = 250;
 const check = (id) => (state.fleet?.checks || []).find((c) => c.id === id) || null;
@@ -236,15 +230,17 @@ function render(page, r0) {
     }
     if (!f) { banner.className = "banner home-banner"; clear(banner, h("div", { class: "bic" }, h("span", { class: "spin" })), h("div", { class: "grow" }, h("div", { class: "big" }, "Checking the fleet…"))); return; }
     const tones = cardTones();
-    let kind = f.status === "critical" ? "bad" : f.status === "warning" ? "warn" : "ok";
+    // LIV-9: the banner, the Problems card and the bell read one list: an alert firing now is a problem here.
+    const status = homeStatus(f);
+    let kind = status === "critical" ? "bad" : status === "warning" ? "warn" : "ok";
     if (tones.includes("bad")) kind = "bad"; else if (kind === "ok" && tones.includes("warn")) kind = "warn";
     if (!answering) kind = "unknown";
     banner.className = "banner home-banner " + kind;
-    const probs = f.problems || [];
+    const probs = homeProblems(f);
     const top = probs[0];
-    let headline = f.headline || (top ? top.title : "Every check is within its limit");
+    let headline = (probs.length === (f.problems || []).length ? f.headline : null) || (top ? top.title : "Every check is within its limit");
     // The fleet said ok, a card says otherwise: say what the card says.
-    if (f.status === "ok" && kind !== "ok" && kind !== "unknown") headline = kpiDefs().filter((d) => d.tone === kind).map((d) => d.why).filter(Boolean)[0] || "A headline number is over its limit";
+    if (status === "ok" && kind !== "ok" && kind !== "unknown") headline = kpiDefs().filter((d) => d.tone === kind).map((d) => d.why).filter(Boolean)[0] || "A headline number is over its limit";
     if (!answering) headline = "Not known: the server does not answer";
     // The headline problem's own since and first signal (NEW-shell-monitor-1); how long the
     // fleet has not been all right is said apart, when it began earlier.
@@ -261,7 +257,7 @@ function render(page, r0) {
       sub.push([m.shards.length ? `${m.shards.filter((s) => s.st === "ok").length} of ${m.shards.length} shards serve reads and writes` : null, m.total ? `${m.up} of ${m.total} copies answer` : null,
         check("error_ratio")?.value != null ? `error ratio ${pctTxt(check("error_ratio").value)} (SLO ${pctTxt(sloErr())})` : null,
         p99Shown() != null ? `p99 ${fmt.ms(p99Shown())}${check("p99")?.recent?.value_ms != null ? " last minute" : ""} (SLO ${fmt.ms(sloP99())})` : null,
-        firingNow().length ? null : "nothing firing", `checked ${when(f.at_ms)}`].filter(Boolean).join(" · "));
+        firingNow().length ? fmt.plural(firingNow().length, "info alert") + " firing" : "nothing firing", `checked ${when(f.at_ms)}`].filter(Boolean).join(" · "));
     } else {
       if (rec) sub.push(`failed ${when(rec.from_ms)}–${when(rec.to_ms)}; answering again since ${when(rec.to_ms)} (${durTxt(rec.to_ms)})`);
       else if (since) sub.push(`since ${when(since)} (${durTxt(since)})`);
@@ -468,7 +464,7 @@ function render(page, r0) {
     const f = state.fleet;
     probCard.classList.toggle("stale", !fresh("fleet").ok && !fresh("fleet").loading);
     if (!f) { clear(probBody, h("div", { class: "muted small" }, "Checking…")); return; }
-    const probs = f.problems || [];
+    const probs = homeProblems(f);
     const restore = probs[0]?.severity === "critical" && /majority|dark|does not answer|no reads/i.test(probs[0].title);
     probTitle.textContent = restore ? "What would restore service" : "Problems";
     probSub.textContent = probs.length ? `${probs.length}, worst first · where, since when, next step${isPast() ? " · now, not the window shown" : ""}` : "";
@@ -481,10 +477,12 @@ function render(page, r0) {
         p99Shown() != null ? `p99 ${fmt.ms(p99Shown())}${check("p99")?.recent?.value_ms != null ? " last minute" : ""} (SLO ${fmt.ms(sloP99())})` : null,
         check("lag") ? `replication lag at most ${fmt.si(check("lag").max_txn || 0)} transactions` : null,
         check("disk")?.max != null ? `fullest disk ${fmt.pct(check("disk").max, 0)}` : null,
-        `${firingNow().length ? fmt.plural(firingNow().length, "alert") + " firing" : "no alert firing"}`,
-      ].filter(Boolean);
+      ].filter(Boolean).map((t) => [icon("check"), t]);
+      // What fires here is info only (a warning or worse is a problem above): told, not checked off.
+      const info = firingNow();
+      okRows.push(info.length ? [icon("info"), h("a", { href: link("alerts") }, `${fmt.plural(info.length, "info alert")} firing`), " (it tells, it is no problem)"] : [icon("check"), "no alert firing"]);
       clear(probBody, h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc", "lg")), h("b", {}, "No problems")),
-        h("ul", { class: "home-oklist" }, okRows.map((t) => h("li", {}, icon("check"), t))),
+        h("ul", { class: "home-oklist" }, okRows.map((t) => h("li", {}, t))),
         h("div", { class: "small muted" }, `As of ${when(f.at_ms)}. What changed recently is on the `, h("a", { href: link("timeline") }, "Timeline"), "."));
       return;
     }
@@ -723,7 +721,7 @@ function render(page, r0) {
   drawFleet(); drawCluster(); drawCharts(); drawEvents(); drawWho(); drawReady(); drawStart();
   const offs = [
     bus.on("alerts", drawReady), bus.on("whoami", () => { drawReady(); loadAudit(); }), bus.on("cluster", drawReady), every(60000, loadAudit),
-    bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", drawBanner),
+    bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", () => { drawBanner(); drawProblems(); }),
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
     bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
     bus.on("answering", () => { drawBanner(); drawHead(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),

@@ -5,7 +5,7 @@
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
 import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, signInNeeded, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel, isIdle, IDLE_SLOW } from "./core.js";
-import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, pendingProposals, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
+import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, pendingProposals, homeProblems, homeStatus, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
 import { openFeedback, setViewOf } from "./feedback.js";
@@ -197,7 +197,7 @@ function labItem(e, pinned) {
 // silenced (firingNow).
 function shellBadge(id) {
   if (id === "oncall") { const n = pendingProposals(); return n ? { n, tone: "warn", title: `${fmt.plural(n, "proposal")} (the on-call agent's, and change requests) wait for an admin` } : null; }
-  if (id === "home") { const f = state.fleet; if (!f) return null; const n = (f.problems || []).length; return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
+  if (id === "home") { const f = state.fleet; if (!f) return null; const n = homeProblems().length; return n ? { n, tone: homeStatus() === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
   // Info alerts are counted, in a neutral tone: only a warning or worse turns the count amber or red (F2).
   if (id === "alerts") { const fa = firingNow(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : fa.some((a) => a.severity === "warning") ? "warn" : "info", title: `${fmt.plural(n, "alert")} firing${fa.every((a) => a.severity === "info") ? " (info)" : ""}` } : null; }
   if (id === "cluster") {

@@ -379,6 +379,38 @@ export function firesOn(x) {
 /** The alerts firing now that nobody silenced nor a cause holds back (alerts2): the one count the bell, Alerts and Home show. */
 export const firingNow = () => firingAlerts().filter((a) => !a.silenced && !a.held_by);
 
+/**
+ * The fleet's problems as Home, its banner and the navigation show them
+ * (LIV-9): the server's last answer, and the alerts firing now (the bell's
+ * count) when that answer did not count them yet, as the server would: an
+ * info alert tells but is no problem. Worst first.
+ */
+export function homeProblems(f = state.fleet) {
+  const probs = [...(f?.problems || [])];
+  const told = firingNow().filter((a) => a.severity !== "info");
+  if (told.length && !probs.some((p) => p.id === "alerts" || String(p.id || "").startsWith("alert-"))) {
+    const crit = told.filter((a) => a.severity === "critical").length;
+    const on = (a) => (a.on ? ` on ${a.on}` : a.where?.length === 1 ? ` on ${a.where[0].short || a.where[0].copy || a.where[0]}` : a.where?.length > 1 ? ` on ${a.where.length} copies` : "");
+    const since = told.map((a) => a.since_ms).filter(Boolean);
+    probs.push({
+      id: "alerts", severity: crit ? "critical" : "warning",
+      title: `${told.length} ${told.length === 1 ? "alert is" : "alerts are"} firing${crit ? `, ${crit} critical` : ""}: ${told.slice(0, 2).map((a) => a.name + on(a)).join("; ")}${told.length > 2 ? ` and ${told.length - 2} more` : ""}`,
+      where: [], since_ms: since.length ? Math.min(...since) : null,
+      impact: told.slice(0, 4).map((a) => `${a.name} (${a.severity})`).join(", ") + (told.length > 4 ? ` and ${told.length - 4} more` : ""),
+      next: told.length === 1 ? { text: "Open the alert", view: "alert/" + encodeURIComponent(told[0].id), params: {} } : { text: "Open Alerts", view: "alerts", params: {} },
+    });
+    probs.sort((a, b) => (a.severity === "critical" ? 0 : 1) - (b.severity === "critical" ? 0 : 1));
+  }
+  return probs;
+}
+/** The status Home shows: the server's, or worse when an alert fires that its last answer did not count. */
+export function homeStatus(f = state.fleet) {
+  const probs = homeProblems(f);
+  const st = f?.status || "ok";
+  if (probs.some((p) => p.severity === "critical")) return "critical";
+  return st === "ok" && probs.length ? "warning" : st;
+}
+
 // ---------------------------------------------------------------- the cluster's identity
 const idOf = () => state.cluster?.cluster || state.whoami?.cluster || state.health?.cluster || null;
 /** The cluster's name ("prod/search"), or null when the server does not say. */

@@ -187,6 +187,20 @@ assert.equal(woke, before + 1, "someone back: what is due is asked at once");
 st();
 Date.now = realNow;
 
+// LIV-9: an alert firing now is a problem on Home, though the fleet's last
+// answer did not count it yet; an info alert tells but is no problem.
+const data = await import(new URL("data.js", app));
+data.state.fleet = { status: "ok", problems: [], checks: [] };
+data.state.alerts = { rules: [{ id: "p99-jump", name: "Query p99 doubled", severity: "warning" }], states: [{ rule: "p99-jump", state: "firing", since_ms: 1000, where: [] }] };
+assert.deepEqual(data.homeProblems().map((p) => [p.id, p.severity, p.title, p.next.view]), [["alerts", "warning", "1 alert is firing: Query p99 doubled", "alert/p99-jump"]]);
+assert.equal(data.homeStatus(), "warning");
+data.state.fleet = { status: "warning", problems: [{ id: "alerts", severity: "warning", title: "1 alert is firing: Query p99 doubled" }] };
+assert.equal(data.homeProblems().length, 1, "counted once when the fleet has it");
+data.state.fleet = { status: "ok", problems: [] };
+data.state.alerts.rules[0].severity = "info";
+assert.deepEqual([data.homeProblems(), data.homeStatus()], [[], "ok"]);
+data.state.fleet = null; data.state.alerts = null;
+
 // CCW-10: the shell knows each view before its code loads: what views/index.js
 // says of a view (its title, icon, layout, the words the palette finds it by)
 // is what the view's module says, and each view's code loads.
