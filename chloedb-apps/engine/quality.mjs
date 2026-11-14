@@ -54,7 +54,7 @@ export const ART_DOC = `- art: the app's art direction, for a new app, decided w
   "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a taco truck: "editorial, the menu as a chalkboard list"; a course: "split, lessons beside progress"); vary it by subject, not by habit;
   "type": the title face, "system", "serif" (editorial, food, books), "rounded" (friendly, families, learning) or "mono" (technical), with the pairing ("serif titles over plain text");
   "accent": the one color of the main buttons, named as the subject would ("salsa red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
-  "imagery": what the photos show, the real product itself (the tacos on the plate, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job;
+  "imagery": what the photos show, the real product itself (the tacos on the plate, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job, or when the brand is its name, its dates and its voice (a club, an event, a poster, a festival): then the first screen is type-led, a big bold headline in the accent over the design's color and the next event or offer right under it, never a stock photo standing in;
   "action": the one main action and its words, a concrete verb ("Order tacos", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)

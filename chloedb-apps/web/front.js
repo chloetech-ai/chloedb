@@ -290,9 +290,37 @@
 
     // A card; in a row where other cards have photos, one without gets a
     // quiet pattern in the design's tint (no letters), so the row stays even.
+    // A card's day ("date", or an eyebrow that is one: "Nov 27, 2026",
+    // "2026-11-27"), for an event's calendar block: month, day, weekday.
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dayParts = (v) => {
+      const t = String(v ?? '').trim();
+      let y, m, d;
+      let x = /^(\d{4})-(\d{2})-(\d{2})\b/.exec(t);
+      if (x) { y = +x[1]; m = +x[2] - 1; d = +x[3]; } else if ((x = /^(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$/.exec(t))) {
+        m = MONTHS.findIndex((n) => x[1].slice(0, 3).toLowerCase() === n.toLowerCase()); d = +x[2]; y = x[3] ? +x[3] : null;
+      } else return null;
+      if (m < 0 || m > 11 || !(d >= 1 && d <= 31)) return null;
+      const wd = y ? new Date(Date.UTC(y, m, d)).toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' }) : '';
+      return { mon: MONTHS[m], day: d, wd };
+    };
     const card = (it, s, path, row = false) => {
       const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1) : null;
       const has = it.src || it.photo;
+      // an event without a photo: its day as a calendar block beside its words
+      const day = !has && !row ? dayParts(it.date ?? it.eyebrow) : null;
+      if (day) {
+        const el = h('div', { class: 'fp-card dated' },
+          h('div', { class: 'fp-date', 'aria-hidden': 'true' }, h('span', { class: 'fp-date-m' }, day.mon), h('b', { class: 'fp-date-d' }, String(day.day)), day.wd ? h('span', { class: 'fp-date-w' }, day.wd) : null),
+          h('div', { class: 'fp-card-body' },
+            it.title ? h('h3', null, rich(it.title)) : null,
+            it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
+            it.badge ? h('span', { class: 'fp-chip' }, String(it.badge)) : null,
+            it.action ? h('div', { class: 'fp-card-foot' }, action(it.action, s, `${path}.action`, it.action.style ? 1 : 0)) : null));
+        el.setAttribute('aria-label', `${String(it.eyebrow ?? it.date ?? '')} ${String(it.title ?? '')}`.trim());
+        if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }
+        return el;
+      }
       const ph = () => h('div', { class: 'fp-ph fp-ph-pattern', role: 'img', 'aria-label': String(it.title || '') });
       const el = h('div', { class: `fp-card${has || row ? ' has-pic' : ''}` },
         has || row ? h('figure', { class: 'fp-card-pic' }, has ? pic(it, s, path) : ph(), it.badge ? h('span', { class: 'fp-badge' }, String(it.badge)) : null, credit(it)) : null,
