@@ -476,3 +476,12 @@ body.bare.designed.look-bold .top .look { background: transparent; border-color:
   body.bare.designed .top { height: 56px; padding: 0 12px; }
   body.bare.designed .brand { font-size: 18px; }
 }
+
+/* who is signed in, on an app's own page */
+.who { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 12px 4px 4px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 14px; cursor: pointer; }
+.who-av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-fg, #fff); font-weight: 700; font-size: 13px; }
+.who-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.whomenu .who-line { padding: 4px 10px 10px; }
+.who-out { min-height: 44px; padding: 0 6px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+.who-out:hover { color: var(--fg); text-decoration: underline; }
+@media (max-width: 560px) { .who { padding: 4px; } .who-name, .who-out { display: none; } }

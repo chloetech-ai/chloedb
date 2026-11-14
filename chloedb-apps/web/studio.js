@@ -919,6 +919,7 @@ function renderLook() {
     right.prepend(btn);
     document.addEventListener('click', (e) => { if (!e.target.closest?.('#lookmenu')) $('#lookmenu')?.setAttribute('hidden', ''); });
   }
+  renderWho(right);
   const d = S.app?.design;
   btn.hidden = !d;
   $('#lookmenu')?.remove();
@@ -931,6 +932,37 @@ function renderLook() {
       h('span', { class: 'swatch', style: `background:${x.light.accent}` }), h('span', { class: 'swatch', style: `background:${x.dark.bg}` }),
       h('span', { class: 'grow' }, h('b', x.name), x.about ? h('div', { class: 'hint' }, x.about) : null), i === cur ? h('span', { class: 'check' }, '✓') : null)));
   right.append(menu);
+}
+
+// Who is signed in, on the app's own page: their initials in the bar, and
+// a menu with their name and Sign out (on a phone too). Nobody signed in,
+// nothing shows: a screen kept to members shows its own sign-in.
+async function renderWho(right) {
+  const appId = S.appId;
+  if (S.meFor !== appId) {
+    S.meFor = appId;
+    S.me = await api('GET', `/api/apps/${appId}/me`).then((r) => r.user || null).catch(() => null);
+    if (S.appId !== appId) return;
+  }
+  $('#who')?.remove();
+  $('#whomenu')?.remove();
+  const me = S.me;
+  if (!me) return;
+  const name = String(me.name || me.email || 'You');
+  const initials = name.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+  const btn = h('button', { id: 'who', class: 'who', type: 'button', title: `Signed in as ${name}`, 'aria-label': `Signed in as ${name}: account menu`,
+    onclick: (e) => { e.stopPropagation(); $('#whomenu')?.toggleAttribute('hidden'); } }, h('span', { class: 'who-av' }, initials), h('span', { class: 'who-name' }, name));
+  const signOut = async () => { await api('POST', '/api/signout').catch(() => {}); S.meFor = null; authChanged(); };
+  const menu = h('div', { id: 'whomenu', class: 'lookmenu whomenu', hidden: true },
+    h('div', { class: 'lookhead' }, 'Signed in as'),
+    h('div', { class: 'who-line' }, h('b', name), me.email && me.email !== name ? h('div', { class: 'hint' }, me.email) : null),
+    h('button', { class: 'lookitem', type: 'button', onclick: signOut }, 'Sign out'));
+  // on a computer Sign out is in the bar itself; on a phone, in the menu
+  const out = h('button', { id: 'whoout', class: 'who-out', type: 'button', onclick: signOut }, 'Sign out');
+  $('#whoout')?.remove();
+  right.prepend(btn, out);
+  right.append(menu);
+  if (!S.whoClose) { S.whoClose = true; document.addEventListener('click', (e) => { if (!e.target.closest?.('#whomenu')) $('#whomenu')?.setAttribute('hidden', ''); }); }
 }
 
 function togglePanel() {
@@ -1671,6 +1703,7 @@ async function upload(base, file) {
 // After someone signs in or out every view starts again, so that each one
 // sees who is there now.
 function authChanged() {
+  S.meFor = null;
   setTimeout(() => {
     for (const f of S.frames.values()) f.iframe.remove();
     S.frames.clear();
