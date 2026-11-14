@@ -3300,3 +3300,10 @@ test('OFFERS PAY: a one-tap booking takes a card payment for the row its rule re
   assert.match(e.screen.let.sessions_act, /app\.pay\(\{table: "bookings", id, amount: "amount", status: "status"/);
   assert.match(e.screen.let.sessions_act, /app\.payNow\(p, "Booked"\)/);
 });
+
+test('a screen with a site header of its own is a front page', () => {
+  const { screen } = expandWith({ body: [{ nav: 'Shop', links: [] }, { hero: 'Hello' }] });
+  assert.equal(screen.page, 'front');
+  assert.equal(expandWith({ body: [{ h: 'Orders' }] }).screen.page, undefined);
+  assert.equal(expandWith({ page: 'front', body: [{ hero: 'x' }] }).screen.page, 'front');
+});

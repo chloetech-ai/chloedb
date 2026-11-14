@@ -90,7 +90,9 @@
     const list = (v, s, path) => { const x = val(v, s, path); return Array.isArray(x) ? x : x == null ? [] : [x]; };
 
     const scrollToId = (id) => {
-      const el = document.getElementById(id);
+      // a link to a part the page does not have goes to the page's form
+      // (where its actions lead), so a main action never does nothing
+      const el = document.getElementById(id) || document.querySelector('.screen form')?.closest('section, .fp-sec') || null;
       if (el) el.scrollIntoView({ behavior: still() ? 'auto' : 'smooth', block: 'start' });
     };
     // An action: {label, open: "view", params, href: "#part" or a URL, do: "=handler", style: "primary" | "secondary" | "link"}.
@@ -180,8 +182,12 @@
     let pageLayout = null;
     const LAYOUT_HERO = { hero: 'photo', split: 'split', editorial: 'plain', gallery: 'split', dashboard: 'split', tool: 'split' };
     F.hero = (b, s, path) => {
-      const pic0 = b.src || b.photo;
-      const look = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'gradient');
+      // a photo is one placed (src): a photo named but not found (or not yet,
+      // while the page is drawn during a build) is no grey box, the words
+      // stand on the design's gradient instead
+      const pic0 = b.src;
+      const asked = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'gradient');
+      const look = (asked === 'photo' || asked === 'split') && !pic0 ? 'gradient' : asked;
       const align = b.align || (look === 'split' || pageLayout === 'editorial' ? 'left' : 'center');
       const height = b.height || (look === 'photo' ? 'full' : look === 'split' ? 'tall' : 'tall');
       const text = h('div', { class: `fp-hero-text ${align}` },
@@ -210,7 +216,7 @@
       }
       return h('section', { class: cls, id: b.id || null }, look === 'gradient' ? blobs() : null,
         h('div', { class: 'fp-wrap' }, text,
-          b.src || b.photo ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
+          b.src ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
     };
 
     F.band = (b, s, path) => {
@@ -492,6 +498,11 @@
     const flat = (x) => (Array.isArray(x) ? x.flatMap(flat) : x == null || x === false ? [] : [x]);
     function page(body, s, layout = null) {
       pageLayout = layout;
+      // The hero carries the page's main action: one that gives none takes
+      // the header's (a page whose only action was a small header link)
+      const list = Array.isArray(body) ? body : [body];
+      const navAct = list.find((b) => b && typeof b === 'object' && b.nav !== undefined && b.action !== undefined)?.action;
+      if (navAct) body = list.map((b) => (b && typeof b === 'object' && b.hero !== undefined && b.actions === undefined && b.action === undefined ? { ...b, actions: [navAct] } : b));
       const out = [];
       let loose = null;
       const section = (b, i) => h('section', { class: `fp-sec${b && b.tint ? ' tint' : ''}`, id: (b && b.id) || null }, h('div', { class: 'fp-wrap' }));

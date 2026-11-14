@@ -1184,7 +1184,8 @@ function renderFrames() {
   } else if (S.act) { S.act.destroy(); S.act.box.remove(); S.act = null; }
   // An app on its own showing a front page gives the page the whole window:
   // the page has its own header.
-  document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"/.test(v.code || ''));
+  // (A screen with a site header of its own, a "nav" part, is one too.)
+  document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"|"body"\s*:\s*\[\s*\{\s*"nav"\s*:/.test(v.code || ''));
   box.querySelector('.viewerr')?.remove();
   const err = S.errors.get(S.view);
   if (err) {

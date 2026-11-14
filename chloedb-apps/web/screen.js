@@ -1092,7 +1092,7 @@ window.__sa_numbers = (() => {
     // A front page (spec.page "front") is drawn edge to edge, its parts in
     // sections; its blocks work in any screen.
     const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope }) : null;
-    const isFront = spec.page === 'front' && !!front;
+    const isFront = (spec.page === 'front' || (!spec.page && Array.isArray(spec.body) && spec.body.some((b) => b && typeof b === 'object' && b.nav !== undefined))) && !!front;
     if (isFront) document.body.classList.add('front');
     // The screen's page structure (engine/quality.mjs LAYOUTS): a class the
     // kit draws (kit.css, front.css), and for a working screen its parts

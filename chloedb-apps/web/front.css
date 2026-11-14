@@ -189,6 +189,12 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-band-body .fp-head { margin-bottom: 4px; }
 .fp-band.left .fp-band-in, .fp-band.left .fp-band-body { align-items: flex-start; text-align: left; }
 .fp-band-body > .col { align-items: inherit; }
+/* A form in a band is a card of its own a hand's width: a centred band does
+   not shrink it to its labels, and its fields stand out of the band's tint. */
+.fp-band-body > .col:has(form) { align-self: stretch; }
+.fp-band-body form.wide { width: min(640px, 100%); margin-inline: auto; text-align: left; color: var(--fg); padding: clamp(20px, 3vw, 32px);
+  background: var(--card); border: 1px solid var(--card-border, var(--line)); border-radius: 18px; box-shadow: 0 24px 48px -28px rgba(16, 24, 40, .28); }
+.fp-band.left .fp-band-body form.wide { margin-inline: 0; }
 .fp-band.look-accent { background: linear-gradient(125deg, var(--accent), color-mix(in srgb, var(--g2) 85%, var(--accent)) 55%, color-mix(in srgb, var(--g3) 80%, var(--accent))); }
 .fp-band.look-dark { background: #08080b; }
 .fp-band.look-tint { background: color-mix(in srgb, var(--fg) 3.5%, var(--bg)); }
