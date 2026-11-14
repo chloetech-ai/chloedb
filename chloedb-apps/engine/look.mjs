@@ -149,9 +149,10 @@ export function measure(arg) {
     if (fg.a === 0) continue; // drawn some other way (gradient text)
     const r = Math.min(...bgs.map((bg) => ratio(over({ ...fg, a: fg.a * alpha }, bg), bg)));
     const size = parseFloat(cs.fontSize);
+    // The ratio cut (never rounded up), so that one under the need never reads as the need itself.
     const need = q ? q.neededContrast(size, cs.fontWeight) : ((size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700)) ? 3 : 4.5);
     if (r < need) {
-      const f = { text: words(t.data).slice(0, 40), ratio: Math.round(r * 10) / 10, need };
+      const f = { text: words(t.data).slice(0, 40), ratio: Math.floor(r * 100) / 100, need };
       faint.push(f);
       if (e.closest('button, a[href], [role=button]')) faintButtons.push(f);
     }
@@ -227,9 +228,13 @@ export function rules(m, device) {
   if (m.text < 3 && !m.controls) out.push({ problem: 'the screen draws nothing', severity: 'high' });
   if (m.scroll > m.width + 2) out.push({ problem: `the page is ${m.scroll - m.width} px wider than the ${device} and scrolls sideways${m.wide ? ` (${m.wide.what} reaches ${m.wide.right} px)` : ''}`, severity: 'high' });
   if (device === 'phone' && m.smallCount) out.push({ problem: `${m.smallCount} thing${m.smallCount === 1 ? '' : 's'} to tap ${m.smallCount === 1 ? 'is' : 'are'} smaller than a finger (44 px): ${m.small.slice(0, 3).join(', ')}`, fix: 'make each control and link at least 44 by 44 px on a phone', severity: 'high' });
-  if (m.faintButtons?.length) out.push({ problem: `button words that are hard to read: ${m.faintButtons.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (they need ${m.faintButtons[0].need || 4.5}:1)`, fix: 'draw the words in white on a deep color, or in dark ink on a pale one', severity: 'high' });
+  // Text a hair under its contrast (within 0.2) is noted, not a reason for
+  // a change of its own: the audit saw a paid change for 4.49:1.
+  const need = (f) => f.need || 4.5;
+  const far = (list) => list.some((f) => f.ratio < need(f) - 0.2);
+  if (m.faintButtons?.length) out.push({ problem: `button words that are hard to read: ${m.faintButtons.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (they need ${need(m.faintButtons[0])}:1)`, fix: 'draw the words in white on a deep color, or in dark ink on a pale one', severity: far(m.faintButtons) ? 'high' : 'low' });
   const faintOther = (m.faint || []).filter((f) => !(m.faintButtons || []).some((b) => b.text === f.text));
-  if (faintOther.length) out.push({ problem: `text that is hard to read: ${faintOther.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (it needs ${faintOther[0].need || 4.5}:1)`, severity: 'high' });
+  if (faintOther.length) out.push({ problem: `text that is hard to read: ${faintOther.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (it needs ${need(faintOther[0])}:1)`, severity: far(faintOther) ? 'high' : 'low' });
   if (m.raw?.length) out.push({ problem: `labels that are not words for people: ${m.raw.slice(0, 3).join(', ')}`, fix: 'say what each number or column is in the subject\'s words ("Lessons done", "Groups meeting this week")', severity: 'high' });
   if (device === 'phone' && m.mainTop != null && m.mainTop > m.screen - 24) out.push({ problem: `the main action ("${m.mainName}") starts ${m.mainTop} px down and the phone's first screen shows ${m.screen} px`, fix: 'make what stands above it shorter (a short hero, fewer words) so the main action shows without scrolling', severity: 'high' });
   if (m.ids.length) out.push({ problem: `raw ids are shown: ${m.ids.join(', ')} (show the name of the row instead)`, severity: 'high' });

@@ -155,7 +155,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
-        tokio::runtime::Builder::new_multi_thread().worker_threads(n).thread_name("chloedb-datafusion").enable_all().build().expect("a tokio runtime for DataFusion")
+        tokio::runtime::Builder::new_multi_thread().worker_threads(n).thread_name("chloedb-datafusion").thread_stack_size(super::parse::QUERY_STACK).enable_all().build().expect("a tokio runtime for DataFusion")
     })
 }
 
@@ -168,7 +168,7 @@ pub fn run_in(plan: &Plan, catalog: &[&Schema], runner: &mut Runner, opts: &Exec
     let pool = Arc::new(Pool { charge: charge.clone(), limited: opts.memory.is_some(), used: AtomicUsize::new(0), refused: Mutex::new(None) });
     let env = RuntimeEnvBuilder::new().with_memory_pool(pool.clone()).build_arc().map_err(|e| Error::Query(format!("datafusion: {e}")))?;
     let ctx = SessionContext::new_with_config_rt(config, env);
-    let mut l = Lower { catalog, runner, opts, ctx, pool, next: 0, ctes: Vec::new(), driver: None, per: None, lines: Vec::new(), charge, filter_docs: 0, scored: 0, clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, tables: HashMap::new(), leaf_rows: 0, ran: Vec::new() };
+    let mut l = Lower { catalog, runner, opts, ctx, pool, next: 0, ctes: Vec::new(), driver: None, per: None, lines: Vec::new(), charge, filter_docs: 0, scored: 0, clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, tables: HashMap::new(), leaf_rows: 0, ran: Vec::new(), depth: 0 };
     match l.answer(&plan.root) {
         Ok(rs) => Ok(Outcome::Done(rs)),
         Err(Fail::No(why)) => Ok(Outcome::Fallback(why, l.ran())),
@@ -335,7 +335,18 @@ struct Lower<'a, 'r> {
     /// [`SMALL`] ([`Ran`]).
     leaf_rows: usize,
     ran: Vec<(Plan, ResultSet)>,
+    /// How many [`Lower::expr`] and [`Lower::node`] calls are open:
+    /// past [`MAX_DEPTH`], the plan is not lowered.
+    depth: usize,
 }
+
+/// How deeply an expression or a plan may nest to be lowered here. Past
+/// it, the operators run the plan: DataFusion names, types and
+/// optimises a nested expression by walking it again at each level, so
+/// its time grows with the cube of the depth and its stack with the
+/// depth (a 990-term `'a' || 'a' || ...` took seconds, then overflowed
+/// the stack), while the operators take a millisecond for it.
+const MAX_DEPTH: usize = 48;
 
 impl<'a> Lower<'a, '_> {
     fn ran(&mut self) -> Ran {
@@ -632,6 +643,21 @@ impl<'a> Lower<'a, '_> {
     /// Lowers `n`; `what` names its leaves in the plan's lines, as the
     /// operators do (`query`, `scan`, `join`, `WITH t`, `subquery`).
     fn node(&mut self, n: &Node, what: &str) -> R<Rel> {
+        self.deeper(|l| l.node_at(n, what))
+    }
+
+    /// `f` one level deeper into the plan, or not lowered past [`MAX_DEPTH`].
+    fn deeper<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        if self.depth >= MAX_DEPTH {
+            return no(format!("a plan or expression nested more than {MAX_DEPTH} levels deep"));
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
+    fn node_at(&mut self, n: &Node, what: &str) -> R<Rel> {
         if n.is_leaf() {
             return self.leaf(n, what, Vec::new());
         }
@@ -1994,6 +2020,10 @@ impl<'a> Lower<'a, '_> {
 
     /// An expression over rows whose column `i` is `cols[i]`.
     fn expr(&mut self, e: &Expr, cols: &[String], schema: &DFSchema) -> R<DExpr> {
+        self.deeper(|l| l.expr_at(e, cols, schema))
+    }
+
+    fn expr_at(&mut self, e: &Expr, cols: &[String], schema: &DFSchema) -> R<DExpr> {
         let ty = |x: &DExpr| x.get_type(schema).map_err(Fail::from);
         if let Some(c) = self.list_cond(e, cols, schema)? {
             return Ok(c);

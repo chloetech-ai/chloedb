@@ -299,17 +299,19 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre></div>
 
   <section class="gutter band-night" id="start"><div class="wrap cta">
     <h2>Start with a file in your app</h2>
-    <p class="lede" style="color:var(--night-dim)">Build the Python package from the repository, open a file and query it. Rust and a C compiler are all it needs.</p>
-<pre>git clone https://github.com/chloetech-ai/chloedb
-pip install ./chloedb/chloedb-py
-python - &lt;&lt;'EOF'
+    <p class="lede" style="color:var(--night-dim)">Install the Python package, a prebuilt wheel for Linux and macOS (Python 3.10 or later), then open a file and query it. Nothing to compile.</p>
+<pre>pip install chloedb
+python3 - &lt;&lt;'EOF'
 import chloedb
 db = chloedb.open("shop.chloedb", schema={"table": "products", "key": "id",  # a new file needs a schema
     "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}]})
 db.upsert({"id": "p1", "title": "Trail running shoes"})
 print(db.search("shoes").dicts())
 EOF</pre>
-    <div class="center-row"><a class="btn primary lg" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/python.md">Python guide</a><a class="btn on-night lg" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Run a server</a></div>
+    <p class="lede" style="color:var(--night-dim)">Or run the server, prebuilt, with SQL over HTTP and the command center in your browser:</p>
+<pre>curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
+    <div class="center-row"><a class="btn primary lg" href="docs/quickstart.html">Quickstart</a><a class="btn on-night lg" href="docs/python.html">Python guide</a></div>
+    <p style="color:var(--night-dim);text-align:center">On Windows (outside WSL 2) or Alpine there is no wheel yet: <a href="docs/python.html#from-source">build the package from source</a>, which needs Rust and a C compiler.</p>
   </div></section>
 </main>
 

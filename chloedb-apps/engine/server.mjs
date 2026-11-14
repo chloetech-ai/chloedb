@@ -19,13 +19,15 @@ import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
-import { MODEL, spend, useSpendFile, checkProvider, withProvider } from './llm.mjs';
-import { newId } from './store.mjs';
+import { MODEL, spend, useSpendFile, buildScope, checkProvider, withProvider } from './llm.mjs';
+import { explainFailure } from './failures.mjs';
+import { newId, shortName, firstBuildStatus } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
 import { STEP_DEFAULTS, expectedSteps } from './trace.mjs';
 import { Publish, forVisitor, strangerOf } from './publish.mjs';
+import { forVisitors } from './audience.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -342,7 +344,8 @@ async function runRequest(req, extra = {}) {
   // The build's steps as the studio draws them (read, plan, write, store),
   // with when each began, and the pieces being written at once.
   const split = SPLIT === 'always' || (SPLIT === 'first' && first);
-  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'] };
+  // stop: aborts every model call of this build (POST .../stop).
+  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'], stop: new AbortController() };
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
@@ -358,19 +361,24 @@ async function runRequest(req, extra = {}) {
   try {
     // A build that names its provider (codex, agy) has its model calls go there.
     if (extra.provider) log(`[${req.app}] ${req.id} built with the ${extra.provider} provider`);
-    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
-      : await withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress));
+    const out = await buildScope.run({ signal: state.stop.signal }, () => (req.source === 'component' ? useSharedVersion(engine, req.app, extra.cap, progress)
+      : withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress))));
+    if (state.stop.signal.aborted) throw Object.assign(new Error('stopped by its owner'), { stopped: true });
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
     engine.changes?.soon();
-  } catch (e) {
-    progress(`Failed: ${e.message}`);
-    await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
-    if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
+  } catch (err) {
+    // Stopped by its owner: whatever the forge made of the stop, it is a stop.
+    const stopped = state.stop.signal.aborted;
+    const e = stopped ? Object.assign(new Error('stopped by its owner'), { cost: err.cost, trace: err.trace }) : err;
+    const status = stopped ? 'stopped' : 'failed';
+    progress(stopped ? 'Stopped' : `Failed: ${e.message}`);
+    await engine.store.putRequest({ ...req, status, error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
+    if (e.trace) await saveTrace(req, e.trace, lines, { status, error: e.message.slice(0, 500), cost: e.cost || 0 });
     if (extra.candidate) await evolver.failed(extra.candidate, e.message).catch(() => {});
-    broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
+    broadcast('failed', { app: req.app, request: req.id, error: e.message, stopped, said: explainFailure(e.message, { stopped }), candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
     // A first build that gave no art direction: designs from the description.
@@ -544,7 +552,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: view.app,
+    app: { ...view.app, name: nameOf(view.app) },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -562,7 +570,8 @@ async function appState(appId) {
     suggestions: await store.suggestions(appId),
     // (versions built to try and not kept are listed with their candidates)
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
-    requests: await store.requests(appId, 30),
+    // A failed or stopped request says why in a plain sentence (said), its error kept for the details.
+    requests: (await store.requests(appId, 30)).map((r) => (r.status === 'failed' || r.status === 'stopped' ? { ...r, said: explainFailure(r.error, { stopped: r.status === 'stopped' }) } : r)),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
@@ -581,18 +590,27 @@ const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
-async function publicState(appId) {
+// An app's name as shown. One with no version yet that is still called by
+// the first 40 characters of its description (as apps were named before
+// shortName) is shown by a short name instead.
+const nameOf = (a) => (!Number(a.head) && a.name && String(a.description || '').startsWith(String(a.name).trim()) && String(a.name).trim().length >= 30 ? shortName(a.description) : a.name);
+
+async function publicState(appId, access) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
+    // What visitors may do with its data (publish.mjs): the page offers no
+    // write a visitor who may only look would be refused.
+    access: access || 'look',
     app: { id: appId, name: view.app.name },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
-    views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    // A visitor never gets the owner's views (engine/audience.mjs).
+    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
@@ -619,7 +637,17 @@ const routes = [
   ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
     // A key limited to tables lists the apps whose tables it reads.
-    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
+    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id));
+    // Each app's state: live (a version), building, or failed (its first
+    // build did not go through and none is running): the gallery said
+    // "building" for ever of an app whose first build failed.
+    const status = async (a) => {
+      if (Number(a.head)) return 'live';
+      if (running.has(a.id) || waiting.has(a.id)) return 'building';
+      const [last] = await engine.store.requests(a.id, 1).catch(() => []);
+      return firstBuildStatus(last, Date.now());
+    };
+    return { apps: await Promise.all(apps.map(async (a) => ({ ...a, name: nameOf(a), status: await status(a), cost: costs.get(a.id) || { usd: 0, builds: 0 } }))) };
   }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
@@ -642,7 +670,7 @@ const routes = [
     const provider = checkProvider(b.provider);
     // A name given is the app's for good (the plan's name does not replace it).
     const given = String(b.name || '').trim().slice(0, 60);
-    const name = given || description.split(/[.\n]/)[0].slice(0, 40);
+    const name = given || shortName(description);
     const app = await engine.store.createApp({ name, description });
     if (given) await engine.store.putSetting(app, 'named', '1');
     // Its three designs are made beside the first build, from the art
@@ -651,7 +679,7 @@ const routes = [
     const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access) : appState(id))],
   // Renamed by its owner: the name stays (a later plan does not rename it).
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
     const name = String(b.name || '').trim().replace(/\s+/g, ' ');
@@ -726,6 +754,15 @@ const routes = [
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
     const r = await submit(id, text, source, provider ? { provider } : {});
     return { request: r.id };
+  }],
+  // Stop the build running for this app: its model calls are killed at once
+  // and the request ends "stopped" (requests queued after it go on).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/stop$/, async (b, [id]) => {
+    const run = running.get(id);
+    if (!run || (b.request && b.request !== run.id)) return { stopped: false };
+    log(`[${id}] stopped by its owner`);
+    run.stop.abort();
+    return { stopped: true, request: run.id };
   }],
   // Reads and writes: for the app's people (the public path) under the
   // tables' declared access (access.mjs, ctx.as); the studio has every row.
@@ -939,9 +976,10 @@ const server = http.createServer(async (req, res) => {
     // asks to be treated as a visitor (never the other way round).
     const stranger = !refused ? strangerOf(req) : null;
     const seen = stranger ? await publish.allows(req, url, stranger) : null;
-    if (seen?.denied) return send(res, 403, { error: seen.denied });
+    // A refusal, not an error: the page says it and records nothing (refused).
+    if (seen?.denied) return send(res, 403, { error: seen.denied, refused: true });
     const open = seen || (login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null);
-    if (refused && open?.denied) return send(res, 403, { error: open.denied });
+    if (refused && open?.denied) return send(res, 403, { error: open.denied, refused: true });
     if (refused && open) {
       refused = null;
       if (!open.file) {
