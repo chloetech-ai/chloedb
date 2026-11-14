@@ -92,12 +92,14 @@ fn admin_into_a_closed_pipe_exits_quietly() {
         assert!(!err.contains("panicked"), "admin {args:?}: {err}");
         assert_eq!(out.status.code(), Some(0), "admin {args:?}: {err}");
     }
-    // An answer that is not JSON says its status: a 404's body is empty.
+    // A route that does not exist answers the API's error shape, and admin
+    // prints it and exits 1. (An answer that is not JSON, such as an empty
+    // body, says its status instead: `admin_cli`'s unit tests.)
     let out = bin().args(["admin", "--url", &s.1, "--json", "call", "GET", "/v1/nope"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(j["status"], 404, "{j}");
-    assert_eq!(j["error"], "HTTP 404 Not Found", "{j}");
+    assert_eq!(j["error_code"], "not_found", "{j}");
+    assert!(j["error"].as_str().is_some_and(|e| e.contains("/v1/nope")), "{j}");
 }
 
 /// `-h` lists the options of a first run; `--help` every option, by topic.
