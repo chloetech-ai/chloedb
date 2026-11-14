@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM, planWatcher, bigLabels, honourSize } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, kpiParts } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -181,22 +181,10 @@ test('the plan is handed on once its </plan> has streamed in, before the stateme
   planWatcher(null)({}, '<plan>{}</plan>');
 });
 
-test('a button the request calls big is drawn big and first in its group', () => {
-  assert.deepEqual(bigLabels('Add a big "Find the truck" button linking to https://instagram.com/davestacos.'), ['find the truck']);
-  assert.deepEqual(bigLabels('Add a \u201cBook now\u201d button, nice and large'), ['book now']);
-  assert.deepEqual(bigLabels('Add a "Find the truck" button.'), []);
-  assert.deepEqual(bigLabels('Put a big button that says Find the truck linking to instagram'), ['find the truck']);
-  assert.deepEqual(bigLabels('Add a large Book Now button at the top'), ['book now']);
-  assert.deepEqual(bigLabels('Make the photo big and add "Hours" to the footer'), []);
-  const screen = { page: 'front', body: [{ hero: 'Tacos', actions: [{ label: 'See the menu', href: '#menu' }, { label: 'Find the truck', href: 'https://instagram.com/x' }] }, { button: 'Find the truck', do: '=() => 1' }] };
-  assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), true);
-  assert.deepEqual(screen.body[0].actions.map((a) => a.label), ['Find the truck', 'See the menu']);
-  assert.equal(screen.body[0].actions[0].size, 'big');
-  assert.equal(screen.body[1].class, 'big');
-  assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), false);
-  assert.equal(honourSize(screen, 'Rename the heading'), false);
-  // drawn as the model wrote it in a round: the asked-for one secondary, the other big too
-  const r2 = { body: [{ hero: 'Tacos', actions: [{ label: 'Find the truck', href: 'https://x', size: 'big', style: 'secondary' }, { label: 'See the menu', href: '#menu', size: 'big' }] }] };
-  assert.equal(honourSize(r2, 'Add a big "Find the truck" button linking to https://instagram.com/davestacos.'), true);
-  assert.deepEqual(r2.body[0].actions, [{ label: 'Find the truck', href: 'https://x', size: 'big' }, { label: 'See the menu', href: '#menu' }]);
+
+test('big numbers where one is the other with more conditions are found, for the figure check to ask about', () => {
+  const screen = { data: { a: "SELECT SUM(x) AS v FROM t WHERE kind != 'z' AND d > 0", b: "SELECT SUM(x) AS v FROM t WHERE kind != 'z'", c: 'SELECT COUNT(*) AS v FROM u' },
+    body: [{ kpis: [{ label: 'Narrow', of: 'a' }, { label: 'Wide', of: 'b' }, { label: 'Other', of: 'c' }] }] };
+  assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Narrow', 'Wide']]);
+  assert.deepEqual(kpiParts({ data: { a: 'SELECT 1 AS v FROM t WHERE p OR q', b: 'SELECT 1 AS v FROM t' }, body: [{ kpis: [{ label: 'A', of: 'a' }, { label: 'B', of: 'b' }] }] }), [], 'an OR is no part');
 });

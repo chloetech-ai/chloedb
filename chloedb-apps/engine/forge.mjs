@@ -432,62 +432,6 @@ export function budgetOf(screen) {
   return out;
 }
 export const isBudget = (p) => /^over budget: /.test(p);
-
-// A request that asks for a big button by its label ("Add a big \"Find the
-// truck\" button") gets it: each action or button of a screen with that
-// label is drawn big ("size": "big"), and an action moves to the front of
-// its group, where it is the primary one. Returns whether it changed any.
-const BIG_WORDS = /\b(big|bigger|biggest|large|larger|huge|giant|prominent|oversized)\b/i;
-export function bigLabels(text) {
-  const t = String(text || '');
-  if (!BIG_WORDS.test(t) || !/\bbuttons?\b/i.test(t)) return [];
-  const out = [];
-  for (const m of t.matchAll(/["\u201c\u201d\u2018\u2019']([^"\u201c\u201d\u2018\u2019']{2,40})["\u201c\u201d\u2018\u2019']/g)) {
-    // A quoted label near the size word and the word "button".
-    const near = t.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40);
-    if (BIG_WORDS.test(near) && /\bbutton/i.test(near)) out.push(m[1].trim().toLowerCase());
-  }
-  // unquoted: "a big button that says Find the truck", "a big Find The Truck button"
-  for (const m of t.matchAll(/\bbuttons?\s+(?:that says|saying|labell?ed|called|named|reading|with the words)\s+([^"\u201c\u201d.,;!?\n]{2,40})/gi)) out.push(m[1].trim().replace(/\s+(?:linking|that|which|to|on|at)\b.*$/i, '').toLowerCase());
-  for (const m of t.matchAll(/\b(?:big|bigger|large|larger|huge|giant|prominent|oversized)\s+((?:[A-Z][\w'\u2019]*\s+(?:(?:the|a|an|of|to|my|our|us)\s+)?){1,6})buttons?\b/g)) out.push(m[1].trim().toLowerCase());
-  return [...new Set(out.filter(Boolean))];
-}
-export function honourSize(screen, text) {
-  const labels = bigLabels(text);
-  if (!labels.length) return false;
-  const same = (x) => typeof x === 'string' && labels.includes(x.trim().toLowerCase());
-  let changed = false;
-  const walk = (x) => {
-    if (Array.isArray(x)) {
-      x.forEach(walk);
-      return;
-    }
-    if (!x || typeof x !== 'object') return;
-    // A front page's action: {label, href | open | do}.
-    if (same(x.label) && (x.href !== undefined || x.open !== undefined || x.do !== undefined) && x.size !== 'big') { x.size = 'big'; changed = true; }
-    // A screen's button: {button: "label", do}.
-    if (same(x.button) && !/\bbig\b/.test(String(x.class || ''))) { x.class = `${x.class ? `${x.class} ` : ''}big`; changed = true; }
-    if (Array.isArray(x.actions)) {
-      const xs = x.actions;
-      const i = xs.findIndex((a) => a && typeof a === 'object' && same(a.label));
-      if (i > 0) { xs.unshift(...xs.splice(i, 1)); changed = true; }
-      if (i >= 0) {
-        // the one asked for is the group's primary, filled and big; the others are not big
-        const [first, ...rest] = xs;
-        if (first.style && first.style !== 'primary') { delete first.style; changed = true; }
-        if (first.class && /\b(secondary|ghost|link)\b/.test(first.class)) { first.class = first.class.replace(/\b(secondary|ghost|link)\b/g, '').trim() || undefined; if (!first.class) delete first.class; changed = true; }
-        for (const a of rest) {
-          if (!a || typeof a !== 'object') continue;
-          if (a.size === 'big') { delete a.size; changed = true; }
-          if (a.style === 'primary') { a.style = 'secondary'; changed = true; }
-        }
-      }
-    }
-    for (const v of Object.values(x)) if (v && typeof v === 'object') walk(v);
-  };
-  walk(screen);
-  return changed;
-}
 export function overBudget(slug, now, before) {
   const out = [];
   const grew = (k) => now[k] > BUDGET[k] && (!before || now[k] > before[k]);
@@ -502,6 +446,7 @@ export function overBudget(slug, now, before) {
   if (grew('code')) out.push(`over budget: screen ${slug} has ${now.code.toLocaleString('en-US')} characters of code in its expressions and code blocks (its budget is ${BUDGET.code.toLocaleString('en-US')}): say it with parts and their clauses (LIST, CHECKS, FIND...), move logic into a rule, and keep code to what no part can say`);
   return out;
 }
+
 // The budget a screen had before this change, from its statement when it
 // has one (as written), else its stored screen.
 function budgetBefore(view, slug) {
@@ -809,6 +754,44 @@ async function runData(db, appId, names, screen, name, today = new Date().toISOS
   }
   const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
   return db.query(phys, params);
+}
+
+// Two big numbers of a screen where one is the other's query with more
+// conditions ANDed on (Past due within Outstanding) and that come out equal
+// on the app's rows: two cards with one figure under two names read as a
+// mistake. Said to the model as a problem to fix (one figure, the other as
+// a part of it), never rewritten here.
+export function kpiParts(screen) {
+  const sqlOf = (name) => { const q = (screen.data || {})[name]; return typeof q === 'string' ? q : q && typeof q.sql === 'string' ? q.sql : null; };
+  const split = (sql) => {
+    const t = String(sql).replace(/\s+/g, ' ').trim();
+    const m = /^([\s\S]*?)\sWHERE\s([\s\S]*)$/i.exec(t);
+    const strip = (w) => w.replace(/[()]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return m ? { head: m[1].toLowerCase(), where: strip(m[2]) } : { head: t.toLowerCase(), where: '' };
+  };
+  const kpis = [];
+  const walk = (x) => { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (Array.isArray(x.kpis)) for (const k of x.kpis) if (k && typeof k.of === 'string' && sqlOf(k.of)) kpis.push(k); for (const v of Object.values(x)) walk(v); } };
+  walk(screen?.body);
+  const out = [];
+  for (const a of kpis) for (const b of kpis) {
+    if (a === b || a.of === b.of) continue;
+    const pa = split(sqlOf(a.of)), pb = split(sqlOf(b.of));
+    if (pa.head !== pb.head || /\bor\b/.test(pa.where) || pa.where.length <= pb.where.length || !pa.where.includes(pb.where) || (pb.where && !/\band\b/.test(pa.where))) continue;
+    out.push({ part: a, whole: b });
+  }
+  return out;
+}
+async function kpiEchoes(db, appId, names, plan, today) {
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v.screen || typeof v.screen !== 'object') continue;
+    for (const { part, whole } of kpiParts(v.screen)) {
+      const val = async (k) => { const rows = await runData(db, appId, names, v.screen, k.of, today).catch(() => null); const r = rows && rows[0]; return r ? Number(r.v !== undefined ? r.v : Object.values(r)[0]) : null; };
+      const [x, y] = [await val(part), await val(whole)];
+      if (x !== null && x !== 0 && x === y) out.push(`view ${v.slug}: the big numbers "${part.label}" and "${whole.label}" are the same rows (one with more conditions) and come out equal (${x}) on the app's rows: show one figure and say the other as a part of it (its "hint", such as "all of it ${String(part.label).toLowerCase()}"), or two that differ`);
+    }
+  }
+  return out;
 }
 
 // The figures a plan declares, worked out from the rows of their tables and
@@ -1908,11 +1891,6 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     err.cost = cost;
     throw err;
   }
-  // Size words in the request ("a big \"Find the truck\" button") hold for
-  // the button they name, whatever the model drew.
-  for (const v of plan.views || []) {
-    if (v.screen && typeof v.screen === 'object' && honourSize(v.screen, request.text)) code[v.slug] = JSON.stringify(v.screen, null, 1);
-  }
   progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
   // The app's currency, once: from its sheets' money or what was asked (£,
   // euros), so every price reads in it (the kit's app.fmt.money default).
@@ -1992,7 +1970,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const names = [...new Set([...view.tables.map((t) => t.spec.name), ...(plan.tables || []).map((t) => t.name)])];
     const run = (label) => tr.span('check', label, async (c) => {
       const p = await dryRunScreens(engine.db, appId, names, plan);
-      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view));
+      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view), ...await kpiEchoes(engine.db, appId, names, plan, today));
       c.problems = p.slice(0, 8);
       return p;
     });
