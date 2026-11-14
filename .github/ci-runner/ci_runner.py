@@ -3,9 +3,9 @@
 it and destroyed when CI has been idle, so it bills only while CI runs.
 
   ci_runner.py want     ci.yml's job `runner`: prints `label=<runs-on>`
-                        for $GITHUB_OUTPUT: ubuntu-latest while GitHub's
-                        free runners have room; when they are full, the
-                        droplet's label if one of its runners is free
+                        for $GITHUB_OUTPUT: the droplet's label if one of
+                        its runners is free (with CI_RUNNER=overflow, only
+                        when GitHub's free runners are full)
                         (making the droplet, and waiting for it to come up,
                         when there is none). It never fails: whatever goes wrong,
                         the jobs run on GitHub's runners as before.
@@ -28,7 +28,7 @@ token with this repository's Administration permission, read and write,
 which registering runners takes), GITHUB_TOKEN (reads the workflow runs);
 CI_RUNNER_SIZE (c-16), CI_RUNNER_REGION (nyc1), CI_RUNNER_COUNT (2, the
 runners on the droplet), CI_RUNNER_VOLUME_GB (100), CI_RUNNER ("off" turns
-it all off). No token is ever printed.
+it all off, "overflow" uses it only when GitHub's runners are full). No token is ever printed.
 """
 import argparse
 import base64
@@ -168,15 +168,20 @@ def want(args):
         return FALLBACK, "turned off (variable CI_RUNNER)"
     if not env("DIGITALOCEAN_TOKEN") or not env("GH_ADMIN_TOKEN"):
         return FALLBACK, "no DIGITALOCEAN_TOKEN or CI_RUNNER_ADMIN_TOKEN secret (a fork's pull request has neither)"
-    # GitHub's runners cost nothing: the droplet only takes the overflow,
-    # when they are full (jobs waiting for one), or nearly (fewer than
+    # By default the droplet takes the longest jobs of every run that
+    # builds the engine (the server's binary, ChloeDB's and the server's
+    # tests), which it runs in about half the time of GitHub's 4-core
+    # runners; it is destroyed after 15 idle minutes (`reap`), so it bills
+    # only while CI is busy. CI_RUNNER=overflow uses it only when GitHub's
+    # runners are full (jobs waiting for one), or nearly (fewer than
     # --headroom of the --limit free, since this run is about to start a
-    # dozen jobs of its own).
-    limit = int(env("CI_RUNNER_HOSTED_LIMIT", str(args.limit)))
-    running, queued = hosted_load()
-    if not queued and running + args.headroom < limit and not args.force:
-        return FALLBACK, f"GitHub's runners have room ({running} of {limit} busy, none waiting)"
-    log(f"GitHub's runners are full: {running} of {limit} busy, {queued} jobs waiting")
+    # dozen jobs of its own), as GitHub's cost nothing.
+    if env("CI_RUNNER") == "overflow" and not args.force:
+        limit = int(env("CI_RUNNER_HOSTED_LIMIT", str(args.limit)))
+        running, queued = hosted_load()
+        if not queued and running + args.headroom < limit:
+            return FALLBACK, f"GitHub's runners have room ({running} of {limit} busy, none waiting)"
+        log(f"GitHub's runners are full: {running} of {limit} busy, {queued} jobs waiting")
     deadline = time.time() + args.wait
     made = False
     while True:
