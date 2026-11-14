@@ -2,7 +2,7 @@
 // figures a build checks (engine/data.mjs). No server and no model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn, currencyOf } from '../engine/data.mjs';
+import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn, currencyOf, checkFigure } from '../engine/data.mjs';
 
 const REQUEST = `Here is my sales workbook.
 
@@ -253,4 +253,18 @@ test("an app's currency: its sheets' money first, then what was asked", () => {
   assert.equal(currencyOf([], 'quote it in euros'), 'EUR');
   assert.equal(currencyOf([], 'costs $5'), 'USD');
   assert.equal(currencyOf([], 'a habit tracker'), null);
+});
+
+test('a figure says a day condition (before today) and is checked with it; an unknown condition is a problem, never ignored', () => {
+  const rows = [
+    { amount: 850, due: '2026-11-04', paid: false }, { amount: 3200, due: '2026-10-31', paid: false },
+    { amount: 1800, due: '2026-11-18', paid: false }, { amount: 2400, due: '2026-10-20', paid: true },
+  ];
+  const overdue = { label: 'Overdue', table: 'invoices', sum: 'amount', where: { paid: false, due: { before: 'today' } } };
+  assert.deepEqual(computeFigure(overdue, rows, '2026-11-14'), { kind: 'one', value: 4050 });
+  assert.deepEqual(computeFigure({ ...overdue, where: { paid: false, due: { gte: 'today' } } }, rows, '2026-11-14'), { kind: 'one', value: 1800 });
+  assert.deepEqual(computeFigure({ ...overdue, where: { due: { lte: 'today-14' } } }, rows, '2026-11-14'), { kind: 'one', value: 5600 });
+  const cols = () => new Set(['amount', 'due', 'paid']);
+  assert.deepEqual(checkFigure(overdue, cols), []);
+  assert.match(checkFigure({ ...overdue, where: { due: { earlier: 'today' } } }, cols)[0], /where\.due uses earlier/);
 });

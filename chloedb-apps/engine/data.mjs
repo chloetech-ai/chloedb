@@ -271,11 +271,39 @@ const num = (v) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim(
 const same = (a, b) => Math.abs(a - b) <= Math.max(0.011, Math.abs(b) * 0.005);
 const lc = (v) => String(v ?? '').trim().toLowerCase();
 
-const match = (row, where) => Object.entries(where || {}).every(([k, w]) => {
+// A figure's conditions: a value or values, {"not": ...}, or a comparison
+// ({"before" | "after": "today" | "YYYY-MM-DD"}, {"lt" | "lte" | "gt" |
+// "gte": a number, a day or "today"}). "today" is the build's day, so
+// "overdue" (due before today, not paid) is said and checked. A condition
+// it does not know is a problem of the declaration (checkFigure), never
+// silently true.
+const OPS = ['not', 'before', 'after', 'lt', 'lte', 'gt', 'gte'];
+const dayOrNum = (x, today) => {
+  if (x === 'today') return today;
+  const m = /^today\s*([+-])\s*(\d+)$/.exec(String(x ?? '').trim());
+  if (m) return new Date(Date.parse(`${today}T00:00:00Z`) + (m[1] === '-' ? -1 : 1) * Number(m[2]) * 86400000).toISOString().slice(0, 10);
+  return x;
+};
+const cmp = (a, b) => {
+  const x = num(a), y = num(b);
+  if (x !== null && y !== null) return x - y;
+  const s = String(a ?? '').slice(0, 10), t = String(b ?? '').slice(0, 10);
+  return s < t ? -1 : s > t ? 1 : 0;
+};
+const match = (row, where, today = new Date().toISOString().slice(0, 10)) => Object.entries(where || {}).every(([k, w]) => {
   const v = lc(row[k]);
   if (w && typeof w === 'object' && !Array.isArray(w)) {
-    if (w.not !== undefined) return ![].concat(w.not).map(lc).includes(v);
-    return true;
+    return Object.entries(w).every(([op, x]) => {
+      if (op === 'not') return ![].concat(x).map(lc).includes(v);
+      const raw = row[k];
+      if (raw === null || raw === undefined || raw === '') return false;
+      const c = cmp(raw, dayOrNum(x, today));
+      if (op === 'before' || op === 'lt') return c < 0;
+      if (op === 'after' || op === 'gt') return c > 0;
+      if (op === 'lte') return c <= 0;
+      if (op === 'gte') return c >= 0;
+      return false;
+    });
   }
   return [].concat(w).map(lc).includes(v);
 });
@@ -300,6 +328,11 @@ export function checkFigure(fig, columnsOf) {
   const out = [];
   const [, col] = measure(fig);
   for (const c of [col, fig.by, fig.age?.of, ...Object.keys(fig.where || {})].filter((x) => typeof x === 'string')) if (!cols.has(c)) out.push(`${where}: ${fig.table} has no column ${c}`);
+  for (const [c, w] of Object.entries(fig.where || {})) {
+    if (!w || typeof w !== 'object' || Array.isArray(w)) continue;
+    const bad = Object.keys(w).filter((op) => !OPS.includes(op));
+    if (bad.length) out.push(`${where}: where.${c} uses ${bad.join(', ')}; a condition is a value, values, or {${OPS.map((o) => `"${o}"`).join(', ')}} (a day, a number, or "today")`);
+  }
   return out;
 }
 
@@ -307,7 +340,7 @@ export function checkFigure(fig, columnsOf) {
 // groups: [{key, value}]} | {kind: 'buckets', buckets: [{range, value}]}.
 export function computeFigure(fig, rows, today = new Date().toISOString().slice(0, 10)) {
   const [how, col] = measure(fig);
-  const kept = rows.filter((r) => match(r, fig.where));
+  const kept = rows.filter((r) => match(r, fig.where, today));
   if (fig.age && typeof fig.age.of === 'string' && Array.isArray(fig.age.buckets)) {
     const now = Date.parse(`${today}T00:00:00Z`);
     const past = (r) => { const t = Date.parse(`${String(r[fig.age.of] || '').slice(0, 10)}T00:00:00Z`); return Number.isNaN(t) ? null : Math.round((now - t) / 86400000); };
