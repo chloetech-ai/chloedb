@@ -374,7 +374,7 @@ export class Engine extends EventEmitter {
     // down: its writes are checked as theirs, its errors only recorded.
     // A person's call (ctx.as) runs as them: its reads and writes are held
     // to the tables' declared access, all the way down.
-    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...(ctx.as ? { as: ctx.as } : {}) };
+    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -515,6 +515,9 @@ export class Engine extends EventEmitter {
 
   // Tracks the write and runs the functions that wait for it.
   async after(appId, table, event, row, ctx) {
+    // Who added the row, at any depth (a rule's insert is its caller's):
+    // a payment is bound to the order its payer placed (services.pay).
+    if (event === 'insert' && ctx.who && !ctx.test && row && row.id !== undefined) await this.store.noteMaker(appId, table, row.id, ctx.who).catch(() => {});
     const view = await this.view(appId);
     // A build's own checks (checks.mjs, ctx.test) are not anyone's use of the app.
     if (!ctx.depth && !ctx.test) {

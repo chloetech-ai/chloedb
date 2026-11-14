@@ -5,7 +5,7 @@
 // People, sessions, file metadata and the outbox are rows in Strata; file
 // bytes sit next to the database.
 
-import { scrypt as scryptCb, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
+import { scrypt as scryptCb, randomBytes, timingSafeEqual, createHash, createHmac } from 'node:crypto';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import net from 'node:net';
@@ -315,35 +315,55 @@ export class Services {
 
   // ---- card payments
   //
-  // app.pay({table, id, amount, description, email}) asks for a payment of a
-  // row (an order): a hosted payment page at /pay/<id> takes it, so the app
-  // never sees card details. With no card provider connected the page is in
-  // test mode: it says so, asks for no card, and a tap marks the payment
-  // paid, so a shop works end to end before its owner connects a provider.
-  // The amount is the row's own total (or amount, or price times qty) when
-  // it has one, never only what a page says.
-  async pay(appId, req = {}) {
+  // app.pay({table, id, description}) asks for a payment of a row (an
+  // order): only the one who placed it (the person, or the visitor's
+  // browser, as the engine saw the insert: sa_rowmakers) or the app's owner
+  // may ask. The amount is the row's own total (or amount, or price times
+  // qty). The payer pays on a hosted page, /pay/<id>?t=<token>, the token
+  // the server's own, single use and kept only as its hash, so the app
+  // never sees a card and a page cannot pay for an order by its id alone.
+  //
+  // With no card provider configured the page is in test mode: it asks for
+  // no card, a tap marks the payment "paid (test)" and the row "paid
+  // (test)", never "paid". With a provider (STRATA_APPS_PAYMENT_PROVIDER and
+  // STRATA_APPS_PAYMENT_SECRET), only the provider's signed notice marks a
+  // payment paid (providerNotice), never the payer's browser.
+  get payProvider() {
+    const name = process.env.STRATA_APPS_PAYMENT_PROVIDER || '';
+    const secret = process.env.STRATA_APPS_PAYMENT_SECRET || '';
+    return name && secret ? { name, secret } : null;
+  }
+
+  async pay(appId, req = {}, { who = null, owner = false } = {}) {
     let amount = Number(req.amount);
     const table = req.table ? String(req.table) : null;
     const refId = req.id !== undefined && req.id !== null ? String(req.id) : null;
+    if (!owner && !(table && refId)) throw err('pay: say the row it pays for ({table, id}), an order you placed', 400);
     if (table && refId) {
+      if (!owner) {
+        const maker = await this.store.maker(appId, table, refId).catch(() => null);
+        if (!maker || !who || maker !== String(who).slice(0, 80)) throw err('You can pay only for an order you placed', 403);
+      }
       const spec = await this.engine.tableSpec(appId, table);
       const db = await this.engine.dbOf(appId);
       const [row] = await db.get(physical(appId, spec.name), [refId]);
       if (!row) throw err(`pay: no row ${refId} in ${table}`, 404);
+      if (/^paid\b/i.test(String(row.status || ''))) throw err('This order is paid already', 409);
       const n = (k) => (row[k] === null || row[k] === undefined || row[k] === '' ? null : Number(row[k]));
       const own = n('total') ?? n('amount') ?? (n('price') !== null ? n('price') * (n('qty') ?? n('quantity') ?? 1) : null);
       if (own !== null && Number.isFinite(own)) amount = own;
+      else if (!owner) throw err(`pay: ${table} has no total (or amount, or price) to charge`, 400);
     }
     if (!Number.isFinite(amount) || amount <= 0) throw err('pay: give the amount (or the row it pays for, with a total)');
     if (amount > 100000) throw err('pay: at most 100,000 in one payment');
     const currency = String(req.currency || (await this.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], (await this.store.getApp(appId).catch(() => null))?.description) || 'USD').toUpperCase().slice(0, 3);
     const id = newId(16);
+    const token = randomBytes(24).toString('base64url');
     const doc = { id, app: appId, amount: Math.round(amount * 100) / 100, currency, description: String(req.description || '').slice(0, 300), ref_table: table || '', ref_id: refId || '',
-      email: String(req.email || '').slice(0, 200), mode: 'test', status: 'open' };
+      email: String(req.email || '').slice(0, 200), mode: this.payProvider ? 'live' : 'test', status: 'open', token_hash: createHash('sha256').update(token).digest('hex'), payer: who ? String(who).slice(0, 80) : '' };
     await this.db.write([{ op: 'insert', table: 'sa_payments', doc }]);
     this.store.track(appId, 'action', '', 'payment asked').catch(() => {});
-    return { id, url: `/pay/${id}`, mode: doc.mode, amount: doc.amount, currency };
+    return { id, url: `/pay/${id}?t=${token}`, mode: doc.mode, amount: doc.amount, currency };
   }
 
   async payment(id) {
@@ -351,25 +371,60 @@ export class Services {
     return row || null;
   }
 
-  // The payer paid (in test mode, a tap on the page): the payment is paid and
-  // the row it pays for says so (its status, or paid, when it has one).
-  async paid(id) {
+  // Whether a page's token is the payment's own, still unused.
+  tokenOk(p, token) {
+    if (!p || !p.token_hash || typeof token !== 'string' || !token) return false;
+    const a = Buffer.from(createHash('sha256').update(token).digest('hex'));
+    const b = Buffer.from(String(p.token_hash));
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  // The payer's tap on the hosted page. Test mode only: the token is spent,
+  // the payment and its row are "paid (test)". With a provider the browser
+  // marks nothing: the provider's signed notice does.
+  async payTest(id, token) {
     const p = await this.payment(id);
     if (!p) throw err('no such payment', 404);
-    if (p.status === 'paid') return p;
-    const done = { ...p, status: 'paid', paid: new Date().toISOString() };
+    if (p.mode !== 'test' || this.payProvider) throw err('this payment is confirmed only by the card provider\'s signed notice', 409);
+    if (p.status !== 'open') return p;
+    if (!this.tokenOk(p, token)) throw err('this payment link is not valid (or was used already)', 403);
+    return this.settle(p, 'paid (test)');
+  }
+
+  async settle(p, status) {
+    const done = { ...p, status: status === 'paid' ? 'paid' : 'paid_test', paid: new Date().toISOString(), token_hash: '' };
     await this.db.write([{ op: 'upsert', table: 'sa_payments', doc: done }]);
     if (p.ref_table && p.ref_id) {
       try {
         const spec = await this.engine.tableSpec(p.app, p.ref_table);
         const cols = new Map((spec.columns || []).map((c) => [c.name, c.type]));
         const fields = {};
-        if (cols.has('status')) fields.status = 'paid';
-        if (cols.get('paid') === 'bool') fields.paid = true;
+        if (cols.has('status')) fields.status = status;
+        if (cols.get('paid') === 'bool' && status === 'paid') fields.paid = true;
         if (Object.keys(fields).length) await this.engine.update(p.app, p.ref_table, p.ref_id, fields, {});
-      } catch (e) { this.log(`payment ${id}: ${e.message}`); }
+      } catch (e) { this.log(`payment ${p.id}: ${e.message}`); }
     }
     return done;
+  }
+
+  // A card provider's notice that a payment went through: its raw body,
+  // signed with the shared secret (HMAC-SHA256, hex, in x-payment-signature
+  // as "sha256=<hex>"), {"payment": "<id>", "status": "paid"}. The one way a
+  // payment becomes "paid". With no provider configured it says so.
+  async providerNotice(raw, signature) {
+    const prov = this.payProvider;
+    if (!prov) throw err('no card payment provider is configured here (STRATA_APPS_PAYMENT_PROVIDER and STRATA_APPS_PAYMENT_SECRET): payments stay in test mode', 501);
+    const want = Buffer.from(`sha256=${createHmac('sha256', prov.secret).update(raw).digest('hex')}`);
+    const got = Buffer.from(String(signature || ''));
+    if (want.length !== got.length || !timingSafeEqual(want, got)) throw err('the notice is not signed by the configured provider', 401);
+    let msg;
+    try { msg = JSON.parse(String(raw)); } catch { throw err('the notice is not JSON', 400); }
+    const p = await this.payment(msg && msg.payment);
+    if (!p) throw err('no such payment', 404);
+    if (msg.status !== 'paid') return { ok: true, payment: p.id, status: p.status };
+    if (p.status === 'paid') return { ok: true, payment: p.id, status: 'paid' };
+    const done = await this.settle(p, 'paid');
+    return { ok: true, payment: done.id, status: done.status };
   }
 
   async payments(appId, limit = 50) {

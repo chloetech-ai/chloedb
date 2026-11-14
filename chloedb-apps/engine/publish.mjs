@@ -60,6 +60,9 @@ const APP_CALLS = [
   ['GET', '/companies', 'look'], ['POST', '/companies', 'add'], ['POST', '/companies/members', 'add'], ['POST', '/companies/members/remove', 'add'],
   ['POST', '/people/role', 'look'],
   ['POST', '/track', 'look'], ['POST', '/error', 'look'], ['POST', '/email', 'add'], ['POST', '/ask', 'look'], ['POST', '/fetch', 'look'],
+  // a card payment for the order one placed (services.pay checks it is
+  // theirs); the payments list answers its owner only
+  ['POST', '/pay', 'add'], ['GET', '/payments', 'look'],
 ];
 const DENIED = {
   add: 'This app lets visitors only look: its owner has not let the public add to it',
@@ -74,7 +77,7 @@ export function strangerOf(req) {
 }
 // Calls that cost something (the model, the network, mail, a new account):
 // a lower rate per visitor.
-const DEAR = new Set(['/ask', '/fetch', '/email', '/signup', '/signin', '/files']);
+const DEAR = new Set(['/ask', '/fetch', '/email', '/signup', '/signin', '/files', '/pay']);
 // The runtime's files, the same for every app and nothing private.
 const FILES = new Set(['/studio.js', '/studio.css', '/activity.css', '/frame.js', '/screen.js', '/front.js', '/front.css', '/graph.js', '/kit.css', '/design.js', '/policy.js', '/activity.js']);
 
@@ -229,6 +232,10 @@ export class Publish {
     let m = p.match(/^\/a\/([a-z0-9]+)\/?$/);
     if (req.method === 'GET' && m && this.published(m[1])) return { app: m[1], page: true };
     if (req.method === 'POST' && p === '/api/signout') return { app: hostApp };
+    // A payment's hosted page (its single-use token is what pays) and a card
+    // provider's signed notice: open to the public, at the dear rate.
+    if ((req.method === 'GET' || req.method === 'POST') && /^\/pay\/[a-z0-9]{8,32}$/.test(p)) return { app: hostApp, dear: true };
+    if (req.method === 'POST' && p === '/api/payments/notice') return { app: null, dear: true };
     if (req.method === 'GET' && p === '/api/geocode') return { app: hostApp, dear: true };
     if (req.method === 'GET' && p === '/api/stream' && this.published(url.searchParams.get('app'))) return { app: url.searchParams.get('app'), stream: true };
     m = p.match(/^\/api\/apps\/([a-z0-9]+)(\/[a-z/]*)?$/);

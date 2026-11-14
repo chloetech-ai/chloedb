@@ -72,7 +72,10 @@ const SYSTEM_TABLES = {
   // row it pays for, and whether it was paid. Never a card's details: the
   // payer pays on a hosted page.
   sa_payments: `CREATE TABLE sa_payments (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, amount FLOAT, currency KEYWORD, description TEXT, ref_table KEYWORD, ref_id KEYWORD,
-    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, token_hash KEYWORD, payer KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Who added each row (a person's id, or a visitor's), as the engine saw
+  // the write: what binds a payment to the order its payer placed.
+  sa_rowmakers: `CREATE TABLE sa_rowmakers (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, tbl KEYWORD, rid KEYWORD, who KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
 
 // Columns added to system tables after they were first made: a store made
@@ -271,7 +274,7 @@ export class Store {
       }
     }
     let rows = 0;
-    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox', 'sa_payments']) {
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox', 'sa_payments', 'sa_rowmakers']) {
       for (;;) {
         let ids;
         try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }
@@ -886,6 +889,16 @@ export class Store {
   async setting(app, name) {
     const [row] = await this.db.get('sa_settings', [`${app}:${name}`]);
     return row ? row.value : null;
+  }
+
+  // Who added a row (engine.after), and who that was.
+  async noteMaker(app, table, rid, who) {
+    await this.db.write([{ op: 'upsert', table: 'sa_rowmakers', doc: { id: `${app}:${table}:${rid}`.slice(0, 200), app, tbl: table, rid: String(rid), who: String(who).slice(0, 80) } }]);
+  }
+
+  async maker(app, table, rid) {
+    const [row] = await this.db.get('sa_rowmakers', [`${app}:${table}:${rid}`.slice(0, 200)]);
+    return row ? row.who : null;
   }
 
   async putSetting(app, name, value) {

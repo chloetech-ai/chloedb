@@ -502,19 +502,22 @@ async function body(req) {
 // The hosted payment page: the amount, what it is for, and in test mode a
 // plain statement that no card is charged and none is asked for.
 const html = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-function payPage(p, shop) {
+function payPage(p, shop, { token = '', problem = '', provider = '' } = {}) {
   let amount = `${p.amount} ${p.currency}`;
   try { amount = Number(p.amount).toLocaleString('en-GB', { style: 'currency', currency: p.currency }); } catch { /* as it is */ }
-  const paid = p.status === 'paid';
+  const paid = p.status === 'paid' || p.status === 'paid_test';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pay ${html(shop)}</title>
 <style>:root{color-scheme:light dark}body{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#f4f4f6;color:#16161a;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
 .card{background:#fff;border-radius:18px;box-shadow:0 20px 60px -30px rgba(0,0,0,.35);padding:28px;max-width:420px;width:100%}h1{font-size:15px;margin:0;color:#666;font-weight:600}
 .amt{font-size:40px;font-weight:800;letter-spacing:-.02em;margin:6px 0 4px}.what{color:#444;margin:0 0 18px}button{width:100%;min-height:52px;border:0;border-radius:14px;background:#16161a;color:#fff;font:inherit;font-weight:700;font-size:17px;cursor:pointer}
-.test{margin:16px 0 0;padding:12px 14px;border-radius:12px;background:#fff7e0;color:#6b4a00;font-size:14px}.ok{font-size:20px;font-weight:700;color:#18794e;margin:8px 0}.lock{color:#777;font-size:13px;margin-top:14px}
+.test{margin:16px 0 0;padding:12px 14px;border-radius:12px;background:#fff7e0;color:#6b4a00;font-size:14px}.ok{font-size:20px;font-weight:700;color:#18794e;margin:8px 0}.lock{color:#777;font-size:13px;margin-top:14px}.bad{color:#b42318;font-weight:600}
 @media (prefers-color-scheme:dark){body{background:#0e0e11;color:#eee}.card{background:#1a1a1f}.what{color:#bbb}button{background:#fff;color:#111}.test{background:#3a2e0a;color:#ffd98a}}</style></head>
 <body><main class="card"><h1>${html(shop)}</h1><div class="amt">${html(amount)}</div><p class="what">${html(p.description || 'Your order')}</p>
-${paid ? `<p class="ok" role="status">Paid. Thank you.</p><p class="what">You can close this page and go back to ${html(shop)}.</p>`
-    : `<form method="post"><button type="submit">Pay ${html(amount)} by card</button></form>`}
+${problem ? `<p class="bad" role="alert">${html(problem)}</p>` : ''}
+${paid ? `<p class="ok" role="status">${p.status === 'paid_test' ? 'Paid in test mode. No money moved.' : 'Paid. Thank you.'}</p><p class="what">You can close this page and go back to ${html(shop)}.</p>`
+    : p.mode === 'live' ? `<p class="what">The card payment is taken and confirmed by ${html(provider || 'the card provider')}. This page does not mark it paid.</p>`
+    : token ? `<form method="post"><input type="hidden" name="t" value="${html(token)}"><button type="submit">Pay ${html(amount)} by card</button></form>`
+    : `<p class="bad" role="alert">This payment link is not valid. Go back to ${html(shop)} and pay from your order.</p>`}
 ${p.mode === 'test' ? `<p class="test"><b>Test mode.</b> No card is charged and no card details are asked for here. The shop's owner connects a card payment provider to take real payments.</p>` : ''}
 <p class="lock">A secure payment page. ${html(shop)} never sees your card details.</p></main></body></html>`;
 }
@@ -817,8 +820,21 @@ const routes = [
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   // A card payment for a row (an order): anyone using the app may ask, the
   // amount is the row's; the payer pays on the hosted page (/pay/<id>).
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/pay$/, async (b, [id]) => ({ payment: await services.pay(id, b) })],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)\/payments$/, async (b, [id]) => ({ payments: await services.payments(id), mode: 'test', note: 'Card payments are in test mode: no card is charged. Connect a card payment provider to take real payments.' })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/pay$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    return { payment: await services.pay(id, b, { who: await cx.who(id), owner: !cx.public || user?.role === 'owner' }) };
+  }],
+  // The app's payments, for its owner (the studio, or the owner signed in on its page).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/payments$/, async (b, [id], url, cx) => {
+    if (cx.public) {
+      const user = await cx.user(id);
+      if (!user) throw Object.assign(new Error('Sign in first: only the app\'s owner sees its payments'), { status: 401 });
+      if (user.role !== 'owner') throw Object.assign(new Error('Only the app\'s owner sees its payments'), { status: 403 });
+    }
+    const live = !!services.payProvider;
+    return { payments: await services.payments(id), mode: live ? 'live' : 'test',
+      note: live ? `Card payments go through ${services.payProvider.name}; a payment is paid only on its signed notice.` : 'Card payments are in test mode: no card is charged and orders paid this way say "paid (test)". Connect a card payment provider to take real payments.' };
+  }],
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
   // A published app's visitors name no secret, header or method of their own
@@ -1031,6 +1047,13 @@ const server = http.createServer(async (req, res) => {
       req.on('close', () => { clearInterval(ping); clients.delete(res); });
       return;
     }
+    // A card provider's signed notice that a payment went through
+    // (services.providerNotice): from the provider's servers, so before the
+    // same-origin check; its signature is what is trusted, nothing else.
+    if (req.method === 'POST' && url.pathname === '/api/payments/notice') {
+      const raw = await rawBody(req, 64 * 1024);
+      try { return send(res, 200, await services.providerNotice(raw, req.headers['x-payment-signature'])); } catch (e) { return send(res, e.status || 500, { error: e.message }); }
+    }
     // Only this page may call the API: a page on another site could otherwise
     // post to localhost.
     if (req.method === 'POST' && !login.sameOrigin(req)) return send(res, 403, { error: 'cross-origin request refused' });
@@ -1039,10 +1062,15 @@ const server = http.createServer(async (req, res) => {
     if ((m = url.pathname.match(/^\/pay\/([a-z0-9]{8,32})$/)) && (req.method === 'GET' || req.method === 'POST')) {
       let p = await services.payment(m[1]);
       if (!p) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No such payment.'); }
-      if (req.method === 'POST') p = await services.paid(m[1]);
+      let token = url.searchParams.get('t') || '';
+      let problem = '';
+      if (req.method === 'POST') {
+        token = new URLSearchParams(String(await rawBody(req, 8 * 1024))).get('t') || '';
+        try { p = await services.payTest(m[1], token); } catch (e) { problem = e.message; }
+      }
       const appRow = await engine.store.getApp(p.app).catch(() => null);
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(payPage(p, appRow?.name || 'This shop'));
+      res.writeHead(problem ? 403 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+      return res.end(payPage(p, appRow?.name || 'This shop', { token: p.status === 'open' && services.tokenOk(p, token) ? token : '', problem, provider: services.payProvider?.name || '' }));
     }
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
