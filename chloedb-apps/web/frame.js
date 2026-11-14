@@ -94,7 +94,7 @@
   // {kind: 'pick-edited', ok, oldText, newText}; the frame always puts the
   // element back as it was, since the screen's statement is what changes.
   (() => {
-    let on = false, hover = null, lock = null, editing = null, box = null, lockBox = null;
+    let on = false, hover = null, lock = null, editing = null, box = null, lockBox = null, purpose = '';
     const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
     const outline = (color) => {
       const d = document.createElement('div');
@@ -162,6 +162,8 @@
       if (editing) { if (editing.el.contains(e.target)) return; e.preventDefault(); e.stopPropagation(); commit(); return; }
       e.preventDefault(); e.stopPropagation();
       if (!pickable(e.target)) return;
+      // A pick for a note is a spot, not a selection: nothing stays outlined.
+      if (purpose === 'note') { const r = e.target.getBoundingClientRect(); post({ kind: 'picked', purpose, el: about(e.target), point: { x: Math.round(e.clientX), y: Math.round(e.clientY) }, at: { nx: r.width ? (e.clientX - r.left) / r.width : 0.5, ny: r.height ? (e.clientY - r.top) / r.height : 0.5 } }); return; }
       lock = e.target; place(lockBox, lock); place(box, null);
       post({ kind: 'picked', el: about(lock) });
     };
@@ -201,7 +203,18 @@
       if (e.source !== parent) return;
       const m = e.data;
       if (!m || !m.__sa) return;
-      if (m.kind === 'pick') m.on ? start() : stop();
+      if (m.kind === 'pick') { if (m.on) { purpose = m.purpose === 'note' ? 'note' : ''; start(); } else stop(); }
+      // Where elements are now, by selector: for notes pinned to them.
+      else if (m.kind === 'locate') {
+        const rects = [];
+        for (const it of (Array.isArray(m.items) ? m.items : []).slice(0, 200)) {
+          let el = null;
+          try { el = document.querySelector(String(it.selector || '')); } catch { el = null; }
+          if (el && it.text && norm(el.textContent).slice(0, 200) !== String(it.text) && !norm(el.textContent).startsWith(String(it.text).slice(0, 40))) el = null;
+          rects.push({ id: String(it.id || ''), rect: el ? rectOf(el) : null });
+        }
+        post({ kind: 'located', rects });
+      }
       else if (m.kind === 'pick-clear') { if (editing) finish(); lock = null; place(lockBox, null); }
       else if (m.kind === 'pick-edit') {
         const editId = m.editId;

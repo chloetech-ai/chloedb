@@ -38,6 +38,7 @@ import { Recommender, withHint } from './recommend.mjs';
 import { ask as askModel } from './llm.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
+import { Comments } from './comments.mjs';
 import { Builders, builderRefusal, keyOf as builderKeyOf, COOKIE as BUILDER_COOKIE } from './builders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -137,6 +138,8 @@ const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log 
 engine.services = services;
 // Who builds each app beside its owner, and what their key lets them do.
 const builders = new Builders(engine.db);
+// Notes on an app's screens.
+const comments = new Comments(engine.db);
 // A model and the web for apps, each switched on per app (reach.mjs).
 // Apps' secrets (API keys) are sealed with STRATA_APPS_SECRET_KEY, or with a
 // key kept in DATA/secret.key, made on first start.
@@ -182,6 +185,12 @@ function tokenOf(req) {
 }
 function setSession(res, token) {
   res.setHeader('set-cookie', `${COOKIE}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_DAYS * 86400 : 0}`);
+}
+// Who writes a note: a builder by their key, else the studio's owner, who
+// may give the name to show.
+function authorOf(cx, b) {
+  if (cx.builder) return { id: cx.builder.id, name: cx.builder.name || cx.builder.email || '' };
+  return { id: 'owner', name: String(b?.authorName || '').trim().slice(0, 80) };
 }
 function setBuilderCookie(res, key) {
   res.setHeader('set-cookie', `${BUILDER_COOKIE}=${key}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
@@ -838,6 +847,13 @@ const routes = [
     if (cx.builder && cx.builder.id === bid) throw Object.assign(new Error('a builder does not change their own role'), { status: 400 });
     return { builder: await builders.setRole(id, bid, b.role) };
   }],
+  // Notes on the app's screens (comments.mjs). The author is the builder
+  // whose key it is; the owner names themselves (the studio has no account).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/comments$/, async (b, [id], url) => { await engine.view(id); const s = url.searchParams.get('status'); return { comments: await comments.list(id, { status: ['open', 'resolved'].includes(s) ? s : null }) }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments$/, async (b, [id], url, cx) => { await engine.view(id); const out = await comments.add(id, b, authorOf(cx, b)); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/reply$/, async (b, [id, cid], url, cx) => { const out = await comments.reply(id, cid, b.body, authorOf(cx, b)); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/resolve$/, async (b, [id, cid]) => { const out = await comments.resolve(id, cid, { reopen: !!b.reopen }); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/delete$/, async (b, [id, cid]) => { const out = await comments.remove(id, cid); broadcast('comments', { app: id }); return out; }],
   // An invitation taken, from the studio or another client: the key to use.
   ['POST', /^\/api\/builders\/join$/, async (b, m, url, cx) => { const out = await builders.join(b.token, { name: b.name }); setBuilderCookie(cx.res, out.key); return out; }],
   // People: one account for every app here; joining an app on first use.

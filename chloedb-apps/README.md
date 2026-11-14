@@ -146,6 +146,12 @@ each other in a graph that ChloeDB walks.
   reached without a key is the owner, as before; only hashes of links and
   keys are kept. Links say `STRATA_APPS_PUBLIC_URL` when it is set, else the
   address the request came to.
+- **Notes.** Builders leave notes on a spot of a screen (`engine/comments.mjs`,
+  `sa_comments`): `GET /api/apps/<id>/comments?status=open`, `POST
+  .../comments {body, anchor, authorName}` (the anchor is the client's: a
+  route, a selector, the words shown and where on them), `.../comments/<c>/reply
+  {body}`, `.../resolve {reopen}`, `.../delete`. A builder is named by their
+  key; every builder, a viewer too, may leave and resolve notes.
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request

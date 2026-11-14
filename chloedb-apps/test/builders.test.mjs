@@ -26,6 +26,10 @@ test('builders: what each role may do in the studio', () => {
     assert.match(builderRefusal(viewer, 'POST', `/api/apps/abc123/${rest}`), /viewer can look/, rest);
     assert.equal(builderRefusal(editor, 'POST', `/api/apps/abc123/${rest}`), null, rest);
   }
+  assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments'), null, 'a viewer leaves notes');
+  assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/reply'), null);
+  assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/resolve'), null);
+  assert.match(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/delete'), /viewer can look/);
   assert.match(builderRefusal(editor, 'POST', '/api/apps/abc123/builders'), /owner and admins/);
   assert.match(builderRefusal(editor, 'POST', '/api/apps/abc123/builders/x/remove'), /owner and admins/);
   assert.equal(builderRefusal(admin, 'POST', '/api/apps/abc123/builders'), null);
@@ -159,6 +163,19 @@ test('builders over a real server: invited, joined once, held to their app and r
     list = await call(`/api/apps/${app}/builders`);
     assert.deepEqual(list.body.builders.map((b) => [b.email, b.role, b.status]), [['vic@example.com', 'admin', 'joined']]);
     assert.equal((await call(`/api/apps/${other}/builders/${vicId}/remove`, {})).status, 404, 'a builder of another app');
+
+    // Notes on the app's screens: the owner names themselves, a builder is named by their key.
+    const note = await call(`/api/apps/${app}/comments`, { body: 'The headline is too long', authorName: 'Ana', anchor: { route: '/home', selector: 'h1', textSnippet: 'Welcome', nx: 2, junk: 'x' } });
+    assert.equal(note.status, 200, JSON.stringify(note.body));
+    assert.deepEqual([note.body.comment.author.name, note.body.comment.route, note.body.comment.nx, note.body.comment.junk], ['Ana', '/home', 1, undefined]);
+    const reply = await call(`/api/apps/${app}/comments/${note.body.comment.id}/reply`, { body: 'Shorter now' }, vicKey);
+    assert.equal(reply.body.comment.author.name, 'vic@example.com');
+    let notes = await call(`/api/apps/${app}/comments?status=open`, undefined, vicKey);
+    assert.deepEqual(notes.body.comments.map((c) => [c.body, c.parentId === null]), [['The headline is too long', true], ['Shorter now', false]]);
+    await call(`/api/apps/${app}/comments/${note.body.comment.id}/resolve`, {});
+    assert.equal((await call(`/api/apps/${app}/comments?status=open`)).body.comments.length, 0, 'a resolved note takes its replies with it');
+    assert.equal((await call(`/api/apps/${app}/comments/${note.body.comment.id}/delete`, {})).body.replies, 1);
+    assert.equal((await call(`/api/apps/${app}/comments`, { body: '  ' })).status, 400);
 
     // The studio sees every company of the app with who works in it.
     const signed = await fetch(`${base}/api/apps/${app}/signup`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ email: 'olive@example.com', name: 'Olive', password: 'correct horse' }) });

@@ -41,6 +41,8 @@ export function keyOf(req) {
 // What the app's people did and what it holds for them (their activity, the
 // mail sent them, their payments, the app's keys): for its owner and admins.
 const ADMIN_READS = new Set(['activity', 'outbox', 'payments', 'secrets']);
+// Notes on the app's screens: every builder, a viewer too, may leave them.
+const NOTES = /^comments(\/[a-z0-9]+\/(reply|resolve))?$/;
 // Studio POSTs that only read (a query, file names, usage counted).
 const READS = new Set(['sql', 'files/info', 'track', 'error']);
 // Routes of no one app that a builder key may call.
@@ -58,7 +60,7 @@ export function builderRefusal(b, method, pathname) {
     const rest = m[2] || '';
     if (ADMIN_READS.has(rest) && RANK[b.role] < RANK.admin) return 'only the app\'s owner and admins see this';
     if (get) return null;
-    if (READS.has(rest)) return null;
+    if (READS.has(rest) || NOTES.test(rest)) return null;
     if (b.role === 'viewer') return 'a viewer can look at this app but not change it; ask its owner to make you an editor';
     if (/^builders(\/|$)/.test(rest) && RANK[b.role] < RANK.admin) return 'only the app\'s owner and admins decide who builds it';
     if (rest === 'delete' || rest === 'duplicate') return 'only the app\'s owner can delete or copy it';
