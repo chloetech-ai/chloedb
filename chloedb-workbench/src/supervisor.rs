@@ -405,7 +405,7 @@ impl Supervisor {
         // Before a worktree is made: a session without ChloeCtx would miss
         // most of what Workbench shows.
         if self.cfg.chloectx_required {
-            crate::ctxwire::wiring(&self.cfg.chloectx_bin, &co.main).map_err(|why| ApiError::new(409, "chloectx_missing", why))?;
+            crate::ctxwire::wiring(&self.cfg.chloectx_bin, &co.main).map_err(crate::ctxwire::missing)?;
         }
         let worktree = req.worktree.unwrap_or(true);
         if !worktree && (req.branch.is_some() || req.base.is_some()) {

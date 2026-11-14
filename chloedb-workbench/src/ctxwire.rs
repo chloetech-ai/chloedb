@@ -58,8 +58,8 @@ pub fn wiring(bin: &str, cwd: &Path) -> Result<Json, String> {
     let cwd_s = cwd.to_string_lossy().into_owned();
     match run_chloectx(bin, cwd, &["wiring", "--project", &cwd_s, "--exe", &exe], Duration::from_secs(20)) {
         Ran::Out(w) if w.get("settings").is_some() => Ok(w),
-        Ran::Out(_) | Ran::Failed(_) => Err(format!("{bin} is too old for Workbench (it has no `wiring` command); run {FIX}")),
-        Ran::Missing => Err(format!("ChloeCtx is not installed ({bin} not found); run {FIX}")),
+        Ran::Out(_) | Ran::Failed(_) => Err(format!("{bin} is too old for Workbench: it has no `wiring` command")),
+        Ran::Missing => Err(format!("ChloeCtx is not installed: {bin} was not found")),
     }
 }
 
@@ -87,7 +87,7 @@ pub fn status(bin: &str, required: bool, cwd: &Path) -> Json {
                 "fix": (!model_ok).then(|| format!("{bin} fetch-model")),
             })
         }
-        Err(why) => json!({"required": true, "ok": false, "bin": bin, "version": version, "problem": why, "fix": FIX}),
+        Err(why) => json!({"required": true, "ok": false, "bin": bin, "version": version, "problem": why, "fix": "./install.sh --workbench"}),
     }
 }
 
@@ -144,8 +144,13 @@ pub fn wire(bin: &str, required: bool, cwd: &Path, settings: Json, mcp: Json) ->
     if !required {
         return Ok((settings, mcp));
     }
-    let w = wiring(bin, cwd).map_err(|why| ApiError::new(409, "chloectx_missing", why))?;
+    let w = wiring(bin, cwd).map_err(missing)?;
     Ok((merge_settings(settings, &w["settings"]), merge_mcp(mcp, &w["mcp"])))
+}
+
+/// The answer to a spawn without ChloeCtx: why, and the fix.
+pub fn missing(why: String) -> ApiError {
+    ApiError::new(409, "chloectx_missing", format!("{why}. Workbench needs it; run {FIX}"))
 }
 
 pub fn routes() -> Router<App> {
