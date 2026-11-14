@@ -24,6 +24,7 @@ log_series_bench rollup DB 7                          # a rollup of a loaded tab
 | `chloedb-values.jsonl` | what ChloeDB's queries returned, to check the other stores against |
 | `mac-rollups.jsonl` | rollups on a MacBook Air against ClickHouse materialized views and TimescaleDB continuous aggregates (`compare/rollups_*`) |
 | `chloedb-rollup-values.jsonl` | what ChloeDB's eight rollup and table queries returned there, to check the other two against |
+| `mac-rollups-fix.jsonl` | the same `rollup` run on that MacBook Air with a day of buckets per query and integer keys (8a0f4cbe) |
 
 All measured on 2026-11-13 on a cloud container: 4-core Intel Xeon @
 2.10GHz, 15 GB of RAM, release builds.
@@ -404,3 +405,45 @@ number of rows. All three made the same 749,027 rollup rows.
 - **Size.** ChloeDB's rollup takes 82 MB, the 50,000 new lines included:
   the segments a checkpoint wrote besides the table's. ClickHouse's takes
   11.5 MB and TimescaleDB's 99.9 MB.
+
+### With a day of buckets per query, on the same MacBook Air
+
+`log_series_bench rollup DB 7` again at 8a0f4cbe, which folds a day of
+buckets per query and keys rollup rows with an integer
+(`mac-rollups-fix.jsonl`). The machine and setup were the same: the
+MacBook Air M2, with ChloeDB seeing 4 cores. It ran on a copy of the
+database above, which already held the first run's 50,000 new lines, so
+the rollup covers 20,050,000 lines before the next 50,000. ClickHouse and
+TimescaleDB are as measured above. They did not run again.
+
+| | ChloeDB at c08fd630 | ChloeDB at 8a0f4cbe | ClickHouse | TimescaleDB |
+|---|---|---|---|---|
+| build the rollup | 72.2 s | 8.6 s | 0.9 s | 17.2 s |
+| refresh, nothing new | 0.003 s | 0.004 s | — | 0.037 s |
+| 50,000 new lines in the rollup | 0.084 s | 0.021 s | 0.065 s | 2.8 s |
+| full refresh, every bucket compared | 1.07 s | 0.20 s | — | — |
+| rollup rows | 749,027 | 749,087 | 749,027 | 749,027 |
+| rollup on disk | 82.0 MB* | 42.5 MB as flushed, 30.3 MB merged | 11.5 MB | 99.9 MB |
+
+\* Measured another way: the segments a checkpoint wrote besides the
+table's, so it includes the 50,000 new lines. The fix's figures are the
+harness's own `rollup_bytes` and `rollup_bytes_merged`, for the rollup
+alone. The 60 more rows are the first run's minute of new lines.
+
+Medians of the rollup queries, in ms. The other two stores' times include
+the round trip into Docker:
+
+| query | ChloeDB at c08fd630 | ChloeDB at 8a0f4cbe | ClickHouse | TimescaleDB |
+|---|---|---|---|---|
+| counts per hour, 7 days | 2.22 | 1.95 | 4.56 | 27.27 |
+| counts per 5 min by severity, 24 h | 1.69 | 1.43 | 4.4 | 6.76 |
+| mean latency per hour and service, 24 h | 1.54 | 1.39 | 4.45 | 7.1 |
+| max latency per hour, 24 h | 0.55 | 0.43 | 2.98 | 5.36 |
+
+The windows of this run start about two hours later than the first run's,
+since they end at the newest line. Its answers were checked against the
+table, which the harness does on three of the queries, and not against the
+other stores. ChloeDB's first fold is now twice as fast as TimescaleDB's
+first refresh, and still about ten times ClickHouse's `INSERT ... SELECT`.
+Merged, its rollup is 2.6 times ClickHouse's size and under a third of
+TimescaleDB's.

@@ -74,5 +74,8 @@ with open(os.path.join(RESULTS, "chloedb-rollup-values.jsonl"), "w") as out:
     for q, r in queries.items():
         for on in ("rollup", "table"):
             rows = sql(r["sql_" + on])
-            out.write(json.dumps({"store": "chloedb", "query": q, "on": on, "rows": rows}) + "\n")
+            rec = {"store": "chloedb", "query": q, "on": on, "rows": rows}
+            if q == "by_severity_5m_24h" and on == "table":
+                rec = {**rec, "rows": None, "n_rows": len(rows)}  # by minute: only its number of rows is compared
+            out.write(json.dumps(rec) + "\n")
 print(json.dumps(meta))

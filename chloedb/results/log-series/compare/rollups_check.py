@@ -34,7 +34,10 @@ def same(a, b, q):
 
 
 def main():
-    truth = {(r["query"], r["on"]): r["rows"] for r in map(json.loads, open(os.path.join(c.RESULTS, "chloedb-rollup-values.jsonl")))}
+    vals = [json.loads(l) for l in open(os.path.join(c.RESULTS, "chloedb-rollup-values.jsonl"))]
+    truth = {(r["query"], r["on"]): r["rows"] for r in vals}
+    # The per-minute table query's rows are kept as their number only.
+    n_rows = {(r["query"], r["on"]): r.get("n_rows", len(r["rows"] or [])) for r in vals}
     recs = [json.loads(l) for l in open(c.OUT)]
     q = {(r["store"], r["query"]): r for r in recs if r.get("query")}
     steps = {(r["store"], r["step"]): r for r in recs if r.get("step")}
@@ -51,8 +54,8 @@ def main():
             d = same(norm(r["answer_table"]), norm(truth[(name, "table")]), name)
             if d:
                 mism.append(f"- {LABEL[store]}, `{name}` on the table: {d}")
-        elif r["table_rows"] != len(truth[(name, "table")]):
-            mism.append(f"- {LABEL[store]}, `{name}` on the table: {r['table_rows']} rows (ChloeDB {len(truth[(name, 'table')])})")
+        elif r["table_rows"] != n_rows[(name, "table")]:
+            mism.append(f"- {LABEL[store]}, `{name}` on the table: {r['table_rows']} rows (ChloeDB {n_rows[(name, 'table')]})")
     stores = ["chloedb", "clickhouse", "timescaledb"]
     print("| query | rows | " + " | ".join(f"{LABEL[s]} rollup | {LABEL[s]} table" for s in stores) + " |")
     print("|---|---|" + "---|---|" * len(stores))
