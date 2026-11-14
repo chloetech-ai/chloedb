@@ -34,7 +34,9 @@ export function imageSize(bytes) {
 }
 
 // The bars a full-width photo must clear.
-export const FULL_BLEED = { minWidth: 1200, maxAspect: 3.2, minMean: 0.12, maxMean: 0.86, minContrast: 0.08, minSharp: 5 };
+// (maxSharp: a scene so full of edges that words over it cannot be read and
+// the page's calm is lost; the built-in set, chosen by eye, stays under 45)
+export const FULL_BLEED = { minWidth: 1200, maxAspect: 3.2, minMean: 0.12, maxMean: 0.86, minContrast: 0.08, minSharp: 5, maxSharp: 80 };
 
 // Light (mean luminance, 0 to 1), contrast (its standard deviation) and
 // sharpness (the Laplacian's mean square, x1000) of an image at 256 px
@@ -76,14 +78,42 @@ export async function pixelStats(bytes, type = 'jpeg') {
       let lap = 0;
       let n = 0;
       for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; const v = 4 * L[i] - L[i - 1] - L[i + 1] - L[i - W] - L[i + W]; lap += v * v; n++; }
-      return { mean, contrast: Math.sqrt(q / L.length), sharp: (1000 * lap) / Math.max(1, n) };
+      // colour: how colourful (Hasler and Suesstrunk, 0 to about 150) and
+      // the hue its colour leans to (the chroma-weighted mean, with how much
+      // of the colour agrees on it, 0 to 1)
+      let rgS = 0, ybS = 0, rgQ = 0, ybQ = 0, hx = 0, hy = 0, cw = 0;
+      for (let i = 0; i < W * H; i++) {
+        const r = d[4 * i], gg = d[4 * i + 1], b = d[4 * i + 2];
+        const rg = r - gg, yb = 0.5 * (r + gg) - b;
+        rgS += rg; ybS += yb; rgQ += rg * rg; ybQ += yb * yb;
+        const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), c = mx - mn;
+        if (c < 24) continue;
+        let hdeg = mx === r ? ((gg - b) / c) % 6 : mx === gg ? (b - r) / c + 2 : (r - gg) / c + 4;
+        hdeg *= 60;
+        hx += c * Math.cos((hdeg * Math.PI) / 180); hy += c * Math.sin((hdeg * Math.PI) / 180); cw += c;
+      }
+      const N = W * H;
+      const sd = (S, Q) => Math.sqrt(Math.max(0, Q / N - (S / N) ** 2));
+      const colorful = Math.sqrt(sd(rgS, rgQ) ** 2 + sd(ybS, ybQ) ** 2) + 0.3 * Math.sqrt((rgS / N) ** 2 + (ybS / N) ** 2);
+      const hue = cw ? ((Math.atan2(hy, hx) * 180) / Math.PI + 360) % 360 : null;
+      const agree = cw ? Math.hypot(hx, hy) / cw : 0;
+      return { mean, contrast: Math.sqrt(q / L.length), sharp: (1000 * lap) / Math.max(1, n), colorful, hue, agree };
     }, `data:image/${type};base64,${Buffer.from(bytes).toString('base64')}`);
   } catch { return null; } finally { await page.close().catch(() => {}); }
 }
 
 // What is wrong with a photo for a full-width place, in words, or [] when
 // nothing is (or nothing could be measured).
-export async function fullBleedProblems(bytes, { bars = FULL_BLEED, stats = pixelStats } = {}) {
+// The design's own hue (its art direction's accent) is given as hue: a
+// loud photo whose colour leans far from it would fight the page, and is
+// refused for a full-width place.
+export const CLASH = { colorful: 50, agree: 0.25, degrees: 70 };
+export function clashes(st, hue, bars = CLASH) {
+  if (!st || hue == null || st.hue == null || !(st.colorful >= bars.colorful) || !(st.agree >= bars.agree)) return false;
+  const dd = Math.abs(((st.hue - hue + 540) % 360) - 180);
+  return dd > bars.degrees;
+}
+export async function fullBleedProblems(bytes, { bars = FULL_BLEED, stats = pixelStats, hue = null } = {}) {
   const out = [];
   const size = imageSize(bytes);
   if (size) {
@@ -97,5 +127,7 @@ export async function fullBleedProblems(bytes, { bars = FULL_BLEED, stats = pixe
   if (st.mean > bars.maxMean) out.push('washed out');
   if (st.contrast < bars.minContrast) out.push('flat');
   if (st.sharp < bars.minSharp) out.push('blurred');
+  if (bars.maxSharp && st.sharp > bars.maxSharp) out.push('too busy to carry words');
+  if (clashes(st, hue)) out.push("its loud colours clash with the design's");
   return out;
 }

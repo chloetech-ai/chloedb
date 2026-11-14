@@ -184,3 +184,21 @@ test('a photo for a full-width place: its size from its header, its light and sh
   await placeScreenPhotos(poor, { find, judge: async () => ['too dark'], fetchBytes: async (u) => Buffer.from(u), drawn: false });
   assert.ok(!/https:\/\/x\//.test(String(poor.body[0].src || '')), String(poor.body[0].src));
 });
+
+test('a hero photo: too busy to carry words, or loud colours far from the design, is refused; the owner\'s own photo comes first', async () => {
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x06, 0x40, 0x09, 0x60, 0x03, 0, 0, 0, 0, 0, 0]);
+  const calm = { mean: 0.45, contrast: 0.25, sharp: 30 };
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ ...calm, sharp: 150 }) }), ['too busy to carry words']);
+  // a loud blue photo against a clay design clashes; a quiet one, or one near the design's hue, does not
+  const clay = accentHue('deep clay brown');
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 70, hue: 215, agree: 0.8 }) }), ["its loud colours clash with the design's"]);
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 20, hue: 215, agree: 0.8 }) }), []);
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 70, hue: 30, agree: 0.8 }) }), []);
+  assert.equal(accentHue('#2f5bd3'), 224);
+  // the owner's uploaded photo takes the hero before any search
+  let searched = 0;
+  const screen = { page: 'front', body: [{ hero: 'Hi', photo: 'pottery studio' }, { band: ['x'], photo: 'kiln' }] };
+  await placeScreenPhotos(screen, { find: async () => { searched++; return null; }, own: ['f1'], drawn: false, judge: null });
+  assert.equal(screen.body[0].src, 'f1');
+  assert.equal(searched, 1);
+});
