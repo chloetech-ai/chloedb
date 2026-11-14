@@ -2207,10 +2207,14 @@ impl Service {
             None => (sql, params),
         };
         let functions = self.functions();
+        // A statement that nests deep plans on a thread with the stack for it.
+        let deep = chloedb::query::parse::nests_deep(sql);
         let run = || {
-            let c = self.readable();
-            let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
-            compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
+            chloedb::query::parse::deep_stack(deep, || {
+                let c = self.readable();
+                let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
+                compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
+            })
         };
         let plan = match run() {
             Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => run()?,
@@ -3140,7 +3144,28 @@ impl Service {
         }
     }
 
-    async fn query_once(self: &Arc<Self>, mut req: QueryReq) -> Result<Answer, ApiError> {
+    async fn query_once(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        // A statement that nests deep is bound, planned, run and dropped
+        // on a thread with the stack for it, a worker's 2 MiB being too
+        // little for some (chloedb::query::parse::deep_stack).
+        if chloedb::query::parse::nests_deep(&req.sql) && !chloedb::query::parse::on_deep_stack() {
+            let (me, rt) = (self.clone(), tokio::runtime::Handle::current());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::Builder::new()
+                .name("chloedb-deep".into())
+                .stack_size(chloedb::query::parse::QUERY_STACK)
+                .spawn(move || {
+                    chloedb::query::parse::mark_deep_stack();
+                    let _ = tx.send(rt.block_on(me.query_once_here(req)));
+                })
+                .map_err(ApiError::internal)?;
+            return rx.await.map_err(ApiError::internal)?;
+        }
+        self.query_once_here(req).await
+    }
+
+    /// [`Self::query_once`] on this thread.
+    async fn query_once_here(self: &Arc<Self>, mut req: QueryReq) -> Result<Answer, ApiError> {
         let t0 = Instant::now();
         // A JSON field's paths listing: from this database's terms, or a
         // coordinator's shards' listings summed.
@@ -3401,10 +3426,12 @@ impl Service {
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
+                    let deep = chloedb::query::parse::nests_deep(&req.sql);
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = match (scroll, columns) {
+                        // A statement that nests deep runs on a thread with the stack for it.
+                        let r = chloedb::query::parse::deep_stack(deep, || match (scroll, columns) {
                             (Some((page, hold)), _) => db
                                 .scroll(&view, &select, &opts, page, hold)
                                 .map(|(rs, s)| (rs, Vec::new(), Some(s)))
@@ -3415,7 +3442,7 @@ impl Service {
                                 }),
                             (None, Some(over)) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf).map(|(rs, ipc)| (rs, ipc, None)),
                             (None, None) => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new(), None)),
-                        };
+                        });
                         (r, started, Instant::now())
                     })
                     .await;
@@ -3635,19 +3662,23 @@ impl Service {
                 };
                 let db = db.clone();
                 let te = Instant::now();
+                let deep = chloedb::query::parse::nests_deep(&req.sql);
                 let r = tokio::task::spawn_blocking(move || {
                     let _held = (permit, running);
                     let started = Instant::now();
-                    let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-                    let r = ops::run_on_engine(
-                        &plan,
-                        &tables,
-                        &mut |leaf, over| {
-                            let view = snap.table(leaf.table()).ok_or_else(|| chloedb::Error::Query(format!("no such table: {}", leaf.table())))?;
-                            db.execute_leaf(&view, &leaf.to_select(view.schema())?, &opts, over)
-                        },
-                        &opts,
-                    );
+                    // A statement that nests deep runs on a thread with the stack for it.
+                    let r = chloedb::query::parse::deep_stack(deep, || {
+                        let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                        ops::run_on_engine(
+                            &plan,
+                            &tables,
+                            &mut |leaf, over| {
+                                let view = snap.table(leaf.table()).ok_or_else(|| chloedb::Error::Query(format!("no such table: {}", leaf.table())))?;
+                                db.execute_leaf(&view, &leaf.to_select(view.schema())?, &opts, over)
+                            },
+                            &opts,
+                        )
+                    });
                     (r, started, Instant::now())
                 })
                 .await;
@@ -3669,7 +3700,8 @@ impl Service {
                 // The leaves' calls to the shards carry the request's id.
                 let id = obs::current();
                 let trace = telemetry::trace();
-                tokio::task::spawn_blocking(move || {
+                let deep = chloedb::query::parse::nests_deep(&req.sql);
+                tokio::task::spawn_blocking(move || chloedb::query::parse::deep_stack(deep, || {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
@@ -3695,7 +3727,7 @@ impl Service {
                         Ok(m.leaf())
                     }, &checks);
                     rs.map(|rs| (rs, missing))
-                })
+                }))
                 .await
             }
         };

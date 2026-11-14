@@ -353,10 +353,22 @@ pub fn unparse_per_caps(sql: &str) -> String {
 /// counts [`SET_OP_LEVELS`], and the commas of the queries it joins do not
 /// take them back; the operators of the query before it do not count on.
 fn check_depth(tokens: &[Token]) -> Result<()> {
+    depth(tokens, MAX_EXPR_DEPTH).map(drop).map_err(|()| {
+        Error::Query(format!(
+            "the statement nests more than {MAX_EXPR_DEPTH} levels deep (long chains of AND, OR or arithmetic, deep parentheses, or more than {} queries joined by UNION, INTERSECT or EXCEPT); use IN lists or split it",
+            MAX_EXPR_DEPTH / SET_OP_LEVELS
+        ))
+    })
+}
+
+/// The bound of [`check_depth`] on how deep `tokens` nest, or `Err` once
+/// it passes `limit`.
+fn depth(tokens: &[Token], limit: usize) -> std::result::Result<usize, ()> {
     // Per open parenthesis: the operators since its last comma, and the
     // set operators within it.
     let mut open: Vec<(usize, usize)> = vec![(0, 0)];
     let mut sum = 0usize;
+    let mut most = 0usize;
     for t in tokens {
         match t {
             Token::LParen | Token::LBracket | Token::LBrace => open.push((0, 0)),
@@ -391,14 +403,76 @@ fn check_depth(tokens: &[Token]) -> Result<()> {
             }
             _ => {}
         }
-        if sum + open.len() > MAX_EXPR_DEPTH {
-            return Err(Error::Query(format!(
-                "the statement nests more than {MAX_EXPR_DEPTH} levels deep (long chains of AND, OR or arithmetic, deep parentheses, or more than {} queries joined by UNION, INTERSECT or EXCEPT); use IN lists or split it",
-                MAX_EXPR_DEPTH / SET_OP_LEVELS
-            )));
+        most = most.max(sum + open.len());
+        if most > limit {
+            return Err(());
         }
     }
-    Ok(())
+    Ok(most)
+}
+
+/// How deep a statement may nest ([`check_depth`]'s bound) to be planned
+/// and run on the thread that asks for it, which may be a tokio worker's
+/// or a blocking thread's of 2 MiB: [`deep_stack`] gives a deeper one a
+/// thread of [`QUERY_STACK`]. The statements of each shape at this depth
+/// are tested on a 2 MiB thread (`tests/deep_statements.rs`).
+pub const INLINE_DEPTH: usize = 100;
+
+/// The longest statement that cannot nest past [`INLINE_DEPTH`]: each
+/// level takes a byte or more of text.
+const INLINE_BYTES: usize = INLINE_DEPTH - 1;
+
+/// Whether `sql` may nest deeper than [`INLINE_DEPTH`], by [`check_depth`]'s
+/// bound: a long statement is tokenized once more to tell. One that does
+/// not tokenize is not deep (its parse fails on the thread that asks).
+pub fn nests_deep(sql: &str) -> bool {
+    if sql.len() <= INLINE_BYTES {
+        return false;
+    }
+    match Tokenizer::new(&GenericDialect {}, sql).tokenize() {
+        Ok(tokens) => depth(&tokens, INLINE_DEPTH).is_err(),
+        Err(_) => false,
+    }
+}
+
+thread_local! {
+    /// Whether this thread has [`QUERY_STACK`] or more (a thread of
+    /// [`deep_stack`], or of the query pool).
+    static DEEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread has at least [`QUERY_STACK`] of stack
+/// ([`mark_deep_stack`]).
+pub fn on_deep_stack() -> bool {
+    DEEP.with(std::cell::Cell::get)
+}
+
+/// Marks this thread as one with at least [`QUERY_STACK`] of stack, on
+/// which [`deep_stack`] runs its work itself.
+pub fn mark_deep_stack() {
+    DEEP.with(|d| d.set(true));
+}
+
+/// `f`, on a thread of [`QUERY_STACK`] when `deep` and this thread is not
+/// one (its caller waits), else here. Planning, binding, running and
+/// dropping a statement recurse once per level it nests, so a statement
+/// that nests deeper than [`INLINE_DEPTH`] ([`nests_deep`]) runs so, on
+/// whatever thread it was asked from.
+pub fn deep_stack<T: Send>(deep: bool, f: impl FnOnce() -> T + Send) -> T {
+    if !deep || on_deep_stack() {
+        return f();
+    }
+    std::thread::scope(|s| {
+        let h = std::thread::Builder::new()
+            .name("chloedb-deep".into())
+            .stack_size(QUERY_STACK)
+            .spawn_scoped(s, || {
+                mark_deep_stack();
+                f()
+            })
+            .expect("start a thread for a deep statement");
+        h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
 }
 
 /// Whether a token can join two expressions into a deeper one: every

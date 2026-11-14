@@ -178,9 +178,24 @@ impl From<chloedb::Error> for ApiError {
     }
 }
 
+/// Whether a server refused a request whose message it could not decode
+/// for nesting deeper than Protobuf's limit: a plan whose expression
+/// nests too deep (`a + b + ...` of a hundred terms), the request's fault
+/// and not the copy's.
+pub fn too_deep_to_decode(s: &tonic::Status) -> bool {
+    s.code() == tonic::Code::Internal && s.message().contains("failed to decode Protobuf message") && s.message().contains("recursion limit reached")
+}
+
 impl From<tonic::Status> for ApiError {
     fn from(s: tonic::Status) -> ApiError {
         use tonic::Code;
+        if too_deep_to_decode(&s) {
+            return ApiError {
+                code: Some("query_invalid"),
+                status: 400,
+                message: "query error: the statement nests too deep to be sent to the shards (its plan passes Protobuf's limit of 100 nested messages): write its expressions with fewer levels, or split it".into(),
+            };
+        }
         let status = match s.code() {
             Code::InvalidArgument => 400,
             Code::NotFound => 404,

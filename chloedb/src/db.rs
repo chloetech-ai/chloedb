@@ -1425,6 +1425,12 @@ impl Db {
     /// [`crate::query::compound::MAX_ROWS`] rows each; its answer is held
     /// to [`ExecOptions::max_rows`].
     pub fn query_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
+        // A statement that nests deep runs on a thread with the stack for it.
+        crate::query::parse::deep_stack(crate::query::parse::nests_deep(sql), || self.query_at_here(snap, sql, params, opts))
+    }
+
+    /// [`Db::query_at`] on this thread.
+    fn query_at_here(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
@@ -1899,6 +1905,12 @@ impl Db {
     /// [`Db::sql`], a SELECT run with `opts` (its deadline, cancel flag and
     /// memory budget); any other statement runs as [`Db::sql`] runs it.
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        // A statement that nests deep runs on a thread with the stack for it.
+        crate::query::parse::deep_stack(crate::query::parse::nests_deep(sql), || self.sql_with_here(sql, params, opts))
+    }
+
+    /// [`Db::sql_with`] on this thread.
+    fn sql_with_here(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
         }

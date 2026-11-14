@@ -88,7 +88,10 @@ async fn survive(base: &str) {
             200 => {}
             400 => {
                 assert_eq!(body["error_code"], "query_invalid", "{name}: {body}");
-                assert!(body["error"].as_str().unwrap().contains("nests more than"), "{name}: {body}");
+                // Past the parser's limit, or, through a coordinator, past
+                // what a shard decodes of a plan.
+                let e = body["error"].as_str().unwrap();
+                assert!(e.contains("nests more than") || e.contains("nests too deep to be sent to the shards"), "{name}: {body}");
             }
             s => panic!("{name}: {s} {body}"),
         }
