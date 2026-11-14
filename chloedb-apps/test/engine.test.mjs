@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rewriteSql } from '../engine/sql.mjs';
+import { rewriteSql, existsForCounts } from '../engine/sql.mjs';
 import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -3306,4 +3306,11 @@ test('a screen with a site header of its own is a front page', () => {
   assert.equal(screen.page, 'front');
   assert.equal(expandWith({ body: [{ h: 'Orders' }] }).screen.page, undefined);
   assert.equal(expandWith({ page: 'front', body: [{ hero: 'x' }] }).screen.page, 'front');
+});
+
+test('a count tested above zero in a condition is EXISTS; one tested for zero is NOT EXISTS', () => {
+  assert.equal(existsForCounts('SELECT a FROM t WHERE b = 1 AND (SELECT COUNT(*) FROM u WHERE u.k = :k) > 0 ORDER BY a'), 'SELECT a FROM t WHERE b = 1 AND EXISTS (SELECT 1 FROM u WHERE u.k = :k)  ORDER BY a');
+  assert.equal(existsForCounts('SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) = 0'), 'SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM u) ');
+  // a count in the select list, one with GROUP BY, or one compared with another number stays as it is
+  for (const q of ['SELECT (SELECT COUNT(*) FROM u) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u GROUP BY y) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) > 2']) assert.equal(existsForCounts(q), q);
 });

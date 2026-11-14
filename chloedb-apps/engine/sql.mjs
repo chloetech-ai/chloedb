@@ -143,8 +143,44 @@ export const useTableFunctions = (names) => { tableFunctions.clear(); for (const
 // company's own rows); it may throw to refuse the table. The condition joins
 // the WHERE of each SELECT that reads the table, so search, ranking and
 // graph walks keep working on the table's own scan.
+// A count tested for being above zero in a condition, (SELECT COUNT(*)
+// FROM ...) > 0, is EXISTS (SELECT 1 FROM ...), and = 0 is NOT EXISTS: the
+// same rows, in the form ChloeDB plans in any WHERE (it takes a scalar
+// subquery there only when compared with a column).
+const COND_BEFORE = new Set(['WHERE', 'AND', 'OR', 'NOT', 'ON', 'HAVING', 'WHEN']);
+export function existsForCounts(sql) {
+  let toks;
+  try { toks = tokenize(sql).filter((t) => t.k !== 'ws' && t.k !== 'comment'); } catch { return sql; }
+  const U = (t) => (t && t.k === 'word' ? t.v.toUpperCase() : t ? t.v : '');
+  const edits = [];
+  for (let i = 1; i + 6 < toks.length; i++) {
+    if (toks[i].v !== '(' || U(toks[i + 1]) !== 'SELECT' || U(toks[i + 2]) !== 'COUNT' || toks[i + 3].v !== '(' || toks[i + 4].v !== '*' || toks[i + 5].v !== ')' || U(toks[i + 6]) !== 'FROM') continue;
+    if (!COND_BEFORE.has(U(toks[i - 1])) && toks[i - 1].v !== '(') continue;
+    // the subquery's own closing parenthesis; no GROUP BY, HAVING or LIMIT at its level
+    let depth = 0, end = -1, plain = true;
+    for (let j = i; j < toks.length; j++) {
+      if (toks[j].v === '(') depth++;
+      else if (toks[j].v === ')') { depth--; if (depth === 0) { end = j; break; } }
+      else if (depth === 1 && ['GROUP', 'HAVING', 'LIMIT', 'UNION', 'OFFSET'].includes(U(toks[j]))) plain = false;
+    }
+    if (end < 0 || !plain) continue;
+    const op = toks[end + 1], num = toks[end + 2];
+    if (!op || !num || num.k !== 'number') continue;
+    const n = Number(num.v), o = op.v;
+    const some = (o === '>' && n === 0) || (o === '>=' && n === 1) || ((o === '<>' || o === '!=') && n === 0);
+    const none = (o === '=' && n === 0) || (o === '<' && n === 1) || (o === '<=' && n === 0);
+    if (!some && !none) continue;
+    edits.push({ s: toks[i].s, e: toks[i + 5].e, text: `${none ? 'NOT ' : ''}EXISTS (SELECT 1` }, { s: op.s, e: num.e, text: '' });
+    i = end;
+  }
+  if (!edits.length) return sql;
+  let out = sql;
+  for (const ed of edits.sort((a, b) => b.s - a.s)) out = out.slice(0, ed.s) + ed.text + out.slice(ed.e);
+  return out;
+}
+
 export function rewriteSql(sql, tables, physical, { scope = null } = {}) {
-  const text = String(sql || '').trim();
+  const text = existsForCounts(String(sql || '').trim());
   if (!text) throw new Error('empty SQL');
   const all = tokenize(text);
   const toks = all.filter((t) => t.k !== 'ws' && t.k !== 'comment');

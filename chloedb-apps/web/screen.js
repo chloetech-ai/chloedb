@@ -445,7 +445,21 @@ window.__sa_numbers = (() => {
       const label = b.label ? T(b.label, s, path) : null;
       let el;
       if (type === 'select') {
-        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) trackFilter(key, e.target.value); } }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
+        // What the choice shows is what it holds: with nothing chosen it
+        // starts on the row the screen was opened for (a value of its params
+        // among the options), or shows a blank, never an option it does not hold.
+        const opts = (val(b.options, s, path) || []).map(OPT);
+        const cur = String(state[key] ?? '');
+        let blank = false;
+        if (!opts.some((o) => String(o.value) === cur)) {
+          const given = Object.values(app.params || {}).map(String);
+          const pick = cur === '' ? opts.find((o) => given.includes(String(o.value))) : null;
+          if (pick) queueMicrotask(() => { if (String(state[key] ?? '') === '') set({ [key]: pick.value }); });
+          else blank = !opts.some((o) => String(o.value) === '');
+        }
+        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) trackFilter(key, e.target.value); } },
+          blank ? h('option', { value: '', selected: true }, b.placeholder ? T(b.placeholder, s, path) : '—') : null,
+          opts.map((o) => h('option', { value: o.value, selected: cur === String(o.value) }, o.label)));
       } else if (type === 'checkbox') {
         el = h('input', { type: 'checkbox', checked: !!state[key], onchange: (e) => set({ [key]: e.target.checked }) });
       } else {
