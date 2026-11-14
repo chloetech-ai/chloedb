@@ -2185,7 +2185,7 @@ function leadershipPage(body, app) {
     const cannot = j.risk.failover.filter((f) => !f.survives);
     note.textContent = `${j.days} days of records; measured rates over the ${j.kept_hours} hours of telemetry kept`;
     put(kpis,
-      kpi(app, "Services on target", `${met}/${j.services.length}`, "for the period"),
+      kpi(app, "Services on target", `${met}/${j.services.length}`, `measured over ${j.kept_hours} h, incidents over ${j.days} days`),
       kpi(app, "Incidents", String(inc.count), `${inc.sev1} sev1 · ${j.days} days`),
       kpi(app, "Time to detect", Math.round(inc.ttd) + " s", "mean"),
       kpi(app, "Time to resolve", mins(inc.mttr), "mean"),
@@ -2194,14 +2194,14 @@ function leadershipPage(body, app) {
       kpi(app, "Changes as planned", total ? pct(ch.completed / total) : "–", `${ch.rolled_back} of ${total} rolled back`),
       kpi(app, "Spans that cannot fail over", `${cannot.length}/${j.risk.failover.length}`, "at their measured peak"));
     put(main,
-      C.card({ title: "Are we meeting what we sold?", sub: "each service against its objective; the budget is the failure its objective allows", flush: true, body: C.table([
+      C.card({ title: "Are we meeting what we sold?", sub: `each service against its objective, over two windows: the rate and the budget it spent over the ${j.kept_hours} h of telemetry kept, and the minutes of incidents over ${j.days} days against what the objective allows`, flush: true, body: C.table([
         { key: "name", label: "Service", render: (r) => h("span", {}, h("b", {}, r.name), " ", h("span", { class: "muted small" }, `tier ${r.tier} · ${r.owner}`)) },
         { key: "slo_target", label: "Objective", num: true, render: (r) => (r.slo_target * 100).toFixed(2) + "%" },
-        { key: "success", label: "Measured", num: true, render: (r) => h("span", { style: r.met ? null : { color: "var(--crit-ink)", fontWeight: 600 } }, (r.success * 100).toFixed(3) + "%") },
-        { key: "budget_used", label: "Error budget spent", render: (r) => h("span", { class: "row nw", style: { gap: "8px" } }, bar(r.budget_used), h("span", { class: "small" }, pct(r.budget_used))), sort: (r) => r.budget_used },
-        { key: "degraded_min", label: "Incident minutes", num: true, render: (r) => h("span", { title: `its objective allows ${r.allowed_min} minutes over the period`, style: r.period_used > 1 ? { color: "var(--crit-ink)", fontWeight: 600 } : null }, `${Math.abs(r.degraded_min)} of ${r.allowed_min}`), sort: (r) => r.period_used },
+        { key: "success", label: `Measured, last ${j.kept_hours} h`, num: true, render: (r) => h("span", { style: r.met ? null : { color: "var(--crit-ink)", fontWeight: 600 } }, (r.success * 100).toFixed(3) + "%") },
+        { key: "budget_used", label: `Budget spent, last ${j.kept_hours} h`, render: (r) => h("span", { class: "row nw", style: { gap: "8px" } }, bar(r.budget_used), h("span", { class: "small" }, pct(r.budget_used))), sort: (r) => r.budget_used },
+        { key: "degraded_min", label: `Incident minutes, ${j.days} days`, num: true, render: (r) => h("span", { title: `its objective allows ${r.allowed_min} minutes in ${j.days} days`, style: r.period_used > 1 ? { color: "var(--crit-ink)", fontWeight: 600 } : null }, `${Math.abs(r.degraded_min)} of ${r.allowed_min}`), sort: (r) => r.period_used },
         { key: "customers", label: "Customers", num: true },
-        { key: "revenue_exposed", label: "Revenue exposed", num: true, render: (r) => money(Math.abs(r.revenue_exposed)) },
+        { key: "revenue_exposed", label: `Revenue exposed, ${j.days} days`, num: true, render: (r) => money(Math.abs(r.revenue_exposed)) },
       ], { rows: j.services, compact: true, sortKey: "degraded_min", desc: true, onRow: (r) => serviceDrawer(app, r.id) }) }),
       h("div", { class: "no-cols even" },
         C.card({ title: "What incidents cost", sub: "a week at a time", body: [trend, inc.by_change.length ? h("div", { class: "small", style: { marginTop: "8px" } }, h("b", {}, `${inc.by_change.length} began with a change: `), inc.by_change.map((x, i) => [i ? ", " : "", app.link(x.incident, "incidents", x.incident), " (", h("a", { class: "no-link", onclick: () => changeDrawer(app, x.change) }, x.change), ")"])) : null,

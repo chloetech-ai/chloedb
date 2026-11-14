@@ -522,6 +522,9 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     let lead = api.get("/v1/leadership?days=30").await;
     ran_sql(&lead, "leadership");
     assert!(len(&lead["services"]) == 12 && lead["incidents"]["count"].as_i64().unwrap() >= 6 && len(&lead["carriers"]) > 3 && lead["report"].as_str().unwrap().contains("Incidents."), "leadership: {}", lead["incidents"]);
+    // A rate measured over the telemetry kept and incident minutes over the period are said with their windows.
+    let objectives = lead["report"].as_str().unwrap().lines().find(|l| l.starts_with("Objectives.")).unwrap_or("").to_string();
+    assert!(objectives.contains(" h of telemetry") && objectives.contains("Over the 30 days of incidents"), "{objectives}");
 
     // Stop, start on the same folder: nothing is built again, and the
     // incidents, the judgments and the simulator's place are all still there.
