@@ -11,7 +11,7 @@ export function h(tag, attrs, ...kids) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === "class") el.className = v;
-    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    else if (k === "style" && typeof v === "object") for (const [p, x] of Object.entries(v)) { if (p.startsWith("--")) el.style.setProperty(p, x); else el.style[p] = x; }
     else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
     else if (k === "html") el.innerHTML = v;
     else el.setAttribute(k, v === true ? "" : v);
@@ -101,4 +101,143 @@ useStyle("common", `
 .lv-empty{color:var(--muted);padding:24px;text-align:center}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--ctx:#b48cff}}
 :root[data-theme="dark"]{--ctx:#b48cff}
+`);
+
+// ---------------------------------------------------------------- shared helpers
+// (added with Mission, Story and Decide; generic, for every level screen)
+
+/** A route's parameter: ctx.params[name] when the shell gives it, else the
+ *  hash's second segment (`#/story/<agent>` → agent). */
+export function routeParam(ctx, name) {
+  if (ctx && ctx.params && ctx.params[name]) return ctx.params[name];
+  const parts = (location.hash || "").replace(/^#\/?/, "").split(/[/?]/);
+  return parts[1] ? decodeURIComponent(parts[1]) : null;
+}
+
+/** The repository a screen is about: ctx.params.repo, else the one most of
+ *  the running agents work in. */
+export function repoOf(ctx) {
+  if (ctx && ctx.params && ctx.params.repo) return ctx.params.repo;
+  const n = new Map();
+  for (const a of (ctx && ctx.state && ctx.state.agents) || []) if (a.repo && a.running !== false) n.set(a.repo, (n.get(a.repo) || 0) + 1);
+  let best = null, max = 0;
+  for (const [r, c] of n) if (c > max) [best, max] = [r, c];
+  return best;
+}
+
+/** Agents by id from several lists (fetched rows, the stream's): the row
+ *  whose state or narration is newer wins; on a tie, the later list. */
+export function mergeAgents(...lists) {
+  const stamp = (a) => Math.max(toMs(a.state_since) || 0, toMs(a.narration_ts) || 0);
+  const out = new Map();
+  for (const list of lists) for (const a of list || []) {
+    const had = out.get(a.id);
+    if (!had || stamp(a) >= stamp(had)) out.set(a.id, a);
+  }
+  return out;
+}
+
+/** Text with `code` spans, as nodes. */
+export function inlineCode(text) {
+  return String(text ?? "").split(/(`[^`]+`)/).filter(Boolean).map((p) => (p.length > 2 && p[0] === "`" && p.at(-1) === "`" ? h("code", { class: "lv-code" }, p.slice(1, -1)) : p));
+}
+
+/** JSON a row keeps as TEXT (options, precedent), or already parsed. */
+export function parseJSON(v, fallback = null) {
+  if (v == null || v === "") return fallback;
+  if (typeof v !== "string") return v;
+  try { return JSON.parse(v); } catch { return fallback; }
+}
+
+/** 950, 41k, 1.2M. */
+export function fmtTokens(n) {
+  if (n == null || !isFinite(n)) return "";
+  if (n < 1000) return String(n);
+  if (n < 1e6) return `${n < 1e4 ? (n / 1000).toFixed(1).replace(/\.0$/, "") : Math.round(n / 1000)}k`;
+  return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** A short span: 0.4 s, 11 s, 2 m 40 s, 1 h 5 m. */
+export function fmtSpan(ms) {
+  if (ms == null || !isFinite(ms)) return "";
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)} s`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return s % 60 ? `${Math.floor(s / 60)} m ${s % 60} s` : `${s / 60} min`;
+  return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} m`;
+}
+
+/** A day as people say it: today, yesterday, 9 Nov. */
+export function fmtDay(t) {
+  const ms = toMs(t);
+  if (!ms) return "";
+  const d = new Date(ms);
+  const days = Math.round((new Date(new Date().toDateString()) - new Date(d.toDateString())) / 864e5);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  return d.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+/** Vertical bars for a series (a pulse, activity per minute); `tone(v, i)`
+ *  names a theme token per bar, `title(v, i)` its tooltip. */
+export function barChart(values, { height = 64, tone = () => "accent", title = () => null } = {}) {
+  const max = Math.max(1, ...values);
+  return h("div", { class: "lv-bars", style: { height: height + "px" } }, values.map((v, i) =>
+    h("i", { title: title(v, i), style: { height: (v ? Math.max(6, (v / max) * 100) : 3) + "%", background: `var(--${tone(v, i)})`, opacity: v ? 1 : 0.4 } })));
+}
+
+const typing = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+
+/** A screen's keyboard: `j`/`k` move the focus through the visible elements
+ *  matching `items`, in document order; Enter or Space on one that is not a
+ *  button clicks it. `onKey(e)` sees other keys first and returns true when
+ *  it used one. Keys typed into a field, or with a modifier, are left alone.
+ *  Returns the function that removes it. */
+export function keyNav(root, { items = "[data-nav]", onKey } = {}) {
+  const handler = (e) => {
+    if (!root.isConnected || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
+    if (onKey && onKey(e)) { e.preventDefault(); return; }
+    if (e.key === "j" || e.key === "k") {
+      const list = [...root.querySelectorAll(items)].filter((x) => x.offsetParent !== null);
+      if (!list.length) return;
+      e.preventDefault();
+      const cur = document.activeElement && document.activeElement.closest ? document.activeElement.closest(items) : null;
+      const at = list.indexOf(cur);
+      const next = at < 0 ? list[0] : list[Math.max(0, Math.min(list.length - 1, at + (e.key === "j" ? 1 : -1)))];
+      next.focus({ preventScroll: true });
+      next.scrollIntoView({ block: "nearest" });
+    } else if ((e.key === "Enter" || e.key === " ") && root.contains(e.target) && e.target.matches(items) && !/^(BUTTON|A|LABEL)$/.test(e.target.tagName)) {
+      e.preventDefault();
+      e.target.click();
+    }
+  };
+  document.addEventListener("keydown", handler);
+  return () => document.removeEventListener("keydown", handler);
+}
+
+/** Replaces `host`'s children with what `fn` builds, keeping the focus on
+ *  the element with the same data-key. */
+export function rerender(host, fn) {
+  const had = document.activeElement && host.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  host.replaceChildren(...[fn()].flat(Infinity).filter((x) => x != null && x !== false));
+  if (had) { const el = host.querySelector(`[data-key="${CSS.escape(had)}"]`); if (el) el.focus({ preventScroll: true }); }
+}
+
+/** fn, called once `ms` after the last call. */
+export function later(fn, ms) {
+  let t = null;
+  const f = (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+  f.cancel = () => clearTimeout(t);
+  return f;
+}
+
+useStyle("common-helpers", `
+:root{--ctx:#7c3aed}
+.lv-screen{height:100%;overflow:auto;overscroll-behavior:contain}
+.lv-code{font-family:var(--mono);font-size:.88em;background:var(--surface-3);border-radius:4px;padding:1px 4px}
+.lv-h{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.lv-h .n{font-weight:500;margin-left:3px}
+.lv-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px;box-shadow:var(--shadow-1)}
+.lv-bars{display:flex;align-items:flex-end;gap:3px}.lv-bars>i{flex:1;min-width:2px;border-radius:2px 2px 0 0}
+.lv-vio{background:color-mix(in srgb,var(--ctx) 14%,transparent);color:var(--ctx)}
 `);
