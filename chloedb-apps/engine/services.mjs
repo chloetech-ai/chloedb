@@ -12,7 +12,8 @@ import net from 'node:net';
 import tls from 'node:tls';
 import os from 'node:os';
 import path from 'node:path';
-import { newId } from './store.mjs';
+import { newId, physical } from './store.mjs';
+import { rulesOf } from './access.mjs';
 import { personName } from './engine.mjs';
 
 const scrypt = promisify(scryptCb);
@@ -72,7 +73,26 @@ export class Services {
     const any = pub ? [1] : await this.db.query('SELECT id FROM sa_members WHERE app = :a LIMIT 1', { a: appId });
     const doc = { id: `${appId}#${personId}`, app: appId, person: personId, role: any.length ? 'member' : 'owner' };
     await this.db.write([{ op: 'insert', table: 'sa_members', doc }]);
+    if (doc.role === 'owner') await this.claimExamples(appId, personId).catch((e) => this.log?.(`[${appId}] example rows: ${e.message}`));
     return doc;
+  }
+
+  // The example rows a new app starts with belong to nobody; in a table that
+  // shows each person their own rows (ALLOW ... WHERE owner_id = :user_id),
+  // the app's owner takes them when they first sign in, so the app they
+  // open is not empty.
+  async claimExamples(appId, personId) {
+    const view = await this.engine.store.resolve(appId).catch(() => null);
+    for (const t of view?.tables || []) {
+      const rules = rulesOf(t.spec) || [];
+      // The owner reads every row already when a rule lets them read unscoped.
+      if (rules.some((r) => r.actions.includes('read') && !r.scope.length)) continue;
+      const cols = [...new Set(rules.filter((r) => r.actions.includes('read')).flatMap((r) => r.scope.filter((x) => x.by === 'user').map((x) => x.col)))].slice(0, 1);
+      for (const col of cols) {
+        const rows = await this.db.query(`SELECT id FROM ${physical(appId, t.spec.name)} WHERE ${col} IS NULL LIMIT 500`).catch(() => []);
+        if (rows.length) await this.db.write(rows.map((r) => ({ op: 'set', table: physical(appId, t.spec.name), key: String(r.id), field: col, value: String(personId) })));
+      }
+    }
   }
 
   async newSession(personId) {
