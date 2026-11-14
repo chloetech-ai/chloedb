@@ -363,6 +363,9 @@ export async function checkReads(db, sql, params, allowed) {
   const ok = new Set([...allowed].map((t) => t.toLowerCase()));
   for (const t of tablesOfPlan(out && out.ir)) {
     const lower = t.toLowerCase();
+    // ChloeDB plans a SELECT with no FROM (SELECT :qty >= 1, a rule's
+    // REQUIRE) over its own one-row _placeholder: it reads nothing
+    if (lower === '_placeholder') continue;
     if (!ok.has(lower) && !functionReads.has(lower)) refuse(`the query reads ${t}, which is not one of this app's tables`);
   }
   if (verdicts.size > 2000) verdicts.clear();

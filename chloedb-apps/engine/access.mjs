@@ -30,9 +30,17 @@
 // The studio (the app's builder and owner, not through the public path)
 // always has every row: the statements are for the app's people.
 //
-// Server functions called by people run as them (their reads and writes are
-// held to the same statements); triggers and schedules run as the app,
-// since they answer a write that was allowed or the clock, not a person.
+// Server functions are the app's own code. One the app declares callers for
+//
+//   ALLOW CALL ON place-order TO everyone
+//
+// may be called by those people (a call from anyone else is refused, 401 or
+// 403, said to the person), and then runs with the app's rights, as a
+// stored procedure with SECURITY DEFINER does: a visitor's order lowers the
+// stock no visitor may change. A function with no CALL statement runs as
+// the person who called it (their reads and writes held to the tables'
+// statements). Triggers and schedules run as the app, since they answer a
+// write that was allowed or the clock, not a person.
 
 export const ACTIONS = ['read', 'add', 'change', 'remove'];
 const ACTION_WORDS = { READ: ['read'], SELECT: ['read'], ADD: ['add'], INSERT: ['add'], CHANGE: ['change'], UPDATE: ['change'], EDIT: ['change'],
@@ -55,6 +63,13 @@ const HOW = 'ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL ON <table> TO ever
 // One statement -> {table, actions, who, scope: [{col, by}]}.
 export function parseAllow(text) {
   const s = String(text || '').trim().replace(/;\s*$/, '').replace(/\s+/g, ' ');
+  // ALLOW CALL ON <function> TO <who>: who may call one of the app's functions
+  const c = s.match(/^ALLOW\s+CALL\s+ON\s+([A-Za-z][A-Za-z0-9_-]*)\s+TO\s+(.+)$/i);
+  if (c) {
+    const who = WHO_WORDS[c[2].trim().toUpperCase().replace(/^THE\s+(APP'?S\s+)?/, '').replace(/\s+ONLY$/, '')];
+    if (!who) fail(`TO ${c[2].trim()}: say everyone, members, admins or owner`);
+    return { table: c[1].toLowerCase(), actions: ['call'], who, scope: [], call: true };
+  }
   const m = s.match(/^ALLOW\s+(.+?)\s+ON\s+([A-Za-z_][A-Za-z0-9_]*)\s+TO\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
   if (!m) fail(`write it as ${HOW}, not ${JSON.stringify(s.slice(0, 120))}`);
   const actions = new Set();
@@ -82,6 +97,7 @@ export function parseAllow(text) {
 
 // The statement as the engine keeps and shows it.
 export function allowText(rule) {
+  if (rule.call) return `ALLOW CALL ON ${rule.table} TO ${rule.who}`;
   const what = rule.actions.length === ACTIONS.length ? 'ALL' : rule.actions.map((a) => a.toUpperCase()).join(', ');
   const where = rule.scope.length ? ` WHERE ${rule.scope.map((t) => `${t.col} = :${t.by}_id`).join(' OR ')}` : '';
   return `ALLOW ${what} ON ${rule.table} TO ${rule.who}${where}`;
@@ -103,12 +119,13 @@ export function parseAccessList(list) {
 
 // Problems with a plan's access statements, against the app's tables and
 // columns (Map table -> Set of columns).
-export function checkAccess(list, columns) {
+export function checkAccess(list, columns, functions = null) {
   const problems = [];
   const items = Array.isArray(list) ? list : list ? [list] : [];
   for (const raw of items) {
     let r;
     try { r = parseAllow(raw); } catch (e) { problems.push(`access: ${e.message}`); continue; }
+    if (r.call) { if (functions && !functions.has(r.table)) problems.push(`access: ${allowText(r)} names the function ${r.table}, which the app does not have`); continue; }
     if (!columns.has(r.table)) { problems.push(`access: ${allowText(r)} names the table ${r.table}, which the app does not have`); continue; }
     for (const t of r.scope) if (!columns.get(r.table).has(t.col)) problems.push(`access: ${allowText(r)}: ${r.table} has no column ${t.col} (add it to the table, a keyword column)`);
   }
@@ -135,6 +152,16 @@ export function rulesOf(spec) {
 const PEOPLE = { everyone: 'everyone', members: "the app's signed-in members", admins: "the app's admins", owner: "the app's owner" };
 const VERB = { read: 'see', add: 'add to', change: 'change', remove: 'remove from' };
 const refusal = (status, message) => Object.assign(new Error(message), { status, refused: status === 401 ? 'sign-in' : 'access' });
+
+// Whether a person may call a function whose callers are `callers` (a WHO
+// word): nothing when they may, else a thrown 401 (sign in first) / 403.
+export function mayCall(callers, title, who) {
+  if (!callers || !who) return;
+  const need = WHO.indexOf(callers);
+  if (rank(who.role) >= need) return;
+  if (!who.user) throw refusal(401, `Sign in first: only ${PEOPLE[callers]} can ${title}`);
+  throw refusal(403, `Only ${PEOPLE[callers]} can ${title}`);
+}
 
 // What `who` may do: {all: true} (every row), {scope: [{col, by}]} (those
 // rows), or a thrown 401 (sign in first) / 403. who is {role, user, company}

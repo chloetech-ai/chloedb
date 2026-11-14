@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Store, physical, newId } from './store.mjs';
 import { rewriteSql, checkReads, tokenize } from './sql.mjs';
-import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM } from './access.mjs';
+import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM, mayCall } from './access.mjs';
 import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
 import { rowLabel, tablesOf } from './activity.mjs';
@@ -374,7 +374,16 @@ export class Engine extends EventEmitter {
     // down: its writes are checked as theirs, its errors only recorded.
     // A person's call (ctx.as) runs as them: its reads and writes are held
     // to the tables' declared access, all the way down.
-    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}) };
+    // A function that declares its callers (ALLOW CALL, access.mjs) is the
+    // app's own code acting for them: the call is checked against who may
+    // make it, then it runs with the app's rights (its reads and writes are
+    // not held to the caller's), as a SECURITY DEFINER procedure does.
+    // The person stays its user (:user_id), and who added a row stays theirs.
+    const definer = !!fn.spec?.callers && (ctx.as || ctx.visitor);
+    if (definer) mayCall(fn.spec.callers, String(fn.title || slug).toLowerCase(), ctx.as || { role: 'visitor', user: null });
+    const inner = definer
+      ? { depth, by: fn.id, user, test: !!ctx.test, visitor: false, pub: false, ...(ctx.who ? { who: ctx.who } : {}) }
+      : { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;

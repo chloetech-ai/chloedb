@@ -83,9 +83,10 @@ The engine enforces who may read and write a table, on the server, for every rea
 - WHERE keeps a person to their own rows (owner_id = :user_id) or their company's (company_id = :company_id): reads see only those rows, an add fills the column with the person's id (or their company's) when the row leaves it out, and changes and removes reach only those rows. The column is a keyword column of the table: add it in "tables" when the table lacks it.
 - A table with no ALLOW statement is open to whoever reaches the app. Once a table has one, only what its statements allow goes through. The app's builder (the studio) always sees every row.
 - Statements for a table replace the ones it had: give all of a table's statements together.
+- A function people call says who may: ALLOW CALL ON <function> TO everyone | members | admins | owner. It is the app's own code acting for them: the engine checks the call against that, then runs it with the app's rights, so a visitor's order may lower a stock no visitor may change and a member's booking may take a place they may not edit. Its refusals (REQUIRE) and a call by someone not allowed are said to the person. Keep what such a function does to what its callers should be able to cause.
 - Examples. Only signed-in people read or change the data: ALLOW ALL ON invoices TO members. Everyone reads the menu, the owner edits it: ALLOW READ ON dishes TO everyone, ALLOW WRITE ON dishes TO owner. Each person sees their own notes: ALLOW ALL ON notes TO members WHERE owner_id = :user_id. Admins see everything: ALLOW ALL ON notes TO admins.
 - Companies (workspaces): the engine keeps which company each person works in (not a table of the app: never make one). In a view: app.companies() -> [{id, name, role}], app.company() -> the id of the one they work in now or null, app.createCompany(name) (they become its admin), app.useCompany(id), app.addToCompany(company, email, role) (an admin adds someone who has an account; role 'member' or 'admin'). A table each company keeps to itself has a company_id keyword column and ALLOW ALL ON t TO members WHERE company_id = :company_id.
-- In SQL, :user_id, :user_email, :user_name and :company_id are bound by the engine to the signed-in person and their company (never pass them yourself); a query that names one when nobody is signed in is refused with "Sign in first", so a screen that needs a person shows app.signIn first.
+- In SQL, :user_id, :user_email, :user_name and :company_id are bound by the engine to the signed-in person and their company (never pass them yourself); a query that names one when nobody is signed in is refused with "Sign in first", and the app then asks the person to sign in at that moment.
 
 Whenever the request says who may see or change data (only signed-in people, the owner, admins, roles, each person's or each company's own data), declare access for every table of the app, including the ones that stay open (ALLOW READ ON t TO everyone): a build that asks for it and declares none is refused.
 
@@ -1352,7 +1353,16 @@ export function accessProblems(plan, view, requestText = '') {
     columns.set(t.name, set);
   }
   if (plan.access !== undefined && !Array.isArray(plan.access)) return ['access: a list of ALLOW statements, one string each'];
-  const problems = checkAccess(plan.access || [], columns);
+  const functions = new Set([...(view.functions || []).map((f) => f.slug), ...(plan.functions || []).map((f) => f.slug)]);
+  const problems = checkAccess(plan.access || [], columns, functions);
+  // A function people call in an app that declares who reaches its data says
+  // who may call it, so it can do for them what they may not do themselves.
+  const declares = (plan.access || []).length || view.tables.some((t) => t.spec.access?.length);
+  if (declares && !problems.length) {
+    const calls = new Set([...(view.functions || []).filter((f) => f.spec?.callers).map((f) => f.slug), ...[...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n]) => n)]);
+    const silent = (plan.functions || []).filter((f) => !f.on && !f.every && !calls.has(f.slug)).map((f) => f.slug);
+    if (silent.length) problems.push(`access: ${silent.join(', ')} ${silent.length === 1 ? 'says' : 'say'} no callers: give "access" ALLOW CALL ON <function> TO everyone | members | admins | owner for ${silent.length === 1 ? 'it' : 'each'}: who may use it (a visitor's order, a member's booking); it then runs with the app's rights, so it may change rows those people may not (lower the stock), and is refused to anyone else`);
+  }
   if (!problems.length && wantsAccess(requestText)) {
     const declared = new Set([...view.tables.filter((x) => x.spec.access?.length).map((x) => x.spec.name), ...parseAccessList(plan.access || []).keys()]);
     const open = [...columns.keys()].filter((t) => !declared.has(t));
@@ -1952,7 +1962,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const tableSpecs = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   const written = [];
   // The plan's ALLOW statements, by table, as the engine keeps them.
-  const accessOf = new Map([...parseAccessList(plan.access || [])].map(([name, rules]) => [name, rules.map(allowText)]));
+  const parsedAccess = parseAccessList(plan.access || []);
+  const accessOf = new Map([...parsedAccess].filter(([, rules]) => !rules.some((r) => r.call)).map(([name, rules]) => [name, rules.map(allowText)]));
+  // Who may call each function (ALLOW CALL ON <function> TO <who>): kept in
+  // the function's spec; such a function runs with the app's rights.
+  const callsOf = new Map([...parsedAccess].filter(([, rules]) => rules.some((r) => r.call)).map(([name, rules]) => [name, rules.find((r) => r.call).who]));
   const stored = new Map();
   for (const t of plan.tables || []) {
     const old = tableSpecs.get(t.name);
@@ -2040,12 +2054,23 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       // The patterns a screen was expanded from, for the graph: this
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      const callers = kind === 'function' ? callsOf.get(item.slug) || view.functions.find((f) => f.slug === item.slug)?.spec?.callers || null : null;
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}), ...(callers ? { callers } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
       written.push(id);
     }
+  }
+  // Callers declared for a function this version does not rewrite: a new
+  // version of it with them.
+  for (const [slug, who] of callsOf) {
+    if ((plan.functions || []).some((f) => f.slug === slug)) continue;
+    const cur = view.functions.find((f) => f.slug === slug);
+    if (!cur || cur.spec?.callers === who) continue;
+    const id = await store.putCapability({ app: appId, slug, kind: 'function', title: cur.title, description: cur.description || '', code: cur.code, spec: { ...cur.spec, callers: who }, forked_from: cur.forked_from || null, author: 'forge' });
+    caps.set(`function/${slug}`, id);
+    written.push(id);
   }
   for (const r of plan.reuse || []) {
     const src = library.find((c) => c.id === r.id);
