@@ -679,11 +679,13 @@ button.flag.warn:hover { border-color: var(--warn-line); }
 .tl-day span { background: var(--bg); padding-right: 8px; }
 .tl-time { padding: 12px 10px 0 18px; font: 11.5px var(--mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tl-time.same { opacity: .35; }
-.dc { margin: 5px 10px 5px 0; padding: 0; display: flex; flex-direction: column; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow-1); transition: border-color .12s, box-shadow .12s, transform .12s; }
+.dc { margin: 5px 10px 5px 0; padding: 0; display: flex; flex-direction: column; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow-1); transition: border-color .12s, box-shadow .12s, transform .12s, opacity .18s; }
 .dc:hover { border-color: var(--line-2); }
 .dc.cur { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
 .dc.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .dc.rel { border-color: var(--warn-line); box-shadow: 0 0 0 3px var(--warn-glow); }
+.tl .sp { transition: opacity .18s ease; }
+.tl.relating .dc:not(.rel):not(.src), .tl.relating .sp { opacity: .35; }
 .dc.ping { animation: ping 1.4s ease-out; }
 .dc-open { position: relative; display: flex; gap: 10px; align-items: flex-start; border: 0; background: none; padding: 10px 12px 4px 30px; text-align: left; cursor: pointer; color: var(--text); font-size: 13px; line-height: 1.45; border-radius: var(--r) var(--r) 0 0; }
 .dc-open:focus-visible { outline: none; }

@@ -1529,6 +1529,11 @@ async function openLineCard(agentId, path, line, { text, push = false, back = fa
   }
 }
 
+function rewindLead(a, rw) {
+  const lead = Math.round(((rw.edit_ms ?? rw.to_ms - 3000) - rw.from_ms) / 1000);
+  return lead < 1 ? `${nameOf(a)}'s terminal, from the start of its session` : `${nameOf(a)}'s terminal, ${lead} s before the edit`;
+}
+
 function lineBlock(n, text) {
   return h("div", { class: "sh-line" }, h("span", { class: "ln", text: n != null ? String(n) : "" }), h("code", { text: text ?? "" }));
 }
@@ -1608,7 +1613,7 @@ function renderLineCard(card, agentId) {
   if (card.rewind && a) {
     const host = h("div", { class: "rw" });
     body.push(h("section", { class: "sec rw-sec" }, h("div", { class: "sec-hrow" }, h("h3", { class: "sec-h", text: "Rewind" }),
-      h("span", { class: "sec-sub", text: `${nameOf(a)}'s terminal, ${Math.round(((card.rewind.edit_ms ?? card.rewind.to_ms - 3000) - card.rewind.from_ms) / 1000)} s before the edit` })), host));
+      h("span", { class: "sec-sub", text: rewindLead(a, card.rewind) })), host));
     const t = { ...T.line };
     T.player = new Rewind(host, {
       agent: card.rewind.agent || a.id, from: card.rewind.from_ms, to: card.rewind.to_ms, edit: card.rewind.edit_ms, name: nameOf(a),
@@ -2358,8 +2363,14 @@ function decCard(d, lane, li, row) {
 function relate(d, on) {
   D.hover = on ? d : null;
   const ids = new Set([d.id, d.superseded_by, ...D.list.filter((x) => x.superseded_by === d.id).map((x) => x.id)].filter(Boolean));
-  for (const el of $("tl").querySelectorAll(".dc")) el.classList.toggle("rel", on && ids.has(el.dataset.id) && el.dataset.id !== d.id);
+  const linked = on && ids.size > 1;
+  for (const el of $("tl").querySelectorAll(".dc")) {
+    el.classList.toggle("rel", on && ids.has(el.dataset.id) && el.dataset.id !== d.id);
+    el.classList.toggle("src", linked && el.dataset.id === d.id);
+  }
   const hot = TL_HOT;
+  // Fade the cards an arrow passes over, so it reads as an overlay.
+  $("tl").classList.toggle("relating", linked && getComputedStyle(hot).display !== "none");
   if (!on || getComputedStyle(hot).display === "none") { hot.replaceChildren(); return; }
   const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
   defs.innerHTML = '<marker id="tl-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>';
