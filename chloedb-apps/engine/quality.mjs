@@ -1,6 +1,6 @@
 // What a well-made app looks like, held as rules and checked as numbers.
 //
-// Three parts, after the lessons of Doable's design pipeline:
+// Three parts, after the lessons of other app builders' design pipelines:
 // - the art direction a new app's plan writes before its screens (a
 //   layout idea, a type pairing, a color, its photos and the one main
 //   action), and the rules its screens keep, as short text the forge sees;
