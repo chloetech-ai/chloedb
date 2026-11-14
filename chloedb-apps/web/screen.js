@@ -808,6 +808,35 @@
     const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope }) : null;
     const isFront = spec.page === 'front' && !!front;
     if (isFront) document.body.classList.add('front');
+    // The screen's page structure (engine/quality.mjs LAYOUTS): a class the
+    // kit draws (kit.css, front.css), and for a working screen its parts
+    // arranged: the title and numbers as its head, then the screen's groups
+    // (each starts at a heading or a row of numbers) placed as the layout says.
+    const LAYOUTS = ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool'];
+    const layout = LAYOUTS.includes(spec.layout) ? spec.layout : null;
+    if (layout) { document.body.classList.add(`layout-${layout}`); document.documentElement.dataset.layout = layout; }
+    const flatNodes = (x) => (Array.isArray(x) ? x.flatMap(flatNodes) : x instanceof Node ? [x] : []);
+    const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
+    function arrange(els) {
+      const list = flatNodes(els);
+      if (!layout || list.length < 2) return list;
+      const head = [];
+      let i = 0;
+      while (i < list.length && (headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('p') && head.length))) head.push(list[i++]);
+      const groups = [];
+      for (; i < list.length; i++) {
+        if (!groups.length || (headLike(list[i]) && groups.at(-1).length)) groups.push([]);
+        groups.at(-1).push(list[i]);
+      }
+      const box = (cls, kids) => h('div', { class: cls }, kids);
+      const top = head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [];
+      if (!groups.length) return top;
+      const cells = groups.map((g, k) => box(`lay-group lay-g${k}`, g));
+      if (layout === 'split' && cells.length > 1) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
+      if (layout === 'tool') return [...top, box('lay-main lay-panel', [cells[0]]), ...cells.slice(1)];
+      if (layout === 'dashboard') return [...top, box('lay-grid', cells)];
+      return [...top, ...cells];
+    }
 
     // ---- drawing: the whole screen again, keeping focus and what is typed.
     function focusPath() {
@@ -835,8 +864,8 @@
           const f = focusPath();
           heroAt = null;
           if (isFront) {
-            root.replaceChildren(h('div', { class: 'screen front' }, front.page(spec.body, scope())));
-          } else root.replaceChildren(h('div', { class: 'col screen' }, blocks(spec.body, scope(), 'body')));
+            root.replaceChildren(h('div', { class: `screen front${layout ? ` layout-${layout}` : ''}` }, front.page(spec.body, scope(), layout)));
+          } else root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange(blocks(spec.body, scope(), 'body'))));
           if (front) front.after(root);
           restore(f);
         } while (again);
