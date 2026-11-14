@@ -151,7 +151,17 @@
     const screenLinks = (links, s, path, close) => {
       const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
       const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()));
-      return screens.map((x, i) => { const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1); a && a.addEventListener('click', close); return a; });
+      const out = screens.map((x, i) => { const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1); a && a.addEventListener('click', close); return a; });
+      // An app with screens for its members offers a visitor the way in:
+      // "Sign in" (or create an account) until someone is signed in.
+      if (window.__SA && window.__SA.members && window.__sa_askSignIn && !said.has('sign in') && !said.has('log in')) {
+        const a = h('button', { class: 'fp-btn navlink', type: 'button', onclick: (e) => { e.stopPropagation(); close(); Promise.resolve(window.__sa_askSignIn()).then((ok) => { if (ok) a.remove(); }); } }, 'Sign in');
+        Promise.resolve(app.me()).then((me) => { if (me) a.remove(); }).catch(() => {});
+        const signed = (e) => { if (!a.isConnected) { window.removeEventListener('sa-signed', signed); return; } a.hidden = !!e.detail; };
+        window.addEventListener('sa-signed', signed);
+        out.push(a);
+      }
+      return out;
     };
     F.nav = (b, s, path) => {
       const links = list(b.links, s, `${path}.links`);

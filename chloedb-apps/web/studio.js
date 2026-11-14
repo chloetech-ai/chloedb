@@ -720,7 +720,9 @@ function renderApp() {
 // A screen that shows one row, opened from another screen with its id
 // (app.open("project", {id})): a DETAIL that another view opens.
 function isDetailOnly(v, views) {
-  if (!(v.spec?.patterns || []).includes('detail')) return false;
+  // a detail screen, or one that shows the row it is opened with (it reads
+  // its params and another screen opens it with them)
+  if (!(v.spec?.patterns || []).includes('detail') && !/\bparams\.[A-Za-z_]/.test(v.code || '')) return false;
   const opens = new RegExp(`app\\.open\\(\\\\?["'\`]${v.slug}\\\\?["'\`]\\s*,`);
   return views.some((o) => o !== v && opens.test(o.code || ''));
 }
@@ -1060,7 +1062,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
   const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title }));
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, screens: others, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, screens: others, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}

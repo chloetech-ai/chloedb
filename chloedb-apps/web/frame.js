@@ -231,7 +231,17 @@
   });
   // The frame may open no window; window.open asks the studio, which opens
   // it only while a click is fresh.
-  window.open = (url) => { try { post({ kind: 'link', href: new URL(String(url)).href }); } catch { /* not a full address */ } return null; };
+  // A payment's page (the address app.pay gives) opened when the click is no
+  // longer fresh (after a handler's awaits) is offered as the payment sheet,
+  // whose button is the tap the browser wants.
+  const payments = new Map();
+  window.open = (url) => {
+    const p = payments.get(String(url));
+    const fresh = !navigator.userActivation || navigator.userActivation.isActive;
+    if (p && !p.offered && !fresh && window.__sa_paySheet) { p.offered = true; window.__sa_paySheet(p); return null; }
+    try { post({ kind: 'link', href: new URL(String(url), SA.origin || location.href).href }); } catch { /* not an address */ }
+    return null;
+  };
 
   const pad = (n) => String(n).padStart(2, '0');
   // A calendar day ("2026-11-07") is that day where the person is, not UTC
@@ -297,16 +307,17 @@
     view: SA.slug,
     // people: one account for every app on this engine
     me: () => rpc('me', []),
-    signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]),
+    // (a sign-in or out is told to the page: 'sa-signed' on window, its user)
+    signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]).then((u) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: u })); return u; }),
     // pay({table, id, description, email} | {amount, description}): a card
     // payment on a hosted page; resolves to {url, mode, amount, currency}.
     // Open the url from a tap (window.open(url)); the app never sees a card.
-    pay: (opts) => rpc('pay', [opts || {}]),
+    pay: (opts) => rpc('pay', [opts || {}]).then((r) => { const p = r && (r.payment || r); if (p && p.url) payments.set(String(p.url), p); return r; }),
     // payNow(payment, note): a sheet with the payment's amount and a "Pay
     // by card" button that opens its hosted page (the tap the browser wants)
     payNow: (p, note) => (window.__sa_paySheet ? window.__sa_paySheet(p, note) : (p && p.url ? window.open(p.url) : null)),
-    signUp: (fields) => rpc('signUp', [fields || {}]),
-    signOut: () => rpc('signOut', []),
+    signUp: (fields) => rpc('signUp', [fields || {}]).then((u) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: u })); return u; }),
+    signOut: () => rpc('signOut', []).then((r) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: null })); return r; }),
     people: () => rpc('people', []),
     // companies (workspaces) the engine keeps: rows scoped by :company_id are the current one's
     companies: () => rpc('companies', []),

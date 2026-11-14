@@ -1149,7 +1149,9 @@ const server = http.createServer(async (req, res) => {
         try { p = await services.payTest(m[1], token); } catch (e) { problem = e.message; }
       }
       const appRow = await engine.store.getApp(p.app).catch(() => null);
-      res.writeHead(problem ? 403 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+      // same-origin: the page's own Pay posts with its origin (no-referrer
+      // would send "null" and be refused above); other sites never see its address
+      res.writeHead(problem ? 403 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'same-origin' });
       return res.end(payPage(p, appRow?.name || 'This shop', { token: p.status === 'open' && services.tokenOk(p, token) ? token : '', problem, provider: services.payProvider?.name || '' }));
     }
     // An upload is the file's bytes as the body; its name and type in the query.
