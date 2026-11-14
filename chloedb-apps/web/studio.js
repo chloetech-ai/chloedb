@@ -1062,7 +1062,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
   const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title }));
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1070,7 +1070,7 @@ ${noClose(c.code)}
   const libs = (helpers || []).map((c) => `<script>__sa_helper(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  return `<!doctype html><html${S.app?.app?.locale ? ` lang="${String(S.app.app.locale).replace(/[^A-Za-z0-9-]/g, "")}"` : ""}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${frameCsp(location.origin, { hosts: webHosts() })}">
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>

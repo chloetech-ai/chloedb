@@ -256,6 +256,23 @@
     return null;
   };
 
+  // The app's locale (its plan's "locale": "es-ES"): every number, price and
+  // date drawn in the frame reads as there, the kit's and the app's own code
+  // alike, so one asking for the browser's locale (undefined) gets the app's.
+  const LOCALE = (() => { try { return SA.locale ? new Intl.NumberFormat(SA.locale).resolvedOptions().locale : undefined; } catch { return undefined; } })();
+  if (LOCALE) {
+    const wrap = (proto, name) => { const f = proto[name]; proto[name] = function (loc, opts) { return f.call(this, loc === undefined ? LOCALE : loc, opts); }; };
+    wrap(Number.prototype, 'toLocaleString');
+    for (const n of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) wrap(Date.prototype, n);
+    for (const n of ['NumberFormat', 'DateTimeFormat', 'PluralRules', 'RelativeTimeFormat', 'ListFormat']) {
+      const C = Intl[n];
+      if (typeof C !== 'function') continue;
+      const W = function (loc, opts) { return new C(loc === undefined ? LOCALE : loc, opts); };
+      W.prototype = C.prototype;
+      W.supportedLocalesOf = C.supportedLocalesOf;
+      Intl[n] = W;
+    }
+  }
   const pad = (n) => String(n).padStart(2, '0');
   // A calendar day ("2026-11-07") is that day where the person is, not UTC
   // midnight (which is the day before anywhere west of UTC).
@@ -275,7 +292,7 @@
     time(v) { return v ? asDate(v).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; },
     datetime(v) { return v ? `${fmt.date(v)}, ${fmt.time(v)}` : ''; },
     number(n) { return n === null || n === undefined ? '' : Number(n).toLocaleString(); },
-    money(n, currency = SA.currency || 'USD') { return n === null || n === undefined ? '' : Number(n).toLocaleString(undefined, { style: 'currency', currency }); },
+    money(n, currency = SA.currency || 'USD') { if (n === null || n === undefined || n === '') return ''; const v = Number(n); try { return v.toLocaleString(LOCALE, { style: 'currency', currency }); } catch { return v.toLocaleString(LOCALE); } },
   };
 
   // Files and map tiles come from the engine itself, by URL: the frame's
@@ -317,6 +334,8 @@
   };
   const app = Object.freeze({
     params: Object.freeze({ ...(SA.params || {}) }),
+    // the app's locale ("es-ES"), or undefined for the browser's
+    locale: LOCALE,
     view: SA.slug,
     // people: one account for every app on this engine
     me: () => rpc('me', []),

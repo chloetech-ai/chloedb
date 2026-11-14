@@ -534,9 +534,10 @@ async function body(req) {
 // The hosted payment page: the amount, what it is for, and in test mode a
 // plain statement that no card is charged and none is asked for.
 const html = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-function payPage(p, shop, { token = '', problem = '', provider = '' } = {}) {
+function payPage(p, shop, { token = '', problem = '', provider = '', locale = null } = {}) {
   let amount = `${p.amount} ${p.currency}`;
-  try { amount = Number(p.amount).toLocaleString('en-GB', { style: 'currency', currency: p.currency }); } catch { /* as it is */ }
+  // the amount as the app writes money (its locale), else as in Britain
+  try { amount = Number(p.amount).toLocaleString(locale || 'en-GB', { style: 'currency', currency: p.currency }); } catch { /* as it is */ }
   const paid = p.status === 'paid' || p.status === 'paid_test';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pay ${html(shop)}</title>
 <style>:root{color-scheme:light dark}body{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#f4f4f6;color:#16161a;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
@@ -606,7 +607,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: { ...view.app, currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description) },
+    app: { ...view.app, currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await store.setting(appId, 'locale').catch(() => null)) || null },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -650,7 +651,7 @@ async function publicState(appId, role = null) {
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
-    app: { id: appId, name: view.app.name, currency: (await engine.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description) },
+    app: { id: appId, name: view.app.name, currency: (await engine.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await engine.store.setting(appId, 'locale').catch(() => null)) || null },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
@@ -1181,7 +1182,7 @@ const server = http.createServer(async (req, res) => {
       // same-origin: the page's own Pay posts with its origin (no-referrer
       // would send "null" and be refused above); other sites never see its address
       res.writeHead(problem ? 403 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'same-origin' });
-      return res.end(payPage(p, appRow?.name || 'This shop', { token: p.status === 'open' && services.tokenOk(p, token) ? token : '', problem, provider: services.payProvider?.name || '' }));
+      return res.end(payPage(p, appRow?.name || 'This shop', { token: p.status === 'open' && services.tokenOk(p, token) ? token : '', problem, provider: services.payProvider?.name || '', locale: await engine.store.setting(p.app, 'locale').catch(() => null) }));
     }
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
