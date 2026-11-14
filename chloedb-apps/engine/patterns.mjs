@@ -190,7 +190,20 @@ const HOLDERS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else
 // A screen that carries a site's own header (a "nav" part) is a front page,
 // written so or not: it owns the window's chrome, so the app's bar is not
 // drawn above it (web/studio.js) and the header offers the other screens.
+const isScreenLike = (b) => !!b && typeof b === 'object' && !Array.isArray(b) && Array.isArray(b.body) && Object.keys(b).every((k) => ['page', 'layout', 'body', 'state', 'data', 'let'].includes(k));
 export function frontOf(screen) {
+  // A whole screen given as a part of its own body ({"page": "front",
+  // "body": [...]} inside BLOCKS) is that screen: its parts take its place.
+  if (screen && typeof screen === 'object' && Array.isArray(screen.body) && screen.body.some(isScreenLike)) {
+    const out = { ...screen, body: [] };
+    for (const b of screen.body) {
+      if (!isScreenLike(b)) { out.body.push(b); continue; }
+      for (const k of ['page', 'layout']) if (b[k] !== undefined && out[k] === undefined) out[k] = b[k];
+      for (const k of ['state', 'data', 'let']) if (b[k] && typeof b[k] === 'object') out[k] = { ...(out[k] || {}), ...b[k] };
+      out.body.push(...b.body);
+    }
+    screen = out;
+  }
   if (!screen || typeof screen !== 'object' || screen.page || !Array.isArray(screen.body)) return screen;
   return screen.body.some((b) => b && typeof b === 'object' && !Array.isArray(b) && b.nav !== undefined) ? { ...screen, page: 'front' } : screen;
 }

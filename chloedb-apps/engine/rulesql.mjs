@@ -425,7 +425,8 @@ export function compileRule(text) {
     if (every) fail(`CREATE RULE ${m[1]}: a scheduled rule writes, pulls or sends; a SELECT alone on a schedule changes nothing`);
     return { name: m[1], on: null, every: null, rule: { query: parts[0].trim(), ...(returns === 'row' ? { one: true } : returns === 'value' ? { value: true } : {}) } };
   }
-  if (ret) fail(`CREATE RULE ${m[1]}: RETURNS is for a rule that is one SELECT; steps give back a value with RETURN`);
+  // RETURNS on a rule of steps says nothing more: its RETURN gives back what
+  // it gives (a whole answer again to take the word out is not worth it)
   const steps = compileSteps(body);
   if (!steps.length) fail(`CREATE RULE ${m[1]}: no statements`);
   return { name: m[1], on, every, rule: { steps } };

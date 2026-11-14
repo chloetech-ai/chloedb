@@ -234,6 +234,7 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
+| `STRATA_APPS_PLAN_EFFORT` | the effort of a first version's plan, its longest answer (default `low`: about half the thinking of `medium`, the pages as good) |
 | `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; it reports no cost, so its answers count $0) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
 | `STRATA_APPS_CODEX`, `STRATA_APPS_CODEX_MODEL` | the Codex binary (default `codex`) and its model (default: Codex's own); the `claude-*` model settings go to claude only |
 | `STRATA_APPS_AGY`, `STRATA_APPS_AGY_MODEL` | the same for Antigravity's `agy`, kept for when it is wired |

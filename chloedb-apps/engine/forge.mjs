@@ -756,6 +756,10 @@ export async function dryRunScreens(db, appId, names, plan) {
       // data, a helper) cannot be known here: such a query is not run, so
       // that a right query is never sent back as wrong.
       if (Object.entries((q && typeof q === 'object' && q.params) || {}).some(([k, x]) => typeof x === 'string' && x.startsWith('=') && params[k] == null)) continue;
+      // The signed-in person's own parameters are the engine's to bind when
+      // the screen runs; here someone stands in, so a right query is not
+      // sent back as failing (and the model asked to fix it).
+      for (const k of ['user_id', 'user_email', 'user_name', 'company_id']) if (params[k] === undefined && new RegExp(`:${k}\\b`).test(sql)) params[k] = `dry-run-${k}`;
       try {
         const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
         await checkReads(db, phys, params, names.map((t) => physical(appId, t)));
@@ -874,7 +878,9 @@ async function figuresNotShown(engine, appId, live, opened, figures) {
 function rowsOfBuild(plan, data, fresh, first) {
   const out = data.imports.filter((i) => fresh.has(i.table)).map((i) => ({ table: i.table, rows: i.rows, imported: true }));
   if (first && plan.seed && typeof plan.seed === 'object') {
-    for (const [table, rows] of Object.entries(plan.seed)) if (fresh.has(table) && Array.isArray(rows) && rows.length) out.push({ table, rows: rows.slice(0, 50), imported: false });
+    // (never made-up rows beside the person's own attached ones)
+    const own = new Set(out.map((o) => o.table));
+    for (const [table, rows] of Object.entries(plan.seed)) if (fresh.has(table) && !own.has(table) && Array.isArray(rows) && rows.length) out.push({ table, rows: rows.slice(0, 50), imported: false });
   }
   return out;
 }
@@ -1384,7 +1390,14 @@ export function accessProblems(plan, view, requestText = '') {
   if (declares && !problems.length) {
     const calls = new Set([...(view.functions || []).filter((f) => f.spec?.callers).map((f) => f.slug), ...[...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n]) => n)]);
     const silent = (plan.functions || []).filter((f) => !f.on && !f.every && !calls.has(f.slug)).map((f) => f.slug);
-    if (silent.length) problems.push(`access: ${silent.join(', ')} ${silent.length === 1 ? 'says' : 'say'} no callers: give "access" ALLOW CALL ON <function> TO everyone | members | admins | owner for ${silent.length === 1 ? 'it' : 'each'}: who may use it (a visitor's order, a member's booking); it then runs with the app's rights, so it may change rows those people may not (lower the stock), and is refused to anyone else`);
+    // One that says none gets the plain default instead of a whole answer
+    // again: a rule acting for the signed-in person (it reads :user_id) is
+    // for members, with the app's rights; any other runs as whoever calls
+    // it, held to the tables' own statements.
+    for (const slug of silent) {
+      const f = (plan.functions || []).find((x) => x.slug === slug);
+      if (/:user[._]id\b/.test(JSON.stringify(f || {}))) plan.access = [...(plan.access || []), `ALLOW CALL ON ${slug} TO members`];
+    }
   }
   if (!problems.length && wantsAccess(requestText)) {
     const declared = new Set([...view.tables.filter((x) => x.spec.access?.length).map((x) => x.spec.name), ...parseAccessList(plan.access || []).keys()]);
@@ -1657,7 +1670,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary"${SUGGEST_AFTER ? ', "seed", "import", "figures" and "welcome"' : ', "seed", "import", "figures", "welcome" and "suggestions"'} as always (for a new app, the seed is not optional).${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
+- Keep "summary"${SUGGEST_AFTER ? ', "seed", "import", "figures" and "welcome"' : ', "seed", "import", "figures", "welcome" and "suggestions"'} as always (for a new app, the seed is not optional).${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.\n- Mark each view "format": "screen" (its statement follows the plan) or "code" (written in JavaScript by its writer), and each function "format": "rule" or "javascript": a writer starts as soon as the plan is read.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 // First versions written in parallel: the plan names every screen and rule
 // with a spec and no statement, and each is then written by its own writer
@@ -1730,8 +1743,48 @@ async function pool(items, n, fn) {
 // the longest of a build (the plan, the screens' statements and the example
 // rows), and at the CLI's default effort most of its output was thinking: a
 // course site's plan wrote 24,000 tokens in 149 s, at medium 15,000 in 96 s,
-// the app as good. STRATA_APPS_PLAN_EFFORT (or STRATA_APPS_EFFORT) sets it.
-export const PLAN_EFFORT = process.env.STRATA_APPS_PLAN_EFFORT || process.env.STRATA_APPS_EFFORT || 'medium';
+// the app as good. At low (2026-11-14, course builds twice each) it thought
+// about half as much again: the plan in 62 to 67 s against 95 to 98 s at
+// medium, the pages it drew as good to the eye. STRATA_APPS_PLAN_EFFORT (or
+// STRATA_APPS_EFFORT) sets it.
+export const PLAN_EFFORT = process.env.STRATA_APPS_PLAN_EFFORT || process.env.STRATA_APPS_EFFORT || 'low';
+
+// A fix laid over a first answer: plan lists merged by slug (or name),
+// other plan keys and code blocks replaced where the fix gives them.
+export function mergeAnswers(first, fix) {
+  const plan = JSON.parse(JSON.stringify(first.plan || {}));
+  // "drop": slugs (or names) the fix takes out, or renames away from
+  const drop = new Set(Array.isArray(fix.plan?.drop) ? fix.plan.drop.map(String) : []);
+  const code0 = { ...(first.code || {}) };
+  if (drop.size) {
+    for (const k of Object.keys(plan)) if (Array.isArray(plan[k])) plan[k] = plan[k].filter((x) => !(x && typeof x === 'object' && drop.has(String(x.slug || x.name || ''))));
+    for (const d of drop) delete code0[d];
+  }
+  // a slug the fix gives in one list (a view) is no longer in another (a
+  // function of the same name the fix renamed away)
+  const lists = ['views', 'functions', 'components', 'helpers'];
+  for (const k of lists) {
+    for (const y of Array.isArray(fix.plan?.[k]) ? fix.plan[k] : []) {
+      const id = y && (y.slug || y.name);
+      if (!id) continue;
+      for (const o of lists) {
+        if (o === k || !Array.isArray(plan[o]) || !plan[o].some((x) => x && (x.slug || x.name) === id)) continue;
+        plan[o] = plan[o].filter((x) => !(x && (x.slug || x.name) === id));
+        delete code0[id]; // its code was the other kind's
+      }
+    }
+  }
+  for (const [k, v] of Object.entries(fix.plan || {})) {
+    if (k === 'drop') continue;
+    const keyed = Array.isArray(v) && Array.isArray(plan[k]) && v.every((x) => x && typeof x === 'object' && (x.slug || x.name)) && plan[k].every((x) => x && typeof x === 'object' && (x.slug || x.name));
+    if (!keyed) { plan[k] = v; continue; }
+    const id = (x) => x.slug || x.name;
+    const out = plan[k].map((x) => v.find((y) => id(y) === id(x)) || x);
+    for (const y of v) if (!out.some((x) => id(x) === id(y))) out.push(y);
+    plan[k] = out;
+  }
+  return { plan, code: { ...code0, ...(fix.code || {}) } };
+}
 
 async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null, onPlan = null }, progress, tr = new Trace()) {
   let cost = 0;
@@ -1743,15 +1796,56 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   const parallel = PARALLEL && !view.comp.n;
   const STEP = parallel ? PLAN_STEP_PARALLEL : PLAN_STEP;
   let planPrompt = `${prompt}\n\n${STEP}`;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let first = null;
+  // The writers of the pieces the plan marks as code (views in JavaScript,
+  // functions, components and helpers) start as soon as its </plan> has
+  // streamed in, while the model goes on to write the statements: their
+  // answers are used when the plan passes its checks the first time.
+  const early = new Map();
+  const startEarly = (p) => {
+    if (!p || typeof p !== 'object') return;
+    const text = `# The plan, decided\n\n<plan>\n${JSON.stringify(p, null, 1)}\n</plan>`;
+    const items = [
+      ...(p.views || []).filter((v) => v && v.slug && v.format === 'code').map((v) => ({ slug: v.slug, what: `the view ${v.slug}`, item: v })),
+      ...(p.functions || []).filter((f) => f && f.slug && f.format === 'javascript').map((f) => ({ slug: f.slug, what: `the function ${f.slug}`, item: f })),
+      ...Object.entries(SHARED).flatMap(([kind, { ns, plural }]) => (p[plural] || []).filter((c) => c && c.name).map((c) => ({ slug: `${ns}:${c.name}`, what: `the shared ${kind} ${c.name}`, item: c }))),
+    ];
+    for (const it of items) {
+      const piecePrompt = `${forPiece(it.item.uses, it.item.forked_from)}\n\n${text}\n\n${pieceStep(it.what, it.slug)}`;
+      early.set(it.slug, { prompt: piecePrompt, answer: ask({ system, prompt: piecePrompt }).catch(() => null) });
+    }
+    if (items.length) progress(`Writing ${items.map((i) => i.slug).join(', ')} while the plan's statements are written`);
+  };
+  let partialTried = false;
+  let third = false;
+  let merged = null;
+  for (let attempt = 1; attempt <= (third ? 3 : 2); attempt++) {
     progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null, attempt === 1 && !parallel ? planWatcher(startEarly) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
       try {
-        const parsed = parseAnswer(answer.text);
+        // A fix answers with what changes only (code blocks alone, even):
+        // laid over the first answer.
+        let parsed;
+        try { parsed = parseAnswer(answer.text); } catch (e) {
+          if (!first || /<plan>/.test(answer.text)) throw e;
+          parsed = { plan: {}, code: Object.fromEntries([...answer.text.matchAll(/<code\s+slug="([^"]+)"\s*>\n?([\s\S]*?)\n?<\/code>/g)].map((m) => [m[1], m[2]])) };
+        }
+        if (first) {
+          // what was written early from the first plan stays unless the fix
+          // touches it (its entry) or what it stands on (tables, shared code)
+          const fp = parsed.plan || {};
+          if (fp.tables || fp.components || fp.helpers) early.clear();
+          for (const x of [...(fp.views || []), ...(fp.functions || [])]) if (x && x.slug) early.delete(x.slug);
+          parsed = mergeAnswers(first, parsed);
+          merged = JSON.parse(JSON.stringify(parsed));
+        } else {
+          if (attempt > 1) early.clear();
+          first = JSON.parse(JSON.stringify(parsed));
+        }
         plan = parsed.plan;
         // The plan's CREATE SCREEN statements come with it; other code waits for the writers.
         const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c) || isRuleStatement(c)));
@@ -1769,7 +1863,13 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       problems = [];
     }
     if (!problems.length) { decidedAt = span.end; progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
-    planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
+    // The fix is asked for as what changes, not the whole answer again: a
+    // first version's answer is the longest of a build (a minute or more),
+    // its fix mostly a few lines.
+    planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\n${first ? '# This step: the fixes only\n\nAnswer with what changes and nothing else: a <plan> holding only the keys you change (a view, function, table, component or helper in its list by its slug or name, whole; any other key, such as "access", "seed" or "figures", whole), then the code blocks you rewrite, each whole. Everything you leave out stays as it is in your previous plan; to take one out or rename it, list its old slug in "drop" in the plan.' : 'Answer again with the whole plan, these fixed.'}`;
+    // a fix laid over the first answer that still fails is asked for whole
+    if (attempt === 2 && first && partialTried) { first = null; third = true; planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n<plan>\n${JSON.stringify(merged?.plan || {}, null, 1)}\n</plan>\n${Object.entries(merged?.code || {}).map(([k, c]) => `<code slug="${k}">\n${c}\n</code>`).join('\n')}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`; }
+    partialTried = !!first;
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
   const pieces = planPieces(plan, parallel);
@@ -1813,8 +1913,9 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       const fix = notes.get(pc.slug);
       const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
       const extra = fix ? `\n\n# Your previous code for it\n\n<code slug="${pc.slug}">\n${fix.code}\n</code>\n\n# Its problems\n\n${fix.problems.map((p) => `- ${p}`).join('\n')}\n\nWrite it again, whole, with these fixed.` : '';
-      const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pc.step || pieceStep(pc.what, pc.slug)}${extra}`;
-      const answer = await ask({
+      const pre = !fix && early.get(pc.slug);
+      const piecePrompt = pre ? pre.prompt : `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pc.step || pieceStep(pc.what, pc.slug)}${extra}`;
+      const answer = (pre && await pre.answer) || await ask({
         system,
         prompt: piecePrompt,
         ...(pc.model ? { model: pc.model } : {}),

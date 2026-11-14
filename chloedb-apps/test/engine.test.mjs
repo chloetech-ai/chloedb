@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER, repeatedActions } from '../engine/forge.mjs';
+import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER, repeatedActions, mergeAnswers } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -3352,4 +3352,31 @@ test('SUMMARY: its heading, total and bars are one section; the number of groups
   const c = expandWith(compileStatement("CREATE SCREEN d TITLE 'D'\nSUMMARY receivables AS owed\n  GROUP BY customer  VALUE SUM(amount)  COUNT 'Customers'").screen);
   assert.deepEqual(c.screen.body[0].section[0].kpis.map((k) => k.label), ['Total', 'Customers']);
   assert.equal(c.screen.body[0].title, undefined);
+});
+
+test('a whole screen given as a part of its own body is that screen', () => {
+  const { screen, problems } = expandWith({ body: [{ page: 'front', layout: 'hero', body: [{ nav: 'Lucía' }, { hero: 'Hola' }] }] });
+  assert.deepEqual(problems, []);
+  assert.equal(screen.page, 'front');
+  assert.equal(screen.layout, 'hero');
+  assert.deepEqual(screen.body.map((b) => Object.keys(b)[0]), ['nav', 'hero']);
+});
+
+test('a plan fixed by what changes: lists merged by slug, code blocks replaced, "drop" takes one out', () => {
+  const first = { plan: { name: 'Course', views: [{ slug: 'home', t: 1 }, { slug: 'enrol' }], functions: [{ slug: 'enrol' }], access: ['a'] }, code: { home: 'H', enrol: 'E' } };
+  const out = mergeAnswers(first, { plan: { drop: ['enrol'], views: [{ slug: 'enrol' }], functions: [{ slug: 'enrol-now' }], access: ['b'] }, code: { 'enrol-now': 'N', enrol: 'V' } });
+  assert.deepEqual(out.plan.views.map((v) => v.slug), ['home', 'enrol']);
+  assert.deepEqual(out.plan.functions.map((v) => v.slug), ['enrol-now']);
+  assert.deepEqual(out.plan.access, ['b']);
+  assert.equal(out.plan.name, 'Course');
+  assert.deepEqual(out.code, { home: 'H', 'enrol-now': 'N', enrol: 'V' });
+  // the first answer is left as it was
+  assert.equal(first.plan.functions[0].slug, 'enrol');
+});
+
+test('a fix that gives a slug as a view takes the function of that name out', () => {
+  const out = mergeAnswers({ plan: { views: [{ slug: 'home' }], functions: [{ slug: 'enrol' }] }, code: { enrol: 'R' } }, { plan: { views: [{ slug: 'enrol' }], functions: [{ slug: 'start-enrolment' }] }, code: { 'start-enrolment': 'S' } });
+  assert.deepEqual(out.plan.views.map((v) => v.slug), ['home', 'enrol']);
+  assert.deepEqual(out.plan.functions.map((v) => v.slug), ['start-enrolment']);
+  assert.deepEqual(out.code, { 'start-enrolment': 'S' });
 });
