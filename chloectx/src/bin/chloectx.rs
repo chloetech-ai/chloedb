@@ -72,6 +72,18 @@ enum Cmd {
     /// Run the MCP server on stdio.
     #[command(hide = true)]
     Mcp,
+    /// For programs that start their own Claude Code sessions (Workbench):
+    /// the hooks, permission and MCP server to give a session in this
+    /// folder, as JSON; empty when it is already wired.
+    #[command(hide = true)]
+    /// (The session's folder is --project, default the current one.)
+    Wiring {
+        /// Path of the chloectx binary to call (default: this one).
+        #[arg(long)]
+        exe: Option<String>,
+        #[arg(long, default_value = "haiku")]
+        distill_model: String,
+    },
     /// Run the daemon in the foreground.
     #[command(hide = true)]
     Serve {
@@ -468,6 +480,10 @@ fn main() {
     match cli.cmd {
         Cmd::Hook { event, user } => std::process::exit(hook::run(&event, user)),
         Cmd::Mcp => std::process::exit(mcp::run()),
+        Cmd::Wiring { exe, distill_model } => {
+            let exe = exe.unwrap_or_else(|| std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "chloectx".into()));
+            println!("{}", install::wiring(&project, &exe, Some(&distill_model)));
+        }
         Cmd::Serve { dir } => {
             let dir = dir.unwrap_or_else(|| paths::store_dir(&project));
             // The folder the store is keyed by: a worktree's sessions reach

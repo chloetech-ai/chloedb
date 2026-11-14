@@ -76,7 +76,9 @@ for several minutes (a release build), so give the command a long timeout
 ```
 
 Options: `--distill-model NAME` (default `haiku`), `--prefix DIR` (default
-`~/.local`), `--no-wire` (build and install the binary only). The script stops
+`~/.local`), `--no-wire` (build and install the binary only), `--workbench`
+(also build and install `chloedb-workbench`, which wires ChloeCtx into each
+session it starts and leaves Claude Code's settings alone). The script stops
 at the first failed step with a message saying what is missing, ends by running
 `chloectx doctor`, and exits non-zero if any doctor check failed.
 

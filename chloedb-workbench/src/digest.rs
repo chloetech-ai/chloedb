@@ -68,10 +68,12 @@ fn events_since(sup: &Supervisor, since: i64) -> Vec<Event> {
 /// recording, when there is one.
 fn replay_of(sup: &Supervisor, a: &Agent, at: i64, label: String) -> Option<Json> {
     let st = a.started_ms?;
-    if !sup.session_dir(&a.id).join("term.cast").is_file() || at < st {
+    // ChloeCtx's records keep whole seconds: one of the session's first
+    // second can read as a moment before it started.
+    if !sup.session_dir(&a.id).join("term.cast").is_file() || at < st - 1000 {
         return None;
     }
-    let rel = at - st;
+    let rel = (at - st).max(0);
     Some(json!({ "agent": a.id, "from_ms": (rel - BEFORE_MS).max(0), "to_ms": rel + AFTER_MS, "at_ms": at, "label": label }))
 }
 

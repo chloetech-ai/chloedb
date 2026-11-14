@@ -38,6 +38,9 @@ pub struct Config {
     pub exe: PathBuf,
     /// The ChloeCtx program the decision trail asks.
     pub chloectx_bin: String,
+    /// Whether each session must get ChloeCtx (`--no-chloectx` turns it
+    /// off, for tests): see `ctxwire`.
+    pub chloectx_required: bool,
     /// The most a session's terminal recording grows to.
     pub record_max: u64,
 }
@@ -399,6 +402,11 @@ impl Supervisor {
             return Err(ApiError::bad(format!("repo must be an absolute path, not {}", req.repo)));
         }
         let co = git::checkout(&path).map_err(ApiError::bad)?;
+        // Before a worktree is made: a session without ChloeCtx would miss
+        // most of what Workbench shows.
+        if self.cfg.chloectx_required {
+            crate::ctxwire::wiring(&self.cfg.chloectx_bin, &co.main).map_err(|why| ApiError::new(409, "chloectx_missing", why))?;
+        }
         let worktree = req.worktree.unwrap_or(true);
         if !worktree && (req.branch.is_some() || req.base.is_some()) {
             return Err(ApiError::bad("branch and base need a worktree of the agent's own (worktree: true)"));
@@ -502,8 +510,15 @@ impl Supervisor {
         let mcp = session_dir.join("mcp.json");
         let exe = self.cfg.exe.to_string_lossy().to_string();
         // Bash prefixes allowed from Flow's suggestions, for this repository.
-        write_private(&settings, &crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy())))?;
-        write_private(&mcp, &mcp_json(&exe, &self.cfg.url, &self.cfg.token, &id))?;
+        let (settings_v, mcp_v) = crate::ctxwire::wire(
+            &self.cfg.chloectx_bin,
+            self.cfg.chloectx_required,
+            &cwd,
+            crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy())),
+            mcp_json(&exe, &self.cfg.url, &self.cfg.token, &id),
+        )?;
+        write_private(&settings, &settings_v)?;
+        write_private(&mcp, &mcp_v)?;
 
         // The process.
         let session_id = uuid4();

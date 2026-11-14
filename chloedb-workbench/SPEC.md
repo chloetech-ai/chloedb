@@ -890,6 +890,35 @@ now), tokens, txn, query}]}`.
   a payments repo, as in the concepts), so each screen can be built and
   screenshotted without a model.
 
+## ChloeCtx is required
+
+Most of what the levels show comes from ChloeCtx, so every session
+Workbench starts is wired to it, without touching the user's settings:
+
+- `chloectx wiring --project <session cwd> --exe <abs path>` (hidden;
+  `chloectx/src/install.rs`, `wiring()`) prints `{version, exe, wired:
+  "user"|"project"|null, settings: {hooks, permissions: {allow:
+  ["mcp__chloectx"]}, env: {CHLOECTX_DISTILL_MODEL}}, mcp: {chloectx:
+  {type, command, args: ["mcp"]}}, store, model: {ok, path, fix}}`.
+  `settings` and `mcp` are `{}` when the folder is already wired by the
+  user's settings or its project's, so a session is never recorded twice
+  (a worktree has no `settings.local.json` of its own, so it gets them).
+- At spawn (`supervisor.rs`), before a worktree is made, `wiring` is run
+  for the repo; a failure answers 409 `chloectx_missing` with the fix.
+  Then it is run for the session's cwd and merged (`src/ctxwire.rs`) into
+  the session's `settings.json` (hooks appended per event, allow joined,
+  env added) and `mcp.json` (server `chloectx` beside `workbench`).
+- `GET /api/chloectx`: `{required, ok, bin, version, wired, model,
+  problem, fix}`. The UI (`ui/levels/setup.js`) checks it at start and,
+  when not ok, shows a sheet with the problem and the fix
+  (`./install.sh --workbench`), "Check again", and a bar while unfixed.
+- `--chloectx-bin` resolves a bare name on PATH, else `~/.local/bin/`.
+- `./install.sh --workbench` builds and installs both programs, fetches
+  the model and runs `chloectx wiring`; Claude Code's settings are left
+  alone unless `--user-too` (or `--project`) asks.
+- `--no-chloectx` (hidden): no wiring, no setup sheet. The tests pass it
+  unless a test asks for ChloeCtx (`"+chloectx"` in `Server::start`).
+
 ## Fourth build: what only ChloeDB makes possible
 
 The user's ask: use cases 1 to 11 of the list "unique to ChloeDB", each

@@ -7,12 +7,33 @@ of an embedded ChloeDB database. Think of it as tmux with a friendlier UI and
 a database as its source of truth. [SPEC.md](SPEC.md) is the contract that
 this build follows.
 
-## Run it
+## Install and run it
+
+Workbench needs ChloeCtx: most of what it shows above the terminal (who
+decided what and why, what each agent knew, rules, precedent, the digest)
+is ChloeCtx's memory. One command, from the repository root, installs both:
+
+```bash
+./install.sh --workbench     # builds chloectx and chloedb-workbench into ~/.local/bin,
+                             # downloads ChloeCtx's 129 MB model, checks both
+~/.local/bin/chloedb-workbench serve
+```
+
+It does not change your Claude Code settings. Each session Workbench
+starts gets ChloeCtx's hooks and its `chloectx` MCP server (the `memory_*`
+tools) in its own settings and MCP config, from `chloectx wiring`; when
+your settings or the project's already wire ChloeCtx (`./install.sh`,
+`chloectx install`), nothing is added, so a session is recorded once. If
+ChloeCtx is missing or too old, `serve` still starts, the UI shows what to
+run, and starting an agent is refused (`chloectx_missing`) until it is
+fixed. `--no-chloectx` (hidden) turns this off; the tests use it.
+
+From a checkout, for development:
 
 ```bash
 cd chloedb-workbench
 cargo build --release
-./target/release/chloedb-workbench serve
+./target/release/chloedb-workbench serve --chloectx-bin ../chloectx/target/release/chloectx
 ```
 
 It prints a URL that carries a token (`http://127.0.0.1:7740/?token=...`).
@@ -26,7 +47,7 @@ it a repository path and a task. The settings:
 | `--claude-bin` | `CHLOEDB_WORKBENCH_CLAUDE` | `claude` |
 | `--max-agents` | | 8 running at once |
 | `--max-depth` | | 2: an agent you start may start agents, and those may not |
-| `--chloectx-bin` | `CHLOEDB_WORKBENCH_CHLOECTX` | `chloectx` (the decision trail) |
+| `--chloectx-bin` | `CHLOEDB_WORKBENCH_CHLOECTX` | `chloectx`, else `~/.local/bin/chloectx` |
 | `--token` | `CHLOEDB_WORKBENCH_TOKEN` | random |
 
 The data dir holds:
@@ -36,7 +57,7 @@ The data dir holds:
 - `worktrees/<repo>-<hash>/<name>/`: the worktrees
 
 Workbench never edits your own Claude Code settings. Each session's hooks
-are added to yours, so ChloeCtx keeps working.
+(Workbench's and ChloeCtx's) are added to yours.
 
 When `CHLOEDB_WORKBENCH_UI_DIR=chloedb-workbench/ui` is set, the server
 reads the UI from disk instead of the copy built into the binary, so UI

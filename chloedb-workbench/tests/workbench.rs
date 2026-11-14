@@ -128,6 +128,10 @@ impl Server {
 
     fn start_in(dir: tempfile::TempDir, data: PathBuf, args: &[&str]) -> Server {
         let fake = write_fake(dir.path());
+        // Sessions without ChloeCtx unless the test asks for it with
+        // "+chloectx" (ctxwire: ChloeCtx is required outside tests).
+        let with_ctx = args.contains(&"+chloectx");
+        let args: Vec<&str> = args.iter().copied().filter(|a| *a != "+chloectx").chain((!with_ctx).then_some("--no-chloectx")).collect();
         let mut child = Command::new(BIN)
             .args(["serve", "--addr", "127.0.0.1:0", "--token", TOKEN])
             .arg("--data-dir")
@@ -1847,4 +1851,64 @@ fn flow_shows_where_time_went_and_applies_an_allow() {
     assert_eq!(find(&f3["suggestions"], "/kind", "fix")["applied"], true);
     assert_eq!(s.post("/api/flow/apply", json!({ "id": capsule["id"], "repo": r })).0, 400);
     assert_eq!(s.get("/api/flow").0, 400);
+}
+
+// ChloeCtx is required: each session gets its hooks and MCP server.
+
+#[test]
+fn sessions_get_chloectx_and_without_it_the_setup_check_says_how() {
+    // Missing: the check says so with the fix, and an agent is refused.
+    let s = Server::start(&["+chloectx", "--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let (_, st) = s.get("/api/chloectx");
+    assert_eq!(st["required"], true, "{st}");
+    assert_eq!(st["ok"], false, "{st}");
+    assert!(st["fix"].as_str().unwrap().contains("install.sh --workbench"), "{st}");
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "task": "say hi" }));
+    assert_eq!(status, 409, "{v}");
+    assert_eq!(v["error_code"], "chloectx_missing", "{v}");
+    assert!(!git(&r, &["worktree", "list"]).contains("worktrees"), "no worktree is left behind");
+    drop(s);
+
+    // There: its wiring is merged into the session's files, run for the
+    // session's own folder.
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    std::fs::write(
+        ctx.path().join("wiring.json"),
+        json!({
+            "wired": null,
+            "settings": {
+                "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/opt/chloectx hook Stop", "timeout": 30}]}],
+                          "PostCompact": [{"hooks": [{"type": "command", "command": "/opt/chloectx hook PostCompact", "timeout": 15}]}]},
+                "permissions": {"allow": ["mcp__chloectx"]},
+                "env": {"CHLOECTX_DISTILL_MODEL": "haiku"}
+            },
+            "mcp": {"chloectx": {"type": "stdio", "command": "/opt/chloectx", "args": ["mcp"]}},
+            "model": {"ok": true}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(ctx.path().join("--version.json"), "chloectx 0.3.2\n").unwrap();
+    let s = Server::start(&["+chloectx", "--chloectx-bin", bin.to_str().unwrap()]);
+    let (_, st) = s.get("/api/chloectx");
+    assert_eq!(st["ok"], true, "{st}");
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "name": "ctx" }));
+    let id = a["id"].as_str().unwrap();
+    let sess = s.data.join("sessions").join(id);
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(sess.join("settings.json")).unwrap()).unwrap();
+    let stop: Vec<&str> = settings["hooks"]["Stop"].as_array().unwrap().iter().map(|e| e["hooks"][0]["command"].as_str().unwrap()).collect();
+    assert_eq!(stop.len(), 2, "{settings}");
+    assert!(stop[0].ends_with(" hook") && stop[1] == "/opt/chloectx hook Stop", "{stop:?}");
+    assert_eq!(settings["hooks"]["PostCompact"][0]["hooks"][0]["command"], "/opt/chloectx hook PostCompact");
+    assert_eq!(settings["env"]["CHLOECTX_DISTILL_MODEL"], "haiku");
+    assert!(settings["permissions"]["allow"].as_array().unwrap().contains(&json!("mcp__chloectx")), "{settings}");
+    let mcp: Value = serde_json::from_str(&std::fs::read_to_string(sess.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["chloectx"]["command"], "/opt/chloectx");
+    assert!(mcp["mcpServers"]["workbench"].is_object());
+    // Asked for the worktree the session runs in.
+    let args = args_of(ctx.path(), "wiring");
+    assert_eq!(args[0], a["cwd"].as_str().unwrap(), "{args:?}");
+    assert!(args.iter().any(|x| x == "--project") && args.iter().any(|x| x == a["cwd"].as_str().unwrap()), "{args:?}");
 }

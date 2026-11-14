@@ -132,6 +132,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::preview::routes())
         .merge(crate::flow::routes())
         .merge(crate::levels::routes())
+        .merge(crate::ctxwire::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -180,6 +181,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("preview.js", include_str!("../ui/levels/preview.js")),
     ("flow.js", include_str!("../ui/levels/flow.js")),
     ("away.js", include_str!("../ui/levels/away.js")),
+    ("setup.js", include_str!("../ui/levels/setup.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {

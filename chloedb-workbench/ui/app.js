@@ -2882,6 +2882,8 @@ function start() {
     started = true;
     setInterval(tickTimes, 1000);
     fetch("/api/health").then((r) => r.json()).then((j) => { S.health = j; schedule(); }).catch(() => {});
+    // ChloeCtx is required: say so up front when sessions would miss it.
+    import("/levels/setup.js").then((m) => m.checkSetup(api)).catch(() => {});
   }
   const id = location.hash.slice(1);
   if (id.startsWith("/")) route(location.hash);
