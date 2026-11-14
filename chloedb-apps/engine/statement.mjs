@@ -38,6 +38,12 @@ const MORE = {
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'day'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], FORMAT: ['format', 'word'], DAYS: ['days', 'num'], BY: ['group', 'name'], 'GROUP BY': ['group', 'name'], WHERE: ['where', 'sql'], RECENT: ['recent', 'cols'], TITLE: ['title', 'str'] } },
   OFFERS: { use: 'offers', need: { left: 'LEFT <column of how many are left>' },
     clauses: { NAME: ['name', 'name'], TEXT: ['text', 'name'], PRICE: ['price', 'name'], IMAGE: ['image', 'name'], LEFT: ['left', 'name'], DATE: ['date', 'name'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], SOON: ['soon', 'num'], OUT: ['out', 'str'], ACTION: ['action', 'str'], OPEN: ['open', 'slug'], CALL: ['call', 'slug'], PAY: ['pay', 'name'], CHARGE: ['charge', 'name'], PAID: ['paid', 'name'], QTY: ['qty', 'flag'], COUNT: ['count', 'flag'], DONE: ['done', 'str'], LOOK: ['look', 'word'], TITLE: ['title', 'str'], EYEBROW: ['eyebrow', 'str'], ID: ['id', 'slug'] } },
+  LANES: { use: 'lanes', need: { by: 'BY <column whose value is the lane>' },
+    clauses: { BY: ['by', 'name'], LANES: ['lanes', 'str'], NAME: ['name', 'name'], DETAIL: ['detail', 'name'], SUB: ['sub', 'name'], FLAGS: ['flags', 'sql'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], ACTION: ['action', 'action'], EMPTY: ['empty', 'str'], TITLE: ['title', 'str'] } },
+  CALLOUTS: { use: 'callouts', need: { head: 'HEAD <column with each card\'s title>' },
+    clauses: { HEAD: ['head', 'name'], CHIPS: ['chips', 'list'], JOIN: ['join', 'str'], TEXT: ['text', 'name'], TIP: ['tip', 'name'], TONE: ['tone', 'sql'], LABEL: ['label', 'sql'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], SUB: ['sub', 'text'], EMPTY: ['empty', 'str'], TITLE: ['title', 'str'] } },
+  HEADER: { use: 'header', bare: 'title',
+    clauses: { SUB: ['sub', 'text'], PRIMARY: ['primary', 'text'], OPEN: ['open', 'slug'], CALL: ['call', 'slug'], SECONDARY: ['secondary', 'text'], SECONDARYOPEN: ['secondaryOpen', 'slug'] } },
   LESSONS: { use: 'lessons', need: { progress: 'PROGRESS <table of lessons done>' },
     clauses: { NEEDS: ['needs', 'sql'], LOCKED: ['locked', 'str'], UNLOCK: ['unlock', 'slug'], UNLOCKLABEL: ['unlockLabel', 'str'], PROGRESS: ['progress', 'name'], LESSON: ['lesson', 'name'], NAME: ['name', 'name'], TEXT: ['text', 'name'], MINUTES: ['minutes', 'name'], 'ORDER BY': ['order', 'sql'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], OPEN: ['open', 'slug'], CERTIFICATE: ['certificate', 'slug'], NOUN: ['noun', 'str'], TITLE: ['title', 'str'], ID: ['id', 'slug'] } },
   VARIANCE: { use: 'variance', need: { period: 'PERIOD <column or SQL naming each period>', value: 'VALUE <column, or an aggregate with GROUP BY>' },
@@ -253,7 +259,7 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|PAY|CHARGE|PAID|QTY)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|LANES|DETAIL|FLAGS|HEAD|CHIPS|JOIN|TIP|TONE|PRIMARY|SECONDARYOPEN|SECONDARY|PAY|CHARGE|PAID|QTY)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -357,6 +363,12 @@ export function compileStatement(text) {
         let blocks;
         try { blocks = JSON.parse(rest); } catch (e) { fail(n, `BLOCKS takes a JSON list of screen blocks: ${e.message}`); }
         screen.body.push(...(Array.isArray(blocks) ? blocks : [blocks]));
+        continue;
+      }
+      // A part of no table (HEADER 'Your day') names its words instead.
+      if (MORE[kw] && MORE[kw].bare) {
+        if (!/^'(?:[^']|'')*'$/.test(rest)) fail(n, `${kw} 'words'`);
+        part = { kind: kw, n, use: { use: MORE[kw].use, [MORE[kw].bare]: literal(rest) }, more: MORE[kw], needs: [], kpis: [] };
         continue;
       }
       const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/i);
@@ -500,6 +512,18 @@ function moreClause(part, kw, rest, l, n) {
     case 'slug': if (!/^[a-z][a-z0-9-]*$/.test(rest)) fail(n, `${kw} <a view's or function's slug>`); u[param] = rest; break;
     case 'day': if (!NAME.test(rest)) fail(n, `${kw} <column holding 'YYYY-MM-DD'>`); u[param] = rest; u.day = true; break;
     case 'names': u[param] = names(rest, n, kw); break;
+    case 'list': u[param] = names(rest.replace(/^\(\s*([\s\S]*?)\s*\)$/, '$1'), n, kw); break;
+    // words in quotes, or an =expression of the screen's data
+    case 'text': if (/^=/.test(rest)) u[param] = rest; else u[param] = literal(rest); break;
+    // 'Label' [SET col = value | CALL slug | OPEN slug]
+    case 'action': {
+      const am = rest.match(/^('(?:[^']|'')*')\s*(?:(SET)\s+(\w+\s*=\s*.+)|(CALL|OPEN)\s+([a-z][a-z0-9-]*))?\s*$/i);
+      if (!am) fail(n, `${kw} 'Label' [SET column = value | CALL <function> | OPEN <view>]`);
+      u[param] = literal(am[1]);
+      if (am[2]) u.set = am[3].trim();
+      if (am[4]) u[am[4].toLowerCase()] = am[5];
+      break;
+    }
     case 'str': u[param] = literal(rest); break;
     case 'word':
       u[param] = rest.toLowerCase();
@@ -644,6 +668,12 @@ VARIANCE <table> [AS key]      -- a value compared period by period (a total mon
 OFFERS <table> [AS key]        -- what people order or book while some are left (products with stock, workshops with seats, tours with places): a card per row with its photo, date and price, 'Only 2 left' when few remain, the OUT word (its card in the "out" state) and no action when none; the action opens the view that finishes the order or booking, or calls a rule that checks and lowers the count in one step (its REQUIRE refuses the last one twice). A shelf of products, a list with prices, the upcoming sessions or classes are this part, never a LIST with a form a visitor could edit, and on a front page it comes right after the hero, where visitors see it first
   LEFT <count col>  NAME <col>  TEXT <col>  PRICE <col>  IMAGE <col>  DATE <col>  WHERE day >= :today  ORDER BY day  SOON 3  OUT 'Full'  ACTION 'Book a seat'  OPEN <view slug, gets {id}> | CALL <function slug, gets {id}, returns the new row's id>  PAY <table of that row>  CHARGE <its amount column>  PAID <its status column>  QTY (a person takes several: a quantity beside the action, 1 up to what is left; the call gets {id, qty}, its rule REQUIREs the count >= :qty, lowers it by :qty and charges :qty times the price)  COUNT (every card says how many are left, not only when few)  DONE 'Booked'  LOOK cards | slides  TITLE  EYEBROW  ID <anchor for a nav link>
   An app asked to sell or take bookings always takes them: never tell visitors that checkout is off or that they can only browse. Where one person may take more than one (products, places on a workshop), the one-tap order gives QTY and its rule works with :qty. The order is a row of <table> (its rule REQUIREs the count and lowers it; its refusal is said under the button that asked); when the request asks for card payment, OFFERS takes it in one tap (CALL a rule that adds the row and RETURNs its id, then PAY <its table> CHARGE <its amount column> PAID <its status column>), or a confirmation screen calls app.pay({table: '<table>', id: <the new row's id>, amount: '<its amount column>', status: '<its status column>'}) and offers "Pay by card" opening the url it returns (a hosted page: never card fields in the app); otherwise it says how payment happens
+HEADER 'Your day'              -- a screen's header: its title, one plain line of what matters now, and its actions on the right (the main one filled). A person's own small app says its few figures in this line ('10 in your stack, 3 to act on') rather than in big number cards
+  SUB '=expression of the screen's data, or words'  PRIMARY 'Add supplement'  OPEN <view> | CALL <function>  SECONDARY '=\'Stopped (\' + n + \')\''  SECONDARYOPEN <view>
+LANES <table> [AS key]         -- rows as cards in lanes along a rail, one lane per value of a column the person thinks in (time of day, stage, day, room): its name, a short detail in the mono face, a muted line, badges pointing at related rows, and its action. Choose it over a table when the rows have such a grouping; keep a table for comparing many columns
+  BY <lane column>  LANES 'Morning:With breakfast, Evening:With dinner' (the lanes' order, a note after a colon)  NAME <col>  DETAIL <col>  SUB <col>  FLAGS (SELECT <the card's id> AS row, <words> AS label [, 'warn' | 'bad' | 'ok' | 'info' AS tone] FROM ... joined to the related rows)  WHERE  ORDER BY  ACTION 'Stop' SET <col> = <value> | CALL <function> | OPEN <view>  EMPTY 'words'  TITLE
+CALLOUTS <table> [AS key]      -- rows the person should act on as callout cards (clashes, risks, warnings, findings, advice): a severity label, a title, the things it is about as chips, the explanation and a highlighted tip. Choose it over a table whenever each row asks for an action
+  HEAD <title col>  CHIPS (col, col)  JOIN '↔'  TEXT <col>  TIP <col>  TONE <SQL giving 'bad' | 'warn' | 'ok' | 'info', a CASE on its severity>  LABEL <SQL giving the severity words>  WHERE  ORDER BY (most pressing first)  SUB 'a line under the title'  EMPTY  TITLE
 LESSONS <lessons table> [AS key] -- a course's lessons with each learner's progress: a bar of how many are done, the next lesson as the main action ('Start lesson 3'), Done on each one done, the certificate once all are; a lesson done is a row of PROGRESS (declare ALLOW ALL ON <progress> TO members WHERE <person col> = :user_id); a paid course gives NEEDS: until it holds the lessons stay shut with the LOCKED words and the UNLOCK button, and each lesson's own content comes through a rule that REQUIREs the same
   PROGRESS <table of lessons done>  NEEDS (SELECT ... a row when the person may open them: a paid enrolment)  LOCKED 'what they are told until then'  UNLOCK <the view that enrols or takes payment>  UNLOCKLABEL 'Enrol'  LESSON <its column holding the lesson's id>  NAME <col>  TEXT <col>  MINUTES <col>  ORDER BY position  WHERE  PARAM  OPEN <lesson view slug, gets {id}>  CERTIFICATE <view slug>  NOUN 'lesson'  TITLE
 KPI 'Label' = SUM(col) | COUNT(*) | AVG(col) FROM <table> [WHERE condition] [${KPI_FORMATS.join(' | ')}]   -- a big number over any table, outside a part (KPIs one after the other share a row); :today works in WHERE: this month is WHERE date_trunc('month', day) = date_trunc('month', :today), the last 30 days WHERE days_between(day, :today) <= 30

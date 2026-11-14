@@ -214,7 +214,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 {
   "name": "Habits",
   "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
-  "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "imagery": "none", "action": "Start lesson 1"},
+  "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "theme": "...", "imagery": "none", "action": "Start lesson 1"},
   "currency": "EUR",
   "locale": "es-ES",
   "summary": "what this version changed, in one or two plain sentences, written to the person",
@@ -234,7 +234,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "suggestions": [{"text": "...", "why": "..."}]
 }
 
-- name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
+- name: only for a new app, or when asked to rename it: what a person would call it on their home screen. When the request names it, that name; otherwise coin one as a product would be named, one or two words with a little character from its subject ("Tidepool" for a swim club's lane bookings, "Spokeyard" for a bike repair queue, "Seedline" for a seed library), never a plain description ("Swim bookings", "Repair tracker") and never the request cut short.
 - ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). When the request asks the app to show something (a summary, what is owed, a streak, a total, what is on), the first screen shows that result, and an input done often goes on it as a quick add beside the result, not as an opening screen of its own that hides it. On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
 ${ART_DOC}
 - currency: the ISO code of the app's money ("EUR", "GBP", "JPY") when it handles money and the request or its data says which; leave it out otherwise (an attached sheet's money says it too). Every app.fmt.money then reads in it.
@@ -307,7 +307,8 @@ Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a fu
 ## How a working screen reads
 
 Working screens are drawn like a good phone app: a large title, the screen's numbers as one sentence under it, and the rows of a table as grouped list cells (a table on a computer), grouped by their state. Write for that; what makes an app look unfinished is mostly how a screen is put together, not its colors:
-- Numbers lead with what needs doing. A screen's first big numbers (its KPIs) are read as one sentence, in their order: first the one that asks for action (overdue, out, waiting, owed, due now), then the totals. Two to four, never one that is always zero.
+- Numbers lead with what needs doing. A screen's first big numbers (its KPIs) are read as one sentence, in their order: first the one that asks for action (overdue, out, waiting, owed, due now), then the totals. Two to four, never one that is always zero. A person's own small app (a routine, a collection, a tracker of their own) says its two or three figures as one plain line under its title, with its main action beside it (HEADER), and keeps big number cards for screens that are about the numbers.
+- The screen takes the shape of its subject: rows the person thinks of in groups (morning and evening, stages, days) go in lanes (LANES), with what relates rows to each other shown on the cards as badges (FLAGS) rather than in a separate table; rows that ask for an action (clashes, risks, warnings, advice) are callouts (CALLOUTS) with what to do in their tip. Tables are for comparing many columns.
 - Rows people keep are a list of a table (LIST with COLUMNS, or a "table" block), not cards drawn by hand: on a phone each row becomes a cell with its name, a line of detail, its state and its next step. Give the state a BADGE column (its words group the rows: Out, Low, OK) and keep the row's number (on hand, owed, votes) as a column. Draw cards yourself only for what is not rows of a table (photos, a board, a big today view).
 - One next step per row, named for what it does ('Mark paid', 'Order more', 'Vote', 'Start'): the row's first action (ACTION in a LIST, which comes before Edit and Delete). Never offer the same action twice on a row: no Edit button beside an Edit in a menu, no menu that repeats the buttons, no second vote link.
 - One main action per screen: its add button or its form's submit. Every other button is plain.
@@ -1552,7 +1553,7 @@ export { briefOf };
 // The art direction (plan.art), kept with the brief: what the app should feel
 // like, what its photos show, its accent and the type of its titles. Doable
 // writes one before any interface; the designs and the screens follow it.
-const ART = ['concept', 'mood', 'layout', 'type', 'accent', 'imagery', 'action'];
+const ART = ['concept', 'mood', 'layout', 'type', 'accent', 'theme', 'imagery', 'action'];
 const TYPES_OF_TITLES = ['system', 'serif', 'rounded', 'mono'];
 export function cleanArt(a) {
   if (!a || typeof a !== 'object' || Array.isArray(a) || typeof a.concept !== 'string' || !a.concept.trim()) return null;
@@ -1560,6 +1561,7 @@ export function cleanArt(a) {
   const t = out.type.toLowerCase();
   out.type = TYPES_OF_TITLES.find((x) => t.includes(x)) || (/editorial|elegant|classic/.test(t) ? 'serif' : /friendly|playful|soft/.test(t) ? 'rounded' : /code|technical|terminal/.test(t) ? 'mono' : 'system');
   if (!out.imagery) out.imagery = 'none';
+  out.theme = /^\s*dark\b/i.test(out.theme) ? 'dark' : 'light';
   // The first screen's structure, as the kit names it (quality.mjs LAYOUTS).
   out.structure = parseLayout(out.layout) || '';
   return out;
@@ -2090,7 +2092,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const designing = art && typeof engine.onDirection === 'function'
     ? Promise.resolve(engine.onDirection(appId, { art, views: (plan.views || []).map((v) => ({ title: v.title })), tables: (plan.tables || []).map((t) => t.name) })).catch(() => null)
     : null;
-  if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
+  if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.theme === 'dark' ? '; dark' : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
   let storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
 
   // What the app holds when it opens (engine/data.mjs): the attached sheets

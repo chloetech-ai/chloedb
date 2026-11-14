@@ -780,3 +780,11 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
 .sa-sheet-box form input { width: 100%; box-sizing: border-box; }
 .sa-sheet-box form button[type=submit] { width: 100%; min-height: 48px; }
 @media (max-width: 560px) { .sa-sheet { place-items: end stretch; padding: 0; } .sa-sheet-box { width: 100%; border-radius: 18px 18px 0 0; padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); } }
+
+/* a screen's header (the header pattern): title and its line on the left,
+   its actions on the right, the main one filled */
+.row.page-head { align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
+.row.page-head > .col { flex: 1 1 260px; min-width: 0; gap: 4px; }
+.row.page-head > .col > h1 { margin: 0; }
+.row.page-head > button { border-radius: 999px; min-height: 44px; padding: 0 20px; }
+.row.page-head > button.ghost-outline { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--fg) 30%, transparent); border-color: transparent; }

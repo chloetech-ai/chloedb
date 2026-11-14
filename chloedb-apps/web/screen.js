@@ -1116,7 +1116,7 @@ window.__sa_numbers = (() => {
     const layout = LAYOUTS.includes(spec.layout) ? spec.layout : null;
     if (layout) { document.body.classList.add(`layout-${layout}`); document.documentElement.dataset.layout = layout; }
     const flatNodes = (x) => (Array.isArray(x) ? x.flatMap(flatNodes) : x instanceof Node ? [x] : []);
-    const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
+    const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band, .page-head') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
     function arrange(els) {
       // Numbers given as several rows of one or two, one after another, are
       // one row of summary cards.

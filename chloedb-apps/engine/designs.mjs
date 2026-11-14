@@ -70,6 +70,7 @@ ${views.length ? `Its views: ${views.join(', ')}\n` : ''}${tables.length ? `Its 
 - photos: ${art.imagery || 'none'}
 - accent: ${art.accent || '-'} (the main buttons' color: their words must read on it)
 - titles: ${art.type || 'system'}
+- theme: ${art.theme || 'light'} (design 1's scheme: ${art.theme === 'dark' ? '"dark": a near-black ground, cards a little lighter, the accent vivid on it' : '"auto"'})
 - main action: ${art.action || '-'}
 ` : ''}
 Design three looks for it.`;
@@ -101,6 +102,8 @@ export function shapeDesigns(designs, direction = null, app = null) {
   // column for an editorial page, the full width for a dashboard.
   const width = { editorial: 'narrow', tool: 'narrow', dashboard: 'wide', gallery: 'wide' }[direction?.art?.structure];
   if (width) designs[0].width = width;
+  // and its theme the first design's scheme: a dark identity is always dark
+  if (direction?.art?.theme === 'dark' && designs[0]) designs[0].scheme = 'dark';
   const out = [];
   for (let i = 0; i < designs.length; i++) for (let j = i + 1; j < designs.length; j++) {
     const differ = SHAPE.filter((k) => designs[i][k] !== designs[j][k]);

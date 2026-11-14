@@ -3380,3 +3380,20 @@ test('a fix that gives a slug as a view takes the function of that name out', ()
   assert.deepEqual(out.plan.functions.map((v) => v.slug), ['start-enrolment']);
   assert.deepEqual(out.code, { 'start-enrolment': 'S' });
 });
+
+test('HEADER, LANES and CALLOUTS: a header line with its actions, cards in lanes with badges from related rows, callout cards', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const st = "CREATE SCREEN day TITLE 'Your day'\nHEADER 'Your day'\n  SUB '=items.length + \" planned\"'  PRIMARY 'Add one'  OPEN add  SECONDARY 'Archive'  SECONDARYOPEN archive\nLANES items\n  BY slot  LANES 'Morning:Early, Evening'  NAME name  DETAIL size  FLAGS (SELECT i.id AS row, 'Clashes with ' || c.b AS label FROM items i JOIN clashes c ON c.a = i.name)\n  ACTION 'Stop' SET active = false\nCALLOUTS clashes\n  HEAD effect  CHIPS (a, b)  TIP advice  TONE CASE level WHEN 'high' THEN 'bad' ELSE 'warn' END";
+  const e = expandWith(compileStatement(st).screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.body[0].class, 'page-head');
+  assert.deepEqual(e.screen.body.slice(1).map((b) => b.ui), ['laneList', 'callouts']);
+  assert.match(e.screen.data.items_flags, /Clashes with/);
+  assert.match(e.screen.data.clashes, /AS sa_tone/);
+  // the lanes, the action's change and the items, as the screen works them out
+  const lanes = new Function(`return ${e.screen.let.items_lanes.slice(1)}`)();
+  assert.deepEqual(lanes, [{ name: 'Morning', note: 'Early' }, { name: 'Evening' }]);
+  const set = new Function(`return ${e.screen.let.items_set.slice(1)}`)();
+  assert.deepEqual(set, { active: false });
+  assert.throws(() => compileStatement("CREATE SCREEN d TITLE 'D'\nLANES items\n  NAME name"), /BY/);
+});

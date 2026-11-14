@@ -1,0 +1,71 @@
+{
+ "title": "A screen's header: its title, one plain line of what matters now, and its actions on the right (the main one filled)",
+ "about": "The top of a person's own screen: 'Your day', then a line of its few figures in words ('10 in your stack, 3 flags to act on'), and its main action ('Add supplement') with a quieter one beside it. For a small personal app this line takes the place of big number cards.",
+ "params": {
+  "title": {
+   "about": "the screen's title",
+   "need": true
+  },
+  "sub": {
+   "about": "the line under it: words, or an =expression of the screen's data"
+  },
+  "primary": {
+   "about": "the main action's words"
+  },
+  "open": {
+   "about": "with primary: the view it opens"
+  },
+  "call": {
+   "about": "with primary: a function it calls instead"
+  },
+  "secondary": {
+   "about": "a quieter action's words (may be an =expression, 'Stopped (' + n + ')')"
+  },
+  "secondaryOpen": {
+   "about": "with secondary: the view it opens"
+  }
+ },
+ "example": {
+  "use": "header",
+  "title": "Your week",
+  "sub": "=items.length + ' planned, ' + items.filter(i => i.done).length + ' done'",
+  "primary": "Add a session",
+  "open": "add",
+  "secondary": "Archive",
+  "secondaryOpen": "archive"
+ },
+ "screen": {
+  "body": [
+   {
+    "row": [
+     {
+      "col": [
+       {
+        "h": "{{title}}",
+        "level": 1
+       },
+       {
+        "$when": "sub",
+        "text": "{{sub}}",
+        "muted": true
+       }
+      ]
+     },
+     {
+      "$when": "secondary",
+      "button": "{{secondary}}",
+      "class": "ghost-outline",
+      "do": "=() => app.open({{secondaryOpen|json}})"
+     },
+     {
+      "$when": "primary",
+      "button": "{{primary}}",
+      "class": "primary",
+      "do": "=() => {{call|json}} ? app.call({{call|json}}, {}) : app.open({{open|json}})"
+     }
+    ],
+    "class": "page-head"
+   }
+  ]
+ }
+}
