@@ -59,7 +59,7 @@
       if (m.error !== undefined) {
         // a rule's refusal ("Sorry, only 6 left") is kept for the button whose tap caused it (screen.js)
         if (m.refused) window.__sa_refusal = m.error;
-        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}));
+        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.auth ? { auth: true } : {}));
       }
       else p.resolve(m.value);
     } else if (m.kind === 'design') {

@@ -40,7 +40,7 @@ async function api(method, url, body, more) {
   if (body) headers['content-type'] = 'application/json';
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status }, data.refused ? { refused: true } : {});
   return data;
 }
 
@@ -1696,18 +1696,17 @@ async function upload(base, file) {
   const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
   const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status }, data.refused ? { refused: true } : {});
   return { ...data.file, url: location.origin + data.file.url };
 }
 
 // After someone signs in or out every view starts again, so that each one
 // sees who is there now.
-function authChanged() {
+function authChanged(keep = null) {
   S.meFor = null;
   setTimeout(() => {
-    for (const f of S.frames.values()) f.iframe.remove();
-    S.frames.clear();
-    S.errors.clear();
+    for (const [slug, f] of [...S.frames]) { if (slug === keep) continue; f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
+    if (keep && S.frames.get(keep)) S.frames.get(keep).gated = false;
     refreshApp();
   }, 400);
 }
@@ -1723,7 +1722,8 @@ window.addEventListener('message', async (e) => {
     if (!['sql', 'me', 'people', 'files'].includes(m.method)) { e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, error: 'a preview changes nothing' }, '*'); return; }
     entry = { slug: 'preview', preview: true };
   }
-  const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
+  // auth: the engine wants someone signed in (401), so the screen can ask then
+  const reply = (value, error, refused, auth) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, ...(auth ? { auth: true } : {}) }, '*');
   const base = `/api/apps/${S.appId}`;
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
@@ -1749,8 +1749,10 @@ window.addEventListener('message', async (e) => {
         case 'remove': value = await api('POST', `${base}/remove${atV()}`, { table: a, id: b }, on); break;
         case 'call': value = (await api('POST', `${base}/call${atV()}`, { name: a, input: b }, on)).result; break;
         case 'me': value = (await api('GET', `${base}/me`)).user; break;
-        case 'signIn': value = (await api('POST', `${base}/signin`, a)).user; authChanged(); break;
-        case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
+        // keep: signed in from a screen in the middle of something (an action
+        // that needed a member): that screen stays to finish it, the others draw again
+        case 'signIn': { const { keep, ...cred } = a || {}; value = (await api('POST', `${base}/signin`, cred)).user; authChanged(keep ? entry.slug : null); break; }
+        case 'signUp': { const { keep, ...cred } = a || {}; value = (await api('POST', `${base}/signup`, cred)).user; authChanged(keep ? entry.slug : null); break; }
         case 'signOut': value = await api('POST', '/api/signout'); authChanged(); break;
         case 'people': value = (await api('GET', `${base}/people`)).people; break;
         case 'companies': value = (await api('GET', `${base}/companies`, null, companyHeader())).companies; break;
@@ -1784,7 +1786,7 @@ window.addEventListener('message', async (e) => {
       renderApp();
     }
   } catch (err) {
-    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused);
+    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, err.status === 401);
   }
 });
 

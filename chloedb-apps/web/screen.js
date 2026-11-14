@@ -230,13 +230,45 @@ window.__sa_numbers = (() => {
     // until the next tap, not only in a toast that is gone in seconds (a
     // handler that catches the refusal itself still gets it said).
     const refusals = new Map();
-    const run = async (fn, args, where) => {
+    // Sign-in on demand: an action the engine refuses until someone signs in
+    // (401) opens a sign-in sheet over the screen at that moment, and once
+    // they are in, the action runs again, so no screen needs a sign-in form
+    // up front. Closing the sheet leaves things as they were.
+    let signing = null;
+    const askSignIn = () => signing || (signing = new Promise((resolve) => {
+      let up = false;
+      const close = (ok) => { sheet.remove(); signing = null; resolve(ok); };
+      const box = h('div', { class: 'sa-sheet-box card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Sign in' });
+      const sheet = h('div', { class: 'sa-sheet', onclick: (e) => { if (e.target === sheet) close(false); } }, box);
+      const paint = () => {
+        const email = h('input', { type: 'email', autocomplete: 'email', required: true, placeholder: 'you@example.com', 'aria-label': 'Email' });
+        const name = up ? h('input', { autocomplete: 'name', placeholder: 'Your name', 'aria-label': 'Name' }) : null;
+        const pass = h('input', { type: 'password', required: true, autocomplete: up ? 'new-password' : 'current-password', 'aria-label': 'Password', placeholder: up ? 'At least 8 characters' : '' });
+        const err = h('p', { class: 'err', role: 'alert' });
+        const go = h('button', { class: 'primary', type: 'submit' }, up ? 'Create account and go on' : 'Sign in and go on');
+        box.replaceChildren(h('h3', null, up ? 'Create an account' : 'Sign in to go on'), h('p', { class: 'muted small' }, 'This needs an account. Sign in, and what you started carries on.'),
+          h('form', { class: 'col', onsubmit: async (e) => {
+            e.preventDefault(); err.textContent = ''; go.disabled = true;
+            try { if (up) await app.signUp({ email: email.value, name: name.value, password: pass.value, keep: true }); else await app.signIn({ email: email.value, password: pass.value, keep: true }); close(true); } catch (x) { err.textContent = x.message; go.disabled = false; }
+          } }, h('label', null, 'Email', email), name ? h('label', null, 'Name', name) : null, h('label', null, 'Password', pass), err, go),
+          h('p', { class: 'small muted' }, up ? 'Have an account? ' : 'New here? ', h('button', { type: 'button', class: 'link inline', onclick: () => { up = !up; paint(); } }, up ? 'Sign in' : 'Create an account')),
+          h('button', { type: 'button', class: 'ghost small', onclick: () => close(false) }, 'Not now'));
+        setTimeout(() => email.focus(), 0);
+      };
+      paint();
+      document.body.append(sheet);
+    }));
+    window.__sa_askSignIn = askSignIn;
+    const run = async (fn, args, where, again = true) => {
       refusals.delete(where);
       window.__sa_refusal = null;
       try {
         const r = typeof fn === 'function' ? fn(...args) : fn;
         if (r && typeof r.then === 'function') await r;
-      } catch (e) { if (!(e && e.refused)) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message; }
+      } catch (e) {
+        if (e && e.auth && again && await askSignIn()) return run(fn, args, where, false);
+        if (!(e && (e.refused || e.auth))) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message;
+      }
       if (window.__sa_refusal) refusals.set(where, String(window.__sa_refusal));
       window.__sa_refusal = null;
       await refresh();
@@ -551,6 +583,8 @@ window.__sa_numbers = (() => {
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
           await run(typeof after === 'function' ? after : null, [stored], `${path}.after`);
         } catch (err) {
+          // an add that needs a member: sign in now, then the form sends again (what was typed stays)
+          if (err && err.auth && !el.__signedIn && await askSignIn()) { el.__signedIn = true; saveBtn.disabled = false; el.requestSubmit(); return; }
           app.toast(err.message);
           // said in the form too, which keeps what was typed, so it can be put right
           el.append(h('p', { class: 'refused', role: 'alert' }, String(err.message || err)));

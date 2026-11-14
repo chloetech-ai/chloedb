@@ -171,7 +171,7 @@ returning an object of functions. Helpers get no app and no page (no app.*, docu
 # Services: people, files, email, places, a model, the web
 
 Every app gets these from the runtime. In views and components each call returns a Promise; the ones marked (functions too) also work in functions, where they return directly.
-- People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
+- People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). A screen anyone may open shows its content, never a sign-in form before it: when an action there needs someone signed in (the engine refuses it until then), the app asks them to sign in at that moment and then carries the action on; a screen kept to members gets its own sign-in page. Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
 - Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
 - Card payments. app.pay({table, id, amount: '<column>', status: '<column>', description}) asks for a card payment of a row of <table> that has an amount to charge: amount names the row's column holding it (in the app's currency), status the column set when it is paid (left out, no column changes). It resolves to {url, mode, amount, currency}; the payer pays on that hosted page, opened from a tap (a "Pay by card" button: window.open(url)); the app never sees or stores card details, so never add card fields. Only the one who added the row (or the owner) may ask. When the card provider confirms it, the status column becomes 'paid' (a bool one true); until the owner connects a provider the page is in test mode, says so, and a payment there sets it to 'paid (test)', never 'paid': screens show it as it is. A request to take card payments for rows people add uses it: add the row (a rule that checks it), then app.pay for the new row, then the button.
 - Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
@@ -408,6 +408,27 @@ export function prepareScreens(plan, code, view) {
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
+}
+
+// Whether a screen draws a sign-in form (ui signIn) before its main part
+// (the first block that shows or takes the app's rows: a list, table,
+// cards, form, big numbers or a pattern). Headings, words, a header and a
+// hero come before either and do not count.
+export function signInFirst(screen) {
+  const MAIN = ['table', 'each', 'carousel', 'kpis', 'form', 'list', 'board', 'calendar', 'gallery', 'use', 'chart'];
+  const has = (x, test) => {
+    if (Array.isArray(x)) return x.some((y) => has(y, test));
+    if (!x || typeof x !== 'object') return false;
+    if (test(x)) return true;
+    return Object.entries(x).some(([k, v]) => k !== 'data' && k !== 'let' && v && typeof v === 'object' && has(v, test));
+  };
+  const isSignIn = (b) => b.ui === 'signIn' || (typeof b.code === 'string' && /\bui\.signIn\s*\(/.test(b.code));
+  const isMain = (b) => MAIN.some((k) => b[k] !== undefined) && !isSignIn(b);
+  for (const b of Array.isArray(screen?.body) ? screen.body : []) {
+    if (has(b, isSignIn)) return true;
+    if (has(b, isMain)) return false;
+  }
+  return false;
 }
 
 // A screen's budget: parts, big numbers, fields in a form, and characters
@@ -1376,6 +1397,7 @@ export async function validate(plan, code, view, library, shared = new Map(), re
       if (kind === 'view' && item.screen) {
         for (const x of checkScreen(item.screen, columnsFor(view, plan))) problems.push(`view ${item.slug}: ${x}`);
         if (BUDGETS.has(item)) problems.push(...overBudget(item.slug, BUDGETS.get(item), budgetBefore(view, item.slug)));
+        if (signInFirst(item.screen)) problems.push(`view ${item.slug}: it draws a sign-in form before its main part; take it out: when an action needs someone signed in, the app asks them to sign in at that moment and then carries on, and a screen kept to members gets its own sign-in page`);
         continue;
       }
       const src = code[item.slug];

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM, planWatcher, kpiParts } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, kpiParts, signInFirst } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -187,4 +187,11 @@ test('big numbers where one is the other with more conditions are found, for the
     body: [{ kpis: [{ label: 'Narrow', of: 'a' }, { label: 'Wide', of: 'b' }, { label: 'Other', of: 'c' }] }] };
   assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Narrow', 'Wide']]);
   assert.deepEqual(kpiParts({ data: { a: 'SELECT 1 AS v FROM t WHERE p OR q', b: 'SELECT 1 AS v FROM t' }, body: [{ kpis: [{ label: 'A', of: 'a' }, { label: 'B', of: 'b' }] }] }), [], 'an OR is no part');
+});
+
+test('a screen that draws a sign-in form before its main part is found', () => {
+  assert.equal(signInFirst({ body: [{ h: 'Notes' }, { if: '=!me', then: [{ ui: 'signIn' }] }, { table: '=rows' }] }), true);
+  assert.equal(signInFirst({ body: [{ hero: 'Hi' }, { table: '=rows' }, { band: [{ ui: 'signIn' }] }] }), false);
+  assert.equal(signInFirst({ body: [{ h: 'Rows' }, { table: '=rows' }] }), false);
+  assert.equal(signInFirst({ body: [{ code: 'async function render(root) { root.append(ui.signIn({})); }' }, { carousel: '=rows' }] }), true);
 });
