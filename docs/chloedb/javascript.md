@@ -11,7 +11,7 @@ The package is in [`chloedb-js/`](https://github.com/chloetech-ai/chloedb/tree/m
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler. Install the tarball for your platform:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.2/chloedb-0.3.2-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.3/chloedb-0.3.3-darwin-arm64.tgz
 ```
 
 It imports as `"chloedb"`. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as `strata-db` and imports as `"strata-db"`.

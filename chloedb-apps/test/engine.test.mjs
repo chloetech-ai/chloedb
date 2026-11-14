@@ -1154,7 +1154,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
     { gallery: [{ photo: 'tram' }] },
     { band: [{ media: ['x'], photo: 'farm' }], photo: '=row.image' },
   ] };
-  const placed = await placeScreenPhotos(screen, { find });
+  const placed = await placeScreenPhotos(screen, { find, drawn: false });
   assert.equal(placed.length, 5);
   assert.deepEqual(asked.map(([q, u]) => `${q}:${u}`), ['coffee:hero', 'bread:slide', 'portrait man:avatar', 'tram:gallery', 'farm:media']);
   assert.equal(screen.body[1].carousel[1].src, 'https://kept', 'a photo with a src is left as it is');
@@ -1166,7 +1166,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
   const plan = { views: [], seed: {
     coffees: [{ name: 'Huila', image: 'photo:latte art coffee' }, { name: 'Sumatra', image: 'photo:Sumatra Mandheling dark roast' }],
     sleds: [{ name: 'Polar', image: 'photo:snowmobile trail' }] } };
-  await placePhotos(plan, {});
+  await placePhotos(plan, {}, { open: false, drawn: false });
   assert.match(plan.seed.coffees[0].image, /^https:\/\/images\.unsplash\.com\/photo-/);
   assert.match(plan.seed.coffees[1].image, /^https:\/\/images\.unsplash\.com\/photo-/);
   assert.notEqual(plan.seed.coffees[1].image, plan.seed.coffees[0].image);
@@ -1179,7 +1179,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
     { name: 'Pumpkin pie', category: 'Pies', image: 'photo:pumpkin pie' },
     { name: 'Cable', image: 'photo:usb charging cable' }] } };
   const code = {};
-  await placePhotos(shop, code);
+  await placePhotos(shop, code, { open: false, drawn: false });
   assert.match(code.home, new RegExp(croissant));
   assert.match(shop.seed.products[0].image, /croissant|photo-/);
   assert.match(builtinPhotos().find((p) => shop.seed.products[1].image.includes(p.id)).tags, /\bpie\b/);
@@ -2425,6 +2425,29 @@ test('beside a cluster the studio lets in chloedb-server, a session from a one-t
   assert.equal((await restarted.check(req({ cookie: `${own.name}=${own.value}` }), at('/a/a1'))).status, 401, 'one process\'s browser cookie is not another\'s');
   assert.equal(login.sameOrigin(req({ origin: 'https://studio.example' })), true);
   assert.equal(login.sameOrigin(req({ origin: 'https://elsewhere.example' })), false);
+});
+
+test('an agent\'s MCP server signs in with the agent token, beside a cluster and on a laptop (audit 4, X-G7)', async () => {
+  const { Login } = await import('../engine/login.mjs');
+  const store = { setting: async () => null, putSetting: async () => {} };
+  const req = (headers = {}) => ({ headers: { host: 'h', ...headers } });
+  const at = (p) => new URL(`http://h${p}`);
+  const agent = { authorization: 'Bearer the-agent-token' };
+  const cluster = new Login({ store, appToken: 'the-app-token', agentToken: 'the-agent-token' });
+  assert.equal(await cluster.check(req(agent), at('/api/apps')), null, 'the agent token is a studio sign-in');
+  assert.equal(cluster.fromAgent(req(agent)), true);
+  assert.equal(cluster.fromServer(req(agent)), false, 'and not chloedb-server\'s');
+  assert.equal((await cluster.check(req({ authorization: 'Bearer stale' }), at('/api/apps'))).status, 401);
+  assert.equal((await cluster.check(req(), at('/api/apps'))).status, 401);
+  const laptop = new Login({ store, agentToken: 'the-agent-token' });
+  assert.equal(laptop.on, false);
+  assert.equal(await laptop.check(req(agent), at('/api/apps')), null);
+  assert.equal(await laptop.check(req(), at('/api/apps')), null, 'the studio\'s own page, as before');
+  const wrong = await laptop.check(req({ authorization: 'Bearer stale' }), at('/api/apps'));
+  assert.equal(wrong.status, 401, 'a wrong token is refused even with no login');
+  assert.match(wrong.json.error, /agent token/);
+  assert.equal(await laptop.check(req({ authorization: 'Bearer stale' }), at('/healthz')), null);
+  assert.equal(new Login({ store }).fromAgent(req(agent)), false, 'no agent token: nobody is the agent');
 });
 
 test('the engine\'s own browser opens the app with its cookie', async (t) => {

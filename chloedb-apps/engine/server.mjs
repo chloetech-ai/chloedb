@@ -27,6 +27,7 @@ import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
 import { STEP_DEFAULTS, expectedSteps } from './trace.mjs';
 import { Publish, forVisitor, strangerOf } from './publish.mjs';
+import { forVisitors } from './audience.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -158,7 +159,19 @@ const scheduler = new Scheduler({ engine, reach, log });
 if (process.env.STRATA_APPS_SCHEDULES !== 'off') scheduler.start();
 // Beside a cluster, who may use the studio (login.mjs): chloedb-server with
 // its app token, and browsers it hands a login to.
-const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
+// An agent's MCP server (mcp.mjs) signs in with the agent token:
+// STRATA_APPS_AGENT_TOKEN, or DATA/agent.token, made on first start and
+// readable by its owner only (audit 4, X-G7).
+async function agentToken() {
+  if (process.env.STRATA_APPS_AGENT_TOKEN) return process.env.STRATA_APPS_AGENT_TOKEN.trim();
+  const file = path.join(DATA, 'agent.token');
+  try { const t = (await readFile(file, 'utf8')).trim(); if (t) return t; } catch { /* made below */ }
+  await mkdir(DATA, { recursive: true });
+  await writeFile(file, `${randomBytes(32).toString('base64url')}\n`, { mode: 0o600, flag: 'wx' }).catch(() => {});
+  await chmod(file, 0o600).catch(() => {});
+  return (await readFile(file, 'utf8').catch(() => '')).trim() || null;
+}
+const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, agentToken: await agentToken(), publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
 useSelfCookie(login.selfCookie);
 if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
 // Apps open to the public (publish.mjs): /a/<id>, and <name>.<domain> with a domain.
@@ -608,7 +621,8 @@ async function publicState(appId, access) {
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
-    views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    // A visitor never gets the owner's views (engine/audience.mjs).
+    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),

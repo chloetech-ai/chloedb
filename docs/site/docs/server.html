@@ -81,7 +81,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>chloedb-server</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">docs/chloedb/server.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.2.</p>
+      <p class="doc-version">These docs describe release 0.3.3.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#schemas">Schemas</a></li><li><a href="#loading-rows">Loading rows</a></li><li><a href="#embedded-vector-fields">Embedded vector fields</a></li><li><a href="#media-fields">Media fields</a></li><li><a href="#semantic-ids">Semantic IDs</a></li><li><a href="#http-api">HTTP API</a></li><li><a href="#security">Security</a></li><li><a href="#grpc">gRPC</a></li><li><a href="#sharding-one-coordinator-many-shards">Sharding: one coordinator, many shards</a></li><li><a href="#replication-a-primary-and-its-replicas">Replication: a primary and its replicas</a></li><li><a href="#on-kubernetes">On Kubernetes</a></li><li><a href="#deadlines-admission-and-metrics">Deadlines, admission and metrics</a></li><li><a href="#the-ui">The UI</a></li><li><a href="#the-agent">The agent</a></li><li><a href="#the-on-call-agent">The on-call agent</a></li><li><a href="#agents-over-mcp">Agents over MCP</a></li><li><a href="#agents-and-administration">Agents and administration</a></li></ol></details>
     <div class="doc-body">
@@ -125,7 +125,7 @@
 <p><strong>Old names.</strong> ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (<code>strata-server</code>, <code>STRATA_*</code> settings, <code>x-strata-*</code> headers) still work for a release: <a href="compatibility.html#old-names">Compatibility</a> lists them.</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> (tagged <code>chloedb-server-v&lt;version&gt;</code>) has one archive a platform: <code>linux-x86_64</code> and <code>linux-aarch64</code> (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), <code>macos-arm64</code> and <code>macos-x86_64</code> (macOS 11 or later), each with its <code>.sha256</code> beside it.</p>
-<pre data-lang="sh">v=0.3.2 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+<pre data-lang="sh">v=0.3.3 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz
 chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo catalogue

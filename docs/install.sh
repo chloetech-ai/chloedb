@@ -66,7 +66,7 @@ Options:
                 netops (chloedb-netops, network operations) by name
   -h, --help    this text
 
-Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.2 sh):
+Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.3 sh):
   CHLOEDB_VERSION       the version to install; the newest release by default
   CHLOEDB_WITH          the programs --with names, when it is not given
   CHLOEDB_INSTALL_DIR   where to put the programs (default ~/.local/bin)
