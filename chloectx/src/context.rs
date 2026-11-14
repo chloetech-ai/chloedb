@@ -310,7 +310,9 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     });
     let (notes, messages, answers, rules) = (notes?, messages?, answers?, rules?);
     let signals = signals.into_inner().unwrap_or_else(|e| e.into_inner());
-    let live = |r: &Record| !crate::record::closed_tag(&r.tag) && r.tag != "uncertain" && r.tag != "cue";
+    // A rule or decision another machine pushed waits for a person to
+    // accept that machine (`chloectx sync accept`).
+    let live = |r: &Record| !crate::record::closed_tag(&r.tag) && r.tag != "uncertain" && r.tag != "cue" && !crate::sync::held_back(r);
     let mut left_out: Vec<(Record, &'static str)> = Vec::new();
     let mut gone: HashSet<String> = HashSet::new();
     for r in notes.iter().chain(rules.iter().filter(|(_, c)| *c >= p.rule_min_cos).map(|(r, _)| r)) {
@@ -318,6 +320,7 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
             left_out.push((r.clone(), match r.tag.as_str() {
                 "superseded" => "superseded",
                 crate::record::RETIRED => "retired",
+                _ if crate::sync::held_back(r) => "from another machine, not accepted",
                 _ => "uncertain",
             }));
         }
