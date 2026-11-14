@@ -185,6 +185,11 @@ export function measure(arg) {
   const w2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let t = w2.nextNode(); t && ids.size < 3; t = w2.nextNode()) {
     for (const m of t.data.matchAll(/\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{10}\b/g)) if (t.parentElement && shown(t.parentElement)) ids.add(m[0]);
+    // and the ids of the app's own rows ("kid-1", "c2") the page shows as they are
+    const known = window.__sa_rowIds;
+    if (known && known.size && t.parentElement && !t.parentElement.closest('input, textarea, select') && shown(t.parentElement)) {
+      for (const tok of t.data.split(/\s+[·•|\/—–]\s+|,\s+|\s+/)) if (known.has(tok.trim()) && ids.size < 3) ids.add(tok.trim());
+    }
   }
   // What sticks out to the right, when the page scrolls sideways.
   let wide = null;

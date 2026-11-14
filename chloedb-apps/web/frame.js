@@ -29,6 +29,18 @@
   // kept to signed-in people): the app's own page then shows no tabs.
   let gatedNow = null;
   window.__sa_gated = (on) => { if (gatedNow === !!on) return; gatedNow = !!on; post({ kind: 'gate', on: gatedNow }); };
+  // Where the screen's content runs across the frame (its #root, centred
+  // and narrower than a wide window): the app's bar and tabs line up with it.
+  let boundsNow = '';
+  window.__sa_bounds = () => {
+    const r = document.getElementById('root')?.getBoundingClientRect();
+    if (!r || !r.width) return;
+    const b = `${Math.round(r.left)},${Math.round(window.innerWidth - r.right)}`;
+    if (b === boundsNow) return;
+    boundsNow = b;
+    post({ kind: 'bounds', left: Math.round(r.left), right: Math.round(window.innerWidth - r.right) });
+  };
+  window.addEventListener('resize', () => window.__sa_bounds());
   // A pick (below) is the builder's click, not a tap.
   let pickingNow = false;
   // Every tap in the app is counted (the studio sends the count with the
@@ -528,6 +540,68 @@
     });
   };
   window.lib = lib;
+
+  // A reference shows the row's name, never its id: where a page shows a
+  // text that is the id of a row of the app (a kid's "kid-1" on a chore, a
+  // company's "c2" on a deal), alone or between separators ("c2 · 9500"),
+  // the row's name (its table's naming column, SA.labels) shows instead.
+  // What the person types is left alone.
+  (() => {
+    const specs = Array.isArray(SA.labels) ? SA.labels : [];
+    if (!specs.length || typeof MutationObserver === 'undefined') return;
+    let names = new Map();
+    let fetched = 0;
+    let fetching = null;
+    const load = () => fetching || (fetching = Promise.all(specs.map((x) => rpc('sql', [`SELECT id, ${x.col} AS sa_name FROM ${x.table} LIMIT 2000`, {}]).catch(() => [])))
+      .then((all) => {
+        const m = new Map();
+        // (every row id the page could show, for the drawn page's check)
+        const ids = new Set();
+        for (const rows of all) for (const r of Array.isArray(rows) ? rows : []) {
+          const id = r && r.id != null ? String(r.id) : '';
+          if (id.length >= 2 && !/^\d+$/.test(id)) ids.add(id);
+          const nm = r && r.sa_name != null ? String(r.sa_name).trim() : '';
+          // a number alone or one letter is never taken for an id
+          if (id.length >= 2 && !/^\d+$/.test(id) && nm && nm !== id) m.set(id, nm);
+        }
+        names = m; fetched = Date.now(); fetching = null;
+        window.__sa_rowIds = ids;
+        sweep(document.body);
+      }));
+    const SEP = /(\s+[·•|\/—–]\s+|,\s+)/;
+    const IDISH = /^[A-Za-z0-9][A-Za-z0-9_-]{1,40}$/;
+    let unknown = false;
+    const fix = (node) => {
+      const t = node.nodeValue;
+      if (!t || t.length > 400) return;
+      const parts = t.split(SEP);
+      let changed = false;
+      for (let i = 0; i < parts.length; i += 2) {
+        const core = parts[i].trim();
+        if (!core) continue;
+        const nm = names.get(core);
+        if (nm) { parts[i] = parts[i].replace(core, nm); changed = true; } else if (IDISH.test(core) && /\d/.test(core) && /[a-z]/i.test(core)) unknown = true;
+      }
+      if (changed) node.nodeValue = parts.join('');
+    };
+    const skip = (el) => !!el && !!el.closest && !!el.closest('input, textarea, select, script, style, [contenteditable], code, pre');
+    const sweep = (root) => {
+      if (!root || !names.size) return;
+      if (root.nodeType === 3) { if (!skip(root.parentElement)) fix(root); return; }
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (!skip(n.parentElement)) fix(n);
+    };
+    new MutationObserver((ms) => {
+      unknown = false;
+      for (const m of ms) {
+        if (m.type === 'characterData') sweep(m.target);
+        else for (const n of m.addedNodes) sweep(n);
+      }
+      // a row added since the names were read: read them again, now and then
+      if (unknown && Date.now() - fetched > 4000) load();
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    load();
+  })();
   // css(name, text): a component's stylesheet, added once.
   const styled = new Set();
   window.css = (name, text) => {

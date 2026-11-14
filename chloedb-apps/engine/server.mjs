@@ -620,6 +620,7 @@ async function appState(appId) {
       return { components: view.components.map(one), helpers: view.helpers.map(one) };
     })()),
     tables,
+    labels: labelsOf(view),
     people: await services.people(appId).catch(() => []),
     outbox: await services.outbox(appId, 20).catch(() => []),
     suggestions: await store.suggestions(appId),
@@ -639,11 +640,25 @@ async function appState(appId) {
 
 // The options of app.ask a visitor may pass: the answer's shape only, never
 // instructions of their own, the web or a fresh (uncached) call.
-const publicAsk = (o = {}) => (o.json ? { json: true } : {});
+const publicAsk = (o = {}) => ({ ...(o.json ? { json: true } : {}), ...(o.kept ? { kept: true } : {}) });
 
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
+// Each table's naming column (name, title, label, else its first text
+// column): the frame shows a row's name wherever its id would show
+// (web/frame.js), so a reference reads "Ava", never "kid-1".
+const LABEL_COLS = ['name', 'title', 'label', 'full_name', 'display_name', 'first_name', 'subject', 'company'];
+function labelsOf(view) {
+  const out = [];
+  for (const t of view.tables || []) {
+    const cols = (t.spec?.columns || []).filter((c) => c && c.name);
+    const col = LABEL_COLS.find((n) => cols.some((c) => c.name === n)) || cols.find((c) => c.type === 'text')?.name;
+    if (col && t.spec?.name && !t.spec.links) out.push({ table: t.spec.name, col });
+  }
+  return out;
+}
+
 async function publicState(appId, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
@@ -661,7 +676,7 @@ async function publicState(appId, role = null) {
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
-    tables: [], people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
+    tables: [], labels: labelsOf(view), people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
     reach: { on: { fetch: !!reachNow?.on?.fetch, hosts: (reachNow?.on?.hosts || []).map((x) => ({ host: x.host })) } },
   };
 }
