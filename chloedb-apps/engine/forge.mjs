@@ -614,6 +614,36 @@ export function editCode(plan, code, view) {
       delete item.edits;
     }
   }
+  // An entry of a view or function the app has, given without its code (no
+  // block, edits, patch, screen or rule): a change of the entry alone (who a
+  // screen is for, its title, its order). Its code stays as it is; a
+  // screen's FOR line follows a new "for".
+  for (const [kind, list, have] of [['view', plan?.views, view.views], ['function', plan?.functions, view.functions]]) {
+    for (const item of list || []) {
+      // (an empty patch changes nothing: the same as none)
+      if (item && Array.isArray(item.patch) && !item.patch.length) delete item.patch;
+      if (!item || !item.slug || item.edited || code[item.slug] !== undefined || item.patch !== undefined || item.screen !== undefined || item.rule !== undefined || item.statement !== undefined) continue;
+      const cur = (have || []).find((x) => x.slug === item.slug);
+      if (!cur) continue;
+      for (const k of ['title', 'description']) if (item[k] === undefined) item[k] = cur[k];
+      if (kind === 'view' && item.order === undefined) item.order = cur.spec?.order;
+      if (kind === 'function' && item.on === undefined) item.on = cur.spec?.on || undefined;
+      if (kind === 'function' && item.every === undefined && !cur.spec?.rule) item.every = cur.spec?.every || undefined;
+      if (cur.spec?.statement) {
+        let src = cur.spec.statement;
+        if (kind === 'view' && typeof item.for === 'string' && ['owner', 'admins', 'members', 'everyone'].includes(item.for)) {
+          src = /^\s*FOR\s+\S+\s*$/im.test(src) ? src.replace(/^(\s*)FOR\s+\S+\s*$/im, `$1FOR ${item.for}`) : src.replace(/^(.*\n)/, `$1FOR ${item.for}\n`);
+        }
+        code[item.slug] = src;
+      } else if (kind === 'view' && cur.spec?.screen) {
+        try { item.screen = JSON.parse(cur.code); } catch { code[item.slug] = cur.code; }
+      } else if (kind === 'function' && cur.spec?.rule) {
+        try { item.rule = JSON.parse(cur.code); } catch { code[item.slug] = cur.code; }
+      } else code[item.slug] = cur.code;
+      if (kind === 'view' && item.for === undefined && cur.spec?.for !== undefined) item.for = cur.spec.for;
+      item.kept = true;
+    }
+  }
   return problems;
 }
 

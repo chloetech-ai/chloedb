@@ -3437,3 +3437,40 @@ test('a subquery in FROM that its query leaves unnamed is named, since the datab
   assert.match(rewriteSql('SELECT * FROM (SELECT * FROM receivables) t LIMIT 5', ['receivables'], phys).sql, /\) t LIMIT 5$/);
   assert.doesNotMatch(rewriteSql('SELECT * FROM (receivables JOIN receivables r2 ON receivables.id = r2.id) LIMIT 5', ['receivables'], phys).sql, /sa_sub/);
 });
+
+test('a change that gives a view only a new "for" (no code, edits or patch) keeps its code, and its FOR line follows', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const statement = "CREATE SCREEN invoices TITLE 'Invoices'\nFOR owner\nLIST receivables\n  FORM (customer REQUIRED, amount NUMBER)\n  COLUMNS (customer, amount MONEY)";
+  const screen = compileStatement(statement).screen;
+  const jsonScreen = { body: [{ h: 'Months' }], data: {} };
+  const view = { ...empty, tables: [{ spec: { name: 'receivables', columns: [{ name: 'customer', type: 'keyword' }, { name: 'amount', type: 'float' }] } }],
+    views: [
+      { slug: 'invoices', title: 'Invoices', description: 'd', spec: { order: 2, screen: true, statement, for: 'owner' }, code: JSON.stringify(screen) },
+      { slug: 'months', title: 'Months', description: 'm', spec: { order: 3, screen: true, for: 'owner' }, code: JSON.stringify(jsonScreen) },
+      { slug: 'notes', title: 'Notes', description: 'n', spec: { order: 4, for: 'owner' }, code: 'async function render(root, app) { root.textContent = "x"; }' }] };
+  // the answer of an access change: each view restated with its new audience only
+  const plan = { access: ['ALLOW ALL ON receivables TO members'], views: [{ slug: 'invoices', for: 'members' }, { slug: 'months', for: 'members' }, { slug: 'notes', for: 'members' }] };
+  const code = {};
+  assert.deepEqual(prepareScreens(plan, code, view), []);
+  const [inv, months, notes] = plan.views;
+  assert.match(inv.statement, /^FOR members$/m);
+  assert.doesNotMatch(inv.statement, /FOR owner/);
+  assert.equal(inv.for, 'members');
+  assert.equal(inv.title, 'Invoices');
+  assert.ok(code.invoices.startsWith('{'), 'the statement is compiled into the screen again');
+  assert.deepEqual(months.screen.body, jsonScreen.body);
+  assert.equal(months.for, 'members');
+  assert.equal(code.notes, view.views[2].code);
+  // nothing is reported missing for the views the answer did not rewrite
+  const problems = await validate(plan, code, view, [], new Map(), '');
+  assert.deepEqual(problems.filter((p) => /has no <code slug=/.test(p)), []);
+  // an empty patch is no change either, also on a statement (which takes no patch)
+  const empty2 = { views: [{ slug: 'invoices', for: 'members', patch: [] }] };
+  assert.deepEqual(prepareScreens(empty2, {}, view), []);
+  assert.match(empty2.views[0].statement, /^FOR members$/m);
+  // a view restated with no new "for" keeps the one it had
+  const keep = { views: [{ slug: 'invoices', title: 'Bills' }] };
+  prepareScreens(keep, {}, view);
+  assert.equal(keep.views[0].for, 'owner');
+  assert.match(keep.views[0].statement, /^FOR owner$/m);
+});
