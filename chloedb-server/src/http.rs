@@ -1182,6 +1182,9 @@ fn who(req_who: Option<axum::Extension<Principal>>) -> Principal {
 /// Refuses statement `sql` for a key limited to tables when it names a
 /// table the key may not read ([`crate::scoped::check_reads`]).
 async fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError> {
+    // Before a limited key's tables are read from the statement, which
+    // parses it.
+    app.svc.statement_fits(sql)?;
     if !who.limited() {
         return Ok(());
     }

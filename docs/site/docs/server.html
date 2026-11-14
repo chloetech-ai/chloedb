@@ -416,6 +416,16 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td>the largest body of a write or an import, and of a gRPC message; other requests take up to 16 MiB</td>
 </tr>
 <tr>
+<td><code>--max-statement-bytes N</code></td>
+<td>1048576</td>
+<td>the longest SQL statement a request may send (<code>/v1/query</code>, <code>/v1/sql</code>, <code>/v1/explain</code>, gRPC and the MCP tools that run them), in bytes; a longer one is a 400 <code>query_invalid</code> before it is parsed. A list of values passed as a parameter (<code>id IN (:ids)</code>) does not count; 0: no limit <span class="since unreleased">since 0.3.4 (unreleased)</span></td>
+</tr>
+<tr>
+<td><code>--max-statement-elements N</code></td>
+<td>250000</td>
+<td>the most elements (words, values and symbols) such a statement may hold, as ClickHouse's <code>max_ast_elements</code> bounds; <code>id IN ('a', 'b', ...)</code> is two an id; 0: no limit <span class="since unreleased">since 0.3.4 (unreleased)</span></td>
+</tr>
+<tr>
 <td><code>--otlp-retain PERIOD</code></td>
 <td>none (kept for ever)</td>
 <td>how long a table <a href="#opentelemetry-logs">OpenTelemetry logs</a> make keeps its rows (<code>'30 days'</code>, <code>'12h'</code>); tables already there keep theirs</td>
