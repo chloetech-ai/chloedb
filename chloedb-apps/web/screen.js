@@ -711,7 +711,7 @@ window.__sa_numbers = (() => {
               if (!v.getAttribute('aria-label')) v.setAttribute('aria-label', `${heads[i] || 'Done'}: ${rowName(r) || ''}`.replace(/: $/, ''));
               return h('td', { class: 'tick', 'data-label': heads[i] }, h('label', { class: 'tap' }, v));
             }
-            return h('td', { 'data-label': heads[i], class: [v === '' ? 'blank' : '', ks[i].numeric ? 'num' : '', i === titleAt ? 'lead-cell' : ''].filter(Boolean).join(' ') || null }, v === '' ? v : figure(i, v, rawOf(c, i, r)));
+            return h('td', { 'data-label': heads[i], class: [v === '' ? 'blank' : '', ks[i].numeric ? 'num' : '', i === titleAt ? 'lead-cell' : ''].filter(Boolean).join(' ') || null }, v === '' ? (ks[i].change ? h('span', { class: 'muted', title: 'Nothing before it to compare with' }, 'n/a') : v) : figure(i, v, rawOf(c, i, r)));
           }),
           // More than two steps: the row's next step as a button, the rest
           // in its menu (as on a phone), not a line of words on every row.

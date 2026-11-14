@@ -1,6 +1,6 @@
 {
  "title": "A value compared period by period: the change and the change in percent, and the biggest moves",
- "about": "Revenue month over month, costs quarter over quarter, members week over week: one row per period in order, each with its value, its change from the period before and that change in percent (signed, coloured, with bars), the biggest gain and the biggest drop as big numbers, and the table as a CSV to download. Rows that are one per period already (a month column): give PERIOD and ORDER BY. Rows to add up per period: PERIOD date_trunc('month', day), VALUE SUM(amount), GROUP BY date_trunc('month', day).",
+ "about": "Revenue month over month, costs quarter over quarter, members week over week: one row per period in order, each with its value, its change from the period before and that change in percent (signed, coloured, with bars), the biggest gain and the biggest drop as big numbers, a bar chart of the value per period (with a second value such as costs beside it), and the table as a CSV to download. Rows that are one per period already (a month column): give PERIOD and ORDER BY. Rows to add up per period: PERIOD date_trunc('month', day), VALUE SUM(amount), GROUP BY date_trunc('month', day).",
  "params": {
   "table": {
    "about": "the table",
@@ -20,6 +20,14 @@
   "value": {
    "about": "the value per period: a column, or an aggregate such as SUM(amount) with group",
    "need": true
+  },
+  "compare": {
+   "about": "a second value per period drawn beside it in the chart (costs against revenue), as VALUE is: a column, or an aggregate with group",
+   "default": "NULL"
+  },
+  "compareLabel": {
+   "about": "what the second value is",
+   "default": "Costs"
   },
   "group": {
    "about": "the SQL to group rows by, when the value adds rows up (usually the same as period)"
@@ -50,6 +58,10 @@
   "file": {
    "about": "the name of the CSV download",
    "default": "{{key}}.csv"
+  },
+  "chart": {
+   "about": "bars (the value per period, and the second value beside it) or none",
+   "default": "bars"
   }
  },
  "example": {
@@ -65,17 +77,19 @@
  },
  "screen": {
   "data": {
-   "{{key}}": "SELECT {{period}} AS p, {{value}} AS v, {{order}} AS o FROM {{table}}{{where|pre: WHERE }}{{group|pre: GROUP BY }} LIMIT 500"
+   "{{key}}": "SELECT {{period}} AS p, {{value}} AS v, {{compare}} AS c, {{order}} AS o FROM {{table}}{{where|pre: WHERE }}{{group|pre: GROUP BY }} LIMIT 500"
   },
   "let": {
-   "{{key}}_rows": "=(() => { const day = (p) => /^\\d{4}-\\d{2}(-\\d{2})?/.test(String(p ?? '')); const firsts = {{key}}.every(r => !day(r.p) || /^\\d{4}-\\d{2}(-01)?(\\b|T|$)/.test(String(r.p))); const name = (p) => p == null || p === '' ? '—' : day(p) ? new Date(String(p).slice(0, 7) + (firsts ? '-01' : String(p).slice(7, 10)) + 'T00:00:00Z').toLocaleDateString(undefined, firsts ? { month: 'short', year: 'numeric', timeZone: 'UTC' } : { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : String(p); const key = (r) => typeof r.o === 'number' ? r.o : Number.isFinite(Number(r.o)) && String(r.o).trim() !== '' ? Number(r.o) : String(r.o ?? ''); const sorted = {{key}}.slice().sort((a, b) => { const x = key(a), y = key(b); return x < y ? -1 : x > y ? 1 : 0; }).slice(-Number({{last|json}}) || -24); return sorted.map((r, i, all) => { const v = Number(r.v) || 0; const prev = i ? Number(all[i - 1].v) || 0 : null; return { period: name(r.p), prior: i ? name(all[i - 1].p) : '', value: v, change: prev === null ? null : v - prev, pct: prev ? Math.round((v - prev) / Math.abs(prev) * 1000) / 10 : null }; }); })()",
+   "{{key}}_rows": "=(() => { const day = (p) => /^\\d{4}-\\d{2}(-\\d{2})?/.test(String(p ?? '')); const firsts = {{key}}.every(r => !day(r.p) || /^\\d{4}-\\d{2}(-01)?(\\b|T|$)/.test(String(r.p))); const name = (p) => p == null || p === '' ? '—' : day(p) ? new Date(String(p).slice(0, 7) + (firsts ? '-01' : String(p).slice(7, 10)) + 'T00:00:00Z').toLocaleDateString(undefined, firsts ? { month: 'short', year: 'numeric', timeZone: 'UTC' } : { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : String(p); const key = (r) => typeof r.o === 'number' ? r.o : Number.isFinite(Number(r.o)) && String(r.o).trim() !== '' ? Number(r.o) : String(r.o ?? ''); const sorted = {{key}}.slice().sort((a, b) => { const x = key(a), y = key(b); return x < y ? -1 : x > y ? 1 : 0; }).slice(-Number({{last|json}}) || -24); return sorted.map((r, i, all) => { const v = Number(r.v) || 0; const prev = i ? Number(all[i - 1].v) || 0 : null; return { period: name(r.p), prior: i ? name(all[i - 1].p) : '', value: v, compare: r.c == null ? null : Number(r.c) || 0, change: prev === null ? null : v - prev, pct: prev ? Math.round((v - prev) / Math.abs(prev) * 1000) / 10 : null }; }); })()",
    "{{key}}_moved": "={{key}}_rows.filter(r => r.change !== null)",
    "{{key}}_up": "={{key}}_moved.filter(r => r.change > 0).sort((a, b) => b.change - a.change)[0] || null",
    "{{key}}_down": "={{key}}_moved.filter(r => r.change < 0).sort((a, b) => a.change - b.change)[0] || null",
    "{{key}}_latest": "={{key}}_rows[{{key}}_rows.length - 1] || null",
    "{{key}}_fmt": "=v => {{format|json}} === 'money' ? String(app.fmt.money(v)).replace(/\\.00(?=\\D*$)/, '') : app.fmt.number(Math.round(v * 100) / 100)",
    "{{key}}_signed": "=v => v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + {{key}}_fmt(Math.abs(v))",
-   "{{key}}_pct": "=v => v == null ? '' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + '%'"
+   "{{key}}_pct": "=v => v == null ? '' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + '%'",
+   "{{key}}_total": "={{key}}_rows.reduce((n, r) => n + r.value, 0)",
+   "{{key}}_span": "={{key}}_rows.length > 1 ? {{key}}_rows[0].period + ' to ' + {{key}}_rows[{{key}}_rows.length - 1].period : ({{key}}_rows[0] || {}).period || ''"
   },
   "body": [
    {
@@ -85,9 +99,9 @@
    {
     "kpis": [
      {
-      "label": "={{key}}_latest ? {{label|json}} + ', ' + {{key}}_latest.period : {{label|json}}",
-      "value": "={{key}}_latest ? {{key}}_fmt({{key}}_latest.value) : '—'",
-      "hint": "={{key}}_latest && {{key}}_latest.change !== null ? {{key}}_signed({{key}}_latest.change) + ' (' + {{key}}_pct({{key}}_latest.pct) + ') vs ' + {{key}}_latest.prior : ''"
+      "label": "={{key}}_span ? {{label|json}} + ', ' + {{key}}_span : {{label|json}}",
+      "value": "={{key}}_fmt({{key}}_total)",
+      "hint": "={{key}}_latest ? 'Latest ' + {{key}}_latest.period + ': ' + {{key}}_fmt({{key}}_latest.value) + ({{key}}_latest.change !== null ? ', ' + {{key}}_pct({{key}}_latest.pct) + ' vs ' + {{key}}_latest.prior : '') : ''"
      },
      {
       "label": "={{key}}_up ? 'Biggest increase, ' + {{key}}_up.period : 'Biggest increase'",
@@ -100,6 +114,29 @@
       "hint": "={{key}}_down ? {{key}}_pct({{key}}_down.pct) + ' vs ' + {{key}}_down.prior : 'No period went down'"
      }
     ]
+   },
+   {
+    "card": [
+     {
+      "$when": "compare=NULL",
+      "ui": "barChart",
+      "props": {
+       "data": "={{key}}_rows.map(r => ({label: r.period, value: r.value}))",
+       "format": "={{key}}_fmt"
+      }
+     },
+     {
+      "$when": "compare!=NULL",
+      "ui": "barChart",
+      "props": {
+       "data": "={{key}}_rows.map(r => ({label: r.period, values: [r.value, r.compare || 0]}))",
+       "series": "=[{name: {{label|json}}}, {name: {{compareLabel|json}}}]",
+       "format": "={{key}}_fmt"
+      }
+     }
+    ],
+    "title": "={{label|json}} + ({{compare|json}} !== 'NULL' ? ' and ' + String({{compareLabel|json}}).toLowerCase() : '') + ' by ' + String({{periodLabel|json}}).toLowerCase()",
+    "$when": "chart=bars"
    },
    {
     "card": [
@@ -127,6 +164,11 @@
        }
       ],
       "empty": "Nothing to compare yet."
+     },
+     {
+      "text": "='Change is each ' + String({{periodLabel|json}}).toLowerCase() + '’s ' + String({{label|json}}).toLowerCase() + ' minus the one before it, and Change % is that change as a share of the one before. The first ' + String({{periodLabel|json}}).toLowerCase() + ' has nothing before it, so its change is n/a.'",
+      "muted": true,
+      "class": "small"
      },
      {
       "button": "Download CSV",

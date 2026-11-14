@@ -3232,7 +3232,7 @@ VARIANCE monthly_sales AS rev
   assert.deepEqual(w.screen.body[0], { use: 'variance', table: 'monthly_sales', key: 'rev', period: 'month', value: 'revenue', order: "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END", label: 'Revenue', periodLabel: 'Month', format: 'money', file: 'revenue.csv' });
   const we = expandScreen(w.screen);
   assert.deepEqual(we.problems, []);
-  assert.equal(we.screen.data.rev, "SELECT month AS p, revenue AS v, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM monthly_sales LIMIT 500");
+  assert.equal(we.screen.data.rev, "SELECT month AS p, revenue AS v, NULL AS c, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM monthly_sales LIMIT 500");
   assert.deepEqual(checkScreen(we.screen, (t) => ({ monthly_sales: new Set(['id', 'created', 'month', 'revenue']) })[t] || null), []);
   const table = JSON.stringify(we.screen.body);
   assert.match(table, /"Change %"/);
@@ -3251,6 +3251,19 @@ VARIANCE costs
   assert.match(g.screen.data.costs_var, /AS o FROM costs GROUP BY date_trunc\('month', day\) LIMIT 500$/);
   const months = new Function('costs_var', `return ${g.screen.let.costs_var_rows.slice(1)}`)([{ p: '2026-10-01', v: 5, o: '2026-10-01' }, { p: '2026-09-01', v: 10, o: '2026-09-01' }]);
   assert.match(months[0].period, /Sep/);
+  // one series in the chart, or two with COMPARE
+  assert.equal((table.match(/"barChart"/g) || []).length, 1);
+  assert.match(table, /value: r\.value\}/);
+  const two = expandScreen(compileStatement(`CREATE SCREEN d
+VARIANCE sales
+  PERIOD month  VALUE revenue  COMPARE cost_of_goods + marketing  AGAINST 'Costs'  ORDER BY n`).screen);
+  assert.deepEqual(two.problems, []);
+  assert.match(two.screen.data.sales_var, /cost_of_goods \+ marketing AS c/);
+  assert.match(JSON.stringify(two.screen.body), /values: \[r\.value, r\.compare \|\| 0\]/);
+  const none = expandScreen(compileStatement(`CREATE SCREEN d
+VARIANCE sales
+  PERIOD month  VALUE revenue  CHART none`).screen);
+  assert.doesNotMatch(JSON.stringify(none.screen.body), /barChart/);
   // MONEY alone says the format, as it does for a KPI (a round 2 plan wrote it so)
   assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE sales\n  PERIOD month  VALUE revenue  MONEY").screen.body[0].format, 'money');
 });
