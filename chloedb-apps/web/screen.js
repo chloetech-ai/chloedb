@@ -137,7 +137,42 @@ window.__sa_numbers = (() => {
   };
   window.__sa_gateView = gateView;
 
+  // Two big numbers over the same rows, one of them a part of the other
+  // (Past due within Outstanding: the same query with more in its WHERE),
+  // that come out equal are one number: the wider one stays, saying "All
+  // past due", rather than two cards with one figure under two names,
+  // which reads as a mistake. The rest are left as they are.
+  const kpiSql = (spec, k) => {
+    const d = k.of !== undefined && spec && spec.data ? spec.data[k.of] : null;
+    return typeof d === 'string' ? d : d && typeof d.sql === 'string' ? d.sql : null;
+  };
+  const whereParts = (sql) => {
+    const m = /^([\s\S]*?)\sWHERE\s([\s\S]*)$/i.exec(String(sql).replace(/\s+/g, ' ').trim());
+    const strip = (w) => w.replace(/[()]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return m ? { head: m[1].trim().toLowerCase(), where: strip(m[2]) } : { head: String(sql).replace(/\s+/g, ' ').trim().toLowerCase(), where: '' };
+  };
+  const makeMergeSame = (spec) => (ks) => {
+    for (let i = 0; i < ks.length; i++) for (let j = 0; j < ks.length; j++) {
+      const a = ks[i], b = ks[j];
+      if (i === j || !a || !b || a.gone || b.gone || a.raw == null || Number(a.raw) === 0 || Number(a.raw) !== Number(b.raw) || a.label === b.label) continue;
+      const sa = kpiSql(spec, a), sb = kpiSql(spec, b);
+      if (!sa || !sb) continue;
+      const pa = whereParts(sa), pb = whereParts(sb);
+      // a (narrow) is b (wide) with more conditions ANDed on
+      if (pa.head !== pb.head || /\bor\b/.test(pa.where) || pa.where.length <= pb.where.length || !pa.where.includes(pb.where) || (pb.where && !/\band\b/.test(pa.where))) continue;
+      a.gone = true;
+      const all = `All ${String(a.label).toLowerCase()}`;
+      b.hint = b.hint ? `${b.hint} · ${all}` : all;
+      if (URGENT_KPI.test(String(a.label || ''))) b.urgent = true;
+    }
+    const keep = ks.filter((k) => !k.gone);
+    ks.splice(0, ks.length, ...keep);
+  };
+  const URGENT_KPI = /\b(overdue|late|past due|owed|owing|unpaid|missing|urgent|expired|failed|behind)\b/i;
+  window.__sa_kpiMerge = makeMergeSame;
+
   window.__sa_screen = async (root, app, spec) => {
+    const mergeSame = makeMergeSame(spec);
     if (spec && spec.gate && !spec.preview) {
       const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
       if (!me) { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
@@ -330,6 +365,7 @@ window.__sa_numbers = (() => {
             // "$980.00" reads as "$980": cents only when there are some.
             return { ...k, raw, shown: v == null ? '–' : String(v).replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') };
           });
+          mergeSame(ks);
           if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
           // Summary cards: the screen's first numbers lead it, the first of
           // them the largest; a number that needs doing (overdue, owed...)
@@ -340,7 +376,7 @@ window.__sa_numbers = (() => {
           let alarmed = false;
           const kpiTone = (k) => {
             if (zero(k)) return '';
-            if (URGENT.test(String(k.label || ''))) { if (alarmed) return ''; alarmed = true; return ' attn'; }
+            if (URGENT.test(String(k.label || '')) || k.urgent) { if (alarmed) return ''; alarmed = true; return ' attn'; }
             const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || '') }], [[k.raw]])[0], k.raw);
             return t ? ` ${t}` : '';
           };

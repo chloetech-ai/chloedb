@@ -110,3 +110,21 @@ test('a frame may load the kit\'s typefaces from the engine and nothing else', (
   }
   for (const f of kit.match(/\/fonts\/[a-z-]+\.woff2/g)) assert.ok(readFileSync(new URL(`../web${f}`, import.meta.url)).length > 10000, `${f} ships`);
 });
+
+test('two big numbers over the same rows that come out equal, one within the other, are one card', () => {
+  const window = {};
+  vm.runInNewContext(screenSrc, { window });
+  const spec = { data: {
+    due: { sql: "SELECT SUM(amount) AS v FROM ar WHERE status != 'Paid' AND days_between(due_date, :today) > 0", params: {} },
+    open: "SELECT SUM(amount) AS v FROM ar WHERE status != 'Paid'",
+    rev: 'SELECT SUM(revenue) AS v FROM sales',
+  } };
+  const merge = window.__sa_kpiMerge(spec);
+  const ks = [{ label: 'Past due', of: 'due', raw: 16055 }, { label: 'Outstanding', of: 'open', raw: 16055 }, { label: 'Revenue', of: 'rev', raw: 16055 }];
+  merge(ks);
+  assert.deepEqual(ks.map((k) => [k.label, k.hint || '', !!k.urgent]), [['Outstanding', 'All past due', true], ['Revenue', '', false]]);
+  // different figures, or the same figure over unrelated rows, stay apart
+  const apart = [{ label: 'Past due', of: 'due', raw: 900 }, { label: 'Outstanding', of: 'open', raw: 16055 }];
+  merge(apart);
+  assert.equal(apart.length, 2);
+});
