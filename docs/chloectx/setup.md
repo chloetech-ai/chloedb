@@ -143,13 +143,22 @@ ChloeCtx 0.3.2 for /home/you/code/app
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
   ok    MCP server: user scope in /home/you/.claude.json (/home/you/.local/bin/chloectx mcp)
   ok    embedding model: /home/you/.local/share/chloectx/models/potion-retrieval-32M
-  ok    distillation: model haiku (from the user settings)
-  ok    Claude Code login: logged in
+  ok    distillation: model haiku (from the user settings), after each turn
+  ok    Claude Code login: logged in, so the distiller and query understanding can run
+  ok    query understanding: after the prompt, in the background (the default): after each prompt of 4 words or more, once the store holds 20 records, 2 model calls (haiku: one plans the searches, one picks the records); nothing waits for it: what it finds comes with the turn's next tool result or the next prompt, and the end of a turn does not wait (stop_recheck off)
+  ok    query understanding cost: nothing measured in this store's last 30 days yet (about $0.001 a search with haiku)
+  ok    distillation cost: nothing measured in this store's last 30 days yet (about $0.001 a turn with haiku)
   ok    daemon: a scratch store opened and answered in 368 ms; this project's store will be /home/you/.local/share/chloectx/projects/app-251a5186 once a session runs here
 ChloeCtx is ready. Start `claude` in a project; `chloectx ui` shows what it stores.
 ```
 
 `doctor` checks the current directory's project. Once a session has run there, the last line becomes the store itself (records, sessions, daemon round trip), and a `last distillation` line reports whether the most recent distillation worked. Every failed line says how to fix it, and the command exits non-zero when anything failed.
+
+It also says what ChloeCtx's own model calls do and cost, with the settings the hooks see (the environment, then the `env` of the project's local settings, the project's settings and the user settings, then the store's `config.json`):
+
+- `query understanding` says when it runs: after the prompt, in the background (`async`, the default), at prompt time with the prompt waiting for it (`sync`, a warning), only when the model asks (`tool`), or never (`off`). It names the setting it came from, the model calls each prompt makes, and whether the end of a turn waits for it, which it does only with `stop_recheck` on (a warning: Claude may then run again).
+- `query understanding cost` and `distillation cost` are measured from the store's `events.log` over the last 30 days: how many calls, the median time, the dollars in all and per call, and how many failed.
+- `Claude Code login` says whether the distiller and query understanding can run: both call `claude -p`, which needs the CLI to be found and logged in.
 
 ## Try it for real
 
