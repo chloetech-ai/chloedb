@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { layoutFor, assignLayouts } from '../engine/layouts.mjs';
 import { compileStatement } from '../engine/statement.mjs';
-import { prepareScreens } from '../engine/forge.mjs';
+import { prepareScreens, retargetDeeds } from '../engine/forge.mjs';
 
 test('a screen that names no layout gets the one that fits it', () => {
   const art = { structure: 'editorial' };
@@ -72,4 +72,17 @@ test('FOR in a statement says who a screen is for', async () => {
   assert.equal(plan.views[0].for, 'owner');
   assert.equal(plan.views[1].for, undefined);
   assert.throws(() => compileStatement("CREATE SCREEN x\nFOR strangers"), /FOR owner \| members \| everyone/);
+});
+
+test('a call to action that names a deed does it, and one that reads more stays a link', () => {
+  const screen = { page: 'front', body: [
+    { hero: 'Learn', actions: [{ label: 'Enrol in the course', href: '#price' }, { label: 'See the lessons', href: '#lessons' }] },
+    { carousel: '=outline', id: 'lessons' },
+    { pricing: [{ name: 'All', action: { label: 'Enrol and pay', do: '=async () => { await app.call("take", {}); }' } }], id: 'price' },
+  ] };
+  retargetDeeds(screen);
+  const [a, b] = screen.body[0].actions;
+  assert.equal(a.href, undefined);
+  assert.match(a.do, /app\.call\("take"/);
+  assert.equal(b.href, '#lessons');
 });

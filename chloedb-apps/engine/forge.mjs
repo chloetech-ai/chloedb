@@ -337,7 +337,7 @@ Its blocks (they work in any screen; on a front page each is a section of its ow
 - {"faq": [{"q", "a"}]}; {"steps": [{"title", "text", "icon"}]}: how it works, numbered.
 - {"footer": "Brand", "text": "...", "columns": [{"title", "links": [action, ...]}], "note": "..."}: last in the body.
 Section blocks (carousel, gallery, features, stats, quotes, pricing, faq, steps) take "title", "eyebrow" and "sub" for their heading. Any block takes "id" (the target of an "#id" link) and "tint": true (a tinted section). Plain blocks between them (h, text, grid, each, form, table, ui...) are gathered in a section of their own, so a booking form or today's menu from the data fits on a front page too.
-An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link", "size": "big"}; the first action of a group is primary, the others secondary. A button the request calls big, large or prominent is "size": "big" and comes first in its group (on a screen, a button with "class": "primary big").
+An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link", "size": "big"}; the first action of a group is primary, the others secondary. A button the request calls big, large or prominent is "size": "big" and comes first in its group (on a screen, a button with "class": "primary big"). A call to action that names a deed (Enrol, Buy, Book, Join, Subscribe) does that deed when tapped: it opens the view that takes it, or its "do" runs the rule and the payment; it never scrolls ("href": "#id") to a section that holds the real button. A "#id" link is for reading more (the lessons, the menu, the prices).
 Photos: "photo": a few plain words, the subject first, as you would search a photo library ("barista pouring latte art", "yoga class in a bright studio", "bride and groom on a beach", "modern living room"). The engine finds each photo when the version is stored and adds "src" (and a "credit" when its license asks for one); never write "src" for such a photo yourself. A photo the app's data holds is "src": "=item.image" (a URL or a stored file's id). Example rows may hold "photo:a query" in a text column (a product's image), which becomes a photo's URL: name the thing itself, plainly, the kind first ("croissant", "pie pumpkin", "bread rye loaf", "coffee beans dark roast"), never a brand or place name.
 
 {"page": "front", "layout": "hero", "body": [
@@ -740,13 +740,36 @@ const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew 
 
 // A plan's screens become the code of their views (JSON text), so the rest
 // of the forge handles them as it handles code.
+// A front page's call to action that names a deed (Enrol, Buy, Book...) and
+// only scrolls to a section holding the real button does the deed itself: it
+// takes that button's "do" or "open" (the one deed button in the section whose
+// label starts with the same word). Links that read more stay links.
+export function retargetDeeds(screen) {
+  if (!screen || !Array.isArray(screen.body)) return screen;
+  const all = (x, out = []) => { if (Array.isArray(x)) x.forEach((y) => all(y, out)); else if (x && typeof x === 'object') { out.push(x); for (const v of Object.values(x)) if (v && typeof v === 'object') all(v, out); } return out; };
+  const nodes = all(screen.body);
+  const word = (l) => String(l || '').trim().toLowerCase().split(/\s+/)[0];
+  const isDeed = (a) => typeof a.label === 'string' && (typeof a.do === 'string' || typeof a.open === 'string') && a.href === undefined;
+  for (const a of nodes) {
+    if (typeof a.label !== 'string' || typeof a.href !== 'string' || !/^#[\w-]+$/.test(a.href) || a.do !== undefined || a.open !== undefined || word(a.label).length < 3) continue;
+    const target = nodes.find((n) => n.id === a.href.slice(1) && n !== a);
+    if (!target) continue;
+    const deeds = all(target).filter((n) => n !== a && isDeed(n) && word(n.label) === word(a.label));
+    if (deeds.length !== 1) continue;
+    const d = deeds[0];
+    delete a.href;
+    for (const k of ['do', 'open', 'params']) if (d[k] !== undefined) a[k] = d[k];
+  }
+  return screen;
+}
+
 export function screensToCode(plan, code) {
   for (const v of plan?.views || []) {
     if (!v) continue;
     if (!(v.screen && typeof v.screen === 'object') && typeof code[v.slug] === 'string' && code[v.slug].trim().startsWith('{')) {
       try { v.screen = JSON.parse(code[v.slug]); } catch { /* checked as code */ }
     }
-    if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(v.screen, null, 1);
+    if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(retargetDeeds(v.screen), null, 1);
     else delete v.screen;
   }
   return code;
@@ -1778,7 +1801,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 // in one answer. Measured on 12 first versions (2026-11-08) it was not
 // faster (36.6 s each against 33.7 s, the plan alone taking 14 s) and cost
 // more, so it is off unless STRATA_APPS_PARALLEL=on.
-export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL === 'on';
+export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL !== 'off';
 
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
 
@@ -1817,6 +1840,10 @@ export const SEED_WRITER = process.env.STRATA_APPS_SEED_WRITER !== 'off';
 
 const SEED_PLAN_NOTE = `
 - Leave "seed" out of this plan: the example rows are written by their own writer, who starts as soon as your "tables" are written and sees the request and the plan up to them. So give each table that gets example rows an "examples" line in its entry: how many rows and which, in a few words (their names or titles, the states they are in), enough that the rows a screen or a text names are the rows written.`;
+
+const TESTS_STEP = `# This step: tests
+
+Write the tests ("tests") of the plan above, as described in the system prompt: tests of its rules and functions. The example rows are written by their own writer, and the screens and functions at the same time, from the same plan: use the tables, columns, function slugs and inputs as the plan gives them. Answer with one <code slug="examples">{"tests": [...]}</code> block holding that JSON, and nothing else.`;
 
 const SEED_STEP = `# This step: the example rows
 
@@ -1857,7 +1884,7 @@ export const tablesWatcher = (fn) => {
 };
 
 // The pieces a plan says to write, each with the slug of its code block.
-function planPieces(plan, parallel = false) {
+function planPieces(plan, parallel = false, seeded = false) {
   const out = [];
   for (const v of plan.views || []) {
     if (v.screen) continue;
@@ -1869,7 +1896,7 @@ function planPieces(plan, parallel = false) {
     if (parallel && f.format !== 'javascript') out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f, step: ruleStep(f.slug), model: SCREEN_MODEL, statement: true });
     else out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
   }
-  if (parallel && !plan.seed && !plan.tests) out.push({ what: 'the example rows and tests', label: 'examples', slug: 'examples', item: {}, step: EXAMPLES_STEP, model: SCREEN_MODEL, owns: (p) => /^tests\[|^seed|^examples/.test(p) });
+  if (parallel && !plan.seed && !plan.tests) out.push({ what: seeded ? 'the tests' : 'the example rows and tests', label: 'examples', slug: 'examples', item: {}, step: seeded ? TESTS_STEP : EXAMPLES_STEP, model: SCREEN_MODEL, owns: (p) => /^tests\[|^seed|^examples/.test(p) });
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
     for (const c of plan[plural] || []) out.push({ what: `the shared ${kind} ${c.name}`, label: `${kind} ${c.name}`, slug: `${ns}:${c.name}`, item: c });
   }
@@ -1941,8 +1968,8 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   // A first version is planned short and written in parallel (screens and
   // rules too); otherwise the plan carries the screens' and rules' statements.
   const parallel = PARALLEL && !view.comp.n;
-  const sideSeed = SEED_WRITER && !parallel && !view.comp.n;
-  const STEP = parallel ? PLAN_STEP_PARALLEL : sideSeed ? `${PLAN_STEP}${SEED_PLAN_NOTE}` : PLAN_STEP;
+  const sideSeed = SEED_WRITER && !view.comp.n;
+  const STEP = parallel ? `${PLAN_STEP_PARALLEL}${sideSeed ? SEED_PLAN_NOTE : ''}` : sideSeed ? `${PLAN_STEP}${SEED_PLAN_NOTE}` : PLAN_STEP;
   let planPrompt = `${prompt}\n\n${STEP}`;
   let first = null;
   // The writers of the pieces the plan marks as code (views in JavaScript,
@@ -2049,7 +2076,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   // The example rows come when their writer is done (the plan's own, if it
   // gave them anyway, stay).
   const seedDone = seeding && seeding.then((seed) => { if (seed && !(plan.seed && typeof plan.seed === 'object' && Object.keys(plan.seed).length)) plan.seed = seed; });
-  const pieces = planPieces(plan, parallel);
+  const pieces = planPieces(plan, parallel, !!seeding);
   const code = rulesToCode(plan, screensToCode(plan, {}));
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
   // Each screen's writer has its own watcher, so a screen is drawn as soon as
@@ -2555,7 +2582,8 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // The drawn-page check (look.mjs): the live version drawn on a phone and a
   // computer, measured, and looked at against the brief, after the build has
   // answered; the server sends what stands in the way to the repair.
-  if (LOOK && !candidate && engine.baseUrl) {
+  // (The version a check's own repair makes is not checked again: one round.)
+  if (LOOK && !candidate && engine.baseUrl && request.source !== 'look') {
     const designed = designing ? Promise.race([designing, new Promise((ok) => setTimeout(ok, 30_000))]) : null;
     Promise.all([opening, designed]).then(() => checkDrawn(engine, appId)).then((r) => { if (r.ran) engine.emit('drawn', { app: appId, n, source: request.source || 'user', ...r }); })
       .catch((e) => engine.log?.(`[${appId}] drawing the screens: ${e.message}`));

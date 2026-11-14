@@ -106,7 +106,7 @@ function component(props) {
         'aria-disabled': done ? 'true' : null,
         'aria-label': `${letter(i)}: ${c.text}${state}`,
         onclick: () => pick(i)
-      }, h('span', { class: 'k', 'aria-hidden': 'true' }, letter(i)), h('span', { class: 't' }, c.text), h('span', { class: 'm', 'aria-hidden': 'true' }, mark));
+      }, h('span', { class: 'k', 'aria-hidden': 'true' }, letter(i) + ' '), h('span', { class: 't' }, c.text), h('span', { class: 'm', 'aria-hidden': 'true' }, mark));
     });
 
     let feedback = null;

@@ -19,6 +19,24 @@ const DEVICES = {
 };
 const MAX_VIEWS = 5;
 
+// Waits for the drawn screen to settle: its text has stopped changing (two
+// reads 250 ms apart agree and something is there), or `wait` ms have gone.
+async function settle(page, wait) {
+  const until = Date.now() + wait;
+  const read = async () => {
+    const f = page.frames().filter((x) => x !== page.mainFrame()).pop() || page.mainFrame();
+    return f.evaluate(() => `${document.body ? document.body.innerText.length : 0}:${document.images.length}:${[...document.images].filter((i) => i.complete).length}`).catch(() => '');
+  };
+  await page.waitForTimeout(400);
+  let last = await read();
+  while (Date.now() < until) {
+    await page.waitForTimeout(250);
+    const now = await read();
+    if (now === last && !/^0:/.test(now) && now !== '') return;
+    last = now;
+  }
+}
+
 // Measures a drawn screen. It runs inside the app's frame (page.evaluate),
 // so it is one function with nothing from outside it; `fold` is how much of
 // the frame the first screenful shows, and `names` the app's table and
@@ -254,14 +272,16 @@ export function rules(m, device) {
 
 // Draws every screen of the app (the live version, or version v) on each
 // device: [{tab, phone: {m, png}, computer: {m}}], errors per screen kept.
-export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [] } = {}) {
+export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [], onDevice = null } = {}) {
   const pw = loadPlaywright();
   if (!pw || !baseUrl) return null;
   const browser = await pw.chromium.launch();
   const views = new Map();
-  try {
-    for (const [device, opts] of Object.entries(DEVICES)) {
-      const ctx = await browser.newContext({ ...opts, colorScheme: 'light' });
+  const inOrder = () => [...views.entries()].sort((a, b) => a[0] - b[0]).map(([, e]) => e);
+  // Each device is drawn at the same time as the other, in its own context.
+  const drawOn = async (device, opts) => {
+    const ctx = await browser.newContext({ ...opts, colorScheme: 'light' });
+    try {
       await signInSelf(ctx, baseUrl);
       // Drawing it is not using it: nothing goes to the app's use log.
       await ctx.route('**/track**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
@@ -270,7 +290,7 @@ export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [
       page.on('pageerror', (e) => errors.push(e.message.split('\n')[0].slice(0, 200)));
       page.on('dialog', (d) => d.dismiss());
       await page.goto(`${baseUrl}/a/${appId}${v ? `?v=${v}` : ''}`, { waitUntil: 'load', timeout: 15000 });
-      await page.waitForTimeout(wait);
+      await settle(page, wait);
       const tabs = page.locator('#tabs button.tab[data-slug]');
       const n = Math.min(Math.max(await tabs.count(), 1), MAX_VIEWS);
       for (let i = 0; i < n; i++) {
@@ -279,7 +299,7 @@ export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [
         if (await tabs.count()) {
           tab = (await tabs.nth(i).innerText()).trim();
           slug = await tabs.nth(i).getAttribute('data-slug');
-          if (i > 0 || !(await tabs.nth(i).isVisible())) { await tabs.nth(i).evaluate((b) => b.click()); await page.waitForTimeout(wait); }
+          if (i > 0 || !(await tabs.nth(i).isVisible())) { await tabs.nth(i).evaluate((b) => b.click()); await settle(page, wait); }
           await page.evaluate(() => window.scrollTo(0, 0));
         }
         const el = await page.locator('iframe:visible').first().elementHandle().catch(() => null);
@@ -293,10 +313,13 @@ export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [
         views.set(i, entry);
         errors = [];
       }
-      await ctx.close();
-    }
+    } finally { await ctx.close(); }
+    return onDevice ? onDevice(device, inOrder()) : null;
+  };
+  try {
+    const done = await Promise.all(Object.entries(DEVICES).map(([device, opts]) => drawOn(device, opts)));
+    return { views: inOrder(), extra: done };
   } finally { await browser.close(); }
-  return { views: [...views.values()] };
 }
 
 const LOOK_SYSTEM = `You check the screens of an app the way a UX researcher would, against the app's brief: who uses it, the job they come back for, how often, on what device, which screen opens first and what it should show at a glance. You see each screen as it is drawn on a phone, its first screenful. Name only problems you can see, the ones that stand in the way of doing the job quickly and surely on that device, most important first. For each, say the screen (its tab name), the problem in plain words, the fix as a request to whoever builds the app, and "high" when it stands in the way of the job (the job is not on the first screen without scrolling, a form must be filled for something done daily, a step is missing, something does not read or does not work) or "low" for polish. Some things the engine draws one way on purpose, for every app; do not ask to change them: on a phone a check-per-day part shows yesterday and today (a computer shows the week), a form above a list folds behind its button, a table's rows are cards, big numbers are one row, and a delete offers Undo instead of a question. When the app holds no rows yet, an empty state that says what to do is right, and so is "No streak yet". Say each fix as what the person should see and do, never as code or as a part to replace. When the screens serve the brief well, say so and list nothing. Grade the app as a whole for its brief, from 1 to 5: 5 when the job is on the first screen and done in a tap or two, and everything reads and fits; 4 when only polish is left; 3 when the job takes a scroll, a search or a few more taps than it should; 2 when the job needs a form or another screen every time; 1 when the job cannot be done or the screens do not read. Answer with JSON alone: {"ok": true or false, "grade": 1 to 5, "problems": [{"view": "...", "problem": "...", "fix": "...", "severity": "high" or "low"}]}`;
@@ -309,7 +332,7 @@ export async function lookAt({ app, brief, views, model = LOOK_MODEL }) {
     ? `Who: ${brief.who}\nJob: ${brief.job}\nHow often: ${brief.often}\nDevice: ${brief.device}\nOpens first: ${brief.first}\nAt a glance: ${brief.glance}`
     : `(no brief: judge from the app's name and screens)`;
   const prompt = `# The app: ${app.name}\n${app.description ? `Described as: ${app.description}\n` : ''}\n# Its brief\n${about}\n\n# The screens, in order (one picture each, the phone's first screenful)\n${shots.map((x, i) => `${i + 1}. ${x.tab || 'the app'}${x.slug ? ` (slug ${x.slug})` : ''}: the page is ${x.phone.m ? `${(x.phone.m.height / x.phone.m.screen).toFixed(1)} phone screens long, with ${x.phone.m.fieldsOnFirstScreen} field${x.phone.m.fieldsOnFirstScreen === 1 ? '' : 's'} to fill on the first one` : 'not measured'}`).join('\n')}\n\nAt most 4 problems. JSON alone.`;
-  const answer = await ask({ system: LOOK_SYSTEM, prompt, images: shots.map((x) => ({ data: x.phone.png })), model, idleMs: 90000, timeoutMs: 180000 });
+  const answer = await ask({ system: LOOK_SYSTEM, prompt, images: shots.map((x) => ({ data: x.phone.png })), model, effort: 'low', idleMs: 90000, timeoutMs: 180000 });
   const out = extractJson(answer.text);
   const problems = (Array.isArray(out.problems) ? out.problems : []).filter((p) => p && p.problem).slice(0, 4)
     .map((p) => ({ view: String(p.view || ''), problem: String(p.problem).slice(0, 400), fix: String(p.fix || '').slice(0, 400), severity: p.severity === 'high' ? 'high' : 'low' }));
@@ -332,7 +355,10 @@ export function checkStatic(view, design = null) {
 
 export async function checkDrawn(engine, appId, { v = null } = {}) {
   const view = await engine.view(appId);
-  const drawn = await drawApp(engine.baseUrl, appId, { v, names: namesOf(view) });
+  // The model looks at the phone screens while the computer's are still being drawn.
+  let looking = null;
+  const drawn = await drawApp(engine.baseUrl, appId, { v, names: namesOf(view),
+    onDevice: (device, drawnViews) => { if (device === 'phone') looking = lookAt({ app: view.app, brief: briefOf(view.app), views: drawnViews }).catch((e) => ({ problems: [], cost: 0, ran: false, error: e.message })); } });
   if (!drawn) {
     let design = null;
     try { const d = await engine.store.designs?.(appId); design = d?.designs?.[d.chosen ?? 0] || null; } catch { /* no designs yet */ }
@@ -345,8 +371,7 @@ export async function checkDrawn(engine, appId, { v = null } = {}) {
       for (const r of rules(d[device]?.m, device)) found.push({ view: d.tab, device, ...r, by: 'rule' });
     }
   }
-  let look = { problems: [], cost: 0, ran: false };
-  try { look = await lookAt({ app: view.app, brief: briefOf(view.app), views: drawn.views }); } catch (e) { look.error = e.message; }
+  const look = (await looking) || { problems: [], cost: 0, ran: false };
   for (const p of look.problems) found.push({ ...p, device: 'phone', by: 'look' });
   return {
     ran: true, cost: look.cost, looked: look.ran, lookError: look.error || null, grade: look.grade ?? null,
