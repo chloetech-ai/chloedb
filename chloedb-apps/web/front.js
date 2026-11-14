@@ -448,7 +448,16 @@
         if (kind && (FULL.has(kind) || (kind === 'carousel' && b.look === 'slides'))) { loose = null; out.push(...els); return; }
         if (kind) { loose = null; const sec = section(b, i); sec.firstChild.append(...els); if (kind === 'media') sec.classList.add('media'); out.push(sec); return; }
         if (!els.length) return;
-        if (!loose || (b && (b.id || b.tint))) { loose = section(b, i); out.push(loose); }
+        // A block with an id or a tint starts a section of its own, unless
+        // the one open holds only a heading: that heading is this block's
+        // title, so the block joins it (and gives it its id and tint)
+        // rather than leaving the heading alone over an empty gap.
+        const heading = b && typeof b === 'object' && b.h !== undefined;
+        if (loose && loose.headOnly && b && (b.id || b.tint)) {
+          if (b.id && !loose.id) loose.id = b.id;
+          if (b.tint) loose.classList.add('tint');
+        } else if (!loose || (b && (b.id || b.tint))) { loose = section(b, i); loose.headOnly = true; out.push(loose); }
+        if (!heading) loose.headOnly = false;
         loose.firstChild.append(...els);
       });
       // A header over a photo is white until the page scrolls under it.

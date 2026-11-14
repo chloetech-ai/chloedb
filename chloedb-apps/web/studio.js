@@ -138,6 +138,11 @@ function connect() {
   });
   es.onerror = () => { dot.className = 'status down'; dot.title = 'Not connected to the engine'; };
   const mine = (e) => { const d = JSON.parse(e.data); return d.app === S.appId ? d : null; };
+  // The app on its own is the page its visitors see: the builder's work on
+  // it (a build's progress, its checks, a repair) is the studio's to show,
+  // never theirs. A new version still replaces the one on screen.
+  const builder = (e) => (BARE ? null : mine(e));
+  const note = (text) => { if (!BARE) toast(text); };
   es.addEventListener('data', (e) => {
     const d = mine(e);
     if (!d) return;
@@ -149,7 +154,7 @@ function connect() {
   es.addEventListener('design', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('candidates', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('progress', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     if (S.runningText !== d.text) { S.runningText = d.text; S.lines = []; S.lastReplace = false; }
     if (d.replace && S.lastReplace) S.lines[S.lines.length - 1] = d.line;
@@ -161,7 +166,7 @@ function connect() {
     renderProgress();
   });
   es.addEventListener('preview', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     S.previews.set(d.slug, { slug: d.slug, title: d.title, order: d.order, screen: d.screen });
     if (!S.previewView || !S.previews.has(S.previewView)) S.previewView = d.slug;
@@ -176,7 +181,7 @@ function connect() {
     S.lines = [];
     S.build = null;
     S.runningText = '';
-    toast(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
+    note(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
     refreshApp();
   });
   es.addEventListener('failed', (e) => {
@@ -186,7 +191,7 @@ function connect() {
     S.previews.clear();
     S.previewView = null;
     renderFrames();
-    if (d.candidate) toast(`A change built from your use did not go through: ${d.error}`);
+    if (d.candidate) note(`A change built from your use did not go through: ${d.error}`);
     else S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
     S.lines = [];
     S.build = null;
@@ -194,12 +199,12 @@ function connect() {
     refreshApp();
   });
   es.addEventListener('repair', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     toast('A capability failed; the engine is repairing it');
   });
   es.addEventListener('drawn', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     const graded = d.grade ? `, ${d.grade} of 5 for what it is for` : '';
     const ideas = d.suggested ? `; ${d.suggested} suggestion${d.suggested === 1 ? '' : 's'} under Suggested next` : '';
