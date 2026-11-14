@@ -374,6 +374,8 @@ const T = (x) => (x ? Date.parse(x) : null);
 const SEV = { critical: "bad", major: "serious", minor: "warn", sev1: "bad", sev2: "serious", sev3: "warn" };
 const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", "Cause identified"], mitigated: ["ok", "Mitigated"], resolved: ["good", "Resolved"] };
 const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity", estate: "Estate outage" };
+/** What a page asks for first, for the pages a deep link opens most. */
+const FIRST = { "": "/v1/shift", diagnose: "/v1/where", network: "/v1/overview", incidents: "/v1/incidents", alerts: "/v1/alerts?status=firing", customers: "/v1/customers", carriers: "/v1/maintenance", services: "/v1/services", devices: "/v1/devices", agents: "/v1/agents", data: "/v1/data", leadership: "/v1/leadership", topology: "/v1/topology", changes: "/v1/changes" };
 const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
@@ -414,9 +416,15 @@ function render(el, ctx) {
   el.classList.add("no-root");
   assistant(app, el);
 
+  // The page opened first asks for its answer beside /v1/status rather than after it: one round trip less on a deep link.
+  const pre = new Map(), opened = Date.now();
+  const firstPath = FIRST[(ctx.path() || [])[0] || ""];
+  if (firstPath && !(ctx.path() || [])[1]) { const p = ctx.api(firstPath); p.catch(() => {}); pre.set(firstPath, p); }
   /** The app's API, keeping the queries each answer says it ran. */
   app.call = async (path, opts) => {
-    const j = await ctx.api(path, opts);
+    const early = !opts && pre.get(path);
+    if (early) pre.delete(path);
+    const j = early && Date.now() - opened < 10000 ? await early.catch(() => ctx.api(path, opts)) : await ctx.api(path, opts);
     if (j && Array.isArray(j.queries)) {
       app.queries.set(path.split("?")[0], j.queries);
       let n = 0, ms = 0;
@@ -495,6 +503,7 @@ function render(el, ctx) {
       setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
         h("div", { class: "small muted" }, st.error || "Creating 39 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute."));
       if (!setup.isConnected) body.replaceChildren(setup);
+      pre.clear();
       return;
     }
     if (!ready) { ready = true; show(ctx.path()); }

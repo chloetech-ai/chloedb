@@ -167,6 +167,14 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     assert_eq!(m["name"], "netops");
     let view = api.http.get(format!("{}/ui/view.js", api.url)).bearer_auth(TOKEN).send().await.unwrap().text().await.unwrap();
     assert!(view.contains("export default { render }"), "the view is a module the command center can load");
+    // A client that has the view asks again with its ETag and is told it is the same, with no body.
+    let r = api.http.get(format!("{}/ui/view.js", api.url)).bearer_auth(TOKEN).send().await.unwrap();
+    let tag = r.headers().get("etag").expect("the view has an ETag").to_str().unwrap().to_string();
+    let again = api.http.get(format!("{}/ui/view.js", api.url)).bearer_auth(TOKEN).header("if-none-match", &tag).send().await.unwrap();
+    assert_eq!(again.status(), 304, "the view is not sent again");
+    assert!(again.bytes().await.unwrap().is_empty());
+    let other = api.http.get(format!("{}/ui/view.js", api.url)).bearer_auth(TOKEN).header("if-none-match", "\"0\"").send().await.unwrap();
+    assert_eq!(other.status(), 200, "another version is sent whole");
 
     // The network it built, read the way the page reads it.
     let st = api.get("/v1/status").await;
