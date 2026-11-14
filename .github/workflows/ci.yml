@@ -828,7 +828,7 @@ jobs:
           workspaces: |
             chloedb-py
             chloedb-server
-          key: python
+          shared-key: python
       # The client tests run against a real server: on Linux the one job
       # server-bin built, on macOS (the nightly run) one built here.
       # chloedb-server's binary from job server-bin.
@@ -901,14 +901,14 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
-      # Job python's cache, read only: that job saves it.
+      # Job python's cache (the same shared-key), read only: that job saves it.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: false
           workspaces: |
             chloedb-py
             chloedb-server
-          key: python
+          shared-key: python
       - name: Build
         working-directory: chloedb-py
         run: |
