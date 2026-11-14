@@ -1885,7 +1885,7 @@ claude mcp add chloedb --env CHLOEDB_KEY=$CHLOEDB_KEY -- chloedb-server mcp --ur
 | `check_sql` | binds a statement against the tables without running it: what it would do, or why it is refused | none: bound in the server |
 | `execute` | `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`, `DROP`, rank profiles | `POST /v1/sql` |
 | `write` | rows as JSON operations, in one transaction | `POST /v1/write` |
-| `import` | many rows at once into a table: CSV, TSV or JSON lines as text (`data`), or objects (`rows`); answers how many it wrote and the columns it skipped | `POST /v1/import` |
+| `import` | many rows at once into a table: CSV, TSV or JSON lines as text (`data`), or objects (`rows`); `create: true` makes the table from the rows first (admin key); answers how many it wrote and the columns it skipped | `POST /v1/import` |
 | `get_rows` | rows by primary key | `POST /v1/kv/get` |
 | `json_paths` | the keys a `JSON` field holds, with counts, types and common values | `GET /v1/tables/<t>/paths` |
 | `list_models` | the embedding models a `VECTOR` field may name | `GET /v1/models` |
