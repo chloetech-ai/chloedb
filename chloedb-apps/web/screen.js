@@ -260,11 +260,19 @@ window.__sa_numbers = (() => {
     const scope = (extra) => ({ ...data, ...lets, data, state, set, refresh, app, ui, lib, h, svg, fmt: app.fmt, params: app.params, today: app.today(), ...(extra || {}) });
 
     // A handler: run it, then fetch the data again (writes show at once).
+    // What a tap was refused, by the handler's path: said under its button
+    // until the next tap, not only in a toast that is gone in seconds (a
+    // handler that catches the refusal itself still gets it said).
+    const refusals = new Map();
     const run = async (fn, args, where) => {
+      refusals.delete(where);
+      window.__sa_refusal = null;
       try {
         const r = typeof fn === 'function' ? fn(...args) : fn;
         if (r && typeof r.then === 'function') await r;
-      } catch (e) { if (!(e && e.refused)) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); }
+      } catch (e) { if (!(e && e.refused)) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message; }
+      if (window.__sa_refusal) refusals.set(where, String(window.__sa_refusal));
+      window.__sa_refusal = null;
       await refresh();
     };
     const handler = (v, s, where) => {
@@ -448,7 +456,8 @@ window.__sa_numbers = (() => {
       } }, T(b.button, s, path));
       const who = rowName(s.__row);
       if (who && btn.textContent.trim().length <= 24) btn.setAttribute('aria-label', `${btn.textContent.trim() || 'Open'}: ${who}`);
-      return btn;
+      const said = refusals.get(`${path}.do`);
+      return said ? h('div', { class: 'col btn-said' }, btn, h('p', { class: 'refused', role: 'alert' }, said)) : btn;
     }
 
     // A form keeps its element (and what is typed) across redraws; it is made
@@ -563,6 +572,7 @@ window.__sa_numbers = (() => {
         Object.assign(row, val(b.set || {}, cur, `${path}.set`));
         for (const f of fields) if (f.required && (row[f.name] === null || row[f.name] === '')) { app.toast(`${f.label || human(f.name)} is needed`); return; }
         saveBtn.disabled = true;
+        el.querySelector(':scope > .refused')?.remove();
         try {
           const stored = editing && editing.id ? await app.update(tableName, editing.id, row) : await app.insert(tableName, row);
           entry.touched = 0;
@@ -571,7 +581,12 @@ window.__sa_numbers = (() => {
           if (state[`__fold:${path}`]) set({ [`__fold:${path}`]: false });
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
           await run(typeof after === 'function' ? after : null, [stored], `${path}.after`);
-        } catch (err) { app.toast(err.message); report(fail(`${path} (${tableName})`, err)); } finally { saveBtn.disabled = false; }
+        } catch (err) {
+          app.toast(err.message);
+          // said in the form too, which keeps what was typed, so it can be put right
+          el.append(h('p', { class: 'refused', role: 'alert' }, String(err.message || err)));
+          if (!(err && err.refused)) report(fail(`${path} (${tableName})`, err));
+        } finally { saveBtn.disabled = false; }
       } }, wide ? [] : fields.map(make));
       if (wide) {
         // Each section (the fields after a {"section"} heading, or all of
@@ -620,7 +635,7 @@ window.__sa_numbers = (() => {
       const n = num(v);
       if (n == null) return v == null ? '' : String(v);
       if (!whole || !Number.isInteger(n)) return app.fmt.money(n);
-      try { return n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
+      try { return n.toLocaleString(undefined, { style: 'currency', currency: (window.__SA && window.__SA.currency) || 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
     };
     const FORMAT = {
       date: (v) => app.fmt.date(v), datetime: (v) => app.fmt.datetime(v), time: (v) => app.fmt.time(v), ago: (v) => app.fmt.ago(v),

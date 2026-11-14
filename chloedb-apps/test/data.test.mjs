@@ -2,7 +2,7 @@
 // figures a build checks (engine/data.mjs). No server and no model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn } from '../engine/data.mjs';
+import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn, currencyOf } from '../engine/data.mjs';
 
 const REQUEST = `Here is my sales workbook.
 
@@ -245,4 +245,12 @@ test('figures: screen queries checked against imported rows in ChloeDB', async (
   } finally {
     child.kill();
   }
+});
+
+test("an app's currency: its sheets' money first, then what was asked", () => {
+  assert.equal(currencyOf([{ columns: [{ name: 'price', currency: 'GBP' }] }], 'prices in $'), 'GBP');
+  assert.equal(currencyOf([], 'a shop, prices £4 each'), 'GBP');
+  assert.equal(currencyOf([], 'quote it in euros'), 'EUR');
+  assert.equal(currencyOf([], 'costs $5'), 'USD');
+  assert.equal(currencyOf([], 'a habit tracker'), null);
 });

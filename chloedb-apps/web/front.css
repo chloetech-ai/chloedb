@@ -451,3 +451,7 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
   .fp-card.dated .fp-date { width: 74px; }
   .fp-date-d { font-size: 34px; }
 }
+
+/* what is no longer on offer says so: the chip in the danger tone, the card quieter */
+.fp-chip.out { background: color-mix(in srgb, #c0352b 12%, var(--card)); color: #a52a21; }
+.fp-card.out .fp-price, .fp-card.out h3 { opacity: .6; }

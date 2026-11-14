@@ -56,7 +56,11 @@
       const p = pending.get(m.id);
       if (!p) return;
       pending.delete(m.id);
-      if (m.error !== undefined) p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}));
+      if (m.error !== undefined) {
+        // a rule's refusal ("Sorry, only 6 left") is kept for the button whose tap caused it (screen.js)
+        if (m.refused) window.__sa_refusal = m.error;
+        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}));
+      }
       else p.resolve(m.value);
     } else if (m.kind === 'design') {
       // A design is a block of CSS variables: swapping it redraws nothing.
@@ -112,7 +116,7 @@
     time(v) { return v ? asDate(v).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; },
     datetime(v) { return v ? `${fmt.date(v)}, ${fmt.time(v)}` : ''; },
     number(n) { return n === null || n === undefined ? '' : Number(n).toLocaleString(); },
-    money(n, currency = 'USD') { return n === null || n === undefined ? '' : Number(n).toLocaleString(undefined, { style: 'currency', currency }); },
+    money(n, currency = SA.currency || 'USD') { return n === null || n === undefined ? '' : Number(n).toLocaleString(undefined, { style: 'currency', currency }); },
   };
 
   // Files and map tiles come from the engine itself, by URL: the frame's
@@ -158,6 +162,10 @@
     // people: one account for every app on this engine
     me: () => rpc('me', []),
     signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]),
+    // pay({table, id, description, email} | {amount, description}): a card
+    // payment on a hosted page; resolves to {url, mode, amount, currency}.
+    // Open the url from a tap (window.open(url)); the app never sees a card.
+    pay: (opts) => rpc('pay', [opts || {}]),
     signUp: (fields) => rpc('signUp', [fields || {}]),
     signOut: () => rpc('signOut', []),
     people: () => rpc('people', []),

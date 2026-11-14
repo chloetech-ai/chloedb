@@ -13,6 +13,7 @@ import tls from 'node:tls';
 import os from 'node:os';
 import path from 'node:path';
 import { newId, physical } from './store.mjs';
+import { currencyOf } from './data.mjs';
 import { rulesOf } from './access.mjs';
 import { personName } from './engine.mjs';
 
@@ -310,6 +311,69 @@ export class Services {
 
   async outbox(appId, limit = 50) {
     return this.db.query(`SELECT id, recipients, subject, body, status, error, created FROM sa_outbox WHERE app = :a ORDER BY created DESC LIMIT ${Number(limit)}`, { a: appId });
+  }
+
+  // ---- card payments
+  //
+  // app.pay({table, id, amount, description, email}) asks for a payment of a
+  // row (an order): a hosted payment page at /pay/<id> takes it, so the app
+  // never sees card details. With no card provider connected the page is in
+  // test mode: it says so, asks for no card, and a tap marks the payment
+  // paid, so a shop works end to end before its owner connects a provider.
+  // The amount is the row's own total (or amount, or price times qty) when
+  // it has one, never only what a page says.
+  async pay(appId, req = {}) {
+    let amount = Number(req.amount);
+    const table = req.table ? String(req.table) : null;
+    const refId = req.id !== undefined && req.id !== null ? String(req.id) : null;
+    if (table && refId) {
+      const spec = await this.engine.tableSpec(appId, table);
+      const db = await this.engine.dbOf(appId);
+      const [row] = await db.get(physical(appId, spec.name), [refId]);
+      if (!row) throw err(`pay: no row ${refId} in ${table}`, 404);
+      const n = (k) => (row[k] === null || row[k] === undefined || row[k] === '' ? null : Number(row[k]));
+      const own = n('total') ?? n('amount') ?? (n('price') !== null ? n('price') * (n('qty') ?? n('quantity') ?? 1) : null);
+      if (own !== null && Number.isFinite(own)) amount = own;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) throw err('pay: give the amount (or the row it pays for, with a total)');
+    if (amount > 100000) throw err('pay: at most 100,000 in one payment');
+    const currency = String(req.currency || (await this.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], (await this.store.getApp(appId).catch(() => null))?.description) || 'USD').toUpperCase().slice(0, 3);
+    const id = newId(16);
+    const doc = { id, app: appId, amount: Math.round(amount * 100) / 100, currency, description: String(req.description || '').slice(0, 300), ref_table: table || '', ref_id: refId || '',
+      email: String(req.email || '').slice(0, 200), mode: 'test', status: 'open' };
+    await this.db.write([{ op: 'insert', table: 'sa_payments', doc }]);
+    this.store.track(appId, 'action', '', 'payment asked').catch(() => {});
+    return { id, url: `/pay/${id}`, mode: doc.mode, amount: doc.amount, currency };
+  }
+
+  async payment(id) {
+    const [row] = await this.db.get('sa_payments', [String(id)]);
+    return row || null;
+  }
+
+  // The payer paid (in test mode, a tap on the page): the payment is paid and
+  // the row it pays for says so (its status, or paid, when it has one).
+  async paid(id) {
+    const p = await this.payment(id);
+    if (!p) throw err('no such payment', 404);
+    if (p.status === 'paid') return p;
+    const done = { ...p, status: 'paid', paid: new Date().toISOString() };
+    await this.db.write([{ op: 'upsert', table: 'sa_payments', doc: done }]);
+    if (p.ref_table && p.ref_id) {
+      try {
+        const spec = await this.engine.tableSpec(p.app, p.ref_table);
+        const cols = new Map((spec.columns || []).map((c) => [c.name, c.type]));
+        const fields = {};
+        if (cols.has('status')) fields.status = 'paid';
+        if (cols.get('paid') === 'bool') fields.paid = true;
+        if (Object.keys(fields).length) await this.engine.update(p.app, p.ref_table, p.ref_id, fields, {});
+      } catch (e) { this.log(`payment ${id}: ${e.message}`); }
+    }
+    return done;
+  }
+
+  async payments(appId, limit = 50) {
+    return this.db.query(`SELECT id, amount, currency, description, ref_table, ref_id, mode, status, paid, created FROM sa_payments WHERE app = :a ORDER BY created DESC LIMIT ${Number(limit)}`, { a: appId });
   }
 
   // ---- places

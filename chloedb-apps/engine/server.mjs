@@ -32,6 +32,7 @@ import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
 import { Scheduler } from './schedule.mjs';
 import { ensureDesigns } from './designs.mjs';
+import { currencyOf } from './data.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
@@ -498,6 +499,26 @@ async function body(req) {
   try { return JSON.parse(text); } catch { throw Object.assign(new Error('body is not JSON'), { status: 400 }); }
 }
 
+// The hosted payment page: the amount, what it is for, and in test mode a
+// plain statement that no card is charged and none is asked for.
+const html = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function payPage(p, shop) {
+  let amount = `${p.amount} ${p.currency}`;
+  try { amount = Number(p.amount).toLocaleString('en-GB', { style: 'currency', currency: p.currency }); } catch { /* as it is */ }
+  const paid = p.status === 'paid';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pay ${html(shop)}</title>
+<style>:root{color-scheme:light dark}body{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#f4f4f6;color:#16161a;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
+.card{background:#fff;border-radius:18px;box-shadow:0 20px 60px -30px rgba(0,0,0,.35);padding:28px;max-width:420px;width:100%}h1{font-size:15px;margin:0;color:#666;font-weight:600}
+.amt{font-size:40px;font-weight:800;letter-spacing:-.02em;margin:6px 0 4px}.what{color:#444;margin:0 0 18px}button{width:100%;min-height:52px;border:0;border-radius:14px;background:#16161a;color:#fff;font:inherit;font-weight:700;font-size:17px;cursor:pointer}
+.test{margin:16px 0 0;padding:12px 14px;border-radius:12px;background:#fff7e0;color:#6b4a00;font-size:14px}.ok{font-size:20px;font-weight:700;color:#18794e;margin:8px 0}.lock{color:#777;font-size:13px;margin-top:14px}
+@media (prefers-color-scheme:dark){body{background:#0e0e11;color:#eee}.card{background:#1a1a1f}.what{color:#bbb}button{background:#fff;color:#111}.test{background:#3a2e0a;color:#ffd98a}}</style></head>
+<body><main class="card"><h1>${html(shop)}</h1><div class="amt">${html(amount)}</div><p class="what">${html(p.description || 'Your order')}</p>
+${paid ? `<p class="ok" role="status">Paid. Thank you.</p><p class="what">You can close this page and go back to ${html(shop)}.</p>`
+    : `<form method="post"><button type="submit">Pay ${html(amount)} by card</button></form>`}
+${p.mode === 'test' ? `<p class="test"><b>Test mode.</b> No card is charged and no card details are asked for here. The shop's owner connects a card payment provider to take real payments.</p>` : ''}
+<p class="lock">A secure payment page. ${html(shop)} never sees your card details.</p></main></body></html>`;
+}
+
 function send(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(data));
@@ -549,7 +570,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: view.app,
+    app: { ...view.app, currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description) },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -593,7 +614,7 @@ async function publicState(appId) {
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
-    app: { id: appId, name: view.app.name },
+    app: { id: appId, name: view.app.name, currency: (await engine.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description) },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
@@ -794,6 +815,10 @@ const routes = [
       signals: (await evolver.state(id, view).catch(() => ({ signals: [] }))).signals };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
+  // A card payment for a row (an order): anyone using the app may ask, the
+  // amount is the row's; the payer pays on the hosted page (/pay/<id>).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/pay$/, async (b, [id]) => ({ payment: await services.pay(id, b) })],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/payments$/, async (b, [id]) => ({ payments: await services.payments(id), mode: 'test', note: 'Card payments are in test mode: no card is charged. Connect a card payment provider to take real payments.' })],
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
   // A published app's visitors name no secret, header or method of their own
@@ -1009,6 +1034,16 @@ const server = http.createServer(async (req, res) => {
     // Only this page may call the API: a page on another site could otherwise
     // post to localhost.
     if (req.method === 'POST' && !login.sameOrigin(req)) return send(res, 403, { error: 'cross-origin request refused' });
+    // A payment's hosted page (services.pay): the payer pays here, never in
+    // the app, so the app never sees a card. In test mode no card is asked.
+    if ((m = url.pathname.match(/^\/pay\/([a-z0-9]{8,32})$/)) && (req.method === 'GET' || req.method === 'POST')) {
+      let p = await services.payment(m[1]);
+      if (!p) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No such payment.'); }
+      if (req.method === 'POST') p = await services.paid(m[1]);
+      const appRow = await engine.store.getApp(p.app).catch(() => null);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(payPage(p, appRow?.name || 'This shop'));
+    }
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
       const bytes = await rawBody(req, MAX_FILE);

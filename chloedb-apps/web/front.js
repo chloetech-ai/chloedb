@@ -328,7 +328,10 @@
           it.eyebrow ? h('p', { class: 'fp-eyebrow small' }, String(it.eyebrow)) : null,
           it.title ? h('h3', null, rich(it.title)) : null,
           it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
+          // a card without a photo says its badge in its words ("Sold out", "Only 2 left")
+          !(has || row) && it.badge ? h('span', { class: `fp-chip${!it.action && it.price !== undefined ? ' out' : ''}` }, String(it.badge)) : null,
           it.price !== undefined || it.action ? h('div', { class: 'fp-card-foot' }, it.price !== undefined ? h('span', { class: 'fp-price' }, String(it.price)) : null, it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0) : null) : null));
+      if (!it.action && it.badge && it.price !== undefined) el.classList.add('out');
       if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }
       return el;
     };

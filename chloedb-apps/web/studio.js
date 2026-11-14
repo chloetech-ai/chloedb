@@ -1056,7 +1056,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
     : gate ? `${noClose(view.code)}\n;{ const __inner = render; render = async (root, app) => { const me = await Promise.resolve(app.me()).catch(() => null); if (!me) { root.replaceChildren(window.__sa_gateView(app, ${gate})); return; } return __inner(root, app); }; }`
       : noClose(view.code);
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1760,6 +1760,7 @@ window.addEventListener('message', async (e) => {
         case 'addToCompany': value = (await api('POST', `${base}/companies/members`, { company: a, email: b, role: c || 'member' })).member; break;
         case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
         case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
+        case 'pay': { const pmt = (await api('POST', `${base}/pay`, a)).payment; value = { ...pmt, url: location.origin + pmt.url }; break; }
         case 'geocode': value = (await api('GET', `/api/geocode?q=${encodeURIComponent(a || '')}`)).places; break;
         case 'ask': value = (await api('POST', `${base}/ask`, { prompt: a, opts: b || {} })).answer; break;
         case 'fetch': value = (await api('POST', `${base}/fetch`, { url: a, opts: b || {} })).page; break;

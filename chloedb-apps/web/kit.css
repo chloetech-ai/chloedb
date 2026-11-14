@@ -767,3 +767,7 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
    beside it take the room, so the right part lines up down a list */
 :is(.item, .row) > .row:has(> .right) { flex: 1 1 auto; min-width: 0; }
 .row:has(> .right) > .col { flex: 1 1 0; min-width: 0; }
+
+/* what a tap was refused, said under its button */
+.btn-said { gap: 6px; align-items: flex-start; }
+.refused { margin: 0; color: var(--bad); font-weight: 600; font-size: calc(var(--text) * .95); }

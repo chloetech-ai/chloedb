@@ -68,6 +68,11 @@ const SYSTEM_TABLES = {
   sa_designs: `CREATE TABLE sa_designs (id KEYWORD PRIMARY KEY, designs TEXT, chosen INT, source KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_outbox: `CREATE TABLE sa_outbox (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, recipients KEYWORD[], subject TEXT, body TEXT,
     status KEYWORD, error TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Card payments an app asked for (services.mjs pay): what, how much, the
+  // row it pays for, and whether it was paid. Never a card's details: the
+  // payer pays on a hosted page.
+  sa_payments: `CREATE TABLE sa_payments (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, amount FLOAT, currency KEYWORD, description TEXT, ref_table KEYWORD, ref_id KEYWORD,
+    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
 
 // Columns added to system tables after they were first made: a store made
@@ -266,7 +271,7 @@ export class Store {
       }
     }
     let rows = 0;
-    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox']) {
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox', 'sa_payments']) {
       for (;;) {
         let ids;
         try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }

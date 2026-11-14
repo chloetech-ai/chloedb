@@ -54,6 +54,19 @@ export function parseAttached(text) {
 // ---- types of a sheet's columns
 
 const CURRENCY = { '£': 'GBP', '$': 'USD', '€': 'EUR', '¥': 'JPY', '₹': 'INR' };
+// The currency an app's money is in: its sheets' money columns first, then
+// what the request says (£12, "in euros", GBP), else null (the kit's default).
+export function currencyOf(sheets = [], text = '') {
+  const col = (sheets || []).flatMap((s) => s.columns || []).find((c) => c && c.currency);
+  if (col) return col.currency;
+  const t = String(text || '');
+  const sym = t.match(/[£€¥₹]/);
+  if (sym) return CURRENCY[sym[0]];
+  const word = t.match(/\b(GBP|EUR|USD|JPY|INR|CHF|CAD|AUD|NZD|SEK|NOK|DKK|MXN|BRL)\b/) || t.match(/\b(pounds?|sterling|euros?|yen|rupees?)\b/i);
+  if (!word) return /\$\s?\d/.test(t) ? 'USD' : null;
+  const w = word[1].toLowerCase();
+  return /^pound|sterling/.test(w) ? 'GBP' : /^euro/.test(w) ? 'EUR' : w === 'yen' ? 'JPY' : /^rupee/.test(w) ? 'INR' : word[1].toUpperCase();
+}
 const MONEY_RE = /^\s*(-)?\s*([£$€¥₹])?\s*(-)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([£$€¥₹]|EUR|USD|GBP)?\s*$/i;
 const NUM_RE = /^\s*-?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?\s*$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;

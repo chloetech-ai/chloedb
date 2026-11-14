@@ -39,7 +39,7 @@ export function keysIn(code) {
   return out;
 }
 import { madeUp, tidyTitle } from './taste.mjs';
-import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn } from './data.mjs';
+import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn, currencyOf } from './data.mjs';
 import { ART_DOC, TASTE_DOC, LAYOUT_NAMES, LAYOUT_SHORT, parseLayout } from './quality.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -127,7 +127,7 @@ app in a view (every call returns a Promise):
 - app.track(action, detail): records something meaningful the person did (app.track('filter', 'status=done'), app.track('search', q)). Opening a view, inserts, updates and removes are recorded already. What is recorded is how the app learns what to offer next.
 - app.toast(text): a short message at the bottom
 - app.download(name, text, type = 'text/csv') saves a file the person keeps; app.csv(rows, columns) makes its CSV text (columns: names or {key, label}). A list's CSV needs neither: its EXPORT clause.
-- app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.money(n, currency='USD')
+- app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.money(n, currency=the app's own, from its data or request)
 - app.today(): today's date as "YYYY-MM-DD"; app.now(): the time as ISO text
 
 The frame has no network: fetch, imports, external scripts, fonts and stylesheets are blocked, and so are localStorage and cookies (keep state in a table, or in variables while the view is open). confirm() and prompt() work. Images may load from https URLs the data holds, and from files the app stores (app.fileUrl(id), below).
@@ -173,6 +173,7 @@ returning an object of functions. Helpers get no app and no page (no app.*, docu
 Every app gets these from the runtime. In views and components each call returns a Promise; the ones marked (functions too) also work in functions, where they return directly.
 - People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
 - Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
+- Card payments. app.pay({table, id, description, email}) asks for a card payment of a row (an order, a booking): the amount is the row's own (its total, amount, or price times qty), in the app's currency, and it resolves to {url, mode, amount, currency}. The payer pays on that hosted page, opened from a tap (a "Pay by card" button: window.open(url)); the app never sees or stores card details, so never add card fields. When it is paid the row's status becomes 'paid' (or its paid column true). Until the owner connects a card provider the page is in test mode and says so. A shop or booking asked to take cards uses it: place the order (a rule that checks and lowers the stock), then app.pay for the new row, then the button.
 - Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
 - Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
 - A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line.
@@ -190,7 +191,7 @@ A function's code defines
 a plain synchronous function: app calls return their results directly (no async, no await, no Promises). app in a function:
 - app.sql(sql, params) -> rows; app.insert(table, row) -> row; app.update(table, id, fields) -> row; app.remove(table, id)
 - app.call(slug, input); app.now() -> ISO time; app.log(...)
-- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.geocode(address), app.ask(prompt, opts), app.fetch(url, opts): the services above
+- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.pay({table, id, description}), app.geocode(address), app.ask(prompt, opts), app.fetch(url, opts): the services above
 It returns any JSON value. It runs in QuickJS with a 10 s limit (time spent waiting for app.ask and app.fetch does not count), no network but app.fetch, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
 
 A function may declare a trigger, "on": {"table": "tasks", "event": "insert"} (or "update" or "delete"): it then runs after each such write with input {row, table, event}, where row is the row as stored (the old row for delete). Writes a trigger makes run their own triggers, at most 3 deep. Use a trigger when something must happen whenever rows change (keep a counter, log history, fill a derived column); use a plain function that views call for work on demand.
@@ -1913,6 +1914,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     if (v.screen && typeof v.screen === 'object' && honourSize(v.screen, request.text)) code[v.slug] = JSON.stringify(v.screen, null, 1);
   }
   progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
+  // The app's currency, once: from its sheets' money or what was asked (£,
+  // euros), so every price reads in it (the kit's app.fmt.money default).
+  if (!(await store.setting(appId, 'currency').catch(() => null))) {
+    const cur = currencyOf(sheets, `${request.text || ''}\n${view.app?.description || ''}`);
+    if (cur) await store.putSetting(appId, 'currency', cur).catch(() => {});
+  }
   // The photos the screens and example rows name are searched for while the
   // tables are made and the queries run (engine/photos.mjs).
   const photoOpts = photoOptions(engine, appId, plan, view);
