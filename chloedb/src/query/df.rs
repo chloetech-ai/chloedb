@@ -348,6 +348,32 @@ struct Lower<'a, 'r> {
 /// the stack), while the operators take a millisecond for it.
 const MAX_DEPTH: usize = 48;
 
+/// The most conditions an `AND` or `OR` may join to be lowered here,
+/// which joins them as a balanced tree ([`balanced`]): an `IN` per value
+/// of `tags @> :list`, or the conditions of a long `WHERE` over joined
+/// rows, are one node of the plan with as many children.
+const MAX_TERMS: usize = 1024;
+
+/// `cs` joined by AND (or OR) as a balanced tree, as deep as the log of
+/// how many there are: joined one after another, they would nest as deep
+/// as there are conditions, past what [`MAX_DEPTH`] counts, and DataFusion
+/// walks the tree recursively. `None` for none.
+fn balanced(mut cs: Vec<DExpr>, and: bool) -> Option<DExpr> {
+    while cs.len() > 1 {
+        let mut next = Vec::with_capacity(cs.len().div_ceil(2));
+        let mut it = cs.into_iter();
+        while let Some(a) = it.next() {
+            next.push(match it.next() {
+                Some(b) if and => a.and(b),
+                Some(b) => a.or(b),
+                None => a,
+            });
+        }
+        cs = next;
+    }
+    cs.pop()
+}
+
 impl<'a> Lower<'a, '_> {
     fn ran(&mut self) -> Ran {
         Ran { leaves: std::mem::take(&mut self.ran), steps: std::mem::take(&mut self.prof) }
@@ -2037,16 +2063,13 @@ impl<'a> Lower<'a, '_> {
             Expr::Not(x) => not(self.cond(x, cols, schema)?),
             Expr::And(xs) | Expr::Or(xs) => {
                 let and = matches!(e, Expr::And(_));
-                let mut out: Option<DExpr> = None;
-                for x in xs {
-                    let c = self.cond(x, cols, schema)?;
-                    out = Some(match out {
-                        None => c,
-                        Some(o) if and => o.and(c),
-                        Some(o) => o.or(c),
-                    });
+                // The operators evaluate a wide AND or OR in a loop; DataFusion
+                // walks each of its levels again and again.
+                if xs.len() > MAX_TERMS {
+                    return no(format!("an {} of more than {MAX_TERMS} conditions", if and { "AND" } else { "OR" }));
                 }
-                out.unwrap_or(lit(and))
+                let cs = xs.iter().map(|x| self.cond(x, cols, schema)).collect::<R<Vec<_>>>()?;
+                balanced(cs, and).unwrap_or(lit(and))
             }
             Expr::IsNull(x) => {
                 let x = self.expr(x, cols, schema)?;

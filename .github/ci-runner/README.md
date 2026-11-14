@@ -29,7 +29,10 @@ run's jobs, not set up, or does not come up in time, the jobs run on
 
 ## Switching it on
 
-It needs two repository secrets (Settings, Secrets and variables, Actions):
+It needs two secrets in the environment `ci-runner` (Settings,
+Environments, `ci-runner`; set its deployment branches to `main` alone, and
+keep neither secret at the repository's level, where a branch's copy of
+ci.yml could read it):
 
 - `DIGITALOCEAN_TOKEN`: a DigitalOcean API token with write access. A
   custom-scoped token needs droplets, snapshots, block storage (volumes),
@@ -37,6 +40,14 @@ It needs two repository secrets (Settings, Secrets and variables, Actions):
 - `CI_RUNNER_ADMIN_TOKEN`: a fine-grained GitHub token for this repository
   only, with the permission **Administration: read and write**: it makes the
   runners' registration tokens and reads whether they are busy.
+
+Only main's code reads them. A run of main (a push, the nightly run, a run
+by hand) makes the droplet in ci.yml's job `runner`. Any other run, a pull
+request's, the merge queue's or a tag's, has no secret: ci-runner.yml's job
+`place`, which GitHub runs from main when the run is requested, makes the
+droplet for it once its job `runner` starts, and posts the label as the
+commit status `ci-runner`, which that job waits for (2 minutes for the
+first status, 7 for the label, then GitHub's runners).
 
 Then run the workflow "CI runner" by hand with `image` once, which builds
 the first snapshot (about 15 minutes, a few cents).

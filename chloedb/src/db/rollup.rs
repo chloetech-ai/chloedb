@@ -151,7 +151,9 @@ impl Db {
             return Err(Error::Query(format!("{} is a system table", base.table)));
         }
         self.sql_with(&r.create_table_sql(&base)?, &Params::new(), opts)?;
-        if let Err(e) = self.sql_with(&rollup::function_sql(r), &Params::new(), opts) {
+        // Kept with the mark of its layout, which 0.3.2 refuses by name.
+        let kept = Rollup { statement: rollup::marked(&r.statement), ..r.clone() };
+        if let Err(e) = self.sql_with(&rollup::function_sql(&kept), &Params::new(), opts) {
             let _ = self.drop_tables(&[&r.name], Default::default());
             return Err(e);
         }

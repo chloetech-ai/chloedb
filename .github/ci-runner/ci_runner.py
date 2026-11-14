@@ -9,6 +9,15 @@ it and destroyed when CI has been idle, so it bills only while CI runs.
                         (making the droplet, and waiting for it to come up,
                         when there is none). It never fails: whatever goes wrong,
                         the jobs run on GitHub's runners as before.
+  ci_runner.py place    ci-runner.yml's job `place`, which runs main's code
+                        with the secrets: `want` for a run that is not
+                        main's (a pull request's, the merge queue's, a
+                        tag's), posted as commit status `ci-runner` on the
+                        run's commit, for that run's job `runner`, which
+                        gets no secret.
+  ci_runner.py placed   ci.yml's job `runner` outside main: waits for
+                        `place`'s status and prints `label=<runs-on>`, or
+                        GitHub's label if none comes.
   ci_runner.py reap     ci-runner.yml: destroys the droplet once no CI run
                         has been queued or running for --idle seconds, or
                         once it is older than --max-age, or when it came up
@@ -22,6 +31,9 @@ The state between droplets (cargo's registry, the build folders, the
 runners' work folders) lives on the volume `ci-runner-cache`, attached to
 each new droplet: a powered-off droplet bills as much as a running one, a
 volume a tenth of a cent an hour per 10 GB.
+
+The two secrets are in the environment `ci-runner`, which only main may
+use: a branch's copy of ci.yml runs with neither (audit 4, X-I2).
 
 Environment: DIGITALOCEAN_TOKEN (the DigitalOcean API), GH_ADMIN_TOKEN (a
 token with this repository's Administration permission, read and write,
@@ -206,6 +218,69 @@ def want(args):
         time.sleep(10)
 
 
+STATUS = "ci-runner"
+
+
+def run_url():
+    """The CI run and attempt `place` places, as a status's target_url."""
+    return f"https://github.com/{REPO}/actions/runs/{env('RUN_ID')}/attempts/{env('RUN_ATTEMPT', '1')}"
+
+
+def post(state, description):
+    gh(f"/repos/{REPO}/statuses/{env('RUN_SHA')}", "POST", {"state": state, "context": STATUS, "description": description[:140], "target_url": run_url()})
+
+
+def place(args):
+    """Waits for the CI run's job `runner` to start (it starts when the run
+    builds the engine; skipped, the run needs no droplet), then posts where
+    its heavy jobs run."""
+    post("pending", "placing the heavy jobs")
+    deadline = time.time() + args.patience
+    while True:
+        jobs = gh(f"/repos/{REPO}/actions/runs/{env('RUN_ID')}/attempts/{env('RUN_ATTEMPT', '1')}/jobs?per_page=100").get("jobs", [])
+        job = next((j for j in jobs if j["name"] == "runner"), None)
+        if job and job["status"] == "completed":
+            post("success", f"label={FALLBACK}: the run has no heavy jobs")
+            return
+        if job and job["status"] == "in_progress":
+            break
+        if time.time() > deadline:
+            post("success", f"label={FALLBACK}: the run's job runner did not start")
+            return
+        time.sleep(10)
+    try:
+        label, why = want(args)
+    except Exception as e:  # never fail CI over its runner
+        label, why = FALLBACK, f"error: {e}"
+    log(f"runs-on: {label} ({why})")
+    post("success", f"label={label}: {why}")
+
+
+def placed(args):
+    """`place`'s label for this run and attempt, once it posted it, or
+    GitHub's: when no status came within --start seconds (main's ci-runner.yml
+    did not run for it), or no final one within --wait."""
+    want_url = run_url()
+    started = time.time()
+    while True:
+        try:
+            ss = gh(f"/repos/{REPO}/commits/{env('RUN_SHA')}/statuses?per_page=100")
+        except Exception as e:  # never fail CI over its runner
+            return FALLBACK, f"error: {e}"
+        mine = [x for x in ss if x.get("context") == STATUS and x.get("target_url") == want_url]
+        done = next((x for x in mine if x["state"] == "success"), None)
+        if done:
+            label, _, why = done["description"].partition(": ")
+            label = label.removeprefix("label=")
+            return (label if label in (LABEL, FALLBACK) else FALLBACK), why or "placed"
+        waited = time.time() - started
+        if not mine and waited > args.start:
+            return FALLBACK, f"no {STATUS} status in {args.start} s (ci-runner.yml's job place did not run)"
+        if waited > args.wait:
+            return FALLBACK, f"no runner placed in {args.wait} s"
+        time.sleep(10)
+
+
 def ci_activity():
     """(busy, seconds since the last CI run ended)."""
     busy = False
@@ -313,13 +388,21 @@ def main():
     r.add_argument("--max-age", type=int, default=12 * 3600)
     r.add_argument("--boot", type=int, default=360)
     r.add_argument("--patience", type=int, default=1200, help="seconds to keep checking")
+    pl = sub.add_parser("place")
+    for a, kw in [("--wait", dict(type=int, default=240)), ("--boot", dict(type=int, default=360)), ("--limit", dict(type=int, default=60)), ("--headroom", dict(type=int, default=6))]:
+        pl.add_argument(a, **kw)
+    pl.add_argument("--force", action="store_true")
+    pl.add_argument("--patience", type=int, default=600, help="seconds to wait for the run's job runner to start")
+    pd = sub.add_parser("placed")
+    pd.add_argument("--start", type=int, default=120, help="seconds to wait for place's first status")
+    pd.add_argument("--wait", type=int, default=420, help="seconds to wait for its last")
     sub.add_parser("status")
     i = sub.add_parser("image")
     i.add_argument("--toolchain", default="1.100.0")
     args = p.parse_args()
-    if args.cmd == "want":
+    if args.cmd in ("want", "placed"):
         try:
-            label, why = want(args)
+            label, why = want(args) if args.cmd == "want" else placed(args)
         except Exception as e:  # never fail CI over its runner
             label, why = FALLBACK, f"error: {e}"
         log(f"runs-on: {label} ({why})")
@@ -327,6 +410,8 @@ def main():
         if env("GITHUB_STEP_SUMMARY"):
             with open(env("GITHUB_STEP_SUMMARY"), "a") as f:
                 f.write(f"Heavy jobs run on **{label}**: {why}.\n")
+    elif args.cmd == "place":
+        place(args)
     elif args.cmd == "status":
         status(args)
     elif args.cmd == "reap":
