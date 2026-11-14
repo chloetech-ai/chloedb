@@ -184,8 +184,10 @@ impl Rollup {
     pub fn create_table_sql(&self, base: &Schema) -> Result<String> {
         use super::sql::ident;
         let cols = self.check(base)?;
-        let mut parts = vec![format!("{KEY} KEYWORD PRIMARY KEY")];
-        parts.extend(cols.iter().map(|(c, t)| format!("{} {t}", ident(c))));
+        // Queries read the columns, never the stored rows: keeping no copy
+        // of each row halves the rollup.
+        let mut parts = vec![format!("{KEY} INT PRIMARY KEY OPTIONS(stored = false)")];
+        parts.extend(cols.iter().map(|(c, t)| format!("{} {t} OPTIONS(stored = false)", ident(c))));
         let mut opts = vec![format!("cluster_by = '{}'", self.bucket.replace('\'', "''"))];
         if let Some(s) = self.retain {
             opts.push(format!("retain = '{s} seconds'"));
@@ -205,6 +207,30 @@ impl Rollup {
             false => format!(" GROUP BY {}", self.keys.iter().map(|k| ident(k)).collect::<Vec<_>>().join(", ")),
         };
         format!("SELECT {} FROM {} WHERE {}{group}", items.join(", "), ident(&self.base), self.window_condition())
+    }
+
+    /// `date_bin` of the rollup's time to its buckets.
+    fn bin(&self) -> String {
+        format!("date_bin('{} microseconds', {})", self.width, super::sql::ident(&self.time))
+    }
+
+    /// The query that folds the buckets of `[:rollup_from, :rollup_to)` at
+    /// once: a row per bucket and group, the bucket, the groups' values,
+    /// then the aggregates.
+    pub fn fold_range_sql(&self) -> String {
+        use super::sql::ident;
+        let mut items = vec![format!("{} AS rollup_bin", self.bin())];
+        items.extend(self.keys.iter().map(|k| ident(k)));
+        items.extend(self.aggs.iter().map(|a| format!("{}({})", a.kind.sql(), a.field.as_deref().map_or("*".to_string(), ident))));
+        let mut group = vec!["rollup_bin".to_string()];
+        group.extend(self.keys.iter().map(|k| ident(k)));
+        format!("SELECT {} FROM {} WHERE {} GROUP BY {}", items.join(", "), ident(&self.base), self.window_condition(), group.join(", "))
+    }
+
+    /// The rows each bucket of `[:rollup_from, :rollup_to)` counts, a row
+    /// per bucket that has any.
+    pub fn bucket_counts_sql(&self) -> String {
+        format!("SELECT {} AS rollup_bin, COUNT(*) FROM {} WHERE {} GROUP BY rollup_bin", self.bin(), super::sql::ident(&self.base), self.window_condition())
     }
 
     /// The rows of `[:rollup_from, :rollup_to)` the rollup counts.

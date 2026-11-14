@@ -18,6 +18,7 @@ log_series_bench rollup DB 7                          # a rollup of a loaded tab
 | `baseline.jsonl` | main at f46bfb7f (the harness at 3a3003c9) |
 | `step1-windows.jsonl` | merges within windows of time for tables with `retain` (this branch) |
 | `step6-rollups.jsonl` | ingest with 1, 2 and 4 writers; rollups (this branch, on a91f4601 with the rollup changes uncommitted) |
+| `rollups-build-space.jsonl` | a rollup's first fold, refreshes and bytes on 20M lines, main at c08fd630 beside a day of buckets per query and integer keys (on c08fd630 with the change uncommitted), measured 2026-11-14 |
 
 All measured on 2026-11-13 on a cloud container: 4-core Intel Xeon @
 2.10GHz, 15 GB of RAM, release builds.
@@ -139,3 +140,27 @@ The first fold runs a query per bucket, about 29 ms each: folding many
 buckets in one query waits for `date_bin` in the columnar GROUP BY. The
 refresh after new lines is the first query over rows still in memory;
 repeated by hand in the same container it took 18 ms.
+
+### A day of buckets per query, and integer keys
+
+The first fold above ran a query per bucket. Now the counts and the fold
+each read a day of buckets (288 of 5 minutes) per query, through
+`date_bin` in the columnar GROUP BY, and a new rollup keys its rows with
+a number rather than text and keeps its columns unstored
+(`stored = false`): its queries read the columns only. On the synthetic
+20M lines over 30 days (748,995 rows of rollup, 8,644 buckets), the same
+database, one after the other:
+
+| | main at c08fd630 | this change |
+|---|---|---|
+| first fold, `CREATE ROLLUP`, seconds | 80.5 | 7.9 |
+| refresh, nothing new, seconds | 0.004 | 0.005 |
+| refresh after 50,000 new lines, seconds | 0.042 | 0.028 |
+| full refresh, every bucket compared, seconds | 2.29 | 0.25 |
+| rollup bytes, as flushed | 79.7 MB | 42.5 MB |
+| rollup bytes, merged | 66.5 MB (89 B a row) | 30.3 MB (40 B a row) |
+
+Of the 36 MB saved, most is the stored copy of each row; the rest is the
+text key (the bucket's microseconds and the group's values joined, now one integer).
+Compressing the rollup with zstd saved little more once rows were not
+stored. Rollups made before keep their text keys.
