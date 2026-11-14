@@ -132,16 +132,28 @@ jobs:
   # 4 minutes. A pull
   # request from a fork never gets it: the secrets are not passed to it,
   # and the runner's job-started hook refuses its jobs (job-started.sh).
+  #
+  # The secrets that make the droplet (DIGITALOCEAN_TOKEN, and
+  # CI_RUNNER_ADMIN_TOKEN, which has Administration on the repository) are
+  # in the environment `ci-runner`, which only main may use: a branch's
+  # copy of this file runs with neither (audit 4, X-I2). Main's runs (a
+  # push, the nightly, a run by hand) make the droplet here; any other run
+  # (a pull request's, the merge queue's, a tag's) waits for ci-runner.yml's
+  # job `place`, which runs main's code with the secrets and posts the
+  # label as the commit status `ci-runner`.
   runner:
     name: runner
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    # Reads how busy GitHub's runners are (the repository's runs and jobs).
+    timeout-minutes: 10
+    environment: ${{ github.ref == 'refs/heads/main' && 'ci-runner' || '' }}
+    # Reads how busy GitHub's runners are (the repository's runs and jobs),
+    # and outside main the status `place` posts.
     permissions:
       contents: read
       actions: read
+      statuses: read
     outputs:
       label: ${{ steps.want.outputs.label }}
     steps:
@@ -152,17 +164,25 @@ jobs:
         id: want
         env:
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          GH_ADMIN_TOKEN: ${{ secrets.CI_RUNNER_ADMIN_TOKEN }}
+          ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+          DIGITALOCEAN_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.DIGITALOCEAN_TOKEN || '' }}
+          GH_ADMIN_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.CI_RUNNER_ADMIN_TOKEN || '' }}
           CI_RUNNER: ${{ vars.CI_RUNNER }}
           CI_RUNNER_SIZE: ${{ vars.CI_RUNNER_SIZE }}
           CI_RUNNER_REGION: ${{ vars.CI_RUNNER_REGION }}
           CI_RUNNER_COUNT: ${{ vars.CI_RUNNER_COUNT }}
           CI_RUNNER_HOSTED_LIMIT: ${{ vars.CI_RUNNER_HOSTED_LIMIT }}
           GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ "$SAME_REPO" != true ]; then echo "label=ubuntu-latest" >> "$GITHUB_OUTPUT"; exit 0; fi
-          python3 .github/ci-runner/ci_runner.py want >> "$GITHUB_OUTPUT"
+          if [ "$ON_MAIN" = true ]; then
+            python3 .github/ci-runner/ci_runner.py want >> "$GITHUB_OUTPUT"
+          else
+            python3 .github/ci-runner/ci_runner.py placed >> "$GITHUB_OUTPUT"
+          fi
 
   # chloedb-server's release binary, built once for every job that runs it
   # (the smoke test, the Python and JavaScript packages, the guide's pages),
@@ -244,6 +264,9 @@ jobs:
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
     env: &test-env
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'chloedb' && '-C target-cpu=x86-64-v3' || '' }}
+      # On Linux, GitHub's runners and the on-demand one have Postgres, and
+      # tests/postgres.rs fails rather than skips without it (audit 4, X-I3).
+      CHLOEDB_TEST_POSTGRES_REQUIRED: ${{ matrix.crate == 'chloedb-server' && matrix.os == 'ubuntu-latest' && '1' || '' }}
     steps: &test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

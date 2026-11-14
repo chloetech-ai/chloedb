@@ -50,7 +50,11 @@ order. Auth changes: a connector's push key reads nothing, and
 - Rollups made from now on key their rows by number and keep their columns
   only, about 40 bytes a row; rollups made by 0.3.1 and 0.3.2 keep working
   as they are (`DROP ROLLUP` and `CREATE ROLLUP` again to get the smaller
-  table).
+  table). 0.3.2 cannot refresh a rollup made by 0.3.3, and refuses it by
+  name (below).
+- A statement that calls a stored function is held, written out, to the
+  depth (1,000 levels) and size (250,000 expressions) a statement's text
+  may have, and is refused past them with a 400 `query_invalid`.
 
 ### SQL and the engine
 
@@ -59,6 +63,8 @@ order. Auth changes: a connector's push key reads nothing, and
 - A short read-only statement can no longer stop the server. A chain of 250 `UNION ALL` queries (`INTERSECT` and `EXCEPT` at 260), a 990-term `'a' || 'a' || ...`, or a `GROUP BY` of a 990-term sum used to abort the process with a stack overflow, on a single server and on a coordinator, for any key that may read. Each `UNION`, `INTERSECT` or `EXCEPT` now counts eight levels of the 1,000 a statement may nest (so up to 125 queries joined), and set operations are planned along their chain instead of recursing down it. An expression nested more than 48 levels deep runs on ChloeDB's operators instead of DataFusion, which took seconds for it and then overflowed. A statement that nests deep is planned and run on a thread with 8 MiB of stack, whichever thread called it: the server's or an application's `Db::query` or `Db::sql`. Past the limit the answer is a 400 with `error_code` `query_invalid`: "the statement nests more than 1000 levels deep (... or more than 125 queries joined by UNION, INTERSECT or EXCEPT)". Through a coordinator, a plan too deep for the shard protocol's messages is a 400 `query_invalid` too. It used to be a 502, and the shard's copy was marked as failing (audit PRF-1).
 - Planning a statement stops at the request's deadline and when the client goes away, with a 504 `deadline_exceeded`. A statement longer than 2 KiB is planned on a blocking thread, so a long one no longer holds a thread that serves the other requests. `Db::query_with` and `Db::sql_with` stop planning at their `ExecOptions` deadline as well. A chain of 2,000 `WITH` results plans in 0.3 s. It took 13.5 s, past the deadline, because each result copied the rest of the statement (audit PRF-2).
 - A write that runs while `ALTER TABLE` adds, renames or drops a column of its table now applies to the table's new columns, as long as it names only columns the table keeps. Before, `/v1/write` answered a 400 `schema_invalid` ("document has 4 values, table has 3 fields", not retryable), and an `INSERT`, `UPDATE` or `DELETE` failed with "table ... was altered ... while the statement ran; run it again". Now a statement whose table changed between binding and writing is bound again and run, up to ten times, on a server and in `Db::sql` (audit PRF-3).
+- A call of a stored function can no longer stop the server with a stack overflow. Calls are written out after the statement's text is checked, so `SELECT f16(n) FROM t` (25 bytes), with sixteen functions each calling the one before and each body a 990-term sum, planned about 16,000 levels deep. Functions whose bodies call one another, or calls nested in arguments, `f1(f1(f1(n)))`, did the same. A call written out is now measured before it is walked into, and a statement whose calls written out nest deeper than 1,000 levels, or hold more than 250,000 expressions (a body that uses its parameter four times and calls one that does too, sixteen deep), is refused with "f2(...) written out nests more than 1000 levels deep ..." or "the calls of g1 written out hold more than 250000 expressions ...". A statement that may call a stored function is planned and run on a thread with 8 MiB of stack, however short its text (audit 4, X-B1).
+- A condition of many parts over rows in memory no longer reaches DataFusion as a chain as deep as it has parts. `tags @> :tags` with a list of 50,000 values (an `IN` for each value, joined by `AND`), or a long `WHERE` over joined rows, became a chain 50,000 levels deep, which DataFusion walks recursively, past the stack. An `AND` or `OR` of up to 1,024 conditions now reaches DataFusion as a balanced tree, and a wider one runs on ChloeDB's operators, which evaluate it in a loop (audit 4, X-B2).
 - A segment whose graph section holds damaged offsets is refused as corrupt when it opens. Before, offsets that passed the size checks could describe a range of petabytes, and a graph query over them aborted the process trying to allocate it (found by the nightly fuzzer, issue #485).
 
 #### Documentation
@@ -79,6 +85,12 @@ order. Auth changes: a connector's push key reads nothing, and
   rows: about 40 bytes a row once merged. Rollups made by 0.3.1 and 0.3.2
   keep their text keys and go on working; `DROP ROLLUP` and `CREATE
   ROLLUP` again to get the smaller table.
+- ChloeDB: a rollup made since this release keeps the option
+  `needs_chloedb_0_3_3` in its definition. 0.3.2 can read such a rollup
+  but not refresh it (its refresher writes text keys), and it refuses the
+  definition with "no option needs_chloedb_0_3_3", so its refresh says why
+  instead of serving stale buckets. Open a database whose rollups 0.3.3
+  made with 0.3.3 or later (audit 4, X-I5).
 - `log_series_bench rollup` prints the rollup's bytes on disk, as flushed
   and once merged.
 
@@ -265,6 +277,8 @@ No one-way door.
 - A server removes, when it starts, the copies of its database that a transfer left behind because the server was stopped partway through (`.db.strata.copy-*`, `.db.strata.restore-*`). Home now reports a copy that uses over twice the disk of its shard's other copies, when the difference is more than 1 GB (audit LIV-7).
 - Home's readiness card counted routes twice ("3 routes" for 2) and counted built-in rules as having no runbook. It also said "1 shards have one copy". The full `GET /v1/alerts` now gives `runbook_docs` to each rule whose runbook is compiled in (audit CCW-13).
 - Rollouts: the upgrader's note about the app engine's image now starts with "App engine image:", so it no longer reads as the servers' version (audit LIV-15).
+- CI: the on-demand runner's secrets (`DIGITALOCEAN_TOKEN`, and `CI_RUNNER_ADMIN_TOKEN`, which has Administration on the repository) are read from the environment `ci-runner`, which only main may use, so a branch's copy of `ci.yml` cannot read them. A run outside main (a pull request's, the merge queue's, a tag's) is placed by `ci-runner.yml`'s new job `place`, which runs main's code with them and posts the label as the commit status `ci-runner`. The secrets have to be moved from the repository into that environment (`.github/ci-runner/README.md`) (audit 4, X-I2).
+- CI: chloedb-server's Postgres tests fail instead of passing without running when the runner has no Postgres (`CHLOEDB_TEST_POSTGRES_REQUIRED`, set on Linux), and the on-demand runner's image has Postgres's programs again, unpacked so that no service starts while it is built (audit 4, X-I3).
 
 ## 0.3.2
 
