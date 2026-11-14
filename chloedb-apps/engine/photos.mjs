@@ -83,7 +83,9 @@ export function queryOf(query) {
   const content = things.length ? things : q;
   const subject = content.find((w) => !LOOSE.has(w)) || content[0] || '';
   const head = String(query || '').split(WHERE)[0];
-  const kind = [...new Set(words(head))].filter((w) => !MOD.has(w) && !LOOSE.has(w));
+  // Words of one letter ("woman's") and of doing ("cutting", "pouring") say
+  // nothing of which thing it is.
+  const kind = [...new Set(words(head))].filter((w) => w.length > 1 && !/ing$/.test(w) && !MOD.has(w) && !LOOSE.has(w));
   return { all: q, content, subject, kind: kind.length ? kind : subject ? [subject] : [] };
 }
 
@@ -95,7 +97,7 @@ export function queryOf(query) {
 // city on a river. A photo already on the page is passed over while another
 // fits. With strict, a photo fits only with the subject and every word of
 // its kind ("taco veggie" is not any taco).
-export function matchBuiltin(query, { used = new Set(), limit = 1, strict = false } = {}) {
+export function matchBuiltin(query, { used = new Set(), limit = 1, strict = false, product = false } = {}) {
   const Q = queryOf(query);
   const q = Q.all;
   const content = Q.content;
@@ -112,8 +114,9 @@ export function matchBuiltin(query, { used = new Set(), limit = 1, strict = fals
     }
     const subject = has(content[0]) || (Q.subject !== content[0] && has(Q.subject));
     if (strict && !(has(Q.subject) && Q.kind.every(has))) continue;
-    // Half the words of its kind at least ("bowl ceramic" is not a salad bowl).
-    if (Q.kind.filter(has).length * 2 < Q.kind.length) continue;
+    // A product: half the words of its kind at least ("bowl ceramic" is not
+    // a salad bowl). A scene (a hero, a band) fits more loosely.
+    if (product && Q.kind.filter(has).length * 2 < Q.kind.length) continue;
     if (subject || hits >= 2 || hits / content.length > 0.5) scored.push({ p, s: s + (subject ? 1 : 0), used: used.has(p.id) });
   }
   // Another photo stands in for one already on the page only when it fits
@@ -219,7 +222,7 @@ export function commonsCandidate(page, query, use) {
   // A plant, an animal or a place that shares the thing's name ("golden
   // candle", a shrub) is not the thing, unless living things are asked for.
   const cats = (page.categories || []).map((c) => String(c.title || '').replace(/^Category:/, '')).join(' | ');
-  if (LIVING.test(cats) && !LIVING_ASKED.test(query)) return null;
+  if ((LIVING.test(cats) || LIVING.test(title)) && !LIVING_ASKED.test(query)) return null;
   const tw = new Set(words(title));
   const dw = new Set(words(desc));
   const has = (x) => tw.has(x) || dw.has(x);
@@ -305,14 +308,16 @@ export async function findPhoto(query, { use = 'card', used = new Set(), open = 
     try { const r = await fromCommons(q, use, used, { free, whole: true }); if (r) return r; } catch { /* the built-in set next */ }
   }
   // A photo of the subject, not of its kind: the built-in set's first (its
-  // photos are chosen by eye), then the web's.
-  const [loose] = matchBuiltin(q, { used });
+  // photos are chosen by eye), then, for a scene, the web's. A product card
+  // never takes a web photo that only shares its subject's word.
+  const product = use === 'card';
+  const [loose] = matchBuiltin(q, { used, product });
   if (loose) return { id: loose.id, src: unsplashUrl(loose.id, use), credit: null, href: null, source: 'builtin', tone: loose.tone };
-  if (web) {
+  if (web && !product) {
     try { const r = await fromCommons(q, use, used, { free }); if (r) return r; } catch { /* none */ }
   }
   // Nothing new fits: the best photo again, even if the page has it.
-  const [best] = again ? matchBuiltin(q) : [];
+  const [best] = again ? matchBuiltin(q, { product }) : [];
   return best ? { id: best.id, src: unsplashUrl(best.id, use), credit: null, href: null, source: 'builtin' } : null;
 }
 
@@ -417,9 +422,10 @@ const GENERIC = new Set(words(`products items listings entries records things po
 // ("coffees"). Never a photo of something else: a sofa is no croissant.
 function rowAsks(query, row, table) {
   const text = (re) => Object.entries(row).filter(([k, v]) => re.test(k) && typeof v === 'string' && !v.startsWith('photo:') && v.length <= 60 && !/^https?:/i.test(v)).map(([, v]) => v);
-  const asks = [query, ...text(/categor|kind|type|group|section|collection/i), ...text(/^(name|title)$|_name$/i)];
+  const kindsOf = text(/categor|kind|type|group|section|collection/i).filter((q) => queryOf(q).content.length);
+  const asks = [query, ...kindsOf, ...text(/^(name|title)$|_name$/i)].filter((q) => q && queryOf(q).content.length);
   const what = table.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !GENERIC.has(stem(w))).join(' ');
-  return { asks: asks.filter((q) => q && queryOf(q).content.length), what };
+  return { asks, what, kinds: queryOf(query).content.length ? kindsOf.length : Math.max(0, kindsOf.length - 1) };
 }
 
 // An example row's photo: its query, its kind, then its name, each found as
@@ -427,11 +433,15 @@ function rowAsks(query, row, table) {
 // thing: the croissant on the front page is the croissant on the menu too). Openly licensed photos that need a credit
 // only when the app has a footer to give it in.
 async function seedPhoto(query, row, table, used, { find, credits }) {
-  const { asks, what } = rowAsks(query, row, table);
+  const { asks, what, kinds } = rowAsks(query, row, table);
   const free = !credits;
-  // A photo not yet on the page for any of its asks, before one again.
-  for (const q of asks.slice(0, 3)) { const r = await find(q, { use: 'card', used, free, again: false }); if (r) return r; }
-  for (const q of asks.slice(0, 3)) { const [p] = matchBuiltin(q); if (p) return { id: p.id, src: unsplashUrl(p.id, 'card'), source: 'builtin' }; }
+  // A photo not yet on the page before one again: the query and the row's
+  // kind found anywhere; its name ("Morning Linen") only in the built-in
+  // set, as a name is rarely what the photo shows.
+  for (const q of asks.slice(0, 1 + kinds)) { const r = await find(q, { use: 'card', used, free, again: false }); if (r) return r; }
+  for (const q of asks.slice(1 + kinds)) { const [p] = matchBuiltin(q, { used, product: true, strict: true }); if (p) return { id: p.id, src: unsplashUrl(p.id, 'card'), source: 'builtin' }; }
+  // The same photo twice beats a drawing: a candle is a candle.
+  for (const q of asks.slice(0, 1 + kinds)) { const [p] = matchBuiltin(q); if (p) return { id: p.id, src: unsplashUrl(p.id, 'card'), source: 'builtin' }; }
   // What the table holds, only when it names a thing and a photo has all of it.
   const p = (what && matchBuiltin(what, { used, strict: true })[0]) || (what && matchBuiltin(what, { strict: true })[0]) || null;
   return p ? { id: p.id, src: unsplashUrl(p.id, 'card'), source: 'builtin' } : null;
@@ -451,7 +461,7 @@ export function warmPhotos(plan, { open = OPEN } = {}) {
   const jobs = (plan?.views || []).filter((v) => v?.screen && typeof v.screen === 'object').flatMap((v) => photoJobs(v.screen));
   for (const [table, rows] of Object.entries(plan?.seed || {})) {
     for (const row of Array.isArray(rows) ? rows : []) {
-      for (const val of Object.values(row || {})) if (typeof val === 'string' && val.startsWith('photo:')) for (const q of rowAsks(val.slice(6), row, table).asks.slice(0, 2)) jobs.push({ query: q, use: 'card' });
+      for (const val of Object.values(row || {})) if (typeof val === 'string' && val.startsWith('photo:')) for (const q of rowAsks(val.slice(6), row, table).asks.slice(0, 1)) jobs.push({ query: q, use: 'card' });
     }
   }
   return prefetchPhotos(jobs, { open });

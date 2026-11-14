@@ -42,7 +42,8 @@ test('a query names its subject and the words that say which kind of it', () => 
   assert.ok(matchBuiltin('tacos on a plate', { strict: true }).length);
   assert.equal(matchBuiltin('taco veggie', { strict: true }).length, 0);
   // Half of the kind at least: a salad bowl is no ceramic speckled bowl.
-  assert.equal(matchBuiltin('bowl ceramic speckled').length, 0);
+  assert.equal(matchBuiltin('bowl ceramic speckled', { product: true }).length, 0);
+  assert.ok(matchBuiltin("hairdresser cutting woman's hair in bright salon").length, 'a scene fits more loosely');
 });
 
 test('a Commons file fits when it is a large enough photo whose title has the subject', () => {
