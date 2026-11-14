@@ -520,8 +520,12 @@ const directions = new Map();
 function awaitDirection(appId, provider = null) {
   let give;
   const given = new Promise((ok) => { give = ok; });
-  const made = given.then((direction) => { directions.delete(appId); return withProvider(provider, () => designsOf(appId, false, direction)); });
+  const made = given.then((direction) => withProvider(provider, () => designsOf(appId, false, direction)));
   made.catch((e) => console.error(`designs ${appId}: ${e.message}`));
+  // Kept until they are made: the art direction comes early (as the plan
+  // streams in) and again once the build is stored, and a later hook waits
+  // on the same designs instead of making them twice.
+  made.finally(() => directions.delete(appId)).catch(() => {});
   directions.set(appId, { give, made });
 }
 engine.onDirection = (appId, direction) => {

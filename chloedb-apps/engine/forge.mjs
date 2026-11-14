@@ -657,6 +657,21 @@ export function screenWatcher(view, onScreen) {
 }
 
 const tee = (...fns) => (seen, text) => { for (const f of fns) if (f) f(seen, text); };
+// Calls fn once with the plan's JSON as soon as its </plan> has streamed in,
+// while the model goes on to write the statements after it.
+export const planWatcher = (fn) => {
+  let done = false;
+  return (seen, text) => {
+    if (done || !fn || typeof text !== 'string') return;
+    const a = text.indexOf('<plan>');
+    const b = a < 0 ? -1 : text.indexOf('</plan>', a);
+    if (b < 0) return;
+    done = true;
+    let plan = null;
+    try { plan = JSON.parse(text.slice(a + 6, b)); } catch { return; }
+    try { fn(plan); } catch { /* a hook's own failure is not the build's */ }
+  };
+};
 const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew the screen ${p.title} while the rest is written`, { preview: { ...p, screen: expandScreen(p.screen).screen } }));
 
 // A plan's screens become the code of their views (JSON text), so the rest
@@ -1605,7 +1620,7 @@ async function pool(items, n, fn) {
   return out;
 }
 
-async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null }, progress, tr = new Trace()) {
+async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null, onPlan = null }, progress, tr = new Trace()) {
   let cost = 0;
   let plan;
   let problems = [];
@@ -1618,7 +1633,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
@@ -1633,7 +1648,10 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       } catch (e) { problems = [e.message]; }
       c.problems = problems.slice(0, 8);
     });
-    if (problems.length && problems.every(isBudget) && attempt === 2) {
+    // A screen's budget is a soft limit. A first version over it only is
+    // kept at once: planning it again costs a whole answer (half a minute
+    // or more) and leaves most of what was over as it was.
+    if (problems.length && problems.every(isBudget) && (attempt === 2 || !view.comp.n)) {
       progress(`Kept over a screen's budget: ${problems.map((p) => p.replace(/^over budget: /, '').split(':')[0]).join('; ')}`);
       problems = [];
     }
@@ -1786,7 +1804,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   let attemptPrompt = prompt;
   let decidedAt = 0;
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
-  if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
+  // A new app's designs start from the art direction as soon as the plan
+  // has streamed in, not after its statements are written and checked: the
+  // app is then drawn in its own design from its first open.
+  const early = !view.comp.n && !request.candidate && typeof engine.onDirection === 'function'
+    ? (p) => { const art = cleanArt(p?.art); if (art) engine.onDirection(appId, { art, views: (p.views || []).map((v) => ({ title: v.title })), tables: (p.tables || []).map((t) => t.name) })?.catch?.(() => {}); }
+    : null;
+  if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit({ ...context, onPlan: early }, progress, tr));
   const small = !split && smallChange(request.text, view);
   for (let attempt = 1; attempt <= (small ? 3 : 2) && !split; attempt++) {
     const model = small && attempt === 1 ? SMALL_MODEL : SCREEN_MODEL;

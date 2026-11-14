@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -162,4 +162,20 @@ test('the art direction: layout, type, accent, imagery and the one main action',
   assert.equal(designs[0].width, 'narrow');
   assert.equal(designs[0].titles, 'serif');
   assert.match(designPrompt({ name: 'Tacos', description: 'A taco truck' }, null, { art }), /main action: See the menu/);
+});
+
+test('the plan is handed on once its </plan> has streamed in, before the statements after it', () => {
+  const got = [];
+  const w = planWatcher((p) => got.push(p));
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a qu');
+  assert.equal(got.length, 0);
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a quiet shelf"}}</plan>\n<code slug="home">CREATE SCR');
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a quiet shelf"}}</plan>\n<code slug="home">CREATE SCREEN home</code>');
+  assert.equal(got.length, 1);
+  assert.equal(got[0].art.concept, 'a quiet shelf');
+  // A plan that does not parse is not handed on, and a missing hook is fine.
+  const bad = [];
+  planWatcher((p) => bad.push(p))({}, '<plan>{"name": </plan>');
+  assert.equal(bad.length, 0);
+  planWatcher(null)({}, '<plan>{}</plan>');
 });
