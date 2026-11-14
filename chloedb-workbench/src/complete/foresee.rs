@@ -1071,7 +1071,7 @@ pub fn model_ghost(sup: &Arc<Supervisor>, b: GhostB) -> Result<Json, ApiError> {
                     let typed_more = &text[t0.len()..];
                     if g.starts_with(typed_more) && g.len() > typed_more.len() && g.is_char_boundary(typed_more.len()) {
                         let rest = g[typed_more.len()..].to_string();
-                        return Ok(json!({ "available": true, "cached": true, "took_ms": 0, "ghost": { "text": rest, "source": "model", "model": MODEL, "because": "a fast model, from this box's context" } }));
+                        return Ok(json!({ "available": true, "cached": true, "took_ms": 0, "ghost": { "text": rest, "source": "model", "model": MODEL, "checked": true, "because": "a fast model, from this box's context; every name in it is in the code or the memory" } }));
                     }
                 }
             }
@@ -1079,12 +1079,13 @@ pub fn model_ghost(sup: &Arc<Supervisor>, b: GhostB) -> Result<Json, ApiError> {
     }
     let agent = b.agent.as_deref().filter(|a| !a.is_empty()).and_then(|a| sup.agent_row(a));
     let user = user_of(b.user.as_deref());
+    super::fresh(sup, &repo);
     let prompt = pack(sup, &user, &repo, &field, &text, agent.as_ref(), b.ghost.as_deref());
-    let system = "You complete what a developer is typing into a box of Workbench, an IDE where they direct coding agents. Answer with only the characters that come after their cursor: no quotes, no explanation, one line, at most 30 words. Begin with a space when a new word begins. Keep their style and words. Name files, ◆ records and tests only from the context. A task ends with a done check: a command in backticks that passes.";
+    let system = "You complete what a developer is typing into a box of Workbench, an IDE where they direct coding agents. Answer with only the characters that come after their cursor: no quotes, no explanation, one line, at most 30 words. Begin with a space when a new word begins. Keep their style and words. Name files, functions, ◆ records, tests and services only from the context, which is this repository's real code and memory: never invent a component it does not show (a payment processor, a bank, a queue, a service). When you do not know, complete with fewer words. A task that changes code ends with a done check: a command in backticks that passes.";
     let args: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--settings", "{\"disableAllHooks\":true}", "--no-session-persistence", "--model", MODEL, "--system-prompt", system]
         .iter()
         .map(|s| s.to_string())
-        .chain(std::iter::once(prompt))
+        .chain(std::iter::once(prompt.clone()))
         .collect();
     let out = run_for(&bin, &args, Path::new(&repo), MODEL_TIMEOUT);
     let raw = match out {
@@ -1104,6 +1105,19 @@ pub fn model_ghost(sup: &Arc<Supervisor>, b: GhostB) -> Result<Json, ApiError> {
         g = g.trim_start().to_string();
     }
     let g: String = g.chars().take(240).collect();
+    // Grounded, or dropped (SPEC.md, "Sixth build: E"): every file,
+    // function and thing it names is in the code, the memory or the context.
+    let (files, recs) = mem().lock().unwrap().get(&repo).map(|e| (e.files.clone(), e.recs.clone())).unwrap_or_default();
+    let known = format!("{text}\n{prompt}\n{}", recs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n"));
+    let unknown = ungrounded(&g, &known, &files, &mut |w| in_code(&repo, w));
+    if !unknown.is_empty() {
+        let names = unknown.iter().take(4).map(|w| format!("“{w}”")).collect::<Vec<_>>().join(", ");
+        return Ok(json!({
+            "available": true, "cached": false, "ghost": null, "took_ms": started.elapsed().as_millis() as u64,
+            "dropped": { "text": g, "names": unknown },
+            "why": format!("the model's ghost named {names}, which this repository's code and memory do not have: it was dropped"),
+        }));
+    }
     {
         let mut c = ghost_cache().lock().unwrap();
         if c.len() > 500 {
@@ -1111,7 +1125,92 @@ pub fn model_ghost(sup: &Arc<Supervisor>, b: GhostB) -> Result<Json, ApiError> {
         }
         c.insert(format!("{key}{text}"), g.clone());
     }
-    Ok(json!({ "available": true, "cached": false, "took_ms": started.elapsed().as_millis() as u64, "ghost": { "text": g, "source": "model", "model": MODEL, "because": "a fast model, from this box's context" } }))
+    Ok(json!({ "available": true, "cached": false, "took_ms": started.elapsed().as_millis() as u64, "ghost": { "text": g, "source": "model", "model": MODEL, "checked": true, "because": "a fast model, from this box's context; every name in it is in the code or the memory" } }))
+}
+
+/// Words a ghost may use without the repository having them: the language
+/// of tasks.
+const GENERIC: &[&str] = &[
+    "about", "above", "accept", "across", "actual", "add", "after", "again", "against", "agent", "all", "allow", "already", "also", "always", "amount", "answer", "any", "app",
+    "apply", "around", "ask", "back", "bad", "based", "before", "begin", "behaviour", "behavior", "being", "below", "best", "better", "between", "both", "break", "broken", "bug", "build",
+    "bullet", "call", "case", "cause", "change", "check", "clean", "clear", "close", "code", "come", "command", "comment", "commit", "compare", "complete", "correct", "could", "count",
+    "cover", "current", "data", "default", "describe", "detail", "different", "does", "done", "down", "each", "edge", "edit", "else", "empty", "end", "ensure", "enough", "error", "even",
+    "every", "example", "exist", "expect", "explain", "fail", "false", "fast", "few", "field", "file", "find", "first", "fix", "flow", "follow", "found", "from", "function", "get",
+    "give", "goes", "good", "handle", "happen", "have", "here", "how", "idea", "input", "inside", "instead", "into", "issue", "item", "just", "keep", "kind", "know", "last", "later",
+    "leave", "less", "line", "list", "little", "long", "look", "make", "many", "match", "mean", "method", "might", "missing", "more", "most", "move", "much", "must", "name", "need",
+    "never", "new", "next", "none", "note", "nothing", "now", "number", "old", "once", "only", "other", "output", "over", "own", "part", "pass", "path", "place", "point", "print",
+    "problem", "project", "put", "read", "reason", "record", "remove", "rename", "repo", "report", "result", "return", "right", "run", "same", "say", "see", "seem", "send", "set",
+    "should", "show", "side", "simple", "since", "small", "some", "start", "state", "step", "still", "stop", "sure", "take", "task", "tell", "test", "text", "than", "that", "their",
+    "them", "then", "there", "these", "thing", "this", "those", "through", "time", "today", "together", "top", "true", "try", "turn", "under", "until", "update", "use", "user", "using",
+    "value", "very", "want", "way", "well", "what", "when", "where", "which", "while", "who", "whole", "why", "will", "with", "without", "work", "would", "write", "wrong",
+    "yes", "you", "your", "goes", "comes", "rather", "summary", "points",
+];
+
+/// The names in a model's ghost that nothing backs: a file not among the
+/// repository's, an identifier the code does not hold, a word that is in
+/// neither the code (`in_code`), nor `known` (what was typed, the context
+/// pack, the memory's records), nor the language of tasks.
+pub fn ungrounded(ghost: &str, known: &str, files: &[String], in_code: &mut dyn FnMut(&str) -> bool) -> Vec<String> {
+    let known_stems: HashSet<String> = known.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(|w| stem(&w.to_lowercase())).collect();
+    let mut out: Vec<String> = Vec::new();
+    for raw in ghost.split_whitespace() {
+        let tok = raw.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '`' | '“' | '”' | '‘' | '’' | '*'));
+        let tok = tok.strip_suffix("'s").or_else(|| tok.strip_suffix("’s")).unwrap_or(tok);
+        if tok.chars().count() < 3 || tok.starts_with('◆') || tok.starts_with('@') || tok.chars().all(|c| !c.is_alphabetic()) {
+            continue;
+        }
+        let ext = tok.rsplit_once('.').filter(|(a, e)| !a.is_empty() && (1..=5).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()) && e.chars().any(|c| c.is_ascii_alphabetic()));
+        let ok = if tok.contains('/') || ext.is_some() {
+            files.iter().any(|f| f == tok || f.ends_with(&format!("/{tok}")) || f.starts_with(&format!("{}/", tok.trim_end_matches('/')))) || known.contains(tok)
+        } else if tok.contains('_') || tok.ends_with("()") || tok.chars().zip(tok.chars().skip(1)).any(|(a, b)| a.is_lowercase() && b.is_uppercase()) {
+            let id = tok.trim_end_matches("()");
+            known.contains(id) || in_code(id)
+        } else {
+            let w = tok.to_lowercase();
+            let s = stem(&w);
+            w.chars().count() < 4 || STOP.contains(&w.as_str()) || GENERIC.contains(&w.as_str()) || GENERIC.contains(&s.as_str()) || known_stems.contains(&s) || known_stems.contains(&w) || in_code(&w)
+        };
+        if !ok && !out.contains(&tok.to_string()) {
+            out.push(tok.to_string());
+        }
+    }
+    out
+}
+
+type CodeCache = Mutex<HashMap<String, bool>>;
+
+fn code_cache() -> &'static CodeCache {
+    static C: OnceLock<CodeCache> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether the repository's tracked files hold a word (as a whole word,
+/// or a form of it: "settles" for "settle"), case aside: `git grep`.
+fn in_code(repo: &str, word: &str) -> bool {
+    let w: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
+    if w.is_empty() {
+        return false;
+    }
+    let key = format!("{repo}\u{1}{}", w.to_lowercase());
+    if let Some(v) = code_cache().lock().unwrap().get(&key) {
+        return *v;
+    }
+    let s = stem(&w.to_lowercase());
+    let forms = [w.clone(), s.clone(), format!("{s}e"), format!("{s}s"), format!("{s}es"), format!("{s}ed"), format!("{s}ing")];
+    let re = format!("({})", forms.join("|"));
+    let hit = Command::new("git")
+        .args(["-C", repo, "grep", "-q", "-I", "-i", "-w", "-E", "-e", &re, "--"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    let mut c = code_cache().lock().unwrap();
+    if c.len() > 5000 {
+        c.clear();
+    }
+    c.insert(key, hit);
+    hit
 }
 
 /// The context a model ghost is given: a pack of what the box knows.
@@ -1144,6 +1243,20 @@ fn pack(sup: &Supervisor, user: &str, repo: &str, field: &str, text: &str, agent
     }
     if let Some(g) = ghost.filter(|g| !g.is_empty()) {
         lines.push(format!("The box suggests now: “{g}”"));
+    }
+    // The repository's real code: its files, and the code nearest the text
+    // (code search's chunks, when it is indexed).
+    let files = mem().lock().unwrap().get(repo).map(|e| e.files.clone()).unwrap_or_default();
+    if !files.is_empty() {
+        lines.push(format!("Files ({}): {}", files.len(), files.iter().take(60).cloned().collect::<Vec<_>>().join(", ")));
+    }
+    let qtext: String = words(text).iter().map(|w| w.0.clone()).collect::<Vec<_>>().join(" ");
+    if !qtext.is_empty() {
+        let rows = q(sup, "SELECT path, start_line, symbol, text FROM code_chunks WHERE repo = :r AND tree = 'main' AND MATCH(text, :q, min => 1) ORDER BY bm25(text, :q) DESC LIMIT 4", &Params::new().set("r", sv(repo)).set("q", sv(&qtext))).unwrap_or_default();
+        for r in rows {
+            let body: String = get_str(&r[3]).unwrap_or_default().lines().take(6).collect::<Vec<_>>().join(" ⏎ ");
+            lines.push(format!("Code {}:{} {}: {}", get_str(&r[0]).unwrap_or_default(), get_int(&r[1]).unwrap_or(0), get_str(&r[2]).unwrap_or_default(), one_line(&body, 300)));
+        }
     }
     lines.push(format!("They have typed: “{text}”"));
     lines.push("Continue it.".into());
@@ -1190,6 +1303,15 @@ mod tests {
         assert_eq!(test_cmd("pytest tests", "test_money.py::test_round"), "pytest -k test_round -q");
         assert_eq!(test_name("api › totals::coupon"), "totals::coupon");
         assert_eq!(test_name("cargo test -p calc"), "`cargo test -p calc`");
+        // A ghost is grounded in the code and the memory, or its names are told.
+        let files = vec!["money.py".to_string(), "cart.py".to_string(), "web/index.html".to_string()];
+        let code = ["checkout", "cents", "payment", "tax"];
+        let mut in_code = |w: &str| code.contains(&w.to_lowercase().as_str());
+        let lee = " the money comes in at checkout and goes to the shop's payment processor, then settles to the shop's bank account";
+        assert_eq!(ungrounded(lee, "Read-only: explain how money flows through this shop, from ", &files, &mut in_code), vec!["processor", "settles", "bank", "account"]);
+        assert!(ungrounded(" and keep every total in integer cents.", "Fix the rounding in money.py\nPrices are integer cents; totals round down", &files, &mut in_code).is_empty());
+        assert_eq!(ungrounded(" in billing.py and money.py", "Fix the rounding", &files, &mut in_code), vec!["billing.py"]);
+        assert_eq!(ungrounded(" by calling apply_coupon()", "", &files, &mut in_code), vec!["apply_coupon"]);
         // No claude: the model ghost is off.
         assert!(!claude_found("/nonexistent/claude"));
         assert!(!claude_found("no-such-claude-binary-here"));

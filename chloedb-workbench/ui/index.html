@@ -123,6 +123,7 @@
         </div>
         <span class="hint"><kbd>C-b</kbd><kbd>z</kbd> back</span>
         <button class="btn sm" id="z-stop" title="Stop (Ctrl-b x)"><svg class="i sm"><use href="#i-stop"/></svg><span>Stop</span></button>
+        <button class="btn sm primary" id="z-restart" title="Start it again: same name, task and worktree, continuing its session" hidden><span>Restart</span></button>
       </div>
       <div class="zask" id="z-ask" hidden><svg class="i"><use href="#i-bell"/></svg><span id="z-ask-text"></span></div>
       <div class="zbody" id="z-body" data-tab="term">
@@ -191,9 +192,8 @@
     <div class="dbody">
       <div class="field">
         <label for="f-repo">Repository</label>
-        <input type="text" class="mono" id="f-repo" name="repo" list="repo-list" placeholder="/home/you/src/project" autocomplete="off" spellcheck="false" required>
-        <datalist id="repo-list"></datalist>
-        <span class="help">The absolute path of a git checkout. Remembered for next time.</span>
+        <textarea class="mono lc-repo" id="f-repo" name="repo" rows="1" placeholder="/home/you/src/project" autocomplete="off" spellcheck="false" required></textarea>
+        <span class="help">The absolute path of a git checkout: type to complete it, git repositories first. Remembered for next time.</span>
       </div>
       <div class="field">
         <label for="f-task">Task <span class="opt">optional</span></label>
@@ -213,6 +213,10 @@
       <label class="check" for="f-wt">
         <input type="checkbox" id="f-wt" name="worktree" checked>
         <span><b>Own worktree</b><span id="wt-help">A new branch <code>wb/&lt;name&gt;</code> from the repository's HEAD, so agents don't step on each other.</span></span>
+      </label>
+      <label class="check" for="f-ro">
+        <input type="checkbox" id="f-ro" name="read_only">
+        <span><b>Read-only</b><span>It reads and answers, and changes no file: no Edit or Write, and Bash only for commands that read. Anything else comes to you as a request.</span></span>
       </label>
       <div class="err" id="new-err" hidden></div>
     </div>
@@ -259,7 +263,7 @@
 
 <dialog id="confirm-dialog" aria-labelledby="confirm-title">
   <div class="dhead"><h2 id="confirm-title">Stop agent?</h2></div>
-  <div class="dbody"><p id="confirm-text"></p></div>
+  <div class="dbody"><p id="confirm-text"></p><div id="confirm-servers" hidden></div></div>
   <div class="dfoot"><span class="left"><kbd>y</kbd> / <kbd>n</kbd></span><button type="button" class="btn" id="confirm-no">Cancel</button><button type="button" class="btn danger" id="confirm-yes">Stop agent</button></div>
 </dialog>
 

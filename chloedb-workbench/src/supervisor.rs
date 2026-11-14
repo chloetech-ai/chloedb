@@ -106,6 +106,9 @@ impl Term {
 struct Slot {
     agent: Agent,
     term: Option<Arc<Term>>,
+    /// What the row does not hold (the mark `agent:<id>`): `read_only`,
+    /// `restarted_from`, `resumed` (the session it continued).
+    extra: Json,
 }
 
 struct Inner {
@@ -123,7 +126,7 @@ pub struct Supervisor {
 }
 
 /// What `POST /api/agents` takes.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct SpawnRequest {
     pub repo: String,
     pub task: Option<String>,
@@ -139,6 +142,24 @@ pub struct SpawnRequest {
     /// Claude Code's `--effort` (low, medium, high, xhigh, max); sixth
     /// build, for a goal's lead and agents.
     pub effort: Option<String>,
+    /// Read-only (SPEC.md, "Sixth build: E"): no Edit, Write, MultiEdit or
+    /// NotebookEdit, and Bash only for commands that read. An agent a
+    /// read-only agent starts is read-only too.
+    pub read_only: Option<bool>,
+    /// Set by [`Supervisor::restart_request`]: the agent this one restarts.
+    #[serde(skip)]
+    pub restart: Option<Restart>,
+}
+
+/// An exited agent started again: same name, task, worktree and model,
+/// continuing its Claude Code session when it has one.
+#[derive(Debug, Clone, Default)]
+pub struct Restart {
+    pub of: Agent,
+    /// The session to continue (`--resume <id> --fork-session`).
+    pub resume: Option<String>,
+    /// What it is told first: the task again when nothing is resumed.
+    pub prompt: Option<String>,
 }
 
 /// A notification that says only that a finished turn waits for a prompt
@@ -298,7 +319,8 @@ impl Supervisor {
                 })?;
                 db.put_agent(&a)?;
             }
-            slots.insert(a.id.clone(), Slot { agent: a, term: None });
+            let extra = db.mark(&extra_key(&a.id)).ok().flatten().and_then(|(v, _)| serde_json::from_str(&v).ok()).unwrap_or_else(|| json!({}));
+            slots.insert(a.id.clone(), Slot { agent: a, term: None, extra });
         }
         let (changes, _) = broadcast::channel(4096);
         Ok(Arc::new(Supervisor { cfg, db, inner: Mutex::new(Inner { slots, seq }), spawning: Mutex::new(()), changes }))
@@ -312,7 +334,13 @@ impl Supervisor {
         let slot = inner.slots.get(id)?;
         let mut children: Vec<&Agent> = inner.slots.values().map(|s| &s.agent).filter(|a| a.parent.as_deref() == Some(id)).collect();
         children.sort_by_key(|a| a.created);
-        Some(slot.agent.to_json(Self::running(slot), children.into_iter().map(|a| a.id.clone()).collect()))
+        let mut j = slot.agent.to_json(Self::running(slot), children.into_iter().map(|a| a.id.clone()).collect());
+        if let (Some(o), Some(x)) = (j.as_object_mut(), slot.extra.as_object()) {
+            for (k, v) in x {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        Some(j)
     }
 
     fn emit_agent(&self, inner: &Inner, id: &str) {
@@ -425,6 +453,9 @@ impl Supervisor {
         }
         let model = req.model.clone().filter(|m| !m.trim().is_empty());
         let task = req.task.clone().filter(|t| !t.trim().is_empty());
+        let restart = req.restart.clone();
+        // Read-only when asked, or when the agent that starts it is.
+        let read_only = req.read_only.unwrap_or(false) || req.parent.as_deref().is_some_and(|p| self.is_read_only(p));
 
         // Limits, the parent and the name, checked together.
         let (depth, name) = {
@@ -482,7 +513,8 @@ impl Supervisor {
         let (cwd, branch, base) = if worktree {
             let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| format!("wb/{name}"));
             let dir = git::worktrees_dir(&self.cfg.data_dir, &co.main);
-            let mut wt = dir.join(&name);
+            // A restart carries on in the worktree its agent had.
+            let mut wt = restart.as_ref().map(|r| PathBuf::from(&r.of.cwd)).filter(|p| p.is_dir() && p.as_path() != co.main.as_path()).unwrap_or_else(|| dir.join(&name));
             // The worktree an earlier agent of this name left, on this
             // branch: the new one carries on there.
             let reuse = wt.is_dir() && git::current_branch(&wt).as_deref() == Some(branch.as_str());
@@ -523,7 +555,14 @@ impl Supervisor {
             &self.cfg.chloectx_bin,
             self.cfg.chloectx_required,
             &cwd,
-            crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy())),
+            {
+                let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy()));
+                if read_only {
+                    crate::guarded::read_only_settings(s)
+                } else {
+                    s
+                }
+            },
             mcp_json(&exe, &self.cfg.url, &token, &id),
         )?;
         write_private(&settings, &settings_v)?;
@@ -534,6 +573,14 @@ impl Supervisor {
         let mut cmd = CommandBuilder::new(&self.cfg.claude_bin);
         cmd.arg("--session-id");
         cmd.arg(&session_id);
+        // A restart continues its agent's conversation in a session of its
+        // own (Claude Code wants --fork-session with --session-id).
+        let resume = restart.as_ref().and_then(|r| r.resume.clone());
+        if let Some(r) = &resume {
+            cmd.arg("--resume");
+            cmd.arg(r);
+            cmd.arg("--fork-session");
+        }
         cmd.arg("--settings");
         cmd.arg(&settings);
         cmd.arg("--mcp-config");
@@ -546,7 +593,11 @@ impl Supervisor {
             cmd.arg("--effort");
             cmd.arg(e);
         }
-        if let Some(t) = &task {
+        let first = match &restart {
+            Some(r) => r.prompt.clone().filter(|p| !p.trim().is_empty()),
+            None => task.clone(),
+        };
+        if let Some(t) = &first {
             // `--mcp-config` takes any number of files, so without `--` a
             // task right after it (no `--model` between) is read as a file.
             cmd.arg("--");
@@ -613,12 +664,31 @@ impl Supervisor {
             narration: None,
             narration_ts: None,
         };
+        let mut extra = serde_json::Map::new();
+        if read_only {
+            extra.insert("read_only".into(), json!(true));
+        }
+        if let Some(r) = &restart {
+            extra.insert("restarted_from".into(), json!(r.of.id));
+        }
+        if let Some(r) = &resume {
+            extra.insert("resumed".into(), json!(r));
+        }
+        let extra = Json::Object(extra);
+        if extra.as_object().is_some_and(|o| !o.is_empty()) {
+            let _ = self.db.set_mark(&extra_key(&id), &extra.to_string());
+        }
         let json = {
             let mut inner = self.inner.lock().unwrap();
-            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()) });
+            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()), extra });
+            let how = match (&restart, &resume) {
+                (Some(r), Some(_)) => format!(" (restart of {}, continuing its session)", r.of.id),
+                (Some(r), None) => format!(" (restart of {})", r.of.id),
+                _ => String::new(),
+            };
             let summary = match &task {
-                Some(t) => format!("spawned: {}", one_line(t, 200)),
-                None => "spawned".into(),
+                Some(t) => format!("spawned{how}: {}", one_line(t, 200)),
+                None => format!("spawned{how}"),
             };
             self.record(&mut inner, &id, "spawned", None, summary, None)?;
             if let Some(p) = &req.parent {
@@ -664,6 +734,12 @@ impl Supervisor {
         let _ = self.record(&mut inner, id, "exited", None, format!("exited with code {code}"), None);
         if let Some(p) = parent {
             self.emit_agent(&inner, &p);
+        }
+        drop(inner);
+        // Its servers go with it when the user chose so (SPEC.md, "Sixth
+        // build: E", Servers).
+        if crate::preview::servers::policy(self).as_deref() == Some("stop") {
+            crate::preview::servers::stop_of_agent_later(self, id);
         }
     }
 
@@ -774,6 +850,75 @@ impl Supervisor {
         self.inner.lock().unwrap().slots.get(id).map(|s| s.agent.clone())
     }
 
+    /// What an agent's row does not hold (`read_only`, `restarted_from`,
+    /// `resumed`), `{}` when nothing.
+    pub fn extra_of(&self, id: &str) -> Json {
+        self.inner.lock().unwrap().slots.get(id).map(|s| s.extra.clone()).unwrap_or_else(|| json!({}))
+    }
+
+    /// Whether an agent was started read-only.
+    pub fn is_read_only(&self, id: &str) -> bool {
+        self.extra_of(id)["read_only"] == json!(true)
+    }
+
+    /// What starts an exited agent again (`POST /api/agents/:id/restart`):
+    /// its name, task, model, worktree and branch, read-only as it was, its
+    /// goal and outcome; it continues its Claude Code session when that
+    /// session has a transcript, else it starts over on its task. `prompt`
+    /// is what it is told first; a continued session that ended mid-turn is
+    /// told to carry on.
+    pub fn restart_request(&self, id: &str, prompt: Option<String>) -> Result<SpawnRequest, ApiError> {
+        let (a, extra) = {
+            let inner = self.inner.lock().unwrap();
+            let slot = inner.slots.get(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
+            if Self::running(slot) {
+                return Err(ApiError::conflict(format!("agent {} is running: stop it first, or steer it", slot.agent.name)));
+            }
+            if let Some(live) = inner.slots.values().find(|s| Self::running(s) && s.agent.name == slot.agent.name && s.agent.repo == slot.agent.repo) {
+                return Err(ApiError::conflict(format!("an agent named {} is running ({}): it already carries on", live.agent.name, live.agent.id)));
+            }
+            (slot.agent.clone(), slot.extra.clone())
+        };
+        let resume = a.session_id.clone().filter(|_| self.transcript_of(id).is_some());
+        let prompt = prompt.filter(|p| !p.trim().is_empty()).or_else(|| match &resume {
+            Some(_) if self.ended_mid_turn(id) => Some("Workbench restarted this session after it ended. Carry on with your task where you left off.".to_string()),
+            Some(_) => None,
+            None => a.task.clone(),
+        });
+        let worktree = a.cwd != a.repo;
+        Ok(SpawnRequest {
+            repo: a.repo.clone(),
+            task: a.task.clone(),
+            name: Some(a.name.clone()),
+            branch: if worktree { a.branch.clone() } else { None },
+            worktree: Some(worktree),
+            model: a.model.clone(),
+            parent: a.parent.clone().filter(|p| self.is_running(p)),
+            goal: a.goal.clone(),
+            outcome: a.outcome.clone(),
+            read_only: Some(extra["read_only"] == json!(true)),
+            restart: Some(Restart { of: a, resume, prompt }),
+            ..SpawnRequest::default()
+        })
+    }
+
+    /// The transcript of an agent's session, when it has one with lines:
+    /// the last `transcript_path` its hooks reported.
+    fn transcript_of(&self, id: &str) -> Option<PathBuf> {
+        let evs = self.db.all_events(id).ok()?;
+        evs.iter().rev().filter_map(|e| e.data.as_deref()).filter_map(|d| serde_json::from_str::<Json>(d).ok()).find_map(|d| {
+            let p = PathBuf::from(d["transcript_path"].as_str()?);
+            std::fs::metadata(&p).ok().filter(|m| m.len() > 0).map(|_| p)
+        })
+    }
+
+    /// Whether an agent ended inside a turn (its last hook was not a Stop).
+    fn ended_mid_turn(&self, id: &str) -> bool {
+        let Ok(evs) = self.db.all_events(id) else { return false };
+        const HOOKS: [&str; 6] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop"];
+        evs.iter().rev().find(|e| HOOKS.contains(&e.kind.as_str())).is_some_and(|e| e.kind != "Stop")
+    }
+
     /// Every agent's row.
     pub fn agent_rows(&self) -> Vec<Agent> {
         self.inner.lock().unwrap().slots.values().map(|s| s.agent.clone()).collect()
@@ -830,13 +975,19 @@ impl Supervisor {
         self.cfg.data_dir.join("sessions").join(id)
     }
 
-    /// Stops an agent: SIGHUP to its process group, then SIGKILL after 5 s.
-    pub fn stop(&self, id: &str) -> Result<(), ApiError> {
+    /// Stops an agent: SIGHUP to its process group, then SIGKILL after 5 s;
+    /// and the servers it started when `servers` says so (else as the user
+    /// chose once, else yes): see `preview::servers`.
+    pub fn stop_with(&self, id: &str, servers: Option<bool>) -> Result<(), ApiError> {
         let term = {
             let inner = self.inner.lock().unwrap();
             let slot = inner.slots.get(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
             slot.term.clone()
         };
+        let with_servers = servers.unwrap_or_else(|| crate::preview::servers::policy(self).as_deref() != Some("keep"));
+        if with_servers {
+            crate::preview::servers::stop_of_agent_later(self, id);
+        }
         if let Some(t) = term.filter(|t| t.alive.load(Ordering::SeqCst)) {
             hangup(&t);
             std::thread::spawn(move || {
@@ -963,6 +1114,11 @@ fn read_output(mut reader: Box<dyn Read + Send>, term: &Term, sup: &Supervisor, 
         }
     }
     term.output.lock().unwrap().tx = None;
+}
+
+/// The mark that keeps what an agent's row does not.
+fn extra_key(id: &str) -> String {
+    format!("agent-extra:{id}")
 }
 
 fn write_private(path: &Path, body: &Json) -> Result<(), ApiError> {

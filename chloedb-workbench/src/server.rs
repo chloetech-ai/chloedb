@@ -221,6 +221,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("repos.js", include_str!("../ui/levels/repos.js")),
     ("rules.js", include_str!("../ui/levels/rules.js")),
     ("guide.js", include_str!("../ui/levels/guide.js")),
+    ("lifecycle.js", include_str!("../ui/levels/lifecycle.js")),
 ];
 
 /// The user guide (GUIDE.md), compiled in; `#/guide` renders it.
@@ -334,8 +335,16 @@ async fn resize(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> 
     ok()
 }
 
-async fn stop(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    app.sup.stop(&id)?;
+#[derive(Deserialize, Default)]
+struct StopB {
+    /// Its servers too (SPEC.md, "Sixth build: E"); unset: as chosen once.
+    servers: Option<bool>,
+}
+
+async fn stop(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> ApiResult {
+    let b: StopB = if body.is_empty() { StopB::default() } else { parse_body(&body)? };
+    let sup = app.sup.clone();
+    blocking(move || sup.stop_with(&id, b.servers)).await?;
     ok()
 }
 

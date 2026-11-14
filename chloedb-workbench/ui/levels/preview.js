@@ -8,6 +8,7 @@ import {
   h, useStyle, agentColor, avatar, agentChip, ctxChip, pill, fmtAgo, fmtClock, toMs, onEscape, token, card, setFleet, throttle,
 } from "./common.js";
 import { mountLab } from "./preview-lab.js";
+import { serversBox } from "./lifecycle.js";
 
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 const URL_OK = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}(\/.*)?$/;
@@ -158,15 +159,26 @@ export function mount(root, ctx) {
       a?.preview_url ? h("button", { class: "btn ghost icon sm", title: "Reload", "aria-label": "Reload the preview", onclick: reload }, "↻") : null,
       a?.preview_url ? h("button", { class: "btn ghost sm", title: "Set another preview URL", onclick: () => { S.setting = true; renderFrame(); } }, "Change URL") : null,
       h("button", {
-        class: "pv-ov" + (S.overlay ? " on" : ""), "aria-pressed": S.overlay ? "true" : "false", title: "Label what each agent changed on this page",
+        class: "pv-ov" + (S.overlay ? " on" : ""), "aria-pressed": S.overlay ? "true" : "false", title: ovTitle(),
         onclick: (e) => {
           S.overlay = !S.overlay;
           e.currentTarget.classList.toggle("on", S.overlay);
           e.currentTarget.setAttribute("aria-pressed", String(S.overlay));
-          e.currentTarget.textContent = S.overlay ? "overlay: who and why" : "overlay off";
+          e.currentTarget.textContent = ovLabel();
+          e.currentTarget.title = ovTitle();
+          if (!S.overlay) closeBubble(false);
+          pickMode();
           drawLabels();
         },
-      }, S.overlay ? "overlay: who and why" : "overlay off"));
+      }, ovLabel()));
+  }
+  // Overlay off (SPEC.md, "Sixth build: E"): the page inside gets every
+  // click and key, as it would in its own tab; on, a click picks.
+  function ovLabel() { return S.overlay ? "overlay: who and why" : "overlay off: the page is yours"; }
+  function ovTitle() { return S.overlay ? "A click picks an element and asks its agent. Turn off to use the page itself." : "Clicks and keys go to the page. Turn on to label and pick what each agent changed."; }
+  function pickMode() {
+    if (!frame || !frame.contentWindow) return;
+    try { frame.contentWindow.postMessage({ type: "wb-pick-mode", on: !!S.overlay }, location.origin); } catch {}
   }
 
   function previewSrc(a) { return `/preview/${encodeURIComponent(a.id)}/?token=${encodeURIComponent(token(ctx))}`; }
@@ -217,6 +229,7 @@ export function mount(root, ctx) {
       if (t && a) t.textContent = hostOf(a.preview_url) + (p === "/" ? "" : p);
     } catch {}
     S.who = [];
+    pickMode();
     askWho();
   }
   function askWho() {
@@ -266,7 +279,7 @@ export function mount(root, ctx) {
 
   // --------------------------------------------------------------- picking
   async function onPick(p) {
-    if (!p || !p.rect) return;
+    if (!p || !p.rect || !S.overlay) return;
     S.pick = p; S.route = null; S.routeErr = null;
     openBubble();
     try {
@@ -363,7 +376,21 @@ export function mount(root, ctx) {
   // ------------------------------------------------------------------ side
   function renderSide() {
     if (!side) return;
-    side.replaceChildren(...[changesCard(), sinceCard(), sentCard()].filter(Boolean));
+    side.replaceChildren(...[serversCard(), changesCard(), sinceCard(), sentCard()].filter(Boolean));
+  }
+  // The servers the agent started (SPEC.md, "Sixth build: E"), one box per
+  // agent shown, kept across renders; hidden while it has none.
+  let srv = null;
+  function serversCard() {
+    if (!S.agentId) return null;
+    if (!srv || srv.agent !== S.agentId) {
+      srv?.box.destroy();
+      const box = serversBox(ctx.api, S.agentId, { title: "Servers it started", onChange: (list) => { c.hidden = !list.length; } });
+      const c = card(null, null, box.el, h("p", { class: "pv-p lv-sub" }, "When you stop the agent, Workbench asks whether these stop too."));
+      c.hidden = true;
+      srv = { agent: S.agentId, box, card: c };
+    }
+    return srv.card;
   }
 
   function fileStats(agentId, path) {
@@ -429,7 +456,7 @@ export function mount(root, ctx) {
     if (!frame || e.source !== frame.contentWindow || !e.data || typeof e.data !== "object") return;
     if (e.origin !== location.origin) return;
     if (e.data.type === "wb-pick") onPick(e.data);
-    else if (e.data.type === "wb-ready") askWho(); // a page loaded inside the frame (its load event may come later)
+    else if (e.data.type === "wb-ready") { pickMode(); askWho(); } // a page loaded inside the frame (its load event may come later)
     else if (e.data.type === "wb-who") {
       if (e.data.id != null && e.data.id !== S.whoId) return; // an answer to an older ask
       S.who = (e.data.items || e.data.elements || []).filter((x) => x && x.rect);
@@ -457,6 +484,7 @@ export function mount(root, ctx) {
     },
     unmount() {
       refreshSide.cancel();
+      srv?.box.destroy();
       window.removeEventListener("message", onMessage);
       window.removeEventListener("resize", onResize);
       dropEsc?.();

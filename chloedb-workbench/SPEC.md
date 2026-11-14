@@ -2404,3 +2404,180 @@ below names what changed, the test that holds it, and what is left out.
 - The diff has one Why? button. It sits on the added line under the
   pointer, else on the cursor's line, so a page of 91 added lines shows
   one. `y` and Alt-click work as before.
+
+## Sixth build: E
+
+Agent lifecycle, Preview, read-only agents and grounded autocomplete. The
+tests are in `tests/workbench.rs`
+(`restart_starts_an_exited_agent_again_in_its_worktree_and_session`,
+`read_only_agents_and_path_guards_refuse_changes`,
+`an_agents_servers_are_listed_and_stopped_with_it`,
+`a_done_check_is_its_own_clause_and_a_ghost_names_only_what_exists`). The
+unit tests of `guarded.rs`, `complete.rs`, `complete/foresee.rs` and
+`preview/servers.rs` cover the rest.
+
+### 1. Restart
+
+`POST /api/agents/:id/restart {prompt?}` starts an exited agent again. It
+keeps the agent's:
+
+- name, task, worktree and branch;
+- model, goal and read-only flag;
+- outcome, unless another agent took it since;
+- parent, if that one still runs.
+
+When the old session's transcript is on disk, Claude Code gets
+`--session-id <new> --resume <old> --fork-session`. It continues the
+conversation under a new session id, so the two agents' events stay
+apart.
+
+- If the old session ended mid-turn (its last hook was not Stop), the
+  first prompt says "Workbench restarted this session after it ended.
+  Carry on with your task where you left off."
+- Otherwise the agent waits at the prompt.
+- Without a transcript, the task is the first prompt again.
+
+The answer is 409 when the agent runs, or when a running agent has its
+name in its repository.
+
+The new agent carries `restarted_from` and `resumed` (the session it
+continues), kept in the mark `agent-extra:<id>`. Its `spawned` event says
+"restart of <id>, continuing its session".
+
+In the UI:
+
+- An exited agent's zoom has Restart where Stop was.
+- When the new agent appears, the old agent's zoom, Preview and Ship move
+  to it (`followLive`, by `restarted_from`).
+- A level opened without an agent picks the live agent of the name
+  (`liveId`).
+- The task text is the old agent's.
+
+### 2. Agents' servers
+
+A server is a process that listens on a TCP port and belongs to an agent.
+It belongs to the agent when either:
+
+- its environment has `CHLOEDB_WORKBENCH_AGENT=<id>`, so a server started
+  with `setsid` or `nohup` is found too; or
+- it descends from the agent's process.
+
+On Linux they are read from `/proc` (`net/tcp`, `net/tcp6`, the sockets in
+`fd/`, `environ` and `stat`); elsewhere from `lsof` and `ps`.
+
+The routes:
+
+- `GET /api/servers?agent=` lists them: agent, command, ports, since, cwd,
+  and whether it serves the agent's preview.
+- `POST /api/servers/:pid/stop` stops one the scan finds: SIGTERM to its
+  process group, then SIGKILL after 3 s.
+- `POST /api/agents/:id/stop {servers}` stops them with the agent.
+- `PUT /api/servers/policy {on_stop}` sets the policy: `stop`, `keep`, or
+  empty.
+
+Without the `servers` flag, the policy decides on Stop; an empty policy
+stops them. An agent that ends by itself stops its servers only under
+`stop`. Each stop is a `servers_stopped` event.
+
+The UI lists them in the zoom's facts and in Preview's side panel. The
+stop dialog asks once ("Stop them too"), with Remember.
+
+### 3. Preview overlay
+
+Overlay off now sends `{type: "wb-pick-mode", on: false}` to the page: on
+toggle, on load and on `wb-ready`. The overlay script stops taking clicks,
+so every click and key reaches the app, and a pick that arrives while the
+overlay is off is ignored. The button says "overlay off: the page is
+yours".
+
+The stray "null" under the frame came from the runtime strip's
+`replaceChildren(..., null)`, which writes the text "null". It is now
+filtered out.
+
+### 4. Read-only agents and path guards
+
+`POST /api/agents {read_only: true}` is the New agent dialog's Read-only.
+
+- Edit, Write, MultiEdit and NotebookEdit go into the session's
+  `permissions.deny`, and the PreToolUse hook refuses them too.
+- Bash runs only commands that read. Each simple command must be on the
+  read list: `cat`, `rg`, `ls`, `git log|diff|show|status|…`, `find`
+  without `-delete` or `-exec`, `sed` without `-i`, and so on.
+- A command with `$(…)`, backticks or a redirect to a file is denied.
+- Anything else is denied with a reason that points to `propose_change`.
+- An agent that a read-only agent starts is read-only too.
+
+The intent check marks a task that says it changes nothing ("read-only",
+"don't change any files", …). The mark offers "Start it read-only", which
+ticks the box.
+
+The guarded list (`PUT /api/guarded`) takes rules of kind `path` beside
+`prefix`. A pattern is read as `.gitignore` reads it: `money.py` matches
+anywhere, and `migrations/**` and `*.lock` work as there. With a path rule:
+
+- Edit-family tools on a matching file are denied.
+- A Bash command that names a matching file, and does not only read, is
+  denied.
+
+The Decide screen's guarded list has "Add a path".
+
+### 5. Grounded autocomplete
+
+The model's context now has the repository's files (up to 60) and the four
+code chunks nearest the text (`code_chunks`, BM25). Its prompt says to
+name only what the context shows.
+
+Every ghost the model writes is checked before it is offered:
+
+- each file name must be a tracked file;
+- each identifier (`snake_case`, `camelCase`, `name()`) must be in the
+  code or the context;
+- each other word of four letters or more must be in one of: the code
+  (`git grep -w -i`, with its forms), the text, the context, the memory's
+  records, or the language of tasks.
+
+A ghost with any other name is dropped: the answer has `ghost: null`,
+`dropped: {text, names}` and a reason. So it never becomes the Tab
+default. A checked ghost carries `checked: true`, and the page offers a
+model ghost only then.
+
+### 6. "Add a done check"
+
+Where the clause goes:
+
+- at the end of a complete sentence, after a space;
+- when the text ends mid-sentence, after the last complete sentence;
+- when no sentence is complete, nowhere: the card says to finish the
+  sentence first and offers no fix.
+
+What it says:
+
+- A task that changes code gets "Done when `<test command>` passes.", or
+  "Done when a test shows it works."
+- A task that asks for an answer and changes nothing (or is read-only)
+  gets "Done when it answers: <what it asks>." and no test.
+
+### 7. The repository box
+
+The New agent dialog's repository box is a one-row textarea that grows and
+wraps, so the whole path shows. It completes from the recent repositories
+and from part D's `GET /api/repos/dirs?q=`, git repositories first. Enter
+or Tab takes a suggestion, and a folder opens its children.
+
+### Left out
+
+- Restart is in the UI and the API, not an MCP tool. Nothing restarts
+  every agent at once after a server restart.
+- Servers are tested on Linux only; CI does not run the macOS path (`lsof`
+  and `ps`). A server is not found if its process left the agent's tree
+  and dropped `CHLOEDB_WORKBENCH_AGENT` from its environment.
+- The read-only Bash check is a list of commands, so a read command it
+  does not know is refused (the agent can propose it).
+- Path guards see a file in Bash only when the command names it as a word.
+  A script that writes the file is not caught.
+- The grounding check is lexical. A word that is in the code passes in
+  any sense, and words under four letters pass. The deterministic ghost,
+  built from the records, is not checked.
+- The repository box needs part D's `/api/repos/dirs`. Without it (a 404)
+  it completes from the recent repositories only. For the screenshots, the
+  test harness answered that route from the real scratch folder.

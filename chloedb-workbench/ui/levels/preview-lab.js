@@ -195,12 +195,13 @@ export function mountLab(host, ctx, getAgent) {
     strip.classList.toggle("open", L.errOpen && errs.length > 0);
     strip.classList.toggle("ok", !errs.length);
     if (!errs.length) {
-      strip.replaceChildren(h("div", { class: "pvl-sh" },
+      // replaceChildren writes a null as the text "null" (SPEC.md, "Sixth build: E").
+      strip.replaceChildren(...[h("div", { class: "pvl-sh" },
         h("span", { class: "pvl-dot ok", "aria-hidden": "true" }),
         h("b", null, "No runtime errors"),
         h("span", { class: "lv-sub pvl-trunc" }, L.errMissing ? ` · ${L.errMissing}` : " · what the page throws, its 5xx and its server's OTLP logs show up here, with the edit that probably caused them"),
         h("button", { class: "lv-link pvl-hintb", onclick: () => { L.hint = !L.hint; renderStrip(); } }, L.hint ? "Hide" : "Server logs?")),
-      L.hint ? otlpHint() : null);
+      L.hint ? otlpHint() : null].filter(Boolean));
       return;
     }
     const top = errs[0];

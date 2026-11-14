@@ -47,7 +47,7 @@ const KINDS = {
 const CTX_KINDS = new Set(["decision", "preference", "fact", "rule"]);
 const MARK_TITLE = {
   no_done_check: "No done check", contradicts: "Goes against a decision", guarded: "Reaches a guarded command", overlap: "Overlaps a running agent",
-  hotspot: "A hotspot", unknown_ref: "Unknown reference", superseded: "Cites a superseded decision",
+  hotspot: "A hotspot", unknown_ref: "Unknown reference", superseded: "Cites a superseded decision", read_only: "Asks for no changes",
 };
 const TRACE_RE = /^\s*(when|why|how|who)\b|\bchang/i;
 /** The boxes a ghost sentence is offered in. */
@@ -343,6 +343,9 @@ function make(input, opts0) {
     try { d = await api("/api/complete/ghost", { method: "POST", body: { text, field: field(), repo: repo() || undefined, agent: agent() || undefined, user: user(), ghost: S.ghost && S.ghost.at === text ? S.ghost.text : undefined } }); } catch { return; }
     if (d && d.available === false) { modelOff = true; return; }
     if (r !== S.greq || input.value !== text || !d || !d.ghost || !d.ghost.text) return;
+    // Grounded, or not offered (SPEC.md, "Sixth build: E"): a model's ghost
+    // becomes the one-key default only when the server checked its names.
+    if (d.ghost.source === "model" && d.ghost.checked !== true) return;
     setGhost({ ...d.ghost, at: text, parts: null });
   }, 700);
 
@@ -483,7 +486,7 @@ function make(input, opts0) {
     if (text === S.checked) return;
     const r = ++S.creq;
     let d;
-    try { d = await api("/api/intent/check", { method: "POST", body: { text, repo: repo(), field: field(), agent: agent() || undefined } }); } catch { return; }
+    try { d = await api("/api/intent/check", { method: "POST", body: { text, repo: repo(), field: field(), agent: agent() || undefined, ...(O.checkExtra ? O.checkExtra() : {}) } }); } catch { return; }
     if (r !== S.creq || input.value !== text) return;
     S.checked = text;
     S.marks = d.marks || [];
@@ -529,6 +532,8 @@ function make(input, opts0) {
   function applyFix(fix) {
     if (layers) layers.card.hidden = true;
     if (fix.go) { const go = O.onGo || (O.ctx && O.ctx.go); if (go) go(fix.go); return; }
+    // A fix that sets a field of the form ("Start it read-only"), not the text.
+    if (fix.set) { if (O.onSet) O.onSet(fix.set); S.checked = ""; check(); return; }
     const edits = [...(fix.edits || [])].sort((a, b) => b.start - a.start);
     if (!edits.length) return;
     input.focus();

@@ -142,7 +142,7 @@ pub fn rules_of(sup: &Supervisor, repo: &str) -> Vec<GuardRule> {
         .iter()
         .map(|(id, label, _)| GuardRule { id: id.to_string(), kind: "builtin".into(), label: label.to_string(), on: saved.iter().find(|s| s.id == *id).is_none_or(|s| s.on) })
         .collect();
-    out.extend(saved.into_iter().filter(|s| s.kind == "prefix" && !s.label.trim().is_empty()));
+    out.extend(saved.into_iter().filter(|s| (s.kind == "prefix" || s.kind == "path") && !s.label.trim().is_empty()));
     out
 }
 
@@ -154,6 +154,7 @@ fn rules_json(sup: &Supervisor, repo: &str) -> Json {
         .map(|r| {
             let detail = match BUILTINS.iter().find(|b| b.0 == r.id && r.kind == "builtin") {
                 Some(b) => b.2.replace("{default}", &def),
+                None if r.kind == "path" => "files that match this path: agents may read them, not change them".into(),
                 None => "commands that start with these words".into(),
             };
             json!({ "id": r.id, "kind": r.kind, "label": r.label, "detail": detail, "on": r.on })
@@ -470,23 +471,272 @@ pub fn matches(cmd: &str, cwd: &Path, root: &Path, rules: &[GuardRule], default:
     None
 }
 
-/// The PreToolUse hook's answer for a guarded Bash command: denied, with
-/// the reason Claude Code tells the agent; `None` for anything else.
+/// The tools that change files.
+const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// A read-only agent's settings: Claude Code denies it the tools that
+/// change files (and Workbench's hook does too, see [`check`]).
+pub fn read_only_settings(mut settings: Json) -> Json {
+    if !settings["permissions"].is_object() {
+        settings["permissions"] = json!({});
+    }
+    let mut deny: Vec<Json> = settings["permissions"]["deny"].as_array().cloned().unwrap_or_default();
+    for t in EDIT_TOOLS {
+        if !deny.iter().any(|d| d == t) {
+            deny.push(json!(t));
+        }
+    }
+    settings["permissions"]["deny"] = Json::Array(deny);
+    settings
+}
+
+/// A deny answer for PreToolUse.
+fn deny(reason: String) -> Json {
+    json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } })
+}
+
+/// The PreToolUse hook's answer: denied, with the reason Claude Code tells
+/// the agent, for a guarded Bash command, a read-only agent's edit or
+/// command that may write, and a change to a guarded path; `None` for
+/// anything else.
 pub fn check(sup: &Supervisor, id: &str, hook: &Json) -> Option<Json> {
-    if hook.get("hook_event_name").and_then(Json::as_str) != Some("PreToolUse") || hook.get("tool_name").and_then(Json::as_str) != Some("Bash") {
+    if hook.get("hook_event_name").and_then(Json::as_str) != Some("PreToolUse") {
         return None;
     }
-    let cmd = hook["tool_input"]["command"].as_str()?;
+    let tool = hook.get("tool_name").and_then(Json::as_str)?;
+    if tool != "Bash" && !EDIT_TOOLS.contains(&tool) {
+        return None;
+    }
     let a = sup.agent_row(id)?;
     let cwd = PathBuf::from(&a.cwd);
     let main = PathBuf::from(&a.repo);
     let rules = rules_of(sup, &a.repo);
-    let (rule, label) = matches(cmd, &cwd, &cwd, &rules, &default_branch(&main), crate::git::current_branch(&cwd).as_deref())?;
-    let _ = sup.note(id, "guarded", format!("guarded: {label}: {}", one_line(cmd, 160)), Some(json!({ "command": cmd, "rule": rule }).to_string()), |_| {});
-    let reason = format!(
-        "Workbench guards this command in this repository ({label}): only the user runs it. Propose it with the workbench tool propose_change (the command, and why it is needed), then carry on with what does not need it; you will be told the result when the user approves or declines. Do not try to run it another way."
-    );
-    Some(json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } }))
+    let read_only = sup.is_read_only(id);
+    let note = |what: String, data: Json| {
+        let _ = sup.note(id, "guarded", what, Some(data.to_string()), |_| {});
+    };
+    if tool != "Bash" {
+        let input = &hook["tool_input"];
+        let file = input["file_path"].as_str().or_else(|| input["notebook_path"].as_str()).unwrap_or("");
+        let rel = rel_path(&cwd, &main, file);
+        if read_only {
+            note(format!("guarded: read-only: {tool} {rel}"), json!({ "tool": tool, "path": file, "rule": "read-only" }));
+            return Some(deny(format!(
+                "This agent was started read-only in Workbench: it does not edit, write or create files ({tool} {rel} is refused). Say in your answer what you would change, and where, instead."
+            )));
+        }
+        let (rule, pat) = path_rule(&rules, &rel)?;
+        note(format!("guarded: path {pat}: {tool} {rel}"), json!({ "tool": tool, "path": file, "rule": rule }));
+        return Some(deny(path_reason(&pat, &rel)));
+    }
+    let cmd = hook["tool_input"]["command"].as_str()?;
+    if let Some((rule, label)) = matches(cmd, &cwd, &cwd, &rules, &default_branch(&main), crate::git::current_branch(&cwd).as_deref()) {
+        note(format!("guarded: {label}: {}", one_line(cmd, 160)), json!({ "command": cmd, "rule": rule }));
+        return Some(deny(format!(
+            "Workbench guards this command in this repository ({label}): only the user runs it. Propose it with the workbench tool propose_change (the command, and why it is needed), then carry on with what does not need it; you will be told the result when the user approves or declines. Do not try to run it another way."
+        )));
+    }
+    if is_read_command(cmd) {
+        return None;
+    }
+    if read_only {
+        note(format!("guarded: read-only: {}", one_line(cmd, 160)), json!({ "command": cmd, "rule": "read-only" }));
+        return Some(deny(format!(
+            "This agent was started read-only in Workbench: only commands that read run here (ls, cat, grep, rg, find, git log, git diff, …), and `{}` may change something. If it is needed, propose it with the workbench tool propose_change (the command, and why) and carry on reading; the user decides. Do not run it another way.",
+            one_line(cmd, 160)
+        )));
+    }
+    // A command that may write, naming a guarded path.
+    let mut here = cwd.clone();
+    for words in shell_split(cmd) {
+        let w = bare(&words);
+        if w.first().is_some_and(|x| x == "cd") {
+            here = w.get(1).map(|d| resolve(&here, d)).unwrap_or_else(|| PathBuf::from("/"));
+            continue;
+        }
+        if reads(&words) {
+            continue;
+        }
+        for x in w.iter().skip(1).filter(|x| !x.starts_with('-')) {
+            let x = x.trim_start_matches(['>', '<', '&']);
+            if x.is_empty() || x.contains("://") {
+                continue;
+            }
+            let full = resolve(&here, x);
+            let rel = rel_path(&cwd, &main, &full.to_string_lossy());
+            if let Some((rule, pat)) = path_rule(&rules, &rel) {
+                note(format!("guarded: path {pat}: {}", one_line(cmd, 160)), json!({ "command": cmd, "path": rel, "rule": rule }));
+                return Some(deny(path_reason(&pat, &rel)));
+            }
+        }
+    }
+    None
+}
+
+fn path_reason(pat: &str, rel: &str) -> String {
+    format!(
+        "Workbench guards `{pat}` in this repository (a path guard): only the user changes {rel}; you may read it. Do not change it another way. If the change is needed, ask the user with the workbench tool ask_human, quoting the change and why, and carry on with what does not need it."
+    )
+}
+
+/// A file's path in the repository: from the agent's worktree (or the main
+/// checkout), else as given.
+fn rel_path(cwd: &Path, main: &Path, file: &str) -> String {
+    let p = resolve(cwd, file);
+    for root in [cwd, main] {
+        if let Ok(r) = p.strip_prefix(root) {
+            return r.to_string_lossy().to_string();
+        }
+    }
+    p.to_string_lossy().to_string()
+}
+
+/// The path rule (its id and pattern) a file of the repository matches.
+fn path_rule(rules: &[GuardRule], rel: &str) -> Option<(String, String)> {
+    if rel.starts_with('/') {
+        return None;
+    }
+    rules.iter().filter(|r| r.on && r.kind == "path").find(|r| path_matches(&r.label, rel)).map(|r| (r.id.clone(), r.label.clone()))
+}
+
+/// Whether a repository path matches a guard's pattern, as .gitignore
+/// reads one: `*` within a name, `**` across folders, `?` one character; a
+/// pattern without a `/` matches a name at any depth (`money.py`); one
+/// with a `/` is from the repository's root (`migrations/**`); a folder
+/// matches everything under it.
+pub fn path_matches(pattern: &str, rel: &str) -> bool {
+    let pat = pattern.trim().trim_start_matches("./").trim_start_matches('/').trim_end_matches('/');
+    if pat.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = rel.split('/').filter(|c| !c.is_empty() && *c != ".").collect();
+    if pat.contains('/') {
+        // From the root: the path, or a folder that holds it.
+        (1..=parts.len()).any(|n| glob(pat.as_bytes(), parts[..n].join("/").as_bytes()))
+    } else {
+        // A name at any depth: the file, or a folder on its way.
+        parts.iter().any(|c| glob(pat.as_bytes(), c.as_bytes()))
+    }
+}
+
+fn glob(p: &[u8], s: &[u8]) -> bool {
+    match p.first() {
+        None => s.is_empty(),
+        Some(b'*') if p.get(1) == Some(&b'*') => {
+            let rest = p[2..].strip_prefix(b"/").unwrap_or(&p[2..]);
+            (0..=s.len()).any(|i| (i == 0 || s[i - 1] == b'/' || rest.is_empty()) && glob(rest, &s[i..])) || glob(rest, s)
+        }
+        Some(b'*') => (0..=s.len()).take_while(|&i| i == 0 || s[i - 1] != b'/').any(|i| glob(&p[1..], &s[i..])),
+        Some(b'?') => s.first().is_some_and(|c| *c != b'/') && glob(&p[1..], &s[1..]),
+        Some(c) => s.first() == Some(c) && glob(&p[1..], &s[1..]),
+    }
+}
+
+/// Whether a shell command only reads: every simple command in it is one
+/// of the commands that read (`ls`, `cat`, `grep`, `rg`, `find` without
+/// `-delete` or `-exec`, `sed` without `-i`, `git log`/`diff`/`show`/…),
+/// with no redirection into a file and no command substitution.
+pub fn is_read_command(cmd: &str) -> bool {
+    if cmd.contains("$(") || cmd.contains('`') || writes_redirect(cmd) {
+        return false;
+    }
+    // Redirections that write nothing, which the splitter would cut at `&`.
+    let mut cmd = cmd.to_string();
+    for r in ["&>/dev/null", "2>/dev/null", "2> /dev/null", "1>/dev/null", ">/dev/null", "> /dev/null", "2>&1", "1>&2", ">&2"] {
+        cmd = cmd.replace(r, " ");
+    }
+    let cmd = cmd.as_str();
+    shell_split(cmd).iter().all(|w| reads(w))
+}
+
+/// Whether one simple command only reads (see [`is_read_command`]).
+fn reads(words: &[String]) -> bool {
+    const READ: [&str; 52] = [
+        "ls", "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ag", "ack", "tree", "wc", "file", "stat", "du", "df", "pwd", "echo", "printf", "which", "type", "whereis",
+        "whoami", "date", "uname", "cut", "tr", "diff", "cmp", "comm", "jq", "basename", "dirname", "realpath", "readlink", "nl", "column", "xxd", "hexdump", "od", "strings", "true", "false", "test",
+        "[", "printenv", "id", "fd", "tokei", "cloc",
+    ];
+    {
+        let w = bare(words);
+        let Some(first) = w.first() else { return true };
+        let name = base_name(first);
+        let args = &w[1..];
+        let has = |f: &[&str]| args.iter().any(|a| f.iter().any(|x| a == x || a.starts_with(&format!("{x}="))));
+        match name {
+            "cd" => true,
+            n if READ.contains(&n) => true,
+            "sort" => !has(&["-o", "--output"]),
+            "uniq" => args.iter().filter(|a| !a.starts_with('-')).count() <= 1,
+            "find" => !has(&["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]),
+            "sed" => !args.iter().any(|a| a.starts_with("-i") || a.starts_with("--in-place") || (a.starts_with('-') && !a.starts_with("--") && a.contains('i') && a.len() <= 4)),
+            "awk" | "gawk" | "mawk" => !args.iter().any(|a| a.contains("system") || a.contains('>') || a.contains("getline") || a == "-i" || a.starts_with("--inplace")),
+            "git" => git_reads(args),
+            "cargo" => matches!(args.first().map(String::as_str), Some("tree" | "metadata" | "--version")),
+            "npm" | "pnpm" | "yarn" => matches!(args.first().map(String::as_str), Some("ls" | "list" | "view" | "why" | "outdated" | "--version")),
+            "pip" | "pip3" => matches!(args.first().map(String::as_str), Some("list" | "show" | "freeze")),
+            _ => false,
+        }
+    }
+}
+
+/// Whether a git command only reads.
+fn git_reads(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        i += if matches!(args[i].as_str(), "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
+    }
+    let Some(sub) = args.get(i).map(String::as_str) else { return true };
+    let rest = &args[i + 1..];
+    let flags_only = |deny: &[&str]| rest.iter().all(|a| a.starts_with('-') && !deny.iter().any(|d| a == d || a.starts_with(&format!("{d}="))));
+    match sub {
+        "log" | "show" | "diff" | "status" | "blame" | "grep" | "ls-files" | "ls-tree" | "rev-parse" | "describe" | "shortlog" | "cat-file" | "rev-list" | "merge-base" | "name-rev" | "whatchanged" | "annotate" | "cherry" | "count-objects" | "for-each-ref" | "show-ref" | "version" | "help" => !rest.iter().any(|a| a == "--output" || a.starts_with("--output=")),
+        "branch" => flags_only(&["-d", "-D", "-m", "-M", "-c", "-C", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "-u", "--unset-upstream", "--edit-description"]) || rest.first().is_some_and(|a| a == "--list" || a == "-l"),
+        "tag" => rest.is_empty() || rest.first().is_some_and(|a| a == "-l" || a == "--list"),
+        "remote" => rest.is_empty() || rest.iter().all(|a| a == "-v" || a == "--verbose") || rest.first().is_some_and(|a| a == "show" || a == "get-url"),
+        "stash" => rest.first().is_some_and(|a| a == "list" || a == "show"),
+        "worktree" => rest.first().is_some_and(|a| a == "list"),
+        "config" => rest.iter().any(|a| matches!(a.as_str(), "--get" | "--get-all" | "--get-regexp" | "--list" | "-l")),
+        "reflog" => rest.first().is_none_or(|a| a == "show" || a.starts_with('-')),
+        _ => false,
+    }
+}
+
+/// Whether a command redirects output into a file (`>`, `>>`, `&>`): not
+/// into `/dev/null`, a descriptor (`2>&1`), or inside quotes.
+fn writes_redirect(cmd: &str) -> bool {
+    let b: Vec<char> = cmd.chars().collect();
+    let (mut sq, mut dq) = (false, false);
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '\\' if !sq => i += 1,
+            '\'' if !dq => sq = !sq,
+            '"' if !sq => dq = !dq,
+            '>' if !sq && !dq => {
+                let mut j = i + 1;
+                if b.get(j) == Some(&'>') || b.get(j) == Some(&'|') {
+                    j += 1;
+                }
+                if b.get(j) == Some(&'&') {
+                    i = j + 1;
+                    continue;
+                }
+                while b.get(j).is_some_and(|c| c.is_whitespace()) {
+                    j += 1;
+                }
+                let target: String = b[j..].iter().take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')')).collect();
+                if target != "/dev/null" && target != "/dev/stderr" && target != "/dev/stdout" {
+                    return true;
+                }
+                i = j;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 // Change requests.
@@ -976,15 +1226,22 @@ async fn guarded_put(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
             if BUILTINS.iter().any(|x| x.0 == id) {
                 saved.push(json!({ "id": id, "kind": "builtin", "on": on }));
             } else {
-                let label = r["label"].as_str().unwrap_or("").trim().to_string();
+                let path = r["kind"].as_str() == Some("path");
+                let mut label = r["label"].as_str().unwrap_or("").trim().to_string();
+                if path {
+                    label = label.trim_start_matches("./").to_string();
+                    if label.split('/').any(|c| c == "..") {
+                        return Err(ApiError::bad(format!("a guarded path is inside the repository: {label:?} has `..`")));
+                    }
+                }
                 if label.is_empty() {
                     continue;
                 }
                 if label.len() > 200 {
-                    return Err(ApiError::bad("a guarded prefix is at most 200 bytes"));
+                    return Err(ApiError::bad("a guarded prefix or path is at most 200 bytes"));
                 }
-                let id = if id.is_empty() || id.len() > 40 { format!("p{}", hex(4)) } else { id.to_string() };
-                saved.push(json!({ "id": id, "kind": "prefix", "label": label, "on": on }));
+                let id = if id.is_empty() || id.len() > 40 { format!("{}{}", if path { "f" } else { "p" }, hex(4)) } else { id.to_string() };
+                saved.push(json!({ "id": id, "kind": if path { "path" } else { "prefix" }, "label": label, "on": on }));
             }
         }
         sup.set_mark(&mark_key(&repo), &Json::Array(saved).to_string())?;
@@ -1121,6 +1378,59 @@ mod tests {
         let (r, why) = risk_of(None, "make thing", &json!(null), Some("high"));
         assert_eq!((r.as_str(), why.len()), ("high", 1));
         assert_eq!(last_lines("abcdef", 3), "…def");
+    }
+
+    #[test]
+    fn read_commands_and_path_guards() {
+        for c in [
+            "ls -la",
+            "cat money.py | grep -n round",
+            "rg -n 'to_cents' . 2>/dev/null",
+            "git log --oneline -5 && git diff HEAD~1 -- money.py",
+            "find . -name '*.py' -not -path './.git/*'",
+            "sed -n '1,40p' cart.py",
+            "cd web && ls",
+            "git branch -a",
+            "grep -rn fmt . | head -20",
+            "wc -l *.py 2>&1",
+        ] {
+            assert!(is_read_command(c), "{c}");
+        }
+        for c in [
+            "echo x > money.py",
+            "cat a >> b",
+            "sed -i 's/a/b/' money.py",
+            "python3 serve.py",
+            "rm money.py",
+            "find . -name '*.pyc' -delete",
+            "git commit -am x",
+            "git branch new-one",
+            "cat money.py | tee copy.py",
+            "echo $(rm -rf x)",
+            "pytest -q",
+            "awk '{print > \"out\"}' f",
+        ] {
+            assert!(!is_read_command(c), "{c}");
+        }
+        assert!(!writes_redirect("echo 'a > b'"));
+        for (p, f, want) in [
+            ("money.py", "money.py", true),
+            ("money.py", "lib/money.py", true),
+            ("money.py", "money.pyc", false),
+            ("migrations/**", "migrations/0001_init.sql", true),
+            ("migrations/**", "app/migrations/x.sql", false),
+            ("migrations", "app/migrations/x.sql", true),
+            ("*.sql", "db/schema.sql", true),
+            ("src/*.rs", "src/a/b.rs", false),
+            ("src/**/*.rs", "src/a/b.rs", true),
+            ("src/**/*.rs", "src/b.rs", true),
+            ("web/", "web/index.html", true),
+        ] {
+            assert_eq!(path_matches(p, f), want, "{p} {f}");
+        }
+        let s = read_only_settings(json!({ "hooks": {}, "permissions": { "allow": ["Bash(pytest:*)"] } }));
+        assert_eq!(s["permissions"]["deny"], json!(["Edit", "Write", "MultiEdit", "NotebookEdit"]));
+        assert_eq!(s["permissions"]["allow"], json!(["Bash(pytest:*)"]));
     }
 
     #[test]

@@ -20,7 +20,7 @@ const isToday = (t) => new Date(toMs(t) || 0).toDateString() === new Date().toDa
 export function changeRequests(ctx) {
   if (sections.has(ctx)) return sections.get(ctx).el;
   const S = {
-    repo: repoOf(ctx), list: [], guarded: null, loaded: false, error: null, edit: false, draft: null, newPrefix: "",
+    repo: repoOf(ctx), list: [], guarded: null, loaded: false, error: null, edit: false, draft: null, newPrefix: "", newPath: "",
     busy: new Set(), confirm: null, declining: null, reason: "", open: new Set(), note: null, saving: false,
   };
   const el = h("section", { class: "cr-sec", "aria-label": "Change requests" });
@@ -175,16 +175,28 @@ export function changeRequests(ctx) {
       S.newPrefix = ""; render();
       requestAnimationFrame(() => el.querySelector(".cr-addin")?.focus());
     };
+    // A path guard (SPEC.md, "Sixth build: E"): files agents may read, not change.
+    const addPath = () => {
+      const t = S.newPath.trim().replace(/^\.\//, "");
+      if (!t) return;
+      rules.push({ id: null, kind: "path", label: t, detail: "files that match this path: agents may read them, not change them", on: true });
+      S.newPath = ""; render();
+      requestAnimationFrame(() => el.querySelector(".cr-addpath")?.focus());
+    };
+    const own = (r) => r.kind === "prefix" || r.kind === "path";
     return h("div", { class: "cr-ed" },
       h("div", { class: "cr-edh" }, h("b", {}, "Guarded in ", h("code", {}, (S.guarded && S.guarded.repo ? S.guarded.repo.split("/").pop() : "this repository"))),
-        h("span", { class: "cr-mut" }, "An agent's Bash command that matches one is denied and comes here as a request.")),
+        h("span", { class: "cr-mut" }, "An agent's Bash command that matches one is denied and comes here as a request; a guarded path is a file agents may read but not change.")),
       h("div", { class: "cr-rules" }, rules.map((r, i) => h("label", { class: "cr-rule" },
         h("input", { type: "checkbox", checked: r.on, onchange: (e) => { r.on = e.target.checked; } }),
-        h("span", {}, r.kind === "prefix" ? h("code", {}, r.label) : h("b", {}, r.label), h("small", {}, r.detail || "")),
-        r.kind === "prefix" ? h("button", { class: "cr-x", type: "button", "aria-label": `Remove ${r.label}`, onclick: (e) => { e.preventDefault(); rules.splice(i, 1); render(); } }, "×") : null))),
+        h("span", {}, own(r) ? h("code", {}, r.label) : h("b", {}, r.label), h("small", {}, r.detail || "")),
+        own(r) ? h("button", { class: "cr-x", type: "button", "aria-label": `Remove ${r.label}`, onclick: (e) => { e.preventDefault(); rules.splice(i, 1); render(); } }, "×") : null))),
       h("div", { class: "cr-addrow" },
         h("input", { class: "cr-in cr-addin", type: "text", placeholder: "Add a command: make release, ./scripts/seed-prod …", value: S.newPrefix, oninput: (e) => { S.newPrefix = e.target.value; }, onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } } }),
-        h("button", { class: "btn sm", onclick: add }, "Add"),
+        h("button", { class: "btn sm", onclick: add }, "Add")),
+      h("div", { class: "cr-addrow" },
+        h("input", { class: "cr-in cr-addpath", type: "text", placeholder: "Add a path: money.py, migrations/**", value: S.newPath, oninput: (e) => { S.newPath = e.target.value; }, onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); addPath(); } } }),
+        h("button", { class: "btn sm", onclick: addPath }, "Add path"),
         h("span", { class: "cr-sp" }),
         h("button", { class: "btn sm ghost", onclick: () => { S.edit = false; S.draft = null; render(); } }, "Cancel"),
         h("button", { class: "btn sm primary", disabled: S.saving, onclick: saveGuarded }, S.saving ? "Saving…" : "Save")));

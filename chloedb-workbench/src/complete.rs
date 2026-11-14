@@ -1367,6 +1367,8 @@ pub struct CheckB {
     pub repo: Option<String>,
     pub field: Option<String>,
     pub agent: Option<String>,
+    /// The New agent dialog's Read-only box: the task is read-only.
+    pub read_only: Option<bool>,
 }
 
 pub fn check(sup: &Arc<Supervisor>, b: CheckB) -> Result<Json, ApiError> {
@@ -1476,6 +1478,23 @@ pub fn check(sup: &Arc<Supervisor>, b: CheckB) -> Result<Json, ApiError> {
     // No done check: a task or a goal that says nothing of how the agent
     // knows it is finished.
     let ws = words(&text);
+    // A task that says not to change files (SPEC.md, "Sixth build: E"):
+    // nothing stops a session from editing, unless it starts read-only.
+    let said_ro = said_read_only(&text);
+    if field == "task" && b.read_only != Some(true) {
+        if let Some((s, e)) = said_ro {
+            marks.push(Mark {
+                start: s,
+                end: e,
+                severity: "info",
+                kind: "read_only",
+                message: "You ask it not to change files, but words do not stop a session from editing. Start it read-only: Workbench then refuses its Edit and Write, and runs only commands that read.".into(),
+                fix: Some(json!({ "label": "Start it read-only", "set": { "read_only": true } })),
+                refj: None,
+            });
+        }
+    }
+    let read_only_task = b.read_only == Some(true) || said_ro.is_some() || (asks_answer(&text) && !changes_code(&text));
     if matches!(field.as_str(), "task" | "goal") && ws.len() >= 3 {
         if !foresee::has_done(&text) {
             let end = text.find(['.', ',', ';', ':', '!', '?', '\n']).unwrap_or(text.len());
@@ -1495,20 +1514,34 @@ pub fn check(sup: &Arc<Supervisor>, b: CheckB) -> Result<Json, ApiError> {
             }
             let start = text.len() - text.trim_start().len();
             let named: Vec<String> = file_refs.iter().map(|f| f.2.clone()).collect();
-            let cmd = foresee::covering(sup, &repo, &main, &named).map(|c| c.0).or_else(|| done_command(sup, &repo, &main, &file_refs));
-            let tail = if text.trim_end().ends_with(['.', '!', '?']) { " " } else { ". " };
-            let at = text.trim_end().len();
-            let (label, add) = match &cmd {
-                Some(c) => (format!("Add done check: {c} passes"), format!("{tail}Done when `{c}` passes.")),
-                None => ("Add a done check".to_string(), format!("{tail}Done when a test shows it works.")),
+            // A test only for a task that changes code; a question is done
+            // when it is answered.
+            let cmd = if read_only_task { None } else { foresee::covering(sup, &repo, &main, &named).map(|c| c.0).or_else(|| done_command(sup, &repo, &main, &file_refs)) };
+            let (label, clause) = match (&cmd, read_only_task) {
+                (Some(c), _) => (format!("Add done check: {c} passes"), format!("Done when `{c}` passes.")),
+                (None, true) => match answers_what(&text) {
+                    Some(q) => (format!("Add: done when it answers {q}"), format!("Done when it answers: {q}.")),
+                    None => ("Add a done check".to_string(), "Done when it has answered in its reply, changing no file.".to_string()),
+                },
+                (None, false) => ("Add a done check".to_string(), "Done when a test shows it works.".to_string()),
             };
+            // As a clause of its own, after the last complete sentence: never
+            // glued onto one still being written.
+            let fix = done_insert(&text).map(|(at, lead)| json!({ "label": label, "edits": [{ "start": at, "end": at, "text": format!("{lead}{clause}") }] }));
+            let open = sentence_open(&text);
             marks.push(Mark {
                 start,
                 end: cut.max(start + 1).min(text.len()),
                 severity: "warning",
                 kind: "no_done_check",
-                message: "Nothing says how the agent knows it is done: a test that passes, or something you can see. Without one it stops when it thinks it is finished.".into(),
-                fix: Some(json!({ "label": label, "edits": [{ "start": at, "end": text.len(), "text": add }] })),
+                message: if fix.is_none() && open {
+                    "Nothing says how the agent knows it is done. Finish the sentence, then add a done check: a test that passes, or (for a question) what the answer must say.".into()
+                } else if read_only_task {
+                    "Nothing says how the agent knows it is done: say what the answer must cover, so it stops when it has answered.".into()
+                } else {
+                    "Nothing says how the agent knows it is done: a test that passes, or something you can see. Without one it stops when it thinks it is finished.".into()
+                },
+                fix,
                 refj: cmd.map(|c| json!({ "command": c })),
             });
         }
@@ -1749,6 +1782,125 @@ pub fn check(sup: &Arc<Supervisor>, b: CheckB) -> Result<Json, ApiError> {
     Ok(json!({ "repo": repo, "field": field, "marks": marks_json, "refs": refs_json, "took_ms": (started.elapsed().as_secs_f64() * 10_000.0).round() / 10.0, "missing": missing }))
 }
 
+/// The words a sentence does not end on: it is still being written.
+const DANGLING: [&str; 52] = [
+    "from", "to", "the", "a", "an", "and", "or", "of", "in", "on", "with", "by", "for", "at", "into", "through", "about", "that", "which", "so", "but", "then", "when", "if", "because",
+    "as", "than", "via", "using", "like", "is", "are", "was", "my", "our", "its", "their", "this", "these", "those", "your", "where", "how", "what", "why", "who", "not", "no", "until", "after", "before", "while",
+];
+
+/// Whether the text's last sentence is unfinished: it ends on a word such
+/// as "from" or "the", or on a comma, colon or dash.
+fn sentence_open(text: &str) -> bool {
+    let t = text.trim_end();
+    if t.ends_with([',', ':', ';', '-', '(', '—', '–', '/']) {
+        return true;
+    }
+    if t.ends_with(['.', '!', '?', ')', '`', '"']) {
+        return false;
+    }
+    let last = t.rsplit(|c: char| !c.is_alphanumeric() && c != '\'').next().unwrap_or("").to_lowercase();
+    DANGLING.contains(&last.as_str())
+}
+
+/// Where a done clause goes (a byte offset, and what comes before it): at
+/// the end when the last sentence is complete, else after the last
+/// complete one; `None` when there is none yet.
+fn done_insert(text: &str) -> Option<(usize, &'static str)> {
+    let t = text.trim_end();
+    if !sentence_open(t) {
+        let lead = if t.ends_with(['.', '!', '?']) { " " } else { ". " };
+        return Some((t.len(), lead));
+    }
+    // The last sentence end before the unfinished one.
+    let cut = t.char_indices().filter(|(i, c)| matches!(c, '.' | '!' | '?' | '\n') && t[i + c.len_utf8()..].starts_with(char::is_whitespace)).map(|(i, c)| i + c.len_utf8()).last()?;
+    let before = t[..cut].trim_end();
+    if before.is_empty() {
+        return None;
+    }
+    let lead = if before.ends_with(['.', '!', '?']) { " " } else { ". " };
+    Some((before.len(), lead))
+}
+
+/// Words that change code; a task without one (or with each said against)
+/// asks for an answer, not a change.
+const CHANGE_WORDS: [&str; 32] = [
+    "fix", "add", "change", "make", "implement", "refactor", "write", "update", "remove", "delete", "rename", "edit", "create", "build", "move", "replace", "convert", "support", "migrate",
+    "bump", "upgrade", "rewrite", "introduce", "handle", "port", "wire", "patch", "drop", "extract", "split", "merge", "commit",
+];
+
+fn is_change_word(w: &str) -> bool {
+    CHANGE_WORDS.contains(&w)
+        || ["ing", "es", "ed", "s"].iter().any(|suf| w.strip_suffix(suf).filter(|b| b.len() >= 2).is_some_and(|b| CHANGE_WORDS.contains(&b) || CHANGE_WORDS.contains(&format!("{b}e").as_str())))
+}
+
+fn changes_code(text: &str) -> bool {
+    let t = text.to_lowercase();
+    if t.len() != text.len() {
+        return true;
+    }
+    let mut start = None;
+    for (i, c) in t.char_indices().chain(std::iter::once((t.len(), ' '))) {
+        if c.is_alphanumeric() {
+            start.get_or_insert(i);
+            continue;
+        }
+        if let Some(s) = start.take() {
+            if is_change_word(&t[s..i]) && !negated(&t, s, i - s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a task asks for an answer: "explain …", "how does …", a "?".
+fn asks_answer(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    answers_what(text).is_some()
+        || t.ends_with('?')
+        || ["how ", "why ", "what ", "where ", "which ", "who ", "when ", "does ", "is ", "can ", "explain", "describe", "summari", "review", "investigate", "look into", "find out"].iter().any(|w| t.starts_with(w) || t.contains(&format!(": {w}")) || t.contains(&format!(". {w}")))
+}
+
+/// Where a task says not to change files: "read-only", "do not edit",
+/// "don't change any files", "without changing", …
+fn said_read_only(text: &str) -> Option<(usize, usize)> {
+    let t = text.to_lowercase();
+    if t.len() != text.len() {
+        return None;
+    }
+    const SAYS: [&str; 16] = [
+        "read-only", "read only", "readonly", "do not edit", "don't edit", "dont edit", "do not change any", "don't change any", "without changing", "do not modify", "don't modify",
+        "no edits", "do not write", "don't write", "do not touch any file", "don't touch any file",
+    ];
+    SAYS.iter().filter_map(|s| t.find(s).map(|i| (i, i + s.len()))).min()
+}
+
+/// What a question-task asks, for "done when it answers: …": the words
+/// after "explain", "describe", … up to the end of its sentence, without
+/// an unfinished tail.
+fn answers_what(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    if t.len() != text.len() {
+        return None;
+    }
+    const ASK: [&str; 12] = ["explain ", "describe ", "summarize ", "summarise ", "tell me ", "show me ", "walk me through ", "document ", "find out ", "figure out ", "map out ", "list "];
+    let (i, n) = ASK.iter().filter_map(|a| t.find(a).map(|i| (i, a.len()))).min()?;
+    let mut q = text[i + n..].split(['.', '!', '?', '\n']).next().unwrap_or("").trim().to_string();
+    // Drop a tail still being written: back to the last comma, else word by word.
+    while sentence_open(&q) {
+        match q.rfind([',', ';', ':']) {
+            Some(c) if c > 0 && q[c + 1..].split_whitespace().count() <= 3 => q.truncate(c),
+            _ => match q.trim_end().rfind(' ') {
+                Some(c) => q.truncate(c),
+                None => q.clear(),
+            },
+        }
+        q = q.trim_end().trim_end_matches([',', ';', ':', '-']).to_string();
+    }
+    let words = q.split_whitespace().count();
+    (words >= 2 && q.len() <= 140).then_some(q)
+}
+
 /// Levenshtein's distance, in characters.
 fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
@@ -1905,6 +2057,30 @@ async fn check_route(State(app): State<App>, body: Bytes) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_done_check_goes_after_a_complete_sentence() {
+        let lee = "Read-only: explain how money flows through this shop, from ";
+        assert!(sentence_open(lee));
+        // No complete sentence yet: nowhere to put it.
+        assert_eq!(done_insert(lee), None);
+        // After the last complete one, as its own clause.
+        let t = "Read money.py and cart.py. Then explain how money flows through the shop, from";
+        let (at, lead) = done_insert(t).unwrap();
+        assert_eq!((&t[..at], lead), ("Read money.py and cart.py.", " "));
+        assert_eq!(done_insert("Fix the rounding in money.py"), Some((28, ". ")));
+        assert_eq!(done_insert("Fix the rounding in money.py.  "), Some((29, " ")));
+        // Read-only or a question: no test, an answer.
+        assert!(!changes_code(lee) && asks_answer(lee));
+        assert!(!asks_answer("Floor each line total in money.py"));
+        assert!(!changes_code("Do not edit any files. Read money.py and explain the rounding"));
+        assert!(changes_code("Fix the rounding in money.py"));
+        assert!(changes_code("Making totals use integer cents"));
+        assert_eq!(answers_what(lee).as_deref(), Some("how money flows through this shop"));
+        assert_eq!(answers_what("Explain why tax is 82 cents on $10.").as_deref(), Some("why tax is 82 cents on $10"));
+        assert_eq!(said_read_only("Do not edit any files. Read money.py"), Some((0, 11)));
+        assert_eq!(said_read_only("Fix it"), None);
+    }
 
     #[test]
     fn tokens_and_offsets() {

@@ -243,7 +243,41 @@ function upsert(a) {
   if (prev && prev.state !== a.state && a.state === "waiting" && S.zoomed !== a.id) {
     S.tiles.get(a.id)?.flash();
   }
+  if (!prev && a.running) followLive(a);
   schedule();
+}
+
+// A restart (SPEC.md, "Sixth build: E"): a view of an exited agent follows
+// the agent that now runs under its name, in its repository.
+function liveId(id) {
+  const a = S.agents.get(id);
+  if (!a || a.running) return id;
+  const next = [...S.agents.values()].filter((x) => x.running && x.id !== id && x.repo === a.repo && (x.restarted_from === id || (a.name && x.name === a.name)))
+    .sort((x, y) => (toMs(y.created) || 0) - (toMs(x.created) || 0))[0];
+  return next ? next.id : id;
+}
+function followLive(a) {
+  if (!a.restarted_from) return; // only a restart moves a view that is open
+  if (S.zoomed && S.zoomed === a.restarted_from) zoom(a.id, { history: "replace" });
+  else if (L.screen && (L.screen === "preview" || L.screen === "ship") && L.param === a.restarted_from) openLevel(L.screen, a.id, { how: "replace", query: L.query || "" });
+}
+
+async function restartAgent(id) {
+  const a = S.agents.get(id);
+  if (!a || a.running) return;
+  $("z-restart").disabled = true;
+  try {
+    const r = await api(`/api/agents/${encodeURIComponent(id)}/restart`, { method: "POST", body: {} });
+    if (r && r.agent) {
+      upsert(r.agent);
+      if (S.zoomed !== r.agent.id && (S.zoomed === id || !S.zoomed)) zoom(r.agent.id, { history: "replace" });
+      toast(r.resumed ? `Restarted ${nameOf(r.agent)}: it continues its session` : `Restarted ${nameOf(r.agent)} with its task (no session to continue)`);
+    }
+  } catch (e) {
+    toast(`Could not restart it: ${e.message}`, true);
+  } finally {
+    $("z-restart").disabled = false;
+  }
 }
 
 async function loadAll() {
@@ -799,10 +833,11 @@ function renderZoom() {
   const ask = a.state === "waiting";
   $("z-ask").hidden = !ask;
   $("z-ask-text").textContent = cap(a.waiting_for) || "Waiting for you";
-  $("z-stop").disabled = !a.running;
+  $("z-stop").hidden = !a.running;
+  $("z-restart").hidden = a.running;
   if (Z.term) Z.term.options.disableStdin = !a.running;
 
-  const key = JSON.stringify([a.task, a.repo, a.cwd, a.branch, a.model, a.parent, a.children, a.pid, a.session_id, a.created, a.ended, a.exit_code, a.depth]);
+  const key = JSON.stringify([a.task, a.repo, a.cwd, a.branch, a.model, a.parent, a.children, a.pid, a.session_id, a.created, a.ended, a.exit_code, a.depth, a.read_only, a.restarted_from, a.resumed]);
   if (key === Z.factsKey) return;
   Z.factsKey = key;
   const link = (id) => {
@@ -815,15 +850,20 @@ function renderZoom() {
   if (a.cwd && a.cwd !== a.repo) fact("worktree", shortPath(a.cwd), a.cwd);
   fact("branch", a.branch);
   fact("model", a.model);
+  if (a.read_only) fact("mode", "read-only", "No Edit or Write; Bash only for commands that read");
+  if (a.restarted_from) fact("restart of", link(a.restarted_from), a.resumed ? `continuing session ${a.resumed}` : "started again with its task");
   if (a.parent) fact("spawned by", link(a.parent));
   if (a.children.length) fact("spawned", a.children.flatMap((id, i) => (i ? [", ", link(id)] : [link(id)])));
   fact("pid", a.pid != null ? String(a.pid) : null);
   fact("session", a.session_id);
   fact("started", fmtWhen(a.created));
   if (!a.running) fact("ended", fmtWhen(a.ended) + (a.exit_code != null ? `, exit ${a.exit_code}` : ""));
-  $("z-facts").replaceChildren(
+  Z.servers?.destroy();
+  Z.servers = LC ? LC.serversBox(api, a.id) : null;
+  $("z-facts").replaceChildren(...[
     h("p", { class: "task-full", text: a.task || "No task: started at a prompt." }),
-    h("dl", null, rows));
+    h("dl", null, rows),
+    Z.servers ? Z.servers.el : null].filter(Boolean));
 }
 
 // ---------------------------------------------------------------- events
@@ -987,9 +1027,9 @@ function openNew() {
   $("f-name").value = "";
   $("f-model").value = store("local", MODEL_KEY) || "";
   $("f-wt").checked = true;
+  $("f-ro").checked = false;
   $("new-err").hidden = true;
   $("new-go").disabled = false;
-  $("repo-list").replaceChildren(...recentRepos().map((r) => h("option", { value: r })));
   branchHelp();
   $("new-dialog").showModal();
   (repo ? $("f-task") : $("f-repo")).focus();
@@ -1002,10 +1042,13 @@ $("f-name").addEventListener("input", (e) => {
   branchHelp();
 });
 $("f-wt").addEventListener("change", branchHelp);
+// Sixth build, E: the servers agents start, the stop choice and the repository box (ui/levels/lifecycle.js).
+let LC = null;
+import("/levels/lifecycle.js").then((m) => { LC = m; m.attachRepoBox($("f-repo"), { api, recent: recentRepos, next: () => $("f-task").focus() }); }).catch(() => {});
 // Model routing: which model tasks like this one did best on (ui/levels/route-hint.js).
 import("/levels/route-hint.js").then((m) => m.attach($("new-dialog"), { api })).catch(() => {});
 // Fifth build: autocomplete and intent checks for the task and Ask why (ui/levels/complete.js).
-import("/levels/complete.js").then((m) => { const c = { api, go: (hash) => { if ($("new-dialog").open) $("new-dialog").close(); route(hash, { push: true }); } }; m.attachComplete($("f-task"), { field: "task", ctx: c, repo: () => $("f-repo").value.trim() }); m.attachComplete($("ask-q"), { field: "why", ctx: c, repo: () => D.repo || "" }); }).catch(() => {});
+import("/levels/complete.js").then((m) => { const c = { api, go: (hash) => { if ($("new-dialog").open) $("new-dialog").close(); route(hash, { push: true }); } }; m.attachComplete($("f-task"), { field: "task", ctx: c, repo: () => $("f-repo").value.trim(), checkExtra: () => ($("f-ro").checked ? { read_only: true } : {}), onSet: (set) => { if (set.read_only != null) $("f-ro").checked = !!set.read_only; } }); m.attachComplete($("ask-q"), { field: "why", ctx: c, repo: () => D.repo || "" }); }).catch(() => {});
 $("f-task").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("new-form").requestSubmit(); }
 });
@@ -1022,6 +1065,7 @@ $("new-form").addEventListener("submit", async (e) => {
   const name = $("f-name").value.trim();
   const model = $("f-model").value.trim();
   const worktree = $("f-wt").checked;
+  const readOnly = $("f-ro").checked;
   $("new-err").hidden = true;
   if (!repo || !(repo.startsWith("/") || /^[A-Za-z]:[\\/]/.test(repo))) {
     $("f-repo").setAttribute("aria-invalid", "true");
@@ -1035,6 +1079,7 @@ $("new-form").addEventListener("submit", async (e) => {
   if (task) body.task = task;
   if (name) body.name = name;
   if (model) body.model = model;
+  if (readOnly) body.read_only = true;
   $("new-go").disabled = true;
   try {
     const { agent } = await api("/api/agents", { method: "POST", body });
@@ -1064,23 +1109,29 @@ function confirmStop(id) {
   confirmFor = id;
   $("confirm-title").textContent = `Stop ${nameOf(a)}?`;
   $("confirm-text").textContent = `Its Claude Code session ends: Workbench sends it SIGHUP, then SIGKILL after 5 s. ${a.cwd && a.cwd !== a.repo ? "Its worktree and branch are left as they are." : ""}`.trim();
+  stopServers = { choice: () => undefined };
+  if (LC) LC.stopChoice(api, id, $("confirm-servers")).then((c) => { if (confirmFor === id) stopServers = c; });
+  else $("confirm-servers").hidden = true;
   $("confirm-dialog").showModal();
   $("confirm-yes").focus();
 }
+let stopServers = { choice: () => undefined };
 
 async function doStop() {
   const id = confirmFor;
   confirmFor = null;
   $("confirm-dialog").close();
   if (!id) return;
+  const servers = stopServers.choice();
   try {
-    await api(`/api/agents/${encodeURIComponent(id)}/stop`, { method: "POST" });
+    await api(`/api/agents/${encodeURIComponent(id)}/stop`, { method: "POST", body: servers === undefined ? {} : { servers } });
     toast(`Stopping ${nameOf(S.agents.get(id))}`);
   } catch (e) {
     toast(`Could not stop it: ${e.message}`, true);
   }
 }
 $("confirm-yes").addEventListener("click", doStop);
+$("z-restart").addEventListener("click", () => { if (S.zoomed) restartAgent(S.zoomed); });
 $("confirm-no").addEventListener("click", () => { confirmFor = null; $("confirm-dialog").close(); });
 $("confirm-dialog").addEventListener("keydown", (e) => {
   if (e.key === "y" || e.key === "Y") { e.preventDefault(); doStop(); }
@@ -2787,8 +2838,9 @@ function levelState() {
 /** The agent the levels are about: the zoomed one, the story's, or the selected one. */
 function focusAgent() {
   if (S.zoomed) return S.zoomed;
-  if ((L.screen === "story" || L.screen === "preview" || L.screen === "ship") && L.param) return L.param;
-  return L.focus || S.selected || null;
+  if ((L.screen === "story" || L.screen === "preview" || L.screen === "ship") && L.param) return liveId(L.param);
+  const id = L.focus || S.selected || null;
+  return id ? liveId(id) : null;
 }
 
 function hideOtherViews() {
@@ -2803,6 +2855,7 @@ async function openLevel(screen, param, { how = "push", query = "" } = {}) {
     param = focusAgent() || [...S.agents.values()].filter((a) => a.running).sort(byCreated).find((a) => a.state === "working")?.id
       || [...S.agents.values()].sort(byCreated)[0]?.id || null;
   }
+  if ((screen === "preview" || screen === "ship") && param) param = liveId(param);
   // A screen's own parameters ride after "?" (#/trace?q=…) and stay in the hash.
   const hash = `#/${screen}${param ? "/" + param : ""}${query ? "?" + query : ""}`;
   if (how === "push" && location.hash !== hash) history.pushState({ level: hash }, "", hash);

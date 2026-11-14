@@ -30,6 +30,8 @@ use crate::server::{blocking, parse_body, same_bytes, ApiResult, App};
 use crate::supervisor::{ApiError, Supervisor};
 use crate::trail;
 
+pub mod servers;
+
 const OVERLAY: &str = include_str!("../ui/preview-overlay.js");
 const COOKIE: &str = "wb_preview";
 /// The most of an answer the proxy reads.
@@ -44,6 +46,37 @@ pub fn routes() -> Router<App> {
         .route("/preview/:agent", get(proxy_root).post(proxy_root))
         .route("/preview/:agent/", get(proxy_root).post(proxy_root))
         .route("/preview/:agent/*rest", get(proxy_rest).post(proxy_rest))
+        // Sixth build (E): an exited agent started again, and the servers
+        // agents started.
+        .route("/api/agents/:id/restart", post(restart))
+        .merge(servers::routes())
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RestartB {
+    prompt: Option<String>,
+}
+
+/// `POST /api/agents/:id/restart {prompt?}` → 201 `{agent, restarted_from,
+/// resumed}`: the same name, task, worktree, model and read-only mode,
+/// continuing its session when it has a transcript (SPEC.md, "Sixth
+/// build: E").
+async fn restart(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> ApiResult {
+    let b: RestartB = if body.is_empty() { RestartB::default() } else { parse_body(&body)? };
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let v = blocking(move || {
+        let req = sup.restart_request(&id, b.prompt)?;
+        let resumed = req.restart.as_ref().and_then(|r| r.resume.clone());
+        // Its outcome follows it, unless another agent took the outcome since.
+        let again = crate::supervisor::SpawnRequest { outcome: None, ..req.clone() };
+        let agent = match crate::goals::spawn(&sup, &lv, req) {
+            Err(e) if e.status == 409 && e.message.contains("outcome") => crate::goals::spawn(&sup, &lv, again)?,
+            r => r?,
+        };
+        Ok(json!({ "agent": agent, "restarted_from": id, "resumed": resumed }))
+    })
+    .await?;
+    Ok((StatusCode::CREATED, AxJson(v)).into_response())
 }
 
 // The preview's URL.

@@ -30,6 +30,9 @@ while [ $# -gt 0 ]; do
     --model) MODEL="$2"; shift 2;;
     # Sixth build: a goal's lead and agents may get an effort.
     --effort) EFFORT="$2"; shift 2;;
+    # A restart (SPEC.md, "Sixth build: E"): the session it continues.
+    --resume) RESUME="$2"; shift 2;;
+    --fork-session) FORK=1; shift;;
     --) TASK="$2"; shift $#;;
     -p) PRINT=1; shift;;
     *) TASK="$1"; shift;;
@@ -42,6 +45,7 @@ TR="$SDIR/transcript.jsonl"
 N=0
 echo "FAKE CLAUDE sid=$SID model=$MODEL agent=$CHLOEDB_WORKBENCH_AGENT"
 echo "TASK: $TASK"
+[ -n "$RESUME" ] && echo "RESUMED: $RESUME fork=$FORK"
 echo "CWD: $(pwd)"
 [ -n "$EFFORT" ] && echo "EFFORT: $EFFORT"
 hook() {
@@ -84,6 +88,11 @@ turn() {
       hook PreToolUse "$(printf "$edit" PreToolUse)"
       printf '%s\n' "$text" >> "$file"
       hook PostToolUse "$(printf "$edit" PostToolUse)";;
+    SERVE\ *)
+      # SERVE <port>: a dev server in the background, out of the session's
+      # process group, as a command an agent backgrounds is.
+      setsid python3 -m http.server "${1#SERVE }" --bind 127.0.0.1 >/dev/null 2>&1 < /dev/null &
+      ;;
     *ASK*)
       hook Notification '{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
       read -r answer
@@ -4266,4 +4275,215 @@ fn rules_are_added_and_deleted_without_a_question() {
     let (_, l) = s.get(&format!("/api/rules?repo={}", enc(r.to_str().unwrap())));
     assert_eq!(l["rules"], json!([]));
     assert_eq!(s.delete(&format!("/api/rules/{id}")).0, 404);
+}
+
+// Sixth build (E): restart, servers, read-only agents and path guards,
+// grounded autocomplete.
+
+#[test]
+fn restart_starts_an_exited_agent_again_in_its_worktree_and_session() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "name": "cents", "model": "haiku", "read_only": true }));
+    let id = a["id"].as_str().unwrap().to_string();
+    assert_eq!(a["read_only"], true, "{a}");
+    s.wait(&id, "idle");
+    // Running: nothing to restart.
+    let (status, v) = s.post(&format!("/api/agents/{id}/restart"), json!({}));
+    assert_eq!(status, 409, "{v}");
+    s.post(&format!("/api/agents/{id}/stop"), json!({}));
+    s.until(&id, "stopped", |a| a["running"] == false);
+
+    // It continues its session (it had a transcript), in its worktree, with
+    // its name, task, model and read-only mode; it ended idle, so it is told
+    // nothing new.
+    let (status, v) = s.post(&format!("/api/agents/{id}/restart"), json!({}));
+    assert_eq!(status, 201, "{v}");
+    let b = v["agent"].clone();
+    let bid = b["id"].as_str().unwrap().to_string();
+    assert_ne!(bid, id);
+    assert_eq!((b["name"].as_str(), b["cwd"].clone(), b["branch"].as_str(), b["task"].as_str(), b["model"].as_str()), (Some("cents"), a["cwd"].clone(), Some("wb/cents"), Some("say hi"), Some("haiku")), "{b}");
+    assert_eq!((b["read_only"].clone(), b["restarted_from"].as_str()), (json!(true), Some(id.as_str())), "{b}");
+    assert_eq!(v["resumed"], a["session_id"], "{v}");
+    let screen = ws_read_until(&s, &bid, "CWD:", &[]);
+    assert!(screen.contains(&format!("RESUMED: {} fork=1", a["session_id"].as_str().unwrap())), "{screen}");
+    assert!(screen.contains("TASK: \r\n"), "{screen}");
+    assert!(s.events(&bid)[0]["summary"].as_str().unwrap().contains(&format!("restart of {id}, continuing its session")));
+    // The old one cannot be restarted while the new one runs.
+    let (status, v) = s.post(&format!("/api/agents/{id}/restart"), json!({}));
+    assert_eq!(status, 409, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("named cents is running"), "{v}");
+
+    // Without a transcript (it died before its first turn): it starts over on its task.
+    s.post(&format!("/api/agents/{bid}/stop"), json!({}));
+    s.until(&bid, "stopped", |a| a["running"] == false);
+    let _ = std::fs::remove_file(s.data.join("sessions").join(&id).join("transcript.jsonl"));
+    let _ = std::fs::remove_file(s.data.join("sessions").join(&bid).join("transcript.jsonl"));
+    let (status, v) = s.post(&format!("/api/agents/{bid}/restart"), json!({}));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["resumed"], Value::Null, "{v}");
+    let cid = v["agent"]["id"].as_str().unwrap().to_string();
+    let screen = ws_read_until(&s, &cid, "DONE: say hi", &[]);
+    assert!(!screen.contains("RESUMED:"), "{screen}");
+    let (status, _) = s.post("/api/agents/nope/restart", json!({}));
+    assert_eq!(status, 404);
+}
+
+fn pre_tool(s: &Server, token: &str, id: &str, tool: &str, input: Value) -> Value {
+    let (status, v) = call_as(s, "POST", "/api/hook", token, Some(id), Some(json!({ "hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": input, "session_id": "s" })));
+    assert_eq!(status, 200, "{v}");
+    v["output"].clone()
+}
+
+fn denied(out: &Value) -> String {
+    assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny", "{out}");
+    out["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn read_only_agents_and_path_guards_refuse_changes() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // Read-only: no edits, and Bash only for commands that read.
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "name": "explain", "read_only": true }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(&id).join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["permissions"]["deny"], json!(["Edit", "Write", "MultiEdit", "NotebookEdit"]), "{settings}");
+    let tok = agent_token(&s, &id);
+    let cwd = a["cwd"].as_str().unwrap();
+    assert!(denied(&pre_tool(&s, &tok, &id, "Edit", json!({ "file_path": format!("{cwd}/README"), "old_string": "a", "new_string": "b" }))).contains("read-only"));
+    assert_eq!(pre_bash(&s, &tok, &id, "ls -la && git log --oneline -3 | head 2>/dev/null"), Value::Null);
+    assert!(denied(&pre_bash(&s, &tok, &id, "echo x > README")).contains("propose_change"));
+    assert!(denied(&pre_bash(&s, &tok, &id, "python3 -c 'open(\"x\",\"w\")'")).contains("read-only"));
+    assert!(s.events(&id).iter().any(|e| e["kind"] == "guarded" && e["summary"].as_str().unwrap().contains("read-only")));
+    // An agent it starts is read-only too.
+    let child = s.spawn(json!({ "repo": r, "task": "say hi", "name": "kid", "parent": id }));
+    assert_eq!(child["read_only"], true, "{child}");
+
+    // Path guards: money.py anywhere, everything under migrations/.
+    let (status, g) = s.put("/api/guarded", json!({ "repo": r, "rules": [{ "kind": "path", "label": "money.py" }, { "kind": "path", "label": "../x" }] }));
+    assert_eq!(status, 400, "{g}");
+    let (status, g) = s.put("/api/guarded", json!({ "repo": r, "rules": [{ "kind": "path", "label": "money.py" }, { "kind": "path", "label": "./migrations/**" }] }));
+    assert_eq!(status, 200, "{g}");
+    let paths: Vec<&Value> = g["rules"].as_array().unwrap().iter().filter(|x| x["kind"] == "path").collect();
+    assert_eq!(paths.iter().map(|x| x["label"].as_str().unwrap()).collect::<Vec<_>>(), ["money.py", "migrations/**"], "{g}");
+    let w = s.spawn(json!({ "repo": r, "task": "say hi", "name": "writer" }));
+    let wid = w["id"].as_str().unwrap().to_string();
+    s.wait(&wid, "idle");
+    let wt = agent_token(&s, &wid);
+    let wcwd = w["cwd"].as_str().unwrap();
+    let why = denied(&pre_tool(&s, &wt, &wid, "Edit", json!({ "file_path": format!("{wcwd}/lib/money.py") })));
+    assert!(why.contains("`money.py`") && why.contains("ask_human"), "{why}");
+    assert!(denied(&pre_tool(&s, &wt, &wid, "Write", json!({ "file_path": format!("{wcwd}/migrations/0002_cents.sql") }))).contains("migrations/**"));
+    assert_eq!(pre_tool(&s, &wt, &wid, "Edit", json!({ "file_path": format!("{wcwd}/cart.py") })), Value::Null);
+    assert!(denied(&pre_bash(&s, &wt, &wid, "sed -i 's/floor/round/' money.py")).contains("path guard"));
+    assert_eq!(pre_bash(&s, &wt, &wid, "cat money.py && pytest -q tests/test_cart.py"), Value::Null);
+}
+
+#[cfg(target_os = "linux")]
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+#[cfg(target_os = "linux")]
+fn listening(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)).is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn server_of(s: &Server, id: &str, port: u16) -> Value {
+    let end = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, v) = s.get(&format!("/api/servers?agent={id}"));
+        if let Some(x) = v["servers"].as_array().unwrap().iter().find(|x| x["ports"].as_array().unwrap().contains(&json!(port))) {
+            return x.clone();
+        }
+        assert!(Instant::now() < end, "no server on {port} for {id}: {v}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agents_servers_are_listed_and_stopped_with_it() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let port = free_port();
+    let a = s.spawn(json!({ "repo": r, "task": format!("SERVE {port}"), "name": "paybutton", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let x = server_of(&s, &id, port);
+    assert_eq!(x["name"], "paybutton", "{x}");
+    assert!(x["command"].as_str().unwrap().contains("http.server"), "{x}");
+    assert!(x["since_ms"].as_i64().is_some(), "{x}");
+    // Stopping the agent stops its server (asked for here; unasked, the
+    // default is the same until the user chooses).
+    s.post(&format!("/api/agents/{id}/stop"), json!({ "servers": true }));
+    s.until(&id, "stopped", |a| a["running"] == false);
+    let end = Instant::now() + Duration::from_secs(10);
+    while listening(port) {
+        assert!(Instant::now() < end, "its server on {port} still answers");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(s.events(&id).iter().any(|e| e["kind"] == "servers_stopped"), "{:?}", s.events(&id));
+
+    // Chosen once: keep them. The server outlives its agent and is listed,
+    // then stopped by hand; only an agent's server can be stopped here.
+    let (status, v) = s.put("/api/servers/policy", json!({ "on_stop": "keep" }));
+    assert_eq!((status, v["policy"].as_str()), (200, Some("keep")), "{v}");
+    let port2 = free_port();
+    let b = s.spawn(json!({ "repo": r, "task": format!("SERVE {port2}"), "name": "paybutton", "worktree": false }));
+    let bid = b["id"].as_str().unwrap().to_string();
+    s.wait(&bid, "idle");
+    server_of(&s, &bid, port2);
+    s.post(&format!("/api/agents/{bid}/stop"), json!({}));
+    s.until(&bid, "stopped", |a| a["running"] == false);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(listening(port2));
+    let x = server_of(&s, &bid, port2);
+    assert_eq!(x["agent_running"], false, "{x}");
+    let (status, _) = s.post("/api/servers/1/stop", json!({}));
+    assert_eq!(status, 404);
+    let (status, v) = s.post(&format!("/api/servers/{}/stop", x["pid"]), json!({}));
+    assert_eq!(status, 200, "{v}");
+    assert!(!listening(port2));
+}
+
+#[test]
+fn a_done_check_is_its_own_clause_and_a_ghost_names_only_what_exists() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    std::fs::write(r.join("money.py"), "def to_cents(amount):\n    return round(amount * 100)\n").unwrap();
+    std::fs::write(r.join("cart.py"), "from money import to_cents\n\nclass Cart:\n    def add(self, price):\n        self.total = to_cents(price)\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "shop"]);
+    // Lee's half sentence: no fix glued onto it; and "read-only" in words
+    // offers the real thing.
+    let lee = "Read-only: explain how money flows through this shop, from ";
+    let v = check_text(&s, lee, "task", &r);
+    let m = first_mark(&v, "no_done_check");
+    assert_eq!(m["fix"], Value::Null, "{m}");
+    assert!(m["message"].as_str().unwrap().contains("Finish the sentence"), "{m}");
+    assert_eq!(first_mark(&v, "read_only")["fix"]["set"], json!({ "read_only": true }), "{v}");
+    // A complete question: done when it answers, no test.
+    let t = "Do not edit any files. Read money.py and cart.py and explain how money flows through the shop";
+    let v = check_text(&s, t, "task", &r);
+    let add = first_mark(&v, "no_done_check")["fix"]["edits"][0].clone();
+    assert_eq!((add["start"].as_u64(), add["text"].as_str()), (Some(t.len() as u64), Some(". Done when it answers: how money flows through the shop.")), "{v}");
+    // With the box ticked, no read-only mark.
+    let (_, v) = s.post("/api/intent/check", json!({ "text": t, "field": "task", "repo": r, "read_only": true }));
+    assert_eq!(marks_of(&v, "read_only"), Vec::<Value>::new(), "{v}");
+    // A change still gets a test.
+    let v = check_text(&s, "Fix the rounding in money.py", "task", &r);
+    assert!(first_mark(&v, "no_done_check")["fix"]["edits"][0]["text"].as_str().unwrap().contains("test"), "{v}");
+
+    // The model ghost (the fake's " and keep every total in integer cents.")
+    // names what this repository has neither in code nor in memory: dropped.
+    let (status, mg) = s.post("/api/complete/ghost", json!({ "text": "Explain how a cart adds a price", "field": "task", "repo": r }));
+    assert_eq!(status, 200, "{mg}");
+    assert_eq!(mg["ghost"], Value::Null, "{mg}");
+    let names: Vec<&str> = mg["dropped"]["names"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+    assert!(names.contains(&"integer") && !names.contains(&"total"), "{mg}");
+    assert!(mg["why"].as_str().unwrap().contains("dropped"), "{mg}");
 }

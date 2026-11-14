@@ -82,7 +82,13 @@ origin when that request would change something.
 - `GET /api/health`
 - `GET /api/agents?all=1`, `POST /api/agents`, `GET /api/agents/:id`
 - `GET /api/agents/:id/events?after=&limit=&data=1`
-- `POST /api/agents/:id/input|resize|stop`
+- `POST /api/agents/:id/input|resize|stop` (stop takes `{servers: true|false}`:
+  whether the dev servers it started stop with it)
+- `POST /api/agents/:id/restart {prompt?}`: an exited agent again, with
+  its name, task and worktree, continuing its Claude Code session
+- `GET /api/servers?agent=`, `POST /api/servers/:pid/stop`,
+  `PUT /api/servers/policy {on_stop: "stop"|"keep"|""}`: the servers
+  agents started (processes that listen on a port)
 - `GET /api/attention`: the agents that are waiting for you or idle
 - `GET /api/repos`, `POST /api/repos {path}`, `DELETE /api/repos?path=`:
   the repositories Workbench knows without an agent (opened in a picker,
@@ -169,7 +175,8 @@ installed, ChloeCtx:
   through Workbench with an overlay: hover outlines an element, and a
   click sends it to the Workbench page instead of the app.
   `POST /api/preview/route` finds the agent whose diff made the picked
-  element. Open the preview once with `?token=`; a cookie scoped to
+  element. With the overlay turned off ("overlay off: the page is yours")
+  every click and key goes to the app itself. Open the preview once with `?token=`; a cookie scoped to
   `/preview/` carries the token after that. Absolute links in HTML are
   rewritten to stay in the preview. An app that builds URLs in scripts
   should run under the base path `/preview/<agent>/` and set its preview
@@ -187,6 +194,30 @@ installed, ChloeCtx:
 
 The state database also has a `marks` table (small key/value rows: the
 allow-lists, applied suggestions) and `agents.preview_url`.
+
+## Restart, servers and read-only agents
+
+- **Restart.** An agent that ended (it crashed, you stopped it, the server
+  restarted) has Restart where Stop was, in its zoom. It comes back with the
+  same name, task and worktree. When its session's transcript is still
+  there, Claude Code continues that session (`--resume <old> --fork-session`);
+  otherwise it starts on its task again. A view of the old agent (the zoom,
+  Preview, Ship) moves to the new one.
+- **Servers.** A dev server an agent starts in the background is listed
+  under Servers, in the agent's zoom and in Preview: its port, command and
+  age, with Stop. Stopping the agent asks whether its servers stop too
+  (tick Remember to stop asking).
+- **Read-only.** Tick Read-only in New agent, or take "Start it read-only"
+  when the task says not to change anything. The agent gets no Edit, Write,
+  MultiEdit or NotebookEdit, and Bash runs only commands that read (`cat`,
+  `rg`, `git log`, `ls`…). Anything else is refused and can come to you as
+  a change request. An agent a read-only agent starts is read-only too.
+- **Guarded paths.** On the Decide screen, the guarded list takes paths
+  beside commands (`money.py`, `migrations/**`, read as `.gitignore` reads
+  them). Agents may read those files but not edit them, nor change them
+  from Bash.
+- **The repository box** in New agent completes paths as you type, git
+  repositories first, and wraps so the whole path shows.
 
 ## The levels: goals, questions, story, away
 
@@ -244,8 +275,8 @@ settings file it is given, so they call no model.
 ## Not done yet
 
 - Agents do not outlive the server. Stopping it ends them, and on the next
-  start the agents left behind are marked `exited`. Resuming a session
-  (`claude --resume`) is not wired up.
+  start the agents left behind are marked `exited`. Restart brings each
+  back in its session, one at a time; nothing restarts them all.
 - Worktrees and `wb/*` branches are kept when an agent ends. A new agent
   with the same name picks up its worktree again. Nothing removes them.
 - Claude Code's first-run questions (theme, trusting the folder) appear in
