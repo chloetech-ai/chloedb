@@ -254,6 +254,7 @@ test('a published app: visitors, members, row scopes by person and by company, e
     assert.equal((await sql('SELECT title FROM invoices', B)).status, 403);
     assert.equal((await call('/companies/members', { company: acme.id, email: 'alice@example.com' }, B)).status, 403, 'only its admins add people');
     assert.equal((await call('/companies/members', { company: acme.id, email: 'bob@example.com', role: 'member' }, A)).status, 200);
+    assert.equal((await call('/companies/join', { company: acme.id }, B)).status, 200, 'an invitation, joined');
     assert.deepEqual((await sql('SELECT title FROM invoices', B)).body.rows, [{ title: 'Acme invoice' }]);
     const beta = (await call('/companies', { name: 'Beta' }, B)).body.company;
     assert.deepEqual((await sql('SELECT title FROM invoices', { ...B, company: beta.id })).body.rows, [], 'the company chosen now');
