@@ -3267,3 +3267,13 @@ VARIANCE tallies2
   // MONEY alone says the format, as it does for a KPI (a round 2 plan wrote it so)
   assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE tallies2\n  PERIOD month  VALUE amount  MONEY").screen.body[0].format, 'money');
 });
+
+test('a yes/no FILTER says what its chips mean, and a SET action says what it sets so a row that has it shows no such action', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN bills TITLE 'Bills'\nLIST bills\n  FORM (title, settled CHECKBOX)\n  FILTER settled IN (true, false)\n  ACTION 'Mark settled' SET settled = true");
+  assert.deepEqual(w.screen.body[0].filter.options, [{ value: 'true', label: 'Settled' }, { value: 'false', label: 'Not settled' }]);
+  assert.deepEqual(w.screen.body[0].actions[0].sets, { settled: true });
+  const ex = expandWith(w.screen);
+  assert.deepEqual(ex.problems, []);
+  assert.match(JSON.stringify(ex.screen), /"sets":\{"settled":true\}/);
+});

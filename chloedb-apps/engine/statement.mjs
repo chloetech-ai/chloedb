@@ -382,7 +382,13 @@ export function compileStatement(text) {
       case 'FILTER': {
         const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(?:IN\s+)?([\s\S]+)$/i);
         if (!m) fail(n, "FILTER <column> IN ('a', 'b')");
-        u.filter = { column: m[1], options: splitTop(parens(m[2], n, 'FILTER').inside).map(literal) };
+        let options = splitTop(parens(m[2], n, 'FILTER').inside).map(literal);
+        // a yes/no column's chips say what it means ("Paid", "Not paid"), never true and false
+        if (options.length && options.every((o) => typeof o === 'boolean')) {
+          const name = (u.toggle === m[1] && u.toggleLabel) || m[1].replace(/_/g, ' ').replace(/^is /, '').replace(/^./, (c) => c.toUpperCase());
+          options = options.map((o) => ({ value: String(o), label: o ? name : `Not ${name.toLowerCase()}` }));
+        }
+        u.filter = { column: m[1], options };
         break;
       }
       case 'TOGGLE': { const w = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/); if (!w) fail(n, "TOGGLE <bool column> ['Label']"); u.toggle = w[1]; if (w[2].trim()) u.toggleLabel = literal(w[2]); break; }
@@ -423,12 +429,16 @@ export function compileStatement(text) {
         const m = rest.match(/^('(?:[^']|'')*')\s+(OPEN\s+([a-z][a-z0-9-]*)|SET\s+([\s\S]+)|DELETE)$/i);
         if (!m) fail(n, "ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE");
         let doIt;
+        let setsOf = null;
         if (m[3]) doIt = `=row => app.open(${jsStr(m[3])}, {id: row.id})`;
         else if (m[4]) {
           const sets = splitTop(m[4]).map((x) => { const mm = x.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/); if (!mm) fail(n, `ACTION SET: ${JSON.stringify(x)} is not col = value`); return [mm[1], literal(mm[2])]; });
-          doIt = `=row => app.update(${jsStr(u.table)}, row.id, ${JSON.stringify(Object.fromEntries(sets.map(([k, v]) => [k, v === 'TODAY' || v === 'today' ? '@today' : v]))).replace(/"@today"/g, 'app.today()')})`;
+          const vals = Object.fromEntries(sets.map(([k, v]) => [k, v === 'TODAY' || v === 'today' ? '@today' : v]));
+          doIt = `=row => app.update(${jsStr(u.table)}, row.id, ${JSON.stringify(vals).replace(/"@today"/g, 'app.today()')})`;
+          // "sets": the kit leaves the action off a row that has these values already
+          setsOf = vals;
         } else { u.deleteLabel = literal(m[1]); break; } // every list has a delete button: this names it
-        u.actions = [...(u.actions || []), { label: literal(m[1]), class: 'small ghost', do: doIt }];
+        u.actions = [...(u.actions || []), { label: literal(m[1]), class: 'small ghost', do: doIt, ...(setsOf ? { sets: setsOf } : {}) }];
         break;
       }
       case 'BY': case 'STATUS': {

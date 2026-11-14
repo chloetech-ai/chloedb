@@ -221,7 +221,8 @@
         "label": "All"
        },
        "{{...filter.options}}"
-      ]
+      ],
+      "column": "{{filter.column}}"
      },
      {
       "$when": "export",

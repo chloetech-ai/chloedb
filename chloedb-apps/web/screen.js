@@ -386,7 +386,11 @@ window.__sa_numbers = (() => {
 
     function chips(b, s, path) {
       const key = b.chips;
-      return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(OPT).map((o) =>
+      // a yes/no option (true, false) says what it means by its column ("Paid",
+      // "Not paid"), and is kept as a word, so "no" is a choice, not "all"
+      const col = typeof b.column === 'string' && b.column ? human(b.column).replace(/^is /i, '') : null;
+      const yesNo = (o) => (typeof o === 'boolean' ? { value: String(o), label: col ? (o ? cap(col) : `Not ${col.toLowerCase()}`) : (o ? 'Yes' : 'No') } : o);
+      return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(yesNo).map(OPT).map((o) =>
         h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; const changed = !off && state[key] !== o.value; set({ [key]: off ? null : o.value }); if (changed) trackFilter(key, o.value); } }, cap(o.label))));
     }
 
@@ -697,7 +701,7 @@ window.__sa_numbers = (() => {
           // More than two steps: the row's next step as a button, the rest
           // in its menu (as on a phone), not a line of words on every row.
           acts.length > 2 ? h('td', { class: 'right acts' }, (() => { const { main, more } = rowActions(acts, r, rowName(r), s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`); return h('span', { class: 'rc-end' }, main, more); })())
-          : acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
+          : acts.length ? h('td', { class: 'nowrap right' }, acts.filter((a) => applies(a, r, s, path)).map((a) => {
             const label = T(a.label, s, path);
             const who = rowName(r);
             return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
@@ -807,7 +811,28 @@ window.__sa_numbers = (() => {
         window.addEventListener('scroll', () => { for (const o of document.querySelectorAll('details.rc-more[open]')) o.open = false; }, { passive: true, capture: true });
       }
     }
+    // A row's actions that apply to it: one that sets columns ("sets", from
+    // ACTION ... SET) is left off a row that has those values already (no
+    // Mark paid on a paid row), and one with "when" only where it holds.
+    const sameVal = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean' ? String(a) === String(b) : String(a ?? '') === String(b ?? ''));
+    // what an action sets, said ("sets") or, for screens compiled before it
+    // was, read from its code when that is app.update(table, row.id, {...})
+    const setsOf = (a) => {
+      if (a.sets && typeof a.sets === 'object') return a.sets;
+      // the expression's source: "=..." as written, or {"$e": n} once compiled
+      const src = typeof a.do === 'string' ? a.do.replace(/^=/, '') : a.do && a.do.$e !== undefined ? String(SRC[a.do.$e] || '') : '';
+      const m = /^\s*row\s*=>\s*app\.update\("[^"]+",\s*row\.id,\s*(\{[^{}]*\})\)\s*$/.exec(src);
+      if (!m) return null;
+      try { return JSON.parse(m[1]); } catch { return null; }
+    };
+    function applies(a, r, s, path) {
+      const sets = setsOf(a);
+      if (sets && Object.keys(sets).length && Object.entries(sets).every(([k, v]) => sameVal(r[k], v === '@today' ? app.today() : v))) return false;
+      if (a.when !== undefined) { try { const w = val(a.when, s, `${path}.when`); return typeof w === 'function' ? !!w(r) : !!w; } catch { return true; } }
+      return true;
+    }
     function rowActions(acts, r, who, s, path, mainClass, editByTap = false) {
+      acts = acts.filter((a) => applies(a, r, s, path));
       const label = (a) => T(a.label, s, path);
       const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
       const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
