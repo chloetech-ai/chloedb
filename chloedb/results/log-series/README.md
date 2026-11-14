@@ -22,6 +22,8 @@ log_series_bench rollup DB 7                          # a rollup of a loaded tab
 | `mac-chloedb.jsonl` | the query set on a MacBook Air, ChloeDB at 13bb25bd, with `"cores"` 8 and 4 (see below) |
 | `mac-others.jsonl` | the same on ClickHouse, VictoriaLogs and OpenSearch, with `"store"` (`compare/`) |
 | `chloedb-values.jsonl` | what ChloeDB's queries returned, to check the other stores against |
+| `mac-rollups.jsonl` | rollups on a MacBook Air against ClickHouse materialized views and TimescaleDB continuous aggregates (`compare/rollups_*`) |
+| `chloedb-rollup-values.jsonl` | what ChloeDB's eight rollup and table queries returned there, to check the other two against |
 
 All measured on 2026-11-13 on a cloud container: 4-core Intel Xeon @
 2.10GHz, 15 GB of RAM, release builds.
@@ -318,3 +320,87 @@ approximate ones cost in the other two stores. ChloeDB's load is the slowest of 
 against 5 to 29 s for ClickHouse). The harness writes in one thread, in
 batches of 5,000, merging as it goes. Its database is 2.7 to 4.5 times
 ClickHouse's on disk.
+## Rollups on a MacBook Air
+
+The `rollup` run again, on a MacBook Air (Mac14,2): Apple M2, 8 cores (4
+performance, 4 efficiency), 24 GB of RAM, macOS 26.0.1, measured on
+2026-11-14. It ran beside ClickHouse 25.8.33.6 with a materialized view
+and TimescaleDB 2.32.0 (PostgreSQL 16.15) with a continuous aggregate. The
+two ran in Docker Desktop (engine 24.0.5), whose VM has 4 CPUs and 8.7 GB,
+one at a time with nothing else in the VM. ChloeDB at c08fd630 ran
+natively, seeing 4 cores (`compare/ncpu.c`, as in the comparison of the
+day before). The scripts are `compare/rollups_chloedb.sh`, then
+`rollups_prep.py`, `rollups_others.sh` (which runs `rollups_clickhouse.py`
+and `rollups_timescale.py` and removes each container), and
+`rollups_check.py`, which prints these tables.
+
+All three hold the same rows: the synthetic log `gen:20000000:30`, its
+times shifted as ChloeDB's `load` shifted them, then the 50,000 lines
+`rollup` writes over the last minute, with the same times. They answer
+over the same windows, from the whole hour after the newest line less 7
+days or 24 hours, as the harness's queries do.
+
+- **ChloeDB**: `CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5
+  minutes', ts), service, severity, COUNT(*), SUM(latency), MIN(latency),
+  MAX(latency)`, then `REFRESH ROLLUP` after the new lines.
+- **ClickHouse**: the logs table is the OpenTelemetry exporter's, as in the
+  comparison before (latency in `LogAttributes`). The view is a
+  materialized view `TO` an AggregatingMergeTree keyed by
+  `toStartOfFiveMinutes`, service and severity, with
+  `SimpleAggregateFunction` columns for count, sum, min and max. A view
+  sees only inserts made after it exists, so it is filled with one
+  `INSERT ... SELECT` from the table. Queries on it `GROUP BY` again with
+  `sum`/`max`, since its parts merge later.
+- **TimescaleDB**: a hypertable of day chunks (uncompressed), loaded with
+  `COPY`. A continuous aggregate by `time_bucket('5 minutes')`, service and
+  severity, materialized only (TimescaleDB's default), filled once with
+  `refresh_continuous_aggregate` over everything, with a refresh policy
+  every minute over the last hour.
+
+Median and slowest of 7 runs, in ms. ChloeDB's are in process.
+ClickHouse's are over HTTP from the Mac and TimescaleDB's are psql's
+`\timing` from the Mac, both into Docker's VM, so each includes about a
+millisecond of round trip. "Table" is the same question asked of the raw
+table. By severity, the table's query is by minute, as the harness asks it.
+
+| query | rows | ChloeDB rollup | ChloeDB table | ClickHouse rollup | ClickHouse table | TimescaleDB rollup | TimescaleDB table |
+|---|---|---|---|---|---|---|---|
+| counts per hour, 7 days | 168 | 2.22 / 5.23 | 36.27 / 46.3 | 4.56 / 33.54 | 32.44 / 42.32 | 27.27 / 40.8 | 1039.93 / 1162.63 |
+| counts per 5 min by severity, 24 h | 1398 | 1.69 / 2.36 | 26.64 / 27.92 | 4.4 / 5.55 | 19.95 / 28.51 | 6.76 / 23.69 | 196.25 / 277.22 |
+| mean latency per hour and service, 24 h | 480 | 1.54 / 3.31 | 19.69 / 19.81 | 4.45 / 13.94 | 25.03 / 31.95 | 7.1 / 19.54 | 197.42 / 257.92 |
+| max latency per hour, 24 h | 24 | 0.55 / 1.96 | 10.28 / 11 | 2.98 / 9.42 | 23.78 / 25.95 | 5.36 / 16.55 | 181.62 / 238.58 |
+
+| | ChloeDB | ClickHouse | TimescaleDB |
+|---|---|---|---|
+| load 20M lines | 186.1 s | 30.3 s | 66.7 s |
+| build the rollup | 72.192 s | 0.886 s | 17.175 s |
+| refresh, nothing new | 0.003 s | — | 0.037 s |
+| 50,000 new lines in the rollup | 0.084 s | 0.065 s | 2.78 s |
+| rollup rows | 749027 | 749027 | 749027 |
+| rollup on disk | 82.0 MB (with the 50,000 new lines) | 11.5 MB | 99.9 MB |
+| table on disk | 1361 MB | 551 MB | 3456 MB |
+
+Each store's answers match ChloeDB's, on the rollup and on the table:
+every hour's count and maximum exactly, and every mean to the 4 decimals
+ChloeDB's shell prints. The per-minute query on the table matches in
+number of rows. All three made the same 749,027 rollup rows.
+
+- **Queries.** On the rollup, ChloeDB answers each query in 0.5 to 2.2 ms:
+  2 to 5 times faster than ClickHouse's view (3 to 4.6 ms) and 4 to 12
+  times faster than TimescaleDB's aggregate (5 to 27 ms), though both of
+  those times include the round trip. Against its own raw table, a rollup
+  is 13 to 19 times faster in ChloeDB, 4.5 to 8 in ClickHouse and 28 to 38
+  in TimescaleDB. ChloeDB's table takes 10 to 36 ms here, about
+  ClickHouse's 20 to 32, against 180 to 1,040 ms for TimescaleDB's
+  uncompressed hypertable.
+- **Building it.** ChloeDB's first fold is the slowest by far: 72 s,
+  against 0.9 s for ClickHouse's `INSERT ... SELECT` and 17 s for
+  TimescaleDB's first refresh. It folds one bucket per query, 8,643 buckets
+  at about 8 ms each, as the section above says.
+- **New lines.** ChloeDB's `REFRESH ROLLUP` takes the 50,000 lines in 0.08 s.
+  ClickHouse's view has them as its `INSERT` returns (0.065 s). In
+  TimescaleDB they are in the aggregate when the policy next runs: 2.6 s
+  after the `COPY` here, but up to its minute.
+- **Size.** ChloeDB's rollup takes 82 MB, the 50,000 new lines included:
+  the segments a checkpoint wrote besides the table's. ClickHouse's takes
+  11.5 MB and TimescaleDB's 99.9 MB.
