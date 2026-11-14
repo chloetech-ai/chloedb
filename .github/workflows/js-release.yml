@@ -7,8 +7,9 @@ name: chloedb-js release
 #
 # A tag chloedb-js-v<version> (chloedb-js/package.json's version; the old
 # name, strata-js-v<version>, works too) builds and tests every platform
-# and attaches the tarballs to the tag's GitHub release; a run started
-# by hand does the same and keeps them as the run's artifacts.
+# and attaches the tarballs to the tag's GitHub release (a draft until
+# release-publish.yml finds the whole version there); a run started by
+# hand does the same and keeps them as the run's artifacts.
 # A tag builds nothing unless it is on main and CI's full matrix passed on
 # its commit (release-gate.yml): the tests here check the packages, CI's
 # check the code.
@@ -166,7 +167,8 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "chloedb for JavaScript ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
+            # A draft: release-publish.yml publishes it with the version's others.
+            gh release create "$TAG" --repo "$REPO" --draft --latest=false --title "chloedb for JavaScript ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
           fi
           # A checksum of each tarball, to check a download by (sha256sum -c).
           (cd dist && sha256sum *.tgz > SHA256SUMS && cat SHA256SUMS)
