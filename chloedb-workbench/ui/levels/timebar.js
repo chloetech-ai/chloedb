@@ -222,9 +222,16 @@ export function timeTravel(mountScreen, { screen = "" } = {}) {
     }
 
     // ------------------------------------------------------------- life
+    // A link from another screen (Trace's "Mission then") rides as
+    // `#/mission?at=<ms>`: open on that moment once the timeline is known.
+    const linked = (() => {
+      const i = location.hash.indexOf("?");
+      const at = Number(new URLSearchParams(i >= 0 ? location.hash.slice(i + 1) : "").get("at"));
+      return Number.isFinite(at) && at > 0 ? at : null;
+    })();
     mountView();
     draw();
-    loadLine();
+    loadLine().then(() => { if (alive && linked != null) go(linked); });
     timer = setInterval(() => { if (S.at == null) loadLine(); else draw(); }, 60e3);
 
     return {
