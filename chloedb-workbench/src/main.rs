@@ -39,6 +39,8 @@ mod runtime;
 mod swarm;
 // Fifth build: Hotspots (SPEC.md).
 mod hotspots;
+// Fifth build: autocomplete and intent checks.
+mod complete;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

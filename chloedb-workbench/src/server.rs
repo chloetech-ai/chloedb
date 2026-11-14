@@ -152,6 +152,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::trace::routes())
         // Fifth build: Hotspots.
         .merge(crate::hotspots::routes())
+        .merge(crate::complete::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -213,6 +214,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("quicksearch.js", include_str!("../ui/levels/quicksearch.js")),
     ("trace.js", include_str!("../ui/levels/trace.js")),
     ("hotspots.js", include_str!("../ui/levels/hotspots.js")),
+    ("complete.js", include_str!("../ui/levels/complete.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {

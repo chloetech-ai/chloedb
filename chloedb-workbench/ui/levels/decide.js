@@ -209,6 +209,7 @@ export function mount(root, ctx) {
     ruleBox.value = ruleFor(q, pick);
     ruleBox.addEventListener("input", () => { S.own.set(q.id, true); S.ruleText.set(q.id, ruleBox.value); });
     const words = h("textarea", { class: "de-words", rows: 2, "data-key": `w:${q.id}`, placeholder: `Tell ${a ? a.name : "it"} in your own words…`, "aria-label": "Your answer" });
+    import("./complete.js").then((m) => m.attachComplete(words, { field: "answer", ctx, agent: q.agent })).catch(() => {}); // Fifth build: autocomplete
     const sendWords = () => { const t = words.value.trim(); if (t) answer(q, { text: t, ...(on ? { rule: ruleBox.value.trim() } : {}) }, t); };
     words.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendWords(); });
     const wordsOpen = S.choice.get(q.id) === "words";

@@ -253,6 +253,7 @@ export function mount(root, ctx) {
       placeholder: "Ask when, why or how something changed: “when and why did we change retries from 3 to 5?”",
       oninput: (e) => { S.q = e.target.value; },
     });
+    import("./complete.js").then((m) => m.attachComplete(input, { field: "trace", ctx })).catch(() => {}); // Fifth build: autocomplete
     return h("form", { class: "tr-ask", onsubmit: (e) => { e.preventDefault(); S.over = null; run(); } },
       svg(I.search, "tr-i tr-ask-i"), input,
       h("button", { class: "btn primary tr-go", type: "submit", disabled: S.busy || null }, S.busy ? "Tracing…" : "Trace"));

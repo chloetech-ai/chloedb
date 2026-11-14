@@ -513,7 +513,7 @@ export function mount(root, ctx) {
     return h("section", { class: "lv-card sh-ask" },
       h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Ask the capsule"), h("span", { class: "muted sm" }, p.capsule ? "no model call" : "no capsule: asks the repository's memory")),
       h("form", { class: "sh-askf", onsubmit: (e) => { e.preventDefault(); ask(); } },
-        h("input", { "data-key": "q", placeholder: "Why per line and not on the total?", value: S.q, oninput: (e) => { S.q = e.target.value; } }),
+        h("input", { "data-key": "q", placeholder: "Why per line and not on the total?", onfocus: (e) => import("./complete.js").then((m) => m.attachComplete(e.target, { field: "why", ctx })).catch(() => {}), value: S.q, oninput: (e) => { S.q = e.target.value; } }),
         h("button", { class: "btn primary sm", type: "submit", disabled: S.asking }, S.asking ? "Asking…" : "Ask")),
       !ans && !S.askErr ? h("div", { class: "sh-sugg" }, suggest.map((q) => h("button", { class: "sh-chip", onclick: () => ask(q) }, q))) : null,
       S.askErr ? h("div", { class: "sh-note crit" }, S.askErr) : null,

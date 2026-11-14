@@ -292,6 +292,7 @@ export function mountLab(host, ctx, getAgent) {
     const f = L.form;
     const list = [...L.personas, { id: "custom", name: "Someone else", role: "describe them in a few words", traits: [] }];
     const ta = h("textarea", { class: "pvl-ta", rows: "2", placeholder: "Buy two linen totes with the code SAVE10 and pay with the saved card", "aria-label": "The task", oninput: (e) => { f.task = e.target.value; } });
+    import("./complete.js").then((m) => m.attachComplete(ta, { field: "persona", ctx, agent: a && a.id, repo: a && a.repo })).catch(() => {}); // Fifth build: autocomplete
     ta.value = f.task;
     return h("div", { class: "pvl-form" },
       h("div", { class: "pvl-lab" }, "Who"),

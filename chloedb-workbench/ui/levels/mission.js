@@ -327,6 +327,7 @@ function mountMission(root, ctx) {
   // ------------------------------------------------------------- set a goal
   function setGoal() {
     const text = h("textarea", { class: "mi-gt", rows: 3, "data-key": "goal-text", placeholder: "Refunds v2: partial refunds, idempotent, visible in the dashboard", "aria-label": "The goal" });
+    import("./complete.js").then((m) => m.attachComplete(text, { field: "goal", ctx, repo: () => repo.value.trim() })).catch(() => {}); // Fifth build: autocomplete
     const repo = h("input", { class: "mi-gr", "data-key": "goal-repo", value: S.repo || "", placeholder: "/path/to/the/repository", "aria-label": "Repository", spellcheck: "false" });
     const msg = h("div", { class: "mi-gmsg muted" }, "A lead agent breaks it into 3 to 8 outcomes, starts an agent for each, and asks you here rather than in a terminal.");
     const go = h("button", { class: "btn primary", type: "submit", "data-key": "goal-go" }, "Plan it", h("kbd", {}, "⌘↵"));

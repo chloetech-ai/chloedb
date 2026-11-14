@@ -29,9 +29,12 @@ while [ $# -gt 0 ]; do
       while [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; do echo "MCP config file not found: $1"; exit 1; done;;
     --model) MODEL="$2"; shift 2;;
     --) TASK="$2"; shift $#;;
+    -p) PRINT=1; shift;;
     *) TASK="$1"; shift;;
   esac
 done
+# claude -p (autocomplete's model ghost): one result, no session.
+[ -n "$PRINT" ] && { echo '{"type":"result","is_error":false,"result":" and keep every total in integer cents."}'; exit 0; }
 SDIR=$(dirname "$SETTINGS")
 TR="$SDIR/transcript.jsonl"
 N=0
@@ -689,7 +692,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors", "trace", "hotspots"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors", "trace", "hotspots", "check_intent"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -3542,4 +3545,369 @@ fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() 
     assert!(!err && text.starts_with("Workbench: src/totals.rs is a hotspot") && text.contains("totals::coupon (2 runs, 2 failed)"), "{text}");
     let (text, err) = m.tool("hotspots", json!({ "file": "README" }));
     assert!(!err && text.contains("README is not a hotspot"), "{text}");
+}
+
+// Fifth build: Autocomplete
+
+/// What /api/complete suggests for `q` with the cursor at its end.
+fn complete_at(s: &Server, field: &str, q: &str, repo: &Path) -> Value {
+    let (status, v) = s.get(&format!("/api/complete?field={field}&q={}&cursor={}&repo={}", enc_q(q), q.encode_utf16().count(), enc_q(&repo.to_string_lossy())));
+    assert_eq!(status, 200, "{v}");
+    v
+}
+
+fn sugg<'a>(v: &'a Value, kind: &str, label: &str) -> Option<&'a Value> {
+    v["suggestions"].as_array().unwrap().iter().find(|s| s["kind"] == kind && s["label"].as_str().is_some_and(|l| l.contains(label)))
+}
+
+/// Asks until a suggestion of `kind` whose label holds `label` comes, and
+/// `also` holds of it (the rows are refreshed in the background).
+fn complete_until(s: &Server, field: &str, q: &str, repo: &Path, kind: &str, label: &str, also: impl Fn(&Value) -> bool) -> Value {
+    let t = std::time::Instant::now();
+    loop {
+        let v = complete_at(s, field, q, repo);
+        if sugg(&v, kind, label).is_some_and(&also) {
+            return v;
+        }
+        assert!(t.elapsed() < Duration::from_secs(40), "no {kind} {label} for {q:?}: {v}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+fn check_text(s: &Server, text: &str, field: &str, repo: &Path) -> Value {
+    let (status, v) = s.post("/api/intent/check", json!({ "text": text, "field": field, "repo": repo }));
+    assert_eq!(status, 200, "{v}");
+    v
+}
+
+fn first_mark(v: &Value, kind: &str) -> Value {
+    marks_of(v, kind).into_iter().next().unwrap_or_else(|| panic!("no {kind} mark: {v}"))
+}
+
+fn marks_of(v: &Value, kind: &str) -> Vec<Value> {
+    v["marks"].as_array().unwrap().iter().filter(|m| m["kind"] == kind).cloned().collect()
+}
+
+/// A repository with money.py and its test, and ChloeCtx's decisions about
+/// it (one superseded).
+fn complete_shop(ctx: &Path) -> (tempfile::TempDir, PathBuf) {
+    let (d, r) = repo();
+    std::fs::create_dir(r.join("tests")).unwrap();
+    std::fs::write(r.join("money.py"), "def round_half_up(cents):\n    return (cents * 2 + 1) // 2\n\n\ndef line_total(price, qty):\n    return price * qty\n").unwrap();
+    std::fs::write(r.join("tests/test_money.py"), "from money import round_half_up\n\n\ndef test_round_half_up():\n    assert round_half_up(5) == 5\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "money"]);
+    let now = now_s();
+    std::fs::write(
+        ctx.join("sql.json"),
+        json!({ "text": "", "count": 3, "columns": ["id", "kind", "text", "ts", "files", "session", "tag", "links"], "rows": [
+            ["d1a2b3c4:7", "decision", "Money rounds half up per line; never floor.", now, "money.py", "other-session", "", null],
+            ["d1a2b3c4:9", "decision", "Prices are integer cents; never floats.", now - 3600, "", "other-session", "", null],
+            ["d1a2b3c4:2", "decision", "Totals round down to the cent.", now - 86_400, "money.py", "other-session", "superseded", null]
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    (d, r)
+}
+
+#[test]
+fn autocomplete_ranks_agents_files_symbols_records_tasks_tests_and_sql() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = complete_shop(ctx.path());
+    let (status, rule) = s.post("/api/rules", json!({ "repo": r, "text": "Every API response carries a request id." }));
+    assert_eq!(status, 201, "{rule}");
+    let rule_id = rule["rule"]["id"].as_str().unwrap().to_string();
+    // cart edits money.py; checkout is on the rounding of discounts.
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "task": "WRITE money.py ROUND = 1" }));
+    let cart_id = cart["id"].as_str().unwrap().to_string();
+    s.wait(&cart_id, "idle");
+    let checkout = s.spawn(json!({ "repo": r, "name": "checkout", "task": "fix the rounding of discounts in money.py" }));
+    let checkout_id = checkout["id"].as_str().unwrap().to_string();
+    s.wait(&checkout_id, "idle");
+    bash_as(&s, &cart_id, "tu_c1", "cargo test", &cargo_out(true), false);
+
+    // @agent: the agent, with what it is doing; the token is replaced.
+    let v = complete_at(&s, "task", "Ask @ca", &r);
+    let a = &v["suggestions"][0];
+    assert_eq!((a["kind"].as_str(), a["label"].as_str(), a["insert"].as_str()), (Some("agent"), Some("@cart"), Some("@cart ")), "{v}");
+    assert_eq!((a["replace"]["start"].as_i64(), a["replace"]["end"].as_i64()), (Some(4), Some(7)), "{a}");
+    assert_eq!((v["token"]["text"].as_str(), v["token"]["trigger"].as_str()), (Some("@ca"), Some("@")), "{v}");
+    // A file, with who is changing it now.
+    let v = complete_until(&s, "task", "Look at mon", &r, "file", "money.py", |f| f["because"].as_str().unwrap_or("").contains("cart edited it"));
+    assert_eq!(sugg(&v, "file", "money.py").unwrap()["insert"].as_str().map(str::trim), Some("money.py"), "{v}");
+    // A symbol, from the code index (filled in the background).
+    let v = complete_until(&s, "steer", "Use round_ha", &r, "symbol", "round_half_up", |_| true);
+    assert_eq!(v["suggestions"][0]["kind"], "symbol", "{v}");
+    assert!(sugg(&v, "symbol", "round_half_up").unwrap()["detail"].as_str().unwrap().contains("money.py"), "{v}");
+    // Decisions and rules after ◆, by their words; ◆ counts one UTF-16 unit.
+    let v = complete_at(&s, "task", "as ◆flo", &r);
+    let d = sugg(&v, "decision", "never floor").unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(d["insert"], "◆d1a2b3c4:7 ");
+    assert_eq!((d["replace"]["start"].as_i64(), d["replace"]["end"].as_i64()), (Some(3), Some(7)), "{d}");
+    assert!(v["suggestions"].as_array().unwrap().iter().all(|s| ["rule", "decision", "preference", "fact"].contains(&s["kind"].as_str().unwrap())), "{v}");
+    let v = complete_at(&s, "answer", "◆requ", &r);
+    assert_eq!((v["suggestions"][0]["kind"].as_str(), v["suggestions"][0]["insert"].as_str()), (Some("rule"), Some(format!("◆{rule_id} ").as_str())), "{v}");
+    // A superseded decision ranks below a live one.
+    let v = complete_at(&s, "task", "◆round", &r);
+    let pos = |id: &str| v["suggestions"].as_array().unwrap().iter().position(|s| s["ref"]["id"] == id);
+    assert!(pos("d1a2b3c4:7").unwrap_or_else(|| panic!("{v}")) < pos("d1a2b3c4:2").unwrap_or(99), "{v}");
+    // A past task like the one being typed, with how it went; it replaces the text.
+    let v = complete_at(&s, "task", "fix the roundi", &r);
+    let t = sugg(&v, "task", "fix the rounding of discounts").unwrap_or_else(|| panic!("{v}"));
+    assert!(t["detail"].as_str().unwrap().contains("checkout"), "{t}");
+    assert_eq!((t["replace"]["start"].as_i64(), t["replace"]["end"].as_i64()), (Some(0), Some(14)), "{t}");
+    // A test, from test_runs, with its record.
+    let v = complete_until(&s, "steer", "make totals::cou", &r, "test", "totals::coupon", |_| true);
+    assert!(sugg(&v, "test", "totals::coupon").unwrap()["detail"].as_str().unwrap().contains("1 of 1 passed"), "{v}");
+    // SQL: tables after FROM, an alias's columns after the dot.
+    let v = complete_at(&s, "sql", "SELECT * FROM test_r", &r);
+    assert_eq!((v["suggestions"][0]["kind"].as_str(), v["suggestions"][0]["label"].as_str()), (Some("table"), Some("test_runs")), "{v}");
+    let v = complete_at(&s, "sql", "SELECT * FROM agents a WHERE a.na", &r);
+    assert_eq!((v["suggestions"][0]["kind"].as_str(), v["suggestions"][0]["label"].as_str()), (Some("column"), Some("name")), "{v}");
+    assert!(v["suggestions"].as_array().unwrap().iter().all(|s| s["kind"] == "column"), "{v}");
+    // Quick search: a question goes to Trace first.
+    let v = complete_at(&s, "quick", "why did we change the rounding", &r);
+    let tr = &v["suggestions"][0];
+    assert_eq!(tr["kind"], "trace", "{v}");
+    assert_eq!(tr["go"].as_str(), Some(format!("#/trace?q={}", enc_q("why did we change the rounding")).as_str()), "{tr}");
+    // A persona for a persona task.
+    let v = complete_at(&s, "persona", "test it like keyb", &r);
+    assert_eq!(v["suggestions"][0]["kind"], "persona", "{v}");
+    assert!(v["suggestions"][0]["insert"].as_str().unwrap().contains("Ken Okafor"), "{v}");
+    // Warm, it answers from its rows (the target is 30 ms; a loaded test
+    // machine gets slack).
+    let took: Vec<f64> = (0..5).map(|_| complete_at(&s, "task", "Look at mon", &r)["took_ms"].as_f64().unwrap()).collect();
+    assert!(took.iter().cloned().fold(f64::MAX, f64::min) < 200.0, "{took:?}");
+}
+
+#[test]
+fn intent_checks_fire_on_a_crafted_task_and_stay_quiet_on_a_good_one() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = complete_shop(ctx.path());
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "task": "WRITE money.py ROUND = 1" }));
+    let cart_id = cart["id"].as_str().unwrap().to_string();
+    s.wait(&cart_id, "idle");
+    let checkout = s.spawn(json!({ "repo": r, "name": "checkout", "task": "fix the rounding of discounts in the basket" }));
+    s.wait(checkout["id"].as_str().unwrap(), "idle");
+
+    // A good task: quiet.
+    let good = "Add a coupon field to the README; done when `cat README` shows it.";
+    let v = check_text(&s, good, "task", &r);
+    assert_eq!(v["marks"], json!([]), "{v}");
+    assert!(v["took_ms"].as_f64().is_some());
+
+    // No done check: the fix appends one; a steer needs none.
+    let v = check_text(&s, "Add a coupon field to the README", "task", &r);
+    let m = &first_mark(&v, "no_done_check");
+    assert_eq!(m["severity"], "warning", "{m}");
+    assert!(m["fix"]["label"].as_str().unwrap().starts_with("Add done check:"), "{m}");
+    assert!(m["fix"]["edits"][0]["text"].as_str().unwrap().contains("Done when"), "{m}");
+    assert_eq!(marks_of(&check_text(&s, "Add a coupon field to the README", "steer", &r), "no_done_check"), Vec::<Value>::new());
+
+    // Against a decision: the word, the record, a fix to the other choice.
+    let text = "Floor each line total; done when `pytest` passes.";
+    let v = check_text(&s, text, "task", &r);
+    let m = &first_mark(&v, "contradicts");
+    assert_eq!((m["severity"].as_str(), m["ref"]["id"].as_str()), (Some("error"), Some("d1a2b3c4:7")), "{m}");
+    let (a, b) = (m["start"].as_u64().unwrap() as usize, m["end"].as_u64().unwrap() as usize);
+    assert_eq!(text[a..b].to_lowercase(), "floor", "{m}");
+    assert!(m["fix"]["label"].as_str().unwrap().to_lowercase().contains("half up"), "{m}");
+    // Its other words: never floats.
+    let v = check_text(&s, "Store each price as a float; done when `pytest` passes.", "task", &r);
+    assert_eq!(first_mark(&v, "contradicts")["ref"]["id"], "d1a2b3c4:9", "{v}");
+    // Saying the decided thing, or refusing the forbidden one, is fine.
+    let v = check_text(&s, "Round each line total half up, never floor; done when `pytest` passes.", "task", &r);
+    assert_eq!(marks_of(&v, "contradicts"), Vec::<Value>::new(), "{v}");
+
+    // A guarded command, in words or in backticks.
+    let v = check_text(&s, "Fix the README typo, then push to main; done when `cat README` shows it.", "task", &r);
+    assert_eq!(first_mark(&v, "guarded")["ref"]["rule"], "push-default", "{v}");
+    let v = check_text(&s, "Ship it: run `git push --force origin main` when the tests pass.", "task", &r);
+    assert_eq!(first_mark(&v, "guarded")["ref"]["rule"], "push-default", "{v}");
+
+    // Overlap: a file a running agent is changing, and a task like a running one's.
+    let text = "Rename line_total in money.py; done when `pytest` passes.";
+    let v = check_text(&s, text, "task", &r);
+    let o = &first_mark(&v, "overlap");
+    assert_eq!((o["ref"]["name"].as_str(), o["fix"]["go"].as_str()), (Some("cart"), Some(format!("#/story/{cart_id}").as_str())), "{o}");
+    assert_eq!(&text[o["start"].as_u64().unwrap() as usize..o["end"].as_u64().unwrap() as usize], "money.py");
+    assert!(v["refs"].as_array().unwrap().iter().any(|f| f["kind"] == "file" && f["label"] == "money.py"), "{v}");
+    let v = check_text(&s, "Fix the rounding of basket discounts; done when `pytest` passes.", "task", &r);
+    assert_eq!(first_mark(&v, "overlap")["ref"]["name"], "checkout", "{v}");
+
+    // References: an unknown @agent, a superseded ◆ record.
+    let v = check_text(&s, "Ask @kart about it", "steer", &r);
+    let u = &first_mark(&v, "unknown_ref");
+    assert_eq!(u["severity"], "error", "{u}");
+    assert!(u["fix"]["label"].as_str().unwrap().contains("@cart"), "{u}");
+    let v = check_text(&s, "Do it as ◆d1a2b3c4:2 says", "steer", &r);
+    let sm = &first_mark(&v, "superseded");
+    // Offsets count UTF-16 units, as the browser's selection does: ◆ is one.
+    assert_eq!((sm["start"].as_u64(), sm["end"].as_u64()), (Some(9), Some(20)), "{sm}");
+    assert!(v["refs"].as_array().unwrap().iter().any(|f| f["kind"] == "decision"), "{v}");
+
+    // Agents check a task before they hand it on.
+    let mut m = Mcp::start(&s, &cart_id);
+    let (text, err) = m.tool("check_intent", json!({ "text": "Store each price as a float" }));
+    assert!(!err, "{text}");
+    assert!(text.contains("contradicts") && text.contains("◆d1a2b3c4:9") && text.contains("no_done_check"), "{text}");
+    let (text, err) = m.tool("check_intent", json!({ "text": good }));
+    assert!(!err && text.starts_with("No problems found"), "{text}");
+}
+
+#[test]
+fn autocomplete_and_checks_without_chloectx_say_what_is_missing() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    std::fs::write(r.join("money.py"), "def round_half_up(cents):\n    return cents\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "money"]);
+    let v = complete_until(&s, "task", "fix mon", &r, "file", "money.py", |_| true);
+    assert!(v["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("ChloeCtx is not installed")), "{v}");
+    let v = check_text(&s, "Floor each line total in money.py", "task", &r);
+    assert_eq!(marks_of(&v, "contradicts"), Vec::<Value>::new());
+    assert_eq!(marks_of(&v, "no_done_check").len(), 1, "{v}");
+    assert!(v["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("ChloeCtx is not installed")), "{v}");
+    // No repository: nothing to check against, and it says so.
+    let (status, v) = s.post("/api/intent/check", json!({ "text": "Fix it" }));
+    assert_eq!((status, v["marks"].clone()), (200, json!([])), "{v}");
+}
+
+/// What a user's box showed and which they picked (rank from 0).
+fn picked(s: &Server, user: &str, field: &str, repo: &Path, shown: &[Value], kind: &str, label: &str) -> usize {
+    let list: Vec<Value> = shown.iter().enumerate().map(|(i, x)| json!({ "kind": x["kind"], "label": x["label"], "rank": i })).collect();
+    let rank = shown.iter().position(|x| x["kind"] == kind && x["label"] == label).unwrap_or_else(|| panic!("{kind} {label} not shown: {shown:?}"));
+    let (status, v) = s.post("/api/complete/events", json!({ "user": user, "field": field, "repo": repo, "shown": list, "accepted": { "kind": kind, "label": label, "rank": rank } }));
+    assert_eq!(status, 200, "{v}");
+    rank
+}
+
+fn complete_as(s: &Server, user: &str, field: &str, q: &str, repo: &Path, agent: Option<&str>) -> Value {
+    let agent = agent.map(|a| format!("&agent={a}")).unwrap_or_default();
+    let (status, v) = s.get(&format!("/api/complete?field={field}&q={}&cursor={}&repo={}&user={user}{agent}", enc_q(q), q.encode_utf16().count(), enc_q(&repo.to_string_lossy())));
+    assert_eq!(status, 200, "{v}");
+    v
+}
+
+fn typed(s: &Server, user: &str, field: &str, repo: &Path, agent: Option<&str>, text: &str) {
+    let (status, v) = s.post("/api/complete/events", json!({ "user": user, "field": field, "repo": repo, "agent": agent, "typed": text }));
+    assert_eq!(status, 200, "{v}");
+}
+
+#[test]
+fn an_empty_box_proposes_a_ghost_finishes_the_sentence_and_each_user_is_learned() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = complete_shop(ctx.path());
+    std::fs::write(r.join("monitor.py"), "def latency():\n    return 0\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "monitor"]);
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "task": "WRITE money.py ROUND = 1" }));
+    let cart_id = cart["id"].as_str().unwrap().to_string();
+    s.wait(&cart_id, "idle");
+    // totals::coupon: failed once, then passed twice: flaky.
+    bash_as(&s, &cart_id, "tu_f1", "cargo test", &cargo_out(false), true);
+    bash_as(&s, &cart_id, "tu_f2", "cargo test", &cargo_out(true), false);
+    bash_as(&s, &cart_id, "tu_f3", "cargo test", &cargo_out(true), false);
+
+    // 1. Before the first keystroke: the flaky test, with why.
+    let v = complete_as(&s, "ana", "task", "", &r, None);
+    assert_eq!(v["mode"], "propose", "{v}");
+    let p = &v["suggestions"][0];
+    assert_eq!((p["kind"].as_str(), p["sub"].as_str()), (Some("proposal"), Some("test")), "{v}");
+    assert!(p["insert"].as_str().unwrap().starts_with("Fix totals::coupon: flaky, failed 1 of 3 runs in the last "), "{p}");
+    assert!(p["insert"].as_str().unwrap().ends_with("done when `cargo test coupon` passes 5 times in a row."), "{p}");
+    assert!(p["because"].as_str().unwrap().contains("test_runs: last failed") && p["because"].as_str().unwrap().contains("(cart)"), "{p}");
+    assert!(v["took_ms"].as_f64().unwrap() < 500.0, "{v}");
+    // Trace and the quick search: questions about today.
+    let v = complete_as(&s, "ana", "quick", "", &r, None);
+    let qn = v["suggestions"].as_array().unwrap().iter().find(|x| x["label"] == "Why did cart change money.py today?").unwrap_or_else(|| panic!("{v}"));
+    assert!(qn["go"].as_str().unwrap().starts_with("#/trace?q=Why%20did%20cart"), "{qn}");
+    assert!(qn["because"].as_str().unwrap().starts_with("1 edit today"), "{qn}");
+
+    // 2. The ghost finishes the sentence: the ◆ decision that applies and a
+    // done check from the test that covers money.py.
+    let v = complete_as(&s, "ana", "task", "Fix the rounding in money.py ", &r, None);
+    let g = &v["ghost"];
+    assert_eq!(g["text"], "per ◆d1a2b3c4:7; done when `pytest tests/test_money.py -q` passes.", "{v}");
+    assert_eq!(g["parts"].as_array().unwrap().iter().map(|p| p["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["rule", "done"], "{g}");
+    assert!(g["because"].as_str().unwrap().contains("tests/test_money.py covers money.py"), "{g}");
+    assert_eq!(g["source"], "chloedb");
+    // Mid-word, it completes the word first.
+    let v = complete_as(&s, "ana", "task", "Look at mon", &r, None);
+    if v["suggestions"][0]["label"] == "money.py" {
+        assert!(v["ghost"]["text"].as_str().unwrap().starts_with("ey.py"), "{v}");
+    }
+    // A text that is already done-checked gets no done clause.
+    let v = complete_as(&s, "ana", "task", "Fix the rounding in money.py; done when `pytest` passes", &r, None);
+    assert!(v["ghost"].is_null() || !v["ghost"]["text"].as_str().unwrap().contains("done when"), "{v}");
+
+    // 4. Because: what an agent is doing now.
+    let v = complete_as(&s, "ana", "task", "Ask @ca", &r, None);
+    assert!(v["suggestions"][0]["because"].as_str().unwrap().contains("now: "), "{v}");
+
+    // 3. Each user is learned: ana picks monitor.py, ben money.py.
+    let (mut ana, mut ben) = (Vec::new(), Vec::new());
+    for _ in 0..3 {
+        let v = complete_as(&s, "ana", "task", "Look at mon", &r, None);
+        let files: Vec<Value> = v["suggestions"].as_array().unwrap().iter().filter(|x| x["kind"] == "file").cloned().collect();
+        ana.push(picked(&s, "ana", "task", &r, &files, "file", "monitor.py"));
+        let v = complete_as(&s, "ben", "task", "Look at mon", &r, None);
+        let files: Vec<Value> = v["suggestions"].as_array().unwrap().iter().filter(|x| x["kind"] == "file").cloned().collect();
+        ben.push(picked(&s, "ben", "task", &r, &files, "file", "money.py"));
+    }
+    let first_file = |v: &Value| v["suggestions"].as_array().unwrap().iter().find(|x| x["kind"] == "file").map(|x| x["label"].as_str().unwrap().to_string());
+    let va = complete_as(&s, "ana", "task", "Look at mon", &r, None);
+    let vb = complete_as(&s, "ben", "task", "Look at mon", &r, None);
+    assert_eq!((first_file(&va).as_deref(), first_file(&vb).as_deref()), (Some("monitor.py"), Some("money.py")), "ana {ana:?} ben {ben:?}");
+    assert_eq!(*ana.last().unwrap(), 0, "{ana:?}");
+    assert_eq!(*ben.last().unwrap(), 0, "{ben:?}");
+    let pick = va["suggestions"].as_array().unwrap().iter().find(|x| x["label"] == "monitor.py").unwrap();
+    assert_eq!(pick["picked"], 3, "{pick}");
+    // The stats say it: the rank of what ana picked, early and late.
+    let (status, st) = s.get(&format!("/api/complete/stats?user=ana&repo={}", enc_q(&r.to_string_lossy())));
+    assert_eq!(status, 200, "{st}");
+    assert_eq!(st["accepted"], 3, "{st}");
+    assert!(st["second_half"]["mrr"].as_f64().unwrap() >= st["first_half"]["mrr"].as_f64().unwrap_or(0.0), "{st}");
+    assert_eq!(st["second_half"]["top1"], 1.0, "{st}");
+
+    // Their own words: what ana wrote comes back to ana, not to ben.
+    typed(&s, "ana", "task", &r, None, "Tighten the monitor thresholds for checkout latency; done when `pytest -q` passes.");
+    let v = complete_as(&s, "ana", "task", "Tighten the mon", &r, None);
+    assert_eq!(v["ghost"]["text"], "itor thresholds for checkout latency; done when `pytest -q` passes.", "{v}");
+    assert!(v["ghost"]["because"].as_str().unwrap().starts_with("you wrote this"), "{v}");
+    let v = complete_as(&s, "ben", "task", "Tighten the mon", &r, None);
+    assert!(v["ghost"].is_null() || !v["ghost"]["text"].as_str().unwrap().contains("thresholds"), "{v}");
+    let v = complete_as(&s, "ana", "task", "Tighten the thresh", &r, None);
+    let m = sugg(&v, "mine", "Tighten the monitor thresholds").unwrap_or_else(|| panic!("{v}"));
+    assert!(m["because"].as_str().unwrap().starts_with("you wrote this"), "{m}");
+
+    // A personalized steer: what ana told an agent in a spot like this.
+    typed(&s, "ana", "steer", &r, Some(&cart_id), "Run the money tests before you commit anything.");
+    let v = complete_as(&s, "ana", "steer", "", &r, Some(&cart_id));
+    assert_eq!(v["context"]["agent"], "cart", "{v}");
+    assert!(v["context"]["now"].as_str().unwrap().contains("now: "), "{v}");
+    let subs: Vec<&str> = v["suggestions"].as_array().unwrap().iter().map(|x| x["sub"].as_str().unwrap()).collect();
+    assert!(subs.contains(&"said") && subs.contains(&"test"), "{v}");
+    let said = v["suggestions"].as_array().unwrap().iter().find(|x| x["sub"] == "said").unwrap();
+    assert_eq!(said["insert"], "Run the money tests before you commit anything.");
+    assert!(said["because"].as_str().unwrap().starts_with("you said this"), "{said}");
+    let v = complete_as(&s, "ben", "steer", "", &r, Some(&cart_id));
+    assert!(v["suggestions"].as_array().unwrap().iter().all(|x| x["sub"] != "said"), "{v}");
+    assert!(v["suggestions"].as_array().unwrap().iter().any(|x| x["sub"] == "rule" && x["insert"].as_str().unwrap().starts_with("Keep to ◆d1a2b3c4:7")), "{v}");
+
+    // 5. The model ghost: the fake claude answers, then the cache does.
+    let body = json!({ "text": "Fix the rounding in money.py", "field": "task", "repo": r, "user": "ana" });
+    let (status, mg) = s.post("/api/complete/ghost", body.clone());
+    assert_eq!(status, 200, "{mg}");
+    assert_eq!((mg["available"].as_bool(), mg["cached"].as_bool()), (Some(true), Some(false)), "{mg}");
+    assert_eq!((mg["ghost"]["text"].as_str(), mg["ghost"]["source"].as_str()), (Some(" and keep every total in integer cents."), Some("model")), "{mg}");
+    let (_, mg) = s.post("/api/complete/ghost", json!({ "text": "Fix the rounding in money.py and keep", "field": "task", "repo": r }));
+    assert_eq!((mg["cached"].as_bool(), mg["ghost"]["text"].as_str()), (Some(true), Some(" every total in integer cents.")), "{mg}");
 }

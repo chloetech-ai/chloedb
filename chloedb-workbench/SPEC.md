@@ -1813,3 +1813,307 @@ context).
   the new text found in the file when the hook came), placed in the code
   index's chunks of the agent's tree, else main's, else the file chunked
   as the index would.
+
+## Fifth build: Autocomplete
+
+The questions behind it: do we have contextual autocomplete everywhere we
+type something, and if code is the unit of edit, autocomplete and syntax
+of an IDE, what is the equivalent for an IDE that works through agents?
+The answer here: the unit is the task (an intent given to an agent). The
+box completes references into the project's memory, and its syntax check
+is an intent check.
+
+### The contract
+
+- `GET /api/complete?field=<kind>&q=<text>&cursor=<n>&repo=&agent=&user=`
+  answers ranked suggestions `{kind, label, insert, detail, ref, replace:
+  {start, end}}` for the token at the cursor (offsets in UTF-16 units, as
+  a browser's `selectionStart`). The sources are @agents (the agents
+  table); files and symbols (the files under the repository, and
+  `code_chunks`); ◆ decisions, preferences and facts (ChloeCtx through
+  `chloectx sql --json`, which degrades when ChloeCtx is missing) and the
+  user's rules; earlier tasks and goals by BM25, with how they ended;
+  tests (`test_runs`); SQL tables and columns; personas; doc pages.
+  `field` picks the sources and their order: task, goal, steer, answer,
+  trace, quick, why, persona, change, search, sql.
+- `POST /api/intent/check {text, repo, field, agent?}` answers marks
+  `{start, end, severity, kind, message, fix?, ref?}`:
+  - `no_done_check`: a task or goal that does not say how it is done;
+  - `contradicts`: against a ChloeCtx decision or a rule, with the record
+    linked;
+  - `guarded`: a guarded command or path (guarded.rs's rules);
+  - `overlap`: with a running agent's task or files;
+  - `hotspot`: only when a `hotspots` table exists;
+  - `unknown_ref` and `superseded`: for @names and ◆ids.
+
+  The checks are cheap and deterministic, with no model.
+- UI: `attachComplete(input, {field, ctx, ...})` gives every box a list
+  (arrows, Tab or Enter, Esc, chips), squiggles with a hover card and a
+  one-click fix. A question in the quick search goes to Trace first.
+
+### The bar
+
+The user raised it: "The autocomplete should be amazing, every time I
+write a prompt or search or write anything at all, I want the
+autocomplete to be so contextualized and personalized that it blows away
+the user's imagination." The part is held to it in this order:
+
+1. **Before the first keystroke.** An empty box proposes the three likeliest
+   things to write, given where the user is and what is happening:
+   - a new task: a flaky or failing test from `test_runs`, the top
+     hotspot, an open runtime error, or the next step of a goal's outcome
+     that is not done;
+   - a steer: what the agent is doing now, and the correction this user
+     made last time in a similar spot;
+   - Trace and `/`: questions about what changed today.
+2. **A ghost for the whole sentence**, not just the token. Tab takes a
+   word; Shift+Tab or → takes it all. It is built from what the screen
+   knows: the focused agent, its files, the failing test, the ◆ rule that
+   applies, the user's own past tasks. It ends with a done check made
+   from the tests that cover the files. The deterministic version comes
+   first and is instant.
+3. **Personal.** Every suggestion shown, accepted and ignored is a row.
+   Ranking uses those rows, frecency, and the user's own words (BM25 over
+   their past tasks and steers, and ChloeCtx's record of what they typed).
+   Two users, or one user over time, see different orders.
+4. **Context, not just matching.** Each item says why it is offered ("cart
+   edited it 4 min ago", "◆ decided Nov 9"). @agent shows what the agent
+   is doing now.
+5. **Optionally, a model.** After about 700 ms of pause, a fast model may
+   offer a better ghost. It counts only if it arrives before the next
+   keystroke. It is off without the claude binary, and is never called in
+   tests. The UI shows where a suggestion came from.
+
+The deterministic path stays under about 30 ms, measured.
+
+### Autocomplete as built
+
+**Code**:
+- `src/complete.rs`: the routes, the rows, the token completion and the
+  intent checks.
+- `src/complete/foresee.rs`: proposals, the ghost, "because" lines,
+  habits, the model ghost.
+- `ui/levels/complete.js`: the UI.
+- `ui/dev/fixtures/complete.mjs` and `ui/dev/complete.html?demo=task|sql|quick|steer`:
+  fixtures and a dev page in the real shapes.
+
+**Tables** (created in `StateDb::open`):
+- `complete_items (id, repo, kind, pfx KEYWORD[], label, ins, detail,
+  refj, body TEXT, weight, grp)`: one row per thing to complete; `repo =
+  '*'` for SQL words, tables, columns and personas.
+  - Prefixes go through `PREFIX(pfx, :p)`, with `fuzzy => 'auto'` as the
+    fallback when fewer than four rows come back.
+  - Records near a text go through BM25 over `body`, which uses the default
+    stemming analyzer ("floats" meets "float").
+  - Rows are refreshed from their sources by signature: the first time
+    before answering, then in the background once 3 s old. ChloeCtx is
+    asked again after 60 s.
+  - Kinds: file, symbol, test, doc, rule, decision, preference, fact,
+    prompt (ChloeCtx's `kind = 'prompt'` records: what the user typed into
+    sessions), table, column, keyword, function, persona.
+- `complete_events (id, "user", repo, field, agent, kind, label, ctx, text,
+  accepted BOOL, rank, source, ts)`: every list shown, the row picked (and
+  its rank), the rows passed over, ghosts taken, and what the user wrote
+  in the end (`kind = 'typed'`, `text` searchable by BM25). `ctx` is the
+  agent's step at that moment.
+
+**Routes**:
+- `GET /api/complete?field&q&cursor&repo&agent&user&force&limit` answers
+  `{field, repo, user, mode, token, suggestions, ghost, context, took_ms,
+  missing}`:
+  - `mode` is `propose` for an empty box, `complete` otherwise;
+  - a suggestion adds `because`, `picked` (how often this user took it),
+    `sub` and `source` (proposals), and `go` (a hash to open instead);
+  - `ghost` is `{text, parts: [{kind: word|rule|done|continued, text}],
+    because, source: "chloedb"}` and comes only when the cursor is at the
+    end;
+  - `context` is `{agent, id, now}` on a steer or an answer.
+- `POST /api/intent/check {text, repo?, field?, agent?}` answers `{repo,
+  field, marks, refs, took_ms, missing}`.
+- `POST /api/complete/events {user, field, repo?, agent?, shown: [{kind,
+  label, rank, source}], accepted?, typed?}`.
+- `GET /api/complete/stats?user&repo` answers the rank of what the user
+  picked, early against late: `{shown, accepted, typed, acceptance, all,
+  first_half, second_half}`, each half with `{n, mrr, top1}`.
+- `POST /api/complete/ghost {text, field, repo?, agent?, user?, ghost?}`
+  answers `{available, cached, took_ms, ghost: {text, source: "model",
+  model: "haiku", because}}`. It answers `{available: false, why}` when
+  the claude binary is not found.
+
+**What reaches the bar**:
+1. **Proposals.** Each comes with its because.
+   - task and goal: tests failing or flaky in the last day ("Fix
+     totals::coupon: flaky, failed 1 of 3 runs in the last 4 min; done when
+     `cargo test coupon` passes 5 times in a row."), open runtime errors,
+     the top hotspot (with a covering done check), the next outcome of an
+     unfinished goal that no agent has, and the user's own recent task
+     again;
+   - steer: the test the agent broke since its edit; the ◆ rule or
+     decision about the files it is editing; "run `<covering command>` and
+     show me"; and what this user said in a spot like this (BM25 of their
+     typed steers against the agent's task, current step and files: "you
+     said this to hooks yesterday, when it was at …"). The header shows
+     "ledger · working · now: Edit src/refunds/service.rs · 1 min ago";
+   - trace, quick, why: "Why did cart change money.py today?" (file_edits
+     since local midnight), today's commits on every branch, and "When did
+     X start failing?". In the quick search they go to Trace.
+
+   Proposals are cached per repository, field and agent for 3 s. The
+   user's own rows are read on each request.
+2. **The ghost.** It comes from, in order:
+   - (a) a text that begins as the typed one: the user's own `typed` rows,
+     the box's proposals, the agents' tasks, ChloeCtx prompts. The rest of
+     it is the ghost, because "you wrote this 2 days ago";
+   - (b) otherwise: the rest of the word being typed (from the top
+     suggestion), then ", per ◆<id>" for the rule or decision that applies
+     (sharing the files or two stemmed words, and not one the text goes
+     against), then "; done when `<cmd>` passes." when the text has no
+     done check.
+
+   `<cmd>` comes from the tests that cover the files the text names (or,
+   on a steer, the agent's files):
+   - pytest `tests/test_money.py -q`, `npx vitest run x.test.tsx` or
+     `npx jest`, `go test ./dir`, `cargo test --test t`, `cargo test stem`,
+     rspec;
+   - else a recorded test run named like the file;
+   - else the most-run command.
+
+   `no_done_check`'s fix uses the same command. Tab takes a word (when no
+   list is open), Shift+Tab or → takes all of it, and Esc drops it. The
+   ghost is drawn in the squiggles' mirror, the rule part in ◆ purple, the
+   done part in green, with a small "Tab ChloeDB" (or "Tab haiku") tag.
+3. **Personal.**
+   - The box keeps a user id in `localStorage` (`wb.complete.user`), or
+     takes `ctx.user`.
+   - It posts what it showed on accept (with the rank), proposals typed
+     over as passed over, ghosts taken, and the final text on `change`
+     (blur) or Enter.
+   - Ranking adds `12 * (1 - e^-w)` for the suggestion and `3 * (1 -
+     e^-w/4)` for its kind. `w` sums the picks with a two-week half life,
+     at half weight from other fields. A suggestion never picked loses 0.7
+     per time it was passed over, up to six.
+   - The user's own earlier texts come back as `mine` rows (BM25 over their
+     `typed` rows of that field), ChloeCtx prompts as `prompt` rows.
+4. **Because.** Each suggestion says why:
+   - agent: "now: Edit api/src/cart/total.rs · 1 min ago" (its last tool
+     call), or exited;
+   - file and symbol: "cart edited it 4 min ago";
+   - decision: "◆ decided Nov 9 by cart";
+   - rule: "your rule since Nov 13; every agent is told it";
+   - test: "failed 2 min ago", "flaky: failed 1 of 3 runs", or "passed …";
+   - task: "like what you are typing: fix-floor's task, 2 days ago";
+   - proposals and `mine` rows: their own.
+
+   A row the user picked shows ★n.
+5. **The model ghost.**
+   - After a 700 ms pause at the end of the text, the UI posts
+     `/api/complete/ghost`.
+   - The server runs `claude -p --model haiku --output-format json --tools
+     "" --strict-mcp-config --settings {"disableAllHooks":true}
+     --no-session-persistence --system-prompt …`. These are the flags
+     chloedb-swarm uses, so no hook or session of the user's records it.
+   - The prompt is a pack of the box's context: the agent, its task, step
+     and files; the covering done check; up to four ◆ records near the
+     text; the failing test; the user's last three texts of the field; the
+     deterministic ghost.
+   - The answer is cached by text and reused while the user types what it
+     said.
+   - The UI shows it only if the text has not changed since the request,
+     tags it "haiku", and turns the model off for the page once the server
+     says it is not available.
+
+**Measured.** Latency is warm, the median of 9, as `took_ms` (server) and
+HTTP round trip. The demo repository is seed-real.mjs's harbor (5 agents,
+test runs, ChloeCtx records), on this 4-CPU container, while another
+agent's build was running:
+
+| box | server | HTTP |
+|---|---|---|
+| empty task box (proposals) | 3.2 ms | 4.6 ms |
+| `Make ref` (files, symbols) | 3.9 ms | 4.9 ms |
+| `Ask @le` | 3.6 ms | 4.5 ms |
+| empty steer | 3.1 ms | 4.0 ms |
+| quick `why did we chan` | 3.7 ms | 4.5 ms |
+| SQL `a.na` | 3.4 ms | 4.0 ms |
+
+The slowest of the 9 runs of any box was 5.7 ms; `/api/intent/check` took
+8.5 ms. A first request for a repository refreshes its rows before
+answering, which includes `chloectx sql`. The integration test's warm
+requests take under 10 ms.
+
+**Learning.** That it learns is measured by the integration test
+`an_empty_box_proposes_a_ghost_finishes_the_sentence_and_each_user_is_learned`:
+- two users type the same "Look at mon"; ana picks monitor.py three times
+  and ben money.py;
+- after that their lists differ for the same text: ana's first file is
+  monitor.py and ben's is money.py;
+- the picked row shows `picked: 3`;
+- `/api/complete/stats` reports a second-half top-1 of 1.0 and MRR at
+  least the first half's;
+- ana's own sentence comes back to her as the ghost and as a `mine` row,
+  and not to ben;
+- ana's steer comes back on cart's empty steer box, and ben's has none.
+
+There is no measurement on real users yet: the stats endpoint is how one
+would be read.
+
+**MCP**: `check_intent {text, field?, repo?}` (appended last) posts
+`/api/intent/check` as the calling agent and answers the marks as text,
+so a lead checks a task before it hands it on.
+
+**UI wiring**: one import and call in each place:
+- the task box and Ask why: `app.js`;
+- Health's rule SQL: `health.js`;
+- answers: `decide.js` and `away.js`;
+- steer: `story.js`, `preview.js` and `flow.js`;
+- the goal: `mission.js`;
+- the Trace question: `trace.js`;
+- quick search: `quicksearch.js`, whose "Trace: …" row is the Trace
+  hand-off the Trace part asked for;
+- the persona task: `preview-lab.js`;
+- the capsule's question: `ship.js`;
+- a change request's notes: `change-requests.js`;
+- code search: `library.js`.
+
+**Tests**:
+- In `tests/workbench.rs`, under "Fifth build: Autocomplete":
+  - `autocomplete_ranks_agents_files_symbols_records_tasks_tests_and_sql`;
+  - `intent_checks_fire_on_a_crafted_task_and_stay_quiet_on_a_good_one`;
+  - `autocomplete_and_checks_without_chloectx_say_what_is_missing`;
+  - `an_empty_box_proposes_a_ghost_finishes_the_sentence_and_each_user_is_learned`.
+- Unit tests in `complete.rs` (tokens and UTF-16 offsets, choices and
+  negation, PREFIX over KEYWORD[], BM25 over body, hotspots read when the
+  table exists) and in `foresee.rs`.
+- The fake claude has a new case: `-p` prints one JSON result, which is
+  the model ghost.
+
+#### What does not reach the bar yet
+
+- The deterministic ghost is a template: the word, ", per ◆id", and the
+  done clause. It does not write new middle clauses from the context; the
+  model ghost is the path to that.
+- The ghost's done check covers files a text names by path or file name.
+  A symbol named alone does not lead to its file yet.
+- Personalization is per browser id, not per signed-in person: Workbench
+  has no accounts. Two people on one browser share habits. ChloeCtx
+  prompts are per machine, not per user.
+- The model ghost is off in the fixtures (the dev page shows it only for a
+  text that says "model"). It has run only against the fake claude here.
+  Its latency with a real Haiku (seconds) means it lands mostly on real
+  pauses.
+- Proposals for a goal reuse the task ones. The answer, persona and change
+  boxes propose nothing yet: their list starts at the first keystroke.
+- The hotspot proposal and check read a `hotspots` table by whatever
+  columns it has (path or file; score; reason or why). They were tested on
+  a table made in a unit test, not on the hotspots part's own table.
+
+#### Deviations
+
+- `contradicts` finds candidate records by BM25 over `complete_items.body`,
+  then reads exclusive choices (rounding modes, floats against cents, case,
+  sync and async, tabs and spaces, naming styles, REST/GraphQL/gRPC, ids,
+  time zones) with negation, or "never/don't/avoid/instead of X". It is
+  not a general contradiction detector.
+- `guarded` marks are `info`: the agent is not stopped, it proposes the
+  command and waits for approval.
+- The user id is a parameter (`user`), not a header.

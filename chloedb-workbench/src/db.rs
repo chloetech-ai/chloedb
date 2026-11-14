@@ -115,6 +115,15 @@ const PREVIEW_LAB_TABLES: [&str; 4] = [
     "CREATE TABLE IF NOT EXISTS runtime_edits (id KEYWORD PRIMARY KEY, seq INT, ts_ms INT, agent KEYWORD, repo KEYWORD, cwd KEYWORD, file KEYWORD, line INT, tool KEYWORD)",
 ];
 
+/// Fifth build: what the boxes complete (src/complete.rs), one row per
+/// suggestion of a repository (`*` for the global ones), found by `PREFIX`
+/// over `pfx` and by BM25 over `body`.
+const COMPLETE_ITEMS: &str = "CREATE TABLE IF NOT EXISTS complete_items (id KEYWORD PRIMARY KEY, repo KEYWORD, kind KEYWORD, pfx KEYWORD[], label TEXT OPTIONS(indexed = false), ins TEXT OPTIONS(indexed = false), detail TEXT OPTIONS(indexed = false), refj TEXT OPTIONS(indexed = false), body TEXT, weight FLOAT, grp KEYWORD)";
+
+/// Fifth build: what each user's boxes showed, what they picked and passed
+/// over, and what they wrote (kind `typed`): the habits ranking learns from.
+const COMPLETE_EVENTS: &str = "CREATE TABLE IF NOT EXISTS complete_events (id KEYWORD PRIMARY KEY, \"user\" KEYWORD, repo KEYWORD, field KEYWORD, agent KEYWORD, kind KEYWORD, label KEYWORD, ctx TEXT OPTIONS(indexed = false), text TEXT, accepted BOOL, rank INT, source KEYWORD, ts TIMESTAMP)";
+
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
   seq INT,
@@ -327,6 +336,8 @@ impl StateDb {
         }
         // Fifth build: Hotspots (src/hotspots.rs).
         db.sql(crate::hotspots::TABLE, &Params::new()).map_err(e)?;
+        db.sql(COMPLETE_ITEMS, &Params::new()).map_err(e)?;
+        db.sql(COMPLETE_EVENTS, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });

@@ -226,7 +226,20 @@ fn tools() -> Value {
             }
         },
         // Fifth build: Hotspots (src/hotspots.rs).
-        crate::hotspots::mcp_def()
+        crate::hotspots::mcp_def(),
+        {
+            "name": "check_intent",
+            "description": "Check a task or goal before you hand it to an agent (spawn_agent, send_to_agent): says when it has no way to tell it is done, goes against a ChloeCtx decision or rule (with the record's id), names a guarded command or path, or overlaps a running agent's task or files. Cheap and deterministic: no model is asked.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "The task, goal or message as you would send it." },
+                    "field": { "type": "string", "enum": ["task", "goal", "steer", "answer"], "description": "What the text is; task when left out." },
+                    "repo": { "type": "string", "description": "The repository's absolute path; yours when left out." }
+                },
+                "required": ["text"]
+            }
+        }
     ])
 }
 
@@ -556,6 +569,19 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             Ok(crate::trace::as_text(&v))
         }
         "hotspots" => crate::hotspots::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
+        "check_intent" => {
+            let text = s(args, "text");
+            if text.trim().is_empty() {
+                return Err("text is required".into());
+            }
+            let repo = args.get("repo").and_then(Value::as_str).filter(|r| !r.is_empty());
+            if repo.is_none() && c.env.agent.is_empty() {
+                return Err("repo is required outside a Workbench session".into());
+            }
+            let body = json!({ "text": text, "field": args.get("field").and_then(Value::as_str).unwrap_or("task"), "repo": repo, "agent": c.env.agent });
+            let v = c.call("POST", "/api/intent/check", Some(body), Duration::from_secs(30))?;
+            Ok(crate::complete::as_text(&v))
+        }
         other => Err(format!("no tool {other}")),
     }
 }

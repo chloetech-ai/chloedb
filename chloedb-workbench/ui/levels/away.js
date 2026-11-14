@@ -261,6 +261,7 @@ export function mount(root, ctx) {
     const busy = S.busy.has(q.id);
     const ruleOn = S.ruleOn.get(q.id) || false;
     const free = h("input", { class: "aw-in", placeholder: "Or answer in your own words…", "aria-label": "Your answer", value: S.freeText.get(q.id) || "" });
+    import("./complete.js").then((m) => m.attachComplete(free, { field: "answer", ctx, agent: q.agent })).catch(() => {}); // Fifth build: autocomplete
     free.addEventListener("input", () => S.freeText.set(q.id, free.value));
     free.addEventListener("keydown", (e) => { if (e.key === "Enter" && free.value.trim()) answer(q, { text: free.value.trim() }, free.value.trim()); });
     const ruleIn = ruleOn ? h("input", { class: "aw-in", "aria-label": "The rule", value: S.ruleText.get(q.id) ?? "" , placeholder: "The rule, as agents will read it" }) : null;

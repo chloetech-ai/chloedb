@@ -1004,6 +1004,8 @@ $("f-name").addEventListener("input", (e) => {
 $("f-wt").addEventListener("change", branchHelp);
 // Model routing: which model tasks like this one did best on (ui/levels/route-hint.js).
 import("/levels/route-hint.js").then((m) => m.attach($("new-dialog"), { api })).catch(() => {});
+// Fifth build: autocomplete and intent checks for the task and Ask why (ui/levels/complete.js).
+import("/levels/complete.js").then((m) => { const c = { api, go: (hash) => { if ($("new-dialog").open) $("new-dialog").close(); route(hash, { push: true }); } }; m.attachComplete($("f-task"), { field: "task", ctx: c, repo: () => $("f-repo").value.trim() }); m.attachComplete($("ask-q"), { field: "why", ctx: c, repo: () => D.repo || "" }); }).catch(() => {});
 $("f-task").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("new-form").requestSubmit(); }
 });

@@ -333,6 +333,7 @@ export function mount(root, ctx) {
   function talkCard(a) {
     const about = S.about ? aboutText() : null;
     const ta = h("textarea", { class: "sy-ta", rows: 2, "data-key": "talk", placeholder: STEER_HINT[S.level], "aria-label": `Steer ${a.name}` });
+    import("./complete.js").then((m) => m.attachComplete(ta, { field: "steer", ctx, agent: S.id, repo: a.repo })).catch(() => {}); // Fifth build: autocomplete
     ta.value = S.talk;
     ta.addEventListener("input", () => { S.talk = ta.value; });
     const send = async () => {

@@ -31,6 +31,7 @@ export function open(ctx, { q } = {}) {
   const S = { q: q ?? last.q, scope: last.scope, data: null, err: null, busy: false, sel: 0 };
   const input = h("input", { type: "search", placeholder: "Search code, docs and decisions…", value: S.q, "aria-label": "Search", spellcheck: "false", autocomplete: "off",
     oninput: () => { S.q = input.value; S.sel = 0; soon(); } });
+  import("./complete.js").then((m) => m.attachComplete(input, { field: "quick", ctx, repo: () => (ctx.repo && ctx.repo()) || "", onGo: (hash) => { close(); ctx.go(hash); } })).catch(() => {}); // Fifth build: autocomplete
   const scopes = h("div", { class: "qs-scopes", role: "tablist" });
   const list = h("div", { class: "qs-list", role: "listbox" });
   const foot = h("div", { class: "qs-foot" },

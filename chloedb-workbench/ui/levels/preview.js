@@ -281,6 +281,7 @@ export function mount(root, ctx) {
     const W = layer.clientWidth, H = layer.clientHeight;
     const mark = h("div", { class: "pv-mark", style: `left:${r.x - 3}px;top:${r.y - 3}px;width:${r.width + 6}px;height:${r.height + 6}px` }, h("span", { class: "pv-mark-l" }, "you clicked"));
     const ta = h("textarea", { class: "pv-ta", rows: "2", placeholder: "Say what you want here: “make this a split button: Full / Partial”", "aria-label": "What you want changed" });
+    import("./complete.js").then((m) => m.attachComplete(ta, { field: "steer", ctx, agent: () => S.agentId })).catch(() => {}); // Fifth build: autocomplete
     const send = h("button", { class: "btn primary sm pv-send", disabled: true, onclick: () => doSend(ta.value) }, "Send");
     ta.addEventListener("input", () => { send.disabled = !ta.value.trim() || !S.route || S.sending; });
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!send.disabled) doSend(ta.value); } });

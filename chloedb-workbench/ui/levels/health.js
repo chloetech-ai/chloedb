@@ -389,6 +389,7 @@ function mountHealth(root, ctx) {
     const desc = h("input", { class: "hl-in hl-rdesc", value: d.description, placeholder: "Why it matters (optional)", "aria-label": "Description" });
     desc.addEventListener("input", () => set("description", desc.value));
     const sql = h("textarea", { class: "hl-sql", rows: String(Math.max(5, d.sql.split("\n").length + 1)), spellcheck: "false", "aria-label": "The rule's SQL" }, d.sql);
+    import("./complete.js").then((m) => m.attachComplete(sql, { field: "sql", ctx })).catch(() => {}); // Fifth build: autocomplete
     sql.addEventListener("input", () => { set("sql", sql.value); sql.rows = Math.max(5, sql.value.split("\n").length + 1); });
     sql.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); testNow(); } });
     const cmp = h("select", { class: "hl-sel", "aria-label": "Compare" }, CMPS.map((c) => h("option", { value: c, selected: c === d.cmp || null }, c)));

@@ -252,6 +252,7 @@ export function mount(root, ctx) {
       if (done) act = pill(a?.kind === "allow" ? "Allowed for agents started from now" : "Applied", "good");
       else if (can && a.kind === "fix" && S.fixOpen === s.id) {
         const ta = h("textarea", { class: "fl-fix", rows: "2", placeholder: "What fixes it, in a sentence the fleet will get on that error", "aria-label": "The fix" }, S.fixText);
+        import("./complete.js").then((m) => m.attachComplete(ta, { field: "steer", ctx })).catch(() => {}); // Fifth build: autocomplete
         ta.addEventListener("input", () => { S.fixText = ta.value; });
         ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && ta.value.trim()) apply(s, ta.value.trim()); if (e.key === "Escape") { e.stopPropagation(); S.fixOpen = null; render(); } });
         requestAnimationFrame(() => ta.focus());

@@ -255,7 +255,7 @@ export function mount(root, ctx) {
     const ix = S.code?.index || S.index?.index;
     const overlays = ix?.overlays || [];
     const input = h("input", {
-      type: "search", value: S.q, placeholder: "Search code: a symbol, a few words, an error…", "data-key": "q", "aria-label": "Search code", spellcheck: "false", autocomplete: "off",
+      type: "search", value: S.q, placeholder: "Search code: a symbol, a few words, an error…", onfocus: (e) => import("./complete.js").then((m) => m.attachComplete(e.target, { field: "search", ctx })).catch(() => {}), "data-key": "q", "aria-label": "Search code", spellcheck: "false", autocomplete: "off",
       oninput: (e) => { S.q = e.target.value; searchSoon(); },
       onkeydown: (e) => { if (e.key === "Enter") { searchSoon.cancel(); search(); } if (e.key === "ArrowDown") { e.preventDefault(); el.querySelector(".lb-hit")?.focus(); } },
     });

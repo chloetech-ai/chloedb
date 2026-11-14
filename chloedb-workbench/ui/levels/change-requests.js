@@ -133,7 +133,7 @@ export function changeRequests(ctx) {
       c.precedent && c.precedent.text ? h("div", { class: "cr-prec" }, ctxChip("ChloeCtx remembers"), h("span", {}, c.precedent.text)) : null,
       c.state === "running" ? h("div", { class: "cr-run" }, h("i", { class: "cr-spin" }), `Running in ${c.branch || shortPath(c.cwd)}…`) : null,
       S.declining === c.id ? h("div", { class: "cr-decl" },
-        h("input", { class: "cr-in", type: "text", placeholder: `Why not? ${a.name} is told (optional)`, value: S.reason, "aria-label": "Why you decline", oninput: (e) => { S.reason = e.target.value; },
+        h("input", { class: "cr-in", type: "text", placeholder: `Why not? ${a.name} is told (optional)`, onfocus: (e) => import("./complete.js").then((m) => m.attachComplete(e.target, { field: "change", ctx, agent: c.agent, repo: c.repo })).catch(() => {}), value: S.reason, "aria-label": "Why you decline", oninput: (e) => { S.reason = e.target.value; },
           onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); decline(c); } else if (e.key === "Escape") { e.stopPropagation(); S.declining = null; render(); } } }),
         h("button", { class: "btn sm", disabled: busy, onclick: () => decline(c) }, "Decline"),
         h("button", { class: "btn sm ghost", onclick: () => { S.declining = null; render(); } }, "Cancel"))
