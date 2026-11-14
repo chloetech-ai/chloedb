@@ -1497,7 +1497,7 @@ impl Platform for Cluster {
             let path = self.credentials_path(app);
             let Some(have) = self.kube.get(&path).await? else { continue };
             if let Some(id) = have["metadata"]["annotations"][cr::KEY_ID].as_str() {
-                admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+                cr::revoke_own(admin, app, id).await?;
             }
             match self.kube.delete(&path).await {
                 Err(e) if forbidden(&e) => tracing::warn!(cluster = %self.name, app, error = %e, "{OLD_ROLE}: the Secret of an app taken out of the spec is left (its key is revoked)"),
@@ -1554,7 +1554,7 @@ impl Platform for Cluster {
                 // The crawler that grows the cluster: the admin token is
                 // its key, and the one it had is revoked.
                 if let Some(i) = &old_id {
-                    admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{i}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+                    cr::revoke_own(admin, app, i).await?;
                 }
                 (id, key) = (None, None);
             }
