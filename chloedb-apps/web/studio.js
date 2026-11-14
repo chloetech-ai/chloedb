@@ -725,7 +725,8 @@ function renderApp() {
   const tabbed = BARE ? views.filter((v) => !isDetailOnly(v, views)) : views;
   tabs.replaceChildren(...(tabbed.length ? tabbed : views).map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
-  if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
+  if (!views.length && BARE && st.public && st.version?.n) tabs.replaceChildren();
+  else if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
   renderFrames();
   renderPanel();
@@ -1160,7 +1161,9 @@ function renderFrames() {
   if (!st.views.length) {
     for (const f of S.frames.values()) f.iframe.remove();
     S.frames.clear();
-    box.replaceChildren(buildingScreen());
+    // On the app's own page, an app whose every screen is kept to its
+    // owner shows a visitor its sign-in, never a build that never comes.
+    box.replaceChildren(BARE && st.public && st.version?.n ? signInScreen() : buildingScreen());
     return;
   }
   box.querySelector('.building')?.remove();
@@ -1224,6 +1227,39 @@ function renderFrames() {
       !err.repairing ? h('button', { class: 'btn small', onclick: () => ask(`The view "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
       h('button', { class: 'btn small ghost', onclick: () => { S.errors.delete(S.view); renderFrames(); } }, 'Dismiss')));
   }
+}
+
+// The sign-in of an app on its own page when nothing in it is open to a
+// visitor: sign in, or create an account (the first one is the owner's).
+function signInScreen() {
+  const st = S.app;
+  const base = `/api/apps/${S.appId}`;
+  if (S.me) {
+    const who = String(S.me.name || S.me.email || 'you');
+    return h('div', { class: 'building signin' }, h('div', { class: 'box' }, h('h2', st.app.name),
+      h('p', { class: 'hint' }, `Signed in as ${who}. Nothing here is open to your account yet: the app's owner decides who sees what.`),
+      h('div', { class: 'signin-row' }, h('button', { class: 'btn small', type: 'button', onclick: async () => { await api('POST', '/api/signout').catch(() => {}); S.meFor = null; S.me = null; authChanged(); } }, 'Sign out'))));
+  }
+  let create = false;
+  const msg = h('div', { class: 'hint signin-msg', role: 'alert' });
+  const name = h('input', { name: 'name', placeholder: 'Your name', autocomplete: 'name', hidden: true });
+  const email = h('input', { name: 'email', type: 'email', placeholder: 'Email', autocomplete: 'email', required: true });
+  const pass = h('input', { name: 'password', type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
+  const go = h('button', { class: 'btn primary', type: 'submit' }, 'Sign in');
+  const flip = h('button', { class: 'btn ghost small', type: 'button', onclick: () => { create = !create; name.hidden = !create; go.textContent = create ? 'Create account' : 'Sign in'; flip.textContent = create ? 'I have an account' : 'Create an account'; pass.autocomplete = create ? 'new-password' : 'current-password'; } }, 'Create an account');
+  const form = h('form', { class: 'signin-form', onsubmit: async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    go.disabled = true;
+    try {
+      await api('POST', `${base}/${create ? 'signup' : 'signin'}`, create ? { email: email.value, password: pass.value, name: name.value || email.value } : { email: email.value, password: pass.value });
+      S.meFor = null;
+      window.dispatchEvent(new CustomEvent('sa-signed', { detail: true }));
+      authChanged();
+    } catch (err) { msg.textContent = String(err.message || err); } finally { go.disabled = false; }
+  } }, name, email, pass, h('div', { class: 'signin-row' }, go, flip), msg);
+  return h('div', { class: 'building signin' }, h('div', { class: 'box' },
+    h('h2', st.app.name), h('p', { class: 'hint' }, 'Sign in to continue.'), form));
 }
 
 function buildingScreen() {

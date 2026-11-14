@@ -507,3 +507,7 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
    a strip of words beside an empty half */
 @media (min-width: 1100px) { .fp-hero.look-type > .fp-wrap:has(.fp-hero-text.left) { max-width: 1040px; } }
 @media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 84px 36px; } .fp-hero.look-type .fp-display { font-size: clamp(36px, min(11vw, 7.5vh), 56px); } }
+
+/* What the app refused when a button was pressed, said under it. */
+.fp-said { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.fp-refused { font-size: 13px; line-height: 1.3; color: var(--bad, #b42318); max-width: 22ch; text-align: right; }

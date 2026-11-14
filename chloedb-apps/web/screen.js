@@ -113,6 +113,9 @@ window.__sa_numbers = (() => {
   const isExpr = (v) => v && typeof v === 'object' && !Array.isArray(v) && typeof v.$e === 'number' && Object.keys(v).length === 1;
   const OPT = (o) => (o && typeof o === 'object' ? { value: o.value ?? o.id ?? o.label, label: o.label ?? o.name ?? String(o.value) } : { value: o, label: String(o) });
   const human = (k) => String(k).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  // The app's people, asked once a page (a "person" field picks from them).
+  let peopleP = null;
+  const peopleOf = () => (peopleP ||= Promise.resolve(typeof app !== 'undefined' && app.people ? app.people() : []).then((x) => (Array.isArray(x) ? x : [])).catch(() => { peopleP = null; return []; }));
   // What a row is called: its name or title, else its first short text. A
   // button repeated on every row says which row it acts on ("Delete: Basil").
   const NAMES = ['name', 'title', 'label', 'subject', 'item', 'task', 'what', 'text'];
@@ -540,6 +543,7 @@ window.__sa_numbers = (() => {
         if (t === 'checkbox') return el.checked;
         if (t === 'number' || t === 'rating') return el.value === '' ? null : Number(el.value);
         if (t === 'tags') return el.value.split(',').map((x) => x.trim()).filter(Boolean);
+        if (t === 'people') return [...el.selectedOptions].map((o) => o.value).filter(Boolean);
         if (t === 'datetime') return el.value ? new Date(el.value).toISOString() : null;
         if (t === 'file') return el.__fileId || (editing ? editing[f.name] : null) || null;
         return el.value === '' ? null : el.value;
@@ -566,7 +570,7 @@ window.__sa_numbers = (() => {
       const wide = inCol ? fields.length > 1 || fields.some((f) => f.type === 'textarea' || f.type === 'file') : fields.length > 3 || fields.some((f) => f.type === 'textarea' || f.type === 'file');
       // A control a placeholder cannot name (a date, a select...) gets a
       // label; in a one-line form, then, every field does, so they line up.
-      const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select'].includes(f.type || 'text');
+      const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select', 'person', 'people'].includes(f.type || 'text');
       const labelAll = !inCol && !wide && fields.length > 1 && fields.some(named);
       const make = (f) => {
         const t = f.type || 'text';
@@ -575,6 +579,28 @@ window.__sa_numbers = (() => {
         let el;
         if (t === 'textarea') el = h('textarea', { name: f.name, placeholder: ph, required: !!f.required, rows: f.rows || 3 }, v ?? '');
         else if (t === 'select') { el = h('select', { name: f.name, required: !!f.required }); fillSelect(el, f, s, v); }
+        // One of the app's people (who signed up to it), kept by id: the
+        // column that ties a row to a person's account.
+        else if (t === 'person' || t === 'people') {
+          // "people": several of them, kept as a list of ids (a keyword[] column)
+          const many = t === 'people';
+          const had0 = many ? new Set((Array.isArray(v) ? v : v ? [v] : []).map(String)) : null;
+          el = many ? h('select', { name: f.name, multiple: true, size: 4 }) : h('select', { name: f.name, required: !!f.required }, h('option', { value: v ?? '' }, v ? '…' : f.placeholder || '—'));
+          const box = el;
+          peopleOf().then((ps) => {
+            const opts = ps.map((p) => ({ value: String(p.id), label: p.name && p.email && p.name !== p.email ? `${p.name} (${p.email})` : p.name || p.email || String(p.id) }));
+            if (many) {
+              const keep = box.__touched ? new Set([...box.selectedOptions].map((o) => o.value)) : had0;
+              box.replaceChildren(...opts.map((o) => h('option', { value: o.value, selected: keep.has(o.value) }, o.label)));
+              box.size = Math.min(6, Math.max(2, opts.length));
+              return;
+            }
+            const had = box.value || v;
+            box.replaceChildren(...(f.required ? [] : [h('option', { value: '' }, f.placeholder || '—')]), ...opts.map((o) => h('option', { value: o.value }, o.label)));
+            if (had != null && opts.some((o) => o.value === String(had))) box.value = String(had);
+          });
+          if (many) box.addEventListener('change', () => { box.__touched = true; });
+        }
         else if (t === 'checkbox') el = h('input', { type: 'checkbox', name: f.name, checked: !!v });
         else if (t === 'tags') el = h('input', { name: f.name, placeholder: ph || 'tags, comma separated', value: Array.isArray(v) ? v.join(', ') : v ?? '' });
         else if (t === 'rating') el = h('select', { name: f.name }, h('option', { value: '' }, '—'), [1, 2, 3, 4, 5].map((n) => h('option', { value: n, selected: Number(v) === n }, '★'.repeat(n))));
@@ -1115,7 +1141,7 @@ window.__sa_numbers = (() => {
 
     // A front page (spec.page "front") is drawn edge to edge, its parts in
     // sections; its blocks work in any screen.
-    const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope }) : null;
+    const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope, refused: (where) => refusals.get(where) || null }) : null;
     const isFront = (spec.page === 'front' || (!spec.page && Array.isArray(spec.body) && spec.body.some((b) => b && typeof b === 'object' && b.nav !== undefined))) && !!front;
     if (isFront) document.body.classList.add('front');
     // The screen's page structure (engine/quality.mjs LAYOUTS): a class the

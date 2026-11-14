@@ -16,7 +16,7 @@ import { assignLayouts } from './layouts.mjs';
 import { audienceOf } from './audience.mjs';
 import { placePhotos, placeScreenPhotos, photoIds, warmPhotos, photoCache } from './photos.mjs';
 import { withPhotos } from './source.mjs';
-import { checkAccess, parseAccessList, allowText, wantsAccess } from './access.mjs';
+import { checkAccess, parseAccessList, allowText, wantsAccess, WHO } from './access.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
@@ -90,7 +90,9 @@ The engine enforces who may read and write a table, on the server, for every rea
 
 Whenever the request says who may see or change data (only signed-in people, the owner, admins, roles, each person's or each company's own data), declare access for every table of the app, including the ones that stay open (ALLOW READ ON t TO everyone): a build that asks for it and declares none is refused.
 
-Access follows who the data is for, said or not. Data the request treats as someone's own business (a company's finances, salaries, customers and what they owe, a person's health, budget or diary, staff records, private notes) is for its owner or its team: declare it (ALLOW ALL ON t TO owner, or TO members when a team shares it), so a link that gets out shows a sign-in, never the figures. Data meant for the public (a menu, prices, a timetable, a portfolio) is read by everyone and changed by the owner. An app with both says each table's own.
+Access follows who the data is for, said or not. Data the request treats as someone's own business (a company's finances, salaries, customers and what they owe, a person's health, budget or diary, staff records, private notes) is for its owner or its team: declare it (ALLOW ALL ON t TO owner, or TO members when a team shares it), so a link that gets out shows a sign-in, never the figures. Data meant for the public (a menu, prices, a timetable, a portfolio) is read by everyone and changed by the owner. An app with both says each table's own. What people pay or sign up for (a workshop's handouts and exercises, a members' archive) reaches those who have it, never the owner alone: a function they may call (ALLOW CALL ON get-handout TO members) checks they paid or signed up and returns it, with the app's rights, while its tables stay the owner's; the screens show it through that function, never by reading those tables themselves. When everyone signed in may have it, members read it (ALLOW READ ON t TO members).
+
+When the request names kinds of people who reach different things (crews and homeowners, coaches and players), the owner needs to say who is on what, in the app: the rows people reach carry who may reach them, as keyword[] columns of account ids picked with a people field in the row's own form (a renovation's crew and its homeowners), and access keeps each person to the rows that name them (ALLOW READ ON renovations TO members WHERE crew = :user_id OR homeowners = :user_id: a keyword[] column matches when any of its ids is theirs). Never a separate table of who is on what that access cannot read. Rows under them (a renovation's jobs) carry the same columns, copied from their parent when added. A job that is someone's keeps who it is for with a person field, shown by name.
 
 # SQL (Strata's dialect: read-only SELECT through app.sql)
 
@@ -297,7 +299,7 @@ Blocks, in "body" and in every block that holds blocks:
 - {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row; "change": true on a column or a big number says it is a change (signed, up in the good tone, down in the bad, n/a where there is nothing to compare) (formats: date, days, money, number, percent, pct, hours, duration, clock)
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
 - {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first (never for a remove: it offers Undo)"}
-- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col", "fold": false}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. On a phone a form of three fields or more, on a screen that lists rows, folds behind its submit button so the rows show first; "fold": false keeps it open (when filling it is the job), true folds it everywhere. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
+- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col", "fold": false}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. On a phone a form of three fields or more, on a screen that lists rows, folds behind its submit button so the rows show first; "fold": false keeps it open (when filling it is the job), true folds it everywhere. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), person (one of the app's people, who signed up to it: stores their id; the field for a column that ties a row to someone's account, such as who a job is for, so the owner picks a name and never types an id), people (several of them, kept as a keyword[] list of ids: a renovation's crew), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
 - {"checks": "=things", "done": "=checks", "table": "checks table", "item": "its column holding the thing's id", "day": "its 'YYYY-MM-DD' column", "name": "the things' name column", "days": 7}: the daily check-off (habits, medication, chores): one big tap per thing for today, its last days, its streak and how many are done today; a tap adds or removes that day's row. A check per day is this block (or the CHECKS part), never a grid written in code
 - {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "change": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "change" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
@@ -1413,9 +1415,50 @@ export function accessProblems(plan, view, requestText = '') {
   return problems;
 }
 
+// A screen people use that reads a table only its owner (or admins) may
+// read: its readers get a refusal where its content should be (a lesson's
+// questions kept to the owner, so the students who paid see none). Its
+// readers may read it, or the screen is kept to the owner.
+export function readerProblems(plan, view, code = {}) {
+  const rules = new Map();
+  for (const t of view.tables || []) if (Array.isArray(t.spec?.access) && t.spec.access.length) rules.set(t.spec.name, [...parseAccessList(t.spec.access).values()].flat());
+  for (const [t, rs] of parseAccessList(plan.access || [])) rules.set(t, rs);
+  const least = (t) => {
+    const rs = (rules.get(t) || []).filter((r) => !r.call && r.actions.includes('read'));
+    if (!rules.has(t)) return 0;
+    return rs.length ? Math.min(...rs.map((r) => WHO.indexOf(r.who))) : WHO.length;
+  };
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v || !v.slug || v.for === 'owner' || v.for === 'admins') continue;
+    const text = v.screen && typeof v.screen === 'object' ? JSON.stringify(v.screen.data || {}) + JSON.stringify(v.screen.body || []) : String((code && code[v.slug]) || '');
+    const read = new Set([...text.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/gi)].map((m) => m[1]).filter((t) => rules.has(t)));
+    const shut = [...read].filter((t) => least(t) >= WHO.indexOf('admins'));
+    if (!shut.length) continue;
+    const who = v.for === 'members' ? 'its signed-in members' : 'its visitors and members';
+    out.push(`view ${v.slug} is for ${who}, but reads ${shut.join(', ')}, which only the owner${shut.some((t) => least(t) === WHO.indexOf('admins')) ? ' and admins' : ''} may read: they would get a refusal where its content goes. Give it to them through a function they may call that checks they may have it (ALLOW CALL ... TO members; it runs with the app's rights), let them read ${shut.length === 1 ? 'it' : 'them'} (ALLOW READ ON ${shut[0]} TO members, or WHERE a column keeps each to their own rows), or say "for": "owner" on the view`);
+  }
+  return out;
+}
+
+// Access that opens the data to signed-in members while every screen is
+// still the owner's: a member who signs in finds nothing to open (a change
+// that let "only signed-in users" in, and left each screen "for": "owner").
+export function audienceProblems(plan, view) {
+  if (!Array.isArray(plan.access) || !plan.access.length) return [];
+  const opened = [...parseAccessList(plan.access)].filter(([, rs]) => rs.some((r) => !r.call && r.actions.includes('read') && WHO.indexOf(r.who) <= WHO.indexOf('members'))).map(([t]) => t);
+  if (!opened.length) return [];
+  const mine = new Map((view.views || []).map((v) => [v.slug, v.spec?.for ?? null]));
+  for (const v of plan.views || []) if (v && v.slug) mine.set(v.slug, v.for ?? mine.get(v.slug) ?? null);
+  for (const s of plan.remove || []) mine.delete(s);
+  if (!mine.size || [...mine.values()].some((f) => f !== 'owner' && f !== 'admins')) return [];
+  return [`access lets signed-in members read ${opened.join(', ')}, but every screen is still for the owner (${[...mine.keys()].join(', ')}): a member who signs in finds nothing to open. Say which screens are theirs: FOR members in each one's statement (an edit), or "for": "members" in its plan entry`];
+}
+
 export async function validate(plan, code, view, library, shared = new Map(), requestText = '') {
   const problems = checkBrief(plan, view);
   problems.push(...accessProblems(plan, view, requestText));
+  if (!problems.some((p) => p.startsWith('access:'))) problems.push(...readerProblems(plan, view, code), ...audienceProblems(plan, view));
   const tables = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   for (const t of plan.tables || []) {
     if (!NAME_RE.test(t.name || '')) { problems.push(`table name ${JSON.stringify(t.name)}: lowercase letters, digits and _`); continue; }
@@ -1735,6 +1778,54 @@ const pieceStep = (what, slug) => `# This step: write ${what}
 
 Write the code of ${what} alone, as the plan above and its spec say: what the spec lists and nothing beyond it, in compact code. Other writers write the other pieces at the same time, from the same plan: call them exactly as the plan gives them (components by their props, helpers by their api, functions by their input and output, tables by their columns). Answer with one <code slug="${slug}">...</code> block holding the whole code, and nothing else.`;
 
+// A first version's example rows are written by their own writer, which
+// starts as soon as the plan's tables have streamed in and works while the
+// model writes the rest of the plan and the screens' statements. They were
+// a third of a course plan's answer (its lessons and questions), written
+// after everything else in it. Off with STRATA_APPS_SEED_WRITER=off.
+export const SEED_WRITER = process.env.STRATA_APPS_SEED_WRITER !== 'off';
+
+const SEED_PLAN_NOTE = `
+- Leave "seed" out of this plan: the example rows are written by their own writer, who starts as soon as your "tables" are written and sees the request and the plan up to them. So give each table that gets example rows an "examples" line in its entry: how many rows and which, in a few words (their names or titles, the states they are in), enough that the rows a screen or a text names are the rows written.`;
+
+const SEED_STEP = `# This step: the example rows
+
+Write the example rows ("seed") of the plan above, as the system prompt describes them, for its tables as they are given (their columns, and the values a choice or status column takes), and as each table's "examples" line says: those rows, written out whole and realistic, content in full (an article's text, a recipe's steps). The rest of the plan and its screens are written at the same time, from the same plan. Answer with one <code slug="seed">...</code> block holding the seed's JSON object (each table's name to its rows), and nothing else; {} when the app holds only the person's own entries.`;
+
+// Calls fn once with the plan's keys up to its "tables" (name, ux, art,
+// locale and the tables), as soon as that list has streamed in.
+export const tablesWatcher = (fn) => {
+  let done = false;
+  return (seen, text) => {
+    if (done || !fn || typeof text !== 'string') return;
+    const a = text.indexOf('<plan>');
+    if (a < 0) return;
+    const key = text.indexOf('"tables"', a);
+    const open = key < 0 ? -1 : text.indexOf('[', key);
+    if (open < 0) return;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = open; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '[' || c === '{') depth++;
+      else if (c === ']' || c === '}') {
+        depth--;
+        if (!depth) {
+          done = true;
+          let plan = null;
+          try { plan = JSON.parse(`${text.slice(a + 6, i + 1)}}`); } catch { return; }
+          if (!Array.isArray(plan?.tables) || !plan.tables.length) return;
+          try { fn(plan); } catch { /* a hook's own failure is not the build's */ }
+          return;
+        }
+      }
+    }
+  };
+};
+
 // The pieces a plan says to write, each with the slug of its code block.
 function planPieces(plan, parallel = false) {
   const out = [];
@@ -1820,7 +1911,8 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   // A first version is planned short and written in parallel (screens and
   // rules too); otherwise the plan carries the screens' and rules' statements.
   const parallel = PARALLEL && !view.comp.n;
-  const STEP = parallel ? PLAN_STEP_PARALLEL : PLAN_STEP;
+  const sideSeed = SEED_WRITER && !parallel && !view.comp.n;
+  const STEP = parallel ? PLAN_STEP_PARALLEL : sideSeed ? `${PLAN_STEP}${SEED_PLAN_NOTE}` : PLAN_STEP;
   let planPrompt = `${prompt}\n\n${STEP}`;
   let first = null;
   // The writers of the pieces the plan marks as code (views in JavaScript,
@@ -1842,13 +1934,30 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     }
     if (items.length) progress(`Writing ${items.map((i) => i.slug).join(', ')} while the plan's statements are written`);
   };
+  // The example rows' writer (see SEED_WRITER).
+  let seeding = null;
+  const startSeed = (p) => {
+    const t0 = Date.now();
+    const seedPrompt = `${forPiece([])}\n\n# The plan so far\n\n<plan>\n${JSON.stringify(p, null, 1)}\n</plan>\n\n${SEED_STEP}`;
+    const span = tr.start('write', 'example rows', { piece: 'seed' });
+    progress(`Writing the example rows of ${p.tables.length} table${p.tables.length === 1 ? '' : 's'} while the plan is written`);
+    seeding = ask({ system, prompt: seedPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT }).then((answer) => {
+      tr.call(span, answer, system.length + seedPrompt.length);
+      cost += answer.cost || 0;
+      const block = parseAnswer(`<plan>{}</plan>\n${answer.text}`).code;
+      const text = String(block.seed ?? Object.values(block)[0] ?? '').trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '');
+      const seed = JSON.parse(text);
+      progress(`Wrote the example rows in ${Math.round((Date.now() - t0) / 1000)} s`);
+      return seed && typeof seed === 'object' && !Array.isArray(seed) ? seed : null;
+    }).catch((e) => { progress(`The example rows' writer failed: ${String(e.message || e).slice(0, 200)}`); return null; });
+  };
   let partialTried = false;
   let third = false;
   let merged = null;
   for (let attempt = 1; attempt <= (third ? 3 : 2); attempt++) {
     progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null, attempt === 1 && !parallel ? planWatcher(startEarly) : null) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null, attempt === 1 && !parallel ? planWatcher(startEarly) : null, attempt === 1 && sideSeed ? tablesWatcher(startSeed) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
@@ -1875,6 +1984,15 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
         plan = parsed.plan;
         // The plan's CREATE SCREEN statements come with it; other code waits for the writers.
         const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c) || isRuleStatement(c)));
+        // A screen given as its JSON (what a statement compiles to) is that
+        // screen too, not a piece to write again after the plan.
+        for (const [slug, c] of Object.entries(parsed.code || {})) {
+          const v = (plan?.views || []).find((x) => x && x.slug === slug);
+          if (!v || v.screen || typeof c !== 'string' || !c.trim().startsWith('{')) continue;
+          let screen = null;
+          try { screen = JSON.parse(c); } catch { continue; }
+          if (screen && typeof screen === 'object' && Array.isArray(screen.body)) { v.screen = screen; if (v.format === 'code') v.format = 'screen'; }
+        }
         const preparing = prepareScreens(plan, statements, view);
         completePlan(plan, view, library);
         problems = [...preparing, ...(await validate(plan, {}, view, library, shared, request?.text)).filter((p) => !/has no <code slug=/.test(p))];
@@ -1898,6 +2016,9 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     partialTried = !!first;
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
+  // The example rows come when their writer is done (the plan's own, if it
+  // gave them anyway, stay).
+  const seedDone = seeding && seeding.then((seed) => { if (seed && !(plan.seed && typeof plan.seed === 'object' && Object.keys(plan.seed).length)) plan.seed = seed; });
   const pieces = planPieces(plan, parallel);
   const code = rulesToCode(plan, screensToCode(plan, {}));
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
@@ -1997,6 +2118,8 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     plan.tests = [];
     problems = [];
   }
+  await seedDone;
+  if (sideSeed) for (const t of plan.tables || []) if (t && typeof t === 'object') delete t.examples;
   return { plan, code, cost, problems, decidedAt };
 }
 

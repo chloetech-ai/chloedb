@@ -54,7 +54,7 @@ const MORE = {
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
 const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'LAYOUT', 'PHOTOS', 'FOR'];
-const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
+const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING', 'PERSON', 'PEOPLE'];
 const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'DAYS', 'WEEKDAY', 'MONTH', 'MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK', 'STARS', 'BOOL'];
 // How a big number reads (KPI ... MONEY): the column formats that fit a number.
 const KPI_FORMATS = ['MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK'];
@@ -637,6 +637,8 @@ LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search,
   SEARCH col, col                       FILTER col IN ('a', 'b')        TOGGLE <bool col> ['Done']
   FORM [SIDE | NONE] (col 'Label' NUMBER REQUIRED DEFAULT 0, col SELECT ('a', 'b'), ...)   after the label, one type word: ${FIELD_TYPES.join(' ')}
     a choice among another table's rows: col 'Label' FROM <table> (<value col>, <label col>)  -- client FROM clients (id, name) keeps the id; category FROM categories (name) keeps the name. Use it whenever the choices are rows people add, never a fixed list
+    a person who signed up to the app: col 'Label' PERSON keeps their account's id (who a job is for when they sign in); the owner picks a name, never types an id
+    several of them: col 'Label' PEOPLE on a keyword[] column keeps their ids (a renovation's crew), the column an access WHERE col = :user_id reads
   COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' MONEY = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')} (DAYS reads a day as "in 3 days", DURATION minutes as "1 h 05", CLOCK seconds as "5:30", HOURS a number as "2.5 h", PCT a percent as "12.5%"), and BADGE
   CARDS <title col> [SUB col, col]      (cards instead of a table)
   KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [${KPI_FORMATS.join(' | ')}]   (one line each; SQL over the table)

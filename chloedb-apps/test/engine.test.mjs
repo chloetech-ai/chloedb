@@ -3316,7 +3316,7 @@ test('a count tested above zero in a condition is EXISTS; one tested for zero is
   for (const q of ['SELECT (SELECT COUNT(*) FROM u) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u GROUP BY y) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) > 2']) assert.equal(existsForCounts(q), q);
 });
 
-test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule; every card says how many are left', async () => {
+test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule, more is refused with why; every card says how many are left', async () => {
   const { compileStatement } = await import('../engine/statement.mjs');
   const w = compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  NAME name  PRICE price  CALL buy  QTY  COUNT  ACTION 'Buy'");
   const e = expandWith(w.screen);
@@ -3328,13 +3328,13 @@ test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule; ever
   assert.equal(badge({ stock: 12 }), '12 left');
   assert.equal(badge({ stock: 2 }), 'Only 2 left');
   assert.equal(badge({ stock: 0 }), 'Sold out');
-  // the quantity is held to 1 .. what is left, and sent with the id
+  // the quantity goes with the id; more than is left is refused with why, and nothing is ordered
   const calls = [];
   const app = { call: async (f, input) => { calls.push([f, input]); return 'o1'; }, toast: () => {} };
   const act = new Function('app', 'products_left', `return ${e.screen.let.products_act.slice(1)}`)(app, left);
-  await act({ id: 'p1', stock: 4 }).do(9);
+  await assert.rejects(act({ id: 'p1', stock: 4 }).do(9), (err) => err.refused === true && /Only 4 left: order 4 or fewer/.test(err.message));
   await act({ id: 'p1', stock: 4 }).do(2);
-  assert.deepEqual(calls, [['buy', { id: 'p1', qty: 4 }], ['buy', { id: 'p1', qty: 2 }]]);
+  assert.deepEqual(calls, [['buy', { id: 'p1', qty: 2 }]]);
   // without QTY or COUNT, cards are as before
   const plain = expandWith(compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  CALL buy").screen);
   assert.equal(plain.screen.body.find((b) => b.carousel).item.qty, undefined);
@@ -3428,4 +3428,12 @@ test("the request's own name for the business wins over a coined one", async () 
   assert.equal(appTitle('Wickery', { description: 'An online shop for Wick & Wax where people can buy my candles' }), 'Wick & Wax');
   assert.equal(appTitle('Wick & Wax Candles', { description: 'An online shop for Wick & Wax' }), 'Wick & Wax Candles');
   assert.equal(appTitle('Stackwise', { description: 'A supplement tracker that tells me what is good' }), 'Stackwise');
+});
+
+test('a subquery in FROM that its query leaves unnamed is named, since the database wants a name; a named one and a join in parentheses stay as they are', () => {
+  const phys = (t) => `app_x_${t}`;
+  const out = rewriteSql("WITH u AS (SELECT amount FROM receivables) SELECT label, value FROM (SELECT 'Current' AS label, SUM(amount) AS value FROM u UNION ALL SELECT 'Later' AS label, 0 AS value FROM u) ORDER BY label LIMIT 10", ['receivables'], phys).sql;
+  assert.match(out, /FROM u\) AS sa_sub1 ORDER BY label/);
+  assert.match(rewriteSql('SELECT * FROM (SELECT * FROM receivables) t LIMIT 5', ['receivables'], phys).sql, /\) t LIMIT 5$/);
+  assert.doesNotMatch(rewriteSql('SELECT * FROM (receivables JOIN receivables r2 ON receivables.id = r2.id) LIMIT 5', ['receivables'], phys).sql, /sa_sub/);
 });

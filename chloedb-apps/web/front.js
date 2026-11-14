@@ -75,6 +75,7 @@
 
   window.__sa_front = (ctx) => {
     const { h, val, T, block, run, app, scope } = ctx;
+    const refused = ctx.refused || (() => null);
     // What a part keeps across redraws (a carousel's slide, an open answer),
     // and the parts already shown (they do not rise into view again).
     const keep = new Map();
@@ -111,7 +112,10 @@
         if (a.open !== undefined) { const p = a.params ? val(a.params, s, path) : undefined; app.open(tx(a.open, s, path), extra && extra.params ? { ...(p || {}), ...extra.params } : p); return; }
         if (a.do !== undefined) { const fn = val(a.do, s, `${path}.do`); if (typeof fn === 'function') await run(fn, extra ? extra.args : [], `${path}.do`); }
       };
-      return h('button', { class: cls, type: 'button', onclick: (e) => { e.stopPropagation(); go(); } }, kids);
+      const btn = h('button', { class: cls, type: 'button', onclick: (e) => { e.stopPropagation(); go(); } }, kids);
+      // what the app refused when this was pressed stays said under it
+      const said = a.do !== undefined ? refused(`${path}.do`) : null;
+      return said ? h('span', { class: 'fp-said' }, btn, h('span', { class: 'fp-refused', role: 'alert' }, said)) : btn;
     };
     const actions = (b, s, path) => {
       const xs = b.actions !== undefined ? list(b.actions, s, `${path}.actions`) : b.action !== undefined ? [val(b.action, s, `${path}.action`)] : [];
@@ -371,7 +375,8 @@
       // "qty": the most one can take: a quantity beside the action, 1 to it
       const most = Math.floor(Number(it.qty));
       const qty = it.action && most >= 1 ? h('input', { class: 'fp-qty', type: 'number', min: 1, max: most, value: 1, inputmode: 'numeric', 'aria-label': 'Quantity', onclick: (e) => e.stopPropagation() }) : null;
-      const chosen = qty ? () => { const n = Math.max(1, Math.min(most, Math.floor(Number(qty.value) || 1))); qty.value = n; return { args: [n], params: { qty: n } }; } : null;
+      // (more than is left goes on to the action, which says why it cannot)
+      const chosen = qty ? () => { const n = Math.max(1, Math.floor(Number(qty.value) || 1)); qty.value = n; return { args: [n], params: { qty: n } }; } : null;
       const act = it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0, chosen) : null;
       const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1, chosen) : null;
       // an event without a photo: its day as a calendar block beside its words

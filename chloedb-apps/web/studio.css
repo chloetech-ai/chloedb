@@ -507,3 +507,12 @@ body.bare.designed.look-bold .top .look { background: transparent; border-color:
   body.bare.site-nav .top .brand { flex: none; }
   body.bare.site-nav .top #tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
 }
+
+/* An app on its own page with nothing open to visitors: its sign-in. */
+.building.signin .box { max-width: 380px; }
+.signin-form { display: flex; flex-direction: column; gap: 10px; }
+.signin-form input { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #d7d7d7); background: var(--card, #fff); color: inherit; }
+.signin-form input[hidden] { display: none; }
+.signin-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.signin-msg:empty { display: none; }
+.signin-msg { color: var(--bad, #b42318); }

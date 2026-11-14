@@ -581,11 +581,13 @@
 
   (() => {
     const specs = Array.isArray(SA.labels) ? SA.labels : [];
-    if (!specs.length || typeof MutationObserver === 'undefined') return;
+    if (typeof MutationObserver === 'undefined') return;
     let names = new Map();
     let fetched = 0;
     let fetching = null;
-    const load = () => fetching || (fetching = Promise.all(specs.map((x) => rpc('sql', [`SELECT id, ${x.col} AS sa_name FROM ${x.table} LIMIT 2000`, {}]).catch(() => [])))
+    // (the app's people too: a column that keeps someone's account shows their name)
+    const load = () => fetching || (fetching = Promise.all([...specs.map((x) => rpc('sql', [`SELECT id, ${x.col} AS sa_name FROM ${x.table} LIMIT 2000`, {}]).catch(() => [])),
+      rpc('people', []).then((ps) => (Array.isArray(ps) ? ps.map((p) => ({ id: p.id, sa_name: p.name || p.email })) : [])).catch(() => [])])
       .then((all) => {
         const m = new Map();
         // (every row id the page could show, for the drawn page's check)

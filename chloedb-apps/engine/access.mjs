@@ -205,7 +205,8 @@ export function scopeParams(who) {
   return out;
 }
 
-export const inScope = (row, scope, who) => !!row && scope.some((t) => row[t.col] != null && String(row[t.col]) === String(valueOf(t, who)));
+// (a keyword[] column is theirs when any of its values is)
+export const inScope = (row, scope, who) => !!row && scope.some((t) => row[t.col] != null && (Array.isArray(row[t.col]) ? row[t.col].map(String).includes(String(valueOf(t, who))) : String(row[t.col]) === String(valueOf(t, who))));
 
 // An add under a scope: the scope's columns the row leaves out are filled
 // with the person's (or company's) id; a row that names someone else is

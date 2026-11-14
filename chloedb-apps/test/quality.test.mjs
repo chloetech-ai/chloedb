@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM, planWatcher, kpiParts, signInFirst } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, tablesWatcher, kpiParts, signInFirst } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -181,6 +181,24 @@ test('the plan is handed on once its </plan> has streamed in, before the stateme
   planWatcher(null)({}, '<plan>{}</plan>');
 });
 
+test('the plan up to its tables is handed on once that list has streamed in, for the example rows to be written beside the rest', () => {
+  const got = [];
+  const w = tablesWatcher((p) => got.push(p));
+  const head = '<plan>\n{"name": "Kiln", "ux": {"job": "book a [class] {soon}"}, "tables": [{"name": "pieces", "columns": [{"name": "title"}], "examples": "5 pieces, one \\"sold out\\""}';
+  w({}, head);
+  assert.equal(got.length, 0);
+  w({}, `${head}, {"name": "classes"}], "views": [{"slug": "ho`);
+  w({}, `${head}, {"name": "classes"}], "views": [{"slug": "home"}]}</plan>`);
+  assert.equal(got.length, 1);
+  assert.deepEqual(got[0].tables.map((t) => t.name), ['pieces', 'classes']);
+  assert.equal(got[0].ux.job, 'book a [class] {soon}');
+  assert.equal(got[0].views, undefined);
+  // no tables, no rows to write
+  const none = [];
+  tablesWatcher((p) => none.push(p))({}, '<plan>{"name": "Journal", "tables": [], "views": []}</plan>');
+  assert.equal(none.length, 0);
+});
+
 
 test('big numbers where one is the other with more conditions are found, for the figure check to ask about', () => {
   const screen = { data: { a: "SELECT SUM(x) AS v FROM t WHERE kind != 'z' AND d > 0", b: "SELECT SUM(x) AS v FROM t WHERE kind != 'z'", c: 'SELECT COUNT(*) AS v FROM u' },
@@ -201,4 +219,29 @@ test('three big numbers that narrow one another (over 90 days, past due, unpaid)
   const screen = { data: { k0: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 90`, k1: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 0`, k2: `SELECT SUM(amount) AS v FROM r WHERE ${w}` },
     body: [{ kpis: [{ label: 'Over 90', of: 'k0' }, { label: 'Past due', of: 'k1' }, { label: 'Unpaid', of: 'k2' }] }] };
   assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Over 90', 'Unpaid'], ['Past due', 'Unpaid']]);
+});
+
+test('a screen its readers use that reads a table only the owner may read is a problem; the owner\'s own screens are not', async () => {
+  const { readerProblems } = await import('../engine/forge.mjs');
+  const plan = { access: ['ALLOW READ ON lessons TO members', 'ALLOW WRITE ON lessons TO owner', 'ALLOW ALL ON questions TO owner'], views: [
+    { slug: 'lesson', for: 'members', screen: { data: { q: 'SELECT * FROM questions WHERE lesson = :id LIMIT 20', l: 'SELECT * FROM lessons LIMIT 5' }, body: [] } },
+    { slug: 'manage', for: 'owner', screen: { data: { q: 'SELECT * FROM questions LIMIT 20' }, body: [] } },
+    { slug: 'home', screen: { data: { l: 'SELECT * FROM lessons LIMIT 5' }, body: [] } }] };
+  const p = readerProblems(plan, { tables: [] });
+  assert.equal(p.length, 1);
+  assert.match(p[0], /^view lesson .* reads questions, which only the owner may read/);
+  // members may read the questions: nothing to say
+  plan.access.push('ALLOW READ ON questions TO members');
+  assert.deepEqual(readerProblems(plan, { tables: [] }), []);
+});
+
+test('access opened to members while every screen stays the owner\'s is a problem; a screen of theirs, or access kept to the owner, is not', async () => {
+  const { audienceProblems } = await import('../engine/forge.mjs');
+  const view = { views: [{ slug: 'dashboard', spec: { for: 'owner' } }, { slug: 'invoices', spec: { for: 'owner' } }] };
+  const p = audienceProblems({ access: ['ALLOW ALL ON invoices TO members'] }, view);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /every screen is still for the owner \(dashboard, invoices\)/);
+  assert.deepEqual(audienceProblems({ access: ['ALLOW ALL ON invoices TO members'], views: [{ slug: 'invoices', for: 'members' }] }, view), []);
+  assert.deepEqual(audienceProblems({ access: ['ALLOW ALL ON invoices TO owner'] }, view), []);
+  assert.deepEqual(audienceProblems({}, view), []);
 });

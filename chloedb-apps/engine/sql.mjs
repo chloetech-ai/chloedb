@@ -202,6 +202,7 @@ export function rewriteSql(sql, tables, physical, { scope = null } = {}) {
   const top = () => frames[frames.length - 1];
   const isCte = (name) => frames.some((f) => f.ctes.has(name));
   const skip = new Set(); // token indexes that are names, not keywords
+  let subs = 0;
   const noTable = (name) => {
     const list = [...names].join(', ') || 'none yet';
     throw new Error(`no table ${name} in this app (its tables: ${list})`);
@@ -290,7 +291,9 @@ export function rewriteSql(sql, tables, physical, { scope = null } = {}) {
       if (frames.length === 1) refuse('a ) closes nothing');
       const closed = frames.pop();
       finish(closed.block, i - 1);
-      if (closed.factor) alias(i + 1);
+      // a subquery in FROM is named when its query gives it no name (the
+      // database wants one, and nothing reads it by it)
+      if (closed.factor && !alias(i + 1) && closed.block) { subs++; edits.push({ s: t.e, e: t.e, text: ` AS sa_sub${subs}` }); }
       continue;
     }
     if (t.v === ',') {

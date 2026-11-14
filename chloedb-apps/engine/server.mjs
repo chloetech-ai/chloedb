@@ -4,6 +4,7 @@
 //
 // Without --strata it starts its own chloedb-server on DIR/apps.strata.
 
+import { decide } from './access.mjs';
 import http from 'node:http';
 import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
@@ -659,6 +660,14 @@ function labelsOf(view) {
   return out;
 }
 
+// Whether someone of this role may read a table at all (a page reads names
+// only from the tables its visitor may: no refusals for its labels).
+function mayRead(view, table, role) {
+  const t = view.tables.find((x) => x.spec?.name === table);
+  if (!t) return false;
+  try { decide(t.spec, 'read', { role: role || 'visitor', user: role ? { id: 'someone' } : null, company: role ? 'some' : null }); return true; } catch { return false; }
+}
+
 async function publicState(appId, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
@@ -676,7 +685,7 @@ async function publicState(appId, role = null) {
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
-    tables: [], labels: labelsOf(view), people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
+    tables: [], labels: labelsOf(view).filter((l) => mayRead(view, l.table, role)), people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
     reach: { on: { fetch: !!reachNow?.on?.fetch, hosts: (reachNow?.on?.hosts || []).map((x) => ({ host: x.host })) } },
   };
 }
