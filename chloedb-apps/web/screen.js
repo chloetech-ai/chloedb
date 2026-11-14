@@ -1153,7 +1153,9 @@ window.__sa_numbers = (() => {
       while (i < list.length && (headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('p') && head.length))) head.push(list[i++]);
       const groups = [];
       for (; i < list.length; i++) {
-        if (!groups.length || (headLike(list[i]) && groups.at(-1).length)) groups.push([]);
+        // a group starts at a heading, a row of numbers, or a titled section
+        // (its heading inside it: what it titles never leaves it)
+        if (!groups.length || ((headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('section.section'))) && groups.at(-1).length)) groups.push([]);
         groups.at(-1).push(list[i]);
       }
       const box = (cls, kids) => h('div', { class: cls }, kids);
@@ -1204,7 +1206,16 @@ window.__sa_numbers = (() => {
             root.replaceChildren(typeof gateView === 'function' ? gateView(app, gate) : signInPage(app, gate));
           } else if (isFront) {
             root.replaceChildren(h('div', { class: `screen front${layout ? ` layout-${layout}` : ''}` }, front.page(spec.body, scope(), layout)));
-          } else root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange(blocks(spec.body, scope(), 'body'))));
+          } else {
+            // An app of one screen shown on its own has no app bar: a data
+            // screen (not a tool, not a front page) whose body opens with no
+            // heading of its own says its title as the page's heading.
+            const lone = window.__SA && window.__SA.lone;
+            const first = Array.isArray(spec.body) ? spec.body.find((b) => b && typeof b === 'object') : null;
+            const titled = first && (first.h !== undefined || first.hero !== undefined || first.nav !== undefined);
+            const title = lone && !isFront && layout !== 'tool' && !titled ? h('h1', null, String(lone)) : null;
+            root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange([title, blocks(spec.body, scope(), 'body')])));
+          }
           if (front) front.after(root);
           window.__sa_gated?.(gated);
           restore(f);

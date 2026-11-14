@@ -1,6 +1,6 @@
 {
  "title": "A breakdown of a table by a group: a total and a bar per group",
- "about": "Spending by category, hours by client, requests by status: one GROUP BY query drawn as bars (or a donut), with the total and the number of groups as big numbers.",
+ "about": "Spending by category, hours by client, requests by status: one GROUP BY query drawn as bars (or a donut) with its total, together under its heading.",
  "params": {
   "table": {
    "about": "the table",
@@ -42,6 +42,9 @@
   "limit": {
    "about": "the most groups shown",
    "default": 20
+  },
+  "count": {
+   "about": "words for the number of groups (\"Customers\"), shown beside the total only when given"
   }
  },
  "example": {
@@ -65,28 +68,25 @@
    }
   },
   "let": {
-   "{{key}}_items": "={{key}}.map(g => ({label: g.label == null || g.label === '' ? '\u2014' : String(g.label), value: Number(g.value) || 0}))",
+   "{{key}}_items": "={{key}}.map(g => ({label: g.label == null || g.label === '' ? '—' : String(g.label), value: Number(g.value) || 0}))",
    "{{key}}_fmt": "=v => {{format|json}} === 'money' ? app.fmt.money(v) : app.fmt.number(v)"
   },
   "body": [
    {
-    "$when": "title",
-    "h": "{{title}}"
-   },
-   {
-    "kpis": [
+    "section": [
      {
-      "label": "{{label}}",
-      "value": "={{key}}_fmt({{key}}_items.reduce((n, g) => n + g.value, 0))"
+      "kpis": [
+       {
+        "label": "{{label}}",
+        "value": "={{key}}_fmt({{key}}_items.reduce((n, g) => n + g.value, 0))"
+       },
+       {
+        "$when": "count",
+        "label": "{{count}}",
+        "value": "={{key}}_items.length"
+       }
+      ]
      },
-     {
-      "label": "Groups",
-      "value": "={{key}}_items.length"
-     }
-    ]
-   },
-   {
-    "card": [
      {
       "if": "={{key}}_items.length === 0",
       "then": [
@@ -115,7 +115,11 @@
        }
       ]
      }
-    ]
+    ],
+    "title": {
+     "$when": "title",
+     "$value": "{{title}}"
+    }
    }
   ]
  }

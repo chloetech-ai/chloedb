@@ -3339,3 +3339,17 @@ test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule; ever
   const plain = expandWith(compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  CALL buy").screen);
   assert.equal(plain.screen.body.find((b) => b.carousel).item.qty, undefined);
 });
+
+test('SUMMARY: its heading, total and bars are one section; the number of groups shows only when COUNT names it', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN d TITLE 'D'\nSUMMARY receivables AS owed\n  TITLE 'Who owes us'  GROUP BY customer  VALUE SUM(amount)  LABEL 'Unpaid'  MONEY").screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.body.length, 1);
+  const sec = e.screen.body[0];
+  assert.equal(sec.title, 'Who owes us');
+  assert.deepEqual(sec.section[0].kpis.map((k) => k.label), ['Unpaid']);
+  assert.ok(!JSON.stringify(e.screen).includes('"Groups"'));
+  const c = expandWith(compileStatement("CREATE SCREEN d TITLE 'D'\nSUMMARY receivables AS owed\n  GROUP BY customer  VALUE SUM(amount)  COUNT 'Customers'").screen);
+  assert.deepEqual(c.screen.body[0].section[0].kpis.map((k) => k.label), ['Total', 'Customers']);
+  assert.equal(c.screen.body[0].title, undefined);
+});

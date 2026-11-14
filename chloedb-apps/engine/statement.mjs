@@ -463,6 +463,7 @@ export function compileStatement(text) {
       case 'MONEY': u.format = 'money'; break;
       case 'DONUT': u.chart = 'donut'; break;
       case 'LIMIT': u.limit = Number(rest) || 20; break;
+      case 'COUNT': if (part.kind !== 'SUMMARY') fail(n, `${part.kind} does not take COUNT`); u.count = literal(rest); break;
       default: fail(n, `${part.kind} does not take ${JSON.stringify(l.slice(0, 30))}`);
     }
   }
@@ -584,7 +585,8 @@ export function compileStatements(plan, code) {
       const out = compileStatement(code[v.slug]);
       v.screen = out.screen;
       v.statement = code[v.slug].trim(); // the screen's source, kept with it
-      if (!v.title && out.title) v.title = out.title;
+      // its TITLE is the screen's title: the source the request changed
+      if (out.title) v.title = out.title;
       if (out.for && v.for === undefined) v.for = out.for;
       delete code[v.slug];
     } catch (e) {
@@ -619,8 +621,8 @@ BOARD <table> [AS key]         -- the board pattern
 DETAIL <table> [AS key]        -- the detail pattern: one row (opened with app.open(slug, {id})), edit, related rows
   NAME <heading col>  FORM (...)  SHOW (columns)  PICK (columns of the pick list)  BACK <view slug>  TITLE  NOUN
   RELATED <table> BY <its column holding the id> [TITLE 'Title'] [COLUMNS (...)] [ORDER BY ...]   (one line each)
-SUMMARY <table> [AS key]       -- the summary pattern: a total and a bar (or donut) per group
-  GROUP BY <SQL>  VALUE SUM(col)  LABEL 'Spent'  WHERE <SQL>  MONEY  DONUT  LIMIT 20  TITLE 'Heading'
+SUMMARY <table> [AS key]       -- the summary pattern: a total and a bar (or donut) per group, together under its heading
+  GROUP BY <SQL>  VALUE SUM(col)  LABEL 'Spent'  WHERE <SQL>  MONEY  DONUT  LIMIT 20  TITLE 'Heading'  COUNT 'Customers' (the number of groups beside the total, only when it means something)
 CHECKS <table of checks> [AS key] -- the daily check-off, for the screen people open every day: each thing with one big tap for today, its last days, its streak, and how many are done today (habits, medication, plants watered, chores); a check is a row
   ITEMS <table of the things>  ITEM <checks column holding the thing's id>  DAY <checks column, 'YYYY-MM-DD'>  NAME <things column>  DAYS 7  WHERE <SQL on the things>  ORDER BY <SQL>  ADD  NOUN 'habit'  TITLE 'Today'  SKIP <bool checks column: a day skipped keeps the streak>
 WEEK <table of marks> [AS key] -- the week pattern: a row per thing with its 7 days to tick (habits, chores); a mark is a row

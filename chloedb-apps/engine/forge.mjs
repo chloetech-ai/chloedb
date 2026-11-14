@@ -2441,9 +2441,11 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   let next;
   let source = null;
   let photos = null;
+  let title = cur.title;
   try {
     if (typeof statement === 'string') {
       const out = compileStatement(statement);
+      if (out.title) title = out.title;
       if (out.slug !== slug) throw new Error(`the statement creates ${out.slug}; this screen is ${slug}`);
       next = out.screen;
       photos = out.photos;
@@ -2459,7 +2461,7 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);
-  if (code === cur.code && (source || null) === (cur.spec.statement || null)) return { n: view.comp.n, unchanged: true };
+  if (code === cur.code && (source || null) === (cur.spec.statement || null) && title === cur.title) return { n: view.comp.n, unchanged: true };
   const spec = { ...cur.spec };
   if (source) spec.statement = source; else delete spec.statement;
   // The patterns it was expanded from: a patch keeps the earlier ones.
@@ -2470,7 +2472,7 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   const shared = await store.shared();
   const missing = [...sharedRefs(code)].filter((k) => !shared.has(k));
   if (missing.length) throw Object.assign(new Error(`the library has no ${missing.map((k) => k.replace('component/', 'ui.').replace('helper/', 'lib.')).join(', ')}`), { status: 400 });
-  const id = await store.putCapability({ app: appId, slug, kind: 'view', title: cur.title, description: cur.description, code, spec, author: 'person' });
+  const id = await store.putCapability({ app: appId, slug, kind: 'view', title, description: cur.description, code, spec, author: 'person' });
   const own = view.comp.caps.filter((c) => !view.shared.some((x) => x.id === c)).map((c) => (c === cur.id ? id : c));
   const roots = own.filter((c) => /\/(view|function)\//.test(c));
   const pinned = await pinShared(store, roots, { had: new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id])), shared });
