@@ -4208,24 +4208,31 @@ impl Service {
         let r = match (&self.backend, ddl) {
             (_, true) => self.ddl(sql, params, timeout_ms, &who.name).await,
             (Backend::Local(db), false) => {
-                let (text, p) = (sql.to_string(), params.clone());
-                let slots_hashed = slots.clone();
-                let only = slots.map(|s| moving::mask_outside(&s));
-                let refused = Arc::new(Mutex::new(None));
-                let guard = self.statement_guard(routed(), refused.clone());
-                let prepare = move |db: &Db| {
-                    let Some(w) = db.prepare_write(&text, &p)? else { return Ok(None) };
-                    let w = match only {
-                        Some(m) => w.masked(m)?,
-                        None => w,
+                let only = slots.as_ref().map(|s| moving::mask_outside(s));
+                let key = key.map(|k| (k, statement_hash(sql, params, slots.as_deref())));
+                let mut tries = 0;
+                loop {
+                    let (text, p, only) = (sql.to_string(), params.clone(), only.clone());
+                    let refused = Arc::new(Mutex::new(None));
+                    let guard = self.statement_guard(routed(), refused.clone());
+                    let prepare = move |db: &Db| {
+                        let Some(w) = db.prepare_write(&text, &p)? else { return Ok(None) };
+                        let w = match only {
+                            Some(m) => w.masked(m)?,
+                            None => w,
+                        };
+                        Ok(Some(w.guarded(guard)))
                     };
-                    Ok(Some(w.guarded(guard)))
-                };
-                let r = self.write_local(db, prepare, timeout_ms, key.map(|k| (k, statement_hash(sql, params, slots_hashed.as_deref())))).await;
-                let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
-                match refusal {
-                    Some(e) if r.is_err() => Err(e),
-                    _ => r,
+                    let r = self.write_local(db, prepare, timeout_ms, key.clone()).await;
+                    let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    match (refusal, r) {
+                        (Some(e), Err(_)) => break Err(e),
+                        // An ALTER TABLE committed between binding the
+                        // statement and writing it, which wrote nothing:
+                        // it is bound again, to the table as it is now.
+                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && chloedb::db::altered_while_running(&e.message) => tries += 1,
+                        (_, r) => break r,
+                    }
                 }
             }
             (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
@@ -6491,12 +6498,15 @@ fn commits_in(db: &Db, term: Option<u64>) -> Result<(), ApiError> {
 /// [`apply_keyed`], committing only while the database is at `term`
 /// ([`commits_in`]), checked under the writer.
 fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>, term: Option<u64>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
-    let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
     if mark.is_some() || keys.iter().any(Option::is_some) || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
+    // The tables as the writer sees them: an ALTER TABLE that committed
+    // while this write waited for the writer has changed their fields,
+    // and the documents are made of the fields they have now.
+    let catalog = db.catalog();
     // Under the writer, which a primary's shipped transaction needs too.
     if let Err(e) = commits_in(db, term) {
         t.rollback();
@@ -6522,8 +6532,9 @@ fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u6
 /// [`Service::validate_ops`]: each of `ops` applied in turn in one
 /// transaction, which is rolled back.
 fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
-    let catalog = db.catalog();
     let mut t = db.storage().begin_within(VALIDATE_WAIT)?;
+    // Read under the writer, as [`apply_keyed_in`] reads them.
+    let catalog = db.catalog();
     let mut arrived = arrivals::Group::new(db);
     for (j, op) in ops.iter().enumerate() {
         if let Err(e) = apply_into(&catalog, &mut t, std::slice::from_ref(op), epoch, &mut arrived) {

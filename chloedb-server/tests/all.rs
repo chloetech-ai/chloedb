@@ -74,6 +74,7 @@ mod rank_profiles;
 mod recommender;
 mod replication;
 mod safety;
+mod schema_race;
 mod scoped_keys;
 mod limited_keys;
 mod scroll_pages;
