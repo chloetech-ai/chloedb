@@ -39,7 +39,10 @@ const sevTone = (s) => (s === "major" || s === "critical" ? "crit" : "warn");
 const fmtMs = (ms) => (ms == null ? "" : ms < 1000 ? `${Math.round(ms)} ms` : fmtSpan(ms));
 const pct = (x) => (x == null ? "" : `${Math.round(x * 100)}%`);
 
-export function mount(root, ctx) {
+// Hotspots: a fourth tab (ui/levels/hotspots.js).
+import { withHotspots } from "./hotspots.js";
+export const mount = withHotspots(mountHealth);
+function mountHealth(root, ctx) {
   const first = routeParam(ctx, "agent");
   const S = {
     tab: first && TABS.some(([k]) => k === first) ? first : "incidents",

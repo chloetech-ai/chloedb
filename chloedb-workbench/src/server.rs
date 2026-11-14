@@ -150,6 +150,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::swarm::routes())
         .merge(crate::runtime::routes())
         .merge(crate::trace::routes())
+        // Fifth build: Hotspots.
+        .merge(crate::hotspots::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -210,6 +212,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("library.js", include_str!("../ui/levels/library.js")),
     ("quicksearch.js", include_str!("../ui/levels/quicksearch.js")),
     ("trace.js", include_str!("../ui/levels/trace.js")),
+    ("hotspots.js", include_str!("../ui/levels/hotspots.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -377,7 +380,8 @@ async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiRes
         crate::testruns::after_hook(&sup, &id, &v);
         let out = crate::levels::after_hook(&sup, &lv, &id, &v);
         // Guarded actions (src/guarded.rs): a guarded Bash command is denied.
-        Ok(crate::guarded::check(&sup, &id, &v).or(out))
+        // Hotspots (src/hotspots.rs): a first edit of one gets its history.
+        Ok(crate::guarded::check(&sup, &id, &v).or(out).or_else(|| crate::hotspots::check(&sup, &id, &v)))
     })
     .await?;
     Ok(Json(json!({ "ok": true, "output": output })).into_response())
@@ -521,6 +525,7 @@ pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Resu
     // Time travel's snapshots and routing's recorder (src/timetravel.rs, src/routing.rs).
     crate::timetravel::start(&sup);
     crate::routing::start(&sup);
+    crate::hotspots::start(&sup);
     let router = router(app);
     let server = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
     tokio::select! {

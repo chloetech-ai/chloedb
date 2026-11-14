@@ -37,6 +37,8 @@ mod search;
 // The Preview lab (SPEC.md, "Fourth build", use cases 2 and 3).
 mod runtime;
 mod swarm;
+// Fifth build: Hotspots (SPEC.md).
+mod hotspots;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

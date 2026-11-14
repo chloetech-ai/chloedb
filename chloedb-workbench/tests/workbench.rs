@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors", "trace"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors", "trace", "hotspots"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -3396,4 +3396,150 @@ fn trace_without_chloectx_answers_from_git() {
     // Explain says what is missing instead of failing.
     let (status, x) = s.post("/api/trace/explain", json!({ "q": "why is `retries` 5?", "repo": r }));
     assert_eq!((status, x["available"].as_bool()), (200, Some(false)), "{x}");
+}
+
+// Fifth build: Hotspots (the files the agents keep correcting, redoing or
+// breaking, scored from Workbench's rows, and told to the next agent once).
+
+/// An edit as the PostToolUse hook of Claude Code's Edit tool sends it.
+fn edit_as(s: &Server, id: &str, file: &Path, old: &str, new: &str) {
+    hook_as(s, id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": { "file_path": file, "old_string": old, "new_string": new }, "tool_response": { "filePath": file } }));
+    std::thread::sleep(Duration::from_millis(20));
+}
+
+/// The PreToolUse hook of an Edit: what the server prints for it.
+fn pre_edit(s: &Server, id: &str, file: &Path, session: &str) -> Value {
+    let (status, v) = call_as(s, "POST", "/api/hook", TOKEN, Some(id), Some(json!({ "hook_event_name": "PreToolUse", "tool_name": "Edit", "session_id": session, "tool_input": { "file_path": file, "old_string": "a", "new_string": "b" } })));
+    assert_eq!(status, 200, "{v}");
+    v["output"].clone()
+}
+
+#[test]
+fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    std::fs::create_dir(r.join("src")).unwrap();
+    let totals = r.join("src/totals.rs");
+    let body = "pub fn round_line_total(cents: i64, rate: f64) -> i64 {\n    // floor(cents * rate) lost a cent; round_half_up too\n    let x = (cents as f64 * rate).round() as i64;\n    x\n}\n\npub fn apply_coupon(total: i64, pct: i64) -> i64 {\n    total - total * pct / 100\n}\n";
+    std::fs::write(&totals, body).unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "totals: round per line"]);
+    std::fs::write(&totals, body.replace("round()", "floor()")).unwrap();
+    git(&r, &["commit", "-q", "-am", "totals: floor coupons per unit"]);
+    git(&r, &["revert", "--no-edit", "HEAD"]);
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "worktree": false }))["id"].as_str().unwrap().to_string();
+    let checkout = s.spawn(json!({ "repo": r, "name": "checkout", "worktree": false }))["id"].as_str().unwrap().to_string();
+    s.until(&cart, "started", |a| a["session_id"].is_string());
+    s.until(&checkout, "started", |a| a["session_id"].is_string());
+    let radar = format!("/api/tests?repo={}", r.display());
+
+    // cart changes the rounding, fails the test, puts its edit back, is
+    // corrected, and fails again; checkout edits the same file once.
+    edit_as(&s, &cart, &totals, "floor", "round_half_up");
+    bash_as(&s, &cart, "hu1", "cargo test totals", &cargo_out(false), true);
+    s.get_until(&radar, "the first failure", |v| v["totals"]["commands"] == 1);
+    edit_as(&s, &cart, &totals, "round_half_up", "floor");
+    hook_as(&s, &cart, json!({ "hook_event_name": "UserPromptSubmit", "prompt": "No, don't round per unit: round once, on the line total." }));
+    hook_as(&s, &cart, json!({ "hook_event_name": "UserPromptSubmit", "prompt": "Thanks, now add a changelog entry." }));
+    edit_as(&s, &cart, &totals, "as f64", "(cents as f64 * rate)");
+    edit_as(&s, &cart, &totals, "round", "rate).round()");
+    bash_as(&s, &cart, "hu2", "cargo test totals", &cargo_out(false), true);
+    s.get_until(&radar, "the second failure", |v| v["totals"]["commands"] == 2);
+    edit_as(&s, &checkout, &totals, "pct / 100", "total * pct / 100");
+    edit_as(&s, &checkout, &r.join("README"), "hello", "hello, shop");
+
+    let (status, v) = s.post("/api/hotspots/refresh", json!({ "repo": r }));
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = s.get(&format!("/api/hotspots?repo={}", r.display()));
+    assert_eq!(status, 200, "{v}");
+    let list = v["hotspots"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "README is edited once: not a hotspot: {v}");
+    let h = &list[0];
+    assert_eq!((h["file"].as_str(), h["repo"].as_str()), (Some("src/totals.rs"), r.to_str()), "{h}");
+    let c = &h["counts"];
+    assert_eq!((c["edits"].as_i64(), c["re_edits"].as_i64(), c["agents"].as_i64()), (Some(5), Some(3), Some(2)), "{c}");
+    // The revert commit, and the edit cart put back.
+    assert_eq!(c["reverts"], 2, "{c}");
+    assert_eq!((c["test_fails"].as_i64(), c["flaky"].as_i64(), c["steers"].as_i64()), (Some(2), Some(0), Some(1)), "{c}");
+    // 3 re-edits + 1 more agent + 2 reverts + 2 failures + 1 correction.
+    assert_eq!(h["score"], json!(3.0 + 2.0 + 6.0 + 3.0 + 3.0), "{h}");
+    assert_eq!(h["level"], "hot");
+    let kinds: Vec<&str> = h["reasons"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds[0], "reverts", "{}", h["reasons"]);
+    for k in ["re_edits", "agents", "test_fails", "steers"] {
+        assert!(kinds.contains(&k), "{k}: {}", h["reasons"]);
+    }
+    let tf = h["reasons"].as_array().unwrap().iter().find(|r| r["kind"] == "test_fails").unwrap();
+    assert_eq!(tf["text"], "totals::coupon failed twice after edits here", "{tf}");
+    // The function the edits fell in, from the edits' lines.
+    assert_eq!((h["symbol"].as_str(), h["line"].as_i64()), (Some("round_line_total"), Some(1)), "{}", h["symbols"]);
+    assert!(h["summary"].as_str().unwrap().starts_with("agents re-edited round_line_total 3 times"), "{}", h["summary"]);
+    // The correction is suggested as a rule: no rule or decision names the file.
+    assert_eq!(h["suggestion"]["kind"], "rule", "{}", h["suggestion"]);
+    assert_eq!(h["suggestion"]["rule"], "No, don't round per unit: round once, on the line total.");
+    assert_eq!(h["churn"].as_array().unwrap().len(), 14);
+    assert_eq!(h["churn"].as_array().unwrap().last().unwrap()[1], 5);
+    assert_eq!(v["totals"]["hotspots"], 1);
+    assert_eq!(v["ctx"]["available"], false, "{}", v["ctx"]);
+    assert!(v["agents"].as_array().unwrap().iter().any(|a| a["name"] == "cart"));
+    let hid = h["id"].as_str().unwrap().to_string();
+
+    // The evidence, oldest first, with where each piece is.
+    let (status, d) = s.get(&format!("/api/hotspots/{hid}"));
+    assert_eq!(status, 200, "{d}");
+    let ev = d["evidence"].as_array().unwrap();
+    let of = |k: &str| ev.iter().filter(|e| e["kind"] == k).count();
+    assert_eq!((of("edit"), of("test_fail"), of("prompt"), of("revert")), (5, 2, 1, 2), "{d}");
+    assert!(ev.windows(2).all(|w| w[0]["ts_ms"].as_i64() <= w[1]["ts_ms"].as_i64()));
+    let fail = ev.iter().find(|e| e["kind"] == "test_fail").unwrap();
+    assert_eq!(fail["link"]["test"], "totals::coupon", "{fail}");
+    assert!(fail["detail"].as_str().unwrap().contains("left: 1799"), "{fail}");
+    assert!(ev.iter().any(|e| e["kind"] == "revert" && e["link"]["commit"].is_string() && e["text"].as_str().unwrap().starts_with("Revert")), "{d}");
+    assert!(ev.iter().any(|e| e["kind"] == "revert" && e["link"]["story"]["agent"] == json!(cart)), "{d}");
+    assert_eq!(s.get("/api/hotspots/hnosuch").0, 404);
+
+    // The next edit of it in a session gets its history once.
+    let out = pre_edit(&s, &checkout, &totals, "sess-1");
+    let text = out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert!(text.starts_with("Workbench: src/totals.rs is a hotspot of this repository (score 17 in 14 days)"), "{text}");
+    assert!(text.contains("- totals::coupon failed twice after edits here"), "{text}");
+    assert!(text.contains("the user corrected work here: \"No, don't round per unit: round once, on the line total.\""), "{text}");
+    assert!(text.contains("ask the user (ask_human)"), "{text}");
+    assert_eq!(pre_edit(&s, &checkout, &totals, "sess-1"), Value::Null);
+    assert_eq!(pre_edit(&s, &checkout, &r.join("README"), "sess-1"), Value::Null);
+    // A new session (after /clear) has forgotten it.
+    assert!(pre_edit(&s, &checkout, &totals, "sess-2")["hookSpecificOutput"]["additionalContext"].is_string());
+    assert!(s.events(&checkout).iter().any(|e| e["kind"] == "hotspot"));
+
+    // Pin a test and route to a model: the next agent is told both.
+    let (status, a) = s.post(&format!("/api/hotspots/{hid}/act"), json!({ "kind": "pin_test", "test": "totals::coupon" }));
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["hotspot"]["pinned_test"], "totals::coupon");
+    let (_, a) = s.post(&format!("/api/hotspots/{hid}/act"), json!({ "kind": "route", "model": "opus" }));
+    let text = a["hotspot"]["context"].as_str().unwrap();
+    assert!(text.contains("run `cargo test totals` first, and again after (the user pinned it)") && text.contains("done by opus"), "{text}");
+    assert_eq!(s.post(&format!("/api/hotspots/{hid}/act"), json!({ "kind": "nope" })).0, 400);
+    let (_, v) = s.get(&format!("/api/hotspots?repo={}&file=src/totals.rs", r.display()));
+    assert_eq!(v["hotspots"][0]["routed_model"], "opus", "{v}");
+
+    // The agents working on one, for Mission's badge.
+    let (_, w) = s.get(&format!("/api/hotspots/agents?repo={}", r.display()));
+    let names: Vec<&str> = w["agents"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"cart") && names.contains(&"checkout"), "{w}");
+    // Another window is scored live.
+    let (status, v) = s.get(&format!("/api/hotspots?repo={}&days=1", r.display()));
+    assert_eq!((status, v["window"]["days"].as_i64()), (200, Some(1)), "{v}");
+    assert_eq!(v["hotspots"][0]["file"], "src/totals.rs");
+
+    // Agents ask through MCP.
+    let mut m = Mcp::start(&s, &cart);
+    m.send("initialize", json!({}));
+    m.notify("notifications/initialized");
+    let (text, err) = m.tool("hotspots", json!({}));
+    assert!(!err && text.contains("src/totals.rs › round_line_total [hot 17.0]"), "{text}");
+    let (text, err) = m.tool("hotspots", json!({ "file": "src/totals.rs" }));
+    assert!(!err && text.starts_with("Workbench: src/totals.rs is a hotspot") && text.contains("totals::coupon (2 runs, 2 failed)"), "{text}");
+    let (text, err) = m.tool("hotspots", json!({ "file": "README" }));
+    assert!(!err && text.contains("README is not a hotspot"), "{text}");
 }

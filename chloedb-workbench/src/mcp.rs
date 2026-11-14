@@ -224,7 +224,9 @@ fn tools() -> Value {
                 },
                 "required": ["question"]
             }
-        }
+        },
+        // Fifth build: Hotspots (src/hotspots.rs).
+        crate::hotspots::mcp_def()
     ])
 }
 
@@ -553,6 +555,7 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             let v = c.call("GET", &format!("/api/trace?q={}&{place}", enc(question)), None, Duration::from_secs(240))?;
             Ok(crate::trace::as_text(&v))
         }
+        "hotspots" => crate::hotspots::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
         other => Err(format!("no tool {other}")),
     }
 }

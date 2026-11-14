@@ -1666,3 +1666,150 @@ state then. The fixtures are `ui/dev/fixtures/trace.mjs`.
   question to Trace with `ctx.go('#/trace?q=' + encodeURIComponent(text))`,
   for input that starts with when, why, how or who, or from a "Trace this"
   row.
+
+## Fifth build: Hotspots
+
+The user asked: can we see the pieces the agents keep correcting, redo, or
+break? Workbench already records each of those as a row: every edit an agent
+made (`file_edits`), every test it ran (`test_runs`), the runtime errors of
+its app (`runtime_errors`), the user's steers and prompts (`events`), the
+questions it asked (`questions`) and the incidents Health opened
+(`incidents`); git holds the reverts. A hotspot is a file (and, where the
+edits' lines fall in a definition, its function) where those pile up. It is
+worth seeing for two reasons: the user learns where agents struggle (and
+what is missing: a rule, a decision, a test), and the next agent to edit
+the file can be told its history before it repeats it.
+
+Contract:
+
+- **Score** (`src/hotspots.rs`): per repository over a window (14 days by
+  default), each file's points are the sum of what was counted, with
+  weights: a re-edit (an agent's edit of a file after its first) 1, each
+  agent after the first 2, a revert 3 (a git commit whose subject starts
+  with "Revert" touching the file, or an Edit whose old and new text are
+  an earlier edit's of the file the other way round), a test that failed
+  after an edit of the file 1.5 (the edit the agent made last before the
+  failure, within 30 minutes: an `ASOF JOIN`), a flaky test among those
+  3 (passed and failed on the same commit and tree), a runtime error put
+  down to the file 2.5, a correction 3 (a steer, or a prompt typed to the
+  agent within 30 minutes of its edit that corrects it: "no", "don't",
+  "stop", "again", "instead"...), a question to the user about the file
+  1.5 (asked within 30 minutes of an edit of it, or naming it) and an
+  incident naming it 2. A file of 3 points or more is a hotspot: hot from
+  15, warm from 8, mild below. Each comes with counted reasons and the ids
+  of their evidence, edits per day, the function most of its edits fell in,
+  the tests that failed after its edits, what the user's rules and
+  ChloeCtx's decisions, preferences and facts say of it (◆), and a
+  suggestion: make the user's correction a rule when nothing names the
+  file, run the test that keeps failing first, or route the work to a
+  stronger model than the agents that kept redoing it (all on haiku or
+  sonnet).
+- **Rows**: SQL over the tables (`GROUP BY file, agent`, `date_bin('1 day',
+  ts)` for the churn, `COUNT(*) FILTER (...)` and `HAVING` for flaky tests,
+  `ASOF JOIN ... MATCH_CONDITION (t.ts >= e.ts) ON t.agent = e.agent` from
+  failures, corrections and questions to the edit before them, with the
+  same lookup over the rows in order when a join cannot run), written to
+  the table `hotspots`, made again every minute and on demand.
+- **Told once**: an agent's PreToolUse of Edit, Write, MultiEdit or
+  NotebookEdit on a file scoring 8 or more gets its history and what to do
+  first as `additionalContext`, once per session and file.
+- **Seen**: a heat layer on Map, a Hotspots tab in Health, a badge on the
+  Mission card of an agent working on one; agents ask the MCP tool
+  `hotspots`.
+
+### Hotspots as built
+
+**Table** `hotspots` (`src/hotspots.rs`, `TABLE`; made by `StateDb::open`):
+`id` (`h` + a hash of repository and file, the same whatever the window),
+`repo`, `file`, `symbol`, `score`, `level`, the counts (`edits`,
+`re_edits`, `agents`, `reverts`, `test_fails`, `flaky`, `errors`,
+`steers`, `questions`, `incidents`), `first_at`, `last_at`, `days`,
+`data` (the hotspot's JSON), `evidence` (its timeline's JSON) and
+`updated`. A refresh deletes the repository's rows and writes them again;
+the mark `hotspots:<repo>` keeps its totals, its time and what was
+missing. A pinned test and a routed model are the marks `hotpin:<id>` and
+`hotroute:<id>`, applied when a hotspot is read, so they hold across
+refreshes. The timer (`hotspots::start`) scores every repository with a
+running agent, or one that ended within the window, every 60 s; a `GET` of
+the default window older than 30 s scores again first.
+
+**Endpoints**:
+
+- `GET /api/hotspots?repo=|agent=&days=&since=&limit=&file=`: `{repo,
+  window: {from_ms, to_ms, days}, updated_ms, every_s, hotspots, totals:
+  {hotspots, hot, files, edits, reverts, test_fails, errors, steers},
+  agents, ctx: {available, records | why}, missing}`. Each hotspot: `{id,
+  repo, file, symbol, symbol_kind, line, score, level, counts, reasons:
+  [{kind, n, text, ids, points}], agents, first_ms, last_ms, first, last,
+  churn: [[day_ms, n]], symbols: [{symbol, kind, line, edits}], tests:
+  [{test, runs, failed, flaky, command}], records: [{id, kind, text, ts,
+  via: chloectx | rule}], suggestion: {kind: rule | test | model, text,
+  rule? | test?, command? | model?, from?} | null, summary,
+  last_correction, window_days, pinned_test, routed_model, context}`
+  (`context` is what the next agent is told). The default window reads the
+  table; another (`days` 1 to 90, or `since` in ms or ISO 8601) is scored
+  live and not stored.
+- `GET /api/hotspots/:id`: `{hotspot, evidence: [{id, kind (edit, revert,
+  test_fail, error, steer, prompt, question, incident, record), ts_ms, ts,
+  agent, text, detail, link}], agents, missing}`, oldest first, at most 80;
+  `link` is `{story: {agent, at_ms}}`, `{test, run}`, `{error}`,
+  `{question}`, `{incident}`, `{commit}` or `{record}`.
+- `GET /api/hotspots/agents?repo=`: the running agents that edited a
+  hotspot of 8 or more in the last hour, each with its hottest.
+- `POST /api/hotspots/refresh {repo | agent}`: `{ok, repo, hotspots, ms}`.
+- `POST /api/hotspots/:id/act {kind: pin_test, test} | {kind: route,
+  model} | {kind: clear}`: `{hotspot}`. "Add rule" is the existing `POST
+  /api/rules`.
+
+**Hook** (`hotspots::check`, after `guarded::check` in the hook handler):
+the PreToolUse of an edit tool on a file of the agent's checkout whose row
+scores `TELL_SCORE` (8) or more answers `{"hookSpecificOutput":
+{"hookEventName": "PreToolUse", "additionalContext": ...}}` and records the
+row `deliveries` `<agent>:hot:<session_id>:<file>`, so a session is told
+once per file (a new session id, after /clear, is told again); the agent's
+events get a `hotspot` event. The text: the file and its score, a line per
+reason, the user's last correction, the ◆ rules and records, and "Before
+you edit": the pinned or suggested test to run first and again after, the
+model the user routed it to (ask the user whether to hand it over), and to
+ask the user (ask_human) rather than change a rule or decision back and
+forth.
+
+**MCP tool** `hotspots {repo?, file?}` (the last of the list): the ten
+hottest with their summaries and suggestions, or one file's context and
+tests.
+
+**UI** (`ui/levels/hotspots.js`, wrapping three screens in one place each):
+`withHeat` on Map (a "Heat" toggle in its legend, key `h`, kept in
+`localStorage`; files and folders tinted by score, a score badge on hot
+files, the reasons added to the map's hover card, and a side card of the
+hotspots that opens Health); `withHotspots` on Health (a Hotspots tab, key
+4, `#/health/hotspots`: totals, a 7/14/30 day window and "Score again",
+filters, the ranked list with reason chips, ◆ count, agents and a churn
+sparkline, and a board per hotspot: why it is hot with points, the evidence
+timeline with links to Story, Tests, the incident's board, Decide, Preview
+and Trace, the churn, "Do something about it" (Add rule prefilled with the
+correction, Pin a test, Route to a stronger model), what ChloeCtx knows,
+functions edited and what the next agent is told); `withHotBadges` on
+Mission (a badge on the card of an agent working on a hotspot). Fixtures:
+`ui/dev/fixtures/hotspots.mjs` (the demo repo "shop", `?story=hot`) and
+`ui/dev/hotspots-context.html` (the terminal as the agent sees the
+context).
+
+#### Deviations (Hotspots)
+
+- "Route to a stronger model" does not change how agents are spawned
+  (`spawn_agent` and routing.rs are not changed): agents about to edit the
+  file are told the user wants that model for it and to ask before going
+  on. Making `routing::suggest` read `hotroute:<id>` for tasks naming the
+  file is a small follow-up in routing.rs.
+- A failing test is put down to the one file the agent edited last before
+  it (the `ASOF JOIN`), not to every file it edited since the test last
+  passed.
+- A correction typed in the terminal is told from other prompts by its
+  words; a steer always counts.
+- Rewinds of Claude Code's own history (Esc Esc) leave no hook, so an edit
+  undone that way is not seen; an Edit that puts text back is.
+- The symbol of an edit comes from `runtime_edits`' line (the first line of
+  the new text found in the file when the hook came), placed in the code
+  index's chunks of the agent's tree, else main's, else the file chunked
+  as the index would.

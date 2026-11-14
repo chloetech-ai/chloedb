@@ -51,7 +51,9 @@ const nameOf = (a) => (a && (a.name || a.id)) || "?";
 
 // Time travel: the scrubber above the screen (ui/levels/timebar.js).
 import { timeTravel } from "./timebar.js";
-export const mount = timeTravel(mountMap, { screen: "map" });
+// Hotspots: the heat layer and its "Heat" toggle (ui/levels/hotspots.js).
+import { withHeat } from "./hotspots.js";
+export const mount = timeTravel(withHeat(mountMap), { screen: "map" });
 function mountMap(root, ctx) {
   const S = { data: null, err: null, path: "", sel: null, focus: null, sent: new Map(), busy: new Set() };
   const I = { nodes: new Map(), changed: new Map(), read: new Map(), coll: new Map(), pins: new Map(), agents: new Map(), agg: new Map() };

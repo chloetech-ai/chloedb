@@ -325,6 +325,8 @@ impl StateDb {
         for t in PREVIEW_LAB_TABLES {
             db.sql(t, &Params::new()).map_err(e)?;
         }
+        // Fifth build: Hotspots (src/hotspots.rs).
+        db.sql(crate::hotspots::TABLE, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });

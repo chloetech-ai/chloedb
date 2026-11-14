@@ -16,7 +16,9 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 // Time travel: the scrubber above the screen (ui/levels/timebar.js).
 import { timeTravel } from "./timebar.js";
-export const mount = timeTravel(mountMission, { screen: "mission" });
+// Hotspots: a badge on an agent working on one (ui/levels/hotspots.js).
+import { withHotBadges } from "./hotspots.js";
+export const mount = timeTravel(withHotBadges(mountMission), { screen: "mission" });
 function mountMission(root, ctx) {
   const S = {
     repo: repoOf(ctx), goal: null, detail: null, questions: [], rules: [], loaded: false, error: null,
