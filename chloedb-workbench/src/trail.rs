@@ -36,6 +36,20 @@ pub enum Ran {
 
 /// Runs `<bin> <args>` in `cwd` and reads its JSON, waiting at most `timeout`.
 pub fn run_chloectx(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> Ran {
+    let what = format!("chloectx {}", args.first().copied().unwrap_or(""));
+    match run_raw(bin, cwd, args, timeout) {
+        Ran::Out(Json::String(out)) => match serde_json::from_str::<Json>(&out) {
+            Ok(v) if v.get("error").and_then(Json::as_str).is_some() => Ran::Failed(format!("{what} failed: {}", v["error"].as_str().unwrap_or(""))),
+            Ok(v) => Ran::Out(v),
+            Err(_) => Ran::Failed(format!("{what} printed no JSON (is this chloectx too old for --json?)")),
+        },
+        other => other,
+    }
+}
+
+/// Runs `<bin> <args>` in `cwd` and answers what it printed, as
+/// `Ran::Out(Json::String(text))`, waiting at most `timeout`.
+pub fn run_raw(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> Ran {
     let mut child = match Command::new(bin).args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ran::Missing,
@@ -72,11 +86,7 @@ pub fn run_chloectx(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> 
         let msg = err.lines().last().unwrap_or("").trim_start_matches("chloectx: ").to_string();
         return Ran::Failed(if msg.is_empty() { format!("{what} failed ({status})") } else { format!("{what} failed: {msg}") });
     }
-    match serde_json::from_slice::<Json>(&out) {
-        Ok(v) if v.get("error").and_then(Json::as_str).is_some() => Ran::Failed(format!("{what} failed: {}", v["error"].as_str().unwrap_or(""))),
-        Ok(v) => Ran::Out(v),
-        Err(_) => Ran::Failed(format!("{what} printed no JSON (is this chloectx too old for --json?)")),
-    }
+    Ran::Out(Json::String(String::from_utf8_lossy(&out).into_owned()))
 }
 
 pub(crate) fn not_installed(bin: &str) -> String {
@@ -96,7 +106,7 @@ pub(crate) fn ctx_time(v: &Json) -> Json {
     }
 }
 
-fn ctx_ms(v: &Json) -> Option<i64> {
+pub fn ctx_ms(v: &Json) -> Option<i64> {
     let t = v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))?;
     Some(if t.abs() < 100_000_000_000 { t * 1000 } else { t })
 }

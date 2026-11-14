@@ -145,6 +145,10 @@ enum Cmd {
         session: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Print the JSON result: each receipt with the rows it showed
+        /// (`id`, `kind`, `tag`, `score`, `decision`, `text`).
+        #[arg(long)]
+        json: bool,
     },
     /// One receipt: every candidate's scores, tokens and decision, and the
     /// recall replayed on the snapshot kept at its commit and on today's store.
@@ -524,7 +528,14 @@ fn main() {
             }
         }
         Cmd::Receipts { switch: Some(s), purge, .. } => text(&send(&project, json!({"op": "receipts_switch", "on": s == "on", "purge": purge}), 600)),
-        Cmd::Receipts { switch: None, session, limit, .. } => text(&send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30)),
+        Cmd::Receipts { switch: None, session, limit, json: as_json, .. } => {
+            let r = send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
         Cmd::Receipt { id, no_replay, text: show, json: as_json } => {
             let r = send(&project, json!({"op": "receipt", "id": id, "replay": !no_replay, "text": show}), 120);
             if as_json {

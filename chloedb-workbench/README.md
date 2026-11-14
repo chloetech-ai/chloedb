@@ -31,7 +31,7 @@ it a repository path and a task. The settings:
 
 The data dir holds:
 
-- `workbench.chloedb`: the tables `agents` and `events`
+- `workbench.chloedb`: the tables `agents` and `events`, and the levels' (`goals`, `outcomes`, `questions`, `rules`, `deliveries`, `seen`)
 - `sessions/<id>/`: each session's `settings.json` (its hooks) and `mcp.json`
 - `worktrees/<repo>-<hash>/<name>/`: the worktrees
 
@@ -135,6 +135,43 @@ installed, ChloeCtx:
 
 The state database also has a `marks` table (small key/value rows: the
 allow-lists, applied suggestions) and `agents.preview_url`.
+
+## The levels: goals, questions, story, away
+
+The third build reads the fleet at higher levels than terminals. The
+backend keeps new tables (`goals`, `outcomes`, `questions`, `rules`,
+`deliveries`, `seen`) and gives each agent a `goal`, an `outcome` and a
+`narration`: one live sentence of what it does, made after each
+`PostToolUse`, `Stop` and `UserPromptSubmit` from the tail of its session's
+transcript (at most its last 256 KiB, off the request path). Nothing calls
+a model.
+
+- **Goals**: `POST /api/goals {repo, text, plan: true}` makes a goal and
+  starts a lead agent that breaks it into outcomes (`add_outcome`), starts
+  an agent per outcome (`spawn_agent` with `outcome`) and marks them done
+  (`update_outcome`). An outcome's state follows its agent's.
+  `GET /api/goals/:id` adds the goal's agents, open questions, what
+  ChloeCtx learned in the last day (`chloectx sql --json`) and its pulse.
+- **Questions and rules**: the MCP tool `ask_human` asks you in Workbench
+  and waits for the answer; a permission prompt becomes a question too
+  (answering it types the option's number). Each question carries what
+  `chloectx ask --json` found about it. An answer can become a rule
+  (`chloectx remember decision`), which every agent of the repository is
+  told, and which answers the same question when it is asked again.
+- **Delivery**: `chloedb-workbench hook` prints what the server answers for
+  `SessionStart`, `UserPromptSubmit` and `PostToolUse` as
+  `hookSpecificOutput.additionalContext`: rules, steers
+  (`POST /api/agents/:id/steer`) and an agent's outcome, each told once.
+  It still never fails a hook.
+- **Story**: `GET /api/agents/:id/story` reads an agent's turns as
+  chapters of grouped steps, with its tokens (from the transcript's
+  `usage`) and what ChloeCtx put in its context (`chloectx receipts
+  --json`), déjà vus marked.
+- **Away**: `POST /api/seen` and `GET /api/digest` tell what happened since
+  you last looked: outcomes done, questions decided and open, what was
+  learned, a line per agent, and the moments of decisions to replay.
+
+SPEC.md, "The levels' backend as built", has the JSON shapes.
 
 ## Tests
 

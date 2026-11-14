@@ -13,7 +13,11 @@ use serde_json::{json, Value};
 const BIN: &str = env!("CARGO_BIN_EXE_chloedb-workbench");
 const TOKEN: &str = "test-token-0123456789";
 
-/// The fake Claude Code. Its hooks are the ones the settings file names.
+/// The fake Claude Code. Its hooks are the ones the settings file names;
+/// each payload carries `transcript_path`, a transcript it writes as
+/// Claude Code does (a JSONL line per entry, the assistant's with `usage`)
+/// next to its settings, and what a hook prints is kept in `hook-out.log`
+/// there.
 const FAKE: &str = r#"#!/bin/bash
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -28,23 +32,31 @@ while [ $# -gt 0 ]; do
     *) TASK="$1"; shift;;
   esac
 done
+SDIR=$(dirname "$SETTINGS")
+TR="$SDIR/transcript.jsonl"
+N=0
 echo "FAKE CLAUDE sid=$SID model=$MODEL agent=$CHLOEDB_WORKBENCH_AGENT"
 echo "TASK: $TASK"
 echo "CWD: $(pwd)"
-# Its transcript, beside its settings: an assistant line with usage per
-# turn, and the error of each FAIL turn. Every hook payload names it.
-TR="$(dirname "$SETTINGS")/transcript.jsonl"
-N=0
 hook() {
-  local cmd
+  local cmd out
   cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"][sys.argv[2]][0]["hooks"][0]["command"])' "$SETTINGS" "$1")
-  printf '%s' "$2" | sed "s|\"session_id\":|\"transcript_path\":\"$TR\",\"session_id\":|" | eval "$cmd"
+  out=$(printf '%s' "{\"transcript_path\":\"$TR\",${2#\{}" | eval "$cmd")
+  [ -n "$out" ] && printf '%s\n' "$out" >> "$SDIR/hook-out.log"
+  return 0
 }
+# A transcript entry, with its time.
+tr() {
+  python3 -c 'import json,sys,datetime; e=json.loads(sys.argv[2]); e["timestamp"]=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z"); open(sys.argv[1],"a").write(json.dumps(e)+"\n")' "$TR" "$1"
+}
+USAGE='{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}'
 hook SessionStart '{"hook_event_name":"SessionStart","source":"startup","session_id":"'"$SID"'"}'
 turn() {
   N=$((N+1))
+  tr '{"type":"user","message":{"role":"user","content":"'"$1"'"}}'
   hook UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"'"$1"'","session_id":"'"$SID"'"}'
-  printf '%s\n' '{"type":"assistant","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'","message":{"id":"msg_'"$N"'","role":"assistant","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}}}' >> "$TR"
+  tr '{"type":"assistant","message":{"id":"m'"$N"'a","role":"assistant","usage":'"$USAGE"',"content":[{"type":"text","text":"Working on **'"$1"'**. Then more."}]}}'
+  tr '{"type":"assistant","message":{"id":"m'"$N"'a","role":"assistant","usage":'"$USAGE"',"content":[{"type":"tool_use","id":"t'"$N"'","name":"Bash","input":{"command":"echo hi"}}]}}'
   hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"session_id":"'"$SID"'"}'
   case "$1" in
     READ\ *)
@@ -57,7 +69,7 @@ turn() {
       # the error in the transcript.
       local id="tu_fail_$N"
       hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"'"$id"'","tool_input":{"command":"cargo test -p calc"},"session_id":"'"$SID"'"}'
-      printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"'"$id"'","is_error":true,"content":"'"${1#FAIL }"'"}]}}' >> "$TR";;
+      tr '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"'"$id"'","is_error":true,"content":"'"${1#FAIL }"'"}]}}';;
     WRITE\ *)
       # WRITE <file> <text>: a line written with the Edit tool.
       local rest="${1#WRITE }"; local file="${rest%% *}"; local text="${rest#* }"
@@ -71,7 +83,9 @@ turn() {
       read -r answer
       echo "ANSWER: $answer";;
   esac
-  hook PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"session_id":"'"$SID"'"}'
+  tr '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t'"$N"'","content":"hi"}]}}'
+  hook PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"hi"},"session_id":"'"$SID"'"}'
+  tr '{"type":"assistant","message":{"id":"m'"$N"'b","role":"assistant","usage":'"$USAGE"',"content":[{"type":"text","text":"Finished '"$1"'. All good."}]}}'
   echo "DONE: $1"
   hook Stop '{"hook_event_name":"Stop","session_id":"'"$SID"'"}'
 }
@@ -671,7 +685,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -1046,11 +1060,457 @@ fn why_without_chloectx_answers_from_git_and_workbench() {
     assert_eq!(http().get(format!("{}/api/why?agent={id}&path=calc.py&line=1", s.url)).call().unwrap().status().as_u16(), 401);
 }
 
-// The levels: Map, Preview, Flow.
+// The levels: narration, story, goals and outcomes, questions and rules,
+// delivery, steer and the digest.
+
+impl Server {
+    fn patch(&self, path: &str, body: Value) -> (u16, Value) {
+        let mut r = http().patch(format!("{}{path}", self.url)).header("authorization", format!("Bearer {TOKEN}")).send_json(body).unwrap();
+        let status = r.status().as_u16();
+        (status, r.body_mut().read_json().unwrap_or(Value::Null))
+    }
+
+    /// What an agent's hooks printed (the fake keeps it), one JSON a line.
+    fn hook_out(&self, id: &str) -> Vec<Value> {
+        let p = self.data.join("sessions").join(id).join("hook-out.log");
+        std::fs::read_to_string(p).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect()
+    }
+
+    /// Polls a GET until `f` of its answer holds.
+    fn get_until(&self, path: &str, what: &str, f: impl Fn(&Value) -> bool) -> Value {
+        let end = Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, v) = self.get(path);
+            if status == 200 && f(&v) {
+                return v;
+            }
+            assert!(Instant::now() < end, "{path}: {what} never held: {v}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
 
 fn now_s() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }
+
+fn contexts(outs: &[Value], event: &str) -> Vec<String> {
+    outs.iter().filter(|o| o["hookSpecificOutput"]["hookEventName"] == event).map(|o| o["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn narration_and_the_story_come_from_the_transcript_and_receipts() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    // The sentence of the transcript's last assistant text.
+    let a = s.until(&id, "narrated", |a| a["narration"] == "Finished say hi.");
+    assert!(a["narration_ts"].is_string(), "{a}");
+    let sid = a["session_id"].as_str().unwrap().to_string();
+
+    let now = now_s();
+    std::fs::write(
+        ctx.path().join("receipts.json"),
+        json!({ "text": "", "receipts": [
+            { "id": "rc-2", "ts": now, "session": sid, "turn": 1, "source": "prompt", "rows": [
+                { "id": "old0000:31", "kind": "decision", "tag": "", "score": 0.91, "decision": "take", "text": "Money is i64 cents" },
+                { "id": "fix0000:4", "kind": "error", "tag": "fix", "score": 0.84, "decision": "take", "text": "Batch workers must claim with a row lock" }
+            ]},
+            { "id": "rc-1", "ts": now - 5, "session": sid, "turn": 1, "source": "briefing", "rows": [
+                { "id": "old0000:31", "kind": "decision", "tag": "", "score": 0.5, "decision": "briefing", "text": "Money is i64 cents" }
+            ]}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(ctx.path().join("sql.json"), json!({ "text": "", "columns": ["id", "ts", "session"], "rows": [["fix0000:4", now - 86400, "another-session"]], "count": 1 }).to_string()).unwrap();
+
+    let (status, st) = s.get(&format!("/api/agents/{id}/story"));
+    assert_eq!(status, 200, "{st}");
+    assert_eq!(args_of(ctx.path(), "receipts"), [r.to_str().unwrap(), "receipts", "--session", sid.as_str(), "--limit", "500", "--json"]);
+    assert_eq!(st["agent"]["id"], json!(id));
+    assert_eq!(st["intent"], "say hi");
+    let ch = st["chapters"].as_array().unwrap();
+    assert_eq!(ch.len(), 1, "{st}");
+    assert_eq!(ch[0]["turn"], 1);
+    assert_eq!(ch[0]["prompt"], json!({ "text": "say hi", "by": "you" }));
+    assert_eq!(ch[0]["title"], "say hi");
+    assert_eq!(ch[0]["summary"], "Finished say hi. All good.");
+    assert_eq!(ch[0]["state"], "done");
+    assert!(ch[0]["ended_ms"].as_i64().unwrap() >= ch[0]["started_ms"].as_i64().unwrap());
+    let steps = ch[0]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{st}");
+    assert_eq!((steps[0]["kind"].as_str(), steps[0]["label"].as_str(), steps[0]["count"].as_i64(), steps[0]["failed"].as_i64()), (Some("run"), Some("Ran echo hi"), Some(1), Some(0)));
+    assert_eq!(steps[0]["events"].as_array().unwrap().len(), 2);
+    // Each message's usage once: m1a (two lines) and m1b.
+    assert_eq!(st["tokens"], json!({ "input": 20, "output": 10, "cache_read": 200 }));
+    // What it knew, each record once, where it was first shown.
+    let knew = st["knew"].as_array().unwrap();
+    assert_eq!(knew.len(), 2, "{st}");
+    assert_eq!((knew[0]["id"].as_str(), knew[0]["receipt"].as_str(), knew[0]["deja_vu"].as_bool()), (Some("old0000:31"), Some("rc-1"), Some(false)));
+    assert_eq!((knew[1]["kind"].as_str(), knew[1]["turn"].as_i64(), knew[1]["deja_vu"].as_bool()), (Some("fix"), Some(1), Some(true)));
+    let dv = &st["deja_vu"][0];
+    assert_eq!(dv["record"], "fix0000:4");
+    assert_eq!(dv["text"], "Batch workers must claim with a row lock");
+    assert!(dv["when"].as_str().unwrap().contains('T'), "{dv}");
+    assert_eq!(dv["shown_ms"], json!(now * 1000));
+
+    // A second turn, with an edit: a second chapter, and the tokens add up.
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "WRITE notes.txt hello" }));
+    s.wait(&id, "idle");
+    s.until(&id, "narrated again", |a| a["narration"] == "Finished WRITE notes.txt hello.");
+    let (_, st) = s.get(&format!("/api/agents/{id}/story"));
+    let ch = st["chapters"].as_array().unwrap();
+    assert_eq!(ch.len(), 2, "{st}");
+    let kinds: Vec<&str> = ch[1]["steps"].as_array().unwrap().iter().map(|x| x["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["run", "edit"], "{st}");
+    assert_eq!(ch[1]["steps"][1]["label"], "Edited notes.txt");
+    assert_eq!(st["tokens"], json!({ "input": 40, "output": 20, "cache_read": 400 }));
+    assert_eq!(s.get("/api/agents/a00000000/story").0, 404);
+}
+
+#[test]
+fn a_goal_is_planned_by_a_lead_and_outcomes_follow_their_agents() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let now = now_s();
+    std::fs::write(
+        ctx.path().join("sql.json"),
+        json!({ "text": "", "columns": ["id", "kind", "tag", "ts", "session", "text", "files"], "rows": [
+            ["abc00000:1", "decision", "", now, "s1", "Refunds key on (merchant, client_ref)", "src/refunds.rs"],
+            ["abc00000:2", "error", "fix", now, "s1", "cargo test failed: claim twice; fixed with a row lock", ""]
+        ], "count": 2 })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (status, g) = s.post("/api/goals", json!({ "repo": r, "text": "Make refunds idempotent", "plan": true, "worktree": false }));
+    assert_eq!(status, 201, "{g}");
+    let gid = g["goal"]["id"].as_str().unwrap().to_string();
+    assert!(gid.starts_with('g') && gid.len() == 9, "{g}");
+    assert_eq!(g["goal"]["state"], "active");
+    let lead = &g["lead"];
+    let lead_id = lead["id"].as_str().unwrap().to_string();
+    assert_eq!(lead["name"], "lead");
+    assert_eq!(lead["goal"], json!(gid));
+    let task = lead["task"].as_str().unwrap();
+    assert!(task.contains("Make refunds idempotent") && task.contains("add_outcome") && task.contains("ask_human") && task.contains("spawn_agent"), "{task}");
+    s.wait(&lead_id, "idle");
+
+    // The lead adds outcomes and starts an agent for one.
+    let mut m = Mcp::start(&s, &lead_id);
+    let (text, err) = m.tool("add_outcome", json!({ "title": "Refunds keyed by client ref", "detail": "a retried request pays once" }));
+    assert!(!err && text.starts_with("Added outcome o"), "{text}");
+    let (_, os) = s.get(&format!("/api/outcomes?goal={gid}"));
+    let o1 = os["outcomes"][0]["id"].as_str().unwrap().to_string();
+    let (text, err) = m.tool("add_outcome", json!({ "title": "Batch refunds keyed too", "after": o1 }));
+    assert!(!err, "{text}");
+    let (_, os) = s.get(&format!("/api/outcomes?goal={gid}"));
+    let o2 = os["outcomes"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(os["outcomes"][1]["after"], json!(o1));
+    assert_eq!(os["outcomes"][1]["state"], "next");
+    let (text, err) = m.tool("spawn_agent", json!({ "task": "say hi", "name": "keyed", "outcome": o1 }));
+    assert!(!err, "{text}");
+    let (_, v) = s.get("/api/agents");
+    let child = v["agents"].as_array().unwrap().iter().find(|a| a["name"] == "keyed").unwrap().clone();
+    let cid = child["id"].as_str().unwrap().to_string();
+    assert_eq!((child["goal"].as_str(), child["outcome"].as_str(), child["parent"].as_str()), (Some(gid.as_str()), Some(o1.as_str()), Some(lead_id.as_str())));
+    s.wait(&cid, "idle");
+    // It was told its outcome at its start.
+    let told = contexts(&s.hook_out(&cid), "SessionStart");
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains(&format!("You work on outcome {o1}")) && told[0].contains("Make refunds idempotent") && told[0].contains("update_outcome"), "{told:?}");
+    assert!(s.hook_out(&lead_id).is_empty(), "the lead had nothing to be told");
+
+    let (status, d) = s.get(&format!("/api/goals/{gid}"));
+    assert_eq!(status, 200, "{d}");
+    assert_eq!(d["goal"]["id"], json!(gid));
+    assert_eq!((d["outcomes"][0]["state"].as_str(), d["outcomes"][0]["agent"].as_str(), d["outcomes"][0]["agent_name"].as_str()), (Some("active"), Some(cid.as_str()), Some("keyed")), "{d}");
+    assert_eq!(d["outcomes"][1]["state"], "next");
+    let ids: Vec<&str> = d["agents"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [lead_id.as_str(), cid.as_str()]);
+    assert_eq!(d["open_questions"], 0);
+    assert_eq!(d["heads_up"], json!([]));
+    let learned = d["learned"].as_array().unwrap();
+    assert_eq!(learned.len(), 2, "{d}");
+    assert_eq!((learned[0]["kind"].as_str(), learned[1]["kind"].as_str()), (Some("decision"), Some("fix")));
+    assert!(args_of(ctx.path(), "sql")[3].contains("tag = 'fix'"));
+    let pulse = d["pulse"].as_array().unwrap();
+    assert_eq!(pulse.len(), 60);
+    assert!(pulse.iter().map(|p| p[1].as_i64().unwrap()).sum::<i64>() >= 10, "{pulse:?}");
+    assert!(pulse.windows(2).all(|w| w[1][0].as_i64().unwrap() - w[0][0].as_i64().unwrap() == 60_000));
+
+    // Marked done, it stays done after its agent ends.
+    let (text, err) = m.tool("update_outcome", json!({ "id": o1, "progress": 100, "state": "done" }));
+    assert!(!err && text.contains("[done]"), "{text}");
+    s.post(&format!("/api/agents/{cid}/input"), json!({ "text": "exit" }));
+    s.until(&cid, "exited", |a| a["running"] == false);
+    // An outcome whose agent ended without finishing needs you.
+    let (text, err) = m.tool("spawn_agent", json!({ "task": "say hi", "name": "batch", "outcome": o2 }));
+    assert!(!err, "{text}");
+    let (_, v) = s.get("/api/agents");
+    let bid = v["agents"].as_array().unwrap().iter().find(|a| a["name"] == "batch").unwrap()["id"].as_str().unwrap().to_string();
+    s.wait(&bid, "idle");
+    s.post(&format!("/api/agents/{bid}/input"), json!({ "text": "exit" }));
+    s.until(&bid, "exited", |a| a["running"] == false);
+    let (_, d) = s.get(&format!("/api/goals/{gid}"));
+    assert_eq!((d["outcomes"][0]["state"].as_str(), d["outcomes"][0]["progress"].as_i64()), (Some("done"), Some(100)), "{d}");
+    assert_eq!(d["outcomes"][1]["state"], "needs_you", "{d}");
+    let (_, list) = s.get(&format!("/api/goals?repo={}", r.display()));
+    assert_eq!(list["goals"][0]["id"], json!(gid));
+    assert_eq!((list["goals"][0]["outcomes_total"].as_i64(), list["goals"][0]["outcomes_done"].as_i64()), (Some(2), Some(1)));
+    // The user's own outcome edits and the goal's state.
+    let (status, o) = s.patch(&format!("/api/outcomes/{o2}"), json!({ "state": "dropped" }));
+    assert_eq!((status, o["outcome"]["state"].as_str()), (200, Some("dropped")), "{o}");
+    let (status, g) = s.patch(&format!("/api/goals/{gid}"), json!({ "state": "done" }));
+    assert_eq!((status, g["goal"]["state"].as_str()), (200, Some("done")), "{g}");
+    assert!(g["goal"]["done"].is_string());
+    // Bad requests.
+    assert_eq!(s.post("/api/agents", json!({ "repo": r, "worktree": false, "outcome": "o00000000" })).0, 400);
+    assert_eq!(s.post("/api/goals", json!({ "repo": r, "text": " " })).0, 400);
+    assert_eq!(s.patch(&format!("/api/outcomes/{o2}"), json!({ "state": "bogus" })).0, 400);
+    assert_eq!(s.get("/api/goals/g00000000").0, 404);
+    let (status, _) = s.post("/api/goals", json!({ "repo": r, "text": "no lead" }));
+    assert_eq!(status, 201);
+}
+
+#[test]
+fn ask_human_waits_for_the_answer_and_a_rule_is_told_and_answers_again() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    std::fs::write(ctx.path().join("ask.json"), json!({ "text": "- [decision] Totals round half up, in cents (abc00000:9)\n", "ids": ["abc00000:9"], "ms": 3 }).to_string()).unwrap();
+    std::fs::write(ctx.path().join("remember.json"), "Stored decision as abc12345:7.\n").unwrap();
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "asker", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.until(&id, "started", |a| a["state"] == "working");
+
+    let question = "Round totals half up or half even?";
+    let mut m = Mcp::start(&s, &id);
+    let ask = json!({ "question": question, "options": [{ "label": "Round half up", "detail": "what the ledger does" }, { "label": "Round half even" }], "recommended": 0, "context": "two call sites disagree" });
+    let asking = std::thread::spawn(move || {
+        let out = m.tool("ask_human", ask);
+        (out, m)
+    });
+    let v = s.get_until(&format!("/api/questions?state=open&agent={id}"), "a question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let q = v["questions"][0].clone();
+    let qid = q["id"].as_str().unwrap().to_string();
+    assert_eq!((q["kind"].as_str(), q["text"].as_str(), q["recommended"].as_i64(), q["agent_name"].as_str()), (Some("ask"), Some(question), Some(0), Some("asker")), "{q}");
+    assert_eq!(q["context"], "two call sites disagree");
+    assert_eq!(q["repo"], json!(r));
+    let a = s.agent(&id);
+    assert_eq!((a["state"].as_str(), a["waiting_for"].as_str(), a["narration"].as_str()), (Some("waiting"), Some(question), Some(question)), "{a}");
+    assert!(kinds(&s.events(&id)).contains(&"question".to_string()));
+    // Precedent: what ChloeCtx found, and the option it speaks for.
+    let v = s.get_until(&format!("/api/questions/{qid}"), "precedent", |v| v["question"]["precedent"].is_object());
+    let q = &v["question"];
+    assert_eq!(q["precedent"]["ids"], json!(["abc00000:9"]));
+    assert_eq!((q["options"][0]["matches_precedent"].as_bool(), q["options"][1]["matches_precedent"].as_bool()), (Some(true), Some(false)), "{q}");
+    assert_eq!(args_of(ctx.path(), "ask")[1..], ["ask", "--json", "--", question]);
+    let (_, v) = s.get(&format!("/api/questions?repo={}", r.display()));
+    assert_eq!(v["questions"].as_array().unwrap().len(), 1);
+    // An open question's wait times out unanswered.
+    let (_, w) = s.get(&format!("/api/questions/{qid}/wait?timeout_s=0.2"));
+    assert_eq!(w["answered"], false);
+
+    // The answer, made a rule.
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0, "text": "cents first", "rule": "Totals round half up" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!((v["question"]["state"].as_str(), v["question"]["answered_by"].as_str(), v["question"]["answer"].as_str()), (Some("answered"), Some("you"), Some("Round half up\ncents first")));
+    assert_eq!(v["rule"]["ctx_id"], "abc12345:7", "{v}");
+    assert_eq!(v["rule"]["question"], json!(qid));
+    assert_eq!(args_of(ctx.path(), "remember"), [r.to_str().unwrap(), "remember", "decision", "Totals round half up"]);
+    let ((text, err), mut m) = asking.join().unwrap();
+    assert!(!err, "{text}");
+    assert!(text.starts_with("The user answered: Round half up\ncents first") && text.contains("made this a rule"), "{text}");
+    assert_eq!(s.agent(&id)["state"], "working");
+    assert_eq!(s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 1 })).0, 409);
+
+    // The rule is told once, at the agent's next hook that can carry it.
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "go on" }));
+    s.wait(&id, "idle");
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "and again" }));
+    s.wait(&id, "idle");
+    let outs = s.hook_out(&id);
+    let told = contexts(&outs, "UserPromptSubmit");
+    assert_eq!(told.len(), 1, "{outs:?}");
+    assert!(told[0].contains("Rules the user set for this repository") && told[0].contains("- Totals round half up"), "{told:?}");
+    assert_eq!(outs.len(), 1, "told once: {outs:?}");
+    // Another agent of the repository is told at its start.
+    let b = s.spawn(json!({ "repo": r, "name": "other", "worktree": false }));
+    let bid = b["id"].as_str().unwrap().to_string();
+    s.until(&bid, "started", |a| a["state"] == "working");
+    let end = Instant::now() + Duration::from_secs(10);
+    while s.hook_out(&bid).is_empty() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(contexts(&s.hook_out(&bid), "SessionStart")[0].contains("Totals round half up"));
+
+    // The same question again: the rule answers it at once.
+    let (text, err) = m.tool("ask_human", json!({ "question": "Round totals half up or half even?", "options": ["Round half up", "Round half even"] }));
+    assert!(!err, "{text}");
+    let (_, rules) = s.get(&format!("/api/rules?repo={}", r.display()));
+    let rid = rules["rules"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(rules["rules"][0]["active"], true);
+    assert!(text.starts_with(&format!("A rule the user set ({rid}) answers it: Round half up")), "{text}");
+    let (_, v) = s.get(&format!("/api/questions?agent={id}"));
+    let by: Vec<&str> = v["questions"].as_array().unwrap().iter().map(|q| q["answered_by"].as_str().unwrap()).collect();
+    assert!(by.contains(&format!("rule:{rid}").as_str()) && by.contains(&"you"), "{by:?}");
+    // A rule turned off is told no more.
+    let (status, v) = s.patch(&format!("/api/rules/{rid}"), json!({ "active": false }));
+    assert_eq!((status, v["rule"]["active"].as_bool()), (200, Some(false)));
+    let (_, rules) = s.get(&format!("/api/rules?repo={}", r.display()));
+    assert_eq!(rules["rules"][0]["active"], false);
+    // Bad requests.
+    assert_eq!(s.post("/api/questions", json!({ "question": "who?" })).0, 400);
+    let (status, _) = s.post("/api/questions", json!({ "agent": "a00000000", "question": "who?" }));
+    assert_eq!(status, 404);
+    assert_eq!(s.post(&format!("/api/questions/{qid}/answer"), json!({})).0, 409);
+    let (status, v) = s.post("/api/rules", json!({ "repo": r, "text": "Never float money" }));
+    assert_eq!((status, v["rule"]["active"].as_bool()), (201, Some(true)), "{v}");
+}
+
+#[test]
+fn permission_prompts_are_questions_and_steers_reach_the_agent() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "ASK first", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "waiting");
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a permission question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let q = &v["questions"][0];
+    let qid = q["id"].as_str().unwrap().to_string();
+    assert_eq!((q["kind"].as_str(), q["text"].as_str(), q["context"].as_str()), (Some("permission"), Some("Claude needs your permission to use Bash"), Some("Bash: echo hi")), "{q}");
+    let labels: Vec<&str> = q["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Yes", "Yes, and don't ask again", "No"]);
+    assert_eq!(s.agent(&id)["narration"], "Claude needs your permission to use Bash");
+
+    // A steer while it waits rides its next PostToolUse.
+    let (status, v) = s.post(&format!("/api/agents/{id}/steer"), json!({ "text": "also check the docs" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["delivered"], "queued");
+    // A permission question is answered by typing the option's number.
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0 }));
+    assert_eq!(status, 200, "{v}");
+    s.wait(&id, "idle");
+    ws_read_until(&s, &id, "ANSWER: 1", &[]);
+    let (_, v) = s.get(&format!("/api/questions/{qid}"));
+    assert_eq!((v["question"]["state"].as_str(), v["question"]["answered_by"].as_str(), v["question"]["answer"].as_str()), (Some("answered"), Some("you"), Some("Yes")));
+    let told = contexts(&s.hook_out(&id), "PostToolUse");
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("The user adds: also check the docs"), "{told:?}");
+
+    // A steer to an idle agent is typed in: a new turn.
+    let (_, v) = s.post(&format!("/api/agents/{id}/steer"), json!({ "text": "look at the README too" }));
+    assert_eq!(v["delivered"], "typed", "{v}");
+    ws_read_until(&s, &id, "DONE: look at the README too", &[]);
+    s.wait(&id, "idle");
+    assert_eq!(contexts(&s.hook_out(&id), "PostToolUse").len(), 1, "a typed steer is not told again");
+    let k = kinds(&s.events(&id));
+    assert_eq!(k.iter().filter(|k| *k == "steer").count(), 2, "{k:?}");
+
+    // Answered in the terminal instead.
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "ASK again" }));
+    s.wait(&id, "waiting");
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a second question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let q2 = v["questions"][0]["id"].as_str().unwrap().to_string();
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "yes" }));
+    s.wait(&id, "idle");
+    let (_, v) = s.get(&format!("/api/questions/{q2}"));
+    assert_eq!((v["question"]["state"].as_str(), v["question"]["answered_by"].as_str()), (Some("answered"), Some("terminal")), "{v}");
+    // A steer to nobody, or of nothing.
+    assert_eq!(s.post("/api/agents/a00000000/steer", json!({ "text": "x" })).0, 404);
+    assert_eq!(s.post(&format!("/api/agents/{id}/steer"), json!({ "text": " " })).0, 400);
+    // Without ChloeCtx the precedent says so.
+    let (_, v) = s.get(&format!("/api/questions/{qid}"));
+    assert!(v["question"]["precedent"]["missing"][0].as_str().unwrap().contains("not installed"), "{v}");
+    // An exited agent's open question expires.
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "ASK once more" }));
+    s.wait(&id, "waiting");
+    s.get_until(&format!("/api/questions?agent={id}&state=open"), "a third question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    s.post(&format!("/api/agents/{id}/stop"), json!({}));
+    s.until(&id, "stopped", |a| a["running"] == false);
+    let (_, v) = s.get(&format!("/api/questions?agent={id}&state=expired"));
+    assert_eq!(v["questions"].as_array().unwrap().len(), 1, "{v}");
+}
+
+#[test]
+fn the_digest_tells_what_happened_since_you_last_looked() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let (status, v) = s.post("/api/seen", json!({}));
+    assert_eq!(status, 200, "{v}");
+    let seen = v["last_seen_ms"].as_i64().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+
+    // One agent asks and is answered (and a rule is made); one is left waiting.
+    let a = s.spawn(json!({ "repo": r, "name": "decided", "task": "ASK first", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "waiting");
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let qid = v["questions"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0, "rule": "Bash may echo" }));
+    assert_eq!(status, 200);
+    s.wait(&id, "idle");
+    let b = s.spawn(json!({ "repo": r, "name": "stuck", "task": "ASK first", "worktree": false }));
+    let bid = b["id"].as_str().unwrap().to_string();
+    s.wait(&bid, "waiting");
+    s.get_until(&format!("/api/questions?agent={bid}&state=open"), "a question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let sid = s.agent(&id)["session_id"].as_str().unwrap().to_string();
+    std::fs::write(
+        ctx.path().join("sql.json"),
+        json!({ "text": "", "columns": ["id", "kind", "tag", "ts", "session", "text", "files"], "rows": [[ "abc00000:3", "decision", "", now_s(), sid, "Echo is safe here", "" ]], "count": 1 }).to_string(),
+    )
+    .unwrap();
+
+    // Since you last looked (the default).
+    let (status, d) = s.get("/api/digest");
+    assert_eq!(status, 200, "{d}");
+    assert_eq!(d["since_ms"], json!(seen));
+    assert!(d["until_ms"].as_i64().unwrap() >= seen);
+    assert_eq!(d["tiles"], json!({ "done": 0, "decided": 1, "waiting": 1, "learned": 1 }), "{d}");
+    assert_eq!(d["decided_by"]["you"], 1);
+    assert_eq!(d["happened"], true);
+    assert_eq!(d["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(d["rules"][0]["text"], "Bash may echo");
+    assert_eq!(d["learned"][0]["agent"]["id"], json!(id), "{d}");
+    let qs: Vec<&str> = d["questions"].as_array().unwrap().iter().map(|q| q["state"].as_str().unwrap()).collect();
+    assert_eq!(qs, ["open", "answered"]);
+    let story = d["story"].as_array().unwrap();
+    assert_eq!(story.len(), 2, "{d}");
+    let line_of = |aid: &str| story.iter().find(|l| l["agent"]["id"] == json!(aid)).unwrap().clone();
+    let l = line_of(&id);
+    assert!(l["text"].as_str().unwrap().contains("worked on “ASK first”"), "{l}");
+    assert!(l["chips"].as_array().unwrap().iter().any(|c| c["kind"] == "decided" && c["text"] == "Yes"), "{l}");
+    let l = line_of(&bid);
+    assert!(l["text"].as_str().unwrap().contains("is waiting on you"), "{l}");
+    assert!(l["chips"].as_array().unwrap().iter().any(|c| c["kind"] == "waiting"), "{l}");
+    // The moments of decisions, in the agents' recordings.
+    let replay = d["replay"].as_array().unwrap();
+    assert_eq!(replay.len(), 2, "{d}");
+    assert!(replay.iter().all(|x| x["agent"] == json!(id) && x["to_ms"].as_i64().unwrap() > x["from_ms"].as_i64().unwrap()), "{d}");
+    assert!(replay.iter().any(|x| x["label"].as_str().unwrap().contains("Echo is safe here")), "{d}");
+
+    // Seen now: nothing has happened since.
+    s.post("/api/seen", json!({}));
+    let (_, d) = s.get("/api/digest");
+    assert_eq!(d["tiles"]["decided"], 0, "{d}");
+    assert_eq!(d["tiles"]["waiting"], 1, "still waiting: {d}");
+    // An explicit since.
+    let (_, d) = s.get(&format!("/api/digest?since={seen}&repo={}", r.display()));
+    assert_eq!(d["tiles"]["decided"], 1);
+}
+
+// The levels: Map, Preview, Flow.
 
 fn find<'a>(list: &'a Value, key: &str, want: &str) -> &'a Value {
     list.as_array().unwrap().iter().find(|x| x.pointer(key).and_then(Value::as_str) == Some(want)).unwrap_or_else(|| panic!("no {key} = {want} in {list}"))
@@ -1343,8 +1803,8 @@ fn flow_shows_where_time_went_and_applies_an_allow() {
     }
     let segs = ag["segments"].as_array().unwrap();
     assert!(segs.windows(2).all(|p| p[0][1].as_i64() <= p[1][0].as_i64()), "{ag}");
-    // Ten turns of the fake's usage.
-    assert_eq!(f["tokens"], json!({ "input": 100, "output": 50, "cache_read": 1000 }));
+    // Ten turns of the fake's usage, two assistant messages a turn.
+    assert_eq!(f["tokens"], json!({ "input": 200, "output": 100, "cache_read": 2000 }));
     assert_eq!(ag["tokens"], f["tokens"]);
 
     // The coach.

@@ -35,13 +35,17 @@ const AGENTS: &str = "CREATE TABLE IF NOT EXISTS agents (
   ended TIMESTAMP,
   base KEYWORD,
   started_ms INT,
-  preview_url KEYWORD
+  preview_url KEYWORD,
+  goal KEYWORD,
+  outcome KEYWORD,
+  narration TEXT,
+  narration_ts TIMESTAMP
 )";
 
 /// The columns the decision trail added, for a database made before them.
 const AGENTS_ADDED: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS base KEYWORD, ADD COLUMN IF NOT EXISTS started_ms INT";
 /// The columns the levels added (Preview), for a database made before them.
-const AGENTS_ADDED_LEVELS: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preview_url KEYWORD";
+const AGENTS_ADDED_PREVIEW: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preview_url KEYWORD";
 
 /// Small key/value state: allow-lists, applied suggestions.
 const MARKS: &str = "CREATE TABLE IF NOT EXISTS marks (
@@ -49,6 +53,22 @@ const MARKS: &str = "CREATE TABLE IF NOT EXISTS marks (
   value TEXT,
   ts TIMESTAMP
 )";
+
+/// The columns the levels added (goal, outcome, narration).
+const AGENTS_ADDED_LEVELS: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS goal KEYWORD, ADD COLUMN IF NOT EXISTS outcome KEYWORD, ADD COLUMN IF NOT EXISTS narration TEXT, ADD COLUMN IF NOT EXISTS narration_ts TIMESTAMP";
+
+/// The levels' tables (SPEC.md, "Levels"): goals and their outcomes,
+/// questions to you and the rules made from your answers, what each agent
+/// has been told, and `seen` (small key/value state by `id`: `last_seen`;
+/// `key` is a reserved word of ChloeDB's SQL).
+const LEVEL_TABLES: [&str; 6] = [
+    "CREATE TABLE IF NOT EXISTS goals (id KEYWORD PRIMARY KEY, repo KEYWORD, text TEXT, state KEYWORD, lead KEYWORD, created TIMESTAMP, done TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS outcomes (id KEYWORD PRIMARY KEY, goal KEYWORD, title TEXT, detail TEXT, state KEYWORD, agent KEYWORD, ord INT, after KEYWORD, progress INT, created TIMESTAMP, updated TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS questions (id KEYWORD PRIMARY KEY, agent KEYWORD, outcome KEYWORD, repo KEYWORD, kind KEYWORD, text TEXT, context TEXT, options TEXT, recommended INT, precedent TEXT, state KEYWORD, answer TEXT, answered_by KEYWORD, rule KEYWORD, created TIMESTAMP, answered TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS rules (id KEYWORD PRIMARY KEY, repo KEYWORD, text TEXT, question KEYWORD, ctx_id KEYWORD, active BOOL, created TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS deliveries (id KEYWORD PRIMARY KEY, agent KEYWORD, item KEYWORD, via KEYWORD, ts TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS seen (id KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP)",
+];
 
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
@@ -61,7 +81,7 @@ const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   data TEXT
 )";
 
-const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended, base, started_ms, preview_url";
+const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended, base, started_ms, preview_url, goal, outcome, narration, narration_ts";
 const EVENT_COLS: &str = "id, seq, ts, agent, kind, tool, summary, data";
 
 /// Milliseconds since the Unix epoch.
@@ -103,6 +123,12 @@ pub struct Agent {
     /// Where its app runs (Preview): `http://127.0.0.1:<port>` or
     /// `http://localhost:<port>`.
     pub preview_url: Option<String>,
+    /// The goal it works toward, and its outcome (SPEC.md, "Levels").
+    pub goal: Option<String>,
+    pub outcome: Option<String>,
+    /// One live sentence of what it does, and when it was set (ms).
+    pub narration: Option<String>,
+    pub narration_ts: Option<i64>,
 }
 
 impl Agent {
@@ -131,6 +157,10 @@ impl Agent {
             "base": self.base,
             "started_ms": self.started_ms,
             "preview_url": self.preview_url,
+            "goal": self.goal,
+            "outcome": self.outcome,
+            "narration": self.narration,
+            "narration_ts": self.narration_ts.map(iso),
             "running": running,
             "children": children,
         })
@@ -176,19 +206,19 @@ fn e(err: chloedb::Error) -> String {
     err.to_string()
 }
 
-fn opt_str(v: &Option<String>) -> Value {
+pub fn opt_str(v: &Option<String>) -> Value {
     v.as_ref().map_or(Value::Null, |s| Value::Str(s.clone()))
 }
 
-fn opt_int(v: Option<i64>) -> Value {
+pub fn opt_int(v: Option<i64>) -> Value {
     v.map_or(Value::Null, Value::Int)
 }
 
-fn ts(ms: i64) -> Value {
+pub fn ts(ms: i64) -> Value {
     Value::Timestamp(ms * 1000)
 }
 
-fn get_str(v: &Value) -> Option<String> {
+pub fn get_str(v: &Value) -> Option<String> {
     match v {
         Value::Null => None,
         Value::Str(s) => Some(s.clone()),
@@ -198,7 +228,7 @@ fn get_str(v: &Value) -> Option<String> {
     }
 }
 
-fn get_int(v: &Value) -> Option<i64> {
+pub fn get_int(v: &Value) -> Option<i64> {
     match v {
         Value::Int(i) => Some(*i),
         Value::Timestamp(t) => Some(*t),
@@ -208,7 +238,7 @@ fn get_int(v: &Value) -> Option<i64> {
     }
 }
 
-fn get_ms(v: &Value) -> Option<i64> {
+pub fn get_ms(v: &Value) -> Option<i64> {
     match v {
         Value::Timestamp(t) => Some(t.div_euclid(1000)),
         Value::Int(t) => Some(t.div_euclid(1000)),
@@ -232,12 +262,21 @@ impl StateDb {
         db.sql(AGENTS, &Params::new()).map_err(e)?;
         db.sql(AGENTS_ADDED, &Params::new()).map_err(e)?;
         db.sql(AGENTS_ADDED_LEVELS, &Params::new()).map_err(e)?;
+        db.sql(AGENTS_ADDED_PREVIEW, &Params::new()).map_err(e)?;
         db.sql(MARKS, &Params::new()).map_err(e)?;
+        for t in LEVEL_TABLES {
+            db.sql(t, &Params::new()).map_err(e)?;
+        }
         db.sql(EVENTS, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         Ok(StateDb { db })
+    }
+
+    /// Runs a statement of the levels' tables: its rows, or none for a write.
+    pub fn query(&self, sql: &str, params: &Params) -> Result<Vec<Vec<Value>>> {
+        self.rows(sql, params)
     }
 
     fn rows(&self, sql: &str, params: &Params) -> Result<Vec<Vec<Value>>> {
@@ -270,7 +309,11 @@ impl StateDb {
             .set("ended", a.ended.map_or(Value::Null, ts))
             .set("base", opt_str(&a.base))
             .set("started_ms", opt_int(a.started_ms))
-            .set("preview_url", opt_str(&a.preview_url));
+            .set("preview_url", opt_str(&a.preview_url))
+            .set("goal", opt_str(&a.goal))
+            .set("outcome", opt_str(&a.outcome))
+            .set("narration", opt_str(&a.narration))
+            .set("narration_ts", a.narration_ts.map_or(Value::Null, ts));
         let names: Vec<String> = AGENT_COLS.split(", ").map(|c| format!(":{c}")).collect();
         let sql = format!("INSERT OR REPLACE INTO agents ({AGENT_COLS}) VALUES ({})", names.join(", "));
         self.db.sql(&sql, &p).map_err(e)?;
@@ -304,6 +347,10 @@ impl StateDb {
                 base: r.get(18).and_then(get_str),
                 started_ms: r.get(19).and_then(get_int),
                 preview_url: r.get(20).and_then(get_str),
+                goal: r.get(21).and_then(get_str),
+                outcome: r.get(22).and_then(get_str),
+                narration: r.get(23).and_then(get_str),
+                narration_ts: r.get(24).and_then(get_ms),
             })
             .collect())
     }
@@ -391,6 +438,7 @@ mod tests {
         let s = StateDb::open(dir.path()).unwrap();
         let mut a = s.agents().unwrap().pop().unwrap();
         assert_eq!((a.id.as_str(), a.base.as_deref(), a.started_ms), ("a1", None, None));
+        assert_eq!((a.goal.as_deref(), a.outcome.as_deref(), a.narration.as_deref(), a.narration_ts), (None, None, None, None));
         a.base = Some("abc".into());
         a.started_ms = Some(42);
         a.preview_url = Some("http://127.0.0.1:5173".into());
@@ -405,6 +453,18 @@ mod tests {
         let (v, ts) = s.mark("allow:/r").unwrap().unwrap();
         assert_eq!(v, "[\"Bash(cargo test:*)\"]");
         assert!(ts > 0);
+        a.goal = Some("g1".into());
+        a.outcome = Some("o1".into());
+        a.narration = Some("Editing src/a.rs".into());
+        a.narration_ts = Some(1_700_000_000_000);
+        s.put_agent(&a).unwrap();
+        let b = s.agents().unwrap().pop().unwrap();
+        assert_eq!(b.preview_url.as_deref(), Some("http://127.0.0.1:5173"));
+        assert_eq!((b.goal.as_deref(), b.outcome.as_deref(), b.narration.as_deref(), b.narration_ts), (Some("g1"), Some("o1"), Some("Editing src/a.rs"), Some(1_700_000_000_000)));
+        // The levels' tables are there.
+        for t in ["goals", "outcomes", "questions", "rules", "deliveries", "seen"] {
+            s.query(&format!("SELECT * FROM {t} LIMIT 1"), &Params::new()).unwrap();
+        }
         s.close();
     }
 }

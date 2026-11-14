@@ -12,7 +12,10 @@ use crate::hook::{agent as http_agent, Env};
 
 const PROTOCOL: &str = "2025-06-18";
 
-const INSTRUCTIONS: &str = "Workbench runs Claude Code sessions side by side. spawn_agent starts another agent: a real, interactive Claude Code session in its own terminal and (by default) its own git worktree and branch, which the user watches and can type into. Each one costs tokens like any session, so start one only when the work splits into parts that can go on at once, and give it a task that stands alone: it does not see this conversation, so say what to do, where, how to tell it is done, and what to report. Then wait_agent waits for its turn to finish (or for it to ask something), read_agent reads what it did, send_to_agent answers it, and stop_agent ends it.";
+const INSTRUCTIONS: &str = "Workbench runs Claude Code sessions side by side. spawn_agent starts another agent: a real, interactive Claude Code session in its own terminal and (by default) its own git worktree and branch, which the user watches and can type into. Each one costs tokens like any session, so start one only when the work splits into parts that can go on at once, and give it a task that stands alone: it does not see this conversation, so say what to do, where, how to tell it is done, and what to report. Then wait_agent waits for its turn to finish (or for it to ask something), read_agent reads what it did, send_to_agent answers it, and stop_agent ends it. When only the user can decide something, ask_human asks them in Workbench (a question with options) and waits for the answer: the user does not watch your terminal. A goal's outcomes are kept with add_outcome and update_outcome.";
+
+/// The longest an `ask_human` waits for the answer.
+const ASK_WAIT_S: u64 = 30 * 60;
 
 fn tools() -> Value {
     json!([
@@ -26,7 +29,8 @@ fn tools() -> Value {
                     "name": { "type": "string", "description": "A short name, a-z, 0-9 and -, at most 32; made from the task when left out." },
                     "worktree": { "type": "boolean", "description": "Run in a worktree of its own (default true); false runs it in this repository's checkout." },
                     "model": { "type": "string", "description": "The model, such as sonnet or opus; the default when left out." },
-                    "base": { "type": "string", "description": "What its branch starts from (default: the repository's HEAD)." }
+                    "base": { "type": "string", "description": "What its branch starts from (default: the repository's HEAD)." },
+                    "outcome": { "type": "string", "description": "The id of the outcome (from add_outcome) it works on: it becomes that outcome's agent and is told so." }
                 },
                 "required": ["task"]
             }
@@ -68,6 +72,48 @@ fn tools() -> Value {
             "name": "set_preview",
             "description": "Say where the app you are working on runs (a dev server you started), so that the user sees it in Workbench's Preview and can point at what to change. Only http://127.0.0.1:<port> or http://localhost:<port>; an empty url clears it.",
             "inputSchema": { "type": "object", "properties": { "url": { "type": "string", "description": "Such as http://127.0.0.1:5173" } }, "required": ["url"] }
+        },
+        {
+            "name": "ask_human",
+            "description": "Ask the user a question in Workbench and wait for the answer (up to 30 minutes). Use it when only the user can decide: a choice of behaviour, scope or risk. Give 2 to 4 options and say which you recommend; the user can also answer in words, and may make the answer a rule that every agent of this repository is told from then on. Returns the answer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The question, in one or two sentences the user can answer without reading your terminal." },
+                    "options": { "type": "array", "description": "The choices.", "items": { "type": "object", "properties": { "label": { "type": "string", "description": "A few words." }, "detail": { "type": "string", "description": "What choosing it means." } }, "required": ["label"] } },
+                    "recommended": { "type": "integer", "description": "The index of the option you recommend, from 0." },
+                    "context": { "type": "string", "description": "What the user needs to know to decide: what you found, what each choice costs." }
+                },
+                "required": ["question"]
+            }
+        },
+        {
+            "name": "add_outcome",
+            "description": "Add an outcome to your goal: a result the user can check, worked on by one agent. Returns its id, which spawn_agent takes as outcome.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "What will be true when it is done, in under 10 words." },
+                    "detail": { "type": "string", "description": "How to tell it is done." },
+                    "after": { "type": "string", "description": "The id of an outcome it must wait for." }
+                },
+                "required": ["title"]
+            }
+        },
+        {
+            "name": "update_outcome",
+            "description": "Update an outcome: its progress (0 to 100), its state (done when it checks out, dropped when it no longer makes sense), its title or detail. Without arguments but id, answers your goal's outcomes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "progress": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "state": { "type": "string", "enum": ["next", "active", "needs_you", "done", "dropped"] },
+                    "title": { "type": "string" },
+                    "detail": { "type": "string" }
+                },
+                "required": ["id"]
+            }
         }
     ])
 }
@@ -85,6 +131,7 @@ impl Client {
         let me = self.env.agent.as_str();
         let res = match body {
             Some(b) if method == "PUT" => agent.put(&url).header("authorization", &auth).send_json(b),
+            Some(b) if method == "PATCH" => agent.patch(&url).header("authorization", &auth).header("x-workbench-agent", me).send_json(b),
             Some(b) if !me.is_empty() => agent.post(&url).header("authorization", &auth).header("x-workbench-agent", me).send_json(b),
             Some(b) => agent.post(&url).header("authorization", &auth).send_json(b),
             None if method == "POST" => agent.post(&url).header("authorization", &auth).send_empty(),
@@ -177,7 +224,7 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
                 s(&me["agent"], "repo").to_string()
             };
             let mut body = json!({ "repo": repo, "task": task, "worktree": args.get("worktree").and_then(Value::as_bool).unwrap_or(true) });
-            for k in ["name", "model", "base"] {
+            for k in ["name", "model", "base", "outcome"] {
                 if let Some(v) = args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()) {
                     body[k] = json!(v);
                 }
@@ -259,7 +306,103 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
                 None => "The preview is cleared.".into(),
             })
         }
+        "ask_human" => ask_human(c, args),
+        "add_outcome" => {
+            let title = s(args, "title");
+            if title.trim().is_empty() {
+                return Err("title is required".into());
+            }
+            let mut body = json!({ "title": title });
+            for k in ["detail", "after"] {
+                if let Some(v) = args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()) {
+                    body[k] = json!(v);
+                }
+            }
+            let v = c.call("POST", "/api/outcomes", Some(body), Duration::from_secs(15))?;
+            let o = &v["outcome"];
+            Ok(format!("Added outcome {} ({}) to goal {}. Start its agent with spawn_agent(outcome=\"{}\", task=...).", s(o, "id"), s(o, "title"), s(o, "goal"), s(o, "id")))
+        }
+        "update_outcome" => {
+            let id = id_arg(args)?;
+            let mut body = json!({});
+            for k in ["state", "title", "detail"] {
+                if let Some(v) = args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()) {
+                    body[k] = json!(v);
+                }
+            }
+            if let Some(p) = args.get("progress").and_then(Value::as_i64) {
+                body["progress"] = json!(p);
+            }
+            let v = c.call("PATCH", &format!("/api/outcomes/{id}"), Some(body), Duration::from_secs(15))?;
+            let o = &v["outcome"];
+            let all = c.get(&format!("/api/outcomes?goal={}", enc(s(o, "goal"))))?;
+            let lines: Vec<String> = all["outcomes"].as_array().into_iter().flatten().map(outcome_line).collect();
+            Ok(format!("{}\ngoal {}'s outcomes:\n{}", outcome_line(o), s(o, "goal"), lines.join("\n")))
+        }
         other => Err(format!("no tool {other}")),
+    }
+}
+
+fn outcome_line(o: &Value) -> String {
+    let mut line = format!("{} [{}] {}", s(o, "id"), s(o, "state"), s(o, "title"));
+    if let Some(p) = o["progress"].as_i64().filter(|p| *p > 0 && *p < 100) {
+        line.push_str(&format!(" {p}%"));
+    }
+    if !s(o, "agent_name").is_empty() {
+        line.push_str(&format!(" (agent {})", s(o, "agent_name")));
+    }
+    if !s(o, "after").is_empty() {
+        line.push_str(&format!(" after {}", s(o, "after")));
+    }
+    line
+}
+
+/// What an answered question says to the agent that asked it.
+fn answer_text(q: &Value) -> String {
+    let by = s(q, "answered_by");
+    let who = if by.starts_with("rule:") { format!("A rule the user set ({}) answers it", by.trim_start_matches("rule:")) } else { "The user answered".to_string() };
+    let mut out = format!("{who}: {}", s(q, "answer"));
+    if !s(q, "rule").is_empty() && !by.starts_with("rule:") {
+        out.push_str("\n(The user made this a rule for the repository: follow it from now on.)");
+    }
+    out
+}
+
+/// `ask_human`: posts the question, then waits for its answer in 30 s steps.
+fn ask_human(c: &Client, args: &Value) -> Result<String, String> {
+    if c.env.agent.is_empty() {
+        return Err("ask_human needs CHLOEDB_WORKBENCH_AGENT: it runs inside a Workbench session".into());
+    }
+    let question = s(args, "question");
+    if question.trim().is_empty() {
+        return Err("question is required".into());
+    }
+    let mut body = json!({ "question": question, "options": args.get("options").cloned().unwrap_or(json!([])) });
+    for k in ["recommended", "context"] {
+        if let Some(v) = args.get(k).filter(|v| !v.is_null()) {
+            body[k] = v.clone();
+        }
+    }
+    let v = c.call("POST", "/api/questions", Some(body), Duration::from_secs(30))?;
+    let q = v["question"].clone();
+    let id = s(&q, "id").to_string();
+    if s(&q, "state") == "answered" {
+        return Ok(answer_text(&q));
+    }
+    let deadline = Instant::now() + Duration::from_secs(ASK_WAIT_S);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+        if left == 0 {
+            return Ok(format!("No answer yet after {} minutes (question {id}). Carry on with what does not depend on it, or ask again later.", ASK_WAIT_S / 60));
+        }
+        let step = left.min(30);
+        let v = c.call("GET", &format!("/api/questions/{}/wait?timeout_s={step}", enc(&id)), None, Duration::from_secs(step + 15))?;
+        let q = &v["question"];
+        match s(q, "state") {
+            "answered" => return Ok(answer_text(q)),
+            "expired" => return Ok(format!("The question {id} expired without an answer.")),
+            _ => {}
+        }
     }
 }
 

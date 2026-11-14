@@ -29,6 +29,8 @@ use crate::trail;
 pub struct App {
     pub sup: Arc<Supervisor>,
     pub ui_dir: Option<PathBuf>,
+    /// The levels' state (goals, questions, narration, delivery).
+    pub lv: Arc<crate::levels::Levels>,
 }
 
 impl IntoResponse for ApiError {
@@ -129,6 +131,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::map::routes())
         .merge(crate::preview::routes())
         .merge(crate::flow::routes())
+        .merge(crate::levels::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -220,8 +223,9 @@ pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Ap
 
 async fn spawn(State(app): State<App>, body: Bytes) -> ApiResult {
     let req: SpawnRequest = parse_body(&body)?;
-    let sup = app.sup.clone();
-    let agent = blocking(move || sup.spawn(req)).await?;
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    // With its goal and outcome (SPEC.md, "Goals and outcomes").
+    let agent = blocking(move || crate::goals::spawn(&sup, &lv, req)).await?;
     Ok((StatusCode::CREATED, Json(json!({ "agent": agent }))).into_response())
 }
 
@@ -335,9 +339,15 @@ async fn wait(State(app): State<App>, Query(q): Query<WaitQ>) -> ApiResult {
 async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
     let id = headers.get("x-workbench-agent").and_then(|h| h.to_str().ok()).ok_or_else(|| ApiError::bad("the header x-workbench-agent is required"))?.to_string();
     let v: Value = parse_body(&body)?;
-    let sup = app.sup.clone();
-    blocking(move || sup.hook(&id, v)).await?;
-    ok()
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    // What the levels do after it, and what the hook prints (SPEC.md,
+    // "Delivery"): `output` is the hook's JSON output, or null.
+    let output = blocking(move || {
+        sup.hook(&id, v.clone())?;
+        Ok(crate::levels::after_hook(&sup, &lv, &id, &v))
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true, "output": output })).into_response())
 }
 
 async fn stream(State(app): State<App>) -> Response {

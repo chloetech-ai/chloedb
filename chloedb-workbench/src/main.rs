@@ -13,6 +13,13 @@ mod recording;
 mod server;
 mod trail;
 mod supervisor;
+// The levels (SPEC.md, "Levels (third build)").
+mod digest;
+mod goals;
+mod levels;
+mod narrate;
+mod questions;
+mod story;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -111,6 +118,7 @@ fn serve(s: Serve) -> Result<(), String> {
         println!("state: {}", data_dir.join("workbench.chloedb").display());
         use std::io::Write;
         let _ = std::io::stdout().flush();
-        server::serve(listener, server::App { sup, ui_dir }).await.map_err(|e| e.to_string())
+        let lv = levels::Levels::new(&sup);
+        server::serve(listener, server::App { sup, ui_dir, lv }).await.map_err(|e| e.to_string())
     })
 }

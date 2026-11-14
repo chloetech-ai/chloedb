@@ -1,6 +1,8 @@
 // The level screens' stand-in backend: serves ui/ and answers /api/* from
 // the fixture modules in ./fixtures/ (each exports `routes`: a list of
-// [method, RegExp over the path, (match, url, body) => json | [status, json]]).
+// [method, RegExp over the path, (match, url, body) => json | [status, json]];
+// and, for routes that are not JSON, `raw`: [method, RegExp, (match, url,
+// req, res) => void], tried first).
 // Node 22, standard library only.
 //
 //   node chloedb-workbench/ui/dev/levels-mock.mjs [--port 7790]
@@ -15,13 +17,19 @@ const UI = path.resolve(here, "..");
 const i = process.argv.indexOf("--port");
 const PORT = Number(i > 0 ? process.argv[i + 1] : 7790);
 const routes = [];
+const raw = [];
 for (const f of fs.readdirSync(path.join(here, "fixtures")).filter((f) => f.endsWith(".mjs")).sort()) {
   const m = await import(pathToFileURL(path.join(here, "fixtures", f)));
   routes.push(...(m.routes || []));
+  raw.push(...(m.raw || []));
 }
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".json": "application/json" };
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  for (const [method, re, fn] of raw) {
+    const m = method === req.method && url.pathname.match(re);
+    if (m) return fn(m, url, req, res);
+  }
   if (url.pathname.startsWith("/api/")) {
     let body = "";
     for await (const c of req) body += c;

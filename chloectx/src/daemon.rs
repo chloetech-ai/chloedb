@@ -1525,7 +1525,19 @@ impl Daemon {
         if text.is_empty() {
             text = "No receipts yet.".into();
         }
-        let list: Vec<Json> = rs.iter().map(|r| json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "tokens": r.tokens, "txn": r.snapshot.txn, "query": r.inputs.query.chars().take(200).collect::<String>()})).collect();
+        // The rows each one showed, with their text as it is now (none
+        // when deleted since), for programs (`chloectx receipts --json`).
+        let mut ids: Vec<String> = rs.iter().flat_map(|r| r.rows.iter().filter(|x| x.shown()).map(|x| x.id.clone())).collect();
+        ids.sort();
+        ids.dedup();
+        let texts: std::collections::HashMap<String, String> = self.store.get(&ids)?.into_iter().map(|x| (x.id.clone(), x.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect())).collect();
+        let list: Vec<Json> = rs
+            .iter()
+            .map(|r| {
+                let rows: Vec<Json> = r.rows.iter().filter(|x| x.shown()).map(|x| json!({"id": x.id, "kind": x.kind, "tag": x.tag, "rank": x.rank, "score": x.score, "decision": x.decision, "text": texts.get(&x.id)})).collect();
+                json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "rows": rows, "tokens": r.tokens, "txn": r.snapshot.txn, "query": r.inputs.query.chars().take(200).collect::<String>()})
+            })
+            .collect();
         Ok(json!({"text": text, "receipts": list}))
     }
 

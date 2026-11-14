@@ -373,9 +373,15 @@ CREATE TABLE rules (
   ctx_id KEYWORD,          -- the ChloeCtx record id (`chloectx remember decision`)
   active BOOL, created TIMESTAMP
 );
-CREATE TABLE deliveries (  -- what each agent has been told (rules, steers)
-  id KEYWORD PRIMARY KEY,  -- agent + ':' + item id
-  agent KEYWORD, item KEYWORD, ts TIMESTAMP
+CREATE TABLE deliveries (  -- what each agent has been told (rules, steers, its outcome)
+  id KEYWORD PRIMARY KEY,  -- agent + ':' + item id (a rule's, a steer's, or 'assign:' + outcome)
+  agent KEYWORD, item KEYWORD,
+  via KEYWORD,             -- the hook event that carried it, or 'typed'
+  ts TIMESTAMP
+);
+CREATE TABLE seen (        -- the levels' own key/value state: last_seen
+  id KEYWORD PRIMARY KEY,  -- `key` is a reserved word of ChloeDB's SQL
+  value TEXT, ts TIMESTAMP
 );
 CREATE TABLE marks (       -- small key/value state: last_seen, preview urls, allow-lists
   "key" KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP   -- quoted: KEY is reserved
@@ -441,11 +447,13 @@ per agent), cached in the event's data.
   `chloectx remember decision "<rule>"` in the repo and adds a `rules` row.
 - `GET /api/rules?repo=`, `PATCH /api/rules/:id {active}`.
 - **Delivery.** The `hook` subcommand now prints what the server answers
-  to `POST /api/hook` when it is a `UserPromptSubmit`, `SessionStart` or
-  `PostToolUse`: `{"hookSpecificOutput": {"hookEventName": E,
-  "additionalContext": "..."}}` holding active rules of the repo and
-  steers this agent has not been told yet (recorded in `deliveries`).
-  It still never fails the hook: any error prints nothing.
+  to `POST /api/hook` (as its `output`) when it is a `UserPromptSubmit`,
+  `SessionStart` or `PostToolUse`: `{"hookSpecificOutput":
+  {"hookEventName": E, "additionalContext": "..."}}` holding active rules
+  of the repo and steers this agent has not been told yet (recorded in
+  `deliveries`), at most 9,000 characters (Claude Code moves more than
+  10,000 to a file). It still never fails the hook: any error prints
+  nothing.
 - `POST /api/agents/:id/steer {text}`: an idle agent gets it typed with
   Enter; a working one gets it as additional context at its next
   `PostToolUse` ("The user adds: …").
@@ -718,6 +726,147 @@ Node = {"name", "path", "kind": "dir", "lines", "files", "children": [Node], "co
   rewind), for the Rewind player to play one after another.
 - The UI opens on Away instead of Mission when `last_seen` is more than 30
   minutes old and something happened since.
+
+### The levels' backend as built (Mission, Decide, Story, Away)
+
+Modules: `src/levels.rs` (the routes, what follows each hook, delivery,
+steer), `src/goals.rs`, `src/questions.rs`, `src/narrate.rs` (transcripts
+and sentences), `src/story.rs`, `src/digest.rs`. `server.rs` merges
+`levels::routes()` under its guard. Rows' times are ISO 8601 text, as
+`Agent`'s; numbers in milliseconds are named `*_ms`.
+
+`Agent` gains `goal`, `outcome`, `narration` and `narration_ts` (ISO).
+`POST /api/agents` takes `goal?` and `outcome?`: an outcome's agent works
+toward its goal and the outcome becomes `active` (409 when the outcome
+already has a running agent, 400 when there is no such outcome); an agent
+started by an agent with a goal works toward that goal too. New event
+kinds: `question` (data `{question}`), `answered` (`{question, by}`) and
+`steer` (`{id, text}`); the stream carries them as any event, and no new
+SSE event types are added (a page refetches `/api/questions` on them).
+
+```
+Goal     {id, repo, text, state, lead, created, done,
+          outcomes_total, outcomes_done, needs_you, progress}   -- not counting dropped ones
+Outcome  {id, goal, title, detail, state, agent, agent_name, agent_state,
+          ord, after, progress, created, updated, updated_ms}
+Question {id, agent, agent_name, outcome, repo, kind, text, context,
+          options: [{label, detail?, matches_precedent: bool}], recommended,
+          precedent: {text, ids, agents: {record id: Agent}, missing,
+                      rules: [{id, text, option}]} | null,   -- null until chloectx answered
+          state, answer, answered_by, rule, created, created_ms, answered, answered_ms}
+Rule     {id, repo, text, question, ctx_id, active, created, created_ms}
+Record   {id, kind: "decision"|"preference"|"fact"|"fix", text, ts, ts_ms,
+          session, agent: Agent|null, files: [path]}
+```
+
+| route | body | answer |
+|---|---|---|
+| `POST /api/goals` | `{repo, text, plan?, model?, worktree?}` | 201 `{goal: Goal, lead: Agent\|null}` |
+| `GET /api/goals?repo=` | | `{goals: [Goal]}`, newest first |
+| `GET /api/goals/:id` | | `{goal, outcomes, agents, open_questions, learned: [Record], heads_up: [], pulse: [[minute_ms, count]] (60), missing}` |
+| `PATCH /api/goals/:id` | `{text?, state?}` | `{goal}` |
+| `GET /api/outcomes?goal=` | | `{outcomes: [Outcome]}`, in order |
+| `POST /api/outcomes` | `{goal?, title, detail?, after?}` | 201 `{outcome}`; `goal` defaults to the calling agent's (`x-workbench-agent`) |
+| `PATCH /api/outcomes/:id` | `{title?, detail?, state?, progress?, agent?}` | `{outcome}` |
+| `POST /api/questions` | `{question, options?: [{label, detail?} \| "label"], recommended?, context?}`, header `x-workbench-agent` (or `agent` in the body) | 201 `{question}`, already answered when a rule answers it |
+| `GET /api/questions?repo=&state=&agent=` | | `{questions: [Question]}`, newest first |
+| `GET /api/questions/:id` | | `{question}` |
+| `GET /api/questions/:id/wait?timeout_s=30` | | `{question, answered: bool}` once it is not open, or at the timeout |
+| `POST /api/questions/:id/answer` | `{option?: index from 0, text?, rule?}` | `{question, rule: Rule\|null, missing}`; 409 when not open |
+| `GET /api/rules?repo=` | | `{rules: [Rule]}`, oldest first |
+| `POST /api/rules` | `{repo, text}` | 201 `{rule, missing}` |
+| `PATCH /api/rules/:id` | `{active?, text?}` | `{rule}` |
+| `POST /api/agents/:id/steer` | `{text}` | `{ok, steer: {id, text}, delivered: "typed"\|"queued"}`; 409 when not running |
+| `GET /api/agents/:id/story` | | as above, plus `missing` |
+| `POST /api/seen` | `{ts_ms?}` | `{ok, last_seen_ms, previous_ms}` |
+| `GET /api/digest?since=&repo=` | | see below |
+| `POST /api/hook` | as before | `{ok, output: {hookSpecificOutput: {hookEventName, additionalContext}} \| null}` |
+
+Story: `chapters[].steps[]` also has `running` (a call not finished yet);
+`knew[]` is `{id, kind, text, score, decision, turn, receipt, shown_ms,
+deja_vu}`, each record once, where it was first shown; `deja_vu[]` is
+`{text, record, when: ISO of the record's own time | null, session,
+agent: {id, name} | null, shown_ms}` (`when` and `session` from one
+`chloectx sql --json` on the déjà vus' ids); `tokens` sums the `usage` of
+each assistant message once (Claude Code writes a line per content block,
+each with the message's usage) over every transcript the agent's hooks
+named, read from their last 64 MiB.
+
+Digest: `{since_ms, until_ms, last_seen_ms, away_ms, tiles: {done, decided,
+waiting, learned}, decided_by: {you, rule, terminal}, done: [Outcome],
+story: [{ts, ts_ms, agent: Agent, text, chips: [{kind: "edits"|"done"|
+"decided"|"rule"|"waiting", text, question?, by?}]}], questions: [open
+ones, then those answered since], rules: [made since], learned: [Record],
+replay: [{agent, from_ms, to_ms, at_ms, label}], happened: bool, missing}`.
+`since` defaults to `last_seen`, else the last 24 hours; `learned` asks
+`chloectx sql --json` in each repository that saw work (at most 5).
+
+MCP tools added: `ask_human {question, options?, recommended?, context?}`
+(answers "The user answered: …", or "A rule the user set (r…) answers it:
+…", or after 30 minutes that there is no answer yet), `add_outcome {title,
+detail?, after?}` (the caller's goal), `update_outcome {id, progress?,
+state?, title?, detail?}` (answers the goal's outcomes, a line each), and
+`spawn_agent` takes `outcome`.
+
+ChloeCtx: `chloectx receipts --json` prints `{text, receipts: [{id, ts
+(seconds), session, turn, source, decision, shown, rows: [{id, kind, tag,
+rank, score, decision, text}] (the rows it showed, their text as it is
+now), tokens, txn, query}]}`.
+
+#### Deviations
+
+1. `POST /api/hook` answers `{ok, output}`, and the hook prints `output`
+   alone (never the `ok`), only for an answer of 200 within its 2 s.
+2. `last_seen` is kept in a table of the levels' own, `seen (id, value,
+   ts)`, not in `marks`; its key column is `id` because `key` is a
+   reserved word of ChloeDB's SQL (`marks` will need the same).
+   `deliveries` gains `via`.
+3. Narration at `UserPromptSubmit` is "Starting on: <the prompt's first
+   sentence>", since the transcript is written after the hook fires; at
+   `Stop` it is the first sentence of `last_assistant_message` when the
+   payload has one; at `PostToolUse` it is the transcript's tail, else a
+   sentence from the hook's own tool call. It is made on a thread of its
+   own, one at a time per agent (the newest hook wins), and a waiting
+   agent keeps its question as its sentence.
+4. An outcome's agent is told its outcome (and to use `update_outcome` and
+   `ask_human`) as additional context at its `SessionStart`, not in its
+   task. Rules and the outcome are told again after `/clear` or a
+   compaction (`SessionStart` with source `clear` or `compact`).
+5. Steers are events of kind `steer`. One for an idle agent is typed; any
+   other is told at the next `SessionStart`, `UserPromptSubmit` or
+   `PostToolUse` as "The user adds: …", and those still untold when a
+   turn ends (`Stop`) are typed in.
+6. An outcome's state: `done` and `dropped` stay once set; no agent →
+   `next`; its agent waiting or with an open question → `needs_you`; its
+   agent exited → `done` when it exited with code 0 at progress 100, else
+   `needs_you`; otherwise (working, idle, starting) `active`. It is brought
+   up to date when outcomes are read, and written back when it changed.
+7. A permission prompt is a Notification with `notification_type`
+   `permission_prompt` (or, without a type, the word "permission"); its
+   question's `context` is the agent's last `PreToolUse` summary ("Bash:
+   cargo test"); there is one open per agent, it records no `question`
+   event (its Notification stands for it), and any other hook of the agent
+   before your answer marks it `answered_by: terminal`.
+8. A rule answers a question by itself (`answered_by: rule:<id>`) when an
+   agent of the repository asks again, in the same words, the question the
+   rule was made from, and that answer is one of the new options (or it
+   has none).
+9. `matches_precedent`: every word of the option's label (three letters or
+   more, the commonest left out) is in an active rule of the repository or
+   in one line of what `chloectx ask --json` printed (it gives the records'
+   text as one block and their ids, not each record's kind).
+10. `learned` of a goal is the last 24 hours, not the calendar day.
+11. Déjà vu: a fix is an `error` record tagged `fix`; "right after a failed
+    tool call" is within 120 s after it; a failed call is a `PreToolUse`
+    with no `PostToolUse` before the turn ended (Claude Code fires none
+    then), a `PostToolUseFailure`, or a response with `is_error`.
+12. `heads_up` is always `[]` here; the map fills it (`map::collisions`,
+    a TODO in `goals::detail`).
+13. `--narrate-model` (the optional chapter titles and summaries by a
+    model) is not built; titles are the prompt's first eight words and
+    summaries the turn's last assistant text, first two sentences.
+14. Extra routes: `PATCH /api/goals/:id`, `GET /api/outcomes`, `GET
+    /api/questions/:id`, `POST /api/rules`.
 
 ### UI
 

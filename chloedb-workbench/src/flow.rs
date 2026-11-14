@@ -204,7 +204,8 @@ fn read_transcript(path: &Path, into: &mut Transcript) {
     }
     for line in String::from_utf8_lossy(&buf).lines() {
         let usage = line.contains("\"usage\"");
-        let error = line.contains("\"tool_result\"") && line.contains("\"is_error\":true");
+        // Claude Code writes compact JSON; other writers may not, so parse to be sure.
+        let error = line.contains("\"tool_result\"") && line.contains("\"is_error\"");
         if !usage && !error {
             continue;
         }

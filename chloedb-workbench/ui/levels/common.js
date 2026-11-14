@@ -39,7 +39,8 @@ export function fmtDur(ms) {
   if (s < 60) return `${s} s`;
   const m = Math.round(s / 60);
   if (m < 60) return `${m} min`;
-  return `${Math.floor(m / 60)} h ${m % 60} min`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)} h ${m % 60} min`;
+  return `${Math.round(m / 1440)} days`;
 }
 
 export function fmtClock(t) {
@@ -54,11 +55,38 @@ export function fmtAgo(t) {
 
 /** A stable hue per agent name, so an agent keeps its colour on every screen. */
 const HUES = [222, 266, 176, 330, 40, 150, 12, 200];
-export function agentHue(a) {
+function hashHue(a) {
   const key = (a && (a.name || a.id)) || "?";
   let x = 0;
   for (const c of key) x = (x * 31 + c.charCodeAt(0)) >>> 0;
   return HUES[x % HUES.length];
+}
+const fleetHues = new Map();
+export function agentHue(a) {
+  return (a && fleetHues.get(a.id)) ?? hashHue(a);
+}
+/** Makes the agents seen together tell apart: oldest first, each keeps its
+ *  own hue unless an older one has one within 20°, and then takes the middle
+ *  of the widest free gap (never the reds, which mean trouble). Any screen
+ *  may call it with the fleet; the colours stay the same everywhere. */
+export function setFleet(agents) {
+  const list = [...(agents || [])].sort((x, y) => (toMs(x.created) || 0) - (toMs(y.created) || 0) || String(x.id).localeCompare(String(y.id)));
+  const dist = (p, q) => { const d = Math.abs(p - q) % 360; return Math.min(d, 360 - d); };
+  const taken = [];
+  fleetHues.clear();
+  for (const a of list) {
+    let hue = hashHue(a);
+    if (taken.some((t) => dist(t, hue) < 20)) {
+      let best = hue, gap = -1;
+      for (let c = 30; c <= 340; c += 5) {
+        const g = Math.min(...taken.map((t) => dist(t, c)));
+        if (g > gap) { gap = g; best = c; }
+      }
+      hue = best;
+    }
+    taken.push(hue);
+    fleetHues.set(a.id, hue);
+  }
 }
 export function agentColor(a) { return `hsl(${agentHue(a)} 80% 68%)`; }
 
@@ -99,6 +127,7 @@ useStyle("common", `
 .lv-acc{background:var(--accent-soft);color:var(--accent)}
 .lv-bar{height:6px;border-radius:999px;background:var(--surface-3);overflow:hidden}.lv-bar>b{display:block;height:100%;border-radius:999px}
 .lv-empty{color:var(--muted);padding:24px;text-align:center}
+:root{--ctx:#7c3aed}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--ctx:#b48cff}}
 :root[data-theme="dark"]{--ctx:#b48cff}
 `);
@@ -122,7 +151,7 @@ export function repoOf(ctx) {
   for (const a of (ctx && ctx.state && ctx.state.agents) || []) if (a.repo && a.running !== false) n.set(a.repo, (n.get(a.repo) || 0) + 1);
   let best = null, max = 0;
   for (const [r, c] of n) if (c > max) [best, max] = [r, c];
-  return best;
+  return best || "";
 }
 
 /** Agents by id from several lists (fetched rows, the stream's): the row
@@ -232,7 +261,6 @@ export function later(fn, ms) {
 }
 
 useStyle("common-helpers", `
-:root{--ctx:#7c3aed}
 .lv-screen{height:100%;overflow:auto;overscroll-behavior:contain}
 .lv-code{font-family:var(--mono);font-size:.88em;background:var(--surface-3);border-radius:4px;padding:1px 4px}
 .lv-h{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -240,4 +268,105 @@ useStyle("common-helpers", `
 .lv-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px;box-shadow:var(--shadow-1)}
 .lv-bars{display:flex;align-items:flex-end;gap:3px}.lv-bars>i{flex:1;min-width:2px;border-radius:2px 2px 0 0}
 .lv-vio{background:color-mix(in srgb,var(--ctx) 14%,transparent);color:var(--ctx)}
+// ---------------------------------------------------------------------------
+// More shared pieces: the page frame, cards, a tooltip, Esc handling, short
+// inline formatting, numbers.
+
+/** The token the app keeps (for URLs that cannot carry a header). */
+export function token(ctx) {
+  if (ctx && ctx.token) return ctx.token;
+  try { return sessionStorage.getItem("chloedb-workbench-token") || "dev"; } catch { return "dev"; }
+}
+
+/** An agent's colour at an alpha, for tints. */
+export function agentTint(a, alpha) { return `hsl(${agentHue(a)} 80% 68% / ${alpha})`; }
+
+/** `**bold**` and `code` in a sentence, as nodes; everything else is text. */
+export function md(text) {
+  const out = [];
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  const s = String(text ?? "");
+  let at = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > at) out.push(s.slice(at, m.index));
+    out.push(m[1] != null ? h("b", null, m[1]) : h("code", { class: "lv-code" }, m[2]));
+    at = re.lastIndex;
+  }
+  if (at < s.length) out.push(s.slice(at));
+  return out;
+}
+
+/** 1.2M, 312k, 940. */
+export function fmtNum(n) {
+  if (n == null || !isFinite(n)) return "";
+  const a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (a >= 1e3) return Math.round(n / 1e3) + "k";
+  return String(Math.round(n));
+}
+
+/** Calls fn at most once per `wait` ms, the last call's arguments winning. */
+export function throttle(fn, wait) {
+  let t = null, last = 0, args;
+  const run = () => { t = null; last = Date.now(); fn(...args); };
+  const call = (...a) => { args = a; if (t) return; t = setTimeout(run, Math.max(0, wait - (Date.now() - last))); };
+  call.cancel = () => { clearTimeout(t); t = null; };
+  return call;
+}
+
+/** Esc closes the newest open panel or bubble first. Returns its remover. */
+const escStack = [];
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !escStack.length) return;
+  e.preventDefault();
+  e.stopPropagation();
+  escStack[escStack.length - 1]();
+}, true);
+export function onEscape(close) {
+  escStack.push(close);
+  return () => { const i = escStack.lastIndexOf(close); if (i >= 0) escStack.splice(i, 1); };
+}
+
+/** One floating tooltip: show(content, x, y) near a point, hide(), remove(). */
+export function tooltip() {
+  const el = h("div", { class: "lv-tip", role: "tooltip", hidden: true });
+  document.body.append(el);
+  return {
+    show(content, x, y) {
+      el.replaceChildren(...[content].flat());
+      el.hidden = false;
+      const r = el.getBoundingClientRect();
+      const left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 14));
+      const top = y + 18 + r.height > window.innerHeight - 8 ? y - r.height - 12 : y + 18;
+      el.style.left = left + "px";
+      el.style.top = Math.max(8, top) + "px";
+    },
+    hide() { el.hidden = true; },
+    remove() { el.remove(); },
+  };
+}
+
+/** A card with an optional small uppercase heading and a right-hand aside. */
+export function card(title, aside, ...kids) {
+  return h("section", { class: "lv-card" },
+    title || aside ? h("div", { class: "lv-card-head" }, title ? h("h2", { class: "lv-h2" }, title) : null, aside) : null,
+    ...kids);
+}
+
+useStyle("common-2", `
+.lv-screen{position:absolute;inset:0;color:var(--text);font-size:13px;line-height:1.45}
+.lv-screen.aw,.lv-screen.fl,.lv-screen.mp,.lv-screen.pv{padding:20px 24px 28px}
+.lv-head{display:flex;align-items:baseline;gap:6px 14px;flex-wrap:wrap}
+.lv-h1{margin:0;font-size:22px;font-weight:680;letter-spacing:-.01em}
+.lv-sub{color:var(--muted)}
+.lv-h2{margin:0;font-size:11.5px;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.lv-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow-1);min-width:0}
+.lv-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.lv-code{font-family:var(--mono);font-size:.92em;background:var(--surface-3);border-radius:4px;padding:0 4px}
+.lv-tip{position:fixed;z-index:80;pointer-events:none;max-width:340px;background:var(--surface);color:var(--text);border:1px solid var(--line-2);border-radius:9px;padding:8px 10px;font-size:12px;line-height:1.45;box-shadow:var(--shadow-2)}
+.lv-tip[hidden]{display:none}
+.lv-link{border:0;background:none;padding:0;color:var(--accent);cursor:pointer;font:inherit;font-weight:600}
+.lv-link:hover{text-decoration:underline}
+button.lv-ctx{border:0;background:none;padding:0;cursor:pointer;font-family:inherit}
+@media (max-width:640px){.lv-screen.aw,.lv-screen.fl,.lv-screen.mp,.lv-screen.pv{padding:14px}.lv-h1{font-size:19px}}
 `);

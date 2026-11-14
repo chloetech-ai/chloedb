@@ -130,6 +130,9 @@ pub struct SpawnRequest {
     pub worktree: Option<bool>,
     pub model: Option<String>,
     pub parent: Option<String>,
+    /// The goal and outcome it works on (set by `levels::spawn`).
+    pub goal: Option<String>,
+    pub outcome: Option<String>,
 }
 
 /// A notification that says only that a finished turn waits for a prompt
@@ -141,7 +144,7 @@ fn is_idle_notice(hook: &Json) -> bool {
     hook.get("message").and_then(Json::as_str).is_some_and(|m| m.to_ascii_lowercase().contains("waiting for your input"))
 }
 
-fn one_line(s: &str, max: usize) -> String {
+pub fn one_line(s: &str, max: usize) -> String {
     let line = s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
     let mut out: String = line.chars().take(max).collect();
     if line.chars().count() > max {
@@ -577,6 +580,10 @@ impl Supervisor {
             base,
             started_ms: Some(started_ms),
             preview_url: None,
+            goal: req.goal.clone(),
+            outcome: req.outcome.clone(),
+            narration: None,
+            narration_ts: None,
         };
         let json = {
             let mut inner = self.inner.lock().unwrap();
@@ -752,6 +759,42 @@ impl Supervisor {
     /// Every event of an agent, oldest first, with its data.
     pub fn all_events(&self, id: &str) -> Result<Vec<Event>, ApiError> {
         self.db.all_events(id).map_err(ApiError::internal)
+    }
+
+    /// The state database, for the levels' tables.
+    pub fn db(&self) -> &StateDb {
+        &self.db
+    }
+
+    /// Changes an agent's row with `f`, writes it and sends the change;
+    /// answers the agent as the API does.
+    pub fn update_agent(&self, id: &str, f: impl FnOnce(&mut Agent)) -> Result<Json, ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        let slot = inner.slots.get_mut(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
+        f(&mut slot.agent);
+        self.db.put_agent(&slot.agent).map_err(ApiError::internal)?;
+        self.emit_agent(&inner, id);
+        Ok(Self::agent_json(&inner, id).unwrap_or(Json::Null))
+    }
+
+    /// Changes an agent's row with `f` and records an event of it (kinds
+    /// the levels add: `question`, `answered`, `steer`).
+    pub fn note(&self, id: &str, kind: &str, summary: String, data: Option<String>, f: impl FnOnce(&mut Agent)) -> Result<(), ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        let slot = inner.slots.get_mut(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
+        f(&mut slot.agent);
+        self.record(&mut inner, id, kind, None, summary, data)
+    }
+
+    /// Whether an agent's process runs.
+    pub fn is_running(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().slots.get(id).is_some_and(Self::running)
+    }
+
+    /// Sets an agent's state as the hooks would (the time in state starts
+    /// over when it changes; `waiting_for` is kept only while waiting).
+    pub fn set_agent_state(agent: &mut Agent, state: &str) {
+        Self::set_state(agent, state)
     }
 
     /// Where an agent's session files are: its settings, its recording.
