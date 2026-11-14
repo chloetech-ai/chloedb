@@ -83,6 +83,51 @@ each other in a graph that ChloeDB walks.
   functions (where `app.user` is the person whose action led to the call).
   Each app also has a page of its own at `/a/<id>`, without the studio
   around it, for a phone or to hand to someone.
+- **It enforces who sees what, on the server.** Each table declares its
+  access as SQL the planner writes in the plan's `"access"`, kept in the
+  table's spec (so a version carries the access it had) and shown after its
+  CREATE TABLE (`engine/access.mjs`):
+
+  ```sql
+  ALLOW READ ON products TO everyone;
+  ALLOW WRITE ON products TO owner;
+  ALLOW ALL ON receivables TO members;
+  ALLOW ALL ON notes TO members WHERE owner_id = :user_id;
+  ALLOW ALL ON invoices TO members WHERE company_id = :company_id;
+  ALLOW ALL ON invoices TO admins;
+  ```
+
+  What is READ, ADD, CHANGE, REMOVE, WRITE (the three writes) or ALL; who is
+  everyone (visitors too), members (signed in to the app), admins (whom the
+  owner makes admins: `POST /api/apps/<id>/people/role {person, role}`) or
+  the owner, each including the ones after it; WHERE keeps a person to their
+  own rows or their company's. The engine holds every read and write of the
+  app's people to it (`/sql`, `/insert`, `/update`, `/remove`, and `/call`,
+  whose functions and rules run as the person who called them; triggers and
+  schedules run as the app): a read of a table they may not see is a 401
+  ("Sign in first: ...") for a visitor and a 403 for a member; a scoped read
+  gets the scope's condition joined to the WHERE of every SELECT that reads
+  the table (so MATCH, bm25 and joins keep working on its scan); an add
+  fills the scope's column and is refused when it names someone else; a
+  change or remove reaches only rows in scope and cannot move one out.
+  `:user_id`, `:user_email`, `:user_name` and `:company_id` are the engine's
+  to bind (a page cannot send someone else's), and a query or function that
+  names one with nobody signed in is refused as a 401 "Sign in first", not
+  sent to ChloeDB unbound. Companies are the engine's, never the app's:
+  `sa_companies` and `sa_memberships`, a person making one becomes its admin
+  and adds people who have an account (`GET/POST /api/apps/<id>/companies`,
+  `POST .../companies/members {company, email, role}`,
+  `.../companies/members/remove`; `app.companies()`, `app.company()`,
+  `app.createCompany(name)`, `app.useCompany(id)`, `app.addToCompany(...)` in
+  views), and the one a person works in now is the `x-sa-company` header's
+  when they belong to it, else their first. A table with no ALLOW statement is
+  as tables were before (open to whoever the publish choice lets in), so apps
+  built before keep working; the studio (the builder, not the public path)
+  has every row. A request that asks for signed-in people only, roles or
+  companies fails the build's checks until the plan declares access for every
+  table. On a laptop with no login every caller is the studio, so access
+  applies to a published app's public beside a cluster and to "See it as a
+  stranger".
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request
@@ -167,6 +212,9 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
+| `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; it reports no cost, so its answers count $0) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
+| `STRATA_APPS_CODEX`, `STRATA_APPS_CODEX_MODEL` | the Codex binary (default `codex`) and its model (default: Codex's own); the `claude-*` model settings go to claude only |
+| `STRATA_APPS_AGY`, `STRATA_APPS_AGY_MODEL` | the same for Antigravity's `agy`, kept for when it is wired |
 | `STRATA_APPS_LIBRARY` | the built-in library's folder (default `library/`) |
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
 | `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 90), or after this many in all (default 1200); its owner can stop it at any time |
@@ -209,7 +257,9 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 
 **Rules every screen gets.** Whatever a screen says, the renderer and `web/kit.css` keep it usable: under a finger every button, field and chip is at least 44 px (a check 44 px on a phone); a table of more than three columns is a list of cards on a phone, each cell named by its column; a button repeated on every row is named by its row for a screen reader (`Delete: Basil`); the grey of secondary text is mixed from the design's colors until it reads at 4.6:1 on the page and on cards (`mutedOf` in `web/design.js`); a long app name shortens in the header rather than pushing the design menu off a phone. Every remove offers Undo for seven seconds (`app.remove` in the frame; removes close together share one toast, and Undo puts the rows back with their ids), so a delete asks nothing first: the renderer skips a `confirm` on a handler that removes, and the patterns have none.
 
-**The drawn-page check.** After each live version, `engine/look.mjs` draws every screen the way people see it, on a phone (390 px, touch) and on a computer (1280 px), with the use log left alone. Rules that hold for any app measure each screen (`measure`, run in the app's frame): nothing scrolls sideways, every tap on a phone is 44 px, text reads at 4.5:1 against what is behind it (colors as the browser draws them), no raw row ids, no screen that draws nothing; then the model looks once at the phone screens against the brief (`lookAt`, a few cents): is the job on the first screen, in a tap or two? What stands in the way goes to the repair as one request (source `look`, `repairRequest`): not after a fix it asked for, and at most once in ten minutes per app. The studio says what the check found; `GET /api/apps/:id` carries the last result as `drawn`; `STRATA_APPS_LOOK=off` turns it off and `STRATA_APPS_LOOK_MODEL=off` keeps the rules without the look. What it finds across apps becomes rules every screen gets: a form of three fields or more above a list folds behind its button on a phone (`"fold": false` keeps it open), a tick in a row is a 44 px target and strikes its row through, big numbers are one compact row, and a table's phone card is a title and one line, not a line per column.
+**The drawn-page check.** After each live version, `engine/look.mjs` draws every screen the way people see it, on a phone (390 px, touch) and on a computer (1280 px), with the use log left alone. Rules that hold for any app measure each screen (`measure`, run in the app's frame): nothing scrolls sideways, every tap on a phone is 44 by 44 px, text reads at 4.5:1 against what is behind it (3:1 for large text; colors as the browser draws them), no raw row ids, no screen that draws nothing; then the model looks once at the phone screens against the brief (`lookAt`, a few cents): is the job on the first screen, in a tap or two? What stands in the way goes to the repair as one request (source `look`, `repairRequest`): not after a fix it asked for, and at most once in ten minutes per app. The studio says what the check found; `GET /api/apps/:id` carries the last result as `drawn`; `STRATA_APPS_LOOK=off` turns it off and `STRATA_APPS_LOOK_MODEL=off` keeps the rules without the look. What it finds across apps becomes rules every screen gets: a form of three fields or more above a list folds behind its button on a phone (`"fold": false` keeps it open), a tick in a row is a 44 px target and strikes its row through, big numbers are one compact row, and a table's phone card is a title and one line, not a line per column.
+
+**Art direction, layouts and the numbers checked.** A new app's plan writes its art direction before any screen (`art` in the plan): the idea in one sentence from the subject's own world, the first screen's layout, the title face, the accent of the main buttons, what its photos show (the product itself, never a related ingredient or a background) and the one main action, in its words. The three designs follow it (an editorial page gets the narrow width), and the screens keep the rules the model is given with it (`ART_DOC` and `TASTE_DOC` in `engine/quality.mjs`): white or genuinely dark pages, no emoji icons or ornamental bars, 44 px targets on a phone, text at 4.5:1, the main action on the first phone screen, labels in the subject's words, honest copy. A screen chooses its page structure with `LAYOUT hero | split | editorial | dashboard | gallery | tool` (`"layout"` in its JSON; `PAGE front LAYOUT editorial` on a front page): `web/screen.js` gathers a working screen's title and numbers as its head and its parts into groups (each starts at a heading or a row of numbers) and places them as the layout says, and the kit draws each from the design's tokens (`web/kit.css`, `web/front.css`); on a front page the layout also picks how a hero that does not say its look is drawn. The drawn-page check measures, besides the rules above: button words against the button (and text over a gradient against each of its colors), the main action below the phone's first screen, and labels that are a column's name, a placeholder or one generic word beside a number ("Groups 4"); the checks it shares with the engine are plain functions (`qualityKit`) sent into the frame. Without Playwright the same labels, the main action and the design's own color pairs are checked from the stored screens and the design (`checkStatic`), and go to the repair the same way, once.
 
 **A screen has a budget.** Changes pile up: each one adds a part, a field or a few lines of code, and after ten a screen does everything badly. So each screen has a budget, told to the model up front and measured on the screen as written (`budgetOf` in `engine/forge.mjs`, before patterns expand): at most 7 parts, 4 big numbers, 8 fields in a form (more go under `{"section"}` headings) and 1,000 characters of code in its expressions and code blocks. A change that takes a screen past one goes back to be consolidated: fold what it adds into a part that is there (a column, a filter, an action on the row), move it to a later screen, or say it with a part's clauses. Two rules hold however small the screen: a change may not give up a part (CHECKS, LIST, ...) for code that does what the part did, since the part's rules (taps, phone layout, empty states) go with it, and it may grow a screen's code by at most 400 characters. The budget is soft: an answer over it only in that is kept on the last try, and the progress line says so. What a person asks (and suggestions they take) while a change is being built waits as one request, built together as one design (`joinAsks` in `engine/changes.mjs`), not one change on top of another; and the drawn-page check does not send a repair while a build runs, so it never fixes a version that is already gone. CHECKS takes `SKIP <bool column>`: a thing can be skipped today, a skipped day keeps the streak without adding to it, and it is not counted as to do.
 
@@ -277,6 +327,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | | |
 |---|---|
 | `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
+| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish) |
 | `engine/forge.mjs` | the forge: the prompt, the context it reads from ChloeDB (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following ChloeDB's feed |
 | `engine/store.mjs` | the system tables in ChloeDB and the app's tables |
@@ -301,6 +352,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/checks.mjs` | a build's tests, run on its new tables, and opening each view in a headless browser |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
+| `engine/access.mjs` | declared access: ALLOW statements per table (what, to whom, which rows by `:user_id` or `:company_id`), the decision for a person, the scope's SQL, and the forge's check that a request asking for sign-in declares it |
 | `engine/publish.mjs` | apps open to the public: the Publish switch, `/a/<id>` and `<name>.<domain>` (`STRATA_APPS_DOMAIN`), hosts of the owner's own, what the public may call, and each visitor's rate ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 | `web/cc-view.js`, `engine/provenance.mjs` | the app creator, a page of a cluster's command center (Apps → App creator): describe and build apps, the live app on a phone, tablet or desktop, and **Made of**, how much of the code that runs the engine generated from CREATE statements and how much the agent wrote from scratch, piece by piece (`GET /api/apps/:id/made`); it gets the frame's runtime from `GET /api/kit` and live updates from long polls of `GET /api/events` ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 
@@ -368,8 +420,9 @@ that fails gets one more try with the problems listed.
 A prototype: people can sign in to apps, but run alone the studio itself
 has no sign-in (anyone who can reach it can change any app; put it behind
 `deploy/gate.mjs` to share it, or run it beside a cluster, where it signs in
-the cluster's admins), app data is not yet limited by row
-rules on the server (`lib.access` checks in views and functions only), what
+the cluster's admins), a table limits its rows only as far as its ALLOW
+statements say (a WHERE compares one column with the person or their
+company, no richer row rules yet), what
 the model costs is limited only in all (`STRATA_APPS_SPEND_CAP_USD`, with a
 share kept apart for apps' own questions) and per app for apps' own
 questions (a count and dollars a day), and a capability that passes the checks can

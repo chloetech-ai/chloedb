@@ -4,11 +4,48 @@
 // settings, plugins and MCP servers are switched off: the model only answers.
 
 import { spawn } from 'node:child_process';
+import { readFile, writeFile, rename, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 export const MODEL = process.env.STRATA_APPS_MODEL || 'claude-opus-5-5';
 const CLAUDE = process.env.STRATA_APPS_CLAUDE || 'claude';
+
+// Which CLI answers: claude (Claude Code, the default), codex (OpenAI's
+// Codex CLI, `codex exec`) or agy (Google's Antigravity CLI, not usable
+// here yet: see askAgy). STRATA_APPS_PROVIDER picks it for the engine; a
+// build can name its own (withProvider, from the `provider` field of
+// POST /api/apps and POST /api/apps/:id/requests), for its model calls only.
+export const PROVIDERS = ['claude', 'codex', 'agy'];
+const CODEX = process.env.STRATA_APPS_CODEX || 'codex';
+const AGY = process.env.STRATA_APPS_AGY || 'agy';
+// The model of each CLI; unset, the CLI's own default. The model names the
+// forge passes (claude-...) are Claude's and go to claude only.
+export const CODEX_MODEL = process.env.STRATA_APPS_CODEX_MODEL || null;
+export const AGY_MODEL = process.env.STRATA_APPS_AGY_MODEL || null;
+
+// A provider named by a request or the environment, checked: null for none.
+export function checkProvider(p) {
+  if (p === undefined || p === null || p === '') return null;
+  const v = String(p).trim().toLowerCase();
+  if (!PROVIDERS.includes(v)) throw Object.assign(new Error(`provider is one of ${PROVIDERS.join(', ')}`), { status: 400 });
+  return v;
+}
+export const PROVIDER = checkProvider(process.env.STRATA_APPS_PROVIDER) || 'claude';
+const chosen = new AsyncLocalStorage();
+// fn's model calls (and what they set off) go to `provider`; none keeps the engine's.
+export function withProvider(provider, fn) {
+  const p = checkProvider(provider);
+  return p ? chosen.run(p, fn) : fn();
+}
+export const currentProvider = () => chosen.getStore() || PROVIDER;
+// The model a provider is asked for: Claude's names only to claude.
+export function modelFor(provider, model) {
+  if (provider === 'claude') return model || MODEL;
+  const own = provider === 'codex' ? CODEX_MODEL : AGY_MODEL;
+  return model && !/^claude/i.test(model) ? model : own;
+}
 
 // A cap on what the model may cost here, for a studio other people can
 // reach: STRATA_APPS_SPEND_CAP_USD, in US dollars, counted from the cost
@@ -89,18 +126,34 @@ export const stoppedError = () => Object.assign(new Error('stopped by its owner'
 // tools: built-in tools the model may use (WebSearch, WebFetch for an app's
 // web ask); none by default. maxBudgetUsd stops a call that costs more.
 // bucket: 'asks' for an app's own call (app.ask), counted apart (overCap).
-export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
+// provider: claude, codex or agy; by default the build's (withProvider) or
+// STRATA_APPS_PROVIDER. Only claude reports what an answer cost: the others
+// count 0 (out.costReported is false).
+export function ask(opts) {
+  const provider = checkProvider(opts.provider) || currentProvider();
+  if (provider === 'codex') return askCodex(opts);
+  if (provider === 'agy') return askAgy(opts);
+  return askClaude(opts);
+}
+
+// The arguments of `claude -p` for one answer.
+export function claudeArgs({ system, model = MODEL, effort, tools = [], maxBudgetUsd, images = [] }) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
+    '--tools', tools.join(','), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
+  if (tools.length) args.push('--allowedTools', tools.join(','));
+  if (maxBudgetUsd) args.push('--max-budget-usd', String(maxBudgetUsd));
+  if (effort) args.push('--effort', effort);
+  if (images.length) args.push('--input-format', 'stream-json');
+  return args;
+}
+
+function askClaude({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
   const over = overCap(bucket);
   if (over) return Promise.reject(over);
   const signal = buildScope.getStore()?.signal;
   if (signal?.aborted) return Promise.reject(stoppedError());
   return new Promise((resolve, reject) => {
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
-      '--tools', tools.join(','), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
-    if (tools.length) args.push('--allowedTools', tools.join(','));
-    if (maxBudgetUsd) args.push('--max-budget-usd', String(maxBudgetUsd));
-    if (effort) args.push('--effort', effort);
-    if (images.length) args.push('--input-format', 'stream-json');
+    const args = claudeArgs({ system, model, effort, tools, maxBudgetUsd, images });
     const env = { ...process.env, CHLOECTX_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
     env.ENGRAM_DISABLE = '1'; // read by ChloeCtx's hooks from before the rename
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
@@ -167,6 +220,140 @@ export function ask({ system, prompt, images = [], model = MODEL, effort = proce
       ...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.type || 'image/png', data: i.data } })),
       { type: 'text', text: prompt }] } })}\n`);
   });
+}
+
+// Codex's reasoning efforts; Claude's others (max) are not passed on.
+const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+// The arguments of `codex exec` for one answer: no tools (no shell, apps,
+// browser, computer use, image generation or web search), a read-only
+// sandbox in an empty folder, nothing of the user's config.toml (its MCP
+// servers, profiles), no rules files and no session kept. The system prompt
+// goes in as developer instructions; the prompt is read from stdin ('-');
+// events come as JSONL (--json) and the final answer also lands in outFile.
+// images: paths of files.
+export function codexArgs({ system, model = null, effort, images = [], outFile, cwd }) {
+  const args = ['exec', '--json', '--color', 'never', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
+    '--disable', 'shell_tool', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '--disable', 'image_generation',
+    '-c', 'web_search="disabled"', '-c', 'approval_policy="never"'];
+  if (cwd) args.push('--cd', cwd);
+  if (outFile) args.push('--output-last-message', outFile);
+  if (model) args.push('--model', model);
+  if (effort && CODEX_EFFORTS.has(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
+  if (system) args.push('-c', `developer_instructions=${JSON.stringify(String(system))}`);
+  for (const f of images) args.push('--image', f);
+  args.push('-');
+  return args;
+}
+
+// What one line of `codex exec --json` says: {text} for an answer, {thinking}
+// for reasoning, {usage} at the end of the turn, {error} when it failed.
+export function codexEvent(l) {
+  let j;
+  try { j = JSON.parse(l); } catch { return null; }
+  if (j.type === 'item.completed' || j.type === 'item.updated') {
+    const it = j.item || {};
+    if (it.type === 'agent_message') return { text: String(it.text || ''), done: j.type === 'item.completed' };
+    if (it.type === 'reasoning') return { thinking: String(it.text || '') };
+    return { other: true };
+  }
+  if (j.type === 'turn.completed') return { usage: j.usage || {} };
+  if (j.type === 'turn.failed') return { error: j.error?.message || 'the turn failed' };
+  if (j.type === 'error') return { warning: String(j.message || '') };
+  return { other: true };
+}
+
+function askCodex({ system, prompt, images = [], model, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CODEX, tools = [], bucket = 'build' }) {
+  if (tools.length) return Promise.reject(new Error(`the codex provider runs without tools; ${tools.join(', ')} needs the claude provider`));
+  const over = overCap(bucket);
+  if (over) return Promise.reject(over);
+  const use = modelFor('codex', model);
+  return (async () => {
+    const dir = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'sa-codex-'));
+    try {
+      const files = [];
+      for (const [i, im] of images.entries()) {
+        const f = path.join(dir, `image-${i}.${/jpe?g/.test(im.type || '') ? 'jpg' : 'png'}`);
+        await writeFile(f, Buffer.from(im.data, 'base64'));
+        files.push(f);
+      }
+      const outFile = path.join(dir, 'answer.txt');
+      const work = path.join(dir, 'work');
+      await mkdir(work);
+      const args = codexArgs({ system, model: use, effort, images: files, outFile, cwd: work });
+      const t0 = Date.now();
+      const out = await runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd: work });
+      const last = await readFile(outFile, 'utf8').catch(() => '');
+      const text = last.trim() ? last : out.text;
+      if (!text.trim()) throw new Error(`codex gave no answer${out.warning ? `: ${out.warning.slice(0, 400)}` : ''}`);
+      // Codex reports tokens, not dollars: the answer counts 0 against the cap.
+      counted(0, bucket);
+      return { text, usage: out.usage, cost: 0, costReported: false, ms: Date.now() - t0, model: use || 'codex default', provider: 'codex' };
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+}
+
+function runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd }) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, CHLOECTX_DISABLE: '1', ENGRAM_DISABLE: '1' };
+    const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd });
+    let buf = '';
+    let err = '';
+    let text = '';
+    let usage = {};
+    let failed = null;
+    let warning = '';
+    const seen = { chars: 0, thinking: 0 };
+    let settled = false;
+    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); child.kill('SIGKILL'); reject(e); };
+    const cap = setTimeout(() => fail(new Error(`codex took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
+    let idle;
+    const quiet = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => fail(new Error(`codex wrote nothing for ${Math.round(idleMs / 1000)} s (${seen.chars} characters written)`)), idleMs);
+    };
+    quiet();
+    const line = (l) => {
+      if (!l.trim()) return;
+      const e = codexEvent(l);
+      if (!e) return;
+      quiet();
+      if (e.text !== undefined) {
+        if (e.done) { text = text ? `${text}\n${e.text}` : e.text; seen.chars = text.length; onWrite?.(seen, text); }
+      } else if (e.thinking !== undefined) { seen.thinking += e.thinking.length; onWrite?.(seen, text); }
+      else if (e.usage) usage = e.usage;
+      else if (e.error) failed = e.error;
+      else if (e.warning) warning = e.warning;
+    };
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    });
+    child.stderr.on('data', (d) => { err += d; if (err.length > 20000) err = err.slice(-10000); });
+    child.on('error', (e) => fail(new Error(`could not run ${bin}: ${e.message}. Install the Codex CLI and sign in (codex login), or set STRATA_APPS_CODEX`)));
+    child.on('close', (code) => {
+      line(buf);
+      if (settled) return;
+      settled = true;
+      clearTimeout(cap);
+      clearTimeout(idle);
+      if (failed) return reject(new Error(`codex: ${failed.slice(0, 600)}`));
+      if (code !== 0) return reject(new Error(`codex exited ${code}: ${(warning || err || text).slice(0, 600)}`));
+      resolve({ text, usage, warning });
+    });
+    child.stdin.end(prompt);
+  });
+}
+
+// Antigravity's CLI (agy) is not wired: its --help could not be read on the
+// machine this was written on (the binary was killed on start), so there is
+// no checked way to ask it one prompt and read only the answer. A build that
+// names it fails at once with this error rather than guessing at flags.
+export const AGY_UNSUPPORTED = 'the agy (Antigravity) provider is not supported yet: no checked non-interactive single-prompt mode; use claude or codex';
+function askAgy() {
+  return Promise.reject(Object.assign(new Error(AGY_UNSUPPORTED), { status: 400 }));
 }
 
 // The model answers with a plan, as JSON inside <plan>...</plan>, and the
