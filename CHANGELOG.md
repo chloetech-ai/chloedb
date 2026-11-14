@@ -11,39 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-Connectors locked down (audit 4, X-N1, X-N2, X-N4, X-N5). Auth changes:
-the connectors' tables are the server's own, and `env:` secrets read only
-variables with a prefix.
-
-### What changes by default
-
-- `chloedb_connectors`, `chloedb_connector_runs` and
-  `chloedb_connector_state` are written by the server only: a statement or
-  write that changes them answers 403 `server_owned` for every key, an
-  admin's too (the root token is still let through). Change a connector
-  with `POST /v1/admin/connectors/NAME`. A write key could otherwise point a
-  connector, with its credentials, at any URL, or give its run a key that
-  writes every table (`target = '*'`).
-- The schedule, a run and a push check each config row as the API does; a
-  row that fails shows health `invalid` and does not run. Configs record
-  `updated_by` (the column is added to an existing table at the next change).
-- A connector reaches the public internet only. A system on a private
-  network or the server's own machine needs `"allow_internal": true` in the
-  connector's config; link-local addresses (cloud metadata) are refused
-  even then. **Connectors made before this that read an internal system
-  (a Prometheus inside the cluster, say) fail until it is set.**
-- A connector's auth and headers go to its configured origin only:
-  redirects are followed within it (five at most), and an `http_json` next
-  page elsewhere is asked without them or any secret.
-- An answer is read up to 32 MiB (`max_body_mb`, up to 1024), a Prometheus
-  run keeps 20,000 records at most (ending at an earlier step when its
-  series make more), and a push takes 20,000 records (413 beyond) and a
-  body of 32 MiB at most.
-- An `env:` secret names a variable that starts with
-  `CHLOEDB_CONNECTOR_SECRET_` (`--connector-env-prefix`); another is
-  refused (400) and, if kept from before, not read. A dry run
-  (`POST /v1/admin/connectors/test`) takes no `env:` secret.
-
 ## 0.3.3
 
 The afternoon audit's fixes, a ChloeCtx inspector organised by space, and
@@ -52,8 +19,11 @@ smaller, faster rollups: `chloedb-server-v0.3.3`, `chloedb-py-v0.3.3` and
 `chloedb-sheets` and `chloectx` are attached prebuilt to the server's
 release). The file format stays 3 and the shard protocol stays 21; no plan
 feature is new, so servers of 0.3.2 and 0.3.3 mix in a cluster in either
-order. Auth changes: a connector's push key reads nothing, and
-`POST /v1/admin/keys` refuses fields it does not know (below).
+order. Auth changes: a connector's push key reads nothing,
+`POST /v1/admin/keys` refuses fields it does not know, the connectors'
+tables are the server's own, and `env:` secrets read only variables with a
+prefix (below). **A connector that reads an internal system needs
+`"allow_internal": true`.**
 
 ### What changes by default
 
@@ -92,6 +62,39 @@ order. Auth changes: a connector's push key reads nothing, and
   `codex exec` get a reduced environment, Codex is off unless
   `STRATA_APPS_CODEX_ON=1`, and its MCP server signs in with the engine's
   agent token.
+
+### Connectors
+
+Connectors locked down (audit 4, X-N1, X-N2, X-N4, X-N5). Auth changes:
+the connectors' tables are the server's own, and `env:` secrets read only
+variables with a prefix. These change by default:
+
+- `chloedb_connectors`, `chloedb_connector_runs` and
+  `chloedb_connector_state` are written by the server only: a statement or
+  write that changes them answers 403 `server_owned` for every key, an
+  admin's too (the root token is still let through). Change a connector
+  with `POST /v1/admin/connectors/NAME`. A write key could otherwise point a
+  connector, with its credentials, at any URL, or give its run a key that
+  writes every table (`target = '*'`).
+- The schedule, a run and a push check each config row as the API does; a
+  row that fails shows health `invalid` and does not run. Configs record
+  `updated_by` (the column is added to an existing table at the next change).
+- A connector reaches the public internet only. A system on a private
+  network or the server's own machine needs `"allow_internal": true` in the
+  connector's config; link-local addresses (cloud metadata) are refused
+  even then. **Connectors made before this that read an internal system
+  (a Prometheus inside the cluster, say) fail until it is set.**
+- A connector's auth and headers go to its configured origin only:
+  redirects are followed within it (five at most), and an `http_json` next
+  page elsewhere is asked without them or any secret.
+- An answer is read up to 32 MiB (`max_body_mb`, up to 1024), a Prometheus
+  run keeps 20,000 records at most (ending at an earlier step when its
+  series make more), and a push takes 20,000 records (413 beyond) and a
+  body of 32 MiB at most.
+- An `env:` secret names a variable that starts with
+  `CHLOEDB_CONNECTOR_SECRET_` (`--connector-env-prefix`); another is
+  refused (400) and, if kept from before, not read. A dry run
+  (`POST /v1/admin/connectors/test`) takes no `env:` secret.
 
 ### SQL and the engine
 
@@ -337,6 +340,7 @@ No one-way door.
 - A server removes, when it starts, the copies of its database that a transfer left behind because the server was stopped partway through (`.db.strata.copy-*`, `.db.strata.restore-*`). Home now reports a copy that uses over twice the disk of its shard's other copies, when the difference is more than 1 GB (audit LIV-7).
 - Home's readiness card counted routes twice ("3 routes" for 2) and counted built-in rules as having no runbook. It also said "1 shards have one copy". The full `GET /v1/alerts` now gives `runbook_docs` to each rule whose runbook is compiled in (audit CCW-13).
 - Rollouts: the upgrader's note about the app engine's image now starts with "App engine image:", so it no longer reads as the servers' version (audit LIV-15).
+- The cluster simulator's check of a late-won term now asks that its primary hold the writes acknowledged by an older term's primary, as Raft promises, rather than every write that was a transaction of an older term. A retry of an old term's write is acknowledged by a newer primary once that primary's term commits, so nightly seed 624144435 reported a lost write that was none: a cut-off replica won a stale term after a 10 s vote round and was fenced before serving anything. The server is unchanged (0.3.2 fails the seed the same way); the seed is kept in the simulator's test.
 - CI: the on-demand runner's secrets (`DIGITALOCEAN_TOKEN`, and `CI_RUNNER_ADMIN_TOKEN`, which has Administration on the repository) are read from the environment `ci-runner`, which only main may use, so a branch's copy of `ci.yml` cannot read them. A run outside main (a pull request's, the merge queue's, a tag's) is placed by `ci-runner.yml`'s new job `place`, which runs main's code with them and posts the label as the commit status `ci-runner`. The secrets have to be moved from the repository into that environment (`.github/ci-runner/README.md`) (audit 4, X-I2).
 - CI: chloedb-server's Postgres tests fail instead of passing without running when the runner has no Postgres (`CHLOEDB_TEST_POSTGRES_REQUIRED`, set on Linux), and the on-demand runner's image has Postgres's programs again, unpacked so that no service starts while it is built (audit 4, X-I3).
 
