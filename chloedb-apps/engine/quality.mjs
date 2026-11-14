@@ -56,6 +56,7 @@ export const ART_DOC = `- art: the app's art direction, for a new app, decided w
   "accent": the one color of the main buttons, named as the subject would ("brick red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
   "theme": "light" or "dark": the ground the app stands on, chosen for its identity as a brand would. Dark with one vivid accent gives a personal tool used daily, a night-time or technical subject or anything that wants a bold, focused look a strong identity; light suits paper-like records, shops and pages read in daylight. Commit to it;
   "imagery": what the photos show, the real product itself (the bike on the repair stand, the ferry at the pier), never a related ingredient, plant or background, or "none" when photos do not help the job or there is no real photo of the product to show: then the first screen is type-led (a hero with "look": "type"), never a stock photo standing in;
+  Together the theme, the title type and the accent make the app recognisable at a glance, as a brand is: a plain system face on a light page with a stock blue or teal is what every app looks like, so choose them for this product;
   "action": the one main action and its words, a concrete verb ("Book a repair", "See the next ferry"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)

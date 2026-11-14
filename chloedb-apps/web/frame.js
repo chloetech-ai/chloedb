@@ -292,6 +292,9 @@
     time(v) { return v ? asDate(v).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; },
     datetime(v) { return v ? `${fmt.date(v)}, ${fmt.time(v)}` : ''; },
     number(n) { return n === null || n === undefined ? '' : Number(n).toLocaleString(); },
+    // a count with its word, the word agreeing: count(1, 'flag') -> "1 flag", count(3, 'flag') -> "3 flags",
+    // count(2, 'person', 'people'); a word that does not take an s gives its plural
+    count(n, one, many) { const v = Number(n) || 0; const w = v === 1 ? String(one) : String(many || (/(s|x|z|ch|sh)$/.test(String(one)) ? `${one}es` : /[^aeiou]y$/.test(String(one)) ? `${String(one).slice(0, -1)}ies` : `${one}s`)); return `${v.toLocaleString()} ${w}`; },
     money(n, currency = SA.currency || 'USD') { if (n === null || n === undefined || n === '') return ''; const v = Number(n); try { return v.toLocaleString(LOCALE, { style: 'currency', currency }); } catch { return v.toLocaleString(LOCALE); } },
   };
 

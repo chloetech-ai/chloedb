@@ -1158,15 +1158,24 @@ window.__sa_numbers = (() => {
         if (!groups.length || ((headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('section.section'))) && groups.at(-1).length)) groups.push([]);
         groups.at(-1).push(list[i]);
       }
+      // A group of controls alone (a heading over a week's arrows, a filter
+      // row) leads the part after it: as a column of its own it would be a
+      // strip beside an empty column.
+      const MAIN = 'table, form, .card, .code-box, ul, ol, .list, .kpis, canvas, svg, img, [class*="sa-"]';
+      for (let k = 0; k < groups.length - 1; k++) {
+        const g = groups[k];
+        if (g.every((el) => el.nodeType !== 1 || (!el.matches(MAIN) && !el.querySelector(MAIN)))) { groups[k + 1].unshift(...g); groups.splice(k, 1); k--; }
+      }
       const box = (cls, kids) => h('div', { class: cls }, kids);
       const top = [...quiet, ...(head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [])];
       if (!groups.length) return top;
       const cells = groups.map((g, k) => box(`lay-group lay-g${k}`, g));
-      // A wide table (four columns or more) never shares a row: in a column
+      // A wide table (four columns or more) or a board never shares a row: in a column
       // beside another part it is cut off at its right while the other
       // leaves a hole under it. It takes the page's width, the narrower
       // parts the split above it.
-      const wide = (c) => [...c.querySelectorAll('table')].some((t) => ((t.tHead && t.tHead.rows[0]) || t.rows[0])?.cells.length >= 4);
+      // (a board of columns is as wide: its columns scroll out of a half page)
+      const wide = (c) => [...c.querySelectorAll('table')].some((t) => ((t.tHead && t.tHead.rows[0]) || t.rows[0])?.cells.length >= 4) || !!c.querySelector('.sa-kb, .board');
       if (layout === 'split' && cells.length > 1) {
         const narrow = cells.filter((c) => !wide(c));
         if (narrow.length === cells.length) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];

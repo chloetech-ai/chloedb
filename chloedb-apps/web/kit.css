@@ -582,7 +582,7 @@ body.layout-report #root { max-width: min(var(--page), 980px); counter-reset: rs
 /* dashboard: numbers on top, then a grid of cards */
 .lay-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: var(--space); align-items: start; }
 .layout-dashboard .lay-grid > .lay-group { background: var(--card); border: 1px solid var(--card-border); box-shadow: var(--card-shadow); border-radius: var(--radius); padding: var(--pad); }
-.layout-dashboard .lay-grid > .lay-group:has(table) { grid-column: 1 / -1; }
+.layout-dashboard .lay-grid > .lay-group:is(:has(table), :has(.sa-kb)) { grid-column: 1 / -1; }
 .layout-dashboard > .lay-head .kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 /* gallery: photos and cards first, in tiles */
 .layout-gallery :is(.rcards, .list:has(> .card)) { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 14px; }
@@ -761,7 +761,7 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
    tables and numbers take a row of their own */
 .lay-grid { display: flex; flex-wrap: wrap; align-items: flex-start; }
 .lay-grid > .lay-group { flex: 1 1 min(100%, 380px); }
-.lay-grid > .lay-group:is(:has(table), :has(> .kpis:first-child), .lay-actions) { flex-basis: 100%; }
+.lay-grid > .lay-group:is(:has(table), :has(.sa-kb), :has(> .kpis:first-child), .lay-actions) { flex-basis: 100%; }
 .lay-grid > .lay-group:has(> .card:only-child) > .card { flex: 1; }
 /* a row with a part pushed right (a price, a count) spans its line: the words
    beside it take the room, so the right part lines up down a list */
