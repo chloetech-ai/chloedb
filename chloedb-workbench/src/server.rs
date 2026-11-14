@@ -153,6 +153,9 @@ pub fn router(app: App) -> Router {
         // Fifth build: Hotspots.
         .merge(crate::hotspots::routes())
         .merge(crate::complete::routes())
+        // Sixth build: repositories without an agent, and the user guide.
+        .merge(crate::repos::routes())
+        .route("/guide.md", get(guide_md))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -215,7 +218,24 @@ const LEVELS: &[(&str, &str)] = &[
     ("trace.js", include_str!("../ui/levels/trace.js")),
     ("hotspots.js", include_str!("../ui/levels/hotspots.js")),
     ("complete.js", include_str!("../ui/levels/complete.js")),
+    ("repos.js", include_str!("../ui/levels/repos.js")),
+    ("rules.js", include_str!("../ui/levels/rules.js")),
+    ("guide.js", include_str!("../ui/levels/guide.js")),
 ];
+
+/// The user guide (GUIDE.md), compiled in; `#/guide` renders it.
+const GUIDE: &str = include_str!("../GUIDE.md");
+
+async fn guide_md(State(app): State<App>) -> Response {
+    match &app.ui_dir {
+        // With the UI read from disk, the guide beside it is too.
+        Some(dir) => match std::fs::read_to_string(dir.join("../GUIDE.md")) {
+            Ok(s) => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], s).into_response(),
+            Err(_) => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], GUIDE).into_response(),
+        },
+        None => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], GUIDE).into_response(),
+    }
+}
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {
     match LEVELS.iter().find(|(n, _)| *n == file) {

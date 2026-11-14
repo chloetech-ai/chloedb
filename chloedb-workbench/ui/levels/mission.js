@@ -78,7 +78,7 @@ function mountMission(root, ctx) {
     if (!S.loaded) return h("div", { class: "mi-wrap mi-loading" }, h("div", { class: "mi-skel" }), h("div", { class: "mi-skel short" }));
     if (S.error && !S.detail && !S.goal) return h("div", { class: "mi-wrap" }, h("div", { class: "lv-card mi-err" }, h("b", {}, "Mission could not load."), h("div", { class: "muted" }, S.error),
       h("button", { class: "btn sm", "data-key": "retry", onclick: () => { S.loaded = false; render(); load(); } }, "Try again")));
-    if (!S.goal) return setGoal();
+    if (!S.goal || S.newGoal) return setGoal();
     const agents = agentMap();
     S.used = new Set();
     return h("div", { class: "mi-wrap" }, header(agents), columns(agents), pulseCard(), learnedCard(), side(agents));
@@ -101,7 +101,9 @@ function mountMission(root, ctx) {
     const lead = g.lead && agents.get(g.lead);
     return h("header", { class: "mi-head" },
       h("div", { class: "mi-head-l" },
-        h("div", { class: "mi-kicker" }, "Goal", h("span", {}, `set at ${fmtClock(g.created)}`), h("span", {}, base(g.repo))),
+        h("div", { class: "mi-kicker" }, "Goal", h("span", {}, `set at ${fmtClock(g.created)}`), h("span", {}, base(g.repo)),
+          h("button", { class: "lv-link mi-newgoal", "data-key": "new-goal", title: "Set another goal: a lead, your own outcomes, or agents already running", onclick: () => { S.newGoal = true; S.form = null; render(); } }, "+ New goal")),
+        S.goalNote ? h("div", { class: "mi-gmsg bad" }, S.goalNote) : null,
         h("h1", { class: "mi-goal" }, g.text),
         h("div", { class: "mi-sub" }, facts.map((f) => h("span", {}, f))),
         lead ? h("button", { class: "mi-lead", "data-nav": "", "data-key": "lead", onclick: () => ctx.go(`#/story/${lead.id}`), title: `Open ${lead.name}'s story` },
@@ -325,36 +327,106 @@ function mountMission(root, ctx) {
   }
 
   // ------------------------------------------------------------- set a goal
+  // Three ways to staff a goal (sixth build, Dev): a lead that plans it; the
+  // outcomes you already know, one agent each and no planner; or agents
+  // already running, each made an outcome. The lead's (or the agents')
+  // model and effort are picked here. The form is built once and kept, so
+  // that the stream's re-renders keep what was typed.
+  const MODES = [["plan", "A lead plans it"], ["outcomes", "I know the outcomes"], ["agents", "Agents already running"]];
   function setGoal() {
+    if (S.form) { S.form.sync(); return S.form.el; }
+    const G = { mode: "plan", picked: new Set() };
     const text = h("textarea", { class: "mi-gt", rows: 3, "data-key": "goal-text", placeholder: "Refunds v2: partial refunds, idempotent, visible in the dashboard", "aria-label": "The goal" });
     import("./complete.js").then((m) => m.attachComplete(text, { field: "goal", ctx, repo: () => repo.value.trim() })).catch(() => {}); // Fifth build: autocomplete
     const repo = h("input", { class: "mi-gr", "data-key": "goal-repo", value: S.repo || "", placeholder: "/path/to/the/repository", "aria-label": "Repository", spellcheck: "false" });
-    const msg = h("div", { class: "mi-gmsg muted" }, "A lead agent breaks it into 3 to 8 outcomes, starts an agent for each, and asks you here rather than in a terminal.");
+    const outs = h("textarea", { class: "mi-gt mi-gos", rows: 4, "data-key": "goal-outcomes", "aria-label": "The outcomes, one per line",
+      placeholder: "Totals in integer cents — test_cart passes with 0.1 + 0.2\nPay button submits the order — test_web clicks Pay\nCSV export of orders — a test reads the file back" });
+    const model = h("input", { class: "mi-gr mi-gm", "data-key": "goal-model", list: "mi-models", placeholder: "default", "aria-label": "Model", spellcheck: "false" });
+    const effort = h("select", { class: "mi-gr mi-ge", "data-key": "goal-effort", "aria-label": "Effort" },
+      h("option", { value: "" }, "default"), ["low", "medium", "high", "xhigh", "max"].map((e) => h("option", { value: e }, e)));
+    const who = h("div", { class: "mi-gwho", role: "tablist", "aria-label": "Who does the work" });
+    const panel = h("div", { class: "mi-gpanel" });
+    const msg = h("div", { class: "mi-gmsg muted" });
     const go = h("button", { class: "btn primary", type: "submit", "data-key": "goal-go" }, "Plan it", h("kbd", {}, "⌘↵"));
+    const lines = () => outs.value.split("\n").map((l) => l.trim().replace(/^([-*]|\d+[.)])\s+/, "")).filter(Boolean);
+    const spec = (l) => { const m = l.split(/\s+[—–]\s+|\s+--\s+/); return m.length > 1 ? { title: m[0].trim(), detail: m.slice(1).join(" — ").trim() } : { title: l }; };
+    const running = () => (S.stream || []).filter((a) => a.running !== false && a.state !== "exited" && (!repo.value.trim() || a.repo === repo.value.trim()));
+    const modelRow = (whose) => h("div", { class: "mi-gmodel" },
+      h("label", { class: "mi-glab" }, h("span", {}, `${whose} model`), model),
+      h("label", { class: "mi-glab" }, h("span", {}, "Effort"), effort),
+      h("datalist", { id: "mi-models" }, ["haiku", "sonnet", "opus"].map((m) => h("option", { value: m }))));
+
+    function sync() {
+      who.replaceChildren(...MODES.map(([k, label]) => h("button", {
+        type: "button", role: "tab", "aria-selected": String(G.mode === k), class: "mi-gw" + (G.mode === k ? " on" : ""), "data-key": `gw:${k}`,
+        onclick: () => { G.mode = k; sync(); },
+      }, label, k === "agents" ? h("span", { class: "n" }, String(running().length)) : null)));
+      if (G.mode === "plan") {
+        panel.replaceChildren(h("p", { class: "muted mi-gp" }, "A lead agent reads the repository, breaks the goal into 3 to 8 outcomes, starts an agent for each, and asks you here rather than in a terminal. It costs a planner's session; pick a cheaper model for it if you like."), modelRow("Lead's"));
+        go.firstChild.textContent = "Plan it";
+      } else if (G.mode === "outcomes") {
+        const n = lines().length;
+        panel.replaceChildren(
+          h("label", { class: "mi-gl2" }, "The outcomes, one per line", h("span", { class: "muted" }, " · after “ — ”, how to tell it is done")),
+          outs,
+          h("p", { class: "muted mi-gp" }, n ? `${n} agent${n === 1 ? "" : "s"} start, one per outcome, each in its own worktree; no planner.` : "Each line starts its own agent, in its own worktree; no planner."),
+          modelRow("Agents'"));
+        go.firstChild.textContent = n ? `Start ${n} agent${n === 1 ? "" : "s"}` : "Start the agents";
+      } else {
+        const list = running();
+        for (const id of [...G.picked]) if (!list.some((a) => a.id === id)) G.picked.delete(id);
+        panel.replaceChildren(list.length
+          ? h("div", { class: "mi-gagents" }, list.map((a) => h("label", { class: "mi-ga" + (G.picked.has(a.id) ? " on" : "") },
+            h("input", { type: "checkbox", checked: G.picked.has(a.id), "data-key": `ga:${a.id}`, onchange: (e) => { if (e.target.checked) G.picked.add(a.id); else G.picked.delete(a.id); sync(); } }),
+            avatar(a, 20), h("b", {}, a.name), h("span", { class: "muted mi-gat" }, a.task ? String(a.task).split("\n")[0].slice(0, 140) : a.state))))
+          : h("p", { class: "muted mi-gp" }, "No agent is running in this repository. Start them with New agent (n), then come back to set their goal."),
+        list.length ? h("p", { class: "muted mi-gp" }, "Each one you tick becomes an outcome of the goal (its task is the title) and is told so at its next step.") : null);
+        const n = G.picked.size;
+        go.firstChild.textContent = n ? `Set the goal for ${n} agent${n === 1 ? "" : "s"}` : "Set the goal";
+      }
+      go.disabled = S.sending || (G.mode === "agents" && !G.picked.size) || (G.mode === "outcomes" && !lines().length);
+    }
+    outs.addEventListener("input", () => sync());
+    repo.addEventListener("change", () => sync());
+
     const submit = async (e) => {
       e && e.preventDefault();
       if (S.sending) return;
       const t = text.value.trim(), r = repo.value.trim();
       if (!t) { text.focus(); return; }
       if (!r) { repo.focus(); return; }
-      S.sending = true; go.disabled = true; msg.textContent = "Setting the goal and starting a lead…";
+      const body = { repo: r, text: t };
+      if (G.mode === "plan") body.plan = true;
+      if (G.mode === "outcomes") { if (!lines().length) { outs.focus(); return; } body.outcomes = lines().map(spec); }
+      if (G.mode === "agents") { if (!G.picked.size) return; body.agents = [...G.picked]; }
+      if (G.mode !== "agents") { if (model.value.trim()) body.model = model.value.trim(); if (effort.value) body.effort = effort.value; }
+      S.sending = true; go.disabled = true; msg.className = "mi-gmsg muted";
+      msg.textContent = G.mode === "plan" ? "Setting the goal and starting a lead…" : G.mode === "outcomes" ? "Setting the goal and starting its agents…" : "Setting the goal…";
       try {
-        await ctx.api("/api/goals", { method: "POST", body: { repo: r, text: t, plan: true } });
+        const out = await ctx.api("/api/goals", { method: "POST", body });
         S.repo = r;
+        if ((out.missing || []).length) { S.goalNote = out.missing.join(" "); }
+        S.form = null; S.newGoal = false;
         await load();
-      } catch (err) { msg.textContent = err.message; msg.className = "mi-gmsg bad"; go.disabled = false; }
+      } catch (err) { msg.textContent = err.message; msg.className = "mi-gmsg bad"; }
       S.sending = false;
+      sync();
     };
     text.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(e); });
+    outs.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(e); });
     queueMicrotask(() => { if (!document.activeElement || document.activeElement === document.body) text.focus(); });
-    return h("div", { class: "mi-wrap mi-empty" },
+    const el2 = h("div", { class: "mi-wrap mi-empty" },
       h("form", { class: "lv-card mi-set", onsubmit: submit },
         h("div", { class: "mi-kicker" }, "Mission", h("span", {}, S.repo ? base(S.repo) : "no repository yet")),
         h("h1", { class: "mi-goal" }, "Set a goal"),
         h("p", { class: "muted" }, "Say what the fleet should get done, in a sentence. You steer outcomes here; the terminals stay one level down."),
         text,
         h("label", { class: "mi-glab" }, h("span", {}, "Repository"), repo),
-        h("div", { class: "mi-gfoot" }, msg, go)));
+        h("div", { class: "mi-gl2 mi-gwho-l" }, "Who does the work"), who, panel,
+        h("div", { class: "mi-gfoot" }, msg, S.goal ? h("button", { class: "btn ghost", type: "button", "data-key": "goal-cancel", onclick: () => { S.newGoal = false; S.form = null; render(); } }, "Cancel") : null, go)));
+    S.form = { el: el2, sync };
+    sync();
+    return el2;
   }
 
   // ------------------------------------------------------------- life
@@ -463,6 +535,21 @@ useStyle("mission", `
 .mi-glab{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center;margin-top:12px;color:var(--muted);font-size:12.5px}
 .mi-gfoot{display:flex;align-items:center;gap:14px;justify-content:space-between;margin-top:16px}
 .mi-gmsg{font-size:12.5px;line-height:1.4}.mi-gmsg.bad{color:var(--crit-ink)}
+.mi-newgoal{margin-left:10px;font-size:11.5px;text-transform:none;letter-spacing:0}
+.mi-gl2{display:block;margin-top:14px;color:var(--muted);font-size:12.5px;font-weight:600}.mi-gl2 .muted{font-weight:400}
+.mi-gwho{display:inline-flex;flex-wrap:wrap;gap:2px;margin-top:6px;padding:3px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2)}
+.mi-gw{border:0;background:none;border-radius:999px;padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;color:var(--text-2);cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.mi-gw:hover{color:var(--text)}.mi-gw.on{background:var(--surface);color:var(--accent);box-shadow:var(--shadow-1)}
+.mi-gw .n{font-size:11px;color:var(--muted);font-weight:500}
+.mi-gpanel{margin-top:10px}
+.mi-gp{margin:8px 0 0!important;font-size:12.5px}
+.mi-gos{font-size:13px;min-height:96px;margin-top:6px}
+.mi-gmodel{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.mi-gmodel .mi-glab{grid-template-columns:auto 1fr}
+.mi-gagents{display:flex;flex-direction:column;gap:4px;margin-top:6px;max-height:260px;overflow:auto}
+.mi-ga{display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:9px;cursor:pointer;min-width:0}
+.mi-ga.on{border-color:var(--accent);background:var(--accent-soft)}
+.mi-gat{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-size:12px}
 .mi-err{display:flex;flex-direction:column;gap:8px;align-items:flex-start;max-width:560px}
 .mi-loading{display:block}.mi-skel{height:28px;border-radius:8px;background:var(--surface-3);width:55%;margin-bottom:12px;animation:pulse 1.4s ease-in-out infinite}.mi-skel.short{width:30%;height:14px}
 @media (max-width:1180px){

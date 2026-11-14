@@ -338,6 +338,8 @@ impl StateDb {
         db.sql(crate::hotspots::TABLE, &Params::new()).map_err(e)?;
         db.sql(COMPLETE_ITEMS, &Params::new()).map_err(e)?;
         db.sql(COMPLETE_EVENTS, &Params::new()).map_err(e)?;
+        // Sixth build: repositories opened without an agent (src/repos.rs).
+        db.sql(crate::repos::TABLE, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });

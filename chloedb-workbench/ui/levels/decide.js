@@ -16,6 +16,8 @@ const isToday = (t) => { const d = new Date(toMs(t) || 0); return d.toDateString
 const PERM_LABELS = ["Yes", "Always", "No"];
 // Change requests (guarded actions): a section of its own (ui/levels/change-requests.js).
 import { changeRequests } from "./change-requests.js";
+// Sixth build: the Rules panel, with add, edit and delete (ui/levels/rules.js).
+import { rulesPanel } from "./rules.js";
 
 export function mount(root, ctx) {
   let wanted = routeParam(ctx, "question");
@@ -30,6 +32,10 @@ export function mount(root, ctx) {
   root.append(el);
   const render = () => rerender(el, view);
   let alive = true;
+  const rulesP = rulesPanel(ctx, {
+    repo: () => S.repo, rules: () => S.rules, setRules: (l) => { S.rules = l; }, render: () => { if (alive) render(); },
+    toggle: (r) => toggleRule(r), fresh: S.fresh, questionText: (id) => [...S.open, ...S.answered].find((x) => x.id === id)?.text,
+  });
 
   // ------------------------------------------------------------- data
   async function load() {
@@ -174,7 +180,7 @@ export function mount(root, ctx) {
         byYou || byTerm ? h("span", { class: "muted" }, ` You answered ${[byYou ? plural(byYou, "other") : null, byTerm ? `${byTerm} in a terminal` : null].filter(Boolean).join(" and ")}.`) : null),
       h("div", { class: "de-row" },
         S.answered.length ? h("button", { class: `btn sm${S.review ? " on" : ""}`, "data-key": "review", "aria-expanded": S.review ? "true" : "false", onclick: () => { S.review = !S.review; render(); } }, S.review ? "Only the last 3" : `Review today's ${S.answered.length}`) : null,
-        h("button", { class: "btn sm", "data-key": "to-rules", onclick: () => { const r = el.querySelector(".de-rules"); r && r.scrollIntoView({ behavior: "smooth", block: "start" }); const f = r && r.querySelector(".de-sw"); f && f.focus({ preventScroll: true }); } }, `Rules (${S.rules.length})`)),
+        h("button", { class: "btn sm", "data-key": "to-rules", onclick: () => rulesP.open() }, `Rules (${S.rules.length})`)),
       h("div", { class: "de-auto-l" }, (S.review ? S.answered : byRule.slice(0, 3)).map(item)));
   }
 
@@ -301,17 +307,9 @@ export function mount(root, ctx) {
   }
 
   function rulesCard() {
-    const on = S.rules.filter((r) => r.active).length;
-    const qtext = (id) => [...S.open, ...S.answered].find((x) => x.id === id)?.text;
-    return h("section", { class: "lv-card de-rules" },
-      h("div", { class: "de-rules-h" }, h("h2", { class: "lv-h" }, "Rules", h("span", { class: "n" }, `· ${S.rules.length} · ${on} on`)),
-        h("span", { class: "muted" }, "The active ones reach every agent of this repo at its next prompt.")),
-      S.rules.length ? h("ul", {}, S.rules.map((r) => h("li", { class: `${r.active ? "" : "off"}${S.fresh.has(r.id) ? " fresh" : ""}` },
-        h("button", { class: "de-sw", role: "switch", "aria-checked": r.active ? "true" : "false", "aria-label": `${r.active ? "Turn off" : "Turn on"}: ${r.text}`, "data-nav": "", "data-key": `sw:${r.id}`, onclick: () => toggleRule(r) }, h("i")),
-        h("div", { class: "de-rule-x" }, h("div", {}, inlineCode(r.text)),
-          h("div", { class: "muted" }, [`made ${fmtDay(r.created)}`, qtext(r.question) ? `from “${qtext(r.question)}”` : null, S.fresh.has(r.id) ? "new" : null].filter(Boolean).join(" · ")))))) :
-        h("div", { class: "muted" }, "No rules yet. Tick “Make it a rule” when you answer, and the fleet keeps your answer."));
+    return rulesP.view();
   }
+
 
   // ------------------------------------------------------------- life
   const offKeys = keyNav(el, {

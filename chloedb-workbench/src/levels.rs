@@ -103,7 +103,7 @@ pub fn routes() -> Router<App> {
         .route("/api/questions/:id/wait", get(question_wait))
         .route("/api/questions/:id/answer", post(question_answer))
         .route("/api/rules", get(rules_list).post(rules_create))
-        .route("/api/rules/:id", axum::routing::patch(rule_patch))
+        .route("/api/rules/:id", axum::routing::patch(rule_patch).delete(rule_delete))
         .route("/api/agents/:id/steer", post(steer_route))
         .route("/api/agents/:id/story", get(story_route))
         .route("/api/seen", post(seen_route))
@@ -244,6 +244,21 @@ async fn rule_patch(State(app): State<App>, Path(id): Path<String>, body: Bytes)
     let b: questions::RulePatch = parse_body(&body)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     json_ok(blocking(move || questions::patch_rule(&sup, &lv, &id, b)).await?)
+}
+
+/// `DELETE /api/rules/:id` (sixth build, the Rules panel): the rule stops
+/// reaching agents. ChloeCtx keeps its copy as a past decision.
+async fn rule_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    json_ok(blocking(move || {
+        let _w = lv.write.lock().unwrap();
+        let p = Params::new().set("id", Value::Str(id.clone()));
+        let had = sup.db().query("SELECT ctx_id FROM rules WHERE id = :id LIMIT 1", &p).map_err(ApiError::internal)?;
+        let Some(row) = had.first() else { return Err(ApiError::not_found(format!("no rule {id}"))) };
+        sup.db().query("DELETE FROM rules WHERE id = :id", &p).map_err(ApiError::internal)?;
+        Ok(json!({ "ok": true, "id": id, "ctx_id": get_str(&row[0]) }))
+    })
+    .await?)
 }
 
 // Steer, story, away.

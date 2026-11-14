@@ -2117,3 +2117,134 @@ so a lead checks a task before it hands it on.
 - `guarded` marks are `info`: the agent is not stopped, it proposes the
   command and waits for approval.
 - The user id is a parameter (`user`), not a header.
+
+## Sixth build: D, read without an agent, and the missing pieces
+
+Lee and Maya each opened Workbench to look before changing anything. Every
+reading screen answered "repo is required". The Map of a ten-file
+repository showed one folded tile that did nothing when clicked. A
+restarted agent vanished from the Map. Story had no way to change the
+agent it showed, the Rules panel never opened, and a goal could only be
+planned by a lead. This part fixes each of those.
+
+### 1. A repository without an agent (done)
+
+- `src/repos.rs` (new) adds a `repos` table (path, name, added, opened)
+  and four routes. `GET /api/repos` lists the repositories Workbench
+  knows: those opened in a picker and those an agent worked in. Each comes
+  with its branch, its agents and when it was last used.
+  `POST /api/repos {path}` takes any folder inside a checkout, resolves it
+  to the checkout's main folder and starts indexing it for code search
+  (`search::open_repo`). It answers 201 the first time and 200 after that.
+  A relative path, a missing folder or a folder outside git gets a 400
+  that says which of the three it is. `DELETE /api/repos?path=` forgets
+  a repository. `GET /api/repos/dirs?q=` completes a folder path: folders
+  under what was typed, git checkouts first, hidden folders only when the
+  typed name starts with a dot, at most 40.
+- `ui/levels/repos.js` (new) is one picker that every screen shares. It
+  completes folders with Tab, the arrow keys and Enter, lists the known
+  repositories and keeps the end of a long path in view. A repository
+  chosen there becomes the one that Search, Map, Trace, Library and the
+  time bar read. It is kept per browser and announced with a `wb-repo`
+  event. `repoSwitch` is the small "⌂ shop ▾" button that changes it from
+  a screen's header.
+- `app.js`'s `pickRepo` now goes, in order: the zoomed agent, then the
+  repository opened in a picker, then the selected agent. `knownRepos`
+  includes the server's list.
+- Search, Map, Library and Trace show the picker where they used to show
+  "repo is required". Search runs the query as soon as a repository is
+  opened. The time bar says "open one" and makes no request.
+- Opening `#/library/code` no longer sets an agent focus called "code".
+  That focus was the cause of "There is no agent code".
+
+Left out: Health's Tests and Hotspots panels (part B's files) now get a
+repository through `pickRepo`, but still show their own message when
+there is none, not the picker.
+
+### 2. Map folds (done)
+
+- `map.rs` folds a folder's small files only when, together, they hold at
+  most 20% of that folder's lines (`FOLD_MAX_SHARE`). A small repository
+  is therefore drawn file by file. A fold now carries its files
+  (`items`, at most 400).
+- A folded tile reads "… n small · open" and works by click or keyboard.
+  Opening it gives those files tiles of their own and lists them beside
+  the map, largest first, with the agents that changed each one. Picking
+  a file opens its usual card. "Fold them again" closes the list.
+
+### 3. Who works where (done)
+
+The cause: an agent started again under the same name reuses its
+worktree, so the exited agent and the new one share a folder. The Map
+filtered the shared diff by each agent's Edit and Write events. cents had
+written its file with a Bash heredoc, so no Edit event named it and the
+file belonged to no one. Now each agent claims the files it edited
+(events and `file_edits` rows). Any file left unclaimed in a shared
+folder goes to that folder's newest agent: a running one first, then the
+most recently created. Test:
+`the_map_gives_a_worktree_started_again_to_its_live_agent`.
+
+Left out: a file that an agent edited and then reverted no longer shows.
+The Map reads diffs, not history.
+
+### 4. Story's agent picker (done)
+
+A "Story of" row of chips sits at the top of Story, in every state. It
+lists running agents, newest first, then the agents that ended in the
+last day. With no agent chosen, the page says to pick one above. An
+unknown id says the same instead of only "not found".
+
+### 5. Rules (done)
+
+- `ui/levels/rules.js` (new) is the panel, and Decide's "Rules (n)" button
+  now opens it: it scrolls to the panel, focuses it and flashes it.
+- Add: `POST /api/rules {repo, text}`. That route already existed but no
+  screen called it.
+- Edit adds the new words as a rule and deletes the old rule, keeping
+  whether it was on or off. This way agents are told the new words, and
+  ChloeCtx keeps the old ones as a past decision. The rule being edited
+  spans the panel's width.
+- Delete asks once inline. `DELETE /api/rules/:id` (new, in `levels.rs`)
+  removes the row and gives 404 for a rule that does not exist. Test:
+  `rules_are_added_and_deleted_without_a_question`.
+
+Left out: deleting a rule does not remove ChloeCtx's copy, because
+chloectx has no command to forget a record. The panel says so ("ChloeCtx
+keeps its copy … as a past decision").
+
+### 6. Goals: three ways to staff one (done)
+
+`POST /api/goals` now staffs a goal in one of three ways:
+
+| who does the work | body | what starts |
+|---|---|---|
+| a lead plans it | `plan: true`, `model`, `effort` | the lead, as before, with its model and effort |
+| I know the outcomes | `outcomes: ["title — how to tell it is done", {title, detail, task}]` | one agent per outcome (at most 12), named from its title, its task the title plus the goal; no planner |
+| agents already running | `agents: [ids]` | nothing: each agent becomes an outcome of the goal (its task is the title) and is told so at its next step |
+
+- `effort` is one of `low`, `medium`, `high`, `xhigh` or `max`, and is
+  passed to Claude Code as `--effort`. Any other value is a 400, as is
+  `plan` together with `outcomes` or `agents`.
+- An outcome whose agent cannot start is listed in `missing`, and the
+  outcome stays in the goal.
+- On Mission, "Set a goal" has three tabs that match the table, a model
+  box with the usual names, an effort select, and a button that says what
+  will happen ("Start 3 agents", "Set the goal for 1 agent").
+  "+ New goal" sets another goal while one is open.
+- `SpawnRequest` gained `effort`.
+- Test: `a_goal_takes_known_outcomes_or_running_agents_and_its_leads_effort`.
+  The fake claude prints `EFFORT:`. That is a new case; the existing cases
+  are unchanged.
+
+Left out: an agent's effort is not stored on its row, so a restarted
+agent does not keep it.
+
+### 7. The guide (done)
+
+GUIDE.md (new) covers what each screen is for and when to open it, the
+first ten minutes, the keyboard and the words Workbench uses. The README
+links to it at the top. Workbench serves it at `/guide.md` (compiled in,
+or read beside `ui/` when `CHLOEDB_WORKBENCH_UI_DIR` is set; no token,
+since it is not under `/api`). `#/guide` (`ui/levels/guide.js`, the "?"
+at the bottom of the left rail, and a link in the keyboard help) renders
+it with a table of contents. Its links to screens stay inside the app.

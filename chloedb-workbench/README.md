@@ -7,6 +7,11 @@ of an embedded ChloeDB database. Think of it as tmux with a friendlier UI and
 a database as its source of truth. [SPEC.md](SPEC.md) is the contract that
 this build follows.
 
+**Using it rather than building on it? Read [GUIDE.md](GUIDE.md)**: what
+each screen is for and when to open it, a first ten minutes, and the
+keyboard. In the app, **Guide** (the **?** at the bottom of the left rail)
+opens it. This README is the reference: installing, settings and the API.
+
 ## Install and run it
 
 Workbench needs ChloeCtx: most of what it shows above the terminal (who
@@ -38,7 +43,10 @@ cargo build --release
 
 It prints a URL that carries a token (`http://127.0.0.1:7740/?token=...`).
 It does not open a browser for you. Open the URL and start an agent: give
-it a repository path and a task. The settings:
+it a repository path and a task. To read a repository first, without any
+agent, open Search, Map, Trace or Library: each asks for the repository
+(**Open a repository**, with folder completion) and Workbench indexes it.
+The settings:
 
 | flag | env | default |
 |---|---|---|
@@ -76,6 +84,10 @@ origin when that request would change something.
 - `GET /api/agents/:id/events?after=&limit=&data=1`
 - `POST /api/agents/:id/input|resize|stop`
 - `GET /api/attention`: the agents that are waiting for you or idle
+- `GET /api/repos`, `POST /api/repos {path}`, `DELETE /api/repos?path=`:
+  the repositories Workbench knows without an agent (opened in a picker,
+  or worked in by an agent); opening one indexes it for code search.
+  `GET /api/repos/dirs?q=` completes a folder path, git checkouts first
 - `GET /api/wait?agent=&until=idle|waiting|exited|any&timeout_s=`
 - `POST /api/hook`: what `chloedb-workbench hook` posts
 - `GET /api/stream`: server-sent events (`snapshot`, `agent`, `event`)
@@ -126,7 +138,8 @@ their backend here. Each reads Workbench's rows, git and, when it is
 installed, ChloeCtx:
 
 - `GET /api/map?repo=`: the repository as territory. You get the tracked
-  files sized by lines (folders to depth 3, small files folded into "…"),
+  files sized by lines (folders to depth 3; in a big folder, small files
+  fold into "…", which lists them so the map opens it),
   each agent's changes since `base`, and the files it read in the last 10
   minutes. It also lists collisions: `both_changed` when two agents
   changed one file, `heading_into` when one agent changed a file another
@@ -171,6 +184,10 @@ a model.
   starts a lead agent that breaks it into outcomes (`add_outcome`), starts
   an agent per outcome (`spawn_agent` with `outcome`) and marks them done
   (`update_outcome`). An outcome's state follows its agent's.
+  Without a planner: `outcomes: ["…", {title, detail, task}]` starts an
+  agent per outcome, and `agents: [ids]` makes agents already running
+  outcomes of the goal; `model` and `effort` (`low` to `max`, Claude
+  Code's `--effort`) are the lead's or those agents'.
   `GET /api/goals/:id` adds the goal's agents, open questions, what
   ChloeCtx learned in the last day (`chloectx sql --json`) and its pulse.
 - **Questions and rules**: the MCP tool `ask_human` asks you in Workbench
@@ -179,6 +196,9 @@ a model.
   `chloectx ask --json` found about it. An answer can become a rule
   (`chloectx remember decision`), which every agent of the repository is
   told, and which answers the same question when it is asked again.
+  `POST /api/rules {repo, text}` adds one without a question,
+  `PATCH /api/rules/:id` turns one on or off, `DELETE /api/rules/:id`
+  removes it.
 - **Delivery**: `chloedb-workbench hook` prints what the server answers for
   `SessionStart`, `UserPromptSubmit` and `PostToolUse` as
   `hookSpecificOutput.additionalContext`: rules, steers

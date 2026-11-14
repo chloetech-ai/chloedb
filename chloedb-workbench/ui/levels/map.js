@@ -53,9 +53,11 @@ const nameOf = (a) => (a && (a.name || a.id)) || "?";
 import { timeTravel } from "./timebar.js";
 // Hotspots: the heat layer and its "Heat" toggle (ui/levels/hotspots.js).
 import { withHeat } from "./hotspots.js";
+// Sixth build: a repository read without an agent (ui/levels/repos.js).
+import { repoPicker, repoSwitch, needsRepo } from "./repos.js";
 export const mount = timeTravel(withHeat(mountMap), { screen: "map" });
 function mountMap(root, ctx) {
-  const S = { data: null, err: null, path: "", sel: null, focus: null, sent: new Map(), busy: new Set() };
+  const S = { data: null, err: null, path: "", sel: null, focus: null, sent: new Map(), busy: new Set(), needRepo: false, unfold: new Set() };
   const I = { nodes: new Map(), changed: new Map(), read: new Map(), coll: new Map(), pins: new Map(), agents: new Map(), agg: new Map() };
   const tip = tooltip();
   const el = h("div", { class: "lv-screen mp" });
@@ -63,12 +65,14 @@ function mountMap(root, ctx) {
   let tm = null, ro = null, frame = 0, dropEsc = null, dropUp = null, alive = true;
 
   async function load() {
+    const repo = repoOf(ctx);
+    // No repository yet: the picker, not an error (sixth build).
+    if (!repo) { S.needRepo = true; if (alive) render(); return; }
     try {
-      const repo = repoOf(ctx);
-      S.data = await ctx.api(`/api/map${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`);
-      S.err = null;
+      S.data = await ctx.api(`/api/map?repo=${encodeURIComponent(repo)}`);
+      S.err = null; S.needRepo = false;
       index();
-    } catch (e) { S.err = e.message || String(e); }
+    } catch (e) { S.err = e.message || String(e); S.needRepo = needsRepo(e); }
     if (alive) render();
   }
   const refresh = throttle(load, 10000);
@@ -91,6 +95,13 @@ function mountMap(root, ctx) {
     }
     for (const c of d.collisions || []) I.coll.set(c.path, c);
     for (const p of d.pins || []) { if (!I.pins.has(p.path)) I.pins.set(p.path, []); I.pins.get(p.path).push(p); }
+    // A fold the person opened shows its files (sixth build).
+    const unfold = (n) => {
+      if (!n.children) return;
+      if (S.unfold.has(n.path)) n.children = n.children.flatMap((c) => (c.kind === "more" && Array.isArray(c.items) && c.items.length ? c.items : [c]));
+      n.children.forEach(unfold);
+    };
+    unfold(d.tree);
     const walk = (n) => {
       I.nodes.set(n.path, n);
       const agg = { by: new Map(), coll: [], pins: 0, files: 0, changedFiles: [] };
@@ -119,6 +130,11 @@ function mountMap(root, ctx) {
   // ------------------------------------------------------------ rendering
   function render() {
     tip.hide();
+    if (S.needRepo) {
+      if (el.querySelector(".rp")) return; // the picker stays, with what was typed in it
+      el.replaceChildren(head(), repoPicker(ctx, { why: "The map is a repository's tracked files sized by lines, with each agent's changes and the decisions ChloeCtx pinned to them. It needs no agent: open a git checkout." }));
+      return;
+    }
     if (!S.data) {
       el.replaceChildren(head(), S.err ? empty(`The map could not load: ${S.err}`) : empty("Reading the territory…"));
       return;
@@ -145,7 +161,8 @@ function mountMap(root, ctx) {
   function head() {
     return h("header", { class: "lv-head" },
       h("h1", { class: "lv-h1" }, "Territory"),
-      h("span", { class: "lv-sub" }, "who is working where · size = lines · ", h("span", { class: "mp-dia", "aria-hidden": "true" }), " = a decision ChloeCtx can explain"));
+      h("span", { class: "lv-sub" }, "who is working where · size = lines · ", h("span", { class: "mp-dia", "aria-hidden": "true" }), " = a decision ChloeCtx can explain"),
+      repoOf(ctx) && !ctx.past ? repoSwitch(ctx, (S.data && S.data.repo) || repoOf(ctx)) : null);
   }
 
   function legend() {
@@ -230,8 +247,16 @@ function mountMap(root, ctx) {
     if (n0.kind === "more" || n0.name === "…" || n0.folded) {
       // GET /api/map folds small files into {kind: "more", files: n}.
       const k = n0.files || n0.folded || "";
-      tm.append(h("div", { class: "mp-c mp-fold", style: pos, "data-path": n0.path, "data-folded": k || "?" },
-        r.w > 40 && r.h > 16 ? h("span", { class: "mp-cn" }, `… ${k} small`) : null));
+      const can = Array.isArray(n0.items) && n0.items.length > 0;
+      // Opened, its files get tiles of their own and a list beside the map,
+      // where a tile too small to read is still one click away.
+      const open = () => { const dir = parentOf(n0.path); S.unfold.add(dir); tip.hide(); index(); select({ type: "fold", path: dir, items: n0.items }); };
+      tm.append(h("div", {
+        class: "mp-c mp-fold" + (can ? " can" : ""), style: pos, "data-path": n0.path, "data-folded": k || "?",
+        role: can ? "button" : null, tabindex: can ? "0" : null, "aria-label": `${k} small files folded together${can ? ". Open them." : ""}`,
+        onclick: can ? (e) => { e.stopPropagation(); open(); } : null,
+        onkeydown: can ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); open(); } } : null,
+      }, r.w > 40 && r.h > 16 ? h("span", { class: "mp-cn" }, `… ${k} small${can ? " · open" : ""}`) : null));
       return;
     }
     if (!n0.children) return drawFile(n0, r, pos);
@@ -392,7 +417,12 @@ function mountMap(root, ctx) {
     if (!n && !t.dataset.folded) return;
     const r = t.getBoundingClientRect();
     const x = e ? e.clientX : r.left + 12, y = e ? e.clientY : r.top + 12;
-    if (t.dataset.folded) return tip.show([h("b", null, "Small files"), h("div", { class: "lv-sub" }, `${t.dataset.folded} files folded together`)], x, y);
+    if (t.dataset.folded) {
+      const fold = I.nodes.get(parentOf(p))?.children?.find((c) => c.path === p);
+      const names = (fold?.items || []).slice(0, 8).map((f) => f.name);
+      return tip.show([h("b", null, "Small files"), h("div", { class: "lv-sub" }, `${t.dataset.folded} files folded together${names.length ? `: ${names.join(", ")}${fold.items.length > 8 ? ", …" : ""}` : ""}`),
+        names.length ? h("div", { class: "lv-sub" }, "Click to open them.") : null], x, y);
+    }
     const agg = I.agg.get(p);
     const rows = [h("div", { class: "mp-tp" }, p || n.name),
       h("div", { class: "lv-sub" }, n.children ? `${agg.files} files · ${n.lines.toLocaleString()} lines` : `${n.lines.toLocaleString()} lines`)];
@@ -491,6 +521,17 @@ function mountMap(root, ctx) {
           h("button", { class: "btn sm", onclick: () => { S.path = parentOf(p.path); S.sel = { type: "file", path: p.path }; render(); } }, "Show the file"),
           p.line != null ? h("button", { class: "btn sm primary", onclick: () => openPin(p) }, "Why is this line like this?") : null));
     }
+    if (S.sel.type === "fold") {
+      const f = S.sel, items = [...f.items].sort((a, b) => (b.lines || 0) - (a.lines || 0) || a.name.localeCompare(b.name));
+      return h("section", { class: "lv-card mp-selcard", tabindex: "-1" },
+        h("div", { class: "lv-card-head" }, h("code", { class: "mp-fp" }, `${f.path || "/"} · ${items.length} small files`), close),
+        h("div", { class: "lv-sub" }, "Too small for a readable tile; pick one to see who changed it."),
+        h("ul", { class: "mp-fl" }, items.map((it) => h("li", null,
+          h("button", { class: "mp-fi", onclick: () => select({ type: "file", path: it.path }) },
+            h("code", null, it.name), h("span", { class: "lv-sub" }, `${it.lines} line${it.lines === 1 ? "" : "s"}`),
+            I.changed.has(it.path) ? h("span", { class: "mp-num" }, I.changed.get(it.path).map((c) => c.agent.name).join(", ")) : null)))),
+        h("div", { class: "mp-ca" }, h("button", { class: "btn sm ghost", onclick: () => { S.unfold.delete(f.path); S.sel = null; load(); } }, "Fold them again")));
+    }
     const p = S.sel.path, n = I.nodes.get(p);
     if (!n) return null;
     const ch = I.changed.get(p) || [], rd = I.read.get(p) || [], pins = I.pins.get(p) || [], coll = I.coll.get(p);
@@ -586,6 +627,8 @@ useStyle("map", `
 .mp-c.on .mp-cl{color:var(--text-2)}
 .mp-cav{position:absolute;right:4px;bottom:4px;display:flex;gap:2px}
 .mp-fold{background:transparent;border-style:dashed;cursor:default}
+.mp-fold.can{cursor:pointer}.mp-fold.can:hover,.mp-fold.can:focus-visible{background:var(--surface-2);border-color:var(--accent)}
+.mp .lv-head .rp-switch{margin-left:auto}
 .mp-clab{position:absolute;z-index:3;border:0;border-radius:6px;padding:2px 8px;background:var(--crit-soft);color:var(--crit-ink);font:600 11.5px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;box-shadow:0 0 0 1px color-mix(in srgb,var(--crit) 40%,transparent)}
 .mp-arrows{position:absolute;left:0;top:0;pointer-events:none;z-index:2}
 .mp-pin{position:absolute;z-index:4;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;padding:0;border:0;border-radius:3px;background:var(--ctx);transform:rotate(45deg);cursor:pointer;box-shadow:0 0 0 2.5px var(--surface),0 0 12px color-mix(in srgb,var(--ctx) 70%,transparent);transition:transform .12s}
@@ -601,6 +644,9 @@ useStyle("map", `
 .mp-cd{display:flex;align-items:center;gap:8px;margin-top:8px}
 .mp-ct{margin:6px 0 0;color:var(--text-2)}
 .mp-ca{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.mp-fl{list-style:none;margin:8px 0 0;padding:0;max-height:420px;overflow:auto;border-top:1px solid var(--line)}
+.mp-fi{display:flex;gap:10px;align-items:baseline;width:100%;padding:5px 2px;border:0;border-bottom:1px solid var(--line);background:none;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.mp-fi:hover,.mp-fi:focus-visible{background:var(--surface-2)}.mp-fi code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .mp-selcard{outline:none;border-color:color-mix(in srgb,var(--ctx) 40%,var(--line))}
 .mp-rq{margin:0;font-size:15px;line-height:1.45;font-weight:600}
 .mp-kv{display:grid;grid-template-columns:76px 1fr;gap:6px 10px;margin:12px 0 0;font-size:12.5px}

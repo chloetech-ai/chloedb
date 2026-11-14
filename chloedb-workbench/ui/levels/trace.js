@@ -11,6 +11,8 @@
 import {
   h, useStyle, toMs, fmtClock, fmtDay, agentChip, avatar, ctxChip, pill, repoOf, onEscape, setFleet,
 } from "./common.js";
+// Sixth build: no repository yet is a picker (ui/levels/repos.js).
+import { repoPicker, needsRepo } from "./repos.js";
 
 const enc = encodeURIComponent;
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -609,7 +611,7 @@ export function mount(root, ctx) {
           h("span", { class: "lv-sub" }, "when, why and how something changed: git on every branch, Workbench's events, ChloeCtx and your answers")),
         askBox(),
         readingRow()),
-      S.err ? h("div", { class: "tr-err" }, S.err) : null,
+      !S.repo || (S.err && needsRepo(S.err)) ? (S.picker ||= repoPicker(ctx, { focus: false, why: "Trace reads a repository's git history on every branch, Workbench's events and ChloeCtx. No agent is needed: open the git checkout, then ask." })) : S.err ? h("div", { class: "tr-err" }, S.err) : null,
       !S.q.trim() && !d && !S.busy ? emptyState() : null,
       S.busy && !d ? loading() : null,
       d ? h("div", { class: `tr-body${S.busy ? " stale" : ""}` },

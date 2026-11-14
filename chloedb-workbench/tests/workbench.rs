@@ -28,6 +28,8 @@ while [ $# -gt 0 ]; do
     --mcp-config) MCP="$2"; shift 2
       while [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; do echo "MCP config file not found: $1"; exit 1; done;;
     --model) MODEL="$2"; shift 2;;
+    # Sixth build: a goal's lead and agents may get an effort.
+    --effort) EFFORT="$2"; shift 2;;
     --) TASK="$2"; shift $#;;
     -p) PRINT=1; shift;;
     *) TASK="$1"; shift;;
@@ -41,6 +43,7 @@ N=0
 echo "FAKE CLAUDE sid=$SID model=$MODEL agent=$CHLOEDB_WORKBENCH_AGENT"
 echo "TASK: $TASK"
 echo "CWD: $(pwd)"
+[ -n "$EFFORT" ] && echo "EFFORT: $EFFORT"
 hook() {
   local cmd out
   cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"][sys.argv[2]][0]["hooks"][0]["command"])' "$SETTINGS" "$1")
@@ -3910,4 +3913,171 @@ fn an_empty_box_proposes_a_ghost_finishes_the_sentence_and_each_user_is_learned(
     assert_eq!((mg["ghost"]["text"].as_str(), mg["ghost"]["source"].as_str()), (Some(" and keep every total in integer cents."), Some("model")), "{mg}");
     let (_, mg) = s.post("/api/complete/ghost", json!({ "text": "Fix the rounding in money.py and keep", "field": "task", "repo": r }));
     assert_eq!((mg["cached"].as_bool(), mg["ghost"]["text"].as_str()), (Some(true), Some(" every total in integer cents.")), "{mg}");
+}
+
+// ------------------------------------------------------------ sixth build, D
+
+impl Server {
+    fn delete(&self, path: &str) -> (u16, Value) {
+        let mut r = http().delete(format!("{}{path}", self.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap();
+        let status = r.status().as_u16();
+        (status, r.body_mut().read_json().unwrap_or(Value::Null))
+    }
+}
+
+#[test]
+fn a_repository_is_read_without_an_agent_and_paths_complete() {
+    let s = Server::start(&[]);
+    let (d, r) = repo();
+    std::fs::create_dir(r.join("src")).unwrap();
+    std::fs::write(r.join("src/money.py"), "def to_cents(amount):\n    return round(amount * 100)\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "money"]);
+    let (_, v) = s.get("/api/repos");
+    assert_eq!(v["repos"], json!([]));
+    // Opened from a folder inside it: the checkout's main folder.
+    let (status, v) = s.post("/api/repos", json!({ "path": r.join("src") }));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["repo"]["path"], json!(r));
+    assert_eq!((v["repo"]["name"].as_str(), v["repo"]["branch"].as_str(), v["repo"]["agents"].as_i64()), (Some("proj"), Some("main"), Some(0)));
+    let (status, _) = s.post("/api/repos", json!({ "path": r }));
+    assert_eq!(status, 200, "opened again");
+    let (_, v) = s.get("/api/repos");
+    assert_eq!(v["repos"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["repos"][0]["path"], json!(r));
+    // Bad paths say why.
+    let (status, v) = s.post("/api/repos", json!({ "path": "relative/x" }));
+    assert!(status == 400 && v["error"].as_str().unwrap().contains("absolute"), "{v}");
+    let plain = d.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    let (status, v) = s.post("/api/repos", json!({ "path": plain }));
+    assert!(status == 400 && v["error"].as_str().unwrap().contains("not in a git checkout"), "{v}");
+
+    // Map, search and Trace read it with no agent.
+    let (status, m) = s.get(&format!("/api/map?repo={}", enc(r.to_str().unwrap())));
+    assert_eq!(status, 200, "{m}");
+    assert_eq!((m["tree"]["files"].as_u64(), m["agents"].clone()), (Some(2), json!([])));
+    let (status, c) = s.get(&format!("/api/search/code?repo={}&q=to_cents", enc(r.to_str().unwrap())));
+    assert_eq!(status, 200, "{c}");
+    assert_eq!(c["hits"][0]["path"], "src/money.py", "{c}");
+    let (status, t) = s.get(&format!("/api/trace?repo={}&q=to_cents", enc(r.to_str().unwrap())));
+    assert_eq!(status, 200, "{t}");
+
+    // Path completion: folders under what was typed, git checkouts first.
+    std::fs::create_dir(d.path().join("prose")).unwrap();
+    let (_, v) = s.get(&format!("/api/repos/dirs?q={}", enc(&format!("{}/pr", d.path().display()))));
+    let names: Vec<&str> = v["dirs"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["proj", "prose"], "{v}");
+    assert_eq!((v["dirs"][0]["git"].as_bool(), v["dirs"][1]["git"].as_bool()), (Some(true), Some(false)));
+
+    // Forgotten, it leaves the list.
+    let (status, _) = s.delete(&format!("/api/repos?path={}", enc(r.to_str().unwrap())));
+    assert_eq!(status, 200);
+    assert_eq!(s.get("/api/repos").1["repos"], json!([]));
+
+    // The guide and the new screens are served; the guide needs no token.
+    let mut g = http().get(format!("{}/guide.md", s.url)).call().unwrap();
+    assert_eq!(g.status().as_u16(), 200);
+    let text = g.body_mut().read_to_string().unwrap();
+    assert!(text.contains("The first ten minutes") && text.contains("Open a repository"), "{text}");
+    for f in ["repos.js", "rules.js", "guide.js"] {
+        assert_eq!(http().get(format!("{}/levels/{f}", s.url)).call().unwrap().status().as_u16(), 200, "{f}");
+    }
+}
+
+#[test]
+fn the_map_gives_a_worktree_started_again_to_its_live_agent() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // cents writes a.py with Edit, then ends.
+    let old = s.spawn(json!({ "repo": r, "name": "cents", "task": "WRITE a.py x = 1" }));
+    let old_id = old["id"].as_str().unwrap().to_string();
+    s.wait(&old_id, "idle");
+    s.post(&format!("/api/agents/{old_id}/input"), json!({ "text": "exit" }));
+    s.until(&old_id, "exited", |a| a["running"] == false);
+    // cents again, in the same worktree: it writes b.py with a script (no
+    // Edit call names it), as Maya's cents did with a heredoc.
+    let new = s.spawn(json!({ "repo": r, "name": "cents", "task": "say hi" }));
+    let new_id = new["id"].as_str().unwrap().to_string();
+    assert_eq!(new["cwd"], old["cwd"], "the worktree is picked up again");
+    s.wait(&new_id, "idle");
+    std::fs::write(PathBuf::from(new["cwd"].as_str().unwrap()).join("b.py"), "y = 2\n").unwrap();
+    let (status, m) = s.get(&format!("/api/map?repo={}", enc(r.to_str().unwrap())));
+    assert_eq!(status, 200, "{m}");
+    let files = |id: &str| -> Vec<String> { find(&m["agents"], "/agent/id", id)["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_string()).collect() };
+    assert_eq!(files(&new_id), ["b.py"], "{m}");
+    assert_eq!(files(&old_id), ["a.py"], "{m}");
+}
+
+#[test]
+fn a_goal_takes_known_outcomes_or_running_agents_and_its_leads_effort() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // A lead with a model and an effort.
+    let (status, v) = s.post("/api/goals", json!({ "repo": r, "text": "Cents everywhere", "plan": true, "worktree": false, "model": "haiku", "effort": "high" }));
+    assert_eq!(status, 201, "{v}");
+    let lead = v["lead"]["id"].as_str().unwrap().to_string();
+    let screen = ws_read_until(&s, &lead, "EFFORT:", &[]);
+    assert!(screen.contains("model=haiku") && screen.contains("EFFORT: high"), "{screen}");
+    s.patch(&format!("/api/goals/{}", v["goal"]["id"].as_str().unwrap()), json!({ "state": "done" }));
+    assert_eq!(s.post("/api/goals", json!({ "repo": r, "text": "x", "effort": "huge" })).0, 400);
+    assert_eq!(s.post("/api/goals", json!({ "repo": r, "text": "x", "plan": true, "outcomes": ["a"] })).0, 400);
+
+    // Outcomes the person knows: one agent each, no planner.
+    let (status, v) = s.post("/api/goals", json!({ "repo": r, "text": "Checkout works", "outcomes": [
+        "Totals in cents — test_cart passes",
+        { "title": "Pay button submits", "task": "Fix web/index.html's click handler" }
+    ] }));
+    assert_eq!(status, 201, "{v}");
+    let gid = v["goal"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["lead"], Value::Null);
+    assert_eq!(v["missing"], json!([]));
+    let os = v["outcomes"].as_array().unwrap();
+    assert_eq!(os.len(), 2, "{v}");
+    assert_eq!((os[0]["title"].as_str(), os[0]["detail"].as_str()), (Some("Totals in cents"), Some("test_cart passes")));
+    let names: Vec<&str> = v["agents"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["totals-in-cents", "pay-button-submits"]);
+    for (o, a) in os.iter().zip(v["agents"].as_array().unwrap()) {
+        assert_eq!((o["agent"].as_str(), o["state"].as_str()), (a["id"].as_str(), Some("active")), "{v}");
+        assert_eq!((a["goal"].as_str(), a["outcome"].as_str()), (Some(gid.as_str()), o["id"].as_str()));
+        assert_eq!(a["parent"], Value::Null, "no planner");
+    }
+    let task = v["agents"][1]["task"].as_str().unwrap();
+    assert!(task.starts_with("Pay button submits.\n\nFix web/index.html's click handler") && task.contains("Checkout works"), "{task}");
+    let first = v["agents"][0]["id"].as_str().unwrap().to_string();
+    s.wait(&first, "idle");
+    let told = contexts(&s.hook_out(&first), "SessionStart");
+    assert!(told[0].contains(&format!("You work on outcome {}", os[0]["id"].as_str().unwrap())), "{told:?}");
+
+    // Agents already running, made the outcomes of a new goal.
+    let solo = s.spawn(json!({ "repo": r, "name": "solo", "task": "say hi", "worktree": false }));
+    let solo_id = solo["id"].as_str().unwrap().to_string();
+    s.wait(&solo_id, "idle");
+    let (status, v) = s.post("/api/goals", json!({ "repo": r, "text": "Tidy up", "agents": [solo_id] }));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!((v["outcomes"][0]["title"].as_str(), v["outcomes"][0]["agent"].as_str()), (Some("say hi"), Some(solo_id.as_str())), "{v}");
+    let a = s.agent(&solo_id);
+    assert_eq!((a["goal"].as_str(), a["outcome"].as_str()), (v["goal"]["id"].as_str(), v["outcomes"][0]["id"].as_str()));
+    // Its outcome is told at its next step.
+    s.post(&format!("/api/agents/{solo_id}/input"), json!({ "text": "go on" }));
+    s.wait(&solo_id, "idle");
+    let told = contexts(&s.hook_out(&solo_id), "UserPromptSubmit");
+    assert!(told.iter().any(|t| t.contains("You work on outcome")), "{told:?}");
+    assert_eq!(s.post("/api/goals", json!({ "repo": r, "text": "x", "agents": ["a00000000"] })).0, 400);
+}
+
+#[test]
+fn rules_are_added_and_deleted_without_a_question() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let (status, v) = s.post("/api/rules", json!({ "repo": r, "text": "Totals customers see round half up." }));
+    assert_eq!(status, 201, "{v}");
+    let id = v["rule"]["id"].as_str().unwrap().to_string();
+    let (_, l) = s.get(&format!("/api/rules?repo={}", enc(r.to_str().unwrap())));
+    assert_eq!(l["rules"][0]["text"], "Totals customers see round half up.");
+    let (status, v) = s.delete(&format!("/api/rules/{id}"));
+    assert_eq!((status, v["ok"].as_bool()), (200, Some(true)), "{v}");
+    let (_, l) = s.get(&format!("/api/rules?repo={}", enc(r.to_str().unwrap())));
+    assert_eq!(l["rules"], json!([]));
+    assert_eq!(s.delete(&format!("/api/rules/{id}")).0, 404);
 }

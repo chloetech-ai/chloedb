@@ -89,6 +89,8 @@ export function timeTravel(mountScreen, { screen = "" } = {}) {
     }
 
     async function loadLine() {
+      // Sixth build: no repository yet is the screen's picker, not an error here.
+      if (!S.repo) { S.line = null; S.err = "No repository yet: open one (Map, Library or search) to travel in its time."; if (alive) draw(); return; }
       try {
         S.line = await ctx.api(`/api/time${S.repo ? `?repo=${enc(S.repo)}` : ""}`);
         S.err = null;

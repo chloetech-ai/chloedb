@@ -48,7 +48,7 @@ export function mount(root, ctx) {
 
   // ------------------------------------------------------------- data
   async function load() {
-    if (!S.id) { S.error = "No agent: open a story from Mission, or as #/story/<agent>."; render(); return; }
+    if (!S.id) { S.error = null; render(); return; }
     try {
       const st = await ctx.api(`/api/agents/${enc(S.id)}/story`);
       S.story = st;
@@ -63,7 +63,7 @@ export function mount(root, ctx) {
       if (alive) render();
       if (S.level === "terminal" || !S.peek) loadPeek();
     } catch (e) {
-      S.error = e.status === 404 ? `There is no agent ${S.id}.` : e.message || String(e);
+      S.error = e.status === 404 ? `There is no agent ${S.id}: pick one above.` : e.message || String(e);
       if (alive) render();
     }
   }
@@ -123,12 +123,31 @@ export function mount(root, ctx) {
   };
 
   // ------------------------------------------------------------- view
+  // Sixth build: which agent's story, picked at the top (Dev needed three
+  // clicks and a detour through Terminals to switch). Running agents first,
+  // newest first, then those that ended in the last day.
+  function agentsBar() {
+    const all = [...mergeAgents(S.stream, S.story ? [S.story.agent] : []).values()];
+    const day = Date.now() - 24 * 3600e3;
+    const live = all.filter((x) => x.running !== false && x.state !== "exited").sort((x, y) => (toMs(y.created) || 0) - (toMs(x.created) || 0));
+    const gone = all.filter((x) => !(x.running !== false && x.state !== "exited") && ((toMs(x.ended) || toMs(x.state_since) || 0) > day || x.id === S.id)).sort((x, y) => (toMs(y.created) || 0) - (toMs(x.created) || 0));
+    if (!live.length && !gone.length) return h("nav", { class: "sy-pick", "aria-label": "Agent" }, h("span", { class: "sy-pick-k" }, "Story of"), h("span", { class: "muted" }, "no agent yet: start one with New agent (n), and its story is told here."));
+    const chip = (x) => h("button", {
+      class: "sy-pick-a" + (x.id === S.id ? " on" : "") + (x.state === "exited" || x.running === false ? " gone" : ""), "data-key": `pick:${x.id}`,
+      "aria-current": x.id === S.id ? "page" : null, title: `${x.name}: ${x.state}${x.task ? ` · ${String(x.task).slice(0, 120)}` : ""}`,
+      onclick: () => { if (x.id !== S.id) ctx.go(`#/story/${x.id}`); },
+    }, avatar(x, 18), h("b", {}, x.name), h("span", { class: `sy-pick-s s-${x.state}` }, x.state === "waiting" ? "needs you" : x.state));
+    return h("nav", { class: "sy-pick", "aria-label": "Whose story" }, h("span", { class: "sy-pick-k" }, "Story of"),
+      live.map(chip), gone.length ? h("span", { class: "sy-pick-sep", "aria-hidden": "true" }) : null, gone.slice(0, 6).map(chip));
+  }
+
   function view() {
-    if (S.error && !S.story) return h("div", { class: "sy-wrap" }, h("div", { class: "lv-card sy-err" }, h("b", {}, "This story could not load."), h("div", { class: "muted" }, S.error),
+    if (!S.id) return h("div", { class: "sy-wrap" }, agentsBar(), h("div", { class: "lv-card sy-err" }, h("b", {}, "Pick an agent above to read its story."), h("div", { class: "muted" }, "Its intent, a chapter per turn, the steps of each, and its terminal.")));
+    if (S.error && !S.story) return h("div", { class: "sy-wrap" }, agentsBar(), h("div", { class: "lv-card sy-err" }, h("b", {}, "This story could not load."), h("div", { class: "muted" }, S.error),
       h("div", { class: "sy-row" }, h("button", { class: "btn sm", "data-key": "retry", onclick: () => load() }, "Try again"), h("button", { class: "btn sm ghost", "data-key": "back", onclick: () => ctx.go("#/mission") }, "Mission"))));
-    if (!S.story) return h("div", { class: "sy-wrap" }, h("div", { class: "sy-main" }, h("div", { class: "sy-skel" }), h("div", { class: "sy-skel short" }), h("div", { class: "sy-skel tall" })));
+    if (!S.story) return h("div", { class: "sy-wrap" }, agentsBar(), h("div", { class: "sy-main" }, h("div", { class: "sy-skel" }), h("div", { class: "sy-skel short" }), h("div", { class: "sy-skel tall" })));
     const a = agentOf();
-    return h("div", { class: "sy-wrap" },
+    return h("div", { class: "sy-wrap" }, agentsBar(),
       h("div", { class: "sy-main" }, header(a), intentLevel(a), storyLevel(), stepsLevel(), terminalLevel(a)),
       h("aside", { class: "sy-side" }, dejaVu(a), knewCard(), talkCard(a)));
   }
@@ -419,6 +438,16 @@ export function screenLines(s) {
 }
 
 useStyle("story", `
+.sy-pick{grid-column:1/-1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.sy-pick-k{color:var(--muted);font-size:11.5px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+.sy-pick-a{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px 0 5px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--text-2);font:inherit;font-size:12.5px;cursor:pointer}
+.sy-pick-a:hover{border-color:var(--line-2);color:var(--text)}
+.sy-pick-a.on{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.sy-pick-a b{font-weight:650;color:var(--text)}
+.sy-pick-a.gone{opacity:.7}
+.sy-pick-s{font-size:11px;color:var(--muted)}
+.sy-pick-s.s-waiting{color:var(--warn-ink);font-weight:600}.sy-pick-s.s-working{color:var(--good-ink)}
+.sy-pick-sep{width:1px;height:18px;background:var(--line-2);margin:0 4px}
 .sy-wrap{display:grid;grid-template-columns:minmax(0,1fr) 368px;gap:22px;padding:18px 22px 32px;max-width:1880px;margin:0 auto;align-items:start}
 .sy-main{min-width:0}
 .sy-head{padding-bottom:6px}

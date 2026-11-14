@@ -825,8 +825,15 @@ fn watch(sup: &Arc<Supervisor>) {
     });
 }
 
+/// Sixth build (src/repos.rs): a repository opened without an agent is
+/// indexed in the background now, and its index answered as it stands.
+pub fn open_repo(sup: &Arc<Supervisor>, repo: &str) -> Json {
+    ensure(sup, repo, false);
+    index_json(sup, repo)
+}
+
 /// The index as the API answers it.
-fn index_json(sup: &Supervisor, repo: &str) -> Json {
+pub(crate) fn index_json(sup: &Supervisor, repo: &str) -> Json {
     let meta: Json = sup.mark(&meta_key(repo)).and_then(|m| serde_json::from_str(&m).ok()).unwrap_or(Json::Null);
     let (indexing, done, total, error) = with_state(repo, |s| (s.indexing, s.done, s.total, s.error.clone()));
     let state = if indexing && meta.is_null() { "indexing" } else if meta.is_null() { "none" } else { "ready" };

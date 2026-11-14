@@ -7,6 +7,8 @@
 // ctx = { api, go(hash), openWhy(args), repo(): string, openDecisions?() }
 import { h, useStyle, avatar, ctxChip, fmtAgo, later } from "./common.js";
 import { openWith, tintLine, marksOf, icon, pathNode, queryWords } from "./library.js";
+// Sixth build: no repository yet is a picker in the box, not an error (ui/levels/repos.js).
+import { repoPicker, needsRepo } from "./repos.js";
 
 const SCOPES = [["all", "All"], ["code", "Code"], ["docs", "Docs"], ["decisions", "Decisions"]];
 const nameOf = (a) => (a && (a.name || a.id)) || "?";
@@ -48,14 +50,14 @@ export function open(ctx, { q } = {}) {
   async function load() {
     const q = S.q.trim();
     last.q = S.q;
-    if (!q) { S.data = null; render(); return; }
+    if (!q || !(ctx.repo && ctx.repo())) { S.data = null; render(); return; }
     const r = ++req;
     S.busy = true; panel.classList.add("busy");
     try {
       const d = await ctx.api(`/api/search/quick?${new URLSearchParams({ repo: (ctx.repo && ctx.repo()) || "", q })}`);
       if (r !== req) return;
       S.data = d; S.err = null;
-    } catch (e) { if (r === req) S.err = e.message || String(e); }
+    } catch (e) { if (r === req) { S.err = e.message || String(e); S.noRepo = needsRepo(e); } }
     if (r === req) { S.busy = false; panel.classList.remove("busy"); }
     render();
   }
@@ -86,7 +88,11 @@ export function open(ctx, { q } = {}) {
       groups.push(h("div", { class: "qs-group" }, label, k === "decisions" ? ctxChip("ChloeCtx") : null));
       for (const it of these) groups.push(row(it, i++, marks));
     }
-    if (S.err) list.replaceChildren(h("div", { class: "qs-empty bad" }, `The search failed: ${S.err}`));
+    if (!(ctx.repo && ctx.repo()) || (S.err && S.noRepo)) {
+      // Searched before any repository: open one here, then the search runs.
+      if (!list.querySelector(".rp")) list.replaceChildren(repoPicker(ctx, { compact: true, focus: false, why: "Search reads a repository's code, the docs of its libraries and ChloeCtx's decisions. Open the git checkout to search; no agent is needed.", onDone: () => { S.err = null; S.noRepo = false; input.focus(); load(); } }));
+    }
+    else if (S.err) list.replaceChildren(h("div", { class: "qs-empty bad" }, `The search failed: ${S.err}`));
     else if (!S.q.trim()) list.replaceChildren(h("div", { class: "qs-empty" }, "A symbol (", h("code", { class: "lv-code" }, "cartTotal"), "), a few words, an error message. Code and docs come from the Library's index; decisions from ChloeCtx."));
     else if (!d) list.replaceChildren(h("div", { class: "qs-empty" }, "Searching…"));
     else if (!all.length) list.replaceChildren(h("div", { class: "qs-empty" }, `Nothing for “${S.q.trim()}”${S.scope === "all" ? "" : " here"}.`, ...(d.missing || []).map((m) => h("div", { class: "qs-miss" }, m))));
@@ -140,6 +146,7 @@ export function open(ctx, { q } = {}) {
 
   function onKey(e) {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (e.target.closest && e.target.closest(".rp")) return; // the repository picker's own keys
     const all = items();
     if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); S.sel = (S.sel + (e.key === "ArrowDown" ? 1 : -1) + all.length) % Math.max(1, all.length); render(); return; }
     if (e.key === "Enter") { e.preventDefault(); act(all[S.sel], e.shiftKey); return; }

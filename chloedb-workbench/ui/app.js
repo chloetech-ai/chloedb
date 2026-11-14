@@ -2158,17 +2158,32 @@ const TL_LINKS = $("tl-links");
 const TL_HOT = $("tl-hot");
 const D = { open: false, repo: null, list: [], missing: [], req: 0, prevZoom: null, lanes: [], cur: -1, cards: [], focus: null, loading: false, err: null };
 
+// Sixth build (ui/levels/repos.js, src/repos.rs): repositories opened
+// without an agent. `opened` is the one the picker opened last: the
+// screens read it unless an agent is zoomed; `server` is GET /api/repos.
+const RP = { opened: store("local", "chloedb-workbench-open-repo") || null, server: [] };
+function loadRepos() { if (S.token) api("/api/repos").then((j) => { RP.server = j.repos || []; }, () => {}); }
+window.addEventListener("wb-repo", (e) => {
+  RP.opened = e.detail || null;
+  loadRepos();
+  if (D.open && RP.opened && RP.opened !== D.repo) { D.repo = RP.opened; fillRepos(); loadDecisions(); }
+  // The screen in view reads the repository again.
+  if (L.screen) { const [s, p, q] = [L.screen, L.param, L.query || ""]; closeLevelView(); openLevel(s, p, { how: "none", query: q }); }
+});
+
 function knownRepos() {
   const seen = new Map();
   for (const a of S.agents.values()) if (a.repo) seen.set(a.repo, Math.max(seen.get(a.repo) || 0, toMs(a.state_since) || 0, toMs(a.created) || 0));
+  for (const r of RP.server) if (r.path && r.exists !== false) seen.set(r.path, Math.max(seen.get(r.path) || 0, r.last_ms || 0));
   for (const r of recentRepos()) if (!seen.has(r)) seen.set(r, 0);
   if (D.repo && !seen.has(D.repo)) seen.set(D.repo, 0);
   return [...seen.entries()].sort((x, y) => y[1] - x[1]).map(([r]) => r);
 }
 
 function pickRepo() {
-  const z = S.agents.get(S.zoomed || D.prevZoom || S.selected);
+  const z = S.agents.get(S.zoomed || D.prevZoom || (RP.opened ? null : S.selected));
   if (z?.repo) return z.repo;
+  if (RP.opened) return RP.opened;
   const saved = store("local", DEC_REPO_KEY);
   const list = knownRepos();
   if (saved && list.includes(saved)) return saved;
@@ -2722,8 +2737,9 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
 // between Intent, Plan, Story, Changes and Terminal for what is in focus.
 
-const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library", "trace"];
-const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, library: 1, trace: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
+// Sixth build: "guide", GUIDE.md (ui/levels/guide.js).
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library", "trace", "guide"];
+const LEVEL_OF = { mission: 0, away: 0, guide: 0, decide: 1, flow: 1, health: 1, library: 1, trace: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
 // Search (fourth build): the top bar's quick search over code, docs and decisions; `/` opens it.
 const quickCtx = () => ({ api, go: (hash) => route(hash, { push: true }), openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }), repo: () => pickRepo() || "", openDecisions: () => openDecisions() });
 function openQuickSearch() { import("/levels/quicksearch.js").then((m) => m.open(quickCtx())).catch((err) => console.error(err)); }
@@ -2771,7 +2787,9 @@ async function openLevel(screen, param, { how = "push", query = "" } = {}) {
   const hash = `#/${screen}${param ? "/" + param : ""}${query ? "?" + query : ""}`;
   if (how === "push" && location.hash !== hash) history.pushState({ level: hash }, "", hash);
   else if (how === "replace") history.replaceState({ level: hash, root: true }, "", hash);
-  if (param) L.focus = param;
+  // Only an agent is a focus: #/library/code and #/health/<incident> are not
+  // (sixth build: Story said "There is no agent code").
+  if (param && (screen === "story" || screen === "preview" || screen === "ship")) L.focus = param;
   if (L.screen === screen && L.param === param && L.view && (L.query || "") === query) { markLevels(); return; }
   hideOtherViews();
   closeLevelView();
@@ -2962,6 +2980,7 @@ function start() {
     started = true;
     setInterval(tickTimes, 1000);
     fetch("/api/health").then((r) => r.json()).then((j) => { S.health = j; schedule(); }).catch(() => {});
+    loadRepos();
     // ChloeCtx is required: say so up front when sessions would miss it.
     import("/levels/setup.js").then((m) => m.checkSetup(api)).catch(() => {});
   }

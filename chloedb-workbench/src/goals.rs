@@ -14,7 +14,7 @@ use serde_json::{json, Value as Json};
 
 use crate::db::{get_int, get_ms, get_str, iso, now_ms, opt_str, ts, Agent};
 use crate::levels::{new_id, Levels};
-use crate::supervisor::{ApiError, SpawnRequest, Supervisor};
+use crate::supervisor::{one_line, ApiError, SpawnRequest, Supervisor};
 use crate::trail::{self, Ran};
 
 pub const GOAL_STATES: [&str; 3] = ["active", "done", "dropped"];
@@ -212,7 +212,14 @@ pub fn refresh(sup: &Supervisor, lv: &Levels, goal: Option<&str>) -> Vec<Outcome
     list
 }
 
-/// What `POST /api/goals` takes.
+/// Claude Code's effort levels (`--effort`).
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// What `POST /api/goals` takes. Three ways to staff a goal (sixth build):
+/// `plan`, a lead that finds the outcomes and starts their agents;
+/// `outcomes`, the person's own, one agent each (`start`, default true) and
+/// no planner; `agents`, agents already running, each attached as an
+/// outcome. `model` and `effort` are the lead's, or the outcomes' agents'.
 #[derive(Debug, Default, Deserialize)]
 pub struct GoalBody {
     pub repo: Option<String>,
@@ -220,6 +227,79 @@ pub struct GoalBody {
     pub plan: Option<bool>,
     pub model: Option<String>,
     pub worktree: Option<bool>,
+    pub effort: Option<String>,
+    pub outcomes: Option<Vec<OutcomeSpec>>,
+    pub start: Option<bool>,
+    pub agents: Option<Vec<String>>,
+}
+
+/// An outcome the person names: its title, or the title with how to tell
+/// it is done and what its agent is to do.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum OutcomeSpec {
+    Title(String),
+    Full { title: String, detail: Option<String>, task: Option<String> },
+}
+
+impl OutcomeSpec {
+    fn parts(&self) -> (String, Option<String>, Option<String>) {
+        let clean = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        match self {
+            // "Title — how to tell it is done", as the form's lines are.
+            OutcomeSpec::Title(t) => match [" — ", " – ", " -- "].iter().find_map(|sep| t.split_once(sep)) {
+                Some((title, done)) => (title.trim().to_string(), Some(done.trim().to_string()).filter(|d| !d.is_empty()), None),
+                None => (t.trim().to_string(), None, None),
+            },
+            OutcomeSpec::Full { title, detail, task } => (title.trim().to_string(), clean(detail), clean(task)),
+        }
+    }
+}
+
+/// The first prompt of an outcome's agent when the person named the
+/// outcomes: the outcome first, then the goal it is part of.
+pub fn outcome_task(goal: &Goal, title: &str, detail: Option<&str>, task: Option<&str>) -> String {
+    let mut s = format!("{}.", title.trim_end_matches('.'));
+    if let Some(t) = task {
+        s.push_str("\n\n");
+        s.push_str(t);
+    }
+    if let Some(d) = detail {
+        s.push_str("\n\nDone when: ");
+        s.push_str(d);
+    }
+    s.push_str(&format!(
+        "\n\nThis is one outcome of a goal the user set in Workbench: {}. Other agents work on the other outcomes in their own worktrees. Work in this worktree; when it is done, say what you changed and how you checked it.",
+        goal.text.trim().trim_end_matches('.')
+    ));
+    s
+}
+
+/// A name for an outcome's agent from its title: its first words, free
+/// (no running agent and no `wb/` branch has it) and not in `taken`.
+fn outcome_name(sup: &Supervisor, repo: &std::path::Path, title: &str, taken: &HashSet<String>) -> String {
+    let mut base = String::new();
+    for w in title.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).take(3) {
+        let w = w.to_ascii_lowercase();
+        if base.len() + w.len() + 1 > 20 {
+            break;
+        }
+        if !base.is_empty() {
+            base.push('-');
+        }
+        base.push_str(&w);
+    }
+    if base.is_empty() {
+        base = "outcome".into();
+    }
+    let running: HashSet<String> = sup.agent_rows().into_iter().filter(|a| sup.is_running(&a.id)).map(|a| a.name).collect();
+    let mut n = base.clone();
+    let mut i = 2;
+    while taken.contains(&n) || running.contains(&n) || crate::git::branch_exists(repo, &format!("wb/{n}")) {
+        n = format!("{base}-{i}");
+        i += 1;
+    }
+    n
 }
 
 /// The lead's first prompt.
@@ -260,16 +340,45 @@ pub fn create(sup: &Arc<Supervisor>, lv: &Levels, b: GoalBody) -> Result<Json, A
     if text.is_empty() {
         return Err(ApiError::bad("text is empty: say what the goal is"));
     }
+    let effort = b.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string);
+    if let Some(e) = effort.as_deref().filter(|e| !EFFORTS.contains(e)) {
+        return Err(ApiError::bad(format!("effort {e:?} is one of {}", EFFORTS.join(", "))));
+    }
+    let model = b.model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string);
+    let specs: Vec<(String, Option<String>, Option<String>)> = b.outcomes.unwrap_or_default().iter().map(OutcomeSpec::parts).filter(|o| !o.0.is_empty()).collect();
+    let attach: Vec<String> = b.agents.unwrap_or_default().into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
+    let plan = b.plan.unwrap_or(false);
+    if plan && (!specs.is_empty() || !attach.is_empty()) {
+        return Err(ApiError::bad("plan starts a lead that finds the outcomes itself: with outcomes or agents given, leave plan off"));
+    }
+    if specs.len() > 12 {
+        return Err(ApiError::bad("at most 12 outcomes at once"));
+    }
+    if let Some(t) = specs.iter().find(|o| o.0.len() > 300) {
+        return Err(ApiError::bad(format!("an outcome's title is at most 300 bytes: {:?}", one_line(&t.0, 60))));
+    }
+    // The agents to attach: each one of this repository.
+    let mut attached: Vec<Agent> = Vec::new();
+    for id in &attach {
+        let a = sup.agent_row(id).ok_or_else(|| ApiError::bad(format!("no agent {id}")))?;
+        if PathBuf::from(&a.repo) != repo {
+            return Err(ApiError::bad(format!("agent {} works in {}, not {}", a.name, a.repo, repo.display())));
+        }
+        attached.push(a);
+    }
     let mut g = Goal { id: new_id("g"), repo: repo.to_string_lossy().to_string(), text, state: "active".into(), lead: None, created: now_ms(), done: None };
     g.put(sup)?;
     let mut lead = Json::Null;
-    if b.plan.unwrap_or(false) {
+    let mut started: Vec<Json> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    if plan {
         let req = SpawnRequest {
             repo: g.repo.clone(),
             task: Some(lead_task(&g)),
             name: Some(lead_name(sup, &repo)),
             worktree: b.worktree,
-            model: b.model.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
             goal: Some(g.id.clone()),
             ..SpawnRequest::default()
         };
@@ -277,7 +386,47 @@ pub fn create(sup: &Arc<Supervisor>, lv: &Levels, b: GoalBody) -> Result<Json, A
         g.lead = lead["id"].as_str().map(str::to_string);
         g.put(sup)?;
     }
-    Ok(json!({ "goal": g.to_json(&[]), "lead": lead }))
+    // The person's own outcomes, one agent each and no planner.
+    let mut taken: HashSet<String> = HashSet::new();
+    for (title, detail, task) in &specs {
+        let added = add_outcome(sup, lv, OutcomeBody { goal: Some(g.id.clone()), title: Some(title.clone()), detail: detail.clone(), after: None }, None)?;
+        let oid = added["outcome"]["id"].as_str().unwrap_or("").to_string();
+        if !b.start.unwrap_or(true) {
+            continue;
+        }
+        let name = outcome_name(sup, &repo, title, &taken);
+        taken.insert(name.clone());
+        let req = SpawnRequest {
+            repo: g.repo.clone(),
+            task: Some(outcome_task(&g, title, detail.as_deref(), task.as_deref())),
+            name: Some(name),
+            worktree: b.worktree,
+            model: model.clone(),
+            effort: effort.clone(),
+            outcome: Some(oid),
+            ..SpawnRequest::default()
+        };
+        // One that cannot start (the limit of running agents) stays next.
+        match spawn(sup, lv, req) {
+            Ok(a) => started.push(a),
+            Err(e) => missing.push(format!("{title}: not started ({}); start it from Mission when there is room", e.message)),
+        }
+    }
+    // Agents already running, each an outcome of the goal; each is told
+    // its outcome at its next hook.
+    for a in &attached {
+        let title = a.task.as_deref().map(|t| one_line(t, 120)).filter(|t| !t.is_empty()).unwrap_or_else(|| format!("{}'s work", a.name));
+        let added = add_outcome(sup, lv, OutcomeBody { goal: Some(g.id.clone()), title: Some(title), detail: None, after: None }, None)?;
+        let oid = added["outcome"]["id"].as_str().unwrap_or("").to_string();
+        patch_outcome(sup, lv, &oid, OutcomePatch { agent: Some(a.id.clone()), state: Some("active".into()), ..OutcomePatch::default() })?;
+        let gid = g.id.clone();
+        started.push(sup.update_agent(&a.id, |x| {
+            x.goal = Some(gid);
+            x.outcome = Some(oid);
+        })?);
+    }
+    let os = refresh(sup, lv, Some(&g.id));
+    Ok(json!({ "goal": g.to_json(&os), "lead": lead, "outcomes": os.iter().map(|o| o.to_json(sup)).collect::<Vec<_>>(), "agents": started, "missing": missing }))
 }
 
 /// `GET /api/goals`.

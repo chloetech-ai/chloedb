@@ -41,6 +41,8 @@ mod swarm;
 mod hotspots;
 // Fifth build: autocomplete and intent checks.
 mod complete;
+// Sixth build: repositories read without an agent.
+mod repos;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -136,6 +136,9 @@ pub struct SpawnRequest {
     /// The goal and outcome it works on (set by `levels::spawn`).
     pub goal: Option<String>,
     pub outcome: Option<String>,
+    /// Claude Code's `--effort` (low, medium, high, xhigh, max); sixth
+    /// build, for a goal's lead and agents.
+    pub effort: Option<String>,
 }
 
 /// A notification that says only that a finished turn waits for a prompt
@@ -538,6 +541,10 @@ impl Supervisor {
         if let Some(m) = &model {
             cmd.arg("--model");
             cmd.arg(m);
+        }
+        if let Some(e) = req.effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+            cmd.arg("--effort");
+            cmd.arg(e);
         }
         if let Some(t) = &task {
             // `--mcp-config` takes any number of files, so without `--` a

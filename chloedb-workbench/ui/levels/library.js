@@ -12,6 +12,8 @@
 import {
   h, useStyle, avatar, ctxChip, pill, empty, fmtAgo, fmtNum, fmtTokens, repoOf, later, keyNav, setFleet, toMs,
 } from "./common.js";
+// Sixth build: a repository read without an agent (ui/levels/repos.js).
+import { repoPicker, repoSwitch } from "./repos.js";
 
 /** What the quick search asks the screen to open with: {tab, q, focus}. */
 export const intent = {};
@@ -237,8 +239,9 @@ export function mount(root, ctx) {
       h("div", { class: "lb-tabs", role: "tablist", "aria-label": "Library" },
         tabBtn("code", "Code", ix ? `${count(ix.chunks)} chunks` : null),
         tabBtn("docs", "Docs", nLibs != null ? `${nLibs} libraries` : null)),
+      repo() ? repoSwitch(ctx, repo()) : null,
     );
-    if (!repo()) { el.replaceChildren(head, empty("No repository yet: start an agent on one (n), and its code and the docs of its libraries are searched here.")); return; }
+    if (!repo()) { if (el.querySelector(".rp")) return; el.replaceChildren(head, repoPicker(ctx, { focus: !keepKey, why: "Library searches a repository's code (and the docs of its libraries) in Workbench's own ChloeDB. No agent is needed: open a git checkout and it is indexed now." })); return; }
     el.replaceChildren(head, S.tab === "code" ? codeTab() : docsTab());
     if (keepKey) {
       const k = el.querySelector(`[data-key="${CSS.escape(keepKey)}"]`);
@@ -565,6 +568,7 @@ export function mount(root, ctx) {
 useStyle("library", `
 .lb{padding:20px 24px 28px;display:flex;flex-direction:column;gap:14px}
 .lb-head{align-items:center}
+.lb-head .rp-switch{order:3}
 .lb-tabs{display:inline-flex;margin-left:auto;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px}
 .lb-tabs button{display:inline-flex;align-items:center;gap:7px;border:0;background:none;color:var(--text-2);font:inherit;font-weight:600;padding:5px 14px;border-radius:999px;cursor:pointer}
 .lb-tabs button.on{background:var(--accent-soft);color:var(--accent)}

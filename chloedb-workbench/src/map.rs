@@ -30,6 +30,12 @@ const MAX_DEPTH: usize = 3;
 const FOLD_SHARE: f64 = 0.05;
 const FOLD_LINES: u64 = 50;
 const MAX_FILES: usize = 16;
+/// Small files fold only while together they are at most this share of
+/// their folder: in a small repository most files are small, and folding
+/// them hid the repository (sixth build).
+const FOLD_MAX_SHARE: f64 = 0.2;
+/// A fold lists this many of its files, which the map opens into.
+const FOLD_ITEMS: usize = 400;
 /// Line counting: files above this are estimated from their size, and so
 /// is everything once this much has been read for one tree.
 const COUNT_FILE_MAX: u64 = 4 << 20;
@@ -144,11 +150,28 @@ pub fn territory(sup: &Supervisor, main: &Path) -> Vec<Work> {
     let now = now_ms();
     let agents = repo_agents(sup, main);
     // Agents that share a folder share its diff: each one keeps the files
-    // its own edits named.
-    let mut per_cwd: HashMap<String, usize> = HashMap::new();
+    // its own edits named (its Edit and Write calls, and its rows of
+    // `file_edits`); a file none of them named (written by a script, a
+    // heredoc, a `git merge`) goes to the newest agent of the folder, the
+    // one working there now. An agent started again in its worktree is the
+    // newest, and keeps the folder's work (sixth build: Maya's cents).
+    let mut per_cwd: HashMap<String, Vec<&Agent>> = HashMap::new();
     for a in &agents {
-        *per_cwd.entry(a.cwd.clone()).or_default() += 1;
+        per_cwd.entry(a.cwd.clone()).or_default().push(a);
     }
+    let newest: HashMap<String, String> = per_cwd
+        .iter()
+        .filter_map(|(cwd, xs)| xs.iter().max_by_key(|a| (sup.is_running(&a.id), a.created)).map(|a| (cwd.clone(), a.id.clone())))
+        .collect();
+    let mut claims: HashMap<String, HashSet<String>> = HashMap::new();
+    for a in agents.iter().filter(|a| per_cwd.get(&a.cwd).is_some_and(|xs| xs.len() > 1)) {
+        let cwd = PathBuf::from(&a.cwd);
+        let evs = sup.all_events(&a.id).unwrap_or_default();
+        let mut mine = edited(&evs, &cwd, main);
+        mine.extend(edit_rows(sup, &a.id));
+        claims.insert(a.id.clone(), mine);
+    }
+    let per_cwd: HashMap<String, Vec<String>> = per_cwd.into_iter().map(|(k, xs)| (k, xs.iter().map(|a| a.id.clone()).collect())).collect();
     let mut out = Vec::new();
     for a in agents {
         let cwd = PathBuf::from(&a.cwd);
@@ -174,14 +197,29 @@ pub fn territory(sup: &Supervisor, main: &Path) -> Vec<Work> {
                 .collect(),
             _ => Vec::new(),
         };
-        if per_cwd.get(&a.cwd).copied().unwrap_or(0) > 1 {
-            let mine = edited(&evs, &cwd, main);
-            files.retain(|f| mine.contains(&f.0));
+        if let Some(sharers) = per_cwd.get(&a.cwd).filter(|xs| xs.len() > 1) {
+            let empty = HashSet::new();
+            let mine = claims.get(&a.id).unwrap_or(&empty);
+            let is_newest = newest.get(&a.cwd) == Some(&a.id);
+            files.retain(|f| mine.contains(&f.0) || (is_newest && !sharers.iter().any(|o| claims.get(o).is_some_and(|c| c.contains(&f.0)))));
         }
         let reading = reads(&evs, &cwd, main, now - READ_WINDOW_MS).into_iter().map(|(p, (t, _))| (p, t)).collect();
         out.push(Work { agent: a, files, reading });
     }
     out
+}
+
+/// The files an agent's rows of `file_edits` name (relative to its
+/// checkout, as `alerts::record_edit` wrote them).
+fn edit_rows(sup: &Supervisor, id: &str) -> HashSet<String> {
+    let p = chloedb::query::Params::new().set("a", chloedb::Value::Str(id.to_string()));
+    sup.db()
+        .query("SELECT file FROM file_edits WHERE agent = :a LIMIT 100000", &p)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| crate::db::get_str(&r[0]))
+        .filter(|f| !f.starts_with('/'))
+        .collect()
 }
 
 fn ago(ms: i64) -> String {
@@ -349,16 +387,26 @@ fn dir_json(name: &str, path: &str, d: &Dir, depth: usize, hot: &HashSet<String>
             folded.push(f);
         }
     }
-    // One file is not worth a fold.
-    if folded.len() == 1 {
-        shown.push(folded.pop().unwrap());
+    // One file is not worth a fold; nor are small files that make up much
+    // of their folder (then they are what the folder is), save those past
+    // the `MAX_FILES` biggest.
+    let folded_lines: u64 = folded.iter().map(|f| f.1).sum();
+    if folded.len() == 1 || (folded_lines as f64) > d.lines as f64 * FOLD_MAX_SHARE {
+        let room = MAX_FILES.saturating_sub(shown.len());
+        let back: Vec<&(String, u64)> = if folded.len() == 1 { std::mem::take(&mut folded) } else { folded.drain(..room.min(folded.len())).collect() };
+        shown.extend(back);
+        if folded.len() == 1 {
+            shown.push(folded.pop().unwrap());
+        }
     }
     for (n, lines) in shown {
         children.push(json!({ "name": n, "path": join(path, n), "kind": "file", "lines": lines }));
     }
     if !folded.is_empty() {
         let lines: u64 = folded.iter().map(|f| f.1).sum();
-        children.push(json!({ "name": "…", "path": join(path, "…"), "kind": "more", "lines": lines, "files": folded.len() }));
+        // Its files, so that a click on the fold opens it.
+        let items: Vec<Json> = folded.iter().take(FOLD_ITEMS).map(|(n, l)| json!({ "name": n, "path": join(path, n), "kind": "file", "lines": l })).collect();
+        children.push(json!({ "name": "…", "path": join(path, "…"), "kind": "more", "lines": lines, "files": folded.len(), "items": items }));
     }
     json!({ "name": name, "path": path, "kind": "dir", "lines": d.lines, "files": d.files, "children": children })
 }
@@ -567,6 +615,27 @@ mod tests {
         assert_eq!(c["children"][0]["path"], "a/b/c/d");
         assert_eq!(c["children"][0]["collapsed"], true);
         assert_eq!(c["children"][0]["lines"], 10);
+    }
+
+    #[test]
+    fn a_small_repository_is_not_folded_away_and_a_fold_lists_its_files() {
+        // Lee's shop: ten files, 92 lines, all of them "small".
+        let mut list: Vec<(String, u64)> = ["cart.py", "money.py", "coupons.py", "serve.py", "test_cart.py", "test_money.py", "test_coupons.py", "test_web.py", "README.md"].iter().map(|n| (n.to_string(), 9)).collect();
+        list.push(("web/index.html".into(), 13));
+        let t = tree(Path::new("/x/shop"), &list, &HashSet::new());
+        let kids = t["children"].as_array().unwrap();
+        assert!(kids.iter().all(|c| c["kind"] != "more"), "{t}");
+        assert_eq!(kids.len(), 10);
+        // A big folder of many tiny files still folds them, and the fold
+        // names each one.
+        let mut list: Vec<(String, u64)> = (0..30).map(|i| (format!("gen/f{i:02}.rs"), 2)).collect();
+        list.push(("gen/big.rs".into(), 5000));
+        let t = tree(Path::new("/x/p"), &list, &HashSet::new());
+        let gen = &t["children"][0];
+        let more = gen["children"].as_array().unwrap().iter().find(|c| c["kind"] == "more").unwrap();
+        assert_eq!(more["files"], 30);
+        assert_eq!(more["items"].as_array().unwrap().len(), 30);
+        assert_eq!(more["items"][0]["path"], "gen/f00.rs");
     }
 
     #[test]
