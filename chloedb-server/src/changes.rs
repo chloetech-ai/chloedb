@@ -236,7 +236,62 @@ pub fn asked(b: &Json) -> Result<Asked, ApiError> {
     if route.starts_with("/v1/admin/changes") || route.starts_with("/v1/admin/oncall/proposals") || route == "/v1/mcp" {
         return Err(ApiError::bad("a change request does not decide or file change requests: a person does that"));
     }
-    Ok(Asked { method, path, route, body: b.get("body").cloned().unwrap_or(Json::Null) })
+    // Nor does it carry a credential, or make one (audit X-D1): it is kept
+    // on disk and read by every role key, with the answer it got.
+    if crate::ops::carries_credentials(route) {
+        return Err(ApiError::coded(403, "scope_refused", format!("{method} {route} carries or answers a credential (a key's secret, another cluster's, a connector's or a cloud's): a change request does not, since every role key reads it. A person calls it with their own key")));
+    }
+    let body = b.get("body").cloned().unwrap_or(Json::Null);
+    if let Some(field) = secret_in(&body) {
+        return Err(ApiError::coded(400, "bad_request", format!("the body holds {field:?}, a credential: a change request does not carry one, since every role key reads it. A person sends it with their own key")));
+    }
+    Ok(Asked { method, path, route, body })
+}
+
+/// Whether a field named `name` holds a credential: a secret, a token, a
+/// password or a private key, by its name.
+fn secret_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase().replace(['-', '.', ' '], "_");
+    let parts: Vec<&str> = n.split('_').filter(|p| !p.is_empty()).collect();
+    const WORDS: &[&str] = &["secret", "secrets", "token", "password", "passwd", "passphrase", "credential", "credentials", "authorization", "cookie", "bearer", "apikey"];
+    // Of two words: `private_key`, `api_key`, `access_key`.
+    const BEFORE_KEY: &[&str] = &["private", "api", "access", "signing"];
+    parts.iter().any(|p| WORDS.contains(p)) || parts.windows(2).any(|w| w[1] == "key" && BEFORE_KEY.contains(&w[0]))
+}
+
+/// The first field of `j`, at any depth, whose name says it holds a
+/// credential ([`secret_name`]) and whose value is not empty.
+pub fn secret_in(j: &Json) -> Option<String> {
+    match j {
+        Json::Object(m) => m.iter().find_map(|(k, v)| {
+            let empty = v.is_null() || v.as_str().is_some_and(|s| s.is_empty()) || v.as_bool() == Some(false);
+            if secret_name(k) && !empty {
+                Some(k.clone())
+            } else {
+                secret_in(v)
+            }
+        }),
+        Json::Array(a) => a.iter().find_map(secret_in),
+        _ => None,
+    }
+}
+
+/// `j` with the value of every field whose name says it holds a
+/// credential ([`secret_name`]) replaced by `"(hidden)"`: what a change
+/// request keeps of a body and of the answer it got (audit X-D1).
+pub fn scrub(j: &Json) -> Json {
+    match j {
+        Json::Object(m) => Json::Object(
+            m.iter()
+                .map(|(k, v)| {
+                    let hide = secret_name(k) && !(v.is_null() || v.is_boolean() || v.as_str().is_some_and(|s| s.is_empty()));
+                    (k.clone(), if hide { json!("(hidden)") } else { scrub(v) })
+                })
+                .collect(),
+        ),
+        Json::Array(a) => Json::Array(a.iter().map(scrub).collect()),
+        _ => j.clone(),
+    }
 }
 
 /// The dry run of request `a`, sent by `caller` (the module's first part).
@@ -399,6 +454,19 @@ pub fn applying(headers: &HeaderMap, id: &str, why: &str) -> HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_are_found_and_hidden() {
+        assert_eq!(secret_in(&json!({"name": "x", "auth": {"api_key": "k"}})), Some("api_key".into()));
+        assert_eq!(secret_in(&json!([{"Password": "p"}])), Some("Password".into()));
+        assert_eq!(secret_in(&json!({"x-chloedb-token": "t"})), Some("x-chloedb-token".into()));
+        assert_eq!(secret_in(&json!({"secret_access_key": "s"})), Some("secret_access_key".into()));
+        // Words that hold no credential, and empty values.
+        assert_eq!(secret_in(&json!({"max_tokens": 10, "keys": ["a"], "key": "id", "tokenizer": "en", "secret": "", "token": null})), None);
+        let made = json!({"key": {"id": "k1", "name": "a"}, "secret": "sk_k1_abc", "old": {"token": "t"}, "note": "made"});
+        assert_eq!(scrub(&made), json!({"key": {"id": "k1", "name": "a"}, "secret": "(hidden)", "old": {"token": "(hidden)"}, "note": "made"}));
+        assert_eq!(scrub(&json!([1, "x"])), json!([1, "x"]));
+    }
 
     #[test]
     fn the_where_of_a_statement() {
