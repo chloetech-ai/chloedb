@@ -4,8 +4,9 @@ name: chloedb-server release
 # and no 15-minute first build: one archive per platform, holding the
 # server binary, attached to a GitHub release. Beside it, an archive per
 # platform of each of the programs the guides use with it, chloedb-crawl,
-# chloedb-sheets and chloectx (ChloeCtx), built from the same commit:
-# `install.sh --with crawl,sheets,ctx` installs them too.
+# chloedb-sheets, chloectx (ChloeCtx) and chloedb-netops, built from the
+# same commit: `install.sh --with crawl,sheets,ctx,netops` installs them
+# too.
 #
 # A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
 # the old name, strata-server-v<version>, works too) builds every
@@ -91,13 +92,14 @@ jobs:
         working-directory: chloedb-server
         run: cargo build --locked --release --bin chloedb-server
       # The other programs, each its own crate with its own Cargo.lock.
-      - name: Build chloedb-crawl, chloedb-sheets and chloectx
+      - name: Build chloedb-crawl, chloedb-sheets, chloectx and chloedb-netops
         shell: bash
         run: |
           (cd chloedb-crawl && cargo build --locked --release --bin chloedb-crawl)
           (cd chloedb-sheets && cargo build --locked --release --bin chloedb-sheets)
           (cd chloectx && cargo build --locked --release --bin chloectx)
-          for b in chloedb-crawl/target/release/chloedb-crawl chloedb-sheets/target/release/chloedb-sheets chloectx/target/release/chloectx; do
+          (cd chloedb-netops && cargo build --locked --release --bin chloedb-netops)
+          for b in chloedb-crawl/target/release/chloedb-crawl chloedb-sheets/target/release/chloedb-sheets chloectx/target/release/chloectx chloedb-netops/target/release/chloedb-netops; do
             "$b" --version
           done
       # The binary starts on a new database, takes a table and a row, and
@@ -132,7 +134,7 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           # An archive of each other program, laid out as the server's is.
-          for tool in chloedb-crawl:chloedb-crawl chloedb-sheets:chloedb-sheets chloectx:chloectx; do
+          for tool in chloedb-crawl:chloedb-crawl chloedb-sheets:chloedb-sheets chloectx:chloectx chloedb-netops:chloedb-netops; do
             crate=${tool%%:*} bin=${tool#*:}
             name="$bin-${{ matrix.platform }}"
             mkdir -p "dist/$name"
@@ -160,8 +162,8 @@ jobs:
           "$RUNNER_TEMP/bin/chloedb-server" --version | grep -F "$v"
           test ! -e "$RUNNER_TEMP/bin/chloedb-crawl"
           # --with: the other programs too.
-          CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with crawl,sheets,ctx
-          for b in chloedb-crawl chloedb-sheets chloectx; do "$RUNNER_TEMP/bin/$b" --version; done
+          CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with crawl,sheets,ctx,netops
+          for b in chloedb-crawl chloedb-sheets chloectx chloedb-netops; do "$RUNNER_TEMP/bin/$b" --version; done
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$rel/chloedb-server-${{ matrix.platform }}.tar.gz.sha256"
           if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh; then echo "::error::installed an archive whose SHA-256 is wrong"; exit 1; fi
           test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
@@ -173,6 +175,7 @@ jobs:
             dist/chloedb-crawl-*.tar.gz*
             dist/chloedb-sheets-*.tar.gz*
             dist/chloectx-*.tar.gz*
+            dist/chloedb-netops-*.tar.gz*
           if-no-files-found: error
 
   # The Homebrew formula, written from the archives just built, installs
@@ -235,7 +238,7 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             # A draft: release-publish.yml publishes it when the rest of the
             # version is there too.
-            gh release create "$TAG" --repo "$REPO" --draft --latest=false --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.chloedb\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it. The chloedb-crawl, chloedb-sheets and chloectx archives hold the crawler, the spreadsheet app and ChloeCtx, built from the same commit; \`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx\` installs them with the server."
+            gh release create "$TAG" --repo "$REPO" --draft --latest=false --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.chloedb\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it. The chloedb-crawl, chloedb-sheets, chloectx and chloedb-netops archives hold the crawler, the spreadsheet app, ChloeCtx and the network operations app, built from the same commit; \`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx\` installs the first three with the server (\`--with netops\` the fourth)."
           fi
           gh release upload "$TAG" dist/* --repo "$REPO" --clobber
       # The Homebrew formula of this release, from the archives' checksums,
