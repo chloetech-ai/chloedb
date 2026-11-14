@@ -21,8 +21,17 @@ if [ -n "${CI_RUNNER_CACHE:-}" ]; then
   echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
   # The compile cache both runners share (provision.sh installs sccache):
   # a build folder that starts over recompiles from it, not from source.
+  # Its folder is made by boot.sh, which owns /mnt/ci; on a droplet booted
+  # from an image older than that, the runner cannot make it (11-14:
+  # "Permission denied" on /mnt/ci/sccache failed every C build), so
+  # the runner's own folder holds the cache instead.
   if command -v sccache >/dev/null; then
-    { echo "RUSTC_WRAPPER=sccache"; echo "SCCACHE_DIR=$(dirname "$CI_RUNNER_CACHE")/sccache"; echo "SCCACHE_CACHE_SIZE=40G"; } >> "$GITHUB_ENV"
+    cache="$(dirname "$CI_RUNNER_CACHE")/sccache"
+    if ! mkdir -p "$cache" 2>/dev/null || [ ! -w "$cache" ]; then
+      cache="$CI_RUNNER_CACHE/sccache"
+      mkdir -p "$cache"
+    fi
+    { echo "RUSTC_WRAPPER=sccache"; echo "SCCACHE_DIR=$cache"; echo "SCCACHE_CACHE_SIZE=40G"; } >> "$GITHUB_ENV"
   fi
   echo "building in $dir ($(df -h --output=avail "$dir" | tail -1 | tr -d ' ') free)"
 fi
