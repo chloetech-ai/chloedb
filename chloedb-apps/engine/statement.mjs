@@ -479,6 +479,8 @@ export function compileStatement(text) {
 // A clause of one of the newer parts: sets one parameter of its pattern.
 function moreClause(part, kw, rest, l, n) {
   const c = part.more.clauses[kw];
+  // MONEY alone in a part that takes FORMAT is FORMAT money, as a KPI or a column says it
+  if (!c && kw === 'MONEY' && !String(rest || '').trim() && part.more.clauses.FORMAT) { part.use[part.more.clauses.FORMAT[0]] = 'money'; return; }
   if (!c) fail(n, `${part.kind} takes ${Object.keys(part.more.clauses).join(', ')}, not ${JSON.stringify(l.slice(0, 30))}`);
   const [param, kind] = c;
   const u = part.use;

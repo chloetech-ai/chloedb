@@ -1066,6 +1066,15 @@ function previewBox() {
     iframe);
 }
 
+// The new version of the screen on show has drawn (or failed, or taken too
+// long): it takes the old one's place.
+function settleFrame() {
+  const out = S.outgoing;
+  S.outgoing = null;
+  if (out) out.iframe.remove();
+  for (const f of S.frames.values()) if (f.incoming) { f.incoming = false; f.iframe.style.visibility = ''; }
+}
+
 function renderFrames() {
   const box = $('#frames');
   const st = S.app;
@@ -1093,8 +1102,15 @@ function renderFrames() {
   const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',') + `|${webHosts().join(' ')}`;
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
-    if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
+    if (!v || v.id !== f.capId || f.comps !== compSig) {
+      // The screen on show stays until its new version has drawn: a frame
+      // replaced at once is blank for as long as the new one takes to load
+      // and draw (a visitor saw a blank page while a version went live).
+      if (v && slug === S.view && !f.iframe.hidden && !f.incoming && !S.activity) { settleFrame(); S.outgoing = { slug, iframe: f.iframe }; } else f.iframe.remove();
+      S.frames.delete(slug); S.errors.delete(slug);
+    }
   }
+  if (S.outgoing && (S.outgoing.slug !== S.view || S.activity)) settleFrame();
   const v = st.views.find((x) => x.slug === S.view);
   if (v && !S.frames.has(v.slug) && S.left?.get(v.slug) !== v.id) {
     const params = S.params?.[v.slug] || {};
@@ -1111,8 +1127,14 @@ function renderFrames() {
       S.errors.set(v.slug, { message: 'the view left its page (it navigated the frame), so it was closed' });
       renderApp();
     });
+    const incoming = S.outgoing?.slug === v.slug;
+    if (incoming) {
+      iframe.style.visibility = 'hidden';
+      // a frame that never says it drew is shown anyway after a while
+      setTimeout(() => { if (S.frames.get(v.slug)?.iframe === iframe) settleFrame(); }, 6000);
+    }
     box.append(iframe);
-    S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
+    S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params, incoming });
   }
   for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view || !!S.activity;
   document.body.classList.toggle('gated', !!BARE && !!S.frames.get(S.view)?.gated);
@@ -1673,6 +1695,8 @@ window.addEventListener('message', async (e) => {
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
   if (m.kind === 'tap') { if (!entry.preview) S.taps = (S.taps || 0) + 1; return; }
+  if ((m.kind === 'ready' || m.kind === 'error') && S.frames.get(entry.slug)?.incoming) settleFrame();
+  if (m.kind === 'ready') return;
   if (m.kind === 'gate') {
     const f = S.frames.get(entry.slug);
     if (f) f.gated = !!m.on;

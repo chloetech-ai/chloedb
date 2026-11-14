@@ -3251,4 +3251,6 @@ VARIANCE costs
   assert.match(g.screen.data.costs_var, /AS o FROM costs GROUP BY date_trunc\('month', day\) LIMIT 500$/);
   const months = new Function('costs_var', `return ${g.screen.let.costs_var_rows.slice(1)}`)([{ p: '2026-10-01', v: 5, o: '2026-10-01' }, { p: '2026-09-01', v: 10, o: '2026-09-01' }]);
   assert.match(months[0].period, /Sep/);
+  // MONEY alone says the format, as it does for a KPI (a round 2 plan wrote it so)
+  assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE sales\n  PERIOD month  VALUE revenue  MONEY").screen.body[0].format, 'money');
 });
