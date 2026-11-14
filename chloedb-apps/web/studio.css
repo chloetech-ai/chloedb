@@ -492,3 +492,18 @@ body.bare.designed.look-bold .top .look { background: transparent; border-color:
   body.bare:not(.nav-sidebar) .top { padding-left: max(16px, var(--content-left, 16px)); padding-right: max(16px, var(--content-right, 16px)); }
   body.bare:not(.nav-sidebar) #tabs { padding-left: max(12px, var(--content-left, 12px)); padding-right: max(12px, var(--content-right, 12px)); }
 }
+
+/* A site's header on its other screens (body.site-nav, on a computer): the
+   screens' tabs sit in the bar beside the name, as the front page's links
+   do; the current one in the accent. */
+@media (min-width: 861px) {
+  body.bare.site-nav .top { height: 64px; }
+  body.bare.site-nav .top #tabs { margin-left: auto; padding: 0; gap: 6px; border: 0; background: transparent; overflow: visible; align-self: stretch; align-items: center; }
+  body.bare.site-nav .top #tabs .tab { border: 0; border-radius: 999px; padding: 8px 14px; min-height: 40px; color: var(--fg); font-weight: 550; background: transparent; box-shadow: none; }
+  body.bare.site-nav .top #tabs .tab .ticon { display: none; }
+  body.bare.site-nav .top #tabs .tab:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+  body.bare.site-nav .top #tabs .tab.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 650; }
+  body.bare.site-nav .top .top-right { margin-left: 12px; }
+  body.bare.site-nav .top .brand { flex: none; }
+  body.bare.site-nav .top #tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+}

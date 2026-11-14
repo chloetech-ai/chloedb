@@ -699,6 +699,12 @@ function renderApp() {
   // An app of one screen on its own (a clock, a timer, a calculator) is
   // that screen, whole: no app bar, no tab of its one screen.
   document.body.classList.toggle('one-screen', !!BARE && views.length === 1);
+  // An app whose home is a site's front page keeps the site's header on its
+  // other screens: on a computer the screens' tabs sit in the bar beside its
+  // name, as the front page's links do, not in a second row under it.
+  const site = !!BARE && views.some((v) => v.spec?.screen && /"page"\s*:\s*"front"|"body"\s*:\s*\[\s*\{\s*"nav"\s*:/.test(v.code || ''));
+  document.body.classList.toggle('site-nav', site);
+  placeTabs();
   // The first screen shown is opened too.
   if (S.view && !S.viewSince && !S.activity) {
     S.viewSince = Date.now();
@@ -716,6 +722,20 @@ function renderApp() {
   renderFrames();
   renderPanel();
 }
+
+// The tabs of a site (body.site-nav) on a computer: in the bar, before its
+// right-hand part; on a phone (and otherwise) in their own row, where the
+// phone's tab bar is drawn.
+const WIDE = typeof matchMedia === 'function' ? matchMedia('(min-width: 861px)') : null;
+function placeTabs() {
+  const tabs = document.getElementById('tabs');
+  const top = document.querySelector('.top');
+  if (!tabs || !top) return;
+  const inBar = document.body.classList.contains('site-nav') && !!WIDE?.matches;
+  if (inBar && tabs.parentElement !== top) top.insertBefore(tabs, top.querySelector('.top-right'));
+  if (!inBar && tabs.parentElement === top) document.querySelector('.stage')?.prepend(tabs);
+}
+WIDE?.addEventListener?.('change', placeTabs);
 
 // A screen that shows one row, opened from another screen with its id
 // (app.open("project", {id})): a DETAIL that another view opens.
