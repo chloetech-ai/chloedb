@@ -457,7 +457,7 @@ impl Grpc {
         // and each wrapper below would otherwise move it again (a shard's
         // query spent an eighth of its time copying it).
         // The credential's scope ([`crate::service::SCOPE`]).
-        let scope = if who.root { Scope::Admin } else { who.scope };
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
         let call = Box::pin(crate::service::SCOPE.scope(scope, f(self.0.clone(), who.clone(), req.into_inner())));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
         let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
@@ -637,7 +637,7 @@ impl pb::strata_server::Strata for Grpc {
         let svc = self.0.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let span = tracing::info_span!("request", id = %id, method = "WriteStream");
-        let scope = if who.root { Scope::Admin } else { who.scope };
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
         let run = async move {
             let t0 = Instant::now();
             let mut s = Stream::default();

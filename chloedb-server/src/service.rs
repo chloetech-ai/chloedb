@@ -131,7 +131,8 @@ tokio::task_local! {
 }
 
 tokio::task_local! {
-    /// The scope of the credential of the request being served: the
+    /// The scope of the credential of the request being served (admin for a
+    /// key limited to tables, whose grants decide): the
     /// routes and calls from outside set it (HTTP's, gRPC's), so that a
     /// write deep in the service can tell an admin's from a writer's
     /// ([`below_admin`]).
@@ -140,7 +141,9 @@ tokio::task_local! {
 
 /// Whether the request being served is from a credential below admin
 /// scope ([`SCOPE`]); work of the server's own, outside any request, is
-/// not.
+/// not. A key limited to tables is not counted here: its grants say what
+/// it may write ([`crate::scoped`]), a grant naming the autopilot's
+/// tables included.
 pub fn below_admin() -> bool {
     SCOPE.try_with(|s| *s < Scope::Admin).unwrap_or(false) && !own()
 }
@@ -4244,7 +4247,7 @@ impl Service {
         // The connectors' configs, runs and state are the server's own.
         for t in changed_tables(&command) {
             crate::connectors::may_change(t, "a statement")?;
-            crate::autopilot::may_change(who.root || who.scope >= Scope::Admin, t, "a statement")?;
+            crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, t, "a statement")?;
         }
         // A dictionary's derived field on a coordinator: each shard would
         // tag its rows from its own slice of the dictionary's table, not

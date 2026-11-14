@@ -1005,7 +1005,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             }
             let follow: Option<Arc<str>> = follow.map(Into::into);
             let own = who.as_ref().is_some_and(|w| w.root);
-            let scope = who.as_ref().map_or(Scope::Feed, |w| if w.root { Scope::Admin } else { w.scope });
+            let scope = who.as_ref().map_or(Scope::Feed, |w| if w.root || w.limited() { Scope::Admin } else { w.scope });
             let run = Box::pin(crate::service::SCOPE.scope(scope, keys::noting_change(next.run(req))));
             telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, run))).await
         }
