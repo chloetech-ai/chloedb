@@ -54,7 +54,7 @@ Check, and do not install anything without asking the user:
 
 ```bash
 uname -s                 # Darwin or Linux (on Windows, work inside WSL 2)
-cargo --version          # Rust, stable; if missing, ask before installing it from https://rustup.rs
+cargo --version          # Rust, stable, to build; if missing, install.sh takes the release's prebuilt binary, or ask before installing Rust from https://rustup.rs
 cc --version             # a C compiler (macOS: xcode-select --install; Debian/Ubuntu: build-essential)
 curl --version
 claude auth status       # must show "loggedIn": true
@@ -76,7 +76,11 @@ for several minutes (a release build), so give the command a long timeout
 ```
 
 Options: `--distill-model NAME` (default `haiku`), `--prefix DIR` (default
-`~/.local`), `--no-wire` (build and install the binary only). The script stops
+`~/.local`), `--no-wire` (install the binary only), `--no-model` (skip the
+model download), `--prebuilt` or `--source` (take the release's prebuilt
+binary, or build; by default it takes the prebuilt one for a checkout of a
+release tag, `chloedb-server-v<version>`, or where there is no Rust, and
+builds otherwise, so Rust and a C compiler are needed only to build). The script stops
 at the first failed step with a message saying what is missing, ends by running
 `chloectx doctor`, and exits non-zero if any doctor check failed.
 

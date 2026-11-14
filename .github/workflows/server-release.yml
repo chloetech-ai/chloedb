@@ -6,7 +6,8 @@ name: chloedb-server release
 # platform of each of the programs the guides use with it, chloedb-crawl,
 # chloedb-sheets, chloectx (ChloeCtx) and chloedb-netops, built from the
 # same commit: `install.sh --with crawl,sheets,ctx,netops` installs them
-# too.
+# too, and the repository's ./install.sh takes chloectx's instead of
+# building it for a checkout of the release (or where there is no Rust).
 #
 # A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
 # the old name, strata-server-v<version>, works too) builds every
@@ -37,6 +38,7 @@ on:
     paths:
       - .github/workflows/server-release.yml
       - docs/install.sh
+      - install.sh
       - packaging/homebrew/**
 
 permissions:
@@ -164,6 +166,10 @@ jobs:
           # --with: the other programs too.
           CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with crawl,sheets,ctx,netops
           for b in chloedb-crawl chloedb-sheets chloectx chloedb-netops; do "$RUNNER_TEMP/bin/$b" --version; done
+          # The repository's installer takes the same chloectx archive, with
+          # no build, as it does for a checkout of the release.
+          CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" sh install.sh --prebuilt --no-wire --no-model --prefix "$RUNNER_TEMP/ctx"
+          "$RUNNER_TEMP/ctx/bin/chloectx" --version | grep -F "$v"
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$rel/chloedb-server-${{ matrix.platform }}.tar.gz.sha256"
           if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh; then echo "::error::installed an archive whose SHA-256 is wrong"; exit 1; fi
           test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
