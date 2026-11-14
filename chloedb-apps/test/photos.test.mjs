@@ -202,3 +202,16 @@ test('a hero photo: too busy to carry words, or loud colours far from the design
   assert.equal(screen.body[0].src, 'f1');
   assert.equal(searched, 1);
 });
+
+test('an owner\'s photo takes the hero only when it looks right, and not when the plan placed the owner\'s photos itself', async () => {
+  const find = async () => null;
+  const flat = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }] };
+  await placeScreenPhotos(flat, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => ['flat'], drawn: false });
+  assert.notEqual(flat.body[0].src, 'f1');
+  const good = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }] };
+  await placeScreenPhotos(good, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.equal(good.body[0].src, 'f1');
+  const gallery = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }, { gallery: [{ src: 'f2' }] }] };
+  await placeScreenPhotos(gallery, { find, own: ['f1', 'f2'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.notEqual(gallery.body[0].src, 'f1');
+});

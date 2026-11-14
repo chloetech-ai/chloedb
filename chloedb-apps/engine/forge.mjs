@@ -1576,11 +1576,30 @@ export function cleanArt(a) {
 // The app's name from the plan's, keeping what the owner asked for: a first
 // line "Name: Pawsome Grooming" (or "Title:") is the name as it is, and a
 // leading label like "acme-shop" or "team_42" stays in front of it.
+// The name a request gives the business or the app itself: "called Dave's
+// Tacos", "under the name Sable & Stone", "a shop for Wick & Wax", "para
+// Peluquería Lucía", or a quoted name; null when it gives none.
+const CAP = "[\\p{Lu}0-9][\\p{L}\\p{N}'’-]*";
+const NAMED = new RegExp(`(?:\\bcalled|\\bnamed|under the name|\\bfor|\\bpara|\\bpour|\\bfür)\\s+(${CAP}(?:\\s+(?:&|and|y|de|del|la|el|of|the|et)?\\s*${CAP})*)`, 'u');
+export function namedIn(text) {
+  const t = String(text || '');
+  const q = t.match(/["“]([^"”\n]{2,40})["”]/);
+  if (q) return q[1].trim();
+  const m = t.match(NAMED);
+  if (!m) return null;
+  const name = m[1].replace(/[.,:;]+$/, '').trim();
+  // one plain word that only opens a sentence is no name
+  return name.length >= 3 && !/^(My|Our|A|An|The|This|That|Me|Us|Each|Every|All|Some|Mi|Mis|Un|Una|El|La)$/.test(name) ? name : null;
+}
+
 export function appTitle(planned, app) {
   const name = String(planned || '').trim().slice(0, 32);
   const first = String(app?.description || '').trim().split('\n')[0];
   const given = first.match(/^(?:app\s+)?(?:name|title|called)\s*[:=]\s*["“']?([^"”'.\n]{1,60})/i);
   if (given) return given[1].trim();
+  // the request's own name for it always wins over one the plan coined
+  const own = namedIn(first);
+  if (own && !name.toLowerCase().includes(own.toLowerCase())) return own.slice(0, 60);
   const label = first.match(/^([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)(?=[\s:,.]|$)/);
   if (!label || name.toLowerCase().includes(label[1].toLowerCase())) return name;
   return `${label[1]} ${name}`.slice(0, 60).trim();
@@ -1989,7 +2008,9 @@ function photoOptions(engine, appId, plan, view) {
   if (files) photoCache(path.join(files, '..', 'photo-cache'));
   // (a photo found on the web and kept is the engine's, not the owner's)
   const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta, 'photos')).id : null;
-  return { save, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
+  // (the owner's photos are read to be looked at before a hero takes one)
+  const ownBytes = engine.services?.readFile ? async (id) => (await engine.services.readFile(appId, id)).bytes : null;
+  return { save, ownBytes, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
 }
 
 // The photos the owner uploaded to the app (not the ones the engine kept

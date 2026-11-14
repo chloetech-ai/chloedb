@@ -1089,7 +1089,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
     : gate ? `${noClose(view.code)}\n;{ const __inner = render; render = async (root, app) => { const me = await Promise.resolve(app.me()).catch(() => null); if (!me) { root.replaceChildren(window.__sa_gateView(app, ${gate})); return; } return __inner(root, app); }; }`
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
-  const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title }));
+  const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title, for: x.spec?.for || null }));
   const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {

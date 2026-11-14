@@ -390,14 +390,29 @@ async function keep(r, save) {
 // and has none yet. Returns the photos placed. A block nothing is found for
 // is drawn: a hero or band on the design's gradient (the page's own), a
 // card or photo with a drawn picture.
-export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true, judge = fullBleedProblems, fetchBytes = photoBytes, own = [] } = {}) {
+export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true, judge = fullBleedProblems, fetchBytes = photoBytes, own = [], ownBytes = null } = {}) {
   const placed = [];
   const jobs = photoJobs(screen);
   // The owner's own photos (uploaded to the app, not yet on the page) go to
-  // its full-width places first: theirs before anyone else's.
+  // its full-width places first, theirs before anyone else's, when they
+  // pass the same look as a found one (not flat, dark or washed out, not
+  // too busy for words). When the plan has already put some of them on the
+  // page (a gallery of them), it chose where they go: the rest stay out of
+  // the hero it chose otherwise.
   const onPage = JSON.stringify(screen);
-  const mine = (own || []).filter((id) => id && !onPage.includes(id) && !used.has(id));
+  const placedOwn = (own || []).some((id) => id && onPage.includes(id));
   const hue = accent ? accentHue(accent) : null;
+  const mine = [];
+  if (!placedOwn) {
+    for (const id of (own || []).filter((x) => x && !onPage.includes(x) && !used.has(x))) {
+      if (judge && ownBytes) {
+        const bytes = await ownBytes(id).catch(() => null);
+        const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : ['could not be read'];
+        if (problems.length) continue;
+      }
+      mine.push(id);
+    }
+  }
   if (find === findPhoto) await prefetchPhotos(jobs.filter((j) => !((j.kind === 'hero' || j.kind === 'band') && mine.length)));
   const found = [];
   for (const j of jobs) {
@@ -518,7 +533,7 @@ export function warmPhotos(plan, { open = OPEN } = {}) {
 // (the app's files), accent (the art direction's), drawn (draw what is not
 // found), find (stands in for findPhoto in tests).
 export async function placePhotos(plan, code, opts = {}) {
-  const { open = OPEN, save = null, accent = plan?.art?.accent || '', drawn = true, own = [] } = opts;
+  const { open = OPEN, save = null, accent = plan?.art?.accent || '', drawn = true, own = [], ownBytes = null } = opts;
   const find = opts.find || ((q, o) => findPhoto(q, { ...o, open }));
   const placed = [];
   const used = new Set();
@@ -526,7 +541,7 @@ export async function placePhotos(plan, code, opts = {}) {
   // Every search first, in parallel.
   if (open && !opts.find) await warmPhotos(plan, { open });
   for (const v of screens) {
-    const got = await placeScreenPhotos(v.screen, { used, find, save, accent, drawn, own });
+    const got = await placeScreenPhotos(v.screen, { used, find, save, accent, drawn, own, ownBytes });
     if (got.length) { placed.push(...got); code[v.slug] = JSON.stringify(v.screen, null, 1); }
   }
   const footer = footerOf(plan);
