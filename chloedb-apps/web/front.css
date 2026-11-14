@@ -115,10 +115,6 @@ body.front #root { max-width: none; gap: 0; }
   .fp-nav.open .fp-links .fp-btn { font-size: 18px; padding: 10px 0; }
 }
 .fp-links .fp-menu-act { display: none; }
-.fp-nav:not(.solid) .fp-nav-in > .fp-btn.dup { opacity: 0; pointer-events: none; }
-.fp-nav .fp-nav-in > .fp-btn.dup { transition: opacity .3s var(--ease); }
-/* on a phone a hidden duplicate leaves no gap before the menu button */
-@media (max-width: 760px) { .fp-nav:not(.solid) .fp-nav-in > .fp-btn.dup { display: none; } .fp-nav:not(.solid):has(.fp-btn.dup) .fp-menu { margin-left: auto; } }
 /* a button the request asked to be big */
 .fp-btn.big { font-size: clamp(18px, 2.4vw, 22px); padding: .9em 1.9em; font-weight: 700; letter-spacing: -.01em; }
 @media (max-width: 760px) { .fp-actions .fp-btn.big { flex-basis: 100%; justify-content: center; } }

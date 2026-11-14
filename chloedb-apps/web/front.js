@@ -504,15 +504,6 @@
         if (!heading) loose.headOnly = false;
         loose.firstChild.append(...els);
       });
-      // The header's action that repeats one of the hero's waits until the
-      // hero has scrolled away (front.css): two of the same button on the
-      // first screen read as clutter.
-      const nav = out.find((x) => x.classList?.contains('fp-nav'));
-      const hero = out.find((x) => x.classList?.contains('fp-hero'));
-      if (nav && hero) {
-        const said = new Set([...hero.querySelectorAll('.fp-actions .fp-btn')].map((b) => b.textContent.trim().toLowerCase()));
-        for (const b of nav.querySelectorAll('.fp-nav-in > .fp-btn')) if (said.has(b.textContent.trim().toLowerCase())) b.classList.add('dup');
-      }
       // A header over a photo is white until the page scrolls under it.
       for (let i = 0; i < out.length - 1; i++) {
         if (out[i].classList?.contains('fp-nav') && (out[i + 1].classList?.contains('look-photo') || out[i + 1].classList?.contains('slides') || out[i + 1].classList?.contains('look-gradient') || out[i + 1].classList?.contains('look-split'))) {

@@ -50,12 +50,12 @@ export function parseLayout(v) {
 // ---- the rules, as the forge sees them
 
 export const ART_DOC = `- art: the app's art direction, for a new app, decided with the brief and before the screens; the designs and screens follow it. Invent ONE direction for this product, never a generic one:
-  "concept": one sentence from the subject's own world ("a chalkboard menu by the truck's window", "a quiet ledger for a corner bakery"); "mood": three words;
-  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a bakery: "editorial, the day's bread as a chalkboard list"; a course: "split, lessons beside progress"); vary it by subject, not by habit;
+  "concept": one sentence from the subject's own world ("a workbench tag on every bike in for repair", "a quiet ledger for a seed library"); "mood": three words;
+  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a bike repair shop: "editorial, the repair prices as a workshop list"; a ferry timetable: "split, the next sailing beside the day's list"); vary it by subject, not by habit;
   "type": the title face, "system", "serif" (editorial, food, books), "rounded" (friendly, families, learning) or "mono" (technical), with the pairing ("serif titles over plain text");
   "accent": the one color of the main buttons, named as the subject would ("brick red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
-  "imagery": what the photos show, the real product itself (the bread on the counter, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job or there is no real photo of the product to show: then the first screen is type-led (a hero with "look": "type"), never a stock photo standing in;
-  "action": the one main action and its words, a concrete verb ("Order a loaf", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
+  "imagery": what the photos show, the real product itself (the bike on the repair stand, the ferry at the pier), never a related ingredient, plant or background, or "none" when photos do not help the job or there is no real photo of the product to show: then the first screen is type-led (a hero with "look": "type"), never a stock photo standing in;
+  "action": the one main action and its words, a concrete verb ("Book a repair", "See the next ferry"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)
 - Pages are white, a faint paper tint or genuinely dark; no strong beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.
