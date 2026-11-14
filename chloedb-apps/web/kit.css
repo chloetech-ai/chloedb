@@ -763,3 +763,7 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
 .lay-grid > .lay-group { flex: 1 1 min(100%, 380px); }
 .lay-grid > .lay-group:is(:has(table), :has(> .kpis:first-child), .lay-actions) { flex-basis: 100%; }
 .lay-grid > .lay-group:has(> .card:only-child) > .card { flex: 1; }
+/* a row with a part pushed right (a price, a count) spans its line: the words
+   beside it take the room, so the right part lines up down a list */
+:is(.item, .row) > .row:has(> .right) { flex: 1 1 auto; min-width: 0; }
+.row:has(> .right) > .col { flex: 1 1 0; min-width: 0; }

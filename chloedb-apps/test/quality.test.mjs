@@ -185,6 +185,8 @@ test('a button the request calls big is drawn big and first in its group', () =>
   assert.deepEqual(bigLabels('Add a big "Find the truck" button linking to https://instagram.com/davestacos.'), ['find the truck']);
   assert.deepEqual(bigLabels('Add a \u201cBook now\u201d button, nice and large'), ['book now']);
   assert.deepEqual(bigLabels('Add a "Find the truck" button.'), []);
+  assert.deepEqual(bigLabels('Put a big button that says Find the truck linking to instagram'), ['find the truck']);
+  assert.deepEqual(bigLabels('Add a large Book Now button at the top'), ['book now']);
   assert.deepEqual(bigLabels('Make the photo big and add "Hours" to the footer'), []);
   const screen = { page: 'front', body: [{ hero: 'Tacos', actions: [{ label: 'See the menu', href: '#menu' }, { label: 'Find the truck', href: 'https://instagram.com/x' }] }, { button: 'Find the truck', do: '=() => 1' }] };
   assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), true);
@@ -193,4 +195,8 @@ test('a button the request calls big is drawn big and first in its group', () =>
   assert.equal(screen.body[1].class, 'big');
   assert.equal(honourSize(screen, 'Add a big "Find the truck" button'), false);
   assert.equal(honourSize(screen, 'Rename the heading'), false);
+  // drawn as the model wrote it in a round: the asked-for one secondary, the other big too
+  const r2 = { body: [{ hero: 'Tacos', actions: [{ label: 'Find the truck', href: 'https://x', size: 'big', style: 'secondary' }, { label: 'See the menu', href: '#menu', size: 'big' }] }] };
+  assert.equal(honourSize(r2, 'Add a big "Find the truck" button linking to https://instagram.com/davestacos.'), true);
+  assert.deepEqual(r2.body[0].actions, [{ label: 'Find the truck', href: 'https://x', size: 'big' }, { label: 'See the menu', href: '#menu' }]);
 });

@@ -446,7 +446,10 @@ export function bigLabels(text) {
     const near = t.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40);
     if (BIG_WORDS.test(near) && /\bbutton/i.test(near)) out.push(m[1].trim().toLowerCase());
   }
-  return out;
+  // unquoted: "a big button that says Find the truck", "a big Find The Truck button"
+  for (const m of t.matchAll(/\bbuttons?\s+(?:that says|saying|labell?ed|called|named|reading|with the words)\s+([^"\u201c\u201d.,;!?\n]{2,40})/gi)) out.push(m[1].trim().replace(/\s+(?:linking|that|which|to|on|at)\b.*$/i, '').toLowerCase());
+  for (const m of t.matchAll(/\b(?:big|bigger|large|larger|huge|giant|prominent|oversized)\s+((?:[A-Z][\w'\u2019]*\s+(?:(?:the|a|an|of|to|my|our|us)\s+)?){1,6})buttons?\b/g)) out.push(m[1].trim().toLowerCase());
+  return [...new Set(out.filter(Boolean))];
 }
 export function honourSize(screen, text) {
   const labels = bigLabels(text);
@@ -463,11 +466,20 @@ export function honourSize(screen, text) {
     if (same(x.label) && (x.href !== undefined || x.open !== undefined || x.do !== undefined) && x.size !== 'big') { x.size = 'big'; changed = true; }
     // A screen's button: {button: "label", do}.
     if (same(x.button) && !/\bbig\b/.test(String(x.class || ''))) { x.class = `${x.class ? `${x.class} ` : ''}big`; changed = true; }
-    for (const k of ['actions', 'links']) {
-      const xs = x[k];
-      if (k === 'actions' && Array.isArray(xs)) {
-        const i = xs.findIndex((a) => a && typeof a === 'object' && same(a.label));
-        if (i > 0) { xs.unshift(...xs.splice(i, 1)); changed = true; }
+    if (Array.isArray(x.actions)) {
+      const xs = x.actions;
+      const i = xs.findIndex((a) => a && typeof a === 'object' && same(a.label));
+      if (i > 0) { xs.unshift(...xs.splice(i, 1)); changed = true; }
+      if (i >= 0) {
+        // the one asked for is the group's primary, filled and big; the others are not big
+        const [first, ...rest] = xs;
+        if (first.style && first.style !== 'primary') { delete first.style; changed = true; }
+        if (first.class && /\b(secondary|ghost|link)\b/.test(first.class)) { first.class = first.class.replace(/\b(secondary|ghost|link)\b/g, '').trim() || undefined; if (!first.class) delete first.class; changed = true; }
+        for (const a of rest) {
+          if (!a || typeof a !== 'object') continue;
+          if (a.size === 'big') { delete a.size; changed = true; }
+          if (a.style === 'primary') { a.style = 'secondary'; changed = true; }
+        }
       }
     }
     for (const v of Object.values(x)) if (v && typeof v === 'object') walk(v);
