@@ -491,3 +491,19 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
    a window as tall as the page (a full-page capture) shows it all at once */
 .rv { opacity: .9; transform: translate3d(0, calc(var(--rv) * 14px), 0); transition-duration: .5s; }
 .rv-now .rv { transition: none !important; opacity: 1 !important; transform: none !important; }
+
+/* A hero never fills the first screen: the first part after it starts
+   above the fold (on a 1280 x 800 computer and a phone alike), so people
+   see there is more. Its height leaves a strip of the window below it, and
+   a type-led headline is sized by the window's height too. */
+.fp-hero.h-full { min-height: max(440px, calc(100svh - 150px)); }
+.fp-hero.h-tall { min-height: min(max(440px, 70vh), calc(100svh - 170px)); }
+.screen.front.layout-gallery .fp-hero.h-full, .screen.front.layout-gallery .fp-hero.h-tall { min-height: min(max(420px, 62vh), calc(100svh - 170px)); }
+.screen.front:is(.layout-split, .layout-tool, .layout-dashboard) .fp-hero.h-full { min-height: min(max(460px, 76vh), calc(100svh - 150px)); }
+.fp-hero > .fp-wrap { padding-block: clamp(88px, 13vh, 120px) clamp(48px, 8vh, 80px); }
+.fp-hero.look-type > .fp-wrap, .fp-hero.look-plain > .fp-wrap, .fp-hero.look-gradient > .fp-wrap { padding-block: clamp(84px, 12vh, 112px) clamp(40px, 7vh, 64px); }
+.fp-hero.look-type .fp-display { font-size: clamp(40px, min(8.5vw, 11vh), 104px); max-width: 16ch; }
+/* a type-led hero set to the left on a wide window keeps to a column, not
+   a strip of words beside an empty half */
+@media (min-width: 1100px) { .fp-hero.look-type > .fp-wrap:has(.fp-hero-text.left) { max-width: 1040px; } }
+@media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 84px 36px; } .fp-hero.look-type .fp-display { font-size: clamp(36px, min(11vw, 7.5vh), 56px); } }

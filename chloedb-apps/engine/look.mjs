@@ -203,6 +203,10 @@ export function measure(arg) {
   // Where the screen's main content starts: its first list, table, form or
   // card (a front page is a page to scroll, and is not measured).
   const front = !!document.querySelector('.screen.front');
+  // On a front page: where the first part after its hero starts.
+  let afterHero = null;
+  const hero = document.querySelector('.screen.front .fp-hero');
+  if (hero) { let nx = hero.nextElementSibling; while (nx && !nx.getBoundingClientRect().height) nx = nx.nextElementSibling; if (nx) afterHero = Math.round(nx.getBoundingClientRect().top + (doc.scrollTop || 0)); }
   let firstTop = null;
   for (const e of document.querySelectorAll('table, .list, .checks, .rcards, .rgroups, form, .card, .empty, .board')) {
     const r = shown(e);
@@ -215,7 +219,7 @@ export function measure(arg) {
   const nums = [...document.querySelectorAll('[data-num]')].filter((e) => shown(e));
   const rowsShown = [...document.querySelectorAll('.list > .item, table tbody tr, .rcards > *, .rgroup-list > *')].filter((e) => shown(e)).length;
   return {
-    front, firstTop, tinyFields, numbers: nums.length, zeros: nums.filter((e) => e.dataset.num === '0').length, rowsShown,
+    front, firstTop, afterHero, tinyFields, numbers: nums.length, zeros: nums.filter((e) => e.dataset.num === '0').length, rowsShown,
     width: W, scroll: doc.scrollWidth, height: doc.scrollHeight, screen: H, wide,
     small: small.slice(0, 6), smallCount: small.length, repeats: repeats.slice(0, 4), faint: faint.slice(0, 4), faintCount: faint.length,
     faintButtons: faintButtons.slice(0, 3), mainTop, mainName, raw: [...raw].slice(0, 4),
@@ -241,6 +245,7 @@ export function rules(m, device) {
   if (m.repeats.length) out.push({ problem: `buttons say the same on every row with nothing to tell them apart: ${m.repeats.join(', ')}`, severity: 'low' });
   // Taste rules held in code (Doable): the job's content on the first
   // screenful, fields a phone does not zoom into, numbers that count.
+  if (m.front && m.afterHero != null && m.afterHero > m.screen - 40) out.push({ problem: `the hero fills the ${device}'s first screen: the first part after it starts ${m.afterHero} px down and the screen shows ${m.screen} px`, fix: 'make the hero shorter ("height": "short", fewer and shorter words) so the next part starts on the first screen', severity: 'high' });
   if (device === 'phone' && !m.front && m.firstTop != null && m.firstTop > m.screen - 100) out.push({ problem: `the first screenful shows no list, table or form: the main content starts ${m.firstTop} px down and the phone shows ${m.screen} px`, fix: 'put what the job needs first, and shorten or move what stands above it', severity: 'high' });
   if (device === 'phone' && m.tinyFields) out.push({ problem: `${m.tinyFields} field${m.tinyFields === 1 ? ' has' : 's have'} text under 16 px, so the phone zooms in when one is tapped`, fix: 'give fields 16 px text on a phone', severity: 'high' });
   if (device === 'phone' && m.numbers >= 2 && m.zeros === m.numbers && m.rowsShown >= 2) out.push({ problem: `every number at the top reads 0 while the screen lists ${m.rowsShown} rows`, fix: "count what those rows hold (check the queries' columns, states and dates), or leave out the numbers that only fill in later", severity: 'high' });

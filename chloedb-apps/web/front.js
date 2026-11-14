@@ -161,7 +161,22 @@
     const screenLinks = (links, s, path, close, taken = new Set()) => {
       const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
       const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()) && !taken.has(`open:${x.slug}`) && !taken.has(`label:${String(x.title).trim().toLowerCase()}`));
-      const out = screens.map((x, i) => { const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1); a && a.addEventListener('click', close); return a; });
+      // a screen for the owner (or admins) shows only to them, once the page
+      // knows who is signed in: never in a visitor's header
+      const staff = (x) => x.for === 'owner' || x.for === 'admins';
+      const out = screens.map((x, i) => {
+        const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1);
+        if (!a) return a;
+        a.addEventListener('click', close);
+        if (staff(x)) {
+          a.hidden = true;
+          const may = (me) => !!me && (me.role === 'owner' || (x.for === 'admins' && me.role === 'admin'));
+          Promise.resolve(app.me()).then((me) => { a.hidden = !may(me); }).catch(() => {});
+          const signed = (e) => { if (!a.isConnected) { window.removeEventListener('sa-signed', signed); return; } a.hidden = !may(e.detail); };
+          window.addEventListener('sa-signed', signed);
+        }
+        return a;
+      });
       // An app with screens for its members offers a visitor the way in:
       // "Sign in" (or create an account) until someone is signed in.
       if (window.__SA && window.__SA.members && window.__sa_askSignIn && !said.has('sign in') && !said.has('log in')) {
@@ -216,7 +231,8 @@
       const asked = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'gradient');
       const look = (asked === 'photo' || asked === 'split') && !pic0 ? 'gradient' : asked;
       const align = b.align || (look === 'split' || pageLayout === 'editorial' ? 'left' : 'center');
-      const height = b.height || (look === 'photo' ? 'full' : look === 'split' ? 'tall' : 'tall');
+      // (a type-led hero is short: its words are the hero, not the space)
+      const height = b.height || (look === 'photo' ? 'full' : look === 'type' ? 'short' : 'tall');
       const text = h('div', { class: `fp-hero-text ${align}` },
         [b.eyebrow ? h('p', { class: 'fp-eyebrow' }, tx(b.eyebrow, s, path)) : null,
           h('h1', { class: 'fp-display' }, rich(tx(b.hero, s, path))),
