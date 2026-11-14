@@ -51,6 +51,10 @@ order. Auth changes: a connector's push key reads nothing, and
   only, about 40 bytes a row; rollups made by 0.3.1 and 0.3.2 keep working
   as they are (`DROP ROLLUP` and `CREATE ROLLUP` again to get the smaller
   table).
+- App engine: screen expressions run only in QuickJS, `claude -p` and
+  `codex exec` get a reduced environment, Codex is off unless
+  `STRATA_APPS_CODEX_ON=1`, and its MCP server signs in with the engine's
+  agent token.
 
 ### SQL and the engine
 
@@ -141,6 +145,29 @@ order. Auth changes: a connector's push key reads nothing, and
 - Feature store demo: impressions older than three hours are let go (`--keep`), and a model trains on the last 30 minutes, so training stays quick in a demo left running; the shoppers/s badge counts every shopper thread's requests; `serve --local` no longer starts ChloeCtx beside it; the pipeline diagram scrolls on a phone (audit DAP-12, DAP-15, DAP-16, DAP-23).
 
 ### Apps
+
+#### Security (audit 4: X-G1, X-G6, X-G7)
+
+- A screen's `PARAMS (x = <expression>)` is worked out in a fresh QuickJS
+  interpreter during the build check and screen edits (no Node, 200 ms, 16 MB),
+  never with `new Function` in the engine's process. An expression that reaches
+  for `process`, `require` or `import()` gives no value and its query is not
+  dry-run.
+- `claude -p` and `codex exec` start with a reduced environment (PATH, HOME,
+  user, locale, temp folder, proxy and certificates, and the CLI's own
+  `ANTHROPIC_*`/`CLAUDE_*` or `OPENAI_*`/`CODEX_*`), never the engine's tokens.
+  `STRATA_APPS_CHILD_ENV` names more to keep.
+- The `codex` provider is off unless `STRATA_APPS_CODEX_ON=1` (or
+  `STRATA_APPS_PROVIDER=codex`); a build asking for it otherwise gets a 400.
+  When on, its answers cost what their tokens cost
+  (`STRATA_APPS_CODEX_USD_PER_MTOK`, default `1.25,0.125,10`) against the
+  spending cap, and Stop kills a Codex build at once.
+- The MCP server (`engine/mcp.mjs`) signs in with the engine's agent token
+  (`STRATA_APPS_AGENT_TOKEN`, or `DATA/agent.token`, which the engine makes on
+  first start, mode 0600) and does not start without one. The engine accepts
+  it as a studio sign-in beside a cluster too, and refuses a bearer token that
+  is neither chloedb-server's nor the agent's, with a login or without.
+  MCP `publish` needs `confirm: true` at every access (unpublishing needs none).
 
 #### Changed
 
