@@ -8,7 +8,7 @@
 // longer or older windows read `/v1/timeseries?from=&to=` (per-minute points
 // from the server's `load` table). While paused nothing redraws.
 
-import { api, bus, every, store, provide, provideRoutes, roleOf, connection, fmt, span } from "./core.js";
+import { api, bus, every, store, provide, provideRoutes, roleOf, connection, fmt, span, can, isIdle, IDLE_SLOW } from "./core.js";
 
 /** The ranges the picker offers: [key, minutes]. */
 export const RANGES = [["15m", 15], ["1h", 60], ["6h", 360], ["24h", 1440], ["7d", 10080]];
@@ -174,7 +174,8 @@ export function fresh(name) {
   const f = fr[name];
   if (!f) return { ok: !state.paused, age_ms: null, error: null, since_ms: null, loading: true };
   const age = f.ok_ms ? Date.now() - f.ok_ms : null;
-  const per = (name === "series" && state.series.source === "load") ? 60000 : PERIOD[name] || 5000;
+  // Nobody at the page, the polls run IDLE_SLOW times less often (core.every): not stale for that.
+  const per = ((name === "series" && state.series.source === "load") ? 60000 : PERIOD[name] || 5000) * (isIdle() ? IDLE_SLOW : 1);
   const down = !connection().ok;
   const ok = !down && (f.misses || 0) < 2 && (state.paused || age == null || age < per * 3 + 4000);
   return { ok, age_ms: age, error: f.error || (down ? connection().message : null), since_ms: f.since_ms || (down ? connection().since_ms : null), loading: false };
@@ -498,19 +499,32 @@ export function deriveFleet() {
   };
 }
 
+// ---------------------------------------------------------------- proposals waiting
+// The on-call agent's proposals and change requests that wait for an admin:
+// the navigation counts them, whichever view is open.
+let pendingN = 0;
+export const pendingProposals = () => pendingN;
+export function setPendingProposals(n) { pendingN = n || 0; bus.emit("pending"); }
+async function pollPending() {
+  if (!can("admin", "GET /v1/admin/oncall/proposals")) { pendingN = 0; return; }
+  try { setPendingProposals((await api("/v1/admin/oncall/proposals?state=pending", T)).proposals?.length); } catch { /* an older server, or no key */ }
+}
+bus.on("whoami", () => { pendingN = 0; pollPending(); });
+
 // ---------------------------------------------------------------- start
 let stops = [];
 export function start() {
   stops.forEach((f) => f());
   stops = [
     every(2000, pollSeries),
-    every(5000, pollHealth, true, { always: true }),
+    every(5000, pollHealth, true, { always: true, idle: "slow" }),
     every(5000, pollCluster),
     every(5000, pollAlerts),
     every(5000, pollFleet),
     every(30000, refreshSystem),
+    every(20000, pollPending, false),
   ];
-  refreshWho();
+  return refreshWho();
 }
 provide({ rangeParams: () => rangeParams() });
 bus.on("token", () => { state.points = []; seriesLoadedKey = null; start(); });

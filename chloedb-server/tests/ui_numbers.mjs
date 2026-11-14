@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 
 const noop = () => {};
+// What the modules listen for on the document (core.js: whether anybody is at the page).
+const docListeners = {};
 const el = () => ({ style: {}, dataset: {}, classList: { add: noop, remove: noop, toggle: noop }, append: noop, setAttribute: noop, addEventListener: noop, replaceChildren: noop, children: [] });
 Object.assign(globalThis, {
   window: globalThis,
@@ -13,7 +15,8 @@ Object.assign(globalThis, {
   matchMedia: () => ({ matches: false, addEventListener: noop }),
   sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
   localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
-  document: { addEventListener: noop, querySelector: () => null, querySelectorAll: () => [], documentElement: el(), body: el(), createElement: el, createElementNS: el, createTextNode: el },
+  document: { addEventListener: (ev, f) => (docListeners[ev] ||= []).push(f), querySelector: () => null, querySelectorAll: () => [], documentElement: el(), body: el(), createElement: el, createElementNS: el, createTextNode: el },
+  addEventListener: noop,
 });
 const app = new URL("../ui/app/", import.meta.url);
 const { fmt, ApiError } = await import(new URL("core.js", app));
@@ -150,6 +153,50 @@ assert.ok(!core.signInNeeded());
 await tick();
 assert.ok(ticks.length > 1, "it goes on once another key is given");
 stop();
+
+// LIV-14: cards that ask the same thing at once share one request, each
+// with its own copy of the answer; a change is never shared.
+let fetches = 0;
+globalThis.fetch = async () => { fetches++; await tick(); return { status: 200, ok: true, text: async () => '{"tables":[{"name":"t"}]}' }; };
+const [a1, a2] = await Promise.all([core.api("/v1/index/tables"), core.api("/v1/index/tables")]);
+assert.equal(fetches, 1, "one request for two cards");
+assert.deepEqual(a1, a2); assert.notEqual(a1, a2);
+await core.api("/v1/index/tables");
+assert.equal(fetches, 2, "a later read asks again");
+await Promise.all([core.api("/v1/x", { method: "POST", body: {} }), core.api("/v1/x", { method: "POST", body: {} })]);
+assert.equal(fetches, 4, "writes are each sent");
+
+// LIV-14: a page nobody touched for IDLE_MS polls IDLE_SLOW times less
+// often, and asks what is due as soon as someone is back.
+globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => "{}" });
+const realNow = Date.now;
+const count = async (opts) => { let n = 0; const st = core.every(10, () => { n++; }, true, opts); await new Promise((r) => setTimeout(r, 200)); st(); return n; };
+const busy = await count();
+Date.now = () => realNow() + core.IDLE_MS + 1000;
+assert.ok(core.isIdle());
+const resting = await count();
+assert.ok(busy >= 8 && resting <= Math.ceil(busy / core.IDLE_SLOW) + 1, `polls while used ${busy}, while idle ${resting}`);
+assert.ok(await count({ always: true }) >= 8, "a change under way is followed at the full rate");
+let woke = 0;
+const st = core.every(10, () => { woke++; });
+await new Promise((r) => setTimeout(r, 30));
+const before = woke;
+for (const f of docListeners.pointermove || []) f();
+assert.ok(!core.isIdle());
+assert.equal(woke, before + 1, "someone back: what is due is asked at once");
+st();
+Date.now = realNow;
+
+// CCW-10: the shell knows each view before its code loads: what views/index.js
+// says of a view (its title, icon, layout, the words the palette finds it by)
+// is what the view's module says, and each view's code loads.
+const { VIEWS, NAV } = await import(new URL("views/index.js", app));
+for (const v of VIEWS) {
+  const m = (await v.load()).default;
+  assert.equal(typeof m.render, "function", v.id);
+  for (const k of ["id", "title", "icon", "group", "parent", "nav", "hidden", "full", "range", "cluster", "keywords"]) assert.deepEqual(v[k], m[k], `views/index.js says ${v.id}.${k} = ${JSON.stringify(v[k])}, its module ${JSON.stringify(m[k])}`);
+}
+for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.id === e.id || v.id === e.fallback), e.id);
 
 console.log("ok");
 process.exit(0);
