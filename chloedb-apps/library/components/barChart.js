@@ -3,7 +3,8 @@
 // props: data: [{label, value} or {label, values: [numbers, one per series]}]; series: [{name, color?}] when values has several;
 //   stacked: true to stack the series; horizontal: true for bars across (good for long labels);
 //   format(value): how values read (default a plain number); color: css color for one series (default the accent);
-//   height: pixels of the plot (default 220); onSelect(item, seriesIndex) when a bar is tapped
+//   height: pixels of the plot (default 220); labels: false to leave values off the bars (on when one series of 14 bars or fewer);
+//   onSelect(item, seriesIndex) when a bar is tapped
 function component(props) {
   css('sa-bars', `
 .sa-bars{width:100%;font-size:12px;color:var(--muted)}
@@ -20,7 +21,8 @@ function component(props) {
 .sa-bars-h .track{display:flex;height:16px;border-radius:4px;overflow:hidden;background:var(--soft)}
 .sa-bars-h .val{font-variant-numeric:tabular-nums;color:var(--fg)}
 `);
-  const PALETTE = ['var(--accent)', '#e8590c', '#2f9e44', '#ae3ec9', '#1098ad', '#f08c00', '#d6336c', '#5c7cfa'];
+  // tones of the app's own accent, so a chart is in its design (a part may still give its color)
+  const PALETTE = ['var(--accent)', 'color-mix(in srgb, var(--accent) 55%, var(--card))', 'color-mix(in srgb, var(--accent) 62%, var(--fg))', 'color-mix(in srgb, var(--accent) 30%, var(--card))', 'color-mix(in srgb, var(--accent) 35%, var(--fg))', 'color-mix(in srgb, var(--accent) 16%, var(--card))', 'color-mix(in srgb, var(--fg) 45%, var(--card))', 'color-mix(in srgb, var(--fg) 25%, var(--card))'];
   const data = (props.data || []).map((d) => ({ ...d, vals: Array.isArray(d.values) ? d.values.map((v) => Number(v) || 0) : [Number(d.value) || 0] }));
   const nSeries = Math.max(1, ...data.map((d) => d.vals.length));
   const series = Array.from({ length: nSeries }, (_, i) => ({ name: props.series?.[i]?.name || '', color: props.series?.[i]?.color || (nSeries === 1 ? props.color || PALETTE[0] : PALETTE[i % PALETTE.length]) }));
@@ -40,7 +42,8 @@ function component(props) {
     return root;
   }
   const H = Number(props.height) || 220;
-  const L = 44; const B = 22; const T = 8;
+  const twoLines = data.some((d) => /\s/.test(String(d.label ?? '')) && String(d.label).length > 7);
+  const L = 44; const B = twoLines ? 34 : 22; const T = nSeries === 1 && data.length <= 14 && props.labels !== false ? 22 : 8;
   const nice = (m) => { if (m <= 0) return 1; const p = 10 ** Math.floor(Math.log10(m)); const f = m / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
   const top = nice(max);
   const y = (v) => T + (H - T - B) * (1 - v / top);
@@ -67,7 +70,30 @@ function component(props) {
       g.append(svg('rect', { class: 'bar', x: x + 1, y: Math.min(y1, y0), width: Math.max(1, w - 2), height: Math.max(0, Math.abs(y0 - y1)), rx: 3, fill: series[i].color,
         onclick: props.onSelect ? () => props.onSelect(d, i) : null }, svg('title', null, `${d.label}${series[i].name ? ` · ${series[i].name}` : ''}: ${fmt(v)}`)));
     });
-    if (j % every === 0) g.append(svg('text', { x: x0 + bw / 2, y: H - 6, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 11 }, String(d.label ?? '').slice(0, 12)));
+    // One series of a dozen bars or fewer: each bar says its value, short
+    // when the full one would not fit ($42.2K).
+    if (nSeries === 1 && data.length <= 14 && props.labels !== false) {
+      const v = d.vals[0];
+      let t = fmt(v);
+      if (String(t).length * 6.4 > slot * 0.98) {
+        const a = Math.abs(v);
+        const sh = a >= 1e6 ? `${Math.round(a / 1e5) / 10}M` : a >= 1e3 ? `${Math.round(a / 100) / 10}K` : String(Math.round(a * 10) / 10);
+        const sym = (String(t).match(/^-?([^\d\s-]+)/) || [])[1] || '';
+        t = `${v < 0 ? '-' : ''}${sym}${sh}`;
+      }
+      g.append(svg('text', { x: x0 + bw / 2, y: Math.min(y(v), y(0)) - 6, 'text-anchor': 'middle', fill: 'var(--fg)', 'font-size': 11.5, 'font-weight': 600, style: 'font-variant-numeric:tabular-nums' }, String(t)));
+    }
+    // A label wider than its bar's room goes on two lines, each cut to fit.
+    if (j % every === 0) {
+      const room = Math.max(3, Math.floor((slot * every) / 6.4));
+      const words = String(d.label ?? '').split(/\s+/).filter(Boolean);
+      let lines = [words.join(' ')];
+      if (lines[0].length > room && words.length > 1) { const half = Math.ceil(words.length / 2); lines = [words.slice(0, half).join(' '), words.slice(half).join(' ')]; }
+      lines = lines.map((l) => (l.length > room ? `${l.slice(0, Math.max(1, room - 1))}…` : l));
+      const t = svg('text', { x: x0 + bw / 2, y: H - 6 - (lines.length - 1) * 12, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 11 });
+      lines.forEach((l, k) => t.append(svg('tspan', { x: x0 + bw / 2, dy: k ? 12 : 0 }, l)));
+      g.append(t);
+    }
   });
   return g;
   };

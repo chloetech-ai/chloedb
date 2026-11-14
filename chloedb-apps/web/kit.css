@@ -583,3 +583,172 @@ body.layout-tool #root { max-width: min(var(--page), 680px); }
 .layout-tool .lay-panel :is(input, select, textarea) { font-size: max(16px, 1.05em); }
 .layout-tool .lay-panel button.primary { min-height: 44px; padding-inline: 20px; }
 @media (max-width: 560px) { .lay-hero { border-radius: 0; margin-inline: -14px; } }
+
+/* ---- type: the design's pairing (web/design.js TYPES). The faces ship with
+   the engine (web/fonts, SIL Open Font License) and load only when used. */
+@font-face { font-family: "Fraunces"; src: url("/fonts/fraunces.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/fonts/playfair-display.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Instrument Serif"; src: url("/fonts/instrument-serif.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url("/fonts/bricolage-grotesque.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Nunito"; src: url("/fonts/nunito.woff2") format("woff2"); font-weight: 200 1000; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
+
+/* titles in the pairing's face and weight, whatever the look */
+:root[data-look] :is(h1, h2), :root :is(h1, h2) { font-weight: var(--title-weight, 650); letter-spacing: var(--title-track, -.02em); }
+:root[data-look] .screen > :is(h1, h2):first-child, :root[data-look] .screen > .row:first-child > :is(h1, h2), :root[data-look] .lay-head > :is(h1, h2):first-child, :root[data-look] .lay-head > .row:first-child > :is(h1, h2) {
+  font-size: clamp(28px, 3.4vw, 40px); line-height: 1.06; letter-spacing: var(--title-track, -.02em); }
+:root[data-look] :is(.card, .lay-group) > h3, :root[data-look] .lay-group > :is(h2, h3) { font-family: var(--font-title); font-size: calc(var(--text) * 1.2); font-weight: var(--title-weight, 650); letter-spacing: var(--title-track, -.01em); text-transform: none; color: var(--fg); padding: 0; }
+.screen > h1 + p, .lay-head > h1 + p, .lay-head > .row + p { font-size: calc(var(--text) * 1.08); color: var(--muted); max-width: 66ch; }
+
+/* ---- summary cards: a screen's first numbers lead it */
+.kpis.sumcards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+:root[data-look] .kpis.sumcards > .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px 18px; gap: 6px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.kpis.sumcards > .kpi .label { font-size: calc(var(--text) * .9); font-weight: 600; color: color-mix(in srgb, var(--fg) 80%, var(--card)); letter-spacing: 0; }
+.kpis.sumcards > .kpi .hint { color: color-mix(in srgb, var(--fg) 74%, var(--card)); }
+.kpis.sumcards > .kpi .value { font-size: clamp(26px, 2.6vw, 34px); font-weight: var(--title-weight, 650); letter-spacing: var(--title-track, -.025em); line-height: 1.05; }
+.kpis.sumcards.first > .kpi:first-child:not(.zero) { background: color-mix(in srgb, var(--accent) 7%, var(--card)); border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
+.kpis.sumcards.first > .kpi:first-child:not(.zero) .value { color: color-mix(in srgb, var(--accent) 70%, var(--fg)); }
+.kpis.sumcards[data-n="1"] > .kpi .value, .kpis.sumcards[data-n="2"] > .kpi:first-child .value { font-size: clamp(34px, 4.4vw, 52px); }
+:root .kpis .kpi.attn .value { color: var(--bad) !important; }
+.kpi.attn { box-shadow: inset 3px 0 0 var(--bad) !important; }
+:root .kpis .kpi.up .value { color: var(--ok) !important; } :root .kpis .kpi.down .value { color: var(--bad) !important; }
+.kpi .hint { color: var(--muted); }
+@media (max-width: 560px) {
+  .kpis.sumcards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .kpis.sumcards > .kpi:first-child:nth-last-child(odd) { grid-column: 1 / -1; }
+  .kpis.sumcards > .kpi .value { font-size: 24px; }
+  .kpis.sumcards > .kpi .label { font-size: 13px; white-space: normal; }
+}
+
+/* ---- figures in tables: right aligned, tabular, a change coloured by its
+   sign, one column with an inline bar, the total row ruled off */
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.lead-cell { font-weight: 600; color: var(--fg); }
+.fig.up { color: var(--ok); font-weight: 600; } .fig.down { color: var(--bad); font-weight: 600; }
+.figbar { display: inline-flex; align-items: center; justify-content: flex-end; gap: 10px; width: 100%; }
+.figbar .nbar { flex: 0 0 72px; height: 8px; border-radius: 4px; background: var(--fill); position: relative; overflow: hidden; }
+.figbar .nbar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; background: color-mix(in srgb, var(--accent) 75%, var(--card)); }
+.figbar.two .nbar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line-2); }
+.figbar.two .nbar i.pos { left: 50%; background: var(--ok); border-radius: 0 4px 4px 0; }
+.figbar.two .nbar i.neg { left: auto; right: 50%; background: var(--bad); border-radius: 4px 0 0 4px; }
+.figbar .fig { min-width: 7ch; }
+tfoot tr.total td { font-weight: 700; color: var(--fg); border-top: 2px solid color-mix(in srgb, var(--fg) 70%, transparent); border-bottom: 0; padding-top: calc(var(--row) + 2px); background: color-mix(in srgb, var(--fg) 2.5%, var(--card)); }
+:root[data-look] th { font-size: calc(var(--text) * .8); color: var(--muted); }
+table.has-total tbody tr:last-child td { border-bottom: 0; }
+@media (max-width: 560px) {
+  table.stack tfoot { display: block; }
+  table.stack tfoot tr.total { border: 2px solid color-mix(in srgb, var(--fg) 70%, transparent); }
+  table.stack td.num { text-align: left; }
+  .figbar { width: auto; justify-content: flex-start; }
+  .figbar .nbar { flex-basis: 48px; }
+}
+
+/* a card whose part drew nothing says so, rather than a title alone */
+.card:has(> h3):has(> .col:empty)::after { content: "Nothing to show here yet."; color: var(--muted); font-size: calc(var(--text) * .93); }
+
+/* phone list cells: the month leaf, names on one line, details under */
+.rc-day b.rc-mon { font-size: calc(var(--text) * .95); font-weight: 700; }
+@media (max-width: 560px) {
+  .rcell { grid-template-columns: 40px minmax(0, 1fr) auto; padding: 12px 14px; }
+  .rcell .rc-title { overflow-wrap: normal; word-break: normal; }
+  .rcell .rc-sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .rc-val { font-size: calc(var(--text) * 1.05); }
+}
+
+/* forms: a surface of their own, fields grouped, the main action clear */
+:root[data-look] .screen form.wide { border: 1px solid var(--line); }
+form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; }
+.fold:not(.phone):not(.open) > .fold-open { min-height: 44px; padding-inline: 18px; }
+.empty { background: color-mix(in srgb, var(--card) 70%, transparent); border-style: dashed; padding: 28px 18px; font-size: calc(var(--text) * .98); }
+
+/* ---- sign in first: what the app is, and the sign-in beside it */
+.screen.gate { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 0; min-height: min(78vh, 640px); border-radius: calc(var(--radius) * 1.3); overflow: hidden; background: var(--card); box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 12px 40px rgba(16, 24, 40, .08); }
+.gate-about { background: var(--deep, var(--accent)); color: var(--deep-fg, var(--accent-fg)); padding: clamp(28px, 5vw, 56px); display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; }
+.gate-about h1, :root[data-look] .gate-about h1 { color: inherit; font-family: var(--font-title); font-size: clamp(32px, 4.6vw, 54px); line-height: 1.04; }
+.gate-about .gate-text { font-size: calc(var(--text) * 1.15); color: color-mix(in srgb, var(--deep-fg, #fff) 88%, transparent); max-width: 44ch; }
+.gate-points { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.gate-points li { padding-left: 22px; position: relative; color: color-mix(in srgb, var(--deep-fg, #fff) 90%, transparent); }
+.gate-points li::before { content: ""; position: absolute; left: 0; top: .55em; width: 10px; height: 2px; background: var(--pop, currentColor); }
+.gate-form { display: grid; place-items: center; padding: clamp(24px, 4vw, 48px); }
+.gate-form > * { width: 100%; max-width: 360px; }
+.gate-form .card { border: 0; box-shadow: none; padding: 0; background: transparent; }
+:root .gate-form .card > h3, :root[data-look] .gate-form .card > h3 { font-family: var(--font-title); font-size: calc(var(--text) * 1.9); font-weight: var(--title-weight, 650); margin-bottom: 2px; }
+.gate-form form { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.gate-form form > label { display: flex; flex-direction: column; gap: 6px; }
+.gate-form label { color: var(--fg); font-size: calc(var(--text) * .92); }
+.gate-form input:not([type=checkbox]) { width: 100%; height: 44px; }
+.gate-form button.primary { min-height: 46px; width: 100%; }
+.gate-form .err { color: var(--bad); min-height: 1em; font-size: calc(var(--text) * .9); }
+.gate-form button.link.inline { display: inline; color: var(--accent); font-weight: 600; min-height: 0; }
+@media (max-width: 700px) {
+  .screen.gate { grid-template-columns: minmax(0, 1fr); min-height: 0; border-radius: var(--radius); }
+  .gate-about { padding: 26px 22px; }
+  .gate-about h1, :root[data-look] .gate-about h1 { font-size: 32px; }
+  .gate-form { padding: 24px 22px 28px; }
+}
+/* a screen's lone buttons keep their own width; a group of buttons only is
+   no card of its own on a dashboard */
+:is(.screen, .lay-group, .section) > button, .lay-group > .fold > button { align-self: flex-start; }
+.layout-dashboard .lay-grid > .lay-group:not(:has(> :not(button, .fold))) { background: transparent; border: 0; box-shadow: none; padding: 0; grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
+:root[data-look] .lay-head > :is(h1, h2):not(:first-child), :root[data-look] .lay-head > .row:not(:first-child) > :is(h1, h2) { font-size: calc(var(--text) * 1.45); margin-top: calc(var(--space) * .6); }
+.rcell.noicon { grid-template-columns: minmax(0, 1fr) auto; }
+.rcell.noicon + .rcell::before, .rcell + .rcell.noicon::before { left: 14px; }
+@media (max-width: 560px) {
+  :root[data-look] .kpis.sumcards > .kpi { padding: 12px 14px 13px; gap: 3px; }
+  .layout-dashboard .lay-grid > .lay-group { padding: 14px 12px; }
+  .lay-group .rgroup-list, .card .rgroup-list { background: transparent; }
+  .lay-group .rcell, .card .rcell { padding-inline: 4px; }
+}
+/* a dashboard group that holds cards already is no card around them */
+.layout-dashboard .lay-grid > .lay-group:has(> .card) { background: transparent; border: 0; box-shadow: none; padding: 0; }
+:root[data-look] .layout-dashboard .lay-grid > .lay-group > .card { border: 1px solid var(--line); }
+/* groups that show nothing, and groups of buttons only (screen.js tidy) */
+.lay-group.lay-empty { display: none; }
+.lay-grid > .lay-group.lay-actions, .lay-group.lay-actions { background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; }
+.lay-group.lay-actions .row { flex: 1 1 auto; }
+/* the first number leads in the accent unless it is the one that needs doing */
+.kpis.sumcards.first > .kpi.attn:first-child { background: var(--card); border-color: var(--line); }
+.kpis.sumcards.first > .kpi.attn:first-child .value { color: var(--bad); }
+/* a tool's head is centered, its numbers still a row across */
+.layout-tool > .lay-head > .kpis { align-self: stretch; }
+.layout-tool > .lay-head .kpi { text-align: left; }
+.lay-panel:not(:has(> .lay-group:not(.lay-empty))) { display: none; }
+/* the first number of a screen leads: a wider card, a larger figure */
+@media (min-width: 900px) {
+  .kpis.sumcards.first[data-n="3"] { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); }
+  .kpis.sumcards.first[data-n="4"] { grid-template-columns: minmax(0, 1.45fr) repeat(3, minmax(0, 1fr)); }
+  .kpis.sumcards.first:is([data-n="3"], [data-n="4"]) > .kpi:first-child .value { font-size: clamp(34px, 3.6vw, 48px); }
+  .kpis.sumcards.first:is([data-n="3"], [data-n="4"]) > .kpi { justify-content: flex-end; }
+}
+/* on a phone the numbers stay compact, so the screen's job shows early */
+@media (max-width: 560px) {
+  .kpis.sumcards > .kpi .hint { display: none; }
+  .kpis.sumcards > .kpi .value { font-size: 22px !important; }
+  .kpis.sumcards.first > .kpi:first-child:nth-last-child(odd) .value { font-size: 28px !important; }
+}
+/* a screen's head breathes before its numbers */
+.lay-head > :is(h1, h2):first-child + .kpis, .lay-head > .row:first-child + .kpis { margin-top: 6px; }
+@media (max-width: 560px) {
+  .kpis.sumcards[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .kpis.sumcards[data-n="3"] > .kpi { padding: 10px 10px 11px; }
+  .kpis.sumcards[data-n="3"] > .kpi:first-child { grid-column: auto; }
+  .kpis.sumcards[data-n="3"] > .kpi .value, .kpis.sumcards.first[data-n="3"] > .kpi:first-child .value { font-size: 19px !important; letter-spacing: -.02em; }
+  .kpis.sumcards[data-n="3"] > .kpi .label { font-size: 12px; }
+}
+/* on a phone a screen's title takes the line; its button starts the next */
+@media (max-width: 560px) {
+  .row:has(> :is(h1, h2)) > :is(h1, h2) { flex: 1 1 100%; }
+  .row:has(> :is(h1, h2)) > button.right, .row:has(> :is(h1, h2)) > button { margin-left: 0; }
+}
+/* numbers that start a group of a grid take the whole row, as a row of cards */
+.lay-grid > .lay-group:has(> .kpis:first-child) { grid-column: 1 / -1; background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+/* a tool's title row keeps its title left and its button right */
+.layout-tool > .lay-head:has(> .row) { align-items: stretch; text-align: left; }
+.layout-tool > .lay-head > .row { justify-content: space-between; }
+/* the dashboard grid wraps like words: a card alone on its row takes the row,
+   tables and numbers take a row of their own */
+.lay-grid { display: flex; flex-wrap: wrap; align-items: flex-start; }
+.lay-grid > .lay-group { flex: 1 1 min(100%, 380px); }
+.lay-grid > .lay-group:is(:has(table), :has(> .kpis:first-child), .lay-actions) { flex-basis: 100%; }
+.lay-grid > .lay-group:has(> .card:only-child) > .card { flex: 1; }

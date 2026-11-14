@@ -5,6 +5,109 @@
 // state changes. Values that start with "=" are expressions; the studio
 // compiles each one into a function before the frame loads (window.__SA_EXPR,
 // window.__SA_CODE), so the frame needs no eval.
+// How a table's numbers read, as plain functions (no page needed, so the
+// tests run them as they are): which columns are figures, which say a
+// change (coloured by sign), which add up to a total row, and which one
+// gets an inline bar.
+window.__sa_numbers = (() => {
+  // A figure from a value as data or as shown: 1200, "1,200", "$1,200.50",
+  // "-5.6%", "(300)", "−42 €".
+  const parseNum = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v !== 'string') return null;
+    let t = v.trim().replace(/−/g, '-');
+    if (!t || t.length > 24) return null;
+    let neg = false;
+    if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1); }
+    t = t.replace(/^[+]/, '');
+    if (t.startsWith('-')) { neg = !neg; t = t.slice(1); }
+    t = t.replace(/^(?:[$€£¥]|[A-Z]{3}\s?)/, '').replace(/(?:\s?(?:[$€£¥%]|[A-Z]{3}))$/, '').trim();
+    if (t.startsWith('-')) { neg = !neg; t = t.slice(1); }
+    if (!/^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(t)) return null;
+    const n = Number(t.replace(/,/g, ''));
+    return neg ? -n : n;
+  };
+  const NOT_FIGURE = /(^id$|_id$|\byear\b|phone|zip|postcode|sku|\bcode\b|^no$|#|invoice number|order number)/i;
+  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget)/i;
+  // Amounts that add up down a column; rates, prices and averages do not.
+  const ADDS = /(revenue|sales|cost|amount|total|spend|spent|expense|paid|owed|owing|due|invoiced|billed|balance|outstanding|income|profit|hours|fee|budget|actual|current|\d+\s*[-–]\s*\d+|over \d+|overdue|receivable|payable|tax|net|gross|value|subtotal|refund|collected|earned)/i;
+  const NOT_ADDS = /(price|rate|avg|average|mean|median|percent|pct|%|margin|ratio|score|rating|\bage\b|share|per |each|unit cost|unit price|days|min|max)/i;
+  const NUMERIC_FORMATS = ['money', 'number', 'percent', 'pct', 'hours', 'duration'];
+  // What each column is: {numeric, change, adds, money}. A column is a
+  // figure when its format says so or four in five of its values are
+  // numbers; a change when its name says so; it adds up when it is an
+  // amount (money or hours) named as one.
+  function kinds(cols, values) {
+    return cols.map((c, i) => {
+      const name = `${c.key || ''} ${c.label || ''}`;
+      const vs = (values[i] || []).filter((v) => v != null && v !== '');
+      const nums = vs.map(parseNum).filter((n) => n !== null);
+      const looksMoney = c.format === 'money' || (vs.length > 0 && vs.filter((v) => typeof v === 'string' && /[$€£¥]/.test(v)).length >= vs.length * 0.8);
+      const numeric = !NOT_FIGURE.test(name) && !c.badge && (NUMERIC_FORMATS.includes(c.format) || (vs.length > 0 && nums.length >= vs.length * 0.8));
+      const pct = c.format === 'percent' || c.format === 'pct' || (vs.length > 0 && vs.every((v) => typeof v === 'string' && /%\s*$/.test(v)));
+      const change = numeric && CHANGE.test(name);
+      const adds = numeric && !change && !pct && (looksMoney || c.format === 'hours') && ADDS.test(name) && !NOT_ADDS.test(name);
+      return { numeric, change, adds, money: numeric && looksMoney, pct, max: nums.length ? Math.max(...nums.map(Math.abs)) : 0, negative: nums.some((n) => n < 0) };
+    });
+  }
+  // The tone of a figure: a change up is good, down is bad; any other
+  // figure is only marked when it is below zero.
+  function tone(kind, v) {
+    const n = parseNum(v);
+    if (!kind || !kind.numeric || n === null || n === 0) return '';
+    if (kind.change) return n > 0 ? 'up' : 'down';
+    return n < 0 ? 'down' : '';
+  }
+  // The column that gets an inline bar: a change column (bars both ways),
+  // else the first amount that adds up, when the table has 3 to 40 rows.
+  function barColumn(ks, rows) {
+    if (rows < 3 || rows > 40) return -1;
+    const ch = ks.findIndex((k) => k.change && k.max > 0 && !k.pct);
+    if (ch >= 0) return ch;
+    const pc = ks.findIndex((k) => k.change && k.max > 0);
+    if (pc >= 0) return pc;
+    return ks.findIndex((k) => k.adds && k.max > 0 && !k.negative);
+  }
+  // The total of each column that adds up (null for the others), or null
+  // when no column does. given: true/false from the screen, or a list of keys.
+  function totals(cols, ks, values, given) {
+    if (given === false) return null;
+    const keys = Array.isArray(given) ? given : null;
+    const out = cols.map((c, i) => {
+      const take = keys ? keys.includes(c.key) : ks[i].adds;
+      if (!take) return null;
+      const nums = (values[i] || []).map(parseNum).filter((n) => n !== null);
+      return nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+    });
+    if (!out.some((v) => v !== null)) return null;
+    // Two rows are not worth adding up unless the screen asks.
+    if (given !== true && !keys && (values[0] || []).length < 3) return null;
+    return out;
+  }
+  // A number written short, for a chart's labels: 42150 -> 42.2K.
+  function short(n) {
+    const a = Math.abs(n);
+    const f = (x, u) => `${n < 0 ? '-' : ''}${x >= 100 ? Math.round(x) : Math.round(x * 10) / 10}${u}`;
+    return a >= 1e9 ? f(a / 1e9, 'B') : a >= 1e6 ? f(a / 1e6, 'M') : a >= 1e4 ? f(a / 1e3, 'K') : String(Math.round(n * 100) / 100);
+  }
+  // A row's name that is a month ("January 2026", "2026-01", "Jan 2026"):
+  // {mon, year}, for the leaf a phone list draws beside it.
+  const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  function monthOf(t) {
+    const x = String(t || '').trim();
+    let m = /^(\d{4})-(\d{2})$/.exec(x);
+    if (m && +m[2] >= 1 && +m[2] <= 12) return { mon: MONTHS[+m[2] - 1], year: m[1] };
+    m = /^([A-Za-z]{3})[a-z]*\.?,?\s+(\d{4})$/.exec(x);
+    if (m && MONTHS.includes(m[1].toLowerCase())) return { mon: m[1].toLowerCase(), year: m[2] };
+    // a month named alone ("Jan", "March")
+    m = /^([A-Za-z]{3})([a-z]*)\.?$/.exec(x);
+    const full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    if (m && MONTHS.includes(m[1].toLowerCase()) && (!m[2] || full.includes(x.toLowerCase().replace('.', '')))) return { mon: m[1].toLowerCase(), year: '' };
+    return null;
+  }
+  return { parseNum, kinds, tone, barColumn, totals, short, monthOf };
+})();
+
 (() => {
   const isExpr = (v) => v && typeof v === 'object' && !Array.isArray(v) && typeof v.$e === 'number' && Object.keys(v).length === 1;
   const OPT = (o) => (o && typeof o === 'object' ? { value: o.value ?? o.id ?? o.label, label: o.label ?? o.name ?? String(o.value) } : { value: o, label: String(o) });
@@ -28,6 +131,8 @@
     let data = {};
     let lets = {};
     let drawing = false;
+    let refused = false;
+    let gated = false;
     let again = false;
     const forms = new Map();
     const reported = new Set();
@@ -148,9 +253,15 @@
             return await app.sql(sql, val(def.params || {}, s, `${where}.params`));
           }
           return await app.sql(def.sql, val(def.params || {}, s, `${where}.params`));
-        } catch (e) { report(fail(where, e)); return []; }
+        } catch (e) {
+          // Rows only a signed-in person may read: the screen asks them to sign in.
+          if (/^Sign in first/.test(String(e && e.message))) { refused = true; return []; }
+          report(fail(where, e)); return [];
+        }
       }));
       data = Object.fromEntries(entries.map(([name], i) => [name, out[i] ?? []]));
+      gated = refused && !(await app.me().catch(() => null));
+      refused = false;
     }
     function compute() {
       lets = {};
@@ -196,11 +307,26 @@
             let v = k.of !== undefined ? (() => { const r = (data[k.of] || [])[0]; return r ? (r.v !== undefined ? r.v : Object.values(r)[0]) : null; })() : k.value;
             if (k.of !== undefined && v == null) v = 0;
             const raw = v;
-            if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
-            return { ...k, raw, shown: v == null ? '–' : String(v) };
+            if (k.format === 'money' && v != null) v = moneyOf(v, Number.isInteger(num(v)));
+            else if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
+            // "$980.00" reads as "$980": cents only when there are some.
+            return { ...k, raw, shown: v == null ? '–' : String(v).replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') };
           });
-          if (lookIs() !== 'plain' && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return bold() ? hero(ks, s, path) : summary(ks); }
-          return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: zero(k) ? 'kpi zero' : 'kpi', 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
+          if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
+          // Summary cards: the screen's first numbers lead it, the first of
+          // them the largest; a number that needs doing (overdue, owed...)
+          // in the bad tone, a change coloured by its sign.
+          const first = heroAt === null || heroAt === path;
+          if (first) heroAt = path;
+          // one number in the alarm color: the first that needs doing
+          let alarmed = false;
+          const kpiTone = (k) => {
+            if (zero(k)) return '';
+            if (URGENT.test(String(k.label || ''))) { if (alarmed) return ''; alarmed = true; return ' attn'; }
+            const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || '') }], [[k.raw]])[0], k.raw);
+            return t ? ` ${t}` : '';
+          };
+          return h('div', { class: `kpis${lookIs() !== 'plain' ? ' sumcards' : ''}${first ? ' first' : ''}`, 'data-n': String(ks.length) }, ks.map((k) => h('div', { class: `kpi${zero(k) ? ' zero' : ''}${kpiTone(k)}`, 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted hint' }, k.hint) : null)));
         }
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
@@ -286,7 +412,10 @@
       const editing = b.edit !== undefined ? val(b.edit, s, `${path}.edit`) : null;
       const open = !!state[key] || !!(editing && editing.id);
       const label = b.submit !== undefined ? T(b.submit, s, path) : `Add ${human(b.form || '').replace(/s$/, '')}`;
-      return h('div', { class: `fold${b.fold === true ? '' : ' phone'}${open ? ' open' : ''}` },
+      // A form of four fields or more over a list folds on a computer too:
+      // the list is the screen, adding is a button over it.
+      const everywhere = b.fold === true || (b.fold === undefined && listing && n >= 4);
+      return h('div', { class: `fold${everywhere ? '' : ' phone'}${open ? ' open' : ''}` },
         h('button', { class: 'primary fold-open', type: 'button', 'aria-expanded': String(open), onclick: () => set({ [key]: true }) }, label),
         el,
         open && !(editing && editing.id) ? h('button', { class: 'ghost fold-close', type: 'button', onclick: () => set({ [key]: false }) }, 'Cancel') : null);
@@ -429,6 +558,16 @@
     const dayOf = (v) => (v == null || v === '' ? null : Date.parse(`${String(v).slice(0, 10)}T00:00:00Z`));
     const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
     const two = (n) => String(n).padStart(2, '0');
+    const NUM = window.__sa_numbers;
+    // "$5,300.00" reads as "$5,300" (an amount of whole units).
+    const noCents = (t) => (typeof t === 'string' && /[$€£¥]/.test(t) ? t.replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') : t);
+    // Money as a person writes it: no cents on whole amounts ($42,150).
+    const moneyOf = (v, whole) => {
+      const n = num(v);
+      if (n == null) return v == null ? '' : String(v);
+      if (!whole || !Number.isInteger(n)) return app.fmt.money(n);
+      try { return n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
+    };
     const FORMAT = {
       date: (v) => app.fmt.date(v), datetime: (v) => app.fmt.datetime(v), time: (v) => app.fmt.time(v), ago: (v) => app.fmt.ago(v),
       money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(num(v) == null ? v : Math.round(num(v) * 100) / 100),
@@ -449,8 +588,8 @@
     // A badge's color from what its word means (paid, late, waiting, new...);
     // a column may name them itself: "badge": {"shipped": "ok", "lost": "bad"}.
     const TONES = {
-      ok: /^(paid|done|complete[d]?|yes|active|ok|okay|approved|accepted|delivered|ready|confirmed|present|won|live|published|available|resolved|success|passed|good|in stock|healthy|on track|finished|kept|enabled|true|✓|returned|received|fulfilled|signed)$/,
-      bad: /^(late|overdue|no|failed|fail|cancell?ed|rejected|out|out of stock|lost|absent|declined|blocked|error|urgent|expired|unpaid|critical|missing|broken|disabled|false|off track|bounced|damaged|needs repair|lost|refunded)$/,
+      ok: /^(up|rising|growing|ahead|paid|done|complete[d]?|yes|active|ok|okay|approved|accepted|delivered|ready|confirmed|present|won|live|published|available|resolved|success|passed|good|in stock|healthy|on track|finished|kept|enabled|true|✓|returned|received|fulfilled|signed)$/,
+      bad: /^(down|falling|late|overdue|no|failed|fail|cancell?ed|rejected|out|out of stock|lost|absent|declined|blocked|error|urgent|expired|unpaid|critical|missing|broken|disabled|false|off track|bounced|damaged|needs repair|lost|refunded)$/,
       warn: /^(due|waiting|pending|low|low stock|maybe|partial|partly paid|in progress|doing|preparing|review|in review|tentative|soon|on hold|hold|reorder|draft|stale|warning|busy|sent|fair|worn|out now|rented|on loan)$/,
       info: /^(new|planned|scheduled|todo|to do|open|booked|invited|queued|next|info)$/,
     };
@@ -478,17 +617,47 @@
       // More than three columns is a list of cards on a phone (kit.css).
       const heads = cols.map((c) => c.label ?? human(c.key || ''));
       if (phone.matches && lookIs() !== 'plain') return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cell, s, path);
-      return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
-        h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
+      // The figures: right aligned, a change coloured by its sign, one
+      // column with an inline bar, and a total row for the amounts.
+      const rawOf = (c, i, r) => { const fn = fns[i]; const v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key]; return v instanceof Node ? null : v; };
+      const values = cols.map((c, i) => rows.map((r) => { try { return rawOf(c, i, r); } catch { return null; } }));
+      const ks = NUM.kinds(cols.map((c, i) => ({ ...c, label: heads[i] })), values);
+      const barAt = b.bars === false ? -1 : NUM.barColumn(ks, rows.length);
+      const sums = b.total === undefined && b.totals === undefined ? NUM.totals(cols, ks, values, undefined) : NUM.totals(cols, ks, values, b.total ?? b.totals);
+      const whole = cols.map((c, i) => c.format === 'money' && values[i].every((v) => v == null || v === '' || Number.isInteger(Number(v))));
+      const shown = (c, i, r) => (whole[i] && (typeof fns[i] !== 'function') && r[c.key] != null && r[c.key] !== '' ? moneyOf(r[c.key], true) : cell(c, fns[i], r));
+      const figure = (i, v, raw) => {
+        const k = ks[i];
+        if (!k.numeric || v instanceof Node) return v;
+        const t = NUM.tone(k, raw);
+        let text = t === 'up' && k.change && typeof v === 'string' && !/^[+]/.test(v) ? `+${v}` : v;
+        if (cents0[i] && typeof text === 'string') text = text.replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1');
+        if (i !== barAt) return t ? h('span', { class: `fig ${t}` }, text) : text;
+        const n = NUM.parseNum(raw);
+        const pct = n === null || !k.max ? 0 : Math.min(100, (Math.abs(n) / k.max) * 100);
+        const two = k.change || k.negative;
+        return h('span', { class: `figbar${two ? ' two' : ''}` },
+          h('span', { class: 'nbar', 'aria-hidden': 'true' }, h('i', { class: n < 0 ? 'neg' : 'pos', style: `width:${two ? pct / 2 : pct}%` })),
+          h('span', { class: t ? `fig ${t}` : 'fig' }, text));
+      };
+      const titleAt = cols.findIndex((c, i) => !ks[i].numeric);
+      // a column of whole amounts written with cents ("$4,500.00") drops them
+      const cents0 = cols.map((c, i) => ks[i].numeric && values[i].every((v) => v == null || v === '' || (typeof v === 'string' ? !/\.\d*[1-9]\d*\D*$/.test(v) : Number.isInteger(Number(v)))));
+      const foot = sums ? h('tfoot', null, h('tr', { class: 'total' }, cols.map((c, i) => {
+        if (sums[i] !== null) return h('td', { class: 'num', 'data-label': heads[i] }, c.format === 'money' || ks[i].money ? moneyOf(sums[i], whole[i] || Number.isInteger(sums[i])) : app.fmt.number(sums[i]));
+        return h('td', { 'data-label': heads[i] }, i === (titleAt >= 0 ? titleAt : 0) ? (b.totalLabel ? T(b.totalLabel, s, path) : 'Total') : '');
+      }), acts.length ? h('td') : null)) : null;
+      return h('div', { class: 'tablewrap', style: 'overflow-x:auto' }, h('table', { class: [cols.length > 3 ? 'stack' : '', sums ? 'has-total' : ''].filter(Boolean).join(' ') || null },
+        h('thead', null, h('tr', null, heads.map((x, i) => h('th', { class: ks[i].numeric ? 'num' : null }, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
           cols.map((c, i) => {
-            const v = cell(c, fns[i], r);
+            const v = shown(c, i, r);
             // A tick in a row is a 44 px target named by its row (kit.css).
             if (v instanceof HTMLInputElement && v.type === 'checkbox') {
               if (!v.getAttribute('aria-label')) v.setAttribute('aria-label', `${heads[i] || 'Done'}: ${rowName(r) || ''}`.replace(/: $/, ''));
               return h('td', { class: 'tick', 'data-label': heads[i] }, h('label', { class: 'tap' }, v));
             }
-            return h('td', { 'data-label': heads[i], class: v === '' ? 'blank' : null }, v);
+            return h('td', { 'data-label': heads[i], class: [v === '' ? 'blank' : '', ks[i].numeric ? 'num' : '', i === titleAt ? 'lead-cell' : ''].filter(Boolean).join(' ') || null }, v === '' ? v : figure(i, v, rawOf(c, i, r)));
           }),
           // More than two steps: the row's next step as a button, the rest
           // in its menu (as on a phone), not a line of words on every row.
@@ -497,7 +666,8 @@
             const label = T(a.label, s, path);
             const who = rowName(r);
             return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
-          })) : null)))));
+          })) : null))),
+        foot));
     }
 
     // ---- the bold look
@@ -550,11 +720,13 @@
         if (i === tick || i === badge || NOT_FIGURE.test(name(c, i))) return false;
         if (['money', 'number', 'percent', 'pct', 'hours', 'duration'].includes(c.format)) return true;
         const vs = rows.map((r) => raw(c, i, r)).filter((v) => v != null && v !== '');
-        return vs.length > 0 && vs.filter(isNum).length >= vs.length * 0.8;
+        return vs.length > 0 && vs.filter((v) => isNum(v) || NUM.parseNum(v) !== null).length >= vs.length * 0.8;
       });
       const title = cols.findIndex((c, i) => i !== tick && i !== badge && !numeric[i]);
       const ref = cols.findIndex((c, i) => numeric[i] && (HALF.test(name(c, i)) || FULL.test(name(c, i))));
-      const fig = cols.findIndex((c, i) => numeric[i] && i !== ref);
+      // the number that matters: an amount of money before a count
+      const money = cols.findIndex((c, i) => numeric[i] && i !== ref && (c.format === 'money' || rows.every((r) => { const v = raw(c, i, r); return v == null || v === '' || (typeof v === 'string' && /[$€£¥]/.test(v)); })));
+      const fig = money >= 0 ? money : cols.findIndex((c, i) => numeric[i] && i !== ref);
       const half = ref >= 0 && HALF.test(name(cols[ref], ref));
       return { raw, tick, badge, numeric, title, ref, fig, half };
     }
@@ -562,7 +734,7 @@
     // short: names as they are, numbers and dates with their column's name
     // ("Reorder at 200").
     function rowParts(R, r, cols, fns, heads, cell) {
-      const text = (i) => { const v = cell(cols[i], fns[i], r); return v instanceof Node ? v.textContent : String(v ?? ''); };
+      const text = (i) => { const v = cell(cols[i], fns[i], r); return noCents(v instanceof Node ? v.textContent : String(v ?? '')); };
       const state = R.badge >= 0 ? cell(cols[R.badge], fns[R.badge], r) : null;
       const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
       const sub = cols.map((c, i) => {
@@ -570,7 +742,7 @@
         const t = text(i).trim();
         if (!t) return null;
         return R.numeric[i] || c.format ? `${heads[i]} ${t}` : t;
-      }).filter(Boolean).slice(0, 4);
+      }).filter(Boolean).slice(0, phone.matches ? 2 : 4);
       return { text, state, tone, sub };
     }
     // A row's actions: the next step (the first action that does not
@@ -644,7 +816,7 @@
         groups.splice(0, groups.length, { key: '', tone: '', items });
         for (const it of items) { const st = it.text(R.badge).trim().replace(/^[-–—]+$/, ''); if (st && !it.sub.some((x) => x.toLowerCase() === st.toLowerCase())) it.sub = [cap(st), ...it.sub].slice(0, 4); }
       }
-      const initials = (t) => t.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+      const initials = (t) => t.split(/\s+/).filter((w) => /^\p{L}/u.test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
       // a row named by its day ("Nov 8, 2026", "2026-11-08") gets a calendar
       // leaf, the month over the day, rather than initials like "N8"
       const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -670,11 +842,15 @@
           const open = onRow ? () => run(onRow, [r], `${path}.onRow`) : tap;
           const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
           const day = needs ? null : dayOf(name);
+          const month = needs || day ? null : NUM.monthOf(name);
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
+            : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, month.year ? h('small', null, `’${month.year.slice(2)}`) : null, h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
-            : h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•');
+            // initials only for a name of a person or a firm ("Bramble & Co"), never "1D" for "1-30 days"
+            : tone || /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))+$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•')
+            : null;
           const end = main || (figText && !lead ? h('span', { class: 'rc-val' }, figText) : null);
-          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}`,
+          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}${icon ? '' : ' noicon'}`,
             onclick: open ? (e) => { if (!e.target.closest('button, summary, input, label, a')) open(); } : null },
             icon,
             h('div', { class: 'rc-name' }, h('div', { class: 'rc-title' }, name), lead || sub.length ? h('div', { class: 'rc-sub' }, lead, lead && sub.length ? ' · ' : null, sub.join(' · ')) : null),
@@ -797,7 +973,7 @@
       if (typeof make !== 'function') throw new Error('the code block does not parse');
       const render = make();
       if (typeof render !== 'function') throw new Error('the code block defines no render(root, ctx)');
-      const box = h('div');
+      const box = h('div', { class: 'code-box' });
       const ctx = { state, set, refresh, data: { ...data, ...lets }, app, ...data, ...lets };
       Promise.resolve().then(() => render(box, ctx)).catch((e) => { report(fail(path, e)); box.replaceChildren(h('div', { class: 'small', style: 'color: var(--bad)' }, `This part of the screen failed: ${e.message}`)); });
       return box;
@@ -818,8 +994,20 @@
     const flatNodes = (x) => (Array.isArray(x) ? x.flatMap(flatNodes) : x instanceof Node ? [x] : []);
     const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
     function arrange(els) {
-      const list = flatNodes(els);
-      if (!layout || list.length < 2) return list;
+      // Numbers given as several rows of one or two, one after another, are
+      // one row of summary cards.
+      const list = [];
+      // a block that only adds a stylesheet is no part of the page's structure
+      const quiet = [];
+      for (const el of flatNodes(els)) {
+        if (el.nodeType === 1 && ((el.children.length && [...el.children].every((c) => c.tagName === 'STYLE')) || (!list.length && el.matches('.code-box') && !el.childNodes.length))) { quiet.push(el); continue; }
+        const prev = list[list.length - 1];
+        if (prev && prev.nodeType === 1 && el.nodeType === 1 && prev.matches('.kpis.sumcards') && el.matches('.kpis.sumcards') && prev.children.length + el.children.length <= 4) {
+          prev.append(...el.children);
+          prev.dataset.n = String(prev.children.length);
+        } else list.push(el);
+      }
+      if (!layout || list.length < 2) return [...quiet, ...list];
       const head = [];
       let i = 0;
       while (i < list.length && (headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('p') && head.length))) head.push(list[i++]);
@@ -829,7 +1017,7 @@
         groups.at(-1).push(list[i]);
       }
       const box = (cls, kids) => h('div', { class: cls }, kids);
-      const top = head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [];
+      const top = [...quiet, ...(head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [])];
       if (!groups.length) return top;
       const cells = groups.map((g, k) => box(`lay-group lay-g${k}`, g));
       if (layout === 'split' && cells.length > 1) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
@@ -855,7 +1043,11 @@
         try { if (f.start != null) n.setSelectionRange(f.start, f.end); } catch { /* not a text field */ }
       }
     }
+    // Nothing is drawn before the first data is in (a design arriving
+    // meanwhile redraws, and would draw a screen with none of its data).
+    let ready = false;
     function draw() {
+      if (!ready) return;
       if (drawing) { again = true; return; }
       drawing = true;
       try {
@@ -863,22 +1055,77 @@
           again = false;
           const f = focusPath();
           heroAt = null;
-          if (isFront) {
+          if (gated) {
+            const named = (spec.body || []).map((b) => (b && typeof b === 'object' && typeof b.h === 'string' ? b.h : null)).find(Boolean);
+            const views = (window.__SA && window.__SA.views) || [];
+            const gate = spec.gate || { title: (window.__SA && window.__SA.name) || named || 'Sign in',
+              text: views.length > 1 ? `Sign in to open ${views.slice(0, -1).join(', ')} and ${views.at(-1)}.` : `Sign in to open ${named || views[0] || 'this app'}.`,
+              note: 'One account works in every app here: create one in a moment if you are new.' };
+            root.replaceChildren(typeof gateView === 'function' ? gateView(app, gate) : signInPage(app, gate));
+          } else if (isFront) {
             root.replaceChildren(h('div', { class: `screen front${layout ? ` layout-${layout}` : ''}` }, front.page(spec.body, scope(), layout)));
           } else root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange(blocks(spec.body, scope(), 'body'))));
           if (front) front.after(root);
           restore(f);
+          tidy();
         } while (again);
       } finally { drawing = false; }
       // A form this draw no longer shows was closed.
       for (const [p, f] of forms) if (!f.el || !f.el.isConnected) { abandon(f); forms.delete(p); }
     }
 
+    // After a draw (and once code blocks have drawn): a group of a layout
+    // that shows nothing is left out, and one of buttons only is a row of
+    // actions, not a card around a button.
+    function tidy() {
+      const pass = () => {
+        for (const g of root.querySelectorAll('.lay-group')) {
+          const media = g.querySelector('img, svg, canvas, video, iframe, input, select, textarea, table');
+          const buttons = [...g.querySelectorAll('button')];
+          // what shows: a style a code block adds, or a folded form, is no words
+          const words = (g.innerText || '').replace(/\s+/g, '');
+          const btnWords = buttons.map((b) => b.innerText || '').join('').replace(/\s+/g, '');
+          g.classList.toggle('lay-empty', !media && !buttons.length && !words);
+          g.classList.toggle('lay-actions', !media && buttons.length > 0 && words === btnWords);
+        }
+      };
+      pass();
+      setTimeout(pass, 0);
+    }
     window.__sa_relook = () => draw();
+    // A screen whose rows need someone signed in: what the app is, and the
+    // sign-in beside it (ui.signIn when the app has it, else a form here).
+    function signInPage(app, gate) {
+      let form;
+      if (typeof ui.signIn === 'function') form = ui.signIn({ title: 'Sign in', note: gate.note, onDone: () => refresh() });
+      else {
+        let up = false;
+        form = h('div', { class: 'card sa-signin' });
+        const paint = () => {
+          const email = h('input', { type: 'email', autocomplete: 'email', required: true, placeholder: 'you@example.com', 'aria-label': 'Email' });
+          const name = up ? h('input', { autocomplete: 'name', placeholder: 'Your name', 'aria-label': 'Name' }) : null;
+          const pass = h('input', { type: 'password', required: true, autocomplete: up ? 'new-password' : 'current-password', 'aria-label': 'Password', placeholder: up ? 'At least 8 characters' : '' });
+          const err = h('p', { class: 'err', role: 'alert' });
+          const go = h('button', { class: 'primary', type: 'submit' }, up ? 'Create account' : 'Sign in');
+          form.replaceChildren(h('h3', null, up ? 'Create an account' : 'Sign in'), gate.note ? h('p', { class: 'muted small' }, gate.note) : null,
+            h('form', { class: 'col', onsubmit: async (e) => {
+              e.preventDefault(); err.textContent = ''; go.disabled = true;
+              try { if (up) await app.signUp({ email: email.value, name: name.value, password: pass.value }); else await app.signIn(email.value, pass.value); await refresh(); } catch (x) { err.textContent = x.message; go.disabled = false; }
+            } }, h('label', null, 'Email', email), name ? h('label', null, 'Name', name) : null, h('label', null, 'Password', pass), err, go),
+            h('p', { class: 'small muted' }, up ? 'Have an account? ' : 'New here? ', h('button', { type: 'button', class: 'link inline', onclick: () => { up = !up; paint(); } }, up ? 'Sign in' : 'Create an account')));
+        };
+        paint();
+      }
+      return h('div', { class: 'col screen gate' },
+        h('div', { class: 'gate-about' }, h('h1', null, gate.title), gate.text ? h('p', { class: 'gate-text' }, gate.text) : null,
+          Array.isArray(gate.points) && gate.points.length ? h('ul', { class: 'gate-points' }, gate.points.map((p) => h('li', null, p))) : null),
+        h('div', { class: 'gate-form' }, form));
+    }
     phone.addEventListener('change', () => { if (lookIs() !== 'plain') draw(); });
     state = { ...(val(spec.state || {}, scope(), 'state') || {}) };
     await load();
     compute();
+    ready = true;
     draw();
     app.onChange('*', () => refresh());
   };
