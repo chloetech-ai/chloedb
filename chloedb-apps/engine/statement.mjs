@@ -17,6 +17,8 @@
 // Parts: LIST, BOARD, DETAIL, SUMMARY (the patterns), HEADING, TEXT, DATA,
 // STATE, LET and BLOCKS (screen JSON, for what the rest cannot say).
 
+import { parseLayout, LAYOUT_SHORT, LAYOUT_NAMES } from './quality.mjs';
+
 // The newer patterns: a part names its table, then each clause sets one of
 // the pattern's parameters: [parameter, kind of value].
 const MORE = {
@@ -37,7 +39,7 @@ const MORE = {
   TREND: { use: 'trend',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
-const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'PHOTOS'];
+const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'LAYOUT', 'PHOTOS'];
 const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
 const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'DAYS', 'WEEKDAY', 'MONTH', 'MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK', 'STARS', 'BOOL'];
 // How a big number reads (KPI ... MONEY): the column formats that fit a number.
@@ -280,7 +282,18 @@ export function compileStatement(text) {
     if (PARTS.includes(kw) && !(part && part.more && part.more.clauses[kw])) {
       finish();
       if (kw === 'HEADING') { screen.body.push({ h: literal(rest) }); continue; }
-      if (kw === 'PAGE') { if (!/^[a-z]+$/i.test(rest)) fail(n, 'PAGE <kind>, such as PAGE front'); screen.page = rest.toLowerCase(); continue; }
+      if (kw === 'PAGE') {
+        // PAGE front [LAYOUT editorial]: a front page, and its structure.
+        const pm = rest.match(/^([a-z]+)(?:\s+LAYOUT\s+(.+))?$/i);
+        if (!pm) fail(n, 'PAGE <kind>, such as PAGE front');
+        screen.page = pm[1].toLowerCase();
+        if (pm[2] && parseLayout(pm[2])) screen.layout = parseLayout(pm[2]);
+        continue;
+      }
+      // LAYOUT <hero | split | editorial | dashboard | gallery | tool>: the
+      // screen's page structure (quality.mjs LAYOUTS). A word the kit does
+      // not know is left out rather than failing the build.
+      if (kw === 'LAYOUT') { const l = parseLayout(rest.replace(/^'|'$/g, '')); if (l) screen.layout = l; continue; }
       if (kw === 'TEXT') { screen.body.push({ text: literal(rest), muted: true }); continue; }
       if (kw === 'DATA') {
         // DATA name AS (SELECT ...) [PARAMS (name = expression, ...)]
@@ -499,10 +512,11 @@ const sqlText = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // Returns null when no statement compiles back into it.
 export function screenStatement(slug, title, screen, { plain = false } = {}) {
   if (!screen || typeof screen !== 'object' || Array.isArray(screen)) return null;
-  if (Object.keys(screen).some((k) => !['state', 'data', 'let', 'body', 'page'].includes(k))) return null;
+  if (Object.keys(screen).some((k) => !['state', 'data', 'let', 'body', 'page', 'layout'].includes(k))) return null;
   const NAME_OK = /^[A-Za-z_][A-Za-z0-9_]*$/;
   const L = [`CREATE SCREEN ${slug}${title ? ` TITLE ${sqlText(title)}` : ''}`];
   if (screen.page !== undefined) { if (typeof screen.page !== 'string' || !/^[a-z]+$/.test(screen.page)) return null; L.push(`PAGE ${screen.page}`); }
+  if (screen.layout !== undefined) { if (parseLayout(screen.layout) !== screen.layout) return null; L.push(`LAYOUT ${screen.layout}`); }
   for (const [k, v] of Object.entries(screen.state || {})) { if (!NAME_OK.test(k)) return null; L.push(`STATE ${k} = ${JSON.stringify(v)}`); }
   for (const [k, v] of Object.entries(screen.data || {})) {
     if (!NAME_OK.test(k)) return null;
@@ -595,6 +609,7 @@ DASHBOARD <table> [AS key]     -- a value over the last N days against the N bef
 TREND <table> [AS key]         -- a value per day, week or month over the last periods, as bars (LINE for a line), with the total and the average
   DATE <timestamp or 'YYYY-MM-DD' col>  VALUE SUM(col)  PER day | week | month  LAST 12  LABEL 'Distance (km)'  FORMAT number | money | hours  WHERE  LINE  TITLE
 KPI 'Label' = SUM(col) | COUNT(*) | AVG(col) FROM <table> [WHERE condition] [${KPI_FORMATS.join(' | ')}]   -- a big number over any table, outside a part (KPIs one after the other share a row); :today works in WHERE: this month is WHERE date_trunc('month', day) = date_trunc('month', :today), the last 30 days WHERE days_between(day, :today) <= 30
+LAYOUT <${LAYOUT_NAMES.join(' | ')}>   -- the screen's page structure, its second line (PAGE front, a site's front page, takes one too): ${Object.entries(LAYOUT_SHORT).map(([k, v]) => `${k}: ${v}`).join('; ')}. Choose it from the art direction's layout for the first screen and by what each screen is for; screens of one app need not share one
 HEADING 'text'   TEXT 'text'
 DATA <name> AS SELECT ...      -- more data for BLOCKS and LET, by name
 STATE <name> = <JSON>          LET <name> = <JavaScript expression>

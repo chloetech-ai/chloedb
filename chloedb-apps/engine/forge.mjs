@@ -35,6 +35,7 @@ export function keysIn(code) {
   return out;
 }
 import { madeUp, tidyTitle } from './taste.mjs';
+import { ART_DOC, TASTE_DOC, LAYOUT_NAMES, LAYOUT_SHORT, parseLayout } from './quality.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
 export const BUDGET = { parts: 7, kpis: 4, fields: 8, code: 1000, grow: 400 };
@@ -188,7 +189,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 {
   "name": "Habits",
   "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
-  "art": {"concept": "...", "mood": "...", "imagery": "none", "accent": "...", "type": "system"},
+  "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "imagery": "none", "action": "Start lesson 1"},
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
@@ -204,7 +205,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 
 - name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
 - ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
-- art: the app's art direction, for a new app, decided with the brief and before the screens (it sets the look the app is given, and the screens follow it): the "concept", one sentence on what it should feel like, from the subject's own world ("a quiet ledger for a corner bakery's flour and butter", "a coach's clipboard at the side of the pitch"); the "mood" in three words; the "imagery", what its photos show (the dishes themselves, close up; the rooms to let) or "none" when photos do not help the job; the "accent", the one color of its buttons, named as the subject would ("deep indigo, like the club's kit", "brick red"), green or teal only when the subject itself is green; and "type", the face of its titles: "system", "serif" (editorial, food, books), "rounded" (friendly, for families and kids) or "mono" (technical). Screens keep to it: words in the subject's own terms, photos only where the imagery says, no emoji in titles, labels or buttons (the named icons instead), no em dashes in what they say, and nothing made up that the app's rows do not hold (no ratings, review counts or customer numbers).
+${ART_DOC}
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
@@ -244,6 +245,8 @@ Write each view as a screen unless it needs something a screen cannot say. A scr
   ]
 }
 
+A screen may give "layout": one of ${LAYOUT_NAMES.join(', ')} (its page structure: ${Object.entries(LAYOUT_SHORT).map(([k, v]) => `${k}, ${v}`).join('; ')}).
+
 Values: a string that starts with "=" is a JavaScript expression; anything else is taken as it is. An expression sees each "data" entry by name (its rows), each "let" by name (computed in order, after the data), state, set(changes) (merges into state and redraws), app (as in a view: app.insert, app.update, app.remove, app.call, app.open, app.toast, app.fmt, app.today(), app.me()...), lib (the helpers), ui, h, params (app.params), today, and, inside "each", the item by its name. A handler is an expression that gives a function ("=g => app.remove('guests', g.id)"); after it finishes the screen fetches its data again. Callbacks in a component's props are handlers too.
 
 data: name -> a SELECT (as for app.sql), or {"sql": "...", "params": {"name": value}} (values may be expressions, such as "=state.month": the data is fetched again when the state changes), or {"sql": "=expression giving the SELECT", "params": {...}} when the query itself depends on state, or "=expression" for anything else (a Promise is awaited: "=app.call('totals', {month: state.month})", "=app.people()").
@@ -276,7 +279,7 @@ Working screens are drawn like a good phone app: a large title, the screen's num
 
 ## Front pages
 
-An app that people outside it will visit (a shop, café, restaurant, studio, salon, event, wedding, club, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. A tool only its owner uses has no front page unless asked.
+An app that people outside it will visit (a shop, café, restaurant, studio, salon, event, wedding, club, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. Its structure follows the art direction's layout ("layout" on the screen, LAYOUT in a statement): hero (a photo hero), split (words beside the photo), editorial (a plain left-aligned hero over a ruled list, for menus and lessons), gallery (photos first); its hero stays short enough that the main action shows on a phone's first screen. A tool only its owner uses has no front page unless asked.
 
 Its blocks (they work in any screen; on a front page each is a section of its own):
 - {"nav": "Brand", "links": [action, ...], "action": action}: the site's header, first in the body. Links go to parts of the page ("href": "#id") or to views ("open": "slug").
@@ -296,7 +299,7 @@ Section blocks (carousel, gallery, features, stats, quotes, pricing, faq, steps)
 An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link"}; the first action of a group is primary, the others secondary.
 Photos: "photo": a few plain words, the subject first, as you would search a photo library ("barista pouring latte art", "yoga class in a bright studio", "bride and groom on a beach", "modern living room"). The engine finds each photo when the version is stored and adds "src" (and a "credit" when its license asks for one); never write "src" for such a photo yourself. A photo the app's data holds is "src": "=item.image" (a URL or a stored file's id). Example rows may hold "photo:a query" in a text column (a product's image), which becomes a photo's URL: name the thing itself, plainly, the kind first ("croissant", "pie pumpkin", "bread rye loaf", "coffee beans dark roast"), never a brand or place name.
 
-{"page": "front", "body": [
+{"page": "front", "layout": "hero", "body": [
   {"nav": "Ember & Oak", "links": [{"label": "Coffee", "href": "#coffee"}, {"label": "Visit", "href": "#visit"}], "action": {"label": "Order", "open": "shop"}},
   {"hero": "Coffee, roasted *slowly*.", "eyebrow": "Small-batch roasters since 2014", "sub": "Single-origin beans, roasted on Tuesday, at your door by Friday.", "photo": "latte art coffee cups", "actions": [{"label": "Shop the beans", "open": "shop"}, {"label": "Find the café", "href": "#visit"}]},
   {"carousel": "=beans", "item": {"title": "=item.name", "text": "=item.notes", "price": "=app.fmt.money(item.price)", "src": "=item.image"}, "id": "coffee", "eyebrow": "This week's roast", "title": "Four coffees, *one* Tuesday."},
@@ -304,7 +307,9 @@ Photos: "photo": a few plain words, the subject first, as you would search a pho
   {"media": ["We started with a 5 kg roaster in a garage..."], "photo": "coffee shop interior", "eyebrow": "Our story", "title": "From a garage to your *kitchen*"},
   {"band": ["Cupping every Saturday at 10."], "look": "photo", "photo": "cafe interior", "title": "Visit the roastery", "id": "visit", "actions": [{"label": "Book a seat", "open": "bookings"}]},
   {"footer": "Ember & Oak", "text": "Small-batch coffee from Portland.", "columns": [{"title": "Visit", "links": ["412 Alder St", "Open 7-4 daily"]}]}
-]}`;
+]}
+
+${TASTE_DOC}`;
 
 const SCREEN_PLAN = `
 - views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.
@@ -1215,7 +1220,7 @@ export { briefOf };
 // The art direction (plan.art), kept with the brief: what the app should feel
 // like, what its photos show, its accent and the type of its titles. Doable
 // writes one before any interface; the designs and the screens follow it.
-const ART = ['concept', 'mood', 'imagery', 'accent', 'type'];
+const ART = ['concept', 'mood', 'layout', 'type', 'accent', 'imagery', 'action'];
 const TYPES_OF_TITLES = ['system', 'serif', 'rounded', 'mono'];
 export function cleanArt(a) {
   if (!a || typeof a !== 'object' || Array.isArray(a) || typeof a.concept !== 'string' || !a.concept.trim()) return null;
@@ -1223,6 +1228,8 @@ export function cleanArt(a) {
   const t = out.type.toLowerCase();
   out.type = TYPES_OF_TITLES.find((x) => t.includes(x)) || (/editorial|elegant|classic/.test(t) ? 'serif' : /friendly|playful|soft/.test(t) ? 'rounded' : /code|technical|terminal/.test(t) ? 'mono' : 'system');
   if (!out.imagery) out.imagery = 'none';
+  // The first screen's structure, as the kit names it (quality.mjs LAYOUTS).
+  out.structure = parseLayout(out.layout) || '';
   return out;
 }
 // The brief to keep for a version: the plan's (or the app's, when the plan
@@ -1613,7 +1620,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const designing = art && typeof engine.onDirection === 'function'
     ? Promise.resolve(engine.onDirection(appId, { art, views: (plan.views || []).map((v) => ({ title: v.title })), tables: (plan.tables || []).map((t) => t.name) })).catch(() => null)
     : null;
-  if (art) progress(`Art direction: ${art.concept}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}`);
+  if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
   let storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
 
   // Tables first: data the new code reads must exist when it goes live.

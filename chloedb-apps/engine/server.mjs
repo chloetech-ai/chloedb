@@ -410,7 +410,7 @@ engine.on('drawn', (d) => {
   drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked, grade: d.grade ?? null });
   const said = d.found.length ? `${d.found.length} problem${d.found.length === 1 ? '' : 's'}, ${high.length} in the way` : 'nothing in the way';
   const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
-  log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${d.grade ? `, graded ${d.grade} of 5` : ''}${look}`);
+  log(`[${d.app}] ${d.static ? `checked version ${d.n} without a browser` : `drew version ${d.n} on a phone and a computer`}: ${said}${d.grade ? `, graded ${d.grade} of 5` : ''}${look}`);
   const text = repairRequest(d.found);
   // A newer change already being built is drawn and checked in turn.
   const fixing = !!text && AUTOREPAIR && d.source !== 'look' && !running.has(d.app) && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
