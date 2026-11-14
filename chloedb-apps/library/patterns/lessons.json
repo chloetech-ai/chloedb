@@ -84,10 +84,10 @@
     "sql": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 200",
     "params": "{{params}}"
    },
-   "{{key}}_done": "=app.me() ? app.sql('SELECT {{lesson}} AS lesson FROM {{progress}} LIMIT 2000') : []",
+   "{{key}}_done": "=app.me().then(m => m ? app.sql('SELECT {{lesson}} AS lesson FROM {{progress}} LIMIT 2000') : [])",
    "{{key}}_ok": {
     "$when": "needs",
-    "$value": "=app.me() ? app.sql({{needs|json}}) : []"
+    "$value": "=app.me().then(m => m ? app.sql({{needs|json}}) : [])"
    }
   },
   "let": {

@@ -112,6 +112,14 @@ test('a frame may load the kit\'s typefaces from the engine and nothing else', (
 });
 
 
+test('a front page is never walled for what a visitor may not read, and a part waits for who is signed in (a promise is always true)', () => {
+  assert.match(screenSrc, /gated = refused && !isFront/, 'a refused query gates a members screen, never a front page');
+  for (const f of ['lessons', 'step']) {
+    const src = readFileSync(new URL(`../library/patterns/${f}.json`, import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /"=app\.me\(\) \? app\.sql/, `${f}: its queries wait for the answer of app.me()`);
+  }
+});
+
 test('small grey words read at 5.5:1 on every ground they sit on, and the grounds are plain colors a page measure can read', () => {
   for (const p of PRESETS) {
     for (const which of ['light', 'dark']) {

@@ -335,7 +335,8 @@ window.__sa_numbers = (() => {
         }
       }));
       data = Object.fromEntries(entries.map(([name], i) => [name, out[i] ?? []]));
-      gated = refused && !(await app.me().catch(() => null));
+      // A front page stays public: what a visitor may not read stays out of it, and no wall hides the storefront.
+      gated = refused && !isFront && !(await app.me().catch(() => null));
       refused = false;
     }
     function compute() {

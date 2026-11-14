@@ -71,7 +71,7 @@
         "$when": "content",
         "$value": "=params.id ? app.call({{content|json}}, {id: params.id}).catch(e => ({ error: e && e.message ? e.message : String(e) })) : null"
       },
-      "{{key}}_done": "=app.me() ? app.sql('SELECT {{item}} AS one FROM {{progress}} LIMIT 2000') : []"
+      "{{key}}_done": "=app.me().then(m => m ? app.sql('SELECT {{item}} AS one FROM {{progress}} LIMIT 2000') : [])"
     },
     "let": {
       "{{key}}_l": "=({{key}}_row || [])[0] || null",
@@ -190,7 +190,17 @@
                     ]
                   },
                   {
-                    "button": "=({{key}}_is ? '' : {{done|json}} + ': ') + ({{key}}_next ? 'next {{noun}}' : 'back to the list')",
+                    "if": "=!{{key}}_is",
+                    "then": [
+                      {
+                        "text": "=`This {{noun}} counts in your progress once it is marked done; then on to ` + ({{key}}_next ? 'the next one.' : 'the list.')",
+                        "muted": true,
+                        "small": true
+                      }
+                    ]
+                  },
+                  {
+                    "button": "={{key}}_is ? ({{key}}_next ? 'Next {{noun}}' : 'Back to the list') : {{done|json}}",
                     "class": "primary big",
                     "do": "={{key}}_go"
                   }
