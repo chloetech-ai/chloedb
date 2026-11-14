@@ -43,8 +43,9 @@ want before running anything:**
 |---|---|---|
 | every session on this machine | `./install.sh` | merges hooks, a permission and `env.CHLOECTX_DISTILL_MODEL` into `~/.claude/settings.json` (backed up first as `settings.json.chloectx-<time>.bak`) and registers the `chloectx` MCP server at user scope |
 | one project (good for a first try) | `./install.sh --project /absolute/path` | writes the project's `.claude/settings.local.json` and `.mcp.json` only |
+| every session, as a Claude Code plugin (no Rust needed) | `claude plugin marketplace add chloetech-ai/chloedb && claude plugin install chloectx@chloedb` | Claude Code adds the marketplace and `enabledPlugins` to `~/.claude/settings.json`; the plugin (`chloectx/plugin/`) downloads the release's prebuilt chloectx and the model on its first session ([docs](docs/chloectx/setup.md#as-a-claude-code-plugin)) |
 
-Both install the binary to `~/.local/bin/chloectx` and download a 129 MB
+All three install the binary to `~/.local/bin/chloectx` and download a 129 MB
 embedding model into `~/.local/share/chloectx/models` (on a machine that
 already has `~/.local/share/engram`, from before the rename, into that one).
 
@@ -128,6 +129,7 @@ editing their settings by hand.
 |---|---|
 | `chloectx/` | the memory system (Rust crate): hooks client, per-project daemon, MCP server, recall, distiller, `chloectx ui`, `chloectx doctor` |
 | `chloectx/src/app.rs`, `chloectx/ui/view.js` | `chloectx app`: ChloeCtx as an app of a cluster (`chloedb-server --app chloectx=URL`), its spaces in the cluster's tables (`ctx_<space>`, through `Store::open_remote` and `src/cluster.rs`), with Context and Seen before; the view is compiled in (`CHLOECTX_UI_DIR=chloectx/ui` reads it from disk); `tests/app_cluster.rs` runs it against a real cluster; on Kubernetes the operator's `spec.chloectx` runs it beside a cluster, from chloedb-server's image, which builds it too ([docs](docs/chloectx/app.md)) |
+| `chloectx/plugin/`, `.claude-plugin/marketplace.json` | ChloeCtx as a Claude Code plugin (`chloectx@chloedb`): its hooks and MCP server run `scripts/chloectx-launch`, which finds chloectx or downloads the release's prebuilt one (SHA-256 checked); `plugin.json`'s version is the crate's (`src/plugin.rs` tests that, and that its hooks are `chloectx install`'s); `tests/plugin_launcher.rs` runs the launcher against a release in a folder |
 | `chloectx/demo/index.html` | the inspector page; it is compiled into the binary with `include_str!`, so rebuild after editing it |
 | `chloedb/` | the database (Rust crate), including the posting-list study in `src/postings/` |
 | `chloedb/fuzz/` | cargo-fuzz targets (nightly: `cargo +nightly fuzz run <target>` there) feeding ChloeDB damaged files and arbitrary SQL; `chloedb/tests/corrupt_input.rs` runs the same targets on stable |

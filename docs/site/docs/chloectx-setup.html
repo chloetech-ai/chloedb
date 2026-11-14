@@ -83,7 +83,7 @@
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.2.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: chloectx stores and chloectx prune</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#as-a-claude-code-plugin">As a Claude Code plugin</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: chloectx stores and chloectx prune</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeCtx runs next to your own Claude Code: hooks record each session into a local ChloeDB file per project, and a small MCP server lets the model search that history. This page takes a fresh macOS or Linux machine to a working install in a few minutes, shows how to check it, and covers remote boxes, dev containers and upgrades.</p>
@@ -128,6 +128,102 @@
 <p>The CLI login matters more than it looks. The distiller runs <code>claude -p</code> in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. <code>chloectx doctor</code> checks for it.</p>
 <p>ChloeCtx makes model calls of its own, through <code>claude -p</code> with a small model (<code>haiku</code> by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001), and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it (<a href="chloectx.html#query-understanding">query understanding</a>, about $0.001 a prompt). Neither holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt. <code>CHLOECTX_DISTILL=0</code> turns the first off, <code>CHLOECTX_DEEP=off</code> (or <code>tool</code>, only when the model asks) the second.</p>
 <p>The daemon that makes these calls finds the <code>claude</code> CLI where Claude Code's hooks found it, on its own <code>PATH</code>, or in the usual install places (<code>~/.local/bin</code>, <code>~/.claude/local</code>, <code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code>); <code>CHLOECTX_CLAUDE</code> names it outright. <code>chloectx doctor</code> shows which one the running daemon uses.</p>
+<h2 id="as-a-claude-code-plugin">As a Claude Code plugin<a class="anchor" href="#as-a-claude-code-plugin" aria-label="Link to this section">#</a></h2>
+<p>The repository is a Claude Code plugin marketplace, named <code>chloedb</code>, with ChloeCtx as its plugin <code>chloectx</code>. In Claude Code:</p>
+<pre data-lang="text" data-title="Output">/plugin marketplace add chloetech-ai/chloedb
+/plugin install chloectx@chloedb</pre>
+<p>On Claude Code 2.1.275 or later, <code>/plugin install chloectx --marketplace chloetech-ai/chloedb</code> does both. From a shell, <code>claude plugin marketplace add chloetech-ai/chloedb &amp;&amp; claude plugin install chloectx@chloedb</code> installs it for every session, and <code>--scope local</code> (in the project's folder) for one project only. The plugin's name comes from the repository's <code>.claude-plugin/marketplace.json</code>, not from the address it is added by: <code>chloetech-ai/strata</code>, the repository's old address, still redirects and gives the same <code>chloectx@chloedb</code>.</p>
+<p>It needs no Rust and no clone of your own. Then start a <strong>new</strong> session. Its hooks and its MCP server run a small launcher in the plugin (<code>scripts/chloectx-launch</code>), which runs the first <code>chloectx</code> it finds: <code>$CHLOECTX_BIN</code>, <code>chloectx</code> on your <code>PATH</code>, or <code>~/.local/bin/chloectx</code>. When there is none, it sets ChloeCtx up once, in the background:</p>
+<ol>
+<li>it downloads the prebuilt <code>chloectx</code> of the release that matches the plugin's version (the archive <code>chloectx-&lt;platform&gt;.tar.gz</code> of the release <code>chloedb-server-v&lt;version&gt;</code>, from <a href="https://github.com/chloetech-ai/chloedb/releases">the releases</a>; the newest release when that one has none), checks its SHA-256 against the release's <code>.sha256</code> and refuses one that differs, and installs it as <code>~/.local/bin/chloectx</code>, so <code>chloectx doctor</code>, <code>chloectx ui</code> and the other commands work from a shell too;</li>
+<li>where there is no prebuilt one (Windows outside WSL 2, Alpine and other musl systems, glibc older than 2.35), or the download failed, it builds it from a checkout with <code>cargo</code> (Rust and a C compiler; <code>install.sh --no-wire</code> in <code>$CHLOECTX_SOURCE</code>, or in the clone of the marketplace), which takes several minutes;</li>
+<li>it fetches the embedding model (<code>chloectx fetch-model</code>, 129 MB, SHA-256 checked).</li>
+</ol>
+<p>Until that is done, which is usually well under a minute, the hooks record nothing, and the first session's start says so; the memory tools come with the next session if they were not ready within 25 seconds. The launcher writes what it did to <code>~/.claude/plugins/data/chloectx-chloedb/setup.log</code>, and when it cannot set up, the next session's start says why. To watch it, or to try again by hand: <code>~/.claude/plugins/cache/chloedb/chloectx/&lt;version&gt;/scripts/chloectx-launch setup</code>. When the plugin is updated (<code>/plugin update</code>, or Claude Code's auto-update) to a new version, the launcher replaces a <code>chloectx</code> it downloaded with the new version's; one you installed yourself is yours to upgrade.</p>
+<p>Claude Code clones the whole repository for the marketplace (about 230 MB). <code>claude plugin marketplace add chloetech-ai/chloedb --sparse .claude-plugin chloectx/plugin</code> checks out only the plugin, which leaves no checkout to build from on a machine without a prebuilt <code>chloectx</code>.</p>
+<p>How it differs from <code>chloectx install --user</code>:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th></th>
+<th>the plugin</th>
+<th><code>chloectx install --user</code> (<code>./install.sh</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>hooks</td>
+<td>the same nine events, from the plugin, through its launcher</td>
+<td>in <code>~/.claude/settings.json</code></td>
+</tr>
+<tr>
+<td>MCP server</td>
+<td><code>plugin:chloectx:chloectx</code>, tools <code>mcp__plugin_chloectx_chloectx__*</code></td>
+<td><code>chloectx</code> at user scope, tools <code>mcp__chloectx__*</code></td>
+</tr>
+<tr>
+<td>the memory tools' permission</td>
+<td>asked the first time each is used (add <code>mcp__plugin_chloectx_chloectx</code> to <code>permissions.allow</code> to stop asking)</td>
+<td>allowed by the install (<code>mcp__chloectx</code>)</td>
+</tr>
+<tr>
+<td>distillation model</td>
+<td><code>haiku</code>, unless <code>CHLOECTX_DISTILL_MODEL</code> is set (in the settings' <code>env</code>, say)</td>
+<td><code>--distill-model</code>, written into the settings' <code>env</code></td>
+</tr>
+<tr>
+<td>upgrade</td>
+<td><code>/plugin update chloectx@chloedb</code></td>
+<td><code>chloectx upgrade</code></td>
+</tr>
+<tr>
+<td>remove</td>
+<td><code>/plugin uninstall chloectx@chloedb</code> (keeps <code>~/.local/bin/chloectx</code>, the model and the stores)</td>
+<td><code>chloectx uninstall --user</code> (keeps the binary and the stores)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Both use the same stores, one per project. A project with its own <code>chloectx install</code> keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and <code>chloectx install --user</code>, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; <code>chloectx doctor</code> warns, and <code>chloectx uninstall --user</code> leaves only the plugin. Doctor shows the plugin:</p>
+<pre data-lang="sh">  ok    plugin: chloectx@chloedb 0.3.2, enabled in /home/you/.claude/settings.json (9 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.2/scripts/chloectx-launch)
+  ok    MCP server: the plugin&#x27;s, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)</pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>launcher variable</th>
+<th>effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CHLOECTX_BIN</code></td>
+<td>the <code>chloectx</code> to run, wherever it is</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_PREFIX</code></td>
+<td>where a downloaded or built <code>chloectx</code> goes: <code>DIR/bin</code> (default <code>~/.local</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_VERSION</code></td>
+<td>the release to download, instead of the plugin's version</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_RELEASES_URL</code></td>
+<td>where the releases are (default <code>https://github.com/chloetech-ai/chloedb/releases/download</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_SOURCE</code></td>
+<td>a checkout to build from when there is no prebuilt <code>chloectx</code></td>
+</tr>
+<tr>
+<td><code>CHLOECTX_BUILD=0</code></td>
+<td>never build from source</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_PLUGIN_WAIT</code></td>
+<td>how long the MCP server waits for the setup, in seconds (default 25)</td>
+</tr>
+</tbody>
+</table></div>
 <h2 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h2>
 <p><span class="since">since 0.3.2</span> From release 0.3.2, the ChloeDB installer fetches <code>chloectx</code> prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
@@ -246,11 +342,15 @@ chloectx ui --home ~/chloectx-demo/chloectx  # stores kept elsewhere (here: the 
 </tr>
 <tr>
 <td>hooks</td>
-<td><code>~/.claude/settings.json</code> (user install) or the project's <code>.claude/settings.local.json</code></td>
+<td><code>~/.claude/settings.json</code> (user install), the project's <code>.claude/settings.local.json</code>, or the plugin's <code>hooks/hooks.json</code> under <code>~/.claude/plugins/cache/chloedb/chloectx/&lt;version&gt;/</code></td>
 </tr>
 <tr>
 <td>MCP server</td>
-<td><code>~/.claude.json</code> at user scope, or the project's <code>.mcp.json</code></td>
+<td><code>~/.claude.json</code> at user scope, the project's <code>.mcp.json</code>, or the plugin's <code>.mcp.json</code></td>
+</tr>
+<tr>
+<td>the plugin's launcher state</td>
+<td><code>~/.claude/plugins/data/chloectx-chloedb/</code>: <code>setup.log</code>, and <code>ready</code> once it has set up</td>
 </tr>
 <tr>
 <td>stores</td>
@@ -408,7 +508,11 @@ chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are 
 </tr>
 <tr>
 <td>the model has no <code>memory_*</code> tools</td>
-<td>the MCP server is not registered or the session predates it: <code>claude mcp get chloectx</code>, then restart the session</td>
+<td>the MCP server is not registered or the session predates it: <code>claude mcp get chloectx</code>, then restart the session. With the plugin, <code>/mcp</code> lists <code>plugin:chloectx:chloectx</code>; when it failed to start, the plugin was still setting up (see its <code>setup.log</code>), and the next session has the tools</td>
+</tr>
+<tr>
+<td>a session starts with <em>ChloeCtx could not set itself up</em> (the plugin)</td>
+<td>the launcher found no <code>chloectx</code> and could not download or build one; the message and <code>~/.claude/plugins/data/chloectx-chloedb/setup.log</code> say why. Install <code>chloectx</code> another way (above), or point <code>CHLOECTX_BIN</code> at one, and start a new session</td>
 </tr>
 <tr>
 <td><code>daemon did not answer in time</code></td>

@@ -71,6 +71,43 @@ fn check_hooks(r: &mut Report, what: &str, path: &Path) -> bool {
     true
 }
 
+/// Checks the plugin that the settings enable: installed, with its
+/// launcher, and set up. Returns whether its hooks will run.
+fn check_plugin(r: &mut Report, p: &crate::plugin::Found) -> bool {
+    let id = &p.id;
+    let Some(launcher) = p.launcher() else {
+        r.fail("plugin", format!("{} enables {id}, but Claude Code has not installed it on this machine; run `claude plugin install {id}`", p.settings.display()));
+        return false;
+    };
+    let executable = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&launcher).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            launcher.is_file()
+        }
+    };
+    if !executable {
+        r.fail("plugin", format!("{id} is enabled, but its launcher {} is missing or not executable; run `claude plugin update {id}` (or uninstall and install it again)", launcher.display()));
+        return false;
+    }
+    let events = p.hook_events();
+    let version = p.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
+    r.ok("plugin", format!("{id}{version}, enabled in {} ({} hook events, through {})", p.settings.display(), events.len(), launcher.display()));
+    // What the launcher's setup left: the program it downloaded and the
+    // model, or why it could not.
+    let data = p.data_dir(&crate::plugin::plugins_root());
+    if let Ok(why) = std::fs::read_to_string(data.join("failed")) {
+        r.fail("plugin setup", format!("{}; see {}, and `{} setup` tries again in this shell", why.trim(), data.join("setup.log").display(), launcher.display()));
+    } else if data.join("setup.lock").is_dir() && !data.join("ready").is_file() {
+        r.warn("plugin setup", format!("running: it downloads chloectx and the embedding model once (see {})", data.join("setup.log").display()));
+    }
+    true
+}
+
 /// Runs a hook command's program, as the command spells it, with a shell
 /// (as Claude Code does) and `--version`: a path with a space that is not
 /// quoted runs something else.
@@ -142,8 +179,11 @@ pub fn run(project: &Path) -> i32 {
         None => r.fail("Claude Code CLI", format!("{}; install Claude Code (https://claude.com/claude-code)", claude.err().unwrap_or_default())),
     }
 
-    // Where the hooks come from: the user settings, the project, or both.
+    // Where the hooks come from: the plugin, the user settings, the
+    // project, or more than one of them.
     let user_settings = paths::user_settings();
+    let plugin = crate::plugin::enabled(project);
+    let plugin_ok = plugin.as_ref().is_some_and(|p| check_plugin(&mut r, p));
     let user = check_hooks(&mut r, "user hooks", &user_settings);
     let mut proj = false;
     for f in ["settings.local.json", "settings.json"] {
@@ -152,17 +192,32 @@ pub fn run(project: &Path) -> i32 {
             proj |= check_hooks(&mut r, "project hooks", &p);
         }
     }
-    if !user && !proj {
-        r.fail("hooks", format!("none in {} or {}/.claude; run `chloectx install --user` (every session) or `chloectx install` here", user_settings.display(), project.display()));
-    } else if user && proj {
-        r.ok("hooks", "the project's own install handles this project; the user-level hooks step aside here");
+    if !user && !proj && plugin.is_none() {
+        r.fail(
+            "hooks",
+            format!(
+                "none in {} or {}/.claude, and the {} plugin is not enabled; install the plugin (`/plugin install {}@{} --marketplace chloetech-ai/chloedb` in Claude Code), or run `chloectx install --user` (every session) or `chloectx install` here",
+                user_settings.display(),
+                project.display(),
+                crate::plugin::NAME,
+                crate::plugin::NAME,
+                crate::plugin::MARKETPLACE
+            ),
+        );
+    } else if proj && (user || plugin_ok) {
+        r.ok("hooks", format!("the project's own install handles this project; the {} hooks step aside here", if user { "user-level" } else { "plugin's" }));
+    } else if user && plugin_ok {
+        r.warn("hooks", "both the plugin and `chloectx install --user` are installed: the user settings' hooks record and the plugin's step aside; `chloectx uninstall --user` leaves the plugin alone");
     }
 
     // The MCP server: user scope (claude mcp) or the project's .mcp.json.
     let mcp_json = read_json(&project.join(".mcp.json"));
     let server = format!("/mcpServers/{}", install::SERVER);
     let old_server = format!("/mcpServers/{}", install::OLD_SERVER);
-    if mcp_json.pointer(&server).is_some() {
+    let user_server = read_json(&paths::claude_json()).pointer(&server).is_some();
+    if plugin_ok && mcp_json.pointer(&server).is_none() && !user_server {
+        r.ok("MCP server", format!("the plugin's, plugin:{}:{} (its tools are {}*)", crate::plugin::NAME, install::SERVER, crate::plugin::TOOL_PREFIX));
+    } else if mcp_json.pointer(&server).is_some() {
         r.ok("MCP server", format!("{}/.mcp.json", project.display()));
     } else if proj && mcp_json.pointer(&old_server).is_some() {
         r.warn("MCP server", format!("{}/.mcp.json names it `{}`, its name before the rename; run `chloectx install` again", project.display(), install::OLD_SERVER));
@@ -189,6 +244,10 @@ pub fn run(project: &Path) -> i32 {
         }
     }
 
+    if plugin_ok && (user_server || mcp_json.pointer(&server).is_some()) {
+        r.warn("MCP server", format!("the plugin serves the memory tools too, so a session has them twice (`mcp__{}__*` and `{}*`); `chloectx uninstall --user` (or `chloectx uninstall` in the project) leaves only the plugin's", install::SERVER, crate::plugin::TOOL_PREFIX));
+    }
+
     // The embedding model the store will use.
     let store = paths::store_dir(project);
     let cfg = read_json(&store.join("config.json"));
@@ -207,7 +266,9 @@ pub fn run(project: &Path) -> i32 {
     let distill = std::env::var("CHLOECTX_DISTILL_MODEL").ok().filter(|m| !m.is_empty()).map(|m| (m, "environment".to_string()))
         .or_else(|| settings_env(&project.join(".claude/settings.local.json")).map(|m| (m, "project settings".into())))
         .or_else(|| settings_env(&user_settings).map(|m| (m, "user settings".into())))
-        .or_else(|| cfg.pointer("/distill/model").and_then(|v| v.as_str()).filter(|m| !m.is_empty()).map(|m| (m.to_string(), "store config.json".into())));
+        .or_else(|| cfg.pointer("/distill/model").and_then(|v| v.as_str()).filter(|m| !m.is_empty()).map(|m| (m.to_string(), "store config.json".into())))
+        // The plugin's launcher sets haiku when nothing else names a model.
+        .or_else(|| plugin_ok.then(|| ("haiku".to_string(), "plugin's default".into())));
     if cfg.pointer("/distill/enabled") == Some(&json!(false)) || std::env::var("CHLOECTX_DISTILL").is_ok_and(|v| v == "0") {
         r.warn("distillation", "off: no decisions, rules or planned work are written down");
     } else {
