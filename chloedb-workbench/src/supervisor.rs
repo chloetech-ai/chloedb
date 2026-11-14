@@ -243,6 +243,10 @@ pub fn summarize(kind: &str, hook: &Json) -> String {
             Some(d) => format!("{tool} done: {d}"),
             None => format!("{tool} done"),
         },
+        "PostToolUseFailure" => match detail {
+            Some(d) => format!("{tool} failed: {d}"),
+            None => format!("{tool} failed"),
+        },
         "Notification" => one_line(s("message"), 200),
         "Stop" => "turn finished".into(),
         "SubagentStop" => "subagent finished".into(),
@@ -670,7 +674,7 @@ impl Supervisor {
         }
         let a = &mut slot.agent;
         match kind.as_str() {
-            "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Self::set_state(a, "working"),
+            "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => Self::set_state(a, "working"),
             // Claude Code also notifies when a finished turn has sat idle a
             // while: that agent is idle, not stopped on a question.
             "Notification" if a.state == "idle" && is_idle_notice(&hook) => {}
@@ -971,8 +975,8 @@ pub fn settings_json(exe: &str) -> Json {
     let command = format!("{} hook", shell_quote(exe));
     let hook = json!([{ "type": "command", "command": command, "timeout": 5 }]);
     let mut hooks = serde_json::Map::new();
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
-        let entry = if matches!(ev, "PreToolUse" | "PostToolUse") { json!({ "matcher": "*", "hooks": hook }) } else { json!({ "hooks": hook }) };
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
+        let entry = if matches!(ev, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") { json!({ "matcher": "*", "hooks": hook }) } else { json!({ "hooks": hook }) };
         hooks.insert(ev.to_string(), json!([entry]));
     }
     json!({ "hooks": hooks })
