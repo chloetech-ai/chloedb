@@ -61,3 +61,13 @@ test('public pages and owner pages: a view says who it is for, and visitors neve
   const views = [{ slug: 'home', spec: {} }, { slug: 'roster', spec: { for: 'members' } }, { slug: 'manage', spec: { for: 'owner' } }];
   assert.deepEqual(forVisitors(views).map((v) => v.slug), ['home', 'roster']);
 });
+
+test('FOR in a statement says who a screen is for', async () => {
+  const { compileStatements } = await import('../engine/statement.mjs');
+  const plan = { views: [{ slug: 'manage' }, { slug: 'home' }] };
+  const code = { manage: "CREATE SCREEN manage TITLE 'Manage'\nFOR owner\nHEADING 'Races'", home: "CREATE SCREEN home\nHEADING 'Hi'" };
+  assert.deepEqual(compileStatements(plan, code), []);
+  assert.equal(plan.views[0].for, 'owner');
+  assert.equal(plan.views[1].for, undefined);
+  assert.throws(() => compileStatement("CREATE SCREEN x\nFOR strangers"), /FOR owner \| members \| everyone/);
+});

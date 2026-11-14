@@ -43,7 +43,7 @@ const MORE = {
   TREND: { use: 'trend',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
-const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'LAYOUT', 'PHOTOS'];
+const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'LAYOUT', 'PHOTOS', 'FOR'];
 const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
 const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'DAYS', 'WEEKDAY', 'MONTH', 'MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK', 'STARS', 'BOOL'];
 // How a big number reads (KPI ... MONEY): the column formats that fit a number.
@@ -232,6 +232,7 @@ export function compileStatement(text) {
   const title = head[2] ? literal(head[2]) : null;
   let part = null;
   let photos = null;
+  let audience = null;
   let kpiN = 0;
   let kpiRow = null;
   const finish = () => {
@@ -298,6 +299,13 @@ export function compileStatement(text) {
       // screen's page structure (quality.mjs LAYOUTS). A word the kit does
       // not know is left out rather than failing the build.
       if (kw === 'LAYOUT') { const l = parseLayout(rest.replace(/^'|'$/g, '')); if (l) screen.layout = l; continue; }
+      // FOR owner | members | everyone: who the screen is for (engine/audience.mjs).
+      if (kw === 'FOR') {
+        const a = rest.toLowerCase().replace(/^'|'$/g, '');
+        if (!['owner', 'admins', 'members', 'everyone'].includes(a)) fail(n, 'FOR owner | members | everyone');
+        audience = a === 'admins' ? 'owner' : a;
+        continue;
+      }
       if (kw === 'TEXT') { screen.body.push({ text: literal(rest), muted: true }); continue; }
       if (kw === 'DATA') {
         // DATA name AS (SELECT ...) [PARAMS (name = expression, ...)]
@@ -463,7 +471,7 @@ export function compileStatement(text) {
   };
   picks(screen.body);
   for (const k of ['state', 'data', 'let']) if (!Object.keys(screen[k]).length) delete screen[k];
-  return { slug: head[1], title, screen, ...(photos?.length ? { photos } : {}) };
+  return { slug: head[1], title, screen, ...(photos?.length ? { photos } : {}), ...(audience ? { for: audience } : {}) };
 }
 
 // A clause of one of the newer parts: sets one parameter of its pattern.
@@ -562,6 +570,7 @@ export function compileStatements(plan, code) {
       v.screen = out.screen;
       v.statement = code[v.slug].trim(); // the screen's source, kept with it
       if (!v.title && out.title) v.title = out.title;
+      if (out.for && v.for === undefined) v.for = out.for;
       delete code[v.slug];
     } catch (e) {
       if (!(e instanceof StatementError)) throw e;
@@ -619,6 +628,7 @@ OFFERS <table> [AS key]        -- what people order or book while some are left 
 LESSONS <lessons table> [AS key] -- a course's lessons with each learner's progress: a bar of how many are done, the next lesson as the main action ('Start lesson 3'), Done on each one done, the certificate once all are; a lesson done is a row of PROGRESS (declare ALLOW ALL ON <progress> TO members WHERE <person col> = :user_id)
   PROGRESS <table of lessons done>  LESSON <its column holding the lesson's id>  NAME <col>  TEXT <col>  MINUTES <col>  ORDER BY position  WHERE  PARAM  OPEN <lesson view slug, gets {id}>  CERTIFICATE <view slug>  NOUN 'lesson'  TITLE
 KPI 'Label' = SUM(col) | COUNT(*) | AVG(col) FROM <table> [WHERE condition] [${KPI_FORMATS.join(' | ')}]   -- a big number over any table, outside a part (KPIs one after the other share a row); :today works in WHERE: this month is WHERE date_trunc('month', day) = date_trunc('month', :today), the last 30 days WHERE days_between(day, :today) <= 30
+FOR owner | members           -- who the screen is for, a line of its own: owner for managing what a public page shows (visitors of the published app never get it in the menu), members for signed-in people; leave it out for everyone
 LAYOUT <${LAYOUT_NAMES.join(' | ')}>   -- the screen's page structure, its second line (PAGE front, a site's front page, takes one too): ${Object.entries(LAYOUT_SHORT).map(([k, v]) => `${k}: ${v}`).join('; ')}. Give one in EVERY statement, not only the first: the first screen's from the art direction's layout, each other screen's by what it is for (numbers and charts: dashboard; one thing to do, a check-in, a quiz: tool; one row, lessons, a menu: editorial; products or photos: gallery; a list beside its form: split); screens of one app need not share one. A screen that gives none gets the one that fits its parts
 HEADING 'text'   TEXT 'text'
 DATA <name> AS SELECT ...      -- more data for BLOCKS and LET, by name
