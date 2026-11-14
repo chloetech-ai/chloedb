@@ -135,7 +135,12 @@
     // are drawn with, so a builder changes the token, not the element.
     // Text on the accent is told before white cards: the same white is both.
     const TOKENS = ['accent', 'accent-fg', 'fg', 'bg', 'card'];
-    const tokensOf = (el) => {
+    const tokensOf = (picked) => {
+      // Read from a copy beside it: the picked element is under the pointer,
+      // and its hover colors are not its tokens.
+      const el = picked.cloneNode(true);
+      el.style.cssText += ';position:absolute;visibility:hidden;pointer-events:none;left:-9999px';
+      picked.after(el);
       const cs = getComputedStyle(el);
       const probe = document.createElement('i');
       probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
@@ -147,7 +152,9 @@
       // The background seen behind the element: its own, else the nearest one under it.
       let back = null;
       for (let n = el; n && n.nodeType === 1 && !back; n = n.parentElement) back = match(getComputedStyle(n).backgroundColor) || (/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(getComputedStyle(n).backgroundColor) ? null : 'other');
-      return { text: match(cs.color), background: back === 'other' ? null : back };
+      const out = { text: match(cs.color), background: back === 'other' ? null : back };
+      el.remove();
+      return out;
     };
     const moved = () => { place(box, null); place(lockBox, lock); if (lock) post({ kind: 'pick-rect', rect: lock.isConnected ? rectOf(lock) : null }); };
     const onMove = (e) => { if (!editing && pickable(e.target) && e.target !== hover) { hover = e.target; place(box, hover); } };
