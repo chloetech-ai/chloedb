@@ -19,7 +19,7 @@ import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
-import { MODEL, spend, useSpendFile } from './llm.mjs';
+import { MODEL, spend, useSpendFile, checkProvider, withProvider } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
@@ -356,8 +356,10 @@ async function runRequest(req, extra = {}) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
+    // A build that names its provider (codex, agy) has its model calls go there.
+    if (extra.provider) log(`[${req.app}] ${req.id} built with the ${extra.provider} provider`);
     const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
-      : await forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress);
+      : await withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress));
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
@@ -514,10 +516,10 @@ function designsOf(appId, fresh = false, direction = null) {
 // (forge.mjs calls engine.onDirection once its checks pass); a first build
 // that ends without one has its designs made from the description.
 const directions = new Map();
-function awaitDirection(appId) {
+function awaitDirection(appId, provider = null) {
   let give;
   const given = new Promise((ok) => { give = ok; });
-  const made = given.then((direction) => { directions.delete(appId); return designsOf(appId, false, direction); });
+  const made = given.then((direction) => { directions.delete(appId); return withProvider(provider, () => designsOf(appId, false, direction)); });
   made.catch((e) => console.error(`designs ${appId}: ${e.message}`));
   directions.set(appId, { give, made });
 }
@@ -636,6 +638,8 @@ const routes = [
   ['POST', /^\/api\/apps$/, async (b) => {
     const description = String(b.description || '').trim();
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
+    // provider (claude, codex, agy): the CLI of this first build and its designs only.
+    const provider = checkProvider(b.provider);
     // A name given is the app's for good (the plan's name does not replace it).
     const given = String(b.name || '').trim().slice(0, 60);
     const name = given || description.split(/[.\n]/)[0].slice(0, 40);
@@ -643,8 +647,8 @@ const routes = [
     if (given) await engine.store.putSetting(app, 'named', '1');
     // Its three designs are made beside the first build, from the art
     // direction its plan writes (or the description, when it has none).
-    awaitDirection(app);
-    const request = await submit(app, description, 'user');
+    awaitDirection(app, provider);
+    const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
@@ -713,11 +717,14 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/requests$/, async (b, [id]) => {
     const text = String(b.text || '').trim();
     if (!text) throw Object.assign(new Error('say what to change'), { status: 400 });
+    // provider (claude, codex, agy): the CLI of this build only; an ask that
+    // joins a waiting request is built with that request's.
+    const provider = checkProvider(b.provider);
     const taken = b.suggestion ? await engine.store.setSuggestion(String(b.suggestion), 'taken') : null;
     // A newer shared component is taken without the model: its code is in Strata.
     if (taken?.source === 'component' && taken.cap) return { request: (await submit(id, text, 'component', { cap: taken.cap })).id };
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
-    const r = await submit(id, text, source);
+    const r = await submit(id, text, source, provider ? { provider } : {});
     return { request: r.id };
   }],
   // Reads and writes: for the app's people (the public path) under the
