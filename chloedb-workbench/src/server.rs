@@ -144,6 +144,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::timetravel::routes())
         .merge(crate::guarded::routes())
         .merge(crate::routing::routes())
+        .merge(crate::search::routes(&app))
+        .merge(crate::library::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -200,6 +202,8 @@ const LEVELS: &[(&str, &str)] = &[
     ("timebar.js", include_str!("../ui/levels/timebar.js")),
     ("change-requests.js", include_str!("../ui/levels/change-requests.js")),
     ("route-hint.js", include_str!("../ui/levels/route-hint.js")),
+    ("library.js", include_str!("../ui/levels/library.js")),
+    ("quicksearch.js", include_str!("../ui/levels/quicksearch.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {

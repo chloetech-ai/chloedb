@@ -2694,6 +2694,7 @@ window.addEventListener("keydown", (e) => {
   if (!inTerm && !T.open && (e.key === "[" || e.key === "]") && levelKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (e.key === "Enter" && !S.zoomed && e.target.closest?.(".tile")) { e.preventDefault(); zoom(e.target.closest(".tile").dataset.id); return; }
   if (!S.zoomed && !D.open && ARROWS[e.key] && (e.target.closest?.(".tile") || e.target === document.body)) { e.preventDefault(); move(ARROWS[e.key]); return; }
+  if (e.key === "/" && !inTerm && !T.open && L.screen !== "library") { e.preventDefault(); openQuickSearch(); return; }
   // Without the prefix only n, z and ? act: stop, digits and (in zoom) arrows
   // need it, so a stray key never stops or switches an agent.
   if ((e.key === "n" || e.key === "z" || e.key === "?") && runCommand(e)) e.preventDefault();
@@ -2719,8 +2720,12 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
 // between Intent, Plan, Story, Changes and Terminal for what is in focus.
 
-const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship"];
-const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library"];
+const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, library: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
+// Search (fourth build): the top bar's quick search over code, docs and decisions; `/` opens it.
+const quickCtx = () => ({ api, go: (hash) => route(hash, { push: true }), openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }), repo: () => pickRepo() || "", openDecisions: () => openDecisions() });
+function openQuickSearch() { import("/levels/quicksearch.js").then((m) => m.open(quickCtx())).catch((err) => console.error(err)); }
+import("/levels/quicksearch.js").then((m) => m.install(quickCtx())).catch(() => {});
 const L = { screen: null, param: null, view: null, req: 0, recent: [], focus: null };
 
 function levelCtx(param) {

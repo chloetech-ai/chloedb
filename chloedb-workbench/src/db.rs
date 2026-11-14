@@ -93,6 +93,18 @@ const TIME_GUARD_TABLES: [&str; 3] = [
     "CREATE TABLE IF NOT EXISTS task_features (id KEYWORD PRIMARY KEY, repo KEYWORD, name KEYWORD, task TEXT, files TEXT, model KEYWORD, input INT, output INT, cache_read INT, cost_usd FLOAT, minutes FLOAT, redo INT, done BOOL, outcome KEYWORD, exit_code INT, ended TIMESTAMP)",
 ];
 
+/// Search's tables (SPEC.md, "Fourth build", rows 1 and 10): the files and
+/// chunks of each repository's index (a tree per checkout: `main`, or an
+/// agent's id), the searches agents made, and the docs of their libraries.
+const SEARCH_TABLES: [&str; 6] = [
+    "CREATE TABLE IF NOT EXISTS code_files (id KEYWORD PRIMARY KEY, repo KEYWORD, tree KEYWORD, path KEYWORD, lang KEYWORD, sig KEYWORD, chunks INT, lines INT, deleted BOOL, indexed TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS code_chunks (id KEYWORD PRIMARY KEY, repo KEYWORD, tree KEYWORD, path KEYWORD, lang KEYWORD, symbol KEYWORD, kind KEYWORD, start_line INT, end_line INT, text TEXT OPTIONS(analyzer = 'simple'), terms TEXT OPTIONS(analyzer = 'simple'), head TEXT OPTIONS(analyzer = 'simple'))",
+    "CREATE TABLE IF NOT EXISTS search_log (id KEYWORD PRIMARY KEY, ts TIMESTAMP, repo KEYWORD, agent KEYWORD, kind KEYWORD, q TEXT, hits INT, tokens INT, cites TEXT)",
+    "CREATE TABLE IF NOT EXISTS doc_libs (id KEYWORD PRIMARY KEY, repo KEYWORD, lib KEYWORD, name KEYWORD, version KEYWORD, ecosystem KEYWORD, manifest KEYWORD, url KEYWORD, state KEYWORD, pages INT, error TEXT, crawled TIMESTAMP, updated TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS doc_pages (id KEYWORD PRIMARY KEY, lib KEYWORD, repo KEYWORD, url KEYWORD, title TEXT, text TEXT, words INT, depth INT, fetched TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS doc_cites (id KEYWORD PRIMARY KEY, ts TIMESTAMP, repo KEYWORD, agent KEYWORD, lib KEYWORD, url KEYWORD, title TEXT, q TEXT)",
+];
+
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
   seq INT,
@@ -291,6 +303,9 @@ impl StateDb {
             db.sql(t, &Params::new()).map_err(e)?;
         }
         for t in TIME_GUARD_TABLES {
+            db.sql(t, &Params::new()).map_err(e)?;
+        }
+        for t in SEARCH_TABLES {
             db.sql(t, &Params::new()).map_err(e)?;
         }
         db.sql(EVENTS, &Params::new()).map_err(e)?;

@@ -1342,3 +1342,76 @@ real now while showing the past. The map's tree is today's files. A
 snapshot's worktree commits are not kept by a ref. Precedents need
 ChloeCtx; without it a request has none. `rm-outside` lets a recursive rm
 of a temporary folder through.
+
+### Search as built (rows 1 and 10)
+
+**Tables** (`db.rs`, `SEARCH_TABLES`):
+- `code_files` holds one row per file and tree: `tree` is `main` for the main checkout, or an agent's id for the files that agent changed in its worktree. The other columns are `sig` (size:mtime), `chunks`, `lines`, and `deleted`. A file deleted in an agent's tree hides the main checkout's copy.
+- `code_chunks` holds `path`, `lang`, `symbol`, `kind`, `start_line`, `end_line`, `text`, `terms` and `head`. The last three are TEXT with the `simple` analyzer.
+- `search_log` records which agent searched (`by`), with kind, q, hits, tokens and cites.
+- `doc_libs` holds one row per library of a repository. Its `lib` is the API id, such as `crates-serde`, `npm-react` or `site-<host><path>`.
+- `doc_pages` holds `url`, `title`, `text` (the english analyzer), `words`, `depth` and `fetched`.
+- `doc_cites` records which agent's answer cited which page, and for what query.
+
+**Code search** (`src/search.rs`):
+- Chunks:
+  - A chunk is one definition, with its doc comments and attributes. Definitions are found per line for Rust, Python, TS/JS, Go and Markdown headings. Methods get chunks of their own.
+  - Leading lines form `head`. Chunks longer than 80 lines are cut at 60, and short neighbours are joined.
+  - Files without definitions are cut into 60-line windows.
+- Ranking:
+  - There is no code analyzer, so identifiers are split in Rust. `terms` holds the parts of each compound identifier plus the parts joined (`cartTotal` → cart total carttotal; `cart_total` → carttotal). The query gets the same expansion.
+  - The rank is `bm25(text) + bm25(terms) + 2*bm25(head)`, where `head` is the symbol plus the path's parts.
+- Freshness:
+  - A full pass runs `git ls-files --cached --others --exclude-standard` and chunks again only the files whose signature changed.
+  - It runs on the first search of a repository (the search waits up to 20 s), in the background on a search once the last pass is a minute old, and on `POST /api/search/reindex`.
+  - Each agent with a worktree that is running, or that ended in the last 24 h, gets its `git diff --name-only <base>` and untracked files as its tree. The trees of agents gone longer are dropped.
+  - A `PostToolUse` of Edit, MultiEdit, Write or NotebookEdit reindexes its file in the agent's tree. A watcher thread on the stream of changes catches up 250 ms after it, and each search catches up too (mark `search:seq`). The hook path is not touched.
+- Limits: 512 KiB a file, 20,000 files, 96 MiB a pass.
+- Routes:
+  - `GET /api/search/code?repo&q&agent&lang&limit&tokens&by` answers `{repo, q, agent, hits:[{id, tree, path, lang, symbol, kind, start_line, end_line, text, score, edited_by, overlaid_by}], pack, index, took_ms, missing}`.
+    - With `agent`, the search sees that agent's tree laid over main.
+    - With `tokens`, `pack` is `{budget, used, text, rows:[{path, start_line, end_line, symbol, decision, tokens}]}` from `PACK n TOKENS OF text WITH RECEIPT`. Each chunk sits under a `// path:start-end kind symbol` line.
+    - With `by`, the search is logged as that agent's.
+    - Without `repo`, the agent's repository is used.
+  - `GET /api/search/index?repo` answers `{index:{state, files, chunks, langs, indexed_ms, took_ms, head, progress, overlays, error}, recent, searches, agents}`.
+  - `POST /api/search/reindex {repo}` answers `{index, changed, removed, took_ms}`.
+  - `GET /api/search/quick?repo&q` answers `{code, docs, decisions}`. Decisions are ChloeCtx's from `trail::decisions`, scored by the words they share with the query. Without ChloeCtx, decisions is empty and `missing` says why.
+
+**Docs** (`src/library.rs`):
+- Manifests:
+  - Up to 12 are read: `Cargo.toml` (versions from the nearest `Cargo.lock`; path, git and workspace dependencies skipped), `package.json` (dependencies and peers; version and homepage from `node_modules`), `pyproject.toml` (PEP 621 or Poetry), `requirements.txt` and `go.mod` (direct requirements).
+  - Up to 60 libraries are kept.
+- Doc sites:
+  - Crates map to `https://docs.rs/<name>/<version>/`, Go modules to `https://pkg.go.dev/<module>@<v>`.
+  - Well-known npm and PyPI packages map to their own sites (a small table). Other packages map to their homepage, else their registry page.
+  - `POST /api/library/crawl {url}` adds any site.
+- Crawl:
+  - It fetches the first page, then the pages it links to under the same host and folder (depth 1, at most 200 pages, html or text), as robots.txt allows. A group naming `chloedb-workbench` wins over `*`, and the longest rule wins.
+  - The folder is that of the page the redirects led to. `dir/` and `dir/index.html` count as one page.
+  - Crawls run one at a time on a thread, with progress kept in memory.
+  - A crawl the server did not finish reads as `failed`, with a reason.
+- Routes:
+  - `GET /api/library?repo` answers `{libraries:[{id, name, version, ecosystem, manifest, url, state, pages, error, crawled_ms, cited, cited_by, progress}], crawler:{kind, available, via, note, why?, chloedb_crawl}, citations, manifests, missing}`.
+  - `GET /api/library/:id/pages?repo` answers `{library, pages:[{url, title, words, depth, fetched_ms, cited, cited_by:[{agent, ts_ms, q}]}]}`, cited pages first.
+  - `POST /api/library/crawl {repo, library | libraries | url}` answers 202 `{library | libraries, started}`. Without curl it answers `{available: false, why}`.
+  - `GET /api/search/docs?repo&q&library&limit&tokens&by` answers `{hits:[{url, title, library:{id, name}, text (excerpt), score}], pack, missing}`.
+    - The rank is `bm25(text) + 2*bm25(title)`.
+    - With `tokens`, `PACK … OF text EXCERPT …` packs the text.
+    - With `by`, the first 3 hits are recorded in `doc_cites` as cited by that agent, and the search is logged.
+
+**MCP:**
+- `search_code {query, tokens?, limit?, lang?}` answers `path:start-end kind symbol` lines with the chunks' first lines, or the PACK text. It searches as the caller (its worktree) and logs as the caller.
+- `search_docs {query, library?, tokens?}` answers `title <url> (library)` with the passage and "Cite the URLs you rely on", or the PACK text. The pages answered are recorded as cited by the caller.
+
+**UI:**
+- Library (`ui/levels/library.js`, level Plan, `#/library[/code|docs]`, a nav link):
+  - The Code tab has search, "as seen by" (main checkout or an agent's worktree), PACK with a budget, language chips, hits with edit and overlay chips, Why?, the Index card with Reindex, "Kept fresh" (edits reindexed) and "What agents searched".
+  - The Docs tab has the libraries with their crawl state, Crawl, "Crawl the rest", adding a site, docs search over all docs or one library, the library's pages, and "Cited by agents".
+- Quick search (`ui/levels/quicksearch.js`) is the top bar's Search button, and `/` anywhere but in a field, in a terminal, or on Library, whose own `/` focuses its box. It covers code, docs and decisions; Enter opens a hit and Shift-Enter opens Why.
+- The fixture `ui/dev/fixtures/library.mjs` keeps the real shapes.
+
+**Deviations:**
+- The crawl does not use `chloedb-crawl`, which crawls into a chloedb-server cluster of its own. The built-in fetcher keeps the pages in the state database. It runs `curl` (`CHLOEDB_WORKBENCH_CURL` overrides the path), because this crate's ureq is built without TLS and curl follows the machine's proxy settings.
+- Without curl, the crawler reports `available: false` with the reason, and search over pages already kept still works.
+- There are no embeddings (chloedb is built without models), so search is BM25 only.
+- Docs search ranks pages, not passages. The excerpt is the stretch with most of the query's words.

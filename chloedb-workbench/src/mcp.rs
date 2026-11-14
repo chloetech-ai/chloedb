@@ -158,6 +158,33 @@ fn tools() -> Value {
                 },
                 "required": ["command", "why"]
             }
+        },
+        {
+            "name": "search_code",
+            "description": "Search this repository's code by words or identifiers (cartTotal also finds cart_total), as your worktree has it: answers chunks (a function, a type or 60 lines) with path:start-end, best first. With tokens, answers one text of the best chunks that fits that many tokens, each under its // path:start-end line.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Words, identifiers or a phrase." },
+                    "tokens": { "type": "integer", "minimum": 100, "maximum": 50000, "description": "A budget: answer the chunks' text packed into this many tokens." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "How many chunks to list (default 10)." },
+                    "lang": { "type": "string", "description": "Only this language: rust, typescript, javascript, python, go, markdown and so on." }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_docs",
+            "description": "Search the crawled docs of this repository's libraries (docs.rs, the libraries' own sites): answers pages with their URL, library and the passage that matches. Cite the URLs you rely on. With tokens, answers one text of the best passages that fits that many tokens.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "library": { "type": "string", "description": "Only this library's pages: its id, such as crates-serde or npm-react." },
+                    "tokens": { "type": "integer", "minimum": 100, "maximum": 50000 }
+                },
+                "required": ["query"]
+            }
         }
     ])
 }
@@ -471,6 +498,7 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
                 if s(r, "rule_label").is_empty() { String::new() } else { format!(", guarded by: {}", s(r, "rule_label")) }
             ))
         }
+        "search_code" | "search_docs" => search_tool(c, name, args),
         other => Err(format!("no tool {other}")),
     }
 }
@@ -639,4 +667,64 @@ pub fn run() {
             }
         }
     }
+}
+
+/// `search_code` and `search_docs`: the caller's search, logged as its own.
+fn search_tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
+    if c.env.agent.is_empty() {
+        return Err(format!("{name} is for an agent of Workbench: CHLOEDB_WORKBENCH_AGENT is not set"));
+    }
+    let query = s(args, "query").trim();
+    if query.is_empty() {
+        return Err("query is required".into());
+    }
+    let me = enc(&c.env.agent);
+    let tokens = args.get("tokens").and_then(Value::as_i64).filter(|t| *t > 0);
+    let mut path = if name == "search_code" {
+        let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10).clamp(1, 50);
+        let mut p = format!("/api/search/code?q={}&agent={me}&by={me}&limit={limit}", enc(query));
+        if !s(args, "lang").is_empty() {
+            p.push_str(&format!("&lang={}", enc(s(args, "lang"))));
+        }
+        p
+    } else {
+        let mut p = format!("/api/search/docs?q={}&by={me}&limit=8", enc(query));
+        if !s(args, "library").is_empty() {
+            p.push_str(&format!("&library={}", enc(s(args, "library"))));
+        }
+        p
+    };
+    if let Some(t) = tokens {
+        path.push_str(&format!("&tokens={t}"));
+    }
+    let v = c.call("GET", &path, None, Duration::from_secs(40))?;
+    let mut out = Vec::new();
+    let hits = v["hits"].as_array().cloned().unwrap_or_default();
+    if let Some(p) = v.get("pack").filter(|p| p.is_object()) {
+        let taken = p["rows"].as_array().into_iter().flatten().filter(|r| !s(r, "decision").starts_with("skip")).count();
+        out.push(format!("PACK {} TOKENS: {} used, {taken} {} taken.", p["budget"], p["used"], if name == "search_code" { "chunks" } else { "pages" }));
+        out.push(s(p, "text").to_string());
+    } else if name == "search_code" {
+        out.push(format!("{} chunks for {query:?}{}:", hits.len(), if v["agent"]["cwd"].as_str().is_some_and(|w| w != s(&v["agent"], "repo")) { " as your worktree has them" } else { "" }));
+        for h in &hits {
+            let sym = [s(h, "kind"), s(h, "symbol")].iter().filter(|x| !x.is_empty() && **x != "lines" && **x != "head").copied().collect::<Vec<_>>().join(" ");
+            out.push(format!("{}:{}-{} {sym}", s(h, "path"), h["start_line"], h["end_line"]).trim_end().to_string());
+            for l in s(h, "text").lines().filter(|l| !l.trim().is_empty()).take(3) {
+                out.push(format!("    {}", l.chars().take(160).collect::<String>()));
+            }
+        }
+    } else {
+        out.push(format!("{} pages for {query:?}:", hits.len()));
+        for h in &hits {
+            out.push(format!("{} <{}> ({})", s(h, "title"), s(h, "url"), s(&h["library"], "name")));
+            out.push(format!("    {}", s(h, "text")));
+        }
+        if !hits.is_empty() {
+            out.push("Cite the URLs you rely on.".into());
+        }
+    }
+    for m in v["missing"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        out.push(format!("note: {m}"));
+    }
+    Ok(out.join("\n"))
 }

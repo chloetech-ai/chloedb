@@ -30,6 +30,9 @@ mod testruns;
 mod guarded;
 mod routing;
 mod timetravel;
+// Search (SPEC.md, "Fourth build", rows 1 and 10).
+mod library;
+mod search;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

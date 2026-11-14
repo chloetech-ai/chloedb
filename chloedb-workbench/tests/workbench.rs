@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -2646,4 +2646,251 @@ fn routing_suggests_the_model_similar_tasks_did_best_on() {
     assert!(!err, "{text}");
     let plain = s.get("/api/agents").1["agents"].as_array().unwrap().iter().find(|a| a["name"] == "plain").unwrap().clone();
     assert_eq!(plain["model"], Value::Null);
+}
+
+// Fourth build: Search (code search for agents, docs on tap).
+
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// A repository with a Rust file, a TypeScript one, notes and a manifest.
+fn shop_repo() -> (tempfile::TempDir, PathBuf) {
+    let (d, r) = repo();
+    std::fs::create_dir_all(r.join("src")).unwrap();
+    std::fs::create_dir_all(r.join("web")).unwrap();
+    std::fs::write(r.join("src/cart.rs"), "use std::fmt;\n\n/// Sums the cart's lines, in cents.\npub fn cart_total(lines: &[i64]) -> i64 {\n    lines.iter().sum()\n}\n\n/// Rounds a discount half up.\npub fn round_discount(cents: i64) -> i64 {\n    (cents + 50) / 100 * 100\n}\n").unwrap();
+    std::fs::write(r.join("web/useCart.ts"), "import { useMemo } from \"react\";\n\nexport const cartTotal = (lines: number[]) => {\n  return lines.reduce((a, b) => a + b, 0);\n};\n\nexport function CartSummary() {\n  return null;\n}\n").unwrap();
+    std::fs::write(r.join("NOTES.md"), "# Shop\n\nMoney is integer cents.\nPrices include tax.\nCarts expire after a day.\n\n## Checkout\n\nEvery payment carries an idempotency key.\n").unwrap();
+    std::fs::write(r.join("Cargo.toml"), "[package]\nname = \"shop\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n").unwrap();
+    std::fs::write(r.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.214\"\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "shop"]);
+    (d, r)
+}
+
+fn paths(v: &Value) -> Vec<String> {
+    v["hits"].as_array().unwrap().iter().map(|h| h["path"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn code_search_finds_identifiers_both_ways_and_packs_them() {
+    let s = Server::start(&[]);
+    let (_d, r) = shop_repo();
+    let repo = enc(r.to_str().unwrap());
+    let (st, v) = s.get(&format!("/api/search/code?repo={repo}&q=cartTotal"));
+    assert_eq!(st, 200, "{v}");
+    let p = paths(&v);
+    assert!(p.contains(&"src/cart.rs".to_string()) && p.contains(&"web/useCart.ts".to_string()), "camelCase finds snake_case: {v}");
+    let h = v["hits"].as_array().unwrap().iter().find(|h| h["path"] == "src/cart.rs").unwrap();
+    assert_eq!(h["symbol"], "cart_total", "{h}");
+    assert_eq!(h["kind"], "fn");
+    assert_eq!(h["start_line"], 1, "a short head joins the first definition: {h}");
+    assert_eq!(h["end_line"], 6);
+    assert!(h["text"].as_str().unwrap().contains("/// Sums the cart's lines"), "{h}");
+    assert_eq!(v["index"]["state"], "ready", "{v}");
+    assert!(v["index"]["files"].as_i64().unwrap() >= 5, "{v}");
+
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=cart_total"));
+    assert!(paths(&v).contains(&"web/useCart.ts".to_string()), "snake_case finds camelCase: {v}");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=idempotency"));
+    assert_eq!(paths(&v), ["NOTES.md"], "{v}");
+    assert_eq!(v["hits"][0]["symbol"], "Checkout");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=zebra"));
+    assert_eq!(v["hits"], json!([]), "{v}");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=cartTotal&lang=typescript"));
+    assert!(paths(&v).iter().all(|p| p == "web/useCart.ts"), "{v}");
+    assert_eq!(v["hits"][0]["symbol"], "cartTotal", "{v}");
+
+    // PACK: one text in the budget, each chunk under its path and lines.
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=cart%20total&tokens=200"));
+    let pack = &v["pack"];
+    assert!(pack["used"].as_i64().unwrap() > 0 && pack["used"].as_i64().unwrap() <= 200, "{pack}");
+    assert_eq!(pack["budget"], 200);
+    let text = pack["text"].as_str().unwrap();
+    assert!(text.contains("// src/cart.rs:1-6 fn cart_total") || text.contains("// web/useCart.ts:"), "{text}");
+    assert!(pack["rows"].as_array().unwrap().iter().all(|r| r["decision"].is_string()), "{pack}");
+
+    // The index, and a full pass that sees a new file and a removed one.
+    let (_, v) = s.get(&format!("/api/search/index?repo={repo}"));
+    assert!(v["index"]["langs"].as_array().unwrap().iter().any(|l| l["lang"] == "rust"), "{v}");
+    std::fs::write(r.join("src/shipping.rs"), "pub fn shipping_fee(weight_grams: i64) -> i64 {\n    weight_grams / 10\n}\n").unwrap();
+    let (st, v) = s.post("/api/search/reindex", json!({ "repo": r }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["changed"], 1, "{v}");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=shippingFee"));
+    assert_eq!(paths(&v), ["src/shipping.rs"], "{v}");
+    std::fs::remove_file(r.join("src/shipping.rs")).unwrap();
+    let (_, v) = s.post("/api/search/reindex", json!({ "repo": r }));
+    assert_eq!(v["removed"], 1, "{v}");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=shippingFee"));
+    assert_eq!(v["hits"], json!([]), "{v}");
+    let (st, _) = s.get("/api/search/code?repo=relative/path&q=x");
+    assert_eq!(st, 400);
+}
+
+#[test]
+fn an_agents_edit_is_reindexed_in_its_worktree() {
+    let s = Server::start(&[]);
+    let (_d, r) = shop_repo();
+    let repo = enc(r.to_str().unwrap());
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=coupon"));
+    assert_eq!(v["hits"], json!([]), "{v}");
+    let a = s.spawn(json!({ "repo": r, "name": "cart", "task": "WRITE src/cart.rs pub fn apply_coupon_code() {}" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    // As the agent sees it: its worktree's version of the file.
+    let v = s.get_until(&format!("/api/search/code?repo={repo}&q=applyCouponCode&agent={id}"), "the edit is indexed", |v| !v["hits"].as_array().unwrap().is_empty());
+    let h = &v["hits"][0];
+    assert_eq!(h["path"], "src/cart.rs", "{v}");
+    assert_eq!(h["tree"], json!(id));
+    assert_eq!(h["edited_by"]["id"], json!(id));
+    assert_eq!(v["agent"]["id"], json!(id));
+    // The main checkout has no such line; its hit says who changed the file.
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=applyCouponCode"));
+    assert_eq!(v["hits"], json!([]), "{v}");
+    let (_, v) = s.get(&format!("/api/search/code?repo={repo}&q=cart_total"));
+    let h = v["hits"].as_array().unwrap().iter().find(|h| h["path"] == "src/cart.rs").unwrap();
+    assert_eq!(h["tree"], "main");
+    assert_eq!(h["overlaid_by"][0]["id"], json!(id), "{h}");
+    let (_, v) = s.get(&format!("/api/search/index?repo={repo}"));
+    assert!(v["recent"].as_array().unwrap().iter().any(|x| x["why"] == "edit" && x["path"] == "src/cart.rs" && x["agent"]["id"] == json!(id)), "{v}");
+    assert_eq!(v["index"]["overlays"][0]["agent"]["id"], json!(id), "{v}");
+    assert_eq!(v["index"]["overlays"][0]["files"], json!(["src/cart.rs"]));
+}
+
+/// A doc site on loopback: a first page linking to pages in its folder,
+/// one robots.txt disallows, one in another folder, and one elsewhere.
+fn tiny_docs() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::sync::{Arc, Mutex};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut c) = conn else { continue };
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                seen.lock().unwrap().push(path.clone());
+                let (status, ctype, body) = match path.as_str() {
+                    "/robots.txt" => ("200 OK", "text/plain", "User-agent: *\nDisallow: /docs/private/\n".to_string()),
+                    "/docs/" | "/docs/index.html" => ("200 OK", "text/html", "<html><head><title>Shop SDK</title></head><body><nav><a href=\"intro.html\">Intro</a> <a href=\"/docs/payments.html#top\">Payments</a> <a href=\"private/keys.html\">Keys</a> <a href=\"/blog/news.html\">News</a> <a href=\"https://example.com/x\">x</a> <a href=\"logo.png\">logo</a></nav><main><h1>Shop SDK</h1><p>Start here.</p></main></body></html>".to_string()),
+                    "/docs/intro.html" => ("200 OK", "text/html; charset=utf-8", "<html><head><title>Intro &ndash; Shop SDK</title></head><body><main><h1>Intro</h1><p>Install the SDK and create a client.</p></main></body></html>".to_string()),
+                    "/docs/payments.html" => ("200 OK", "text/html", "<html><head><title>PaymentIntent</title></head><body><main><h1>PaymentIntent</h1><p>Update a PaymentIntent's amount before it is confirmed. The amount is in the smallest currency unit, such as cents.</p></main></body></html>".to_string()),
+                    _ => ("404 Not Found", "text/plain", "no".to_string()),
+                };
+                let _ = write!(c, "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            });
+        }
+    });
+    (port, seen)
+}
+
+fn have_curl() -> bool {
+    Command::new("curl").arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn libraries_come_from_manifests_and_a_crawl_is_searched_and_cited() {
+    let s = Server::start(&[]);
+    let (_d, r) = shop_repo();
+    let repo = enc(r.to_str().unwrap());
+    let (st, v) = s.get(&format!("/api/library?repo={repo}"));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["manifests"], json!(["Cargo.toml"]), "{v}");
+    let serde = v["libraries"].as_array().unwrap().iter().find(|l| l["id"] == "crates-serde").unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(serde["version"], "1.0.214", "the lock's version: {serde}");
+    assert_eq!(serde["url"], "https://docs.rs/serde/1.0.214/");
+    assert_eq!(serde["state"], "none");
+    assert_eq!(serde["manifest"], "Cargo.toml");
+    let (_, v) = s.get(&format!("/api/search/docs?repo={repo}&q=amount"));
+    assert_eq!(v["hits"], json!([]));
+    assert!(v["missing"][0].as_str().unwrap().contains("No docs are crawled"), "{v}");
+    if !have_curl() {
+        assert_eq!(s.get(&format!("/api/library?repo={repo}")).1["crawler"]["available"], false);
+        eprintln!("curl is not on PATH: the crawl is not tested");
+        return;
+    }
+    assert_eq!(s.get(&format!("/api/library?repo={repo}")).1["crawler"]["available"], true);
+
+    let (port, seen) = tiny_docs();
+    let site = format!("http://127.0.0.1:{port}/docs/index.html");
+    let (st, v) = s.post("/api/library/crawl", json!({ "repo": r, "url": site }));
+    assert_eq!(st, 202, "{v}");
+    let lib = v["library"]["id"].as_str().unwrap().to_string();
+    assert!(lib.starts_with("site-127.0.0.1"), "{lib}");
+    let v = s.get_until(&format!("/api/library?repo={repo}"), "the crawl is done", |v| v["libraries"].as_array().unwrap().iter().any(|l| l["id"] == json!(lib) && (l["state"] == "done" || l["state"] == "failed")));
+    let l = v["libraries"].as_array().unwrap().iter().find(|l| l["id"] == json!(lib)).unwrap();
+    assert_eq!(l["state"], "done", "{l}");
+    assert_eq!(l["pages"], 3, "the first page, intro and payments: {l}");
+    assert_eq!(l["ecosystem"], "site");
+    let fetched = seen.lock().unwrap().clone();
+    assert!(fetched.contains(&"/robots.txt".to_string()), "{fetched:?}");
+    assert!(!fetched.iter().any(|p| p.starts_with("/docs/private") || p.starts_with("/blog") || p.ends_with(".png")), "robots.txt and the folder bound the crawl: {fetched:?}");
+    let (_, pv) = s.get(&format!("/api/library/{lib}/pages?repo={repo}"));
+    let mut urls: Vec<String> = pv["pages"].as_array().unwrap().iter().map(|p| p["url"].as_str().unwrap().to_string()).collect();
+    urls.sort();
+    let base = format!("http://127.0.0.1:{port}/docs/");
+    assert_eq!(urls, [format!("{base}index.html"), format!("{base}intro.html"), format!("{base}payments.html")], "{pv}");
+    assert!(pv["pages"].as_array().unwrap().iter().any(|p| p["title"] == "Intro – Shop SDK"), "{pv}");
+
+    // An agent's search_docs answers URLs to cite, and the citation is kept.
+    let lead = s.spawn(json!({ "repo": r, "name": "lead", "worktree": false }));
+    let lid = lead["id"].as_str().unwrap().to_string();
+    let mut m = Mcp::start(&s, &lid);
+    let (text, err) = m.tool("search_docs", json!({ "query": "PaymentIntent amount" }));
+    assert!(!err, "{text}");
+    assert!(text.contains(&format!("<{base}payments.html>")) && text.contains("Cite the URLs"), "{text}");
+    let (text, err) = m.tool("search_docs", json!({ "query": "amount currency", "tokens": 200 }));
+    assert!(!err, "{text}");
+    assert!(text.starts_with("PACK 200 TOKENS") && text.contains("smallest currency unit"), "{text}");
+    let (text, err) = m.tool("search_code", json!({ "query": "cartTotal" }));
+    assert!(!err, "{text}");
+    assert!(text.contains("src/cart.rs:1-6 fn cart_total") && text.contains("web/useCart.ts:"), "{text}");
+    let (text, _) = m.tool("search_code", json!({ "query": "round discount", "tokens": 150 }));
+    assert!(text.starts_with("PACK 150 TOKENS") && text.contains("// src/cart.rs:"), "{text}");
+
+    let (_, v) = s.get(&format!("/api/library?repo={repo}"));
+    let c = &v["citations"];
+    assert!(c.as_array().unwrap().iter().any(|c| c["agent"]["id"] == json!(lid) && c["url"] == json!(format!("{base}payments.html")) && c["q"] == "PaymentIntent amount"), "{v}");
+    let l = v["libraries"].as_array().unwrap().iter().find(|l| l["id"] == json!(lib)).unwrap();
+    assert!(l["cited"].as_i64().unwrap() >= 1 && l["cited_by"][0]["id"] == json!(lid), "{l}");
+    let (_, pv) = s.get(&format!("/api/library/{lib}/pages?repo={repo}"));
+    assert_eq!(pv["pages"][0]["url"], json!(format!("{base}payments.html")), "the cited page first: {pv}");
+    assert_eq!(pv["pages"][0]["cited_by"][0]["agent"]["id"], json!(lid));
+    let (_, v) = s.get(&format!("/api/search/index?repo={repo}"));
+    let kinds: Vec<&str> = v["searches"].as_array().unwrap().iter().map(|x| x["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"code") && kinds.contains(&"docs"), "{v}");
+    assert!(v["searches"].as_array().unwrap().iter().all(|x| x["agent"]["id"] == json!(lid)));
+
+    // The quick search: code, docs and (without ChloeCtx) no decisions.
+    let (st, v) = s.get(&format!("/api/search/quick?repo={repo}&q=PaymentIntent%20amount"));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["docs"][0]["url"], json!(format!("{base}payments.html")), "{v}");
+    assert_eq!(v["decisions"], json!([]));
+    let (_, v) = s.get(&format!("/api/search/quick?repo={repo}&q=cartTotal"));
+    assert!(!v["code"].as_array().unwrap().is_empty(), "{v}");
+    let (st, _) = s.post("/api/library/crawl", json!({ "repo": r }));
+    assert_eq!(st, 400);
+    let (st, _) = s.post("/api/library/crawl", json!({ "repo": r, "library": "crates-nope" }));
+    assert_eq!(st, 404);
 }
