@@ -3238,7 +3238,8 @@ function intentOf(text) {
   return "";
 }
 
-const ID_RE = /\b((?:[a-z]+\d*-)+[a-z0-9]+(?:--[a-z0-9-]+)?)\b/g;
+// An id: a word that starts with a letter, then parts after dashes (cpe-019-s09-h02-waw, cr1-par--cr1-fra).
+const ID_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+(?:--[a-z0-9-]+)?)\b/g;
 
 /** One answer: its paragraphs, its buttons and the queries it ran. */
 async function answer(app, text, hooks) {
@@ -3249,12 +3250,19 @@ async function answer(app, text, hooks) {
   // The object asked about: one named in the question, or the one picked.
   let id = null;
   for (const m of text.matchAll(ID_RE)) if (/\d/.test(m[1]) || /^(cr|br|ag|fw|sp|lf)\d/.test(m[1])) { id = m[1]; break; }
+  const named = id;
   const t = app.target();
-  if (!id && t && !/\b(network|everywhere|incidents)\b/.test(lower) && !/\bin (the )?[A-Z]/.test(text)) id = t.id;
   const intent = intentOf(text);
   const show = (oid) => h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.open(oid); else { app.pending = { open: oid }; app.go("map", oid); } } }, C.icon("node"), "Show on the map");
   const p = (...kids) => h("p", {}, ...kids);
   const place = app.scope();
+
+  // The shift's own questions, about no object: what fires, and a customer by name.
+  if (/\balerts?\b/.test(lower) && !/\brules?\b/.test(lower)) return alertsAnswer(app, call, queries, named);
+  const who = await customerIn(app, text);
+  const forWho = who ? await customerAnswer(app, call, queries, who) : null;
+  if (forWho) return forWho;
+  if (!id && t && !/\b(network|everywhere|incidents)\b/.test(lower) && !/\bin (the )?[A-Z]/.test(text)) id = t.id;
 
   if (id && intent) {
     let j;
@@ -3306,7 +3314,7 @@ async function answer(app, text, hooks) {
         if (cause && cause.id !== n.id) steps.push(`Work on ${cause.id}, not on ${n.id}: it is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up and is ${cause.state}.`);
         if (j.suspect) steps.push(`Check the change ${j.suspect.minutes_before} min before it began (${j.suspect.ticket || j.suspect.text}) and roll it back if it touched ${j.suspect.node}.`);
         const ended = (j.before?.ended || [])[0];
-        if (ended) steps.push(`Faults like this on ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s most often were ${ended.cause} and cleared in ${mins(ended.minutes)} on average (${C.fmt.n(ended.n)} times).`);
+        if (ended) steps.push(`Of the ${C.fmt.n(j.before.matched ?? ended.n)} faults on ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s that read most like this one, ${C.fmt.n(ended.n)} were ${ended.cause} and cleared in ${mins(ended.minutes)} on average.`);
         if (j.incident || cause?.incident) steps.push(`It is part of ${(j.incident || cause.incident).id}: post in its room rather than opening a new one.`);
         else if (j.downstream.not_ok >= 20) steps.push(`${C.fmt.n(j.downstream.not_ok)} objects behind it are not ok: open an incident and tell the customers' account teams.`);
       }
@@ -3320,7 +3328,7 @@ async function answer(app, text, hooks) {
       const body = [];
       if (!b.words) body.push(p(`${n.id} has had no fault to compare in thirty days.`));
       else {
-        body.push(p(`Faults on ${(KIND_NAME[b.kind] || b.kind).toLowerCase()}s that read like “${b.words}”:`));
+        body.push(p(`The ${b.matched != null ? C.fmt.n(b.matched) + " " : ""}faults on ${(KIND_NAME[b.kind] || b.kind).toLowerCase()}s that read most like “${b.words}”, by how they ended:`));
         if ((b.ended || []).length) body.push(h("ul", { class: "no-ag-ul" }, b.ended.slice(0, 5).map((e) => h("li", {}, `${e.cause}: ${C.fmt.n(e.n)} times, cleared in ${mins(e.minutes)} on average, ${mins(e.longest)} at the longest`))));
         if ((b.like || []).length) body.push(p(h("b", {}, "The closest: "), b.like.slice(0, 3).map((e) => `${e.node} ${C.fmt.ago(T(e.ts))} (${e.text})`).join("; "), "."));
       }
@@ -3360,12 +3368,80 @@ async function answer(app, text, hooks) {
   else if (where && !/\bin [A-Z]/.test(asked)) asked += where;
   const j = await call("/v1/map/ask", { body: { q: asked } });
   if (j.refused) return { body: [p(j.hint)], queries };
+  // What changed: the backbone's change calendar as well as the estate's events.
+  const changedIn = /^everything changed in the last (day|week)/.exec(asked);
+  const backbone = changedIn ? await backboneChanges(app, call, changedIn[1] === "week" ? 7 : 1) : null;
   if (!j.understood) return { body: [p(`I did not understand that. ${j.hint || ""}`), p("I can answer, about the object picked: what is wrong and why, what changed before it started, who is affected, what to do, how it went before, what depends on it; or search the network in a sentence.")], queries };
   const body = [p(h("b", {}, `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}`), ` for “${j.asked}”, read as: ${j.read.map((r) => r.text).join(", ")}.`)];
+  if (backbone) body.unshift(...backbone);
   const caveat = askCaveat(h, j);
   if (caveat) body.push(caveat);
   if (j.rows.length) body.push(h("ul", { class: "no-ag-ul" }, j.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.latency_ms ? " · " + fms(r.latency_ms) : ""}`))));
   return { body, acts: [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")], queries, how: "the sentence became one statement" };
+}
+
+/** What fires now, the worst first; about one object when the question names one. */
+async function alertsAnswer(app, call, queries, named) {
+  const { h, C } = app;
+  const j = await call("/v1/alerts?status=firing");
+  const rank = { critical: 0, major: 1, minor: 2 };
+  const all = (j.alerts || []).filter((a) => !named || a.entity === named || (a.entity || "").split("--").includes(named)).sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3) || T(b.started) - T(a.started));
+  const by = {};
+  for (const a of all) by[a.severity] = (by[a.severity] || 0) + 1;
+  const counts = Object.entries(by).sort((a, b) => (rank[a[0]] ?? 3) - (rank[b[0]] ?? 3)).map(([s, n]) => `${n} ${s}`).join(", ");
+  const of = named ? ` on ${named}` : "";
+  const body = [h("p", {}, h("b", {}, all.length ? `${all.length} ${all.length === 1 ? "alert is" : "alerts are"} firing${of}` : `No alert is firing${of}.`), all.length ? `: ${counts}.` : "")];
+  if (all.length) body.push(h("ul", { class: "no-ag-ul" }, all.slice(0, 6).map((a) => h("li", {}, h("b", {}, a.rule_name), ` on ${a.entity} · ${a.severity} · since ${hhmm(T(a.started))}`, a.incident ? h("span", {}, " · ", app.link(a.incident, "incidents", a.incident)) : h("span", { class: "muted" }, " · no incident"), a.acked_by ? h("span", { class: "muted" }, ` · acknowledged by ${a.acked_by}`) : null))));
+  const unowned = all.filter((a) => !a.acked_by && !a.incident).length;
+  if (unowned) body.push(h("p", {}, `${unowned} of them ${unowned === 1 ? "has" : "have"} neither an owner nor an incident.`));
+  return { body, acts: [h("button", { class: "btn xs", onclick: () => app.go("alerts") }, C.icon("alerts"), "Open Alerts")], queries, how: "netops_alerts WHERE status = 'firing'" };
+}
+
+/** A customer the question names: one of the backbone's, by its whole name, or one of the estate's ("Is Northwind Energy affected?"). */
+async function customerIn(app, text) {
+  const lower = text.toLowerCase();
+  try { app.customerList ||= (await app.ctx.api("/v1/customers")).customers || []; } catch { app.customerList = []; }
+  const c = [...app.customerList].sort((a, b) => b.name.length - a.name.length).find((c) => lower.includes(c.name.toLowerCase()));
+  if (c) return { backbone: c };
+  const m = /\b(?:[Cc]ustomer\s+|(?:[Ii]s|[Aa]re|[Ww]as|[Ww]ere|[Hh]ow (?:is|are)|[Ww]hat about)\s+)((?:[A-Z][\w&'.-]*)(?:\s+[A-Z][\w&'.-]*){0,3})(?:'s)?\b/.exec(text);
+  if (!m || /^(The|It|This|That|Anything|Everything|Anyone|Everyone|There|What|Which|Who)\b/.test(m[1])) return null;
+  if (!/^customer\s/i.test(m[0]) && !/\b(affected|hurt|impacted|ok|okay|down|fine|up|having|broken|degraded|trouble|issues?)\b/i.test(text)) return null;
+  return { estate: m[1], said: /^customer\s/i.test(m[0]) };
+}
+
+async function customerAnswer(app, call, queries, who) {
+  const { h, C } = app;
+  if (who.backbone) {
+    const c = who.backbone;
+    const j = await call(`/v1/customers/${encodeURIComponent(c.id)}`);
+    const body = [h("p", {}, h("b", {}, j.headline || `${c.name}: ${j.verdict}`), ` (${c.name} attaches at ${c.device}, ${c.site.toUpperCase()}, ${c.tier}).`)];
+    if ((j.reasons || []).length) body.push(h("ul", { class: "no-ag-ul" }, j.reasons.slice(0, 5).map((r) => h("li", {}, typeof r === "string" ? r : r.text || r.reason || JSON.stringify(r)))));
+    if ((j.incidents || []).length) body.push(h("p", {}, `Incidents that touch it: ${j.incidents.slice(0, 3).map((i) => i.id).join(", ")}.`));
+    return { body, acts: [h("button", { class: "btn xs", onclick: () => app.go("customers", c.id) }, C.icon("user"), `Open ${c.name}`)], queries, how: "the customer's check: its path, its services, alerts, incidents and changes" };
+  }
+  const name = who.estate;
+  const [bad, all] = await Promise.all([call(`/v1/map/ask?q=${encodeURIComponent(`${name} sites that are not ok`)}`), call(`/v1/map/ask?q=${encodeURIComponent(`customer ${name}`)}`)]);
+  // A name the estate does not know is a customer only when the question says so; else it is asked as any other question.
+  if (bad.refused || all.refused || !bad.understood || !all.understood || !bad.plan?.customer) return who.said ? { body: [h("p", {}, bad.hint || all.hint || bad.refused || `I could not find a customer called ${name}.`)], queries } : null;
+  const body = [h("p", {}, h("b", {}, bad.total ? `${name}: ${C.fmt.n(bad.total)} of its ${C.fmt.n(all.total)} sites are not ok now` : `${name} is not affected now`), bad.total ? "." : `: all ${C.fmt.n(all.total)} of its sites are ok.`)];
+  const caveat = askCaveat(h, bad);
+  if (caveat) body.push(caveat);
+  if (bad.rows.length) body.push(h("ul", { class: "no-ag-ul" }, bad.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.reason ? " · " + r.reason : ""}`))));
+  const asked = `${name} sites that are not ok`;
+  return { body, acts: bad.total ? [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")] : [], queries, how: "the customer's sites in the estate, and those not ok" };
+}
+
+/** The backbone's changes carried out in the last days, for "what changed": the estate's are its events. */
+async function backboneChanges(app, call, days) {
+  const { h } = app;
+  let j;
+  try { j = await call("/v1/changes"); } catch { return null; }
+  const since = Date.now() - days * 86400e3;
+  const done = (j.changes || []).filter((c) => c.executed && T(c.executed) >= since && T(c.executed) <= Date.now()).sort((a, b) => T(b.executed) - T(a.executed));
+  const out = [h("p", {}, h("b", {}, done.length ? `On the backbone, ${done.length} ${done.length === 1 ? "change was" : "changes were"} carried out in the last ${days === 1 ? "day" : "week"}` : `No change was carried out on the backbone in the last ${days === 1 ? "day" : "week"}.`), done.length ? ":" : "")];
+  if (done.length) out.push(h("ul", { class: "no-ag-ul" }, done.slice(0, 5).map((c) => h("li", {}, h("a", { class: "no-link", onclick: () => changeDrawer(app, c.id) }, c.id), ` ${c.title} · ${c.status.replace("_", " ")} · ${hhmm(T(c.executed))}`))));
+  out.push(h("p", { class: "muted" }, "In the estate behind it:"));
+  return out;
 }
 
 // ---------------------------------------------------------------- dashboards

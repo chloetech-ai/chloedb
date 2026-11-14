@@ -210,6 +210,9 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     assert!(len(&node["upstream"]) >= 1 && node["upstream"][0]["hop"] == 1, "what it hangs from: {}", node["upstream"]);
     assert!(node["history"].as_array().unwrap().iter().any(|h| h["node"] == fid && h["event"] == "fault" && h["relation"] == "this object"), "its own fault is in its history");
     assert!(node["queries"].as_array().unwrap().iter().any(|q| q["sql"].as_str().unwrap().contains("REACHABLE(netops_estate_edges")), "walked over the edge table");
+    // How such faults ended counts only the faults that read like this one, so its own cause comes first.
+    let own = node["history"].as_array().unwrap().iter().find(|h| h["node"] == fid && h["event"] == "fault").unwrap()["cause"].clone();
+    assert!(node["before"]["matched"].as_i64().unwrap_or(0) > 0 && node["before"]["ended"][0]["cause"] == own, "{fid} ({own}, {:?}) ended like: {}", node["before"]["words"], node["before"]["ended"]);
     if f["layer"] == "access" && f["state"] == "down" {
         // What is behind a dead access node says where its trouble comes from.
         let behind = api.get(&format!("/v1/map/view?x0={}&y0={}&x1={}&y1={}&t=4", x - r, y - r, x + r, y + r)).await;
