@@ -10,6 +10,7 @@
 import * as core from "../core.js";
 import { h, icon, clear, fmt, card, api, every, toast, modal, seg, empty, table, copy, failure, bus, setToken, menu } from "../core.js";
 import { state, refreshWho, isProduction } from "../data.js";
+import { tables as catalogTables } from "../catalog.js";
 
 export default {
   id: "access", title: "Access and audit", icon: "access", group: "Change",
@@ -898,17 +899,37 @@ function render(page, r) {
   function create() {
     if (!can("admin")) { toast(`Creating a key ${needs("admin")}`, "bad"); return; }
     let scope = "read", daysN = 90, preset = "";
-    // A job's key: limited to the tables a prefix names (POST /v1/admin/keys {preset, prefix}).
+    // Which tables: every one (a scope), chosen ones (POST /v1/admin/keys
+    // {tables: {orders: "read"}}), or a job's, a prefix and *
+    // ({preset, prefix}).
+    const CHOSEN = "*tables";
     const presets = state.whoami?.presets || [];
     const prefix = h("input", { class: "input", placeholder: "team_*", style: { width: "100%" }, maxLength: 128 });
     const presetWhat = h("div", { class: "small muted" });
     const presetBox = h("div", { class: "f", style: { display: "none" } }, h("label", { class: "f" }, "Its tables: a prefix and *", prefix), presetWhat);
-    const presetSeg = presets.length ? seg([["", "any job"], ...presets.map((p) => [p.name, p.name])], preset, (v) => {
+    const grants = new Map();
+    const grantList = h("div", { class: "f", style: { maxHeight: "240px", overflowY: "auto", gap: "6px" } }, h("div", { class: "small muted" }, "Reading the tables…"));
+    const pattern = h("input", { class: "input grow", placeholder: "logs_* (optional)", maxLength: 128, "aria-label": "A pattern of tables, a prefix and *" });
+    let patternScope = "read";
+    const patternSeg = seg([["read", "read"], ["write", "write"], ["admin", "admin"]], patternScope, (v) => (patternScope = v), { "aria-label": "What it may do to the tables of the pattern" });
+    const grantRow = (t) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "space-between" } },
+      h("span", { class: "mono" }, t),
+      seg([["", "none"], ["read", "read"], ["write", "write"], ["admin", "admin"]], grants.get(t) || "", (v) => (v ? grants.set(t, v) : grants.delete(t)), { "aria-label": `What it may do to ${t}` }));
+    const tablesBox = h("div", { class: "f", style: { display: "none" } },
+      h("span", { class: "small muted" }, "What it may do to each table. It cannot see the others, nor the server's settings."),
+      grantList,
+      h("div", { class: "row nw", style: { gap: "8px" } }, pattern, patternSeg));
+    catalogTables().then((ts) => {
+      const names = ts.map((t) => t.table).filter((t) => !t.startsWith("_")).sort();
+      clear(grantList, names.length ? names.map(grantRow) : h("div", { class: "small muted" }, "No tables yet: name them with a pattern below."));
+    }, (e) => clear(grantList, h("div", { class: "small muted" }, `The tables could not be read (${e.message}): name them with a pattern below.`)));
+    const presetSeg = seg([["", "every table"], [CHOSEN, "chosen tables"], ...presets.map((p) => [p.name, p.name, p.what])], preset, (v) => {
       preset = v;
-      presetBox.style.display = v ? "" : "none";
+      presetBox.style.display = v && v !== CHOSEN ? "" : "none";
+      tablesBox.style.display = v === CHOSEN ? "" : "none";
       scopeBox.style.display = v ? "none" : "";
-      presetWhat.textContent = v ? `A key limited to tables that ${presets.find((p) => p.name === v)?.what || ""}.` : "";
-    }) : null;
+      presetWhat.textContent = v && v !== CHOSEN ? `A key limited to tables that ${presets.find((p) => p.name === v)?.what || ""}.` : "";
+    }, { "aria-label": "Which tables it reaches" });
     const name = h("input", { class: "input", placeholder: "search-frontend", style: { width: "100%" }, maxLength: 64 });
     const owner = h("input", { class: "input", placeholder: "search-web team, or a person", style: { width: "100%" } });
     const note = h("input", { class: "input", placeholder: "the frontend's servers in eu-west", style: { width: "100%" } });
@@ -925,8 +946,9 @@ function render(page, r) {
           h("label", { class: "f grow" }, "Name: what uses it", name),
           h("label", { class: "f grow" }, "Owner: who answers for it", owner)),
         h("label", { class: "f" }, "Note (optional)", note),
-        presetSeg ? h("div", { class: "f" }, h("span", { class: "small muted" }, "A job's key (limited to its tables), or a key of every table"), presetSeg) : null,
+        h("div", { class: "f" }, h("span", { class: "small muted" }, presets.length ? "Which tables: every one, the ones you choose, or a job's (a prefix and *)" : "Which tables: every one, or the ones you choose"), presetSeg),
         presetBox,
+        tablesBox,
         scopeBox,
         h("div", { class: "f" }, h("span", { class: "small muted" }, "Expires"), exp, h("div", { class: "small muted" }, "A key that expires is rotated on a schedule; one that never expires is flagged when nobody uses it.")),
       ],
@@ -936,8 +958,16 @@ function render(page, r) {
       if (!name.value.trim()) { name.focus(); return; }
       go.disabled = true;
       try {
-        if (preset && !prefix.value.trim()) { go.disabled = false; prefix.focus(); return; }
-        const limits = preset ? { preset, prefix: prefix.value.trim() } : { scope };
+        let limits;
+        if (preset === CHOSEN) {
+          const tables = Object.fromEntries(grants);
+          if (pattern.value.trim()) tables[pattern.value.trim()] = patternScope;
+          if (!Object.keys(tables).length) { go.disabled = false; toast("Choose a table it may read, or name a pattern", "bad"); pattern.focus(); return; }
+          limits = { tables };
+        } else if (preset) {
+          if (!prefix.value.trim()) { go.disabled = false; prefix.focus(); return; }
+          limits = { preset, prefix: prefix.value.trim() };
+        } else limits = { scope };
         const j = await api("/v1/admin/keys", { body: { name: name.value.trim(), ...limits, expires_days: daysN, owner: owner.value.trim() || undefined, note: note.value.trim() || undefined } });
         m.close();
         showSecret(j);

@@ -270,10 +270,20 @@ export function refusedRoute(path) {
   return refusedFor.paths.get(routeOf(path)) || null;
 }
 
+// The server's own views (statements, logs, index sizes, keys) are read by
+// an admin, or an ops or propose key: whoami says so (`may.server_views`).
+// Another key's page does not ask for them, to be refused (and audited) a poll.
+const SERVER_VIEWS = /^\/v1\/(admin\/|queries|logs|profile|index)/;
+function noServerViews(path) {
+  const w = ctx.whoami;
+  if (!w || w.root || w.may?.server_views !== false || !SERVER_VIEWS.test(routeOf(path))) return null;
+  return `${routeOf(path)} is one of the server's views: it needs an admin key (or an ops or propose key), and "${w.name || "this key"}" has ${w.scope}`;
+}
+
 export async function api(path, opts = {}) {
   const get = !opts.method && opts.body === undefined;
-  const held = get && !opts.hub ? refusedRoute(path) : null;
-  if (held) throw new ApiError(403, held, { error: held, limited: true });
+  const held = get && !opts.hub ? refusedRoute(path) || noServerViews(path) : null;
+  if (held) throw new ApiError(403, held, { error: held, limited: !!ctx.whoami?.tables, local: true });
   const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
@@ -326,10 +336,11 @@ export async function api(path, opts = {}) {
   }
   answered();
   if (r.status === 401) bus.emit("unauthorized", path);
-  if (r.status === 403 && get && typeof j?.error === "string" && j.error.includes("not for a key limited to tables")) {
+  // A route this key's scope or its tables do not reach is not asked again for it.
+  if (r.status === 403 && get && !opts.hub && typeof j?.error === "string" && (j.error.includes("not for a key limited to tables") || j.error_code === "scope_refused")) {
     if (refusedFor.token !== token) { refusedFor.token = token; refusedFor.paths = new Map(); }
     refusedFor.paths.set(routeOf(path), j.error);
-    j.limited = true;
+    j.limited = !!ctx.whoami?.tables || j.error.includes("not for a key limited to tables");
   }
   if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;

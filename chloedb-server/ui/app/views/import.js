@@ -374,6 +374,8 @@ function render(page) {
     // How big the tables are now, where the server lists their sizes.
     const sizeNote = h("div", { class: "small muted" });
     async function estimate() {
+      // The sizes are an admin's to read: another key's estimate is left out.
+      if (!can("admin")) { clear(sizeNote); return; }
       try {
         const j = await api("/v1/index/tables");
         const list = (Array.isArray(j) ? j : j.tables || []).filter((t) => pick.has(t.table));
