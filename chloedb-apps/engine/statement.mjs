@@ -40,6 +40,8 @@ const MORE = {
     clauses: { NAME: ['name', 'name'], TEXT: ['text', 'name'], PRICE: ['price', 'name'], IMAGE: ['image', 'name'], LEFT: ['left', 'name'], DATE: ['date', 'name'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], SOON: ['soon', 'num'], OUT: ['out', 'str'], ACTION: ['action', 'str'], OPEN: ['open', 'slug'], CALL: ['call', 'slug'], DONE: ['done', 'str'], LOOK: ['look', 'word'], TITLE: ['title', 'str'], EYEBROW: ['eyebrow', 'str'], ID: ['id', 'slug'] } },
   LESSONS: { use: 'lessons', need: { progress: 'PROGRESS <table of lessons done>' },
     clauses: { PROGRESS: ['progress', 'name'], LESSON: ['lesson', 'name'], NAME: ['name', 'name'], TEXT: ['text', 'name'], MINUTES: ['minutes', 'name'], 'ORDER BY': ['order', 'sql'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], OPEN: ['open', 'slug'], CERTIFICATE: ['certificate', 'slug'], NOUN: ['noun', 'str'], TITLE: ['title', 'str'], ID: ['id', 'slug'] } },
+  VARIANCE: { use: 'variance', need: { period: 'PERIOD <column or SQL naming each period>', value: 'VALUE <column, or an aggregate with GROUP BY>' },
+    clauses: { PERIOD: ['period', 'sql'], VALUE: ['value', 'sql'], 'GROUP BY': ['group', 'sql'], 'ORDER BY': ['order', 'sql'], LABEL: ['label', 'str'], NAME: ['periodLabel', 'str'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LAST: ['last', 'num'], FILE: ['file', 'str'], TITLE: ['title', 'str'] } },
   TREND: { use: 'trend',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
@@ -251,7 +253,7 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -622,6 +624,8 @@ DASHBOARD <table> [AS key]     -- a value over the last N days against the N bef
   DATE <timestamp col> | DAY <'YYYY-MM-DD' col>  VALUE SUM(col)  LABEL 'Hours'  FORMAT number | money | hours  DAYS 30  BY <group col>  RECENT (columns)  WHERE  TITLE
 TREND <table> [AS key]         -- a value per day, week or month over the last periods, as bars (LINE for a line), with the total and the average
   DATE <timestamp or 'YYYY-MM-DD' col>  VALUE SUM(col)  PER day | week | month  LAST 12  LABEL 'Distance (km)'  FORMAT number | money | hours  WHERE  LINE  TITLE
+VARIANCE <table> [AS key]      -- a value compared period by period (revenue month over month, costs quarter over quarter): a row per period in time order with the value, its change and its change in percent (signed, coloured, with bars), the biggest increase and decrease as big numbers, and a CSV download; any request to compare periods (variance, month over month, growth) is this part
+  PERIOD <col or SQL>  VALUE <col> | SUM(col) GROUP BY <same as PERIOD>  ORDER BY <oldest first: a date sorts as it is, a month name needs CASE month WHEN 'Jan' THEN 1 ... END>  LABEL 'Revenue'  NAME 'Month'  FORMAT number | money  LAST 24  WHERE  FILE 'revenue-variance.csv'  TITLE
 OFFERS <table> [AS key]        -- what people order or book while some are left (products with stock, workshops with seats, races with places): a card per row with its photo, date and price, 'Only 2 left' when few remain, the OUT word and no action when none; the action opens the view that finishes the order or booking, or calls a rule that checks and lowers the count in one step (its REQUIRE refuses the last one twice). A shop's shelf, a menu with prices, the upcoming races or classes are this part, never a LIST with a form a visitor could edit, and on a front page it comes right after the hero, where visitors see it first
   LEFT <count col>  NAME <col>  TEXT <col>  PRICE <col>  IMAGE <col>  DATE <col>  WHERE day >= :today  ORDER BY day  SOON 3  OUT 'Full'  ACTION 'Book a seat'  OPEN <view slug, gets {id}> | CALL <function slug, gets {id}>  DONE 'Booked'  LOOK cards | slides  TITLE  EYEBROW  ID <anchor for a nav link>
   An app asked to sell or take bookings always takes them: never tell visitors that checkout is off or that they can only browse. With no payment service connected, the order is a row (its rule REQUIREs the count and lowers it), confirmed on screen, and the confirmation says how payment happens (on pickup, at the door, or a payment link column the owner fills)
@@ -649,7 +653,7 @@ LIST guests
 SUMMARY guests AS meals
   TITLE 'Meals'  GROUP BY meal  WHERE rsvp = 'yes'
 
-Say what you can with the parts and their words, and keep JavaScript for what they cannot say: a thing done each day is CHECKS (never a grid of days in BLOCKS or code), a total is a KPI (with FROM over another table), a value per week is a TREND, an amount reads with MONEY and a day with DATE or DAYS, a computed column is col 'Label' MONEY = row.a - row.b, and arithmetic over rows is SQL (the SQL functions, a QUERY with joins) rather than app.fmt, lib calls or reduce() in LET and BLOCKS.
+Say what you can with the parts and their words, and keep JavaScript for what they cannot say: a thing done each day is CHECKS (never a grid of days in BLOCKS or code), a total is a KPI (with FROM over another table), a value per week is a TREND, periods compared with their change and change in percent are a VARIANCE, an amount reads with MONEY and a day with DATE or DAYS, a computed column is col 'Label' MONEY = row.a - row.b, and arithmetic over rows is SQL (the SQL functions, a QUERY with joins) rather than app.fmt, lib calls or reduce() in LET and BLOCKS.
 
 A screen that is mostly custom (a game, a chart of its own) may be a CREATE SCREEN with a BLOCKS part, or a JSON "screen" in the plan as described above.
 

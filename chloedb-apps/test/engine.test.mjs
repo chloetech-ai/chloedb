@@ -3221,3 +3221,34 @@ test('each app reads and writes with a key of its own, held to its tables by the
     child.kill();
   }
 });
+
+test('VARIANCE: periods compared, with the change, the change in percent and the biggest moves', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const expandScreen = expandWith;
+  const w = compileStatement(`CREATE SCREEN revenue TITLE 'Revenue'
+VARIANCE monthly_sales AS rev
+  PERIOD month  VALUE revenue  ORDER BY CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END
+  LABEL 'Revenue'  NAME 'Month'  FORMAT money  FILE 'revenue.csv'`);
+  assert.deepEqual(w.screen.body[0], { use: 'variance', table: 'monthly_sales', key: 'rev', period: 'month', value: 'revenue', order: "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END", label: 'Revenue', periodLabel: 'Month', format: 'money', file: 'revenue.csv' });
+  const we = expandScreen(w.screen);
+  assert.deepEqual(we.problems, []);
+  assert.equal(we.screen.data.rev, "SELECT month AS p, revenue AS v, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM monthly_sales LIMIT 500");
+  assert.deepEqual(checkScreen(we.screen, (t) => ({ monthly_sales: new Set(['id', 'created', 'month', 'revenue']) })[t] || null), []);
+  const table = JSON.stringify(we.screen.body);
+  assert.match(table, /"Change %"/);
+  assert.match(table, /Biggest increase/);
+  assert.match(table, /Biggest decrease/);
+  // The lets work out the moves: a period's change, in money and in percent.
+  const lets = we.screen.let;
+  const rows = [{ p: 'Mar', v: 120, o: 3 }, { p: 'Jan', v: 100, o: 1 }, { p: 'Feb', v: 150, o: 2 }];
+  const rowsOf = new Function('rev', `return ${lets.rev_rows.slice(1)}`)(rows);
+  assert.deepEqual(rowsOf.map((r) => [r.period, r.change, r.pct, r.prior]), [['Jan', null, null, ''], ['Feb', 50, 50, 'Jan'], ['Mar', -30, -20, 'Feb']]);
+  // Rows added up per period: GROUP BY, and months by their dates.
+  const g = expandScreen(compileStatement(`CREATE SCREEN c
+VARIANCE costs
+  PERIOD date_trunc('month', day)  VALUE SUM(amount)  GROUP BY date_trunc('month', day)`).screen);
+  assert.deepEqual(g.problems, []);
+  assert.match(g.screen.data.costs_var, /AS o FROM costs GROUP BY date_trunc\('month', day\) LIMIT 500$/);
+  const months = new Function('costs_var', `return ${g.screen.let.costs_var_rows.slice(1)}`)([{ p: '2026-10-01', v: 5, o: '2026-10-01' }, { p: '2026-09-01', v: 10, o: '2026-09-01' }]);
+  assert.match(months[0].period, /Sep/);
+});

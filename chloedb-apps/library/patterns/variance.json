@@ -1,0 +1,140 @@
+{
+ "title": "A value compared period by period: the change and the change in percent, and the biggest moves",
+ "about": "Revenue month over month, costs quarter over quarter, members week over week: one row per period in order, each with its value, its change from the period before and that change in percent (signed, coloured, with bars), the biggest gain and the biggest drop as big numbers, and the table as a CSV to download. Rows that are one per period already (a month column): give PERIOD and ORDER BY. Rows to add up per period: PERIOD date_trunc('month', day), VALUE SUM(amount), GROUP BY date_trunc('month', day).",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_var"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "period": {
+   "about": "the column (or SQL expression) naming each period: a month name, 'YYYY-MM', a date",
+   "need": true
+  },
+  "value": {
+   "about": "the value per period: a column, or an aggregate such as SUM(amount) with group",
+   "need": true
+  },
+  "group": {
+   "about": "the SQL to group rows by, when the value adds rows up (usually the same as period)"
+  },
+  "order": {
+   "about": "the SQL that puts the periods in time order, oldest first (a month name needs a CASE; a date or 'YYYY-MM' sorts as it is)",
+   "default": "{{period}}"
+  },
+  "label": {
+   "about": "what the value is",
+   "default": "Value"
+  },
+  "periodLabel": {
+   "about": "what a period is called, for the first column",
+   "default": "Period"
+  },
+  "format": {
+   "about": "how values read: number or money",
+   "default": "number"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "last": {
+   "about": "the most periods shown",
+   "default": 24
+  },
+  "file": {
+   "about": "the name of the CSV download",
+   "default": "{{key}}.csv"
+  }
+ },
+ "example": {
+  "use": "variance",
+  "table": "monthly_sales",
+  "title": "Revenue, month over month",
+  "period": "month",
+  "value": "revenue",
+  "order": "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 WHEN 'Mar' THEN 3 WHEN 'Apr' THEN 4 WHEN 'May' THEN 5 WHEN 'Jun' THEN 6 WHEN 'Jul' THEN 7 WHEN 'Aug' THEN 8 WHEN 'Sep' THEN 9 WHEN 'Oct' THEN 10 WHEN 'Nov' THEN 11 ELSE 12 END",
+  "label": "Revenue",
+  "periodLabel": "Month",
+  "format": "money"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": "SELECT {{period}} AS p, {{value}} AS v, {{order}} AS o FROM {{table}}{{where|pre: WHERE }}{{group|pre: GROUP BY }} LIMIT 500"
+  },
+  "let": {
+   "{{key}}_rows": "=(() => { const day = (p) => /^\\d{4}-\\d{2}(-\\d{2})?/.test(String(p ?? '')); const firsts = {{key}}.every(r => !day(r.p) || /^\\d{4}-\\d{2}(-01)?(\\b|T|$)/.test(String(r.p))); const name = (p) => p == null || p === '' ? '—' : day(p) ? new Date(String(p).slice(0, 7) + (firsts ? '-01' : String(p).slice(7, 10)) + 'T00:00:00Z').toLocaleDateString(undefined, firsts ? { month: 'short', year: 'numeric', timeZone: 'UTC' } : { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : String(p); const key = (r) => typeof r.o === 'number' ? r.o : Number.isFinite(Number(r.o)) && String(r.o).trim() !== '' ? Number(r.o) : String(r.o ?? ''); const sorted = {{key}}.slice().sort((a, b) => { const x = key(a), y = key(b); return x < y ? -1 : x > y ? 1 : 0; }).slice(-Number({{last|json}}) || -24); return sorted.map((r, i, all) => { const v = Number(r.v) || 0; const prev = i ? Number(all[i - 1].v) || 0 : null; return { period: name(r.p), prior: i ? name(all[i - 1].p) : '', value: v, change: prev === null ? null : v - prev, pct: prev ? Math.round((v - prev) / Math.abs(prev) * 1000) / 10 : null }; }); })()",
+   "{{key}}_moved": "={{key}}_rows.filter(r => r.change !== null)",
+   "{{key}}_up": "={{key}}_moved.filter(r => r.change > 0).sort((a, b) => b.change - a.change)[0] || null",
+   "{{key}}_down": "={{key}}_moved.filter(r => r.change < 0).sort((a, b) => a.change - b.change)[0] || null",
+   "{{key}}_latest": "={{key}}_rows[{{key}}_rows.length - 1] || null",
+   "{{key}}_fmt": "=v => {{format|json}} === 'money' ? String(app.fmt.money(v)).replace(/\\.00(?=\\D*$)/, '') : app.fmt.number(Math.round(v * 100) / 100)",
+   "{{key}}_signed": "=v => v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + {{key}}_fmt(Math.abs(v))",
+   "{{key}}_pct": "=v => v == null ? '' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + '%'"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "={{key}}_latest ? {{label|json}} + ', ' + {{key}}_latest.period : {{label|json}}",
+      "value": "={{key}}_latest ? {{key}}_fmt({{key}}_latest.value) : '—'",
+      "hint": "={{key}}_latest && {{key}}_latest.change !== null ? {{key}}_signed({{key}}_latest.change) + ' (' + {{key}}_pct({{key}}_latest.pct) + ') vs ' + {{key}}_latest.prior : ''"
+     },
+     {
+      "label": "={{key}}_up ? 'Biggest increase, ' + {{key}}_up.period : 'Biggest increase'",
+      "value": "={{key}}_up ? {{key}}_signed({{key}}_up.change) : '—'",
+      "hint": "={{key}}_up ? {{key}}_pct({{key}}_up.pct) + ' vs ' + {{key}}_up.prior : 'No period went up'"
+     },
+     {
+      "label": "={{key}}_down ? 'Biggest decrease, ' + {{key}}_down.period : 'Biggest decrease'",
+      "value": "={{key}}_down ? {{key}}_signed({{key}}_down.change) : '—'",
+      "hint": "={{key}}_down ? {{key}}_pct({{key}}_down.pct) + ' vs ' + {{key}}_down.prior : 'No period went down'"
+     }
+    ]
+   },
+   {
+    "card": [
+     {
+      "table": "={{key}}_rows",
+      "columns": [
+       {
+        "key": "period",
+        "label": "{{periodLabel}}"
+       },
+       {
+        "key": "value",
+        "label": "{{label}}",
+        "format": "{{format}}"
+       },
+       {
+        "key": "change",
+        "label": "Change",
+        "format": "{{format}}"
+       },
+       {
+        "key": "pct",
+        "label": "Change %",
+        "format": "pct"
+       }
+      ],
+      "empty": "Nothing to compare yet."
+     },
+     {
+      "button": "Download CSV",
+      "class": "ghost",
+      "do": "=() => app.download({{file|json}}, app.csv({{key}}_rows, [{key: 'period', label: {{periodLabel|json}}}, {key: 'value', label: {{label|json}}}, {key: 'change', label: 'Change'}, {key: 'pct', label: 'Change %'}]))"
+     }
+    ]
+   }
+  ]
+ }
+}

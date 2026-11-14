@@ -28,7 +28,7 @@ window.__sa_numbers = (() => {
     return neg ? -n : n;
   };
   const NOT_FIGURE = /(^id$|_id$|\byear\b|phone|zip|postcode|sku|\bcode\b|^no$|#|invoice number|order number)/i;
-  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget)/i;
+  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget|increase|decrease|\brise\b|\bdrop\b)/i;
   // Amounts that add up down a column; rates, prices and averages do not.
   const ADDS = /(revenue|sales|cost|amount|total|spend|spent|expense|paid|owed|owing|due|invoiced|billed|balance|outstanding|income|profit|hours|fee|budget|actual|current|\d+\s*[-–]\s*\d+|over \d+|overdue|receivable|payable|tax|net|gross|value|subtotal|refund|collected|earned)/i;
   const NOT_ADDS = /(price|rate|avg|average|mean|median|percent|pct|%|margin|ratio|score|rating|\bage\b|share|per |each|unit cost|unit price|days|min|max)/i;
@@ -105,7 +105,7 @@ window.__sa_numbers = (() => {
     if (m && MONTHS.includes(m[1].toLowerCase()) && (!m[2] || full.includes(x.toLowerCase().replace('.', '')))) return { mon: m[1].toLowerCase(), year: '' };
     return null;
   }
-  return { parseNum, kinds, tone, barColumn, totals, short, monthOf };
+  return { parseNum, kinds, tone, barColumn, totals, short, monthOf, CHANGE };
 })();
 
 (() => {
@@ -757,8 +757,10 @@ window.__sa_numbers = (() => {
       const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
       const sub = cols.map((c, i) => {
         if (i === R.tick || i === R.badge || i === R.title || i === R.fig) return null;
-        const t = text(i).trim();
+        let t = text(i).trim();
         if (!t) return null;
+        // a change says its sign, as the table's column does ("+$5,400")
+        if (R.numeric[i] && NUM.CHANGE.test(`${c.key || ''} ${heads[i] || ''}`) && (NUM.parseNum(R.raw(c, i, r)) || 0) > 0 && !/^\+/.test(t)) t = `+${t}`;
         return R.numeric[i] || c.format ? `${heads[i]} ${t}` : t;
       }).filter(Boolean).slice(0, phone.matches ? 2 : 4);
       return { text, state, tone, sub };
@@ -860,7 +862,8 @@ window.__sa_numbers = (() => {
           const open = onRow ? () => run(onRow, [r], `${path}.onRow`) : tap;
           const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
           const day = needs ? null : dayOf(name);
-          const month = needs || day ? null : NUM.monthOf(name);
+          // a row named by its month alone ("Jan") is not shown its month again as a leaf
+          const month = needs || day || /^\p{L}{3,9}\.?$/u.test(name.trim()) ? null : NUM.monthOf(name);
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
             : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, month.year ? h('small', null, `’${month.year.slice(2)}`) : null, h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
