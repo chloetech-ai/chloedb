@@ -78,6 +78,12 @@
   },
   "paid": {
    "about": "with pay: that row's status column, set to paid when it is paid"
+  },
+  "qty": {
+   "about": "true: beside the action a quantity, 1 up to what is left; the call gets {id, qty} (its rule REQUIREs left >= :qty and lowers the count by :qty), the opened view {id, qty}"
+  },
+  "count": {
+   "about": "true: every card says how many are left, not only when few"
   }
  },
  "example": {
@@ -107,8 +113,8 @@
   },
   "let": {
    "{{key}}_left": "=row => Math.max(0, Number(row.{{left}}) || 0)",
-   "{{key}}_badge": "=row => {{key}}_left(row) === 0 ? {{out|json}} : {{key}}_left(row) <= {{soon}} ? 'Only ' + {{key}}_left(row) + ' left' : null",
-   "{{key}}_act": "=item => ({{open|json}} ? {label: {{action|json}}, open: {{open|json}}, params: {id: item.id}} : {label: {{action|json}}, do: async () => { const made = await app.call({{call|json}}, {id: item.id}); if ({{pay|json}} && made) { const id = typeof made === 'object' ? made.id : made; const p = await app.pay({table: {{pay|json}}, id, amount: {{charge|json}}, status: {{paid|json}} || undefined}); app.payNow(p, {{done|json}}); } else app.toast({{done|json}}); }})"
+   "{{key}}_badge": "=row => {{key}}_left(row) === 0 ? {{out|json}} : {{key}}_left(row) <= {{soon}} ? 'Only ' + {{key}}_left(row) + ' left' : {{count|json}} ? {{key}}_left(row) + ' left' : null",
+   "{{key}}_act": "=item => ({{open|json}} ? {label: {{action|json}}, open: {{open|json}}, params: {{qty|json}} ? {id: item.id, qty: 1} : {id: item.id}} : {label: {{action|json}}, do: async (n) => { const qty = Math.max(1, Math.min(Math.floor(Number(n) || 1), {{key}}_left(item))); const made = await app.call({{call|json}}, {{qty|json}} ? {id: item.id, qty} : {id: item.id}); if ({{pay|json}} && made) { const id = typeof made === 'object' ? made.id : made; const p = await app.pay({table: {{pay|json}}, id, amount: {{charge|json}}, status: {{paid|json}} || undefined}); app.payNow(p, {{done|json}}); } else app.toast({{done|json}}); }})"
   },
   "body": [
    {
@@ -140,6 +146,10 @@
       "$value": "={{key}}_left(item) === 0 ? null : {{key}}_act(item)"
      },
      "state": "={{key}}_left(item) === 0 ? 'out' : null",
+     "qty": {
+      "$when": "qty",
+      "$value": "={{key}}_left(item)"
+     },
      "date": {
       "$when": "date",
       "$value": "=item.{{date}} || null"

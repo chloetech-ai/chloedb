@@ -1192,11 +1192,12 @@ test('front-page blocks pass the screen checks, their nested blocks checked like
     { hero: 'Hello *there*', photo: 'cafe', actions: [{ label: 'Go', do: '=() => app.toast("hi")' }] },
     { band: [{ h: 'Visit' }, 'Open daily'], look: 'dark' },
     { media: ['Our story'], photo: 'garden', side: 'right' },
-    { carousel: '=rows', item: { title: '=item.name' } },
+    { carousel: '=rows', id: 'menu', item: { title: '=item.name' } },
     { features: [{ icon: 'leaf', title: 'A', text: 'B' }] },
     { footer: 'Brand', text: 'Made here' },
   ] };
   assert.deepEqual(checkScreen(ok), []);
+  assert.match(checkScreen({ page: 'front', body: [{ nav: 'B', links: [{ label: 'Call me', href: '#callback' }] }] }).join(), /links go to #callback, which no part/);
   const bad = { page: 'front', body: [{ band: [{ nope: 1 }] }, { media: [{ h: '=(' }] }, { carousel: '=rows.map(', item: {} }] };
   const p = checkScreen(bad);
   assert.ok(p.some((x) => /body\[0\]\.band\[0\]: unknown block/.test(x)), p.join('\n'));
@@ -3296,7 +3297,7 @@ test('OFFERS PAY: a one-tap booking takes a card payment for the row its rule re
   const w = compileStatement("CREATE SCREEN home TITLE 'Home'\nOFFERS sessions\n  LEFT seats  NAME title  PRICE price  CALL book  PAY bookings  CHARGE amount  PAID status  ACTION 'Book a seat'  DONE 'Booked'");
   const e = expandWith(w.screen);
   assert.deepEqual(e.problems, []);
-  assert.match(e.screen.let.sessions_act, /app\.call\("book", \{id: item\.id\}\)/);
+  assert.match(e.screen.let.sessions_act, /app\.call\("book", null \? \{id: item\.id, qty\} : \{id: item\.id\}\)/);
   assert.match(e.screen.let.sessions_act, /app\.pay\(\{table: "bookings", id, amount: "amount", status: "status"/);
   assert.match(e.screen.let.sessions_act, /app\.payNow\(p, "Booked"\)/);
 });
@@ -3313,4 +3314,28 @@ test('a count tested above zero in a condition is EXISTS; one tested for zero is
   assert.equal(existsForCounts('SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) = 0'), 'SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM u) ');
   // a count in the select list, one with GROUP BY, or one compared with another number stays as it is
   for (const q of ['SELECT (SELECT COUNT(*) FROM u) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u GROUP BY y) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) > 2']) assert.equal(existsForCounts(q), q);
+});
+
+test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule; every card says how many are left', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  NAME name  PRICE price  CALL buy  QTY  COUNT  ACTION 'Buy'");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  const item = e.screen.body.find((b) => b.carousel).item;
+  assert.equal(item.qty, '=products_left(item)');
+  const left = (row) => Math.max(0, Number(row.stock) || 0);
+  const badge = new Function('products_left', `return ${e.screen.let.products_badge.slice(1)}`)(left);
+  assert.equal(badge({ stock: 12 }), '12 left');
+  assert.equal(badge({ stock: 2 }), 'Only 2 left');
+  assert.equal(badge({ stock: 0 }), 'Sold out');
+  // the quantity is held to 1 .. what is left, and sent with the id
+  const calls = [];
+  const app = { call: async (f, input) => { calls.push([f, input]); return 'o1'; }, toast: () => {} };
+  const act = new Function('app', 'products_left', `return ${e.screen.let.products_act.slice(1)}`)(app, left);
+  await act({ id: 'p1', stock: 4 }).do(9);
+  await act({ id: 'p1', stock: 4 }).do(2);
+  assert.deepEqual(calls, [['buy', { id: 'p1', qty: 4 }], ['buy', { id: 'p1', qty: 2 }]]);
+  // without QTY or COUNT, cards are as before
+  const plain = expandWith(compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  CALL buy").screen);
+  assert.equal(plain.screen.body.find((b) => b.carousel).item.qty, undefined);
 });

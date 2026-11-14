@@ -90,13 +90,13 @@
     const list = (v, s, path) => { const x = val(v, s, path); return Array.isArray(x) ? x : x == null ? [] : [x]; };
 
     const scrollToId = (id) => {
-      // a link to a part the page does not have goes to the page's form
-      // (where its actions lead), so a main action never does nothing
-      const el = document.getElementById(id) || document.querySelector('.screen form')?.closest('section, .fp-sec') || null;
+      const el = document.getElementById(id);
       if (el) el.scrollIntoView({ behavior: still() ? 'auto' : 'smooth', block: 'start' });
     };
     // An action: {label, open: "view", params, href: "#part" or a URL, do: "=handler", style: "primary" | "secondary" | "link"}.
-    const action = (a, s, path, i = 0) => {
+    // (more(): what the person chose beside it, such as a quantity: the
+    // arguments of its handler, and added to the params of the view it opens)
+    const action = (a, s, path, i = 0, more = null) => {
       if (a == null || a === false) return null;
       if (typeof a === 'string') a = { label: a };
       const style = a.style || a.class || (i === 0 ? 'primary' : 'secondary');
@@ -107,8 +107,9 @@
       if (href && /^https?:/i.test(href)) return h('a', { class: cls, href, target: '_blank', rel: 'noopener' }, kids);
       const go = async () => {
         if (href && href.startsWith('#')) { scrollToId(href.slice(1)); return; }
-        if (a.open !== undefined) { app.open(tx(a.open, s, path), a.params ? val(a.params, s, path) : undefined); return; }
-        if (a.do !== undefined) { const fn = val(a.do, s, `${path}.do`); if (typeof fn === 'function') await run(fn, [], `${path}.do`); }
+        const extra = more ? more() : null;
+        if (a.open !== undefined) { const p = a.params ? val(a.params, s, path) : undefined; app.open(tx(a.open, s, path), extra && extra.params ? { ...(p || {}), ...extra.params } : p); return; }
+        if (a.do !== undefined) { const fn = val(a.do, s, `${path}.do`); if (typeof fn === 'function') await run(fn, extra ? extra.args : [], `${path}.do`); }
       };
       return h('button', { class: cls, type: 'button', onclick: (e) => { e.stopPropagation(); go(); } }, kids);
     };
@@ -334,8 +335,13 @@
       return { mon: MONTHS[m], day: d, wd };
     };
     const card = (it, s, path, row = false) => {
-      const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1) : null;
       const has = it.src || it.photo;
+      // "qty": the most one can take: a quantity beside the action, 1 to it
+      const most = Math.floor(Number(it.qty));
+      const qty = it.action && most >= 1 ? h('input', { class: 'fp-qty', type: 'number', min: 1, max: most, value: 1, inputmode: 'numeric', 'aria-label': 'Quantity', onclick: (e) => e.stopPropagation() }) : null;
+      const chosen = qty ? () => { const n = Math.max(1, Math.min(most, Math.floor(Number(qty.value) || 1))); qty.value = n; return { args: [n], params: { qty: n } }; } : null;
+      const act = it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0, chosen) : null;
+      const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1, chosen) : null;
       // an event without a photo: its day as a calendar block beside its words
       const day = !has && !row && it.date ? dayParts(it.date) : null;
       if (day) {
@@ -345,7 +351,7 @@
             it.title ? h('h3', null, rich(it.title)) : null,
             it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
             it.badge ? h('span', { class: 'fp-chip' }, String(it.badge)) : null,
-            it.action ? h('div', { class: 'fp-card-foot' }, action(it.action, s, `${path}.action`, it.action.style ? 1 : 0)) : null));
+            act ? h('div', { class: 'fp-card-foot' }, h('div', { class: 'fp-card-act' }, qty, act)) : null));
         el.setAttribute('aria-label', `${String(it.date ?? '')} ${String(it.title ?? '')}`.trim());
         if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }
         return el;
@@ -359,7 +365,7 @@
           it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
           // a card without a photo says its badge in its words ("Sold out", "Only 2 left")
           !(has || row) && it.badge ? h('span', { class: `fp-chip${it.state === 'out' ? ' out' : ''}` }, String(it.badge)) : null,
-          it.price !== undefined || it.action ? h('div', { class: 'fp-card-foot' }, it.price !== undefined ? h('span', { class: 'fp-price' }, String(it.price)) : null, it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0) : null) : null));
+          it.price !== undefined || it.action ? h('div', { class: 'fp-card-foot' }, it.price !== undefined ? h('span', { class: 'fp-price' }, String(it.price)) : null, qty || act ? h('div', { class: 'fp-card-act' }, qty, act) : null) : null));
       // "state": "out" (no longer on offer, as OFFERS says it): the card is quieter
       if (it.state === 'out') el.classList.add('out');
       if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }

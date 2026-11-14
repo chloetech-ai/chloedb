@@ -464,3 +464,10 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-hero.look-type .fp-display .fp-em { background: none; -webkit-text-fill-color: currentColor; color: var(--accent); }
 .fp-hero.look-type .fp-lead { font-size: clamp(18px, 2.2vw, 22px); }
 @media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 88px 40px; } }
+
+/* a card's quantity beside its action (OFFERS QTY) */
+/* the foot wraps: on a narrow card the quantity and action go under the price */
+.fp-card-foot:has(.fp-qty) { flex-wrap: wrap; }
+.fp-card-act { display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
+.fp-card-act .fp-btn { white-space: nowrap; }
+.fp-qty { width: 4.2em; height: 40px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line, color-mix(in srgb, var(--fg) 18%, transparent)); background: var(--card); color: var(--fg); font: inherit; text-align: center; }

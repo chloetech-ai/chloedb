@@ -1025,6 +1025,20 @@ export function checkScreen(screen, columnsOf = () => null) {
     });
   };
   walk(screen.body, 'body');
+  // A link to a part of the page ("href": "#part") goes to a part with that
+  // "id": one that names none would do nothing when tapped.
+  const ids = new Set(), hrefs = new Set();
+  const seek = (x) => {
+    if (Array.isArray(x)) x.forEach(seek);
+    else if (x && typeof x === 'object') for (const [k, v] of Object.entries(x)) {
+      if (k === 'id' && typeof v === 'string') ids.add(v);
+      else if (k === 'href' && typeof v === 'string' && /^#[\w-]+$/.test(v)) hrefs.add(v.slice(1));
+      else if (k !== 'code') seek(v);
+    }
+  };
+  seek(screen.body);
+  const lost = [...hrefs].filter((x) => !ids.has(x));
+  if (lost.length) problems.push(`links go to ${lost.map((x) => `#${x}`).join(', ')}, which no part of the screen has as its "id": give the part they mean that "id" (the form, the list)`);
   const claims = madeUp(screen);
   if (claims.length) problems.push(`the screen says what the app's rows do not hold: ${claims.slice(0, 3).join('; ')}. Show only what its data or the request gives: take it out, or count it from a table with an "=expression"`);
   if (JSON.stringify(screen).length > 120 * 1024) problems.push('the screen is longer than 120 KiB');
@@ -1441,6 +1455,15 @@ export async function validate(plan, code, view, library, shared = new Map(), re
         if (![].concat(on.event || 'insert').every((e) => ['insert', 'update', 'delete'].includes(e))) problems.push(`function ${item.slug}: trigger event is insert, update or delete (or a list of them)`);
       }
     }
+  }
+  // OFFERS ... CALL <rule> QTY: the rule gets {id, qty}; one that never
+  // reads :qty would take one whatever quantity the person chose.
+  const codeOf = (slug) => code[slug] ?? (view.functions || []).find((f) => f.slug === slug)?.code ?? null;
+  for (const v of plan.views || []) {
+    const seen = [];
+    const seek = (x) => { if (Array.isArray(x)) x.forEach(seek); else if (x && typeof x === 'object') { if (x.use === 'offers' && x.qty && typeof x.call === 'string') seen.push(x.call); Object.values(x).forEach(seek); } };
+    seek(v.screen?.body);
+    for (const fn of seen) { const src = codeOf(fn); if (typeof src === 'string' && !/:qty\b/.test(src)) problems.push(`view ${v.slug}: OFFERS gives QTY, so ${fn} is called with {id, qty}: its rule REQUIREs the count >= :qty, lowers it by :qty and charges :qty times the price`); }
   }
   if (TESTS) problems.push(...checkTests(plan.tests, columnsFor(view, plan)));
   if (plan.patterns !== undefined) {
