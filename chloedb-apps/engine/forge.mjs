@@ -6,7 +6,7 @@ import { sqlFunctionsDoc } from './sqlfns.mjs';
 import vm from 'node:vm';
 import path from 'node:path';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
-import { checkFunction } from './sandbox.mjs';
+import { checkFunction, evalExpression } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical, briefOf } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
@@ -687,10 +687,11 @@ export function rulesToCode(plan, code) {
 export async function dryRunScreens(db, appId, names, plan) {
   const problems = [];
   const today = new Date().toISOString().slice(0, 10);
-  const nothing = new Proxy(() => null, { get: () => nothing, apply: () => null });
-  const guess = (x, state) => {
+  // Worked out in QuickJS (sandbox.mjs), never in the engine's own process:
+  // the expression is the model's (or an editor's) code (audit 4, X-G1).
+  const guess = async (x, state) => {
     if (typeof x !== 'string' || !x.startsWith('=')) return x;
-    try { return new Function('s', `with (s) { return (${x.slice(1)}\n); }`)({ state, today, params: {}, app: { today: () => today, now: () => new Date().toISOString(), me: () => null }, lib: nothing }) ?? null; } catch { return null; }
+    return (await evalExpression(x.slice(1), { state, today })) ?? null;
   };
   for (const v of plan.views || []) {
     if (!v || !v.screen) continue;
@@ -699,7 +700,7 @@ export async function dryRunScreens(db, appId, names, plan) {
       const sql = typeof q === 'string' ? q : q && q.sql;
       if (typeof sql !== 'string' || sql.startsWith('=')) continue;
       const params = {};
-      for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = guess(x, state);
+      for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = await guess(x, state);
       // :today is the screen's own, as a CREATE SCREEN's query has it (screen.js binds it).
       if (/:today\b/.test(sql) && params.today == null) params.today = today;
       // A parameter worked out from what only the running screen has (its

@@ -30,8 +30,14 @@ export function checkProvider(p) {
   if (p === undefined || p === null || p === '') return null;
   const v = String(p).trim().toLowerCase();
   if (!PROVIDERS.includes(v)) throw Object.assign(new Error(`provider is one of ${PROVIDERS.join(', ')}`), { status: 400 });
+  if (v === 'codex' && !codexOn()) throw Object.assign(new Error(CODEX_OFF), { status: 400 });
   return v;
 }
+// Codex is off unless whoever runs the engine turns it on: it answers with
+// the host user's own Codex sign-in, which the engine cannot scope (audit 4,
+// X-G6). STRATA_APPS_CODEX_ON=1, or STRATA_APPS_PROVIDER=codex, turns it on.
+export const codexOn = () => process.env.STRATA_APPS_CODEX_ON === '1' || String(process.env.STRATA_APPS_PROVIDER || '').trim().toLowerCase() === 'codex';
+export const CODEX_OFF = 'the codex provider is off on this engine: whoever runs it turns it on with STRATA_APPS_CODEX_ON=1 (it answers with that machine\'s own Codex sign-in)';
 export const PROVIDER = checkProvider(process.env.STRATA_APPS_PROVIDER) || 'claude';
 const chosen = new AsyncLocalStorage();
 // fn's model calls (and what they set off) go to `provider`; none keeps the engine's.
@@ -119,6 +125,53 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 export const buildScope = new AsyncLocalStorage();
 export const stoppedError = () => Object.assign(new Error('stopped by its owner'), { stopped: true });
 
+// The environment a model's CLI starts with: what it needs to run and sign
+// in, not the engine's own (audit 4, X-G6, and audit 1's A5). The engine's
+// environment holds the cluster's tokens (STRATA_TOKEN, STRATA_APP_TOKEN),
+// the sealing key's path and every other secret of the machine; none of that
+// is the model's. Kept: the process basics (PATH, HOME, the user, locale,
+// the temporary folder), the network's proxy and certificates, and each
+// CLI's own sign-in and settings (ANTHROPIC_* and CLAUDE_* for claude,
+// OPENAI_* and CODEX_* for codex). STRATA_APPS_CHILD_ENV names more
+// variables to keep, separated by commas.
+const BASE_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'TZ', 'TERM', 'TMPDIR', 'TMP', 'TEMP',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'ALL_PROXY', 'https_proxy', 'http_proxy', 'no_proxy', 'all_proxy',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+  'SYSTEMROOT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE'];
+const OWN_ENV = { claude: /^(ANTHROPIC_|CLAUDE_|LC_)/, codex: /^(OPENAI_|CODEX_|AZURE_OPENAI_|LC_)/ };
+// Claude through Bedrock or Vertex signs in with the cloud's own variables,
+// kept only when Claude Code is told to use that cloud.
+const CLOUD_ENV = [['CLAUDE_CODE_USE_BEDROCK', /^AWS_/], ['CLAUDE_CODE_USE_VERTEX', /^(GOOGLE_|GCLOUD_|CLOUDSDK_|CLOUD_ML_|VERTEX_)/]];
+export function childEnv(provider, from = process.env) {
+  const keep = new Set([...BASE_ENV, ...String(from.STRATA_APPS_CHILD_ENV || '').split(',').map((x) => x.trim()).filter(Boolean)]);
+  const own = OWN_ENV[provider] || OWN_ENV.claude;
+  const env = {};
+  const clouds = provider === 'claude' ? CLOUD_ENV.filter(([flag]) => from[flag] && from[flag] !== '0').map(([, re]) => re) : [];
+  for (const [k, v] of Object.entries(from)) if (v !== undefined && (keep.has(k) || own.test(k) || clouds.some((re) => re.test(k)))) env[k] = v;
+  // ChloeCtx's hooks (and Engram's, from before the rename) stay out of it.
+  env.CHLOECTX_DISABLE = '1';
+  env.ENGRAM_DISABLE = '1';
+  if (provider === 'claude') env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+  return env;
+}
+
+// What a Codex answer cost, from the tokens it reports: Codex reports no
+// dollars. Prices in US dollars per million tokens, from
+// STRATA_APPS_CODEX_USD_PER_MTOK as "input,cached input,output" (default
+// 1.25,0.125,10, GPT-5's list prices); with no usage reported, from the
+// lengths of the prompt and the answer at four characters a token, so that
+// an answer never counts as free (audit 4, X-G6).
+export function codexCost(usage, { promptChars = 0, answerChars = 0 } = {}, prices = process.env.STRATA_APPS_CODEX_USD_PER_MTOK) {
+  const [pin, pcached, pout] = String(prices || '1.25,0.125,10').split(',').map((x) => Math.max(0, Number(x) || 0));
+  const u = usage || {};
+  let input = Number(u.input_tokens) || 0;
+  const cached = Math.min(input, Number(u.cached_input_tokens) || 0);
+  let output = (Number(u.output_tokens) || 0) + (Number(u.reasoning_output_tokens) || 0);
+  if (!input && !output) { input = Math.ceil(promptChars / 4); output = Math.ceil(answerChars / 4); }
+  return ((input - cached) * pin + cached * (pcached ?? pin) + output * (pout ?? pin)) / 1e6;
+}
+
 // onWrite(progress, text) is called as the answer streams in, with
 // {chars, thinking}: characters of answer and of thinking so far, and the
 // answer so far. images: [{data (base64), type ('image/png')}] go before the
@@ -127,10 +180,11 @@ export const stoppedError = () => Object.assign(new Error('stopped by its owner'
 // web ask); none by default. maxBudgetUsd stops a call that costs more.
 // bucket: 'asks' for an app's own call (app.ask), counted apart (overCap).
 // provider: claude, codex or agy; by default the build's (withProvider) or
-// STRATA_APPS_PROVIDER. Only claude reports what an answer cost: the others
-// count 0 (out.costReported is false).
+// STRATA_APPS_PROVIDER. Claude reports what an answer cost; Codex's cost is
+// worked out from its tokens (codexCost, out.costReported is false).
 export function ask(opts) {
-  const provider = checkProvider(opts.provider) || currentProvider();
+  let provider;
+  try { provider = checkProvider(opts.provider) || currentProvider(); } catch (e) { return Promise.reject(e); }
   if (provider === 'codex') return askCodex(opts);
   if (provider === 'agy') return askAgy(opts);
   return askClaude(opts);
@@ -154,8 +208,7 @@ function askClaude({ system, prompt, images = [], model = MODEL, effort = proces
   if (signal?.aborted) return Promise.reject(stoppedError());
   return new Promise((resolve, reject) => {
     const args = claudeArgs({ system, model, effort, tools, maxBudgetUsd, images });
-    const env = { ...process.env, CHLOECTX_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
-    env.ENGRAM_DISABLE = '1'; // read by ChloeCtx's hooks from before the rename
+    const env = childEnv('claude');
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
     let buf = '';
     let err = '';
@@ -263,9 +316,12 @@ export function codexEvent(l) {
 }
 
 function askCodex({ system, prompt, images = [], model, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CODEX, tools = [], bucket = 'build' }) {
+  if (!codexOn()) return Promise.reject(Object.assign(new Error(CODEX_OFF), { status: 400 }));
   if (tools.length) return Promise.reject(new Error(`the codex provider runs without tools; ${tools.join(', ')} needs the claude provider`));
   const over = overCap(bucket);
   if (over) return Promise.reject(over);
+  const signal = buildScope.getStore()?.signal;
+  if (signal?.aborted) return Promise.reject(stoppedError());
   const use = modelFor('codex', model);
   return (async () => {
     const dir = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'sa-codex-'));
@@ -281,22 +337,29 @@ function askCodex({ system, prompt, images = [], model, effort = process.env.STR
       await mkdir(work);
       const args = codexArgs({ system, model: use, effort, images: files, outFile, cwd: work });
       const t0 = Date.now();
-      const out = await runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd: work });
+      let out;
+      try {
+        out = await runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd: work, signal });
+      } catch (e) {
+        // A failed or stopped turn still cost what it used.
+        if (e.usage && Object.keys(e.usage).length) counted(codexCost(e.usage), bucket);
+        throw e;
+      }
       const last = await readFile(outFile, 'utf8').catch(() => '');
       const text = last.trim() ? last : out.text;
+      const cost = codexCost(out.usage, { promptChars: String(prompt || '').length + String(system || '').length, answerChars: text.length });
+      counted(cost, bucket);
       if (!text.trim()) throw new Error(`codex gave no answer${out.warning ? `: ${out.warning.slice(0, 400)}` : ''}`);
-      // Codex reports tokens, not dollars: the answer counts 0 against the cap.
-      counted(0, bucket);
-      return { text, usage: out.usage, cost: 0, costReported: false, ms: Date.now() - t0, model: use || 'codex default', provider: 'codex' };
+      return { text, usage: out.usage, cost, costReported: false, ms: Date.now() - t0, model: use || 'codex default', provider: 'codex' };
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   })();
 }
 
-function runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd }) {
+function runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd, signal }) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, CHLOECTX_DISABLE: '1', ENGRAM_DISABLE: '1' };
+    const env = childEnv('codex');
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd });
     let buf = '';
     let err = '';
@@ -306,7 +369,10 @@ function runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd }) {
     let warning = '';
     const seen = { chars: 0, thinking: 0 };
     let settled = false;
-    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); child.kill('SIGKILL'); reject(e); };
+    // The owner's Stop (buildScope's signal) kills the child at once, as for claude.
+    const onStop = () => fail(stoppedError());
+    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); signal?.removeEventListener('abort', onStop); child.kill('SIGKILL'); e.usage = usage; reject(e); };
+    signal?.addEventListener('abort', onStop, { once: true });
     const cap = setTimeout(() => fail(new Error(`codex took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
     let idle;
     const quiet = () => {
@@ -339,8 +405,9 @@ function runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd }) {
       settled = true;
       clearTimeout(cap);
       clearTimeout(idle);
-      if (failed) return reject(new Error(`codex: ${failed.slice(0, 600)}`));
-      if (code !== 0) return reject(new Error(`codex exited ${code}: ${(warning || err || text).slice(0, 600)}`));
+      signal?.removeEventListener('abort', onStop);
+      if (failed) return reject(Object.assign(new Error(`codex: ${failed.slice(0, 600)}`), { usage }));
+      if (code !== 0) return reject(Object.assign(new Error(`codex exited ${code}: ${(warning || err || text).slice(0, 600)}`), { usage }));
       resolve({ text, usage, warning });
     });
     child.stdin.end(prompt);
