@@ -107,6 +107,7 @@ pub fn router(app: App) -> Router {
         .route("/index.html", get(ui_index))
         .route("/app.js", get(ui_js))
         .route("/style.css", get(ui_css))
+        .route("/levels/:file", get(ui_level))
         .route("/api/health", get(health))
         .route("/api/agents", get(list).post(spawn))
         .route("/api/agents/:id", get(agent))
@@ -160,6 +161,25 @@ async fn ui_js(State(app): State<App>) -> Response {
 
 async fn ui_css(State(app): State<App>) -> Response {
     ui_file(&app, "style.css", STYLE, "text/css; charset=utf-8")
+}
+
+/// The level screens (`ui/levels/*.js`), compiled in.
+const LEVELS: &[(&str, &str)] = &[
+    ("common.js", include_str!("../ui/levels/common.js")),
+    ("mission.js", include_str!("../ui/levels/mission.js")),
+    ("story.js", include_str!("../ui/levels/story.js")),
+    ("decide.js", include_str!("../ui/levels/decide.js")),
+    ("map.js", include_str!("../ui/levels/map.js")),
+    ("preview.js", include_str!("../ui/levels/preview.js")),
+    ("flow.js", include_str!("../ui/levels/flow.js")),
+    ("away.js", include_str!("../ui/levels/away.js")),
+];
+
+async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {
+    match LEVELS.iter().find(|(n, _)| *n == file) {
+        Some((name, body)) => ui_file(&app, &format!("levels/{name}"), body, "text/javascript; charset=utf-8"),
+        None => ApiError::not_found("no such level").into_response(),
+    }
 }
 
 // The API.

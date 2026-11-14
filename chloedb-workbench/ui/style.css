@@ -121,7 +121,26 @@ kbd {
 }
 
 /* --------------------------------------------------------------- shell */
-.shell { position: absolute; inset: var(--top) 0 0 0; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); }
+.shell { position: absolute; inset: var(--top) 0 0 0; display: grid; grid-template-columns: 68px var(--rail) minmax(0, 1fr); }
+body.levels-on .shell { grid-template-columns: 68px 0 minmax(0, 1fr); }
+body.levels-on .rail { visibility: hidden; overflow: hidden; padding: 0; border: 0; }
+/* the screens (SPEC.md, "Levels"): a narrow nav, and the level switch in the top bar */
+.lvnav { border-right: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; overflow-y: auto; }
+.lvnav a { position: relative; width: 58px; padding: 7px 0 6px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--muted); text-decoration: none; font-size: 10.5px; font-weight: 600; }
+.lvnav a:hover { color: var(--text); background: var(--surface-2); }
+.lvnav a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
+.lvnav a:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.lvnav a[data-screen="grid"] { margin-top: auto; }
+.lvnav .lvn { position: absolute; top: 3px; right: 7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--warn); color: #241a00; font: 700 10px/16px var(--sans); text-align: center; }
+.levels { display: flex; align-items: center; gap: 2px; background: var(--sunken); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+.levels button { border: 0; background: none; color: var(--muted); font: 600 12px var(--sans); padding: 4px 11px; border-radius: 999px; cursor: pointer; }
+.levels button:hover { color: var(--text); }
+.levels button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--focus); }
+.levels .lv-keys { display: inline-flex; gap: 2px; padding: 0 6px 0 4px; }
+#level-view { overflow: auto; background: var(--bg); }
+.lv-loading { padding: 40px; color: var(--muted); text-align: center; }
+.lv-loading.bad { color: var(--crit-ink); }
+.rw-label { margin: 0 0 10px; color: var(--text-2); }
 .rail { border-right: 1px solid var(--line); background: var(--surface-2); overflow-y: auto; padding: 14px 10px 18px; }
 .rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 10px; }
 .rail-head h2 { margin: 0; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
@@ -738,7 +757,13 @@ button.flag.warn:hover { border-color: var(--warn-line); }
   .brand .sub, .top .conn span, .wide-only, #help-btn { display: none !important; }
   .narrow-only { display: inline; }
   .counts .pill.run-pill { display: none; }
-  .shell { display: block; overflow-y: auto; overflow-x: hidden; }
+  .shell { display: block; overflow-y: auto; overflow-x: hidden; padding-bottom: 58px; }
+  .lvnav { position: fixed; z-index: 6; left: 0; right: 0; bottom: 0; height: 58px; flex-direction: row; justify-content: space-around; padding: 4px 2px; border-right: 0; border-top: 1px solid var(--line); overflow-x: auto; }
+  .lvnav a { width: auto; min-width: 44px; padding: 5px 4px; }
+  .lvnav a[data-screen="grid"] { margin-top: 0; }
+  .levels { display: none; }
+  body.levels-on .rail { display: none; }
+  #level-view { position: static; overflow: visible; }
   .rail { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 12px 10px; overflow: visible; }
   .rail-head { padding: 0 4px 8px; }
   .rail-foot { display: none; }

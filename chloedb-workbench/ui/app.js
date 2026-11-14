@@ -301,7 +301,11 @@ function connectStream() {
   es.addEventListener("event", (e) => {
     const d = parse(e.data);
     const ev = d && d.event ? d.event : d;
-    if (ev) onEvent(ev);
+    if (ev) {
+      L.recent.push(ev);
+      if (L.recent.length > 600) L.recent.splice(0, L.recent.length - 500);
+      onEvent(ev);
+    }
   });
   es.onerror = () => {
     if (es.readyState === EventSource.CLOSED) {
@@ -550,6 +554,7 @@ function render() {
   renderGrid(running);
   renderExited(exited);
   if (S.zoomed) renderZoom();
+  renderLevels();
 }
 
 function renderRail(list) {
@@ -659,6 +664,7 @@ function zoom(id, { history: how = "push", tab } = {}) {
   const a = S.agents.get(id);
   if (!a) return;
   S.selected = id;
+  if (L.screen) leaveLevels();
   if (Z.id === id && !$("zoom-view").hidden) { if (tab) setTab(tab, { focus: true }); else Z.term?.focus(); return; }
   if (D.open) {
     D.open = false;
@@ -700,6 +706,8 @@ function unzoom({ fromHistory = false } = {}) {
 }
 
 window.addEventListener("popstate", () => {
+  if (location.hash.startsWith("#/")) { route(location.hash); return; }
+  if (L.screen) leaveLevels();
   const id = location.hash.slice(1);
   if (id === "decisions") { if (S.zoomed) unzoom({ fromHistory: true }); openDecisions({ history: "none" }); return; }
   if (D.open) closeDecisions({ fromHistory: true });
@@ -2153,6 +2161,7 @@ function openDecisions({ history: how = "push", repo, focus, open = false } = {}
     return;
   }
   if (T.open && T.kind === "line") closeSheet({ focus: false });
+  if (L.screen) leaveLevels();
   D.prevZoom = S.zoomed;
   if (S.zoomed) {
     closeZoomTerm();
@@ -2660,7 +2669,9 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && T.open) { e.preventDefault(); closeSheet(); return; }
   if (e.key === "Escape" && D.open) { e.preventDefault(); closeDecisions(); return; }
   if (e.key === "Escape" && S.zoomed) { e.preventDefault(); unzoom(); return; }
+  if (!inTerm && L.screen && !T.open && levelKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (!inTerm && trailKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
+  if (!inTerm && !T.open && (e.key === "[" || e.key === "]") && levelKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (e.key === "Enter" && !S.zoomed && e.target.closest?.(".tile")) { e.preventDefault(); zoom(e.target.closest(".tile").dataset.id); return; }
   if (!S.zoomed && !D.open && ARROWS[e.key] && (e.target.closest?.(".tile") || e.target === document.body)) { e.preventDefault(); move(ARROWS[e.key]); return; }
   // Without the prefix only n, z and ? act: stop, digits and (in zoom) arrows
@@ -2680,6 +2691,189 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   T.player?.retheme();
 });
 
+
+// ---------------------------------------------------------------- levels
+//
+// SPEC.md, "Levels (third build)": the screens above the terminal, each an
+// ES module in ui/levels/ mounted into #level-view. Routes are hashes,
+// #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
+// between Intent, Plan, Story, Changes and Terminal for what is in focus.
+
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away"];
+const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, story: 2, map: 3, preview: 3, grid: 4, zoom: 4 };
+const L = { screen: null, param: null, view: null, req: 0, recent: [], focus: null };
+
+function levelCtx(param) {
+  return {
+    api,
+    state: levelState(),
+    params: { agent: param || null, repo: pickRepo?.() || null },
+    go: (hash) => route(hash, { push: true }),
+    openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }),
+    openRewind: (o) => openRewindCard(o),
+    zoom: (id) => zoom(id),
+  };
+}
+
+function levelState() {
+  return { agents: [...S.agents.values()], events: L.recent };
+}
+
+/** The agent the levels are about: the zoomed one, the story's, or the selected one. */
+function focusAgent() {
+  if (S.zoomed) return S.zoomed;
+  if ((L.screen === "story" || L.screen === "preview") && L.param) return L.param;
+  return L.focus || S.selected || null;
+}
+
+function hideOtherViews() {
+  if (S.zoomed) { closeZoomTerm(); S.zoomed = null; $("zoom-view").hidden = true; }
+  if (D.open) { D.open = false; $("dec-view").hidden = true; $("dec-btn").setAttribute("aria-pressed", "false"); }
+  $("grid-view").hidden = true;
+}
+
+async function openLevel(screen, param, { how = "push" } = {}) {
+  if (!SCREENS.includes(screen)) return;
+  if ((screen === "story" || screen === "preview") && !param) {
+    param = focusAgent() || [...S.agents.values()].filter((a) => a.running).sort(byCreated).find((a) => a.state === "working")?.id
+      || [...S.agents.values()].sort(byCreated)[0]?.id || null;
+  }
+  const hash = `#/${screen}${param ? "/" + param : ""}`;
+  if (how === "push" && location.hash !== hash) history.pushState({ level: hash }, "", hash);
+  else if (how === "replace") history.replaceState({ level: hash, root: true }, "", hash);
+  if (param) L.focus = param;
+  if (L.screen === screen && L.param === param && L.view) { markLevels(); return; }
+  hideOtherViews();
+  closeLevelView();
+  L.screen = screen;
+  L.param = param;
+  document.body.classList.add("levels-on");
+  const host = $("level-view");
+  host.hidden = false;
+  host.replaceChildren(h("div", { class: "lv-loading", text: "Loading…" }));
+  markLevels();
+  const req = ++L.req;
+  try {
+    const mod = await import(`/levels/${screen}.js`);
+    if (req !== L.req) return;
+    host.replaceChildren();
+    L.view = mod.mount(host, levelCtx(param));
+  } catch (err) {
+    if (req !== L.req) return;
+    host.replaceChildren(h("div", { class: "lv-loading bad", text: `This screen did not load: ${err.message || err}` }));
+  }
+}
+
+function closeLevelView() {
+  try { L.view?.unmount(); } catch (err) { console.error(err); }
+  L.view = null;
+  L.screen = null;
+  L.param = null;
+  L.req++;
+  $("level-view").hidden = true;
+  $("level-view").replaceChildren();
+  document.body.classList.remove("levels-on");
+}
+
+/** Leaves the level screens for the grid (or whatever opens next). */
+function leaveLevels() {
+  if (!L.screen) return;
+  closeLevelView();
+  markLevels();
+}
+
+function currentLevel() {
+  if (L.screen) return LEVEL_OF[L.screen];
+  if (D.open) return 1;
+  if (S.zoomed) return $("z-body")?.dataset.tab === "changes" ? 3 : 4;
+  return 4;
+}
+
+function markLevels() {
+  const cur = currentLevel();
+  for (const b of document.querySelectorAll("#levels button")) b.setAttribute("aria-selected", String(Number(b.dataset.level) === cur));
+  const screen = L.screen || (S.zoomed ? "grid" : D.open ? null : "grid");
+  for (const a of document.querySelectorAll("#lvnav a")) {
+    if (a.dataset.screen === screen) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+}
+
+/** Goes to a level: for one agent when one is in focus, else for the fleet. */
+function goLevel(n) {
+  n = Math.max(0, Math.min(4, n));
+  const id = focusAgent();
+  if (n === 0) return route("#/mission", { push: true });
+  if (n === 1) return route(L.screen === "flow" ? "#/flow" : "#/decide", { push: true });
+  if (n === 2) return route(id ? `#/story/${id}` : "#/story", { push: true });
+  if (n === 3) {
+    if (id && S.agents.has(id)) { leaveLevels(); zoom(id, { tab: "changes" }); markLevels(); return; }
+    return route("#/map", { push: true });
+  }
+  if (id && S.agents.has(id)) { leaveLevels(); zoom(id, { tab: "term" }); markLevels(); return; }
+  route("#/grid", { push: true });
+}
+
+/** Opens what a hash names: #/<screen>[/<param>], #/grid, #/zoom/<id>, #decisions or #<agent id>. */
+function route(hash, { push = false } = {}) {
+  const how = push ? "push" : "none";
+  if (hash.startsWith("#/")) {
+    const [screen, param] = hash.slice(2).split("/");
+    if (screen === "grid") {
+      leaveLevels();
+      if (S.zoomed) unzoom({ fromHistory: true });
+      if (D.open) closeDecisions({ fromHistory: true });
+      $("grid-view").hidden = false;
+      if (push) history.pushState({ level: hash }, "", hash);
+      markLevels();
+      render();
+      return;
+    }
+    if (screen === "zoom" && param) { leaveLevels(); zoom(param, { history: push ? "push" : "none" }); markLevels(); return; }
+    openLevel(screen, param ? decodeURIComponent(param) : null, { how });
+    return;
+  }
+  leaveLevels();
+  return false;
+}
+
+/** A Rewind of any moment ({agent, from_ms, to_ms, edit_ms?, label?}) in the side sheet. */
+function openRewindCard(o) {
+  const a = S.agents.get(o.agent);
+  beginCard("rewind", `rw\u0001${o.agent}\u0001${o.from_ms}`, (b) => openRewindCard({ ...o, back: b }), { push: true });
+  sheetHead("Rewind", a ? nameOf(a) : o.agent);
+  const host = h("div", { class: "rw" });
+  $("sh-body").replaceChildren(
+    o.label ? h("p", { class: "rw-label", text: o.label }) : null,
+    host,
+  );
+  T.player = new Rewind(host, { agent: o.agent, from: o.from_ms, to: o.to_ms, edit: o.edit_ms ?? o.to_ms - 3000, name: a ? nameOf(a) : o.agent, onWrite: () => {} });
+}
+
+for (const b of document.querySelectorAll("#levels button")) b.addEventListener("click", () => goLevel(Number(b.dataset.level)));
+for (const a of document.querySelectorAll("#lvnav a")) a.addEventListener("click", (e) => {
+  e.preventDefault();
+  const s = a.dataset.screen;
+  route(s === "story" || s === "preview" ? `#/${s}${focusAgent() ? "/" + focusAgent() : ""}` : `#/${s}`, { push: true });
+});
+
+function levelKey(e) {
+  if (e.key === "[" ) { goLevel(currentLevel() - 1); return true; }
+  if (e.key === "]") { goLevel(currentLevel() + 1); return true; }
+  if (L.screen && e.key === "Escape" && L.screen !== "mission") { route("#/mission", { push: true }); return true; }
+  return false;
+}
+
+function renderLevels() {
+  const waiting = [...S.agents.values()].filter((a) => a.running && a.state === "waiting").length;
+  const badge = $("lvn-decide");
+  badge.hidden = !waiting;
+  badge.textContent = String(waiting);
+  if (L.view) {
+    try { L.view.update(levelState()); } catch (err) { console.error(err); }
+  }
+}
+
 // ----------------------------------------------------------------- start
 
 let started = false;
@@ -2690,10 +2884,13 @@ function start() {
     fetch("/api/health").then((r) => r.json()).then((j) => { S.health = j; schedule(); }).catch(() => {});
   }
   const id = location.hash.slice(1);
-  if (id === "decisions") S.pendingDec = true;
+  if (id.startsWith("/")) route(location.hash);
+  else if (!id) api("/api/goals").then((g) => { if (!location.hash && (g.goals || []).some((x) => x.state === "active")) { history.replaceState({ level: "#/mission", root: true }, "", "#/mission"); route("#/mission"); } }, () => {});
+  else if (id === "decisions") S.pendingDec = true;
   else if (id) S.pendingZoom = id;
   connectStream();
   render();
+  markLevels();
 }
 
 S.token = readToken();

@@ -36,6 +36,11 @@
   <symbol id="i-ask" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
   <symbol id="i-commit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M11 3v18M11 12h10M16 12v9"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7 14h10"/></symbol>
 </svg>
 
@@ -49,6 +54,10 @@
     <span class="pill warn" id="need-pill" hidden><b id="need-n">0</b> need you</span>
   </div>
   <div class="sep"></div>
+  <div class="levels" id="levels" role="tablist" aria-label="Level">
+    <button role="tab" data-level="0" title="Intent: goals and outcomes">Intent</button><button role="tab" data-level="1" title="Plan: decisions and flow">Plan</button><button role="tab" data-level="2" title="Story: one agent, chapter by chapter">Story</button><button role="tab" data-level="3" title="Changes: the map, the preview, the diff">Changes</button><button role="tab" data-level="4" title="Terminal: the sessions themselves">Terminal</button>
+    <span class="lv-keys wide-only"><kbd>[</kbd><kbd>]</kbd></span>
+  </div>
   <span class="prefix-ind" id="prefix-ind" hidden title="Prefix armed: press a key, ? for the list">C-b</span>
   <span class="conn" id="conn" data-state="connecting" title="The live stream of changes"><span id="conn-text">connecting</span></span>
   <button class="btn" id="dec-btn" title="Decisions: every decision of the repository, by agent (d)" aria-label="Decisions"><svg class="i"><use href="#i-trail"/></svg><span class="wide-only">Decisions</span><kbd class="wide-only">d</kbd></button>
@@ -57,6 +66,16 @@
 </header>
 
 <div class="shell">
+  <nav class="lvnav" id="lvnav" aria-label="Screens">
+    <a href="#/mission" data-screen="mission"><svg class="i"><use href="#i-target"/></svg><span>Mission</span></a>
+    <a href="#/decide" data-screen="decide"><svg class="i"><use href="#i-ask"/></svg><span>Decide</span><b class="lvn" id="lvn-decide" hidden></b></a>
+    <a href="#/map" data-screen="map"><svg class="i"><use href="#i-map"/></svg><span>Map</span></a>
+    <a href="#/story" data-screen="story"><svg class="i"><use href="#i-book"/></svg><span>Story</span></a>
+    <a href="#/preview" data-screen="preview"><svg class="i"><use href="#i-eye"/></svg><span>Preview</span></a>
+    <a href="#/flow" data-screen="flow"><svg class="i"><use href="#i-act"/></svg><span>Flow</span></a>
+    <a href="#/away" data-screen="away"><svg class="i"><use href="#i-rewind"/></svg><span>Away</span></a>
+    <a href="#/grid" data-screen="grid"><svg class="i"><use href="#i-grid"/></svg><span>Terminals</span></a>
+  </nav>
   <aside class="rail" aria-label="Needs you">
     <div class="rail-head"><h2>Needs you</h2><span class="n" id="rail-n"></span></div>
     <ol id="rail-list"></ol>
@@ -123,6 +142,8 @@
         <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="cc">^C</button><button data-k="enter">⏎</button>
       </div>
     </section>
+
+    <section class="view" id="level-view" hidden aria-label="Level"></section>
 
     <section class="view" id="dec-view" hidden aria-label="Decisions">
       <div class="dec-top">
