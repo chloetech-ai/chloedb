@@ -3,7 +3,7 @@
 // generated and stored in Strata.
 
 import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
-import { designCss, checkDesign, PRESETS } from './design.js';
+import { designCss, checkDesign, PRESETS, pairFor } from './design.js';
 import { mountActivity } from './activity.js';
 import { frameCsp, FRAME_SANDBOX, linkToOpen } from './policy.js';
 
@@ -798,11 +798,16 @@ function ownLook() {
 // ?look=bold (or plain) shows any app in that look, to compare looks on the
 // same app; the app's own design is unchanged.
 const LOOK_PARAM = new URLSearchParams(location.search).get('look');
+const TYPE_PARAM = new URLSearchParams(location.search).get('type');
 function currentDesign() {
   const d = S.app?.design;
   const chosen = !d ? checkDesign(PRESETS[0]) : (() => { const own = ownLook(); return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0]; })();
-  // a design stored before looks existed has none: checking it gives the default
-  return checkDesign(LOOK_PARAM ? { ...chosen, look: LOOK_PARAM } : chosen, chosen);
+  // a design stored before looks existed has none: checking it gives the default;
+  // one stored before type pairings gets the one its titles and the app's subject suggest
+  // (?type=ledger shows another, to compare).
+  const pair = TYPE_PARAM ? { type: TYPE_PARAM, titles: { ledger: 'serif', classic: 'serif', elegant: 'serif', rounded: 'rounded', mono: 'mono' }[TYPE_PARAM] || 'system' }
+    : pairFor(chosen, `${chosen.name || ''} ${chosen.about || ''} ${S.app?.app?.name || ''} ${String(S.app?.app?.description || '').slice(0, 400)}`);
+  return checkDesign({ ...chosen, ...pair, ...(LOOK_PARAM ? { look: LOOK_PARAM } : {}) }, chosen);
 }
 function applyDesign() {
   const d = currentDesign();
@@ -996,7 +1001,7 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
   const code = screen
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
     : noClose(view.code);
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {} }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}

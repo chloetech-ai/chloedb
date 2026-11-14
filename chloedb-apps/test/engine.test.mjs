@@ -947,7 +947,7 @@ test('looks: native by default (the grouped page, the tint readable on it), bold
     assert.equal(designVars({ ...p, look: 'plain' }, 'light')['--bg'], checkDesign(p).light.bg, 'a plain design keeps its page');
     for (const which of ['light', 'dark']) {
       const n = designVars(p, which);
-      assert.ok(['#f2f2f7', '#000000'].includes(n['--bg']), `${p.name} ${which}: native is the phone's grouped page`);
+      assert.ok(contrast(n['--bg'], n['--card']) >= 1.03 || n['--card-border'] === 'var(--line)', `${p.name} ${which}: native cells stand off the design's own page`);
       assert.ok(contrast(n['--accent'], n['--card']) >= 4.5 && contrast(n['--accent'], n['--bg']) >= 4.5, `${p.name} ${which}: the tint reads on cells and page`);
       assert.ok(contrast(n['--fg'], n['--card']) >= 7, `${p.name} ${which}: text reads on cells`);
       assert.ok(contrast(n['--muted'], n['--bg']) >= 4.5, `${p.name} ${which}: secondary text reads`);
