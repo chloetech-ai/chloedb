@@ -148,6 +148,13 @@ TIMESTAMP field, a NOT NULL field or a DEFAULT, sequence numbers with
 build exactly as long as it uses only features that build knows, and an
 older build that meets a newer feature refuses the file by name rather than
 misreading it. Starting to use a feature cannot be undone.</p>
+<p><strong>Rollups.</strong> A rollup made by 0.3.3 or later keys its rows by number,
+where one made by 0.3.1 or 0.3.2 keys them by text. 0.3.3 reads and
+refreshes both. 0.3.2 reads the new kind but cannot refresh it, so its
+definition carries the option <code>needs_chloedb_0_3_3</code>, which 0.3.2 refuses
+by name ("no option needs_chloedb_0_3_3"): a refresh by 0.3.2 fails with
+that message rather than leaving the rollup's newest buckets stale. Open a
+database whose rollups 0.3.3 made with 0.3.3 or later.</p>
 <p><strong>Databases from before field ids.</strong> A database written before field ids
 (format 1, 2, or 3 without <code>field_ids</code>) no longer opens for use. <code>upgrade()</code>
 (<code>chloedb.upgrade(path)</code> in Python, <code>upgrade(path)</code> in JavaScript;

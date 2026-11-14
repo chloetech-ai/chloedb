@@ -671,6 +671,12 @@ struct Args {
     /// name secrets as env:VARIABLE).
     #[arg(long)]
     connector_secrets: Option<PathBuf>,
+    /// The prefix of the environment variables a connector's secret may
+    /// name as env:VARIABLE (default CHLOEDB_CONNECTOR_SECRET_): the
+    /// others, this server's own tokens and keys among them, are never
+    /// read for a connector.
+    #[arg(long, env = "CHLOEDB_CONNECTOR_ENV_PREFIX")]
+    connector_env_prefix: Option<String>,
     /// A folder that holds each app's own token in a file of the app's
     /// name, read as it is sent (so a token written there later, as a
     /// Kubernetes Secret mounted there is, needs no restart).
@@ -1161,7 +1167,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
         "otlp_retain", "alerts", "alert_webhook", "contain", "slo_error_ratio", "slo_p99_ms"
     ]),
     ("Apps, connectors, tenants and clouds", &[
-        "apps", "app_token", "app_token_dir", "connectors", "connector_secrets", "tenants",
+        "apps", "app_token", "app_token_dir", "connectors", "connector_secrets", "connector_env_prefix", "tenants",
         "tenant_cache", "tenant_idle_s", "tenant_open_max", "opensearch_listen",
         "opensearch_version", "aws_file", "digitalocean_file", "cloud_file", "hub_file",
         "hub_device"
@@ -1560,6 +1566,7 @@ async fn run() {
         cloud_file: a.cloud_file,
         hub_file: a.hub_file,
         connector_secrets: a.connector_secrets.clone(),
+        connector_env_prefix: a.connector_env_prefix.clone(),
         connectors: run_connectors,
         hub_device: a.hub_device,
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),

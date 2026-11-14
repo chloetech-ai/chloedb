@@ -350,6 +350,8 @@ pub fn parse_statement(text: &str) -> Result<Option<Statement>> {
                     match key.as_str() {
                         "lateness" => lateness = seconds * 1_000_000,
                         "retain" => retain = Some(seconds),
+                        // The mark of a rollup with number keys ([`marked`]).
+                        LAYOUT_MARK => {}
                         _ => return Err(bad(&format!("no option {key}"))),
                     }
                     i += 3;
@@ -541,6 +543,45 @@ pub fn of_function(f: &super::function::Function) -> Result<Option<Rollup>> {
     }
 }
 
+/// The option a rollup made since 0.3.3 keeps in its definition: its rows
+/// are keyed by number with columns only (`stored = false`), which 0.3.2
+/// reads but cannot write (its refresher writes text keys). 0.3.2 refuses
+/// a definition with an option it does not know, "no option
+/// needs_chloedb_0_3_3", so it says why it does not refresh the rollup
+/// rather than serve stale buckets (audit 4, X-I5). This build takes it
+/// and reads the layout from the rollup's table.
+pub const LAYOUT_MARK: &str = "needs_chloedb_0_3_3";
+
+/// `statement`, a `CREATE ROLLUP`, with [`LAYOUT_MARK`] among its options:
+/// what [`Db::create_rollup`](crate::db::Db::create_rollup) keeps.
+pub fn marked(statement: &str) -> String {
+    let Ok(all) = Tokenizer::new(&GenericDialect {}, statement).tokenize_with_location() else { return statement.to_string() };
+    let toks: Vec<&TokenWithSpan> = all.iter().filter(|t| !matches!(t.token, Token::Whitespace(_))).collect();
+    let word = |i: usize| match toks.get(i).map(|t| &t.token) {
+        Some(Token::Word(w)) if w.quote_style.is_none() => w.value.to_ascii_uppercase(),
+        _ => String::new(),
+    };
+    if toks.iter().any(|t| matches!(&t.token, Token::Word(w) if w.value.eq_ignore_ascii_case(LAYOUT_MARK))) {
+        return statement.to_string();
+    }
+    // CREATE ROLLUP [IF NOT EXISTS] name ON table, then OPTIONS(...) or AS.
+    let at = if word(2) == "IF" { 8 } else { 5 };
+    let mark = format!("{LAYOUT_MARK} = '1 second'");
+    match (word(at).as_str(), toks.get(at + 1)) {
+        ("OPTIONS", Some(open)) if open.token == Token::LParen => {
+            let b = byte_at(statement, open.span.end);
+            format!("{}{mark}, {}", &statement[..b], &statement[b..])
+        }
+        _ => match toks.get(at) {
+            Some(t) => {
+                let b = byte_at(statement, t.span.start);
+                format!("{}OPTIONS({mark}) {}", &statement[..b], &statement[b..])
+            }
+            None => statement.to_string(),
+        },
+    }
+}
+
 /// The `CREATE FUNCTION` that keeps `r`.
 pub fn function_sql(r: &Rollup) -> String {
     format!("CREATE OR REPLACE FUNCTION {}() RETURNS TEXT AS '{}'", function_name(&r.name), r.statement.replace('\'', "''"))
@@ -569,6 +610,23 @@ mod tests {
         assert_eq!(r.fold_sql(), "SELECT service, severity, COUNT(*), SUM(latency), MAX(latency) FROM logs WHERE ts >= :rollup_from AND ts < :rollup_to AND (severity <> 'DEBUG') GROUP BY service, severity");
         // The function keeps the statement, and gives the same rollup back.
         assert_eq!(create(&r.statement), r);
+    }
+
+    #[test]
+    fn a_rollup_made_now_is_marked_for_0_3_2() {
+        for text in [
+            "CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5 minutes', ts), service, COUNT(*)",
+            "CREATE ROLLUP IF NOT EXISTS logs_5m ON logs OPTIONS(lateness = '2 minutes') AS SELECT date_bin('5 minutes', ts), service, COUNT(*)",
+        ] {
+            let m = marked(text);
+            assert!(m.contains("needs_chloedb_0_3_3 = '1 second'"), "{m}");
+            assert_eq!(marked(&m), m, "marked once");
+            // It reads as the rollup it marks; 0.3.2 answers "no option
+            // needs_chloedb_0_3_3" (its parser takes lateness and retain only).
+            let (a, b) = (create(text), create(&m));
+            assert_eq!((a.lateness, a.retain, a.keys, a.aggs), (b.lateness, b.retain, b.keys, b.aggs));
+        }
+        assert_eq!(marked("CREATE ROLLUP h ON logs OPTIONS(retain = '1 day') AS SELECT date_trunc('hour', ts), COUNT(*)"), "CREATE ROLLUP h ON logs OPTIONS(needs_chloedb_0_3_3 = '1 second', retain = '1 day') AS SELECT date_trunc('hour', ts), COUNT(*)");
     }
 
     #[test]

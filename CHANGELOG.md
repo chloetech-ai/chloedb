@@ -19,8 +19,11 @@ smaller, faster rollups: `chloedb-server-v0.3.3`, `chloedb-py-v0.3.3` and
 `chloedb-sheets` and `chloectx` are attached prebuilt to the server's
 release). The file format stays 3 and the shard protocol stays 21; no plan
 feature is new, so servers of 0.3.2 and 0.3.3 mix in a cluster in either
-order. Auth changes: a connector's push key reads nothing, and
-`POST /v1/admin/keys` refuses fields it does not know (below).
+order. Auth changes: a connector's push key reads nothing,
+`POST /v1/admin/keys` refuses fields it does not know, the connectors'
+tables are the server's own, and `env:` secrets read only variables with a
+prefix (below). **A connector that reads an internal system needs
+`"allow_internal": true`.**
 
 ### What changes by default
 
@@ -50,7 +53,48 @@ order. Auth changes: a connector's push key reads nothing, and
 - Rollups made from now on key their rows by number and keep their columns
   only, about 40 bytes a row; rollups made by 0.3.1 and 0.3.2 keep working
   as they are (`DROP ROLLUP` and `CREATE ROLLUP` again to get the smaller
-  table).
+  table). 0.3.2 cannot refresh a rollup made by 0.3.3, and refuses it by
+  name (below).
+- A statement that calls a stored function is held, written out, to the
+  depth (1,000 levels) and size (250,000 expressions) a statement's text
+  may have, and is refused past them with a 400 `query_invalid`.
+- App engine: screen expressions run only in QuickJS, `claude -p` and
+  `codex exec` get a reduced environment, Codex is off unless
+  `STRATA_APPS_CODEX_ON=1`, and its MCP server signs in with the engine's
+  agent token.
+
+### Connectors
+
+Connectors locked down (audit 4, X-N1, X-N2, X-N4, X-N5). Auth changes:
+the connectors' tables are the server's own, and `env:` secrets read only
+variables with a prefix. These change by default:
+
+- `chloedb_connectors`, `chloedb_connector_runs` and
+  `chloedb_connector_state` are written by the server only: a statement or
+  write that changes them answers 403 `server_owned` for every key, an
+  admin's too (the root token is still let through). Change a connector
+  with `POST /v1/admin/connectors/NAME`. A write key could otherwise point a
+  connector, with its credentials, at any URL, or give its run a key that
+  writes every table (`target = '*'`).
+- The schedule, a run and a push check each config row as the API does; a
+  row that fails shows health `invalid` and does not run. Configs record
+  `updated_by` (the column is added to an existing table at the next change).
+- A connector reaches the public internet only. A system on a private
+  network or the server's own machine needs `"allow_internal": true` in the
+  connector's config; link-local addresses (cloud metadata) are refused
+  even then. **Connectors made before this that read an internal system
+  (a Prometheus inside the cluster, say) fail until it is set.**
+- A connector's auth and headers go to its configured origin only:
+  redirects are followed within it (five at most), and an `http_json` next
+  page elsewhere is asked without them or any secret.
+- An answer is read up to 32 MiB (`max_body_mb`, up to 1024), a Prometheus
+  run keeps 20,000 records at most (ending at an earlier step when its
+  series make more), and a push takes 20,000 records (413 beyond) and a
+  body of 32 MiB at most.
+- An `env:` secret names a variable that starts with
+  `CHLOEDB_CONNECTOR_SECRET_` (`--connector-env-prefix`); another is
+  refused (400) and, if kept from before, not read. A dry run
+  (`POST /v1/admin/connectors/test`) takes no `env:` secret.
 
 ### SQL and the engine
 
@@ -59,6 +103,8 @@ order. Auth changes: a connector's push key reads nothing, and
 - A short read-only statement can no longer stop the server. A chain of 250 `UNION ALL` queries (`INTERSECT` and `EXCEPT` at 260), a 990-term `'a' || 'a' || ...`, or a `GROUP BY` of a 990-term sum used to abort the process with a stack overflow, on a single server and on a coordinator, for any key that may read. Each `UNION`, `INTERSECT` or `EXCEPT` now counts eight levels of the 1,000 a statement may nest (so up to 125 queries joined), and set operations are planned along their chain instead of recursing down it. An expression nested more than 48 levels deep runs on ChloeDB's operators instead of DataFusion, which took seconds for it and then overflowed. A statement that nests deep is planned and run on a thread with 8 MiB of stack, whichever thread called it: the server's or an application's `Db::query` or `Db::sql`. Past the limit the answer is a 400 with `error_code` `query_invalid`: "the statement nests more than 1000 levels deep (... or more than 125 queries joined by UNION, INTERSECT or EXCEPT)". Through a coordinator, a plan too deep for the shard protocol's messages is a 400 `query_invalid` too. It used to be a 502, and the shard's copy was marked as failing (audit PRF-1).
 - Planning a statement stops at the request's deadline and when the client goes away, with a 504 `deadline_exceeded`. A statement longer than 2 KiB is planned on a blocking thread, so a long one no longer holds a thread that serves the other requests. `Db::query_with` and `Db::sql_with` stop planning at their `ExecOptions` deadline as well. A chain of 2,000 `WITH` results plans in 0.3 s. It took 13.5 s, past the deadline, because each result copied the rest of the statement (audit PRF-2).
 - A write that runs while `ALTER TABLE` adds, renames or drops a column of its table now applies to the table's new columns, as long as it names only columns the table keeps. Before, `/v1/write` answered a 400 `schema_invalid` ("document has 4 values, table has 3 fields", not retryable), and an `INSERT`, `UPDATE` or `DELETE` failed with "table ... was altered ... while the statement ran; run it again". Now a statement whose table changed between binding and writing is bound again and run, up to ten times, on a server and in `Db::sql` (audit PRF-3).
+- A call of a stored function can no longer stop the server with a stack overflow. Calls are written out after the statement's text is checked, so `SELECT f16(n) FROM t` (25 bytes), with sixteen functions each calling the one before and each body a 990-term sum, planned about 16,000 levels deep. Functions whose bodies call one another, or calls nested in arguments, `f1(f1(f1(n)))`, did the same. A call written out is now measured before it is walked into, and a statement whose calls written out nest deeper than 1,000 levels, or hold more than 250,000 expressions (a body that uses its parameter four times and calls one that does too, sixteen deep), is refused with "f2(...) written out nests more than 1000 levels deep ..." or "the calls of g1 written out hold more than 250000 expressions ...". A statement that may call a stored function is planned and run on a thread with 8 MiB of stack, however short its text (audit 4, X-B1).
+- A condition of many parts over rows in memory no longer reaches DataFusion as a chain as deep as it has parts. `tags @> :tags` with a list of 2,000 values (an `IN` for each value, joined by `AND`) over 5,000 rows, or a long `WHERE` over joined rows, became a chain as deep as the list, which DataFusion walks recursively, and the process aborted. An `AND` or `OR` of up to 1,024 conditions now reaches DataFusion as a balanced tree, and a wider one runs on ChloeDB's operators, which evaluate it in a loop (audit 4, X-B2).
 - A segment whose graph section holds damaged offsets is refused as corrupt when it opens. Before, offsets that passed the size checks could describe a range of petabytes, and a graph query over them aborted the process trying to allocate it (found by the nightly fuzzer, issue #485).
 
 #### Documentation
@@ -79,6 +125,12 @@ order. Auth changes: a connector's push key reads nothing, and
   rows: about 40 bytes a row once merged. Rollups made by 0.3.1 and 0.3.2
   keep their text keys and go on working; `DROP ROLLUP` and `CREATE
   ROLLUP` again to get the smaller table.
+- ChloeDB: a rollup made since this release keeps the option
+  `needs_chloedb_0_3_3` in its definition. 0.3.2 can read such a rollup
+  but not refresh it (its refresher writes text keys), and it refuses the
+  definition with "no option needs_chloedb_0_3_3", so its refresh says why
+  instead of serving stale buckets. Open a database whose rollups 0.3.3
+  made with 0.3.3 or later (audit 4, X-I5).
 - `log_series_bench rollup` prints the rollup's bytes on disk, as flushed
   and once merged.
 
@@ -141,6 +193,29 @@ order. Auth changes: a connector's push key reads nothing, and
 - Feature store demo: impressions older than three hours are let go (`--keep`), and a model trains on the last 30 minutes, so training stays quick in a demo left running; the shoppers/s badge counts every shopper thread's requests; `serve --local` no longer starts ChloeCtx beside it; the pipeline diagram scrolls on a phone (audit DAP-12, DAP-15, DAP-16, DAP-23).
 
 ### Apps
+
+#### Security (audit 4: X-G1, X-G6, X-G7)
+
+- A screen's `PARAMS (x = <expression>)` is worked out in a fresh QuickJS
+  interpreter during the build check and screen edits (no Node, 200 ms, 16 MB),
+  never with `new Function` in the engine's process. An expression that reaches
+  for `process`, `require` or `import()` gives no value and its query is not
+  dry-run.
+- `claude -p` and `codex exec` start with a reduced environment (PATH, HOME,
+  user, locale, temp folder, proxy and certificates, and the CLI's own
+  `ANTHROPIC_*`/`CLAUDE_*` or `OPENAI_*`/`CODEX_*`), never the engine's tokens.
+  `STRATA_APPS_CHILD_ENV` names more to keep.
+- The `codex` provider is off unless `STRATA_APPS_CODEX_ON=1` (or
+  `STRATA_APPS_PROVIDER=codex`); a build asking for it otherwise gets a 400.
+  When on, its answers cost what their tokens cost
+  (`STRATA_APPS_CODEX_USD_PER_MTOK`, default `1.25,0.125,10`) against the
+  spending cap, and Stop kills a Codex build at once.
+- The MCP server (`engine/mcp.mjs`) signs in with the engine's agent token
+  (`STRATA_APPS_AGENT_TOKEN`, or `DATA/agent.token`, which the engine makes on
+  first start, mode 0600) and does not start without one. The engine accepts
+  it as a studio sign-in beside a cluster too, and refuses a bearer token that
+  is neither chloedb-server's nor the agent's, with a login or without.
+  MCP `publish` needs `confirm: true` at every access (unpublishing needs none).
 
 #### Changed
 
@@ -265,6 +340,9 @@ No one-way door.
 - A server removes, when it starts, the copies of its database that a transfer left behind because the server was stopped partway through (`.db.strata.copy-*`, `.db.strata.restore-*`). Home now reports a copy that uses over twice the disk of its shard's other copies, when the difference is more than 1 GB (audit LIV-7).
 - Home's readiness card counted routes twice ("3 routes" for 2) and counted built-in rules as having no runbook. It also said "1 shards have one copy". The full `GET /v1/alerts` now gives `runbook_docs` to each rule whose runbook is compiled in (audit CCW-13).
 - Rollouts: the upgrader's note about the app engine's image now starts with "App engine image:", so it no longer reads as the servers' version (audit LIV-15).
+- The cluster simulator's check of a late-won term now asks that its primary hold the writes acknowledged by an older term's primary, as Raft promises, rather than every write that was a transaction of an older term. A retry of an old term's write is acknowledged by a newer primary once that primary's term commits, so nightly seed 624144435 reported a lost write that was none: a cut-off replica won a stale term after a 10 s vote round and was fenced before serving anything. The server is unchanged (0.3.2 fails the seed the same way); the seed is kept in the simulator's test.
+- CI: the on-demand runner's secrets (`DIGITALOCEAN_TOKEN`, and `CI_RUNNER_ADMIN_TOKEN`, which has Administration on the repository) are read from the environment `ci-runner`, which only main may use, so a branch's copy of `ci.yml` cannot read them. A run outside main (a pull request's, the merge queue's, a tag's) is placed by `ci-runner.yml`'s new job `place`, which runs main's code with them and posts the label as the commit status `ci-runner`. The secrets have to be moved from the repository into that environment (`.github/ci-runner/README.md`) (audit 4, X-I2).
+- CI: chloedb-server's Postgres tests fail instead of passing without running when the runner has no Postgres (`CHLOEDB_TEST_POSTGRES_REQUIRED`, set on Linux), and the on-demand runner's image has Postgres's programs again, unpacked so that no service starts while it is built (audit 4, X-I3).
 
 ## 0.3.2
 

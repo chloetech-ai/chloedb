@@ -464,7 +464,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
         .route("/v1/admin/connectors/:name/run", post(connectors_run))
         .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
-        .route("/v1/connectors/:name/push", post(connectors_push).layer(rows.clone()))
+        .route("/v1/connectors/:name/push", post(connectors_push).layer(DefaultBodyLimit::max(app.svc.max_body.min(crate::connectors::PUSH_BODY_MAX))))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -960,6 +960,14 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         // A key for operations: the server's views, and for `ops` the
         // bounded actions ([`crate::ops::role_may`]).
         Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may_by_role(need, &format!("{method} {route}"), crate::ops::role_may(Some(keys::Role::Ops), &method, route)).err(),
+        // A tier 3 action (it loses data or costs money) is never an
+        // agent's alone, whatever its key (audit X-D2): it files a change
+        // request, which a person applies with their own key.
+        Some(w) if agent_tier_refused(w, &method, route) => Some(ApiError::coded(
+            403,
+            "change_request_required",
+            format!("{method} {route} loses data or costs money (tier 3): an agent does not do it alone, even with an admin key. Dry run it (POST /v1/admin/changes/preview) and file a change request (POST /v1/admin/changes) for a person to approve"),
+        )),
         // An agent says why it changes the server: the audit log keeps it.
         Some(w) if agent_needs_reason(w, &method, route) => Some(ApiError::coded(
             400,
@@ -1091,6 +1099,15 @@ fn agent_needs_reason(w: &Principal, method: &axum::http::Method, route: &str) -
         && !route.starts_with("/v1/feedback")
         && crate::ops::is_agent(w, caller.as_ref())
         && caller.as_ref().is_none_or(|c| c.reason.as_deref().is_none_or(|r| r.trim().is_empty()))
+}
+
+/// Whether a request is an agent's tier 3 action ([`crate::ops::tier`]),
+/// which it files as a change request instead. SQL is judged by its
+/// statement, in [`sql`] ([`crate::changes::sql_tier`]). An approved
+/// change is applied with the approver's own key and headers that name no
+/// agent ([`crate::changes::applying`]), so it is not refused here.
+fn agent_tier_refused(w: &Principal, method: &axum::http::Method, route: &str) -> bool {
+    crate::ops::tier(method, route) >= 3 && crate::ops::is_agent(w, keys::caller().as_ref())
 }
 
 /// Why a request failed on the client's side (4xx), for [`auth`] to log.

@@ -502,16 +502,57 @@ pub const INLINE_DEPTH: usize = 100;
 const INLINE_BYTES: usize = INLINE_DEPTH - 1;
 
 /// Whether `sql` may nest deeper than [`INLINE_DEPTH`], by [`check_depth`]'s
-/// bound: a long statement is tokenized once more to tell. One that does
-/// not tokenize is not deep (its parse fails on the thread that asks).
+/// bound, or may call a stored function: a call is written out after the
+/// text is read ([`crate::query::function::expand`]), and may nest as
+/// deep as a statement may ([`MAX_EXPR_DEPTH`]) however short its text.
+/// A statement with a parenthesis or longer than [`INLINE_BYTES`] is
+/// tokenized once more to tell. One that does not tokenize is not deep
+/// (its parse fails on the thread that asks).
 pub fn nests_deep(sql: &str) -> bool {
-    if sql.len() <= INLINE_BYTES {
+    if sql.len() <= INLINE_BYTES && !sql.contains('(') {
         return false;
     }
     match Tokenizer::new(&GenericDialect {}, sql).tokenize() {
-        Ok(tokens) => depth(&tokens, INLINE_DEPTH).is_err(),
+        Ok(tokens) => may_call_stored(&tokens) || (sql.len() > INLINE_BYTES && depth(&tokens, INLINE_DEPTH).is_err()),
         Err(_) => false,
     }
+}
+
+/// Words a parenthesis follows that name no function: a stored
+/// function's name may be any other word but a built-in one's.
+const NOT_CALLS: &[Keyword] = &[
+    Keyword::ALL, Keyword::AND, Keyword::ANY, Keyword::ARRAY, Keyword::AS, Keyword::BETWEEN, Keyword::BY, Keyword::CASE, Keyword::CAST, Keyword::CHAR, Keyword::CHECK, Keyword::CREATE, Keyword::DECIMAL,
+    Keyword::DEFAULT, Keyword::ELSE, Keyword::EXCEPT, Keyword::EXISTS, Keyword::EXTRACT, Keyword::FILTER, Keyword::FROM, Keyword::FUNCTION, Keyword::GROUP, Keyword::HAVING, Keyword::IN, Keyword::INTERSECT,
+    Keyword::INTERVAL, Keyword::INTO, Keyword::IS, Keyword::JOIN, Keyword::KEY, Keyword::LATERAL, Keyword::LIMIT, Keyword::NOT, Keyword::NUMERIC, Keyword::OFFSET, Keyword::ON, Keyword::OPTIONS, Keyword::OR,
+    Keyword::ORDER, Keyword::OVER, Keyword::PARTITION, Keyword::PRIMARY, Keyword::RETURNS, Keyword::ROW, Keyword::SELECT, Keyword::SET, Keyword::TABLE, Keyword::THEN, Keyword::TRY_CAST, Keyword::UNION,
+    Keyword::UNIQUE, Keyword::UNNEST, Keyword::USING, Keyword::VALUES, Keyword::VARCHAR, Keyword::WHEN, Keyword::WHERE, Keyword::WITH, Keyword::WITHIN,
+];
+
+/// Words after which a name followed by a parenthesis is a table's, with
+/// its columns: `INSERT INTO t (a, b)`, `CREATE TABLE t (...)`.
+const NAMES_TABLE: &[Keyword] = &[Keyword::INTO, Keyword::TABLE, Keyword::EXISTS, Keyword::INDEX, Keyword::ON, Keyword::REFERENCES, Keyword::FUNCTION];
+
+/// Whether `tokens` call a function that may be a stored one: a word,
+/// not a built-in function's name nor one of [`NOT_CALLS`], followed by
+/// a parenthesis, and not a table's name before its columns.
+fn may_call_stored(tokens: &[Token]) -> bool {
+    let mut words = tokens.iter().filter(|t| !matches!(t, Token::Whitespace(_))).peekable();
+    let mut before: Option<&Token> = None;
+    while let Some(t) = words.next() {
+        let prev = before.replace(t);
+        let Token::Word(w) = t else { continue };
+        if w.quote_style.is_some() || !matches!(words.peek(), Some(Token::LParen)) || NOT_CALLS.contains(&w.keyword) {
+            continue;
+        }
+        if matches!(prev, Some(Token::Word(p)) if NAMES_TABLE.contains(&p.keyword)) {
+            continue;
+        }
+        let name = w.value.to_ascii_lowercase();
+        if !name.starts_with("__") && !crate::query::function::RESERVED.contains(&name.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 thread_local! {

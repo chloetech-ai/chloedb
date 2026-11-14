@@ -175,6 +175,14 @@ async fn agents_list_query_check_and_change_tables_within_their_keys_scope() {
     assert!(!failed && rows.to_string().contains("second, with a comma") && rows.to_string().contains("an object"), "{rows}");
     let (_, j) = post(&base, "/v1/mcp", Some(&write), json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "import", "arguments": {"table": "notes"}}})).await;
     assert_eq!(j["error"]["code"], -32602, "rows are needed: {j}");
+    // create: an admin key makes the table from the rows' header and values.
+    let gear = "id,title,price,stock\ng-1,Trail Running Shoes,89.5,12\ng-2,Rain Jacket,120,3\n";
+    assert!(tool(&base, &write, "import", json!({"table": "gear", "data": gear, "create": true})).await.0, "a write key makes no table");
+    let (failed, imported) = tool(&base, &admin, "import", json!({"table": "gear", "data": gear, "create": true})).await;
+    assert!(!failed && imported["written"] == 2, "{imported}");
+    assert_eq!(imported["create_table"], "CREATE TABLE IF NOT EXISTS gear (id KEYWORD PRIMARY KEY, title TEXT, price FLOAT, stock INT)");
+    let (failed, found) = tool(&base, &read, "query", json!({"sql": "SELECT id FROM gear WHERE stock > 5 AND MATCH(title, 'running')"})).await;
+    assert!(!failed && found.to_string().contains("g-1") && !found.to_string().contains("g-2"), "{found}");
 
     // check_sql knows the statements execute takes before SQL's own.
     let (failed, c) = tool(&base, &read, "check_sql", json!({"sql": "CREATE ROLLUP sold_daily ON products AS SELECT date_trunc('day', ts), category, COUNT(*)"})).await;

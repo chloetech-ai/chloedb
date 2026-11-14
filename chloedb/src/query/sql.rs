@@ -993,6 +993,11 @@ struct Binder<'a> {
     guards: RefCell<Vec<(Guard, Option<Pred>, bool)>>,
     /// Whether `ORDER BY` is being bound.
     ordering: Cell<bool>,
+    /// The `fuzzy` option of each `MATCH` bound so far, by field and text:
+    /// a `bm25` of the same field and text without its own takes it, so
+    /// that ranking the rows a forgiving `MATCH` found does not score the
+    /// misspelt words as written and drop every row (found by the Swarm).
+    match_fuzzy: RefCell<Vec<(usize, String, Value)>>,
 }
 
 impl<'a> Binder<'a> {
@@ -1007,6 +1012,7 @@ impl<'a> Binder<'a> {
             tables: &[],
             guards: RefCell::new(Vec::new()),
             ordering: Cell::new(false),
+            match_fuzzy: RefCell::new(Vec::new()),
         }
     }
 
@@ -1901,6 +1907,12 @@ impl<'a> Binder<'a> {
                         let field = self.searched_field(field, "bm25")?;
                         let text = self.literal(text)?.as_str().ok_or_else(|| err("bm25 text must be a string"))?.to_string();
                         let mut opts = opts;
+                        if !opts.contains_key("fuzzy") {
+                            let key = text.trim().to_lowercase();
+                            if let Some((_, _, z)) = self.match_fuzzy.borrow().iter().find(|(f, t, _)| *f == field && *t == key) {
+                                opts.insert("fuzzy".into(), z.clone());
+                            }
+                        }
                         Expand::from_opts(&opts).map_err(err)?;
                         crate::query::exec::plain_syntax(&opts)?;
                         // Expansion is a rewrite before the plan
@@ -2342,6 +2354,9 @@ impl<'a> Binder<'a> {
                     None => text.clone(),
                 };
                 let p = Pred::Match { field, query, expand };
+                if let Some(z) = opts.get("fuzzy") {
+                    self.match_fuzzy.borrow_mut().push((field, text.trim().to_lowercase(), z.clone()));
+                }
                 self.guard(&mut guarded, || GuardSite::Match { field, text, expand }, need, Some(&p), "MATCH")?;
                 p
             }

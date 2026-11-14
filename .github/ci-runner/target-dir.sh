@@ -19,5 +19,10 @@ if [ -n "${CI_RUNNER_CACHE:-}" ]; then
   fi
   mkdir -p "$dir"
   echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
+  # The compile cache both runners share (provision.sh installs sccache):
+  # a build folder that starts over recompiles from it, not from source.
+  if command -v sccache >/dev/null; then
+    { echo "RUSTC_WRAPPER=sccache"; echo "SCCACHE_DIR=$(dirname "$CI_RUNNER_CACHE")/sccache"; echo "SCCACHE_CACHE_SIZE=40G"; } >> "$GITHUB_ENV"
+  fi
   echo "building in $dir ($(df -h --output=avail "$dir" | tail -1 | tr -d ' ') free)"
 fi

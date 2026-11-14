@@ -130,6 +130,18 @@ tokio::task_local! {
     pub static OWN: bool;
 }
 
+/// The tables statement `command` changes: the one it writes, makes,
+/// alters or drops, or whose rank profile it makes or drops.
+fn changed_tables(command: &Command) -> Vec<&str> {
+    match command {
+        Command::Write { table, .. } | Command::CreateRankProfile { table, .. } => vec![table.as_str()],
+        Command::CreateTable { schema, .. } => vec![schema.table.as_str()],
+        Command::DropTable { tables, .. } => tables.iter().map(String::as_str).collect(),
+        Command::AlterTable { table: Some(t), .. } | Command::DropRankProfile { table: Some(t), .. } => vec![t.as_str()],
+        _ => Vec::new(),
+    }
+}
+
 /// Whether the request being served is the cluster's own ([`OWN`]).
 pub fn own() -> bool {
     OWN.try_with(|o| *o).unwrap_or(false)
@@ -4200,6 +4212,10 @@ impl Service {
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
         }
+        // The connectors' configs, runs and state are the server's own.
+        for t in changed_tables(&command) {
+            crate::connectors::may_change(t, "a statement")?;
+        }
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -4286,25 +4302,69 @@ impl Service {
                 Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "rollup", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
             }
             Statement::Create { rollup, if_not_exists } => {
-                // Made here, and folded by the refresher a few seconds on:
-                // a long table's first fold takes minutes.
+                // Made here. A table of up to FILL_NOW rows is folded at
+                // once, so the rollup answers as soon as the statement
+                // does; a longer one's first fold, which takes minutes, is
+                // the refresher's, a few seconds on.
                 keys::note(obs::truncate(sql, 500).into_owned());
                 self.takes_writes()?;
-                let _entry = self.moving.enter();
-                self.not_held()?;
-                let by = self.admitted();
-                let timeout = self.timeout_of(timeout_ms);
-                let db = db.clone();
-                let w = tokio::task::spawn_blocking(move || {
-                    wait_for_writer(Instant::now() + timeout, || {
-                        db.create_rollup(&rollup, if_not_exists, &db.exec)?;
-                        Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
+                let (name, base, shown) = (rollup.name.clone(), rollup.base.clone(), rollup.name.clone());
+                let made = {
+                    let _entry = self.moving.enter();
+                    self.not_held()?;
+                    let by = self.admitted();
+                    let timeout = self.timeout_of(timeout_ms);
+                    let db = db.clone();
+                    let made = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let m = made.clone();
+                    let w = tokio::task::spawn_blocking(move || {
+                        wait_for_writer(Instant::now() + timeout, || {
+                            m.store(db.create_rollup(&rollup, if_not_exists, &db.exec)?, std::sync::atomic::Ordering::Relaxed);
+                            Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
+                        })
                     })
+                    .await
+                    .map_err(ApiError::internal)??;
+                    self.replicated(w, timeout, by).await?;
+                    made.load(std::sync::atomic::Ordering::Relaxed)
+                };
+                self.learn_tables(true).await;
+                const FILL_NOW: i64 = 1_000_000;
+                let db = db.clone();
+                let filled = tokio::task::spawn_blocking(move || -> chloedb::Result<Option<chloedb::db::RefreshStats>> {
+                    if !made {
+                        return Ok(None);
+                    }
+                    let rows = db.query(&format!("SELECT COUNT(*) FROM {}", chloedb::query::sql::ident(&base)), &Params::new())?;
+                    match rows.rows.first().and_then(|r| r.first()) {
+                        Some(Value::Int(n)) if *n <= FILL_NOW => db.refresh_rollup(&name, false).map(Some),
+                        _ => Ok(None),
+                    }
                 })
                 .await
-                .map_err(ApiError::internal)??;
-                let w = self.replicated(w, timeout, by).await?;
-                Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+                .map_err(ApiError::internal)?
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "could not fill a new rollup at once; the refresher will");
+                    None
+                });
+                let note = match (made, &filled) {
+                    (false, _) => "the rollup was there already: nothing changed".to_string(),
+                    (true, Some(_)) => "made and filled: query it by its name now; it is kept up to date a few seconds after rows arrive".to_string(),
+                    (true, None) => "made; the refresher fills it in the background (minutes for a long table): until then it has fewer rows, and REFRESH ROLLUP fills it now".to_string(),
+                };
+                let done = filled.is_some();
+                let s = filled.unwrap_or_default();
+                let columns = ["rollup", "made", "filled", "buckets_folded", "rows_written", "note"].map(String::from).to_vec();
+                let rows = vec![vec![
+                    Value::Str(shown),
+                    Value::Bool(made),
+                    Value::Bool(done),
+                    Value::Int(s.folded as i64),
+                    Value::Int(s.rows_written as i64),
+                    Value::Str(note),
+                ]];
+                let rs = ResultSet { columns, rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+                Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "rollup", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
             }
             Statement::Drop { .. } => {
                 keys::note(obs::truncate(sql, 500).into_owned());
@@ -4641,6 +4701,8 @@ impl Service {
     async fn write_ops_counted(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
         own_marks_ok(&ops)?;
+        // The connectors' configs, runs and state are the server's own.
+        crate::connectors::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
