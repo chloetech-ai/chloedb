@@ -701,7 +701,7 @@ window.__sa_numbers = (() => {
       const n = num(v);
       if (n == null) return v == null ? '' : String(v);
       if (!whole || !Number.isInteger(n)) return app.fmt.money(n);
-      try { return n.toLocaleString(undefined, { style: 'currency', currency: (window.__SA && window.__SA.currency) || 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
+      try { return n.toLocaleString((window.__SA && window.__SA.locale) || undefined, { style: 'currency', currency: (window.__SA && window.__SA.currency) || 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
     };
     const FORMAT = {
       date: (v) => app.fmt.date(v), datetime: (v) => app.fmt.datetime(v), time: (v) => app.fmt.time(v), ago: (v) => app.fmt.ago(v),
@@ -752,7 +752,13 @@ window.__sa_numbers = (() => {
       };
       // More than three columns is a list of cards on a phone (kit.css).
       const heads = cols.map((c) => c.label ?? human(c.key || ''));
-      if (phone.matches && lookIs() !== 'plain') return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cell, s, path);
+      // (a column of whole amounts reads the same on a phone as on a computer:
+      // "28 €", never "28,00 €" on one and "28 €" on the other)
+      if (phone.matches && lookIs() !== 'plain') {
+        const wholeMoney = cols.map((c, i) => c.format === 'money' && typeof fns[i] !== 'function' && rows.every((r) => r[c.key] == null || r[c.key] === '' || Number.isInteger(Number(r[c.key]))));
+        const cellP = (c, fn, r) => { const i = cols.indexOf(c); return i >= 0 && wholeMoney[i] && r[c.key] != null && r[c.key] !== '' && !c.badge ? moneyOf(r[c.key], true) : cell(c, fn, r); };
+        return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cellP, s, path);
+      }
       // The figures: right aligned, a change coloured by its sign, one
       // column with an inline bar, and a total row for the amounts.
       const rawOf = (c, i, r) => { const fn = fns[i]; const v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key]; return v instanceof Node ? null : v; };

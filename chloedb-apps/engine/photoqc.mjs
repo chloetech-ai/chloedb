@@ -36,7 +36,9 @@ export function imageSize(bytes) {
 // The bars a full-width photo must clear.
 // (maxSharp: a scene so full of edges that words over it cannot be read and
 // the page's calm is lost; the built-in set, chosen by eye, stays under 45)
-export const FULL_BLEED = { minWidth: 1200, maxAspect: 3.2, minMean: 0.12, maxMean: 0.86, minContrast: 0.08, minSharp: 5, maxSharp: 80 };
+// (minStructure: edges at the scale of things, which a texture, grain or a
+// plain gradient lacks: those measure near 0, photos of anything above 5)
+export const FULL_BLEED = { minWidth: 1200, maxAspect: 3.2, minMean: 0.12, maxMean: 0.86, minContrast: 0.08, minSharp: 5, maxSharp: 80, minStructure: 1 };
 
 // Light (mean luminance, 0 to 1), contrast (its standard deviation) and
 // sharpness (the Laplacian's mean square, x1000) of an image at 256 px
@@ -97,7 +99,18 @@ export async function pixelStats(bytes, type = 'jpeg') {
       const colorful = Math.sqrt(sd(rgS, rgQ) ** 2 + sd(ybS, ybQ) ** 2) + 0.3 * Math.sqrt((rgS / N) ** 2 + (ybS / N) ** 2);
       const hue = cw ? ((Math.atan2(hy, hx) * 180) / Math.PI + 360) % 360 : null;
       const agree = cw ? Math.hypot(hx, hy) / cw : 0;
-      return { mean, contrast: Math.sqrt(q / L.length), sharp: (1000 * lap) / Math.max(1, n), colorful, hue, agree };
+      // structure: edges at the scale of things in the picture (8 px blocks
+      // of it, averaged), which grain and a smooth gradient do not have
+      const B = 8, BW = Math.floor(W / B), BH = Math.floor(H / B);
+      const M = new Float32Array(BW * BH);
+      for (let by = 0; by < BH; by++) for (let bx = 0; bx < BW; bx++) {
+        let t = 0;
+        for (let y = 0; y < B; y++) for (let x = 0; x < B; x++) t += L[(by * B + y) * W + bx * B + x];
+        M[by * BW + bx] = t / (B * B);
+      }
+      let lap2 = 0, n2 = 0;
+      for (let y = 1; y < BH - 1; y++) for (let x = 1; x < BW - 1; x++) { const i = y * BW + x; const v = 4 * M[i] - M[i - 1] - M[i + 1] - M[i - BW] - M[i + BW]; lap2 += v * v; n2++; }
+      return { mean, contrast: Math.sqrt(q / L.length), sharp: (1000 * lap) / Math.max(1, n), colorful, hue, agree, structure: (1000 * lap2) / Math.max(1, n2) };
     }, `data:image/${type};base64,${Buffer.from(bytes).toString('base64')}`);
   } catch { return null; } finally { await page.close().catch(() => {}); }
 }
@@ -127,6 +140,7 @@ export async function fullBleedProblems(bytes, { bars = FULL_BLEED, stats = pixe
   if (st.mean > bars.maxMean) out.push('washed out');
   if (st.contrast < bars.minContrast) out.push('flat');
   if (st.sharp < bars.minSharp) out.push('blurred');
+  if (bars.minStructure && st.structure != null && st.structure < bars.minStructure) out.push('no picture in it: a texture or a plain gradient');
   if (bars.maxSharp && st.sharp > bars.maxSharp) out.push('too busy to carry words');
   if (clashes(st, hue)) out.push("its loud colours clash with the design's");
   return out;

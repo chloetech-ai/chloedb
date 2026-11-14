@@ -215,3 +215,24 @@ test('an owner\'s photo takes the hero only when it looks right, and not when th
   await placeScreenPhotos(gallery, { find, own: ['f1', 'f2'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
   assert.notEqual(gallery.body[0].src, 'f1');
 });
+
+test('an owner\'s photo the screen itself put in its hero leaves the hero when it has no picture in it, and stays in the gallery', async () => {
+  const find = async () => null;
+  const s = { page: 'front', body: [{ hero: 'Hi', src: 'f1', look: 'photo' }, { gallery: [{ src: 'f1' }, { src: 'f2' }] }] };
+  const placed = await placeScreenPhotos(s, { find, own: ['f1', 'f2'], ownBytes: async () => Buffer.from('x'), judge: async () => ['no picture in it: a texture or a plain gradient'], drawn: false });
+  assert.equal(s.body[0].src, undefined);
+  assert.equal(s.body[0].look, 'type');
+  assert.deepEqual(s.body[1].gallery.map((g) => g.src), ['f1', 'f2']);
+  assert.ok(placed.some((p) => p.source === 'own refused'));
+  const ok = { page: 'front', body: [{ hero: 'Hi', src: 'f1', look: 'photo' }] };
+  await placeScreenPhotos(ok, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.equal(ok.body[0].src, 'f1');
+});
+
+test('a texture or a plain gradient has no picture in it: refused for a full-width place', async () => {
+  const stats = async () => ({ mean: 0.5, contrast: 0.15, sharp: 12, structure: 0.02, colorful: 10, hue: null, agree: 0 });
+  const png = Buffer.alloc(32); png.write('\x89PNG\r\n\x1a\n', 0, 'binary'); png.writeUInt32BE(1600, 16); png.writeUInt32BE(900, 20);
+  const { fullBleedProblems } = await import('../engine/photoqc.mjs');
+  assert.ok((await fullBleedProblems(png, { stats })).some((p) => /no picture in it/.test(p)));
+  assert.ok(!(await fullBleedProblems(png, { stats: async () => ({ ...(await stats()), structure: 40 }) })).some((p) => /no picture/.test(p)));
+});

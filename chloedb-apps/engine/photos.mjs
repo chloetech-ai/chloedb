@@ -471,6 +471,21 @@ export async function placeScreenPhotos(screen, { used = new Set(), find = findP
       placed.push({ query: j.query, source: 'drawn' });
     }
   });
+  // An owner's photo the screen itself put in a hero or a band gets the same
+  // look as any other there: one with no picture in it (a texture, a plain
+  // gradient) or too dark or flat to carry words leaves the hero to the
+  // design's own ground (it stays wherever else the screen shows it).
+  if (judge && ownBytes && (own || []).length) {
+    const ownSet = new Set(own.map(String));
+    const heroes = [];
+    const walk2 = (v) => { if (Array.isArray(v)) { v.forEach(walk2); return; } if (!v || typeof v !== 'object') return; if ((v.hero !== undefined || v.band !== undefined) && typeof v.src === 'string' && ownSet.has(v.src)) heroes.push(v); for (const x of Object.values(v)) if (x && typeof x === 'object') walk2(x); };
+    walk2(screen?.body || []);
+    for (const v of heroes) {
+      const bytes = await ownBytes(v.src).catch(() => null);
+      const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : [];
+      if (problems.length) { placed.push({ query: v.src, source: 'own refused', problems }); delete v.src; if (v.look === 'photo') v.look = 'type'; }
+    }
+  }
   return placed;
 }
 
