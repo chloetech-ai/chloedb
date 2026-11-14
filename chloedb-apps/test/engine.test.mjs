@@ -3474,3 +3474,13 @@ test('a change that gives a view only a new "for" (no code, edits or patch) keep
   assert.equal(keep.views[0].for, 'owner');
   assert.match(keep.views[0].statement, /^FOR owner$/m);
 });
+
+test('OFFERS: an ACTION line that also says CALL, PAY, CHARGE and PAID is split into those clauses, after a TEXT clause too; a LIST ACTION keeps its own words', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const c = compileStatement("CREATE SCREEN home TITLE 'x'\nOFFERS products AS candles\n  NAME name  TEXT scent  PRICE price  LEFT stock\n  OUT 'Sold out'  SOON 3  COUNT  QTY\n  ACTION 'Buy and pay'  CALL buy-candle  PAY orders  CHARGE total  PAID status\n  DONE 'Order placed'\nLIST t\n  FORM (a)\n  ACTION 'Done' SET done = true");
+  const [offers, list] = c.screen.body;
+  assert.equal(offers.action, 'Buy and pay');
+  assert.deepEqual([offers.call, offers.pay, offers.charge, offers.paid, offers.done], ['buy-candle', 'orders', 'total', 'status', 'Order placed']);
+  assert.equal(list.actions[0].label, 'Done');
+  assert.deepEqual(list.actions[0].sets, { done: true });
+});

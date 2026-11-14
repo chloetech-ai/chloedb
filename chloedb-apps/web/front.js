@@ -570,10 +570,16 @@
       const out = [];
       let loose = null;
       const section = (b, i) => h('section', { class: `fp-sec${b && b.tint ? ' tint' : ''}`, id: (b && b.id) || null }, h('div', { class: 'fp-wrap' }));
-      (Array.isArray(body) ? body : [body]).forEach((b, i) => {
+      // A page's footer is its end, wherever the screen gave it (parts added
+      // after it go above it); paths stay those of the screen's own order.
+      const all = (Array.isArray(body) ? body : [body]).map((b, i) => [b, i]);
+      const ordered = [...all.filter(([b]) => kindOf(b) !== 'footer'), ...all.filter(([b]) => kindOf(b) === 'footer')];
+      ordered.forEach(([b, i]) => {
         const kind = kindOf(b);
         const els = flat(block(b, s, `body[${i}]`));
         if (kind && (FULL.has(kind) || (kind === 'carousel' && b.look === 'slides'))) { loose = null; out.push(...els); return; }
+        // (a part with nothing to show, such as a gallery of no pictures, is no section)
+        if (kind && !els.length) return;
         if (kind) { loose = null; const sec = section(b, i); sec.firstChild.append(...els); if (kind === 'media') sec.classList.add('media'); out.push(sec); return; }
         if (!els.length) return;
         // A block with an id or a tint starts a section of its own, unless
