@@ -3108,7 +3108,7 @@ claude mcp add chloedb --env CHLOEDB_KEY=$CHLOEDB_KEY -- chloedb-server mcp --ur
 </tr>
 <tr>
 <td><code>import</code></td>
-<td>many rows at once into a table: CSV, TSV or JSON lines as text (<code>data</code>), or objects (<code>rows</code>); answers how many it wrote and the columns it skipped</td>
+<td>many rows at once into a table: CSV, TSV or JSON lines as text (<code>data</code>), or objects (<code>rows</code>); <code>create: true</code> makes the table from the rows first (admin key); answers how many it wrote and the columns it skipped</td>
 <td><code>POST /v1/import</code></td>
 </tr>
 <tr>

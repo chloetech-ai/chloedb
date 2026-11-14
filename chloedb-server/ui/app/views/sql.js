@@ -759,7 +759,7 @@ function render(page, r) {
         const isOpen = open.has(t.table) || !!q || ts.length === 1;
         return h("div", { class: "tt" },
           h("div", { class: "tt-h", draggable: "true", title: "Click to open · drag into the editor", ondragstart: (e) => e.dataTransfer.setData("text/plain", quoteName(t.table)), onclick: () => { if (open.has(t.table)) open.delete(t.table); else open.add(t.table); store.set("sql.open", [...open]); drawSide(); } },
-            icon(isOpen ? "down" : "right"), icon("table"), h("span", { class: "grow ellipsis" }, t.table), h("span", { class: "small muted" }, fs.length),
+            icon(isOpen ? "down" : "right"), icon("table"), h("span", { class: "grow ellipsis" }, t.table), h("span", { class: "small muted", title: "Its fields; the rows are counted on the Tables page" }, fmt.plural(fs.length, "field")),
             h("button", { class: "btn ghost icon sm", title: `SELECT * FROM ${t.table} in a new tab`, onclick: (e) => { e.stopPropagation(); add(`SELECT * FROM ${quoteName(t.table)} LIMIT 20;`, t.table); run(); } }, icon("play"))),
           isOpen ? h("div", { class: "tt-f" }, fs.map((f) => h("div", { class: "fi", draggable: "true", title: `${f.name}: drag into the editor, or click to insert`, ondragstart: (e) => e.dataTransfer.setData("text/plain", quoteName(f.name)), onclick: () => ed.insert(quoteName(f.name)) },
             typeBadge(f), h("span", { class: "grow ellipsis" }, f.name), t.short.key === f.name ? h("span", { class: "badge accent", title: "the primary key" }, "key") : null, f.multi ? h("span", { class: "badge" }, "[]") : null))) : null);
