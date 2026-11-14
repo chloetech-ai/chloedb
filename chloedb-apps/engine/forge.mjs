@@ -2163,7 +2163,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const names = [...new Set([...view.tables.map((t) => t.spec.name), ...(plan.tables || []).map((t) => t.name)])];
     const run = (label) => tr.span('check', label, async (c) => {
       const p = await dryRunScreens(engine.db, appId, names, plan);
-      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view), ...await kpiEchoes(engine.db, appId, names, plan, today));
+      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view));
+      // big numbers that are one another's rows and come out equal, on the
+      // rows the tables hold (a change to a screen of an app with data too,
+      // not only a build with figures to check)
+      p.push(...await kpiEchoes(engine.db, appId, names, plan, today));
       c.problems = p.slice(0, 8);
       return p;
     });

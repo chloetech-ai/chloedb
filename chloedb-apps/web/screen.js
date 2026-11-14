@@ -393,15 +393,7 @@ window.__sa_numbers = (() => {
             else if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
             // "$980.00" reads as "$980": cents only when there are some.
             return { ...k, raw, shown: v == null ? '–' : String(v).replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') };
-          }).reduce((out, k) => {
-            // Cards in one row that come out the same (all of what is owed
-            // is past due, and all of that over 90 days) are one card saying
-            // so, not three repeating one figure.
-            const twin = !zero(k) && out.find((o) => o.shown === k.shown && !zero(o) && k.shown !== '–');
-            if (twin) { twin.also = [...(twin.also || []), String(k.label || '')].filter(Boolean); return out; }
-            out.push({ ...k });
-            return out;
-          }, []).map((k) => (k.also?.length ? { ...k, hint: [k.hint, `also ${k.also.join(', ')}`].filter(Boolean).join(' · ') } : k));
+          });
           if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
           // Summary cards: the screen's first numbers lead it, the first of
           // them the largest; a number that needs doing (overdue, owed...)

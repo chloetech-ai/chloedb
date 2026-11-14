@@ -195,3 +195,10 @@ test('a screen that draws a sign-in form before its main part is found', () => {
   assert.equal(signInFirst({ body: [{ h: 'Rows' }, { table: '=rows' }] }), false);
   assert.equal(signInFirst({ body: [{ code: 'async function render(root) { root.append(ui.signIn({})); }' }, { carousel: '=rows' }] }), true);
 });
+
+test('three big numbers that narrow one another (over 90 days, past due, unpaid) are found as parts of the widest', () => {
+  const w = "coalesce(lower(status), '') != 'paid'";
+  const screen = { data: { k0: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 90`, k1: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 0`, k2: `SELECT SUM(amount) AS v FROM r WHERE ${w}` },
+    body: [{ kpis: [{ label: 'Over 90', of: 'k0' }, { label: 'Past due', of: 'k1' }, { label: 'Unpaid', of: 'k2' }] }] };
+  assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Over 90', 'Unpaid'], ['Past due', 'Unpaid']]);
+});
