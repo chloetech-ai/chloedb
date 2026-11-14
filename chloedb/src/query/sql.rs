@@ -2465,13 +2465,22 @@ impl<'a> Binder<'a> {
                 Err(v) => return Err(err(format!("{op} takes a list of values, not {} (one value: {}{} ARRAY[...])", hint::sql_value(&v), field.name, op))),
             },
         };
+        // Each value once, found in a set: a search of the values kept
+        // so far for each was quadratic, 2·10⁸ comparisons for a list of
+        // 20,000 ids before the query started (finding N-B4).
         let mut values: Vec<Value> = Vec::with_capacity(items.len());
+        let (mut texts, mut ints) = (std::collections::HashSet::new(), std::collections::HashSet::new());
         for v in items {
             if v == Value::Null {
                 return Err(err(format!("{op}'s list holds a NULL, which no value of {} equals", field.name)));
             }
             let v = self.compared(f, v)?;
-            if !values.contains(&v) {
+            let new = match &v {
+                Value::Str(s) => texts.insert(s.clone()),
+                Value::Int(i) => ints.insert(*i),
+                v => !values.contains(v),
+            };
+            if new {
                 values.push(v);
             }
         }
