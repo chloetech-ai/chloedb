@@ -622,7 +622,7 @@ const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
-async function publicState(appId) {
+async function publicState(appId, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
@@ -634,7 +634,8 @@ async function publicState(appId) {
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
     // A visitor never gets the owner's views (engine/audience.mjs).
-    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    // ...but its owner and admins, signed in on its own page, get theirs.
+    views: (role === 'owner' || role === 'admin' ? view.views : forVisitors(view.views)).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
@@ -693,7 +694,7 @@ const routes = [
     const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, (await cx.user(id))?.role || null) : appState(id))],
   // Renamed by its owner: the name stays (a later plan does not rename it).
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
     const name = String(b.name || '').trim().replace(/\s+/g, ' ');

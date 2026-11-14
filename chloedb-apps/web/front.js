@@ -142,6 +142,15 @@
 
     const F = {};
 
+    // The app's other screens (a members' list, the owner's Manage) in the
+    // header of a front page, which has no tabs: the ones the person may
+    // open (the studio gives a visitor no owner's screen), less any the
+    // header links already by name.
+    const screenLinks = (links, s, path, close) => {
+      const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
+      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()));
+      return screens.map((x, i) => { const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1); a && a.addEventListener('click', close); return a; });
+    };
     F.nav = (b, s, path) => {
       const links = list(b.links, s, `${path}.links`);
       let el;
@@ -160,7 +169,7 @@
           const a = action(typeof l === 'string' ? { label: l } : { ...l, style: 'navlink' }, s, `${path}.links[${i}]`, 1);
           a && a.addEventListener('click', close);
           return a;
-        }), inMenu),
+        }), screenLinks(links, s, path, close), inMenu),
         act !== undefined ? action(act, s, `${path}.action`, 0) : null,
         h('button', { class: 'fp-menu', type: 'button', 'aria-label': 'Menu', onclick: () => el.classList.toggle('open') }, h('i'), h('i'))));
       return el;

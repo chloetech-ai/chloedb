@@ -1058,7 +1058,9 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
     : gate ? `${noClose(view.code)}\n;{ const __inner = render; render = async (root, app) => { const me = await Promise.resolve(app.me()).catch(() => null); if (!me) { root.replaceChildren(window.__sa_gateView(app, ${gate})); return; } return __inner(root, app); }; }`
       : noClose(view.code);
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  // the app's other screens, for a front page's header to offer them
+  const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title }));
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, screens: others, origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
