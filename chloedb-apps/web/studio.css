@@ -416,7 +416,9 @@ body.bare.designed { background: var(--bg); }
 .bare.designed.look-bold .mark { background: var(--pop); }
 .bare.designed.look-bold .top .look { background: color-mix(in srgb, var(--deep-fg) 16%, transparent); color: var(--deep-fg); }
 @media (max-width: 560px) {
-  .bare.designed:is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  /* room for the tab bar only while it shows: a front page hides it, and the
+     reserve left behind read as a blank band over the page's lists */
+  .bare.designed:not(.front-view):is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
   .bare.designed:is(.look-bold, .look-native) #tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0; width: auto; max-width: none; border-radius: 0;
     display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; align-self: stretch;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--card); border: 0; border-top: 1px solid var(--line); box-shadow: none; }
