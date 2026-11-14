@@ -81,7 +81,7 @@
       <span class="eyebrow">Apps</span>
       <h1>Install ChloeCtx on your machine</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.2.</p>
+      <p class="doc-version">These docs describe release 0.3.3.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: chloectx stores and chloectx prune</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
     <div class="doc-body">
@@ -188,7 +188,7 @@ chloectx doctor</pre>
 <p><code>chloectx install --user</code> merges nine hooks and a permission for the memory tools into <code>~/.claude/settings.json</code> (saving the previous file next to it as <code>settings.json.chloectx-&lt;time&gt;.bak</code>) and registers the MCP server at user scope with <code>claude mcp add-json</code>. A project install backs up the project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code> the same way before it changes them (delete the <code>.bak</code> files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own <code>chloectx install</code> keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.</p>
 <h2 id="check-it">Check it<a class="anchor" href="#check-it" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">$ chloectx doctor
-ChloeCtx 0.3.2 for /home/you/code/app
+ChloeCtx 0.3.3 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    Claude Code CLI: 2.1.299 (Claude Code)
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
