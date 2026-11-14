@@ -25,6 +25,8 @@ import { checkStatic } from './look.mjs';
 const DAY = 86400000;
 // Below this cosine, a library piece or another app's is too far from this app to offer.
 export const MEANING_FIT = Number(process.env.STRATA_APPS_RECOMMEND_FIT || 0.28);
+// A piece only one other app has is offered only this close.
+const PEER_ALONE = 0.38;
 const tsOf = (e) => { const t = Date.parse(String(e?.ts || '').replace(' ', 'T')); return Number.isFinite(t) ? t : 0; };
 const clip = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length <= n ? t : `${t.slice(0, n - 1).replace(/\s+\S*$/, '')}…`; };
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -35,10 +37,13 @@ export const strengthToConfidence = (strength, ageDays = 0) => (1 - Math.exp(-Ma
 // ---- words
 
 // The words of a text that carry its meaning: letters and digits, lowered,
-// four characters or more (short words are mostly glue in any language).
+// four characters or more (short words are mostly glue in any language),
+// without the commonest glue of longer ones, a plural cut to its singular.
+const GLUE = new Set('make made with each that this have from them they their there what when then also more some please want like need just into your about only sure look looks would could should every other than them will been were which where while very much many able'.split(' '));
 export function wordsOf(text) {
-  return new Set(String(text || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
-    .split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 4).map((w) => w.replace(/(ies|es|s)$/, (m) => (w.length > 5 ? (m === 'ies' ? 'y' : '') : m))));
+  return new Set(String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 4 && !GLUE.has(w))
+    .map((w) => (w.length > 4 && w.endsWith('ies') ? `${w.slice(0, -3)}y` : w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)));
 }
 // How much of `a` is in `b` (sets of words).
 export const covered = (a, b) => (a.size ? [...a].filter((w) => b.has(w)).length / a.size : 1);
@@ -299,6 +304,8 @@ export const startPeers = {
       const alike = hits.filter((o) => o.app !== h.app && jaccard(wordsOf(`${o.title} ${o.description}`), wordsOf(`${h.title} ${h.description}`)) >= 0.3).map((o) => o.app);
       const apps = [...new Set([h.app, ...alike])];
       const cos = Number(h.cosine) || 0;
+      // One app's piece, not close: chance more than a pattern of apps like this.
+      if (apps.length < 2 && cos < PEER_ALONE) continue;
       out.push({ key: `peer:${h.kind}/${String(h.title || h.slug).toLowerCase().slice(0, 60)}`, basis: 'start.peers', source: 'start', cap: h.id,
         text: `Add ${h.kind === 'function' ? 'a function' : 'a screen'} like ${appName}'s ${h.title}: ${clip(h.description, 120)}`,
         why: clip(`Apps like this one have it: ${apps.slice(0, 3).map((a) => ctx.appName(a)).join(', ')}${apps.length > 3 ? ` and ${apps.length - 3} more` : ''}; this app has nothing like it yet.`, 240),

@@ -24,7 +24,7 @@ const DAY = 86400000;
 export const MAX_NEW = Number(process.env.STRATA_APPS_RECOMMEND_MAX || 4);
 const MAX_OPEN = 6;
 const MIN_SCORE = 0.12;
-const MIN_GAP = 5 * 60 * 1000;
+const MIN_GAP = 1000 * Number(process.env.STRATA_APPS_RECOMMEND_GAP_S ?? 300); // between two background refreshes of an app
 const PRIOR = 3; // how many decisions of an app weigh as much as the global rate
 export const RECOMMEND_MODEL = process.env.STRATA_APPS_RECOMMEND_MODEL === 'off' ? null
   : (process.env.STRATA_APPS_RECOMMEND_MODEL || process.env.STRATA_APPS_SUGGEST_MODEL || 'claude-haiku-5-5');
@@ -35,7 +35,7 @@ const parse = (s) => { if (!s || typeof s !== 'string') return s || null; try { 
 const tsOf = (s) => { const t = Date.parse(String(s || '').replace(' ', 'T')); return Number.isFinite(t) ? t : 0; };
 
 // Each source's weight from what people did with its suggestions:
-// rows [{app, basis, status}] -> (basis, app) -> weight, about 1 for a
+// rows [{app, basis, status, n?}] -> (basis, app) -> weight, about 1 for a
 // source taken half the time, from 0.3 to 2.
 export function learnWeights(rows, appId) {
   const tally = () => ({ taken: 0, no: 0 });
@@ -43,7 +43,8 @@ export function learnWeights(rows, appId) {
   const mine = new Map();
   for (const r of rows) {
     if (!r.basis) continue;
-    const add = (m) => { const t = m.get(r.basis) || tally(); if (r.status === 'taken') t.taken++; else if (r.status === 'dismissed') t.no++; else if (r.status === 'stale') t.no += 0.25; m.set(r.basis, t); };
+    const n = Number(r.n) || 1;
+    const add = (m) => { const t = m.get(r.basis) || tally(); if (r.status === 'taken') t.taken += n; else if (r.status === 'dismissed') t.no += n; else if (r.status === 'stale') t.no += 0.25 * n; m.set(r.basis, t); };
     add(global);
     if (r.app === appId) add(mine);
   }
@@ -59,15 +60,19 @@ export function learnWeights(rows, appId) {
 // The candidates people should see, best first: scored, one per key and
 // per meaning, none offered before (open now, taken, or dismissed in the
 // last 30 days; a stale or replaced one may come back), at most two of a
-// source, at most `max`.
-export function rank(cands, { weight = () => 1, history = [], now = Date.now(), max = MAX_NEW } = {}) {
+// source, at most `max`. Two texts mean the same when they share most of
+// their words and two at least, the app's own names (`names`: its screens,
+// tables, columns) left out, which every suggestion for it uses.
+export function rank(cands, { weight = () => 1, history = [], now = Date.now(), max = MAX_NEW, names = new Set() } = {}) {
+  const words = (t) => new Set([...wordsOf(t)].filter((w) => !names.has(w)));
+  const same = (a, b) => { const n = [...a].filter((w) => b.has(w)).length; return n >= 2 && jaccard(a, b) >= 0.5; };
   const blocked = new Set();
   const blockedWords = [];
   for (const h of history) {
     const hard = h.status === 'open' || h.status === 'taken' || h.status === 'building' || (h.status === 'dismissed' && now - tsOf(h.created) < 30 * DAY);
     if (!hard) continue;
     if (h.signal) blocked.add(h.signal);
-    blockedWords.push(wordsOf(h.text));
+    blockedWords.push(words(h.text));
   }
   const scored = cands.filter((c) => c && c.text && c.key)
     .map((c) => ({ ...c, score: Math.round(Math.max(0, Math.min(1, c.confidence)) * weight(c.basis) * 1000) / 1000 }))
@@ -76,9 +81,9 @@ export function rank(cands, { weight = () => 1, history = [], now = Date.now(), 
   const out = [];
   const per = new Map();
   for (const c of scored) {
-    const w = wordsOf(c.text);
-    if (out.some((o) => o.key === c.key || jaccard(wordsOf(o.text), w) >= 0.5)) continue;
-    if (blockedWords.some((b) => jaccard(b, w) >= 0.5)) continue;
+    const w = words(c.text);
+    if (out.some((o) => o.key === c.key || same(words(o.text), w))) continue;
+    if (blockedWords.some((b) => same(b, w))) continue;
     if ((per.get(c.basis) || 0) >= 2) continue;
     per.set(c.basis, (per.get(c.basis) || 0) + 1);
     out.push(c);
@@ -140,6 +145,8 @@ export class Recommender {
     const ctx = {
       appId, view, events, signals, history, requests, versions, design, built, now: Date.now(),
       appText: appText(view),
+      // The app's own names, which every suggestion for it uses.
+      names: wordsOf([...view.views.map((v) => `${v.slug} ${v.title}`), ...view.tables.map((t) => `${t.spec.name} ${(t.spec.columns || []).map((c) => c.name).join(' ')}`)].join(' ').replace(/_/g, ' ')),
       appName: (id) => apps.get(id) || id,
       search: (text, opts) => store.searchCapabilities(text, opts).catch(() => []),
       // Does the app have something that means the same as `text`? By meaning
@@ -202,7 +209,8 @@ export class Recommender {
   }
 
   async weights(appId) {
-    const rows = await this.store.db.query(`SELECT app, basis, status FROM sa_suggestions WHERE status IN ('taken', 'dismissed', 'stale') LIMIT 20000`).catch(() => []);
+    const rows = await this.store.db.query(`SELECT app, basis, status, COUNT(*) AS n FROM sa_suggestions WHERE basis IS NOT NULL AND status IN ('taken', 'dismissed', 'stale')
+      GROUP BY app, basis, status LIMIT 10000`).catch((e) => { this.log(`recommend: what people took: ${e.message}`); return []; });
     return learnWeights(rows, appId);
   }
 
@@ -244,7 +252,7 @@ export class Recommender {
     const mineOpen = ctx.history.filter((h) => h.status === 'open' && h.basis);
     // Ours still open are offered again when still found (kept as they are),
     // else replaced; the others' open ones block their keys and meanings.
-    const fresh = rank(all, { weight, history: ctx.history.filter((h) => !(h.status === 'open' && h.basis)), now: ctx.now, max: MAX_NEW });
+    const fresh = rank(all, { weight, history: ctx.history.filter((h) => !(h.status === 'open' && h.basis)), now: ctx.now, max: MAX_NEW, names: ctx.names });
     const keep = new Set(fresh.map((c) => c.key));
     const room = Math.max(2, MAX_OPEN - openOthers);
     const kept = mineOpen.filter((h) => keep.has(h.signal));
@@ -273,7 +281,7 @@ export class Recommender {
     const weight = await this.weights(appId);
     const shape = (c) => ({ key: c.key, basis: c.basis, source: c.source, text: c.text, why: c.why, confidence: Math.round(c.confidence * 1000) / 1000, weight: Math.round(weight(c.basis) * 100) / 100, score: c.score, change: c.change || null });
     return {
-      next: rank(all, { weight, history: ctx.history.filter((h) => !(h.status === 'open' && h.basis)), now: ctx.now }).map(shape),
+      next: rank(all, { weight, history: ctx.history.filter((h) => !(h.status === 'open' && h.basis)), now: ctx.now, names: ctx.names }).map(shape),
       candidates: rank(all, { weight, history: [], now: ctx.now, max: 50 }).map(shape),
       signals: ctx.signals.length, events: ctx.events.length,
     };
