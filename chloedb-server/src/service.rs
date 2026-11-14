@@ -130,6 +130,18 @@ tokio::task_local! {
     pub static OWN: bool;
 }
 
+/// The tables statement `command` changes: the one it writes, makes,
+/// alters or drops, or whose rank profile it makes or drops.
+fn changed_tables(command: &Command) -> Vec<&str> {
+    match command {
+        Command::Write { table, .. } | Command::CreateRankProfile { table, .. } => vec![table.as_str()],
+        Command::CreateTable { schema, .. } => vec![schema.table.as_str()],
+        Command::DropTable { tables, .. } => tables.iter().map(String::as_str).collect(),
+        Command::AlterTable { table: Some(t), .. } | Command::DropRankProfile { table: Some(t), .. } => vec![t.as_str()],
+        _ => Vec::new(),
+    }
+}
+
 /// Whether the request being served is the cluster's own ([`OWN`]).
 pub fn own() -> bool {
     OWN.try_with(|o| *o).unwrap_or(false)
@@ -4180,6 +4192,10 @@ impl Service {
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
         }
+        // The connectors' configs, runs and state are the server's own.
+        for t in changed_tables(&command) {
+            crate::connectors::may_change(t, "a statement")?;
+        }
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -4621,6 +4637,8 @@ impl Service {
     async fn write_ops_counted(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
         own_marks_ok(&ops)?;
+        // The connectors' configs, runs and state are the server's own.
+        crate::connectors::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
