@@ -135,6 +135,16 @@ fn tools() -> Value {
                     "days": { "type": "integer", "minimum": 1, "maximum": 90, "description": "How far back, in days (default 7)." }
                 }
             }
+        },
+        {
+            "name": "blast_radius",
+            "description": "What your change (or another agent's) reaches before it merges: the functions changed against the base, the tests that cover them, the decisions about those lines (from ChloeCtx), the other agents touching the same files or the callers, and a risk line. Run it before saying a change is done.",
+            "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "The agent; you when left out." } } }
+        },
+        {
+            "name": "prepare_pr",
+            "description": "Draft the pull request for your branch: packs a capsule of the decisions behind it (chloectx pack) and writes the body (summary, decisions with their ids, blast radius, tests run, how to ask the capsule) to a file. It does not push or open the pull request: it answers the body and the gh command for the user.",
+            "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "The agent; you when left out." }, "capsule": { "type": "boolean", "description": "Pack the capsule first (default true)." } } }
         }
     ])
 }
@@ -391,8 +401,79 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
                 Ok(crate::testruns::history_text(&v))
             }
         }
+        "blast_radius" => {
+            let id = me_or(c, args)?;
+            let b = c.call("GET", &format!("/api/agents/{id}/blast"), None, Duration::from_secs(300))?;
+            Ok(blast_text(&b))
+        }
+        "prepare_pr" => {
+            let id = me_or(c, args)?;
+            let mut note = String::new();
+            if args.get("capsule").and_then(Value::as_bool).unwrap_or(true) {
+                let cap = c.call("POST", &format!("/api/agents/{id}/capsule"), Some(json!({})), Duration::from_secs(660))?;
+                note = match cap["capsule"]["dir"].as_str() {
+                    Some(d) => format!("Packed the capsule in {d} ({} records).\n", cap["capsule"]["records"]),
+                    None => format!("No capsule: {}\n", s(&cap, "why")),
+                };
+            }
+            let p = c.call("GET", &format!("/api/agents/{id}/pr"), None, Duration::from_secs(300))?;
+            Ok(format!(
+                "{note}Title: {}\nThe body is in {}. Push the branch and open it (the user decides): {}\n  {}\n\n{}",
+                s(&p, "title"),
+                s(&p, "body_file"),
+                s(&p, "push"),
+                s(&p, "gh"),
+                s(&p, "body")
+            ))
+        }
         other => Err(format!("no tool {other}")),
     }
+}
+
+/// The agent a Ship tool is about: `id`, else the caller.
+fn me_or(c: &Client, args: &Value) -> Result<String, String> {
+    match s(args, "id") {
+        "" if c.env.agent.is_empty() => Err("id is required outside an agent of Workbench".into()),
+        "" => Ok(enc(&c.env.agent)),
+        id => Ok(enc(id)),
+    }
+}
+
+/// A blast radius as lines.
+fn blast_text(b: &Value) -> String {
+    let mut out = vec![s(&b["risk"], "line").to_string()];
+    let list = |k: &str| b[k].as_array().cloned().unwrap_or_default();
+    out.push("Functions changed:".into());
+    for f in list("functions") {
+        let tests = f["tests"].as_array().map(|t| t.len()).unwrap_or(0);
+        out.push(format!(
+            "- {} ({}:{}, {}) {} callers, {}",
+            s(&f, "name"),
+            s(&f, "path"),
+            f["line"],
+            s(&f, "status"),
+            f["callers_total"],
+            if tests == 0 { "NO TEST names it".to_string() } else { format!("{tests} test files") }
+        ));
+    }
+    out.push("Tests that cover them:".into());
+    for t in list("tests") {
+        let r = &t["runs"];
+        let runs = if r.is_null() { "not run".to_string() } else { format!("{} of {} passed{}", r["passed"], r["total"], if r["flaky"] == true { ", flaky" } else { "" }) };
+        out.push(format!("- {} ({runs}): {}", s(&t, "path"), t["why"].as_array().map(|w| w.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default()));
+    }
+    out.push("Decisions about these lines (ChloeCtx):".into());
+    for d in list("decisions") {
+        out.push(format!("- [{}] {}{}: {}", s(&d, "id"), s(&d, "kind"), if d["superseded"] == true { " (superseded)" } else { "" }, s(&d, "text")));
+    }
+    out.push("Other agents in the way:".into());
+    for g in list("agents") {
+        out.push(format!("- {}", s(&g, "detail")));
+    }
+    for m in list("missing") {
+        out.push(format!("(missing: {})", m.as_str().unwrap_or("")));
+    }
+    out.join("\n")
 }
 
 fn outcome_line(o: &Value) -> String {

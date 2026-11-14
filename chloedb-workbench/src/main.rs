@@ -2,6 +2,8 @@
 //! real terminal and most often its own git worktree, with their state and
 //! events as rows of a ChloeDB database. See SPEC.md.
 
+mod blast;
+mod capsule;
 mod ctxwire;
 mod db;
 mod flow;

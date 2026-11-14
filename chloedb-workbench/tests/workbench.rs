@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -2148,4 +2148,243 @@ fn health_rules_open_an_incident_with_a_board_and_act_on_it() {
     assert_eq!(del("same-file"), 409);
     assert_eq!(del(&rid), 200);
     assert_eq!(del(&rid), 404);
+}
+
+// Fourth build: Ship (use cases 7 and 11).
+
+/// `fake_chloectx` with the two commands Ship needs to act: `pack OUT`
+/// writes a capsule (`OUT/manifest.json`) and prints `pack.json`, and
+/// `mount DIR` answers MCP over stdio, its `tools/call` with `mount.json`
+/// (the call it was sent is kept in `mount.call`).
+fn fake_ship_chloectx(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("fake-chloectx");
+    let script = format!(
+        r#"#!/bin/bash
+D='{}'
+printf '%s\n' "$PWD" "$@" > "$D/$1.args"
+case "$1" in
+  pack)
+    [ -f "$D/pack.json" ] || {{ echo "chloectx: no store for $PWD" >&2; exit 1; }}
+    mkdir -p "$2" && cp "$D/pack.json" "$2/manifest.json" && cat "$D/pack.json"; exit 0;;
+  mount)
+    [ -f "$2/manifest.json" ] || {{ echo "chloectx mount: no capsule in $2" >&2; exit 1; }}
+    while read -r line; do
+      case "$line" in
+        *tools/call*) printf '%s\n' "$line" > "$D/mount.call"; cat "$D/mount.json"; echo;;
+        *initialize\"*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"capsule","version":"0"}}}}}}';;
+      esac
+    done
+    exit 0;;
+esac
+[ -f "$D/$1.json" ] || {{ echo "chloectx: no store for $PWD" >&2; exit 1; }}
+cat "$D/$1.json"
+"#,
+        dir.display()
+    );
+    std::fs::write(&p, script).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// A repository "shop": `cartTotal` in src/cart.ts, called from
+/// src/checkout.ts and named by tests/cart.test.ts.
+fn shop() -> (tempfile::TempDir, PathBuf) {
+    let (d, r) = repo();
+    std::fs::create_dir_all(r.join("src")).unwrap();
+    std::fs::create_dir_all(r.join("tests")).unwrap();
+    std::fs::write(r.join("src/cart.ts"), "export function cartTotal(items) {\n  let sum = 0;\n  for (const i of items) sum += i.price * i.qty;\n  return sum;\n}\n").unwrap();
+    std::fs::write(r.join("src/checkout.ts"), "import { cartTotal } from \"./cart\";\n\nexport function createSession(cart) {\n  return { total: cartTotal(cart.items) };\n}\n").unwrap();
+    std::fs::write(r.join("tests/cart.test.ts"), "import { cartTotal } from \"../src/cart\";\n\ntest(\"sums the lines\", () => {\n  expect(cartTotal([{ price: 2, qty: 3 }])).toBe(6);\n});\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "shop"]);
+    (d, r)
+}
+
+/// The agent's change in its worktree: `cartTotal` changed, `taxFor` new.
+fn charge_tax(cwd: &Path) {
+    std::fs::write(
+        cwd.join("src/cart.ts"),
+        "export function cartTotal(items) {\n  let sum = 0;\n  for (const i of items) sum += i.price * i.qty;\n  return sum + taxFor(sum);\n}\n\nexport function taxFor(sum) {\n  return Math.round(sum * 0.08);\n}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn blast_radius_names_functions_tests_decisions_and_agents_and_the_pr_carries_a_capsule() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_ship_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = shop();
+    let a = s.spawn(json!({ "repo": r, "name": "checkout-tax", "task": "Charge tax by address. Then the rest." }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let a = s.wait(&id, "idle");
+    let cwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    let sid = a["session_id"].as_str().unwrap().to_string();
+    let sid8: String = sid.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    charge_tax(&cwd);
+    // Another agent in the same file.
+    let o = s.spawn(json!({ "repo": r, "name": "cart-ui", "task": "WRITE src/cart.ts // badge" }));
+    let oid = o["id"].as_str().unwrap().to_string();
+    s.wait(&oid, "idle");
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mine = format!("{sid8}:9");
+    std::fs::write(ctx.path().join("blame.json"), json!({ "file": "src/cart.ts", "line": 4, "edit": { "session": sid }, "notes": [
+        { "id": mine, "kind": "decision", "text": "Tax is added to the cart total, rounded per order", "ts": now },
+        { "id": format!("{sid8}:10"), "kind": "todo", "text": "check the rounding", "ts": now }
+    ] }).to_string()).unwrap();
+    std::fs::write(ctx.path().join("sql.json"), json!({ "text": "2 rows", "columns": ["id", "kind", "text", "ts", "files", "ctx", "session", "tag", "links"], "rows": [
+        [mine, "decision", "Tax is added to the cart total, rounded per order", now, "src/cart.ts", "", sid, "", []],
+        ["old00000:31", "decision", "No tax in cartTotal", now - 100, "src/cart.ts", "", "another-session", "superseded", []]
+    ] }).to_string()).unwrap();
+    std::fs::write(ctx.path().join("rpc.json"), json!({ "nodes": [
+        { "id": "gr000000:4", "type": "note", "kind": "preference", "label": "Money in cents", "text": "Money is kept in cents", "ts": now, "current": true },
+        { "id": "gr000000:7", "type": "note", "kind": "decision", "label": "Rates by region", "text": "Tax rates come from the region table", "ts": now, "current": true },
+        { "id": "e:tax", "type": "entity", "label": "tax" },
+        { "id": "f:src/cart.ts", "type": "file", "label": "src/cart.ts" },
+        { "id": "f:src/rates.ts", "type": "file", "label": "src/rates.ts" }
+    ], "edges": [
+        { "s": "gr000000:4", "t": "f:src/cart.ts", "label": "touches" },
+        { "s": "gr000000:4", "t": "e:tax", "label": "about" },
+        { "s": "gr000000:7", "t": "e:tax", "label": "about" },
+        { "s": "gr000000:7", "t": "f:src/rates.ts", "label": "touches" }
+    ] }).to_string()).unwrap();
+
+    let (status, b) = s.get(&format!("/api/agents/{id}/blast"));
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["agent"]["id"], json!(id));
+    assert_eq!(b["base"], json!(a["base"]));
+    let f = |name: &str| b["functions"].as_array().unwrap().iter().find(|f| f["name"] == name).cloned().unwrap_or_else(|| panic!("no {name}: {b}"));
+    let total = f("cartTotal");
+    assert_eq!((total["status"].as_str(), total["path"].as_str(), total["line"].as_u64(), total["lang"].as_str()), (Some("changed"), Some("src/cart.ts"), Some(1), Some("typescript")), "{total}");
+    assert_eq!(total["callers"][0]["path"], "src/checkout.ts", "{total}");
+    assert_eq!(total["tests"], json!(["tests/cart.test.ts"]));
+    assert_eq!(f("taxFor")["status"], "added");
+    assert_eq!(b["totals"]["functions"], 2);
+    let t = &b["tests"][0];
+    assert_eq!(t["path"], "tests/cart.test.ts");
+    assert!(t["covers"].as_array().unwrap().contains(&json!("src/cart.ts#cartTotal")), "{t}");
+    // Health's test_runs table is there, with no runs of this test yet.
+    assert!(t["runs"].is_null() || t["runs"] == json!(0) || t["runs"] == json!([]), "no runs yet: {t}");
+    assert_eq!(b["sources"]["test_runs"], true, "{b}");
+    // Decisions: blame (a todo is no decision), the file's records, the graph and its one hop.
+    let d = |did: &str| b["decisions"].as_array().unwrap().iter().find(|d| d["id"] == did).cloned().unwrap_or_else(|| panic!("no {did}: {b}"));
+    let dm = d(&mine);
+    assert!(dm["via"].as_array().unwrap().contains(&json!("blame")) && dm["via"].as_array().unwrap().contains(&json!("file")), "{dm}");
+    assert_eq!(dm["agent"]["id"], json!(id));
+    assert_eq!(dm["line"], json!({ "path": "src/cart.ts", "line": 4 }));
+    assert_eq!(d("old00000:31")["superseded"], true);
+    assert_eq!(d("gr000000:4")["via"], json!(["graph"]));
+    assert_eq!(d("gr000000:7")["entity"], "tax");
+    assert!(b["decisions"].as_array().unwrap().iter().all(|d| d["kind"] != "todo"));
+    assert_eq!(b["related_files"][0]["path"], "src/rates.ts", "{b}");
+    assert_eq!(b["sources"]["graph"], true);
+    let ba = args_of(ctx.path(), "blame");
+    assert_eq!(&ba[1..], ["blame", ba[2].as_str(), "--json", "--no-replay"]);
+    assert!(ba[2].starts_with("src/cart.ts:"), "{ba:?}");
+    // The other agent, in the same file.
+    let g = &b["agents"][0];
+    assert_eq!(g["agent"]["id"], json!(oid), "{b}");
+    assert!(g["kinds"].as_array().unwrap().contains(&json!("same_file")), "{g}");
+    let risk = &b["risk"];
+    assert!(matches!(risk["level"].as_str(), Some("medium" | "high")), "{risk}");
+    assert_eq!(risk["line"], "Medium risk: 2 functions changed with 2 callers; cart-ui changes src/cart.ts too.");
+    assert!(risk["reasons"].as_array().unwrap().iter().any(|r| r.as_str().unwrap().contains("old00000:31")), "{risk}");
+
+    // Asked before there is a capsule: the repository's memory.
+    std::fs::write(ctx.path().join("ask.json"), json!({ "text": format!("Tax is added per order [{mine}]."), "ids": [mine] }).to_string()).unwrap();
+    let (status, v) = s.post(&format!("/api/agents/{id}/capsule/ask"), json!({ "question": "why per order?" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!((v["available"].as_bool(), v["via"].as_str()), (Some(true), Some("repo")), "{v}");
+    assert_eq!(args_of(ctx.path(), "ask"), [cwd.to_str().unwrap(), "ask", "--json", "--", "why per order?"]);
+    assert_eq!(v["agents"][&mine]["id"], json!(id));
+    assert!(v["missing"][0].as_str().unwrap().contains("no capsule"), "{v}");
+    assert_eq!(s.post(&format!("/api/agents/{id}/capsule/ask"), json!({ "question": " " })).0, 400);
+
+    // The draft, before the capsule.
+    let (status, p) = s.get(&format!("/api/agents/{id}/pr"));
+    assert_eq!(status, 200, "{p}");
+    assert_eq!(p["title"], "Charge tax by address");
+    assert_eq!((p["branch"].as_str(), p["base_branch"].as_str()), (Some("wb/checkout-tax"), Some("main")));
+    let body = p["body"].as_str().unwrap();
+    for h in ["## Summary", "## Decisions behind it", "## Blast radius", "## Tests run", "## Ask why"] {
+        assert!(body.contains(h), "no {h} in {body}");
+    }
+    assert!(body.contains(&format!("◆ `{mine}`")) && body.contains("`taxFor` (new)") && body.contains("No capsule was packed"), "{body}");
+    assert_eq!(p["sections"]["decisions"][0]["id"], json!(mine), "its session's decision first: {p}");
+    let file = PathBuf::from(p["body_file"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
+    assert!(p["gh"].as_str().unwrap().starts_with("gh pr create --base main --head wb/checkout-tax --title \"Charge tax by address\" --body-file "), "{p}");
+    assert_eq!(p["push"], "git push -u origin wb/checkout-tax");
+    assert_eq!(s.get(&format!("/api/agents/{id}/capsule")).1["capsule"], Value::Null);
+
+    // Packed: since the agent started, into its session directory.
+    std::fs::write(ctx.path().join("pack.json"), json!({ "format": 1, "title": "checkout-tax: Charge tax by address", "records": 12, "by_kind": { "decision": 3, "prompt": 9 }, "bytes": 40960, "sha256": "9b1e0c47d2a3", "created_ts": now, "since_ts": now - 120, "total_ms": 812.0 }).to_string()).unwrap();
+    let (status, c) = s.post(&format!("/api/agents/{id}/capsule"), json!({}));
+    assert_eq!(status, 200, "{c}");
+    assert_eq!(c["available"], true, "{c}");
+    let cap = &c["capsule"];
+    let dir = cap["dir"].as_str().unwrap().to_string();
+    assert!(Path::new(&dir).join("manifest.json").is_file());
+    assert!(dir.ends_with("/capsule") && dir.contains(&id), "{dir}");
+    assert_eq!((cap["records"].as_u64(), cap["sha256"].as_str()), (Some(12), Some("9b1e0c47d2a3")));
+    assert_eq!(cap["mount"], json!(format!("chloectx mount {dir}")));
+    let pa = args_of(ctx.path(), "pack");
+    assert_eq!(pa[0], cwd.to_str().unwrap());
+    assert_eq!((pa[1].as_str(), pa[2].as_str(), pa[3].as_str()), ("pack", dir.as_str(), "--since-days"));
+    let days: f64 = pa[4].parse().unwrap();
+    assert!(days > 0.0 && days < 0.01, "{pa:?}");
+    assert_eq!(&pa[5..], ["--title", "checkout-tax: Charge tax by address", "--json"]);
+    assert_eq!(s.get(&format!("/api/agents/{id}/capsule")).1["capsule"]["dir"], json!(dir));
+
+    // Asked again: the capsule answers, through `chloectx mount`.
+    std::fs::write(ctx.path().join("mount.json"), json!({ "jsonrpc": "2.0", "id": 2, "result": { "content": [{ "type": "text", "text": format!("- [{mine}] decision: tax per order.\n\n(capsule \"checkout-tax\" sha256:9b1e0c47d2a3, records: {mine}, gr000000:4)") }] } }).to_string()).unwrap();
+    let (_, v) = s.post(&format!("/api/agents/{id}/capsule/ask"), json!({ "question": "why per order?" }));
+    assert_eq!((v["available"].as_bool(), v["via"].as_str()), (Some(true), Some("capsule")), "{v}");
+    assert_eq!(v["ids"], json!([mine, "gr000000:4"]));
+    let call: Value = serde_json::from_str(&std::fs::read_to_string(ctx.path().join("mount.call")).unwrap()).unwrap();
+    assert_eq!((call["params"]["name"].as_str(), call["params"]["arguments"]["question"].as_str()), (Some("capsule_ask"), Some("why per order?")));
+    assert_eq!(args_of(ctx.path(), "mount")[1..], ["mount".to_string(), dir.clone()]);
+
+    // The draft says how to ask it.
+    let (_, p) = s.get(&format!("/api/agents/{id}/pr"));
+    let body = p["body"].as_str().unwrap();
+    assert!(body.contains(&format!("chloectx mount {dir}")) && body.contains("12 records"), "{body}");
+    assert_eq!(p["capsule"]["dir"], json!(dir));
+
+    // The agent's own tools: blast_radius, prepare_pr.
+    let mut m = Mcp::start(&s, &id);
+    let (text, err) = m.tool("blast_radius", json!({}));
+    assert!(!err, "{text}");
+    assert!(text.contains("cartTotal") && text.contains("tests/cart.test.ts") && text.contains(&mine), "{text}");
+    let (text, err) = m.tool("prepare_pr", json!({ "capsule": false }));
+    assert!(!err, "{text}");
+    assert!(text.contains("Title: Charge tax by address") && text.contains("gh pr create") && text.contains("## Ask why"), "{text}");
+    assert_eq!(s.get("/api/agents/a00000000/blast").0, 404);
+}
+
+#[test]
+fn ship_without_chloectx_still_says_the_blast_radius_and_drafts_the_pr() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = shop();
+    let a = s.spawn(json!({ "repo": r, "name": "solo", "task": "Charge tax" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let a = s.wait(&id, "idle");
+    charge_tax(Path::new(a["cwd"].as_str().unwrap()));
+    let (status, b) = s.get(&format!("/api/agents/{id}/blast"));
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["totals"]["functions"], 2, "{b}");
+    assert_eq!(b["decisions"], json!([]));
+    assert_eq!((b["sources"]["chloectx"].as_bool(), b["sources"]["graph"].as_bool()), (Some(false), Some(false)));
+    assert!(b["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("not installed")), "{b}");
+    let (_, c) = s.post(&format!("/api/agents/{id}/capsule"), json!({}));
+    assert_eq!(c["available"], false, "{c}");
+    assert!(c["why"].as_str().unwrap().contains("not installed"), "{c}");
+    let (_, v) = s.post(&format!("/api/agents/{id}/capsule/ask"), json!({ "question": "why?" }));
+    assert_eq!(v["available"], false, "{v}");
+    let (status, p) = s.get(&format!("/api/agents/{id}/pr"));
+    assert_eq!(status, 200, "{p}");
+    assert!(p["body"].as_str().unwrap().contains("ChloeCtx holds no decision"), "{p}");
+    assert!(p["gh"].as_str().unwrap().contains("--head wb/solo"));
 }

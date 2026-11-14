@@ -1085,3 +1085,130 @@ without one counts none. Firings in a repository Workbench has no agent in
 carry the rule's repository, or none. Workbench's sessions do not register
 `PostToolUseFailure`; adding it to `supervisor::settings_json` would let a
 failed run be recorded as it ends rather than at `Stop`.
+
+### Ship as built (use cases 7 and 11)
+
+**Endpoints.**
+
+- `GET /api/agents/:id/blast` (`src/blast.rs`) answers
+  `{agent, repo, base, head, branch, totals, risk, files, functions, tests,
+  decisions, related_files, agents, sources, missing}`:
+  - `functions`: each function the diff against the agent's base touches,
+    `{id: "path#name", name, kind, lang, path, line, status:
+    changed|added|deleted, added, removed, callers, callers_total, tests,
+    decisions, agents}`. They are found by a symbol finder per language
+    (Rust, JS/TS, Python, Go, Java/Kotlin/C#, C/C++, Ruby, PHP, Swift; hand
+    written, no regex crate). It runs over the new text for added lines
+    and the base's text (`git show base:path`) for removed ones. Test
+    files are not counted as changed functions. Callers come from
+    `git grep -w` (8 per function, at most 40 functions searched).
+  - `tests`: test files that name a changed function (3 points per name)
+    or import its file (2), ranked, the top 20. Each is
+    `{path, score, covers, why, runs}`. `runs` comes from the `test_runs`
+    table (Health's) when it exists: total, passed, failed, flaky (passed
+    and failed on one commit), p50_ms, last_passed. When there is no such
+    table, `runs` is null, `sources.test_runs` is false and `missing`
+    says so.
+  - `decisions`: `{id, kind, text, ts, session, agent, files, via,
+    functions, superseded, superseded_by, line, entity}`, where `via` is
+    any of `blame`, `file` and `graph`:
+    - `blame`: `chloectx blame <path>:<first added line> --json
+      --no-replay` for up to 8 functions.
+    - `file`: the repository's decision, preference and fact records that
+      name a changed file (`map::file_records`).
+    - `graph`: `chloectx rpc '{"op":"view","what":"graph"}'`, meaning
+      notes that touch a changed file, one hop over the entities they are
+      about, and `supersedes` links. The other files those notes touch are
+      `related_files`.
+  - `agents`: the other agents whose worktree diffs change the same files
+    (`same_file`), change a file that calls a changed function
+    (`calls_changed`), or are reading a changed file (`reading`), from
+    `map::territory`.
+  - `risk`: `{level: low|medium|high, score, line, reasons}`:
+    - Points: 2 per untested function (at most 6); 3 per function deleted
+      but still called; 3, 2 and 1 for the three kinds of other agent; 1
+      for a flaky test and 2 for a failing one; 1 per superseded decision;
+      1 for more than 10 callers.
+    - Levels: low below 3, medium below 13, high from 13.
+    - `line` is one sentence, for example "Medium risk: 6 functions
+      changed with 5 callers; rateFor has no test that names it and
+      cart-ui changes src/cart/total.ts too."
+- `POST /api/agents/:id/capsule` (`src/capsule.rs`) moves an old capsule
+  aside, then runs `chloectx pack <session dir>/capsule --since-days
+  <since the agent started, plus a minute> --title "<name>: <task's first
+  sentence>" --json` in the worktree. It answers
+  `{available, capsule: {dir, title, records, by_kind, bytes, sha256,
+  created, since, pack_ms, scope, mount, claude}}`, or
+  `{available: false, why}`. `GET /api/agents/:id/capsule` answers the
+  stored one, if its `manifest.json` is still there.
+- `POST /api/agents/:id/capsule/ask {question}` answers
+  `{available, via: capsule|repo, question, text, ids, agents, ms,
+  missing}`:
+  - With a capsule, it runs `chloectx mount <dir>` over stdio (MCP) and
+    calls its `capsule_ask` tool, with no model. The ids come from the
+    answer's `(capsule …, records: …)` trailer and `[id]` marks.
+  - Without one, it runs `chloectx ask --json` in the worktree, and
+    `missing` says that the repository's memory answered.
+- `GET /api/agents/:id/pr` answers `{agent, title, branch, base_branch,
+  base, body, body_file, gh, push, sections: {summary, commits, decisions,
+  blast, tests}, capsule, missing}`:
+  - `title`: the outcome's title, else the task's first sentence.
+  - `body` (Markdown) has these sections: Summary, Decisions behind it
+    (`- ◆ \`id\` kind: text`; the agent's own session's records from
+    `chloectx sql` first, then those about its lines), Blast radius,
+    Tests run (the agent's Bash test commands and their outcome, from its
+    events), and Ask why (the `claude mcp add … -- chloectx mount <dir>`
+    command).
+  - It saves the body to `<session dir>/pr.md`.
+  - `gh` is `gh pr create --base … --head … --title … --body-file …`.
+    Workbench never pushes or opens the pull request.
+
+**Tables.** None new. The capsule is kept as the mark `capsule:<agent>`.
+
+**MCP.** There are two tools:
+- `blast_radius {id?}` answers the risk line and the lists, as text.
+- `prepare_pr {id?, capsule?}` packs the capsule unless `capsule` is
+  false, then drafts the pull request. It answers the title, the body
+  file, the push and `gh` commands, and the body.
+
+Both default to the calling agent.
+
+**UI.**
+
+- **Ship** (`ui/levels/ship.js`; `#/ship/<agent>`; level Changes; nav link
+  Ship) has two tabs:
+  - **Blast radius**:
+    - A risk banner with its reasons.
+    - A radial SVG graph with the change at the center and rings of
+      functions, tests, decisions and agents. Hovering a node dims the
+      rest, and clicking a function opens the Why card.
+    - An "If this merges" card.
+    - Four lists: functions, tests, decisions with ◆ chips, and other
+      agents.
+  - **Pull request**:
+    - An editable title and the body, as a preview or as Markdown.
+    - Copy body, Copy gh command and Copy title, with the push and gh
+      commands.
+    - The Capsule card: records, size, kinds and the mount command, with
+      Pack and Pack again.
+    - "Ask the capsule".
+    - Tests it ran.
+- **Changes tab**: `ui/levels/blast-summary.js` is mounted once above the
+  diff (`showBlastSummary` in app.js). It shows one row: the risk level,
+  the counts of functions, tests and untested functions, a ◆ decisions
+  chip, the other agents, and Ship →. Below it is the risk line. It reads
+  only once it is visible, and keeps an answer for 20 s.
+- **Fixtures**: `ui/dev/fixtures/ship.mjs`, with the same shapes as the
+  real API.
+
+**Deviations.**
+
+- `chloectx pack` has no session filter. The capsule is the repository's
+  memory since the agent started (`--since-days`), and its `scope` says
+  so. The PR's decisions are filtered to the agent's sessions.
+- `chloectx ask` takes no capsule path, so "Ask the capsule" drives
+  `chloectx mount` instead.
+- Changed functions come from a finder over both sides of the diff
+  rather than git's hunk headers, which name the enclosing function of
+  the context and miss new ones.
+- `test_runs` is read only if Health created it.

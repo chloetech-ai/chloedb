@@ -132,6 +132,9 @@ pub fn router(app: App) -> Router {
         .merge(crate::preview::routes())
         .merge(crate::flow::routes())
         .merge(crate::levels::routes())
+        // Fourth build, Ship: blast radius, capsule, pull request.
+        .merge(crate::blast::routes())
+        .merge(crate::capsule::routes())
         .merge(crate::ctxwire::routes())
         // Health: alerts, incidents and the test radar.
         .merge(crate::alerts::routes())
@@ -184,6 +187,8 @@ const LEVELS: &[(&str, &str)] = &[
     ("preview.js", include_str!("../ui/levels/preview.js")),
     ("flow.js", include_str!("../ui/levels/flow.js")),
     ("away.js", include_str!("../ui/levels/away.js")),
+    ("ship.js", include_str!("../ui/levels/ship.js")),
+    ("blast-summary.js", include_str!("../ui/levels/blast-summary.js")),
     ("setup.js", include_str!("../ui/levels/setup.js")),
     ("health.js", include_str!("../ui/levels/health.js")),
     ("test-chip.js", include_str!("../ui/levels/test-chip.js")),

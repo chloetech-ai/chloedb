@@ -1200,7 +1200,20 @@ const C = { id: null, data: null, err: null, req: 0, rows: [], cursor: -1, files
 
 function changesVisible() { return S.zoomed && $("z-body").dataset.tab === "changes" && !$("zoom-view").hidden; }
 
+// SPEC.md, "Fourth build" (use case 7): the Blast radius summary above the
+// diff, ui/levels/blast-summary.js, mounted once; it reads when it shows.
+let blastSummary = null;
+function showBlastSummary(id, fresh) {
+  blastSummary ||= import("/levels/blast-summary.js").then((m) => {
+    const host = h("div", { class: "ch-blast" });
+    $("ch-scroll").before(host);
+    return m.mount(host, { api, go: (hash) => route(hash, { push: true }) });
+  }).catch((err) => { console.error(err); return null; });
+  blastSummary.then((s) => s && s.show(id, { fresh }));
+}
+
 async function loadChanges(id, { fresh = false, quiet = false } = {}) {
+  showBlastSummary(id, fresh);
   const req = ++C.req;
   if (C.id !== id) { C.id = id; C.data = null; C.err = null; C.cursor = -1; C.collapsed = new Set(); }
   if (!quiet && !C.data) renderChanges();
@@ -2704,8 +2717,8 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
 // between Intent, Plan, Story, Changes and Terminal for what is in focus.
 
-const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health"];
-const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, story: 2, map: 3, preview: 3, grid: 4, zoom: 4 };
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship"];
+const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
 const L = { screen: null, param: null, view: null, req: 0, recent: [], focus: null };
 
 function levelCtx(param) {
@@ -2729,7 +2742,7 @@ function levelState() {
 /** The agent the levels are about: the zoomed one, the story's, or the selected one. */
 function focusAgent() {
   if (S.zoomed) return S.zoomed;
-  if ((L.screen === "story" || L.screen === "preview") && L.param) return L.param;
+  if ((L.screen === "story" || L.screen === "preview" || L.screen === "ship") && L.param) return L.param;
   return L.focus || S.selected || null;
 }
 
@@ -2741,7 +2754,7 @@ function hideOtherViews() {
 
 async function openLevel(screen, param, { how = "push" } = {}) {
   if (!SCREENS.includes(screen)) return;
-  if ((screen === "story" || screen === "preview") && !param) {
+  if ((screen === "story" || screen === "preview" || screen === "ship") && !param) {
     param = focusAgent() || [...S.agents.values()].filter((a) => a.running).sort(byCreated).find((a) => a.state === "working")?.id
       || [...S.agents.values()].sort(byCreated)[0]?.id || null;
   }
@@ -2863,7 +2876,7 @@ for (const b of document.querySelectorAll("#levels button")) b.addEventListener(
 for (const a of document.querySelectorAll("#lvnav a")) a.addEventListener("click", (e) => {
   e.preventDefault();
   const s = a.dataset.screen;
-  route(s === "story" || s === "preview" ? `#/${s}${focusAgent() ? "/" + focusAgent() : ""}` : `#/${s}`, { push: true });
+  route(s === "story" || s === "preview" || s === "ship" ? `#/${s}${focusAgent() ? "/" + focusAgent() : ""}` : `#/${s}`, { push: true });
 });
 
 function levelKey(e) {
