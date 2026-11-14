@@ -117,7 +117,8 @@ each other in a graph that ChloeDB walks.
   `sa_companies` and `sa_memberships`, a person making one becomes its admin
   and adds people who have an account (`GET/POST /api/apps/<id>/companies`,
   `POST .../companies/members {company, email, role}`,
-  `.../companies/members/remove`; `app.companies()`, `app.company()`,
+  `.../companies/members/remove`; the studio lists every company with its
+  members by `GET .../companies?all=1`; `app.companies()`, `app.company()`,
   `app.createCompany(name)`, `app.useCompany(id)`, `app.addToCompany(...)` in
   views), and the one a person works in now is the `x-sa-company` header's
   when they belong to it, else their first. A table with no ALLOW statement is
