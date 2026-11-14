@@ -264,7 +264,10 @@
       const track = h('div', { class: 'fp-track', onscroll: () => { st.x = track.scrollLeft; } }, cards);
       const by = (d) => track.scrollBy({ left: d * Math.max(260, track.clientWidth * 0.8), behavior: still() ? 'auto' : 'smooth' });
       requestAnimationFrame(() => { if (st.x) track.scrollLeft = st.x; });
-      return h('div', { class: 'fp-carousel cards' }, track,
+      // A short shelf (five cards or fewer) fits a wide screen as a row
+      // that wraps, so no card is cut at the edge; a phone still swipes.
+      const fit = cards.length <= 5;
+      return h('div', { class: `fp-carousel cards${fit ? ' fit' : ''}`, style: `--n: ${cards.length}` }, track,
         cards.length > 1 ? h('div', { class: 'fp-ctrl' },
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'Back', onclick: () => by(-1) }, icon('arrow', 'fp-ico flip')),
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'More', onclick: () => by(1) }, icon('arrow'))) : null);

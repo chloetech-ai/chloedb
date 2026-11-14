@@ -214,6 +214,14 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-track > * { scroll-snap-align: start; }
 .fp-ctrl { display: flex; gap: 10px; justify-content: flex-end; }
 @media (max-width: 760px) { .fp-track { grid-auto-columns: 84%; gap: 14px; } }
+/* a short shelf on a wide screen: every card in view, wrapping on a narrow
+   computer screen; a long shelf fades at the edge it scrolls toward instead
+   of cutting a card off there */
+@media (min-width: 761px) {
+  .fp-carousel.cards.fit .fp-track { grid-auto-flow: row; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); overflow: visible; scroll-snap-type: none; }
+  .fp-carousel.cards.fit .fp-ctrl { display: none; }
+  .fp-carousel.cards:not(.fit) .fp-track { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); }
+}
 
 /* cards */
 .fp-card { background: var(--card); border-radius: calc(var(--radius) * 1.1); overflow: hidden; border: 1px solid var(--card-border); display: flex; flex-direction: column;
