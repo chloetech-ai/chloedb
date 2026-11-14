@@ -156,6 +156,8 @@ pub fn router(app: App) -> Router {
         // Sixth build: repositories without an agent, and the user guide.
         .merge(crate::repos::routes())
         .route("/guide.md", get(guide_md))
+        // Sixth build: "I'm stepping away" and the presence heartbeat (src/digest.rs).
+        .merge(crate::digest::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)

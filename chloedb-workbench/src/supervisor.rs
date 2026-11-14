@@ -623,6 +623,10 @@ impl Supervisor {
         cmd.env("CHLOEDB_WORKBENCH_URL", &self.cfg.url);
         cmd.env("CHLOEDB_WORKBENCH_TOKEN", &token);
         cmd.env("CHLOEDB_WORKBENCH_AGENT", &id);
+        // Sixth build: pytest writes a junit report Health reads test by test (src/testruns.rs).
+        for (k, v) in crate::testruns::session_env(Path::new(&cwd), &session_dir) {
+            cmd.env(k, v);
+        }
         // A server started from inside a Claude Code session must not make
         // its agents look nested in it.
         for marker in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID"] {

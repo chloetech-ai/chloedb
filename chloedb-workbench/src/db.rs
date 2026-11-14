@@ -336,6 +336,9 @@ impl StateDb {
         }
         // Fifth build: Hotspots (src/hotspots.rs).
         db.sql(crate::hotspots::TABLE, &Params::new()).map_err(e)?;
+        // Sixth build: each test command's summary, and test runs' waits (src/testruns.rs).
+        db.sql(crate::testruns::SUMMARIES, &Params::new()).map_err(e)?;
+        db.sql(crate::testruns::ADDED, &Params::new()).map_err(e)?;
         db.sql(COMPLETE_ITEMS, &Params::new()).map_err(e)?;
         db.sql(COMPLETE_EVENTS, &Params::new()).map_err(e)?;
         // Sixth build: repositories opened without an agent (src/repos.rs).

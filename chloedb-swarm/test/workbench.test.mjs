@@ -39,6 +39,12 @@ test('workbench: plays a job, reports steps, browser findings, the review and th
   // The second step's prompt recalls the first, and the persona.
   assert.match(m.asked[1].prompt, /1\. clicked e3 \(“Tapping the mug”\)/);
   assert.match(m.asked[1].prompt, /You are Maya Chen, a first-time visitor\./);
+  // The persona checks its arithmetic before it calls a total wrong, and
+  // does the task's main action (Sixth build); the review holds it to that.
+  assert.match(m.asked[0].system, /check your arithmetic against everything the page shows/);
+  assert.match(m.asked[0].system, /Do the task's main action \(Pay/);
+  assert.match(m.asked[2].system, /A wrong number is a bug only when you checked it/);
+  assert.match(m.asked[2].system, /never did the task's main action/);
 });
 
 test('workbench: the step limit ends a run, and giving up is a finding', async () => {

@@ -2,20 +2,36 @@
 //! since: outcomes done, questions decided (by you, a rule or the
 //! terminal) and still open, what ChloeCtx learned, a story line per
 //! agent, and the moments of decisions to replay.
+//!
+//! Sixth build: whether you were away at all (`here`, a heartbeat the page
+//! sends while it is shown and used), "I'm stepping away" (`away_mark`,
+//! with the agents likely to need you soon), how long each agent was
+//! blocked on you in the window, and what needs you now counted as the
+//! top bar counts it (running agents that wait or sit idle).
 
 use std::collections::{BTreeMap, HashSet};
 
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::{Json as AxJson, Router};
 use chloedb::query::Params;
 use chloedb::Value;
 use serde_json::{json, Value as Json};
 
 use crate::db::{get_ms, get_str, iso, now_ms, ts, Agent, Event};
 use crate::levels::Levels;
+use crate::server::{blocking, ApiResult, App};
 use crate::supervisor::{one_line, ApiError, Supervisor};
 use crate::{goals, questions};
 
-/// When there is no `last_seen` yet: the last day.
+/// When there is no `last_seen` yet and no agent: the last day.
 const DEFAULT_WINDOW_MS: i64 = 24 * 3600 * 1000;
+/// A heartbeat this long after `since` means you were here, not away.
+const HERE_AFTER_MS: i64 = 90_000;
+/// An agent that asked you this recently is likely to ask again.
+const ASKS_RECENT_MS: i64 = 15 * 60_000;
 /// A replay's window before and after its moment.
 const BEFORE_MS: i64 = 20_000;
 const AFTER_MS: i64 = 3_000;
@@ -77,11 +93,76 @@ fn replay_of(sup: &Supervisor, a: &Agent, at: i64, label: String) -> Option<Json
     Some(json!({ "agent": a.id, "from_ms": (rel - BEFORE_MS).max(0), "to_ms": rel + AFTER_MS, "at_ms": at, "label": label }))
 }
 
+fn seen_ms(sup: &Supervisor, key: &str) -> Option<i64> {
+    get_seen(sup, key).and_then(|(v, _)| v.parse().ok())
+}
+
+/// What needs you now, as the top bar counts it: running agents waiting
+/// on you or idle at their prompt, oldest first.
+fn needs_you(sup: &Supervisor, agents: &[Agent]) -> Vec<Json> {
+    let mut v: Vec<&Agent> = agents.iter().filter(|a| sup.is_running(&a.id) && (a.state == "waiting" || a.state == "idle")).collect();
+    v.sort_by_key(|a| a.state_since);
+    v.iter()
+        .map(|a| json!({ "agent": a.id, "name": a.name, "state": a.state, "since_ms": a.state_since, "why": a.waiting_for.clone().or_else(|| a.narration.clone()) }))
+        .collect()
+}
+
+/// How long each agent was blocked on you in `[since, now]`: its
+/// questions (a permission prompt, an ask) from asked to answered, and
+/// its idle stretches (a turn ended, no prompt yet) while it ran.
+fn blocked(sup: &Supervisor, agents: &[Agent], qs: &[questions::Question], since: i64, now: i64) -> Vec<Json> {
+    let clip = |a: i64, b: i64| (a.max(since), b.min(now));
+    let mut out = Vec::new();
+    for a in agents {
+        let mut waits: Vec<Json> = Vec::new();
+        let mut wait_ms = 0;
+        for q in qs.iter().filter(|q| q.agent.as_deref() == Some(&a.id) && matches!(q.kind.as_str(), "permission" | "ask")) {
+            let end = q.answered.unwrap_or(if q.state == "open" { now } else { q.created });
+            let (f, t) = clip(q.created, end);
+            if t <= f {
+                continue;
+            }
+            wait_ms += t - f;
+            let what = q.context.as_deref().map(|c| one_line(c, 120)).unwrap_or_else(|| one_line(&q.text, 120));
+            waits.push(json!({ "kind": q.kind, "from_ms": f, "to_ms": t, "ms": t - f, "open": q.state == "open", "text": what, "question": q.id,
+                               "answered_by": q.answered_by }));
+        }
+        // Idle stretches: from each Stop to the next prompt (or now, while it runs).
+        let p = Params::new().set("agent", Value::Str(a.id.clone())).set("since", ts(since - DEFAULT_WINDOW_MS));
+        let evs = sup.db().query("SELECT ts, kind FROM events WHERE agent = :agent AND ts >= :since AND kind IN ('Stop', 'UserPromptSubmit', 'steer', 'exited', 'SessionEnd') ORDER BY seq ASC LIMIT 20000", &p).unwrap_or_default();
+        let mut idle_ms = 0;
+        let mut idle_from: Option<i64> = None;
+        for r in &evs {
+            let at = get_ms(&r[0]).unwrap_or(0);
+            match get_str(&r[1]).as_deref() {
+                Some("Stop") => {
+                    idle_from.get_or_insert(at);
+                }
+                _ => {
+                    if let Some(f) = idle_from.take() {
+                        let (f, t) = clip(f, at);
+                        idle_ms += (t - f).max(0);
+                    }
+                }
+            }
+        }
+        if let Some(f) = idle_from.filter(|_| sup.is_running(&a.id) && a.state == "idle") {
+            let (f, t) = clip(f, now);
+            idle_ms += (t - f).max(0);
+        }
+        if wait_ms == 0 && idle_ms == 0 {
+            continue;
+        }
+        out.push(json!({ "agent": a.id, "name": a.name, "wait_ms": wait_ms, "idle_ms": idle_ms, "waits": waits, "running": sup.is_running(&a.id), "state": a.state }));
+    }
+    out.sort_by_key(|b| -(b["wait_ms"].as_i64().unwrap_or(0) + b["idle_ms"].as_i64().unwrap_or(0)));
+    out
+}
+
 /// `GET /api/digest?since=<ms>&repo=`.
 pub fn digest(sup: &Supervisor, lv: &Levels, since: Option<i64>, repo: Option<&str>) -> Result<Json, ApiError> {
     let now = now_ms();
     let seen_at = last_seen(sup);
-    let since = since.or(seen_at).unwrap_or(now - DEFAULT_WINDOW_MS);
     let repo = match repo.filter(|r| !r.is_empty()) {
         Some(r) => Some(crate::trail::repo_dir(Some(r))?.to_string_lossy().to_string()),
         None => None,
@@ -89,6 +170,25 @@ pub fn digest(sup: &Supervisor, lv: &Levels, since: Option<i64>, repo: Option<&s
     let in_repo = |r: Option<&str>| repo.as_deref().is_none_or(|want| r == Some(want));
     questions::expire_stale(sup, lv);
     let agents: Vec<Agent> = sup.agent_rows().into_iter().filter(|a| in_repo(Some(&a.repo))).collect();
+    // Your first visit: since the first agent started, not a made-up day.
+    let first_start = agents.iter().map(|a| a.started_ms.unwrap_or(a.created)).filter(|t| *t > 0).min();
+    let explicit = since.is_some();
+    let since = since.or(seen_at).or(first_start).unwrap_or(now - DEFAULT_WINDOW_MS);
+    let here = seen_ms(sup, "here");
+    let mark = seen_ms(sup, "away_mark");
+    // Away, stepped away (you said so), here all along (the page was in
+    // use after `since`), or the first look.
+    let mode = if explicit {
+        "since"
+    } else if seen_at.is_none() {
+        "first"
+    } else if mark == Some(since) && here.is_none_or(|h| h < since + HERE_AFTER_MS) {
+        "stepped"
+    } else if here.is_some_and(|h| h >= since + HERE_AFTER_MS) {
+        "here"
+    } else {
+        "away"
+    };
     let by_id = |id: &str| agents.iter().find(|a| a.id == id);
     let ids: HashSet<String> = agents.iter().map(|a| a.id.clone()).collect();
 
@@ -195,11 +295,17 @@ pub fn digest(sup: &Supervisor, lv: &Levels, since: Option<i64>, repo: Option<&s
 
     let mut qlist: Vec<Json> = open.iter().map(|q| q.to_json(sup)).collect();
     qlist.extend(decided.iter().map(|q| q.to_json(sup)));
+    let blocked = blocked(sup, &agents, &qs, since, now);
+    let needs = needs_you(sup, &agents);
     Ok(json!({
         "since_ms": since,
         "until_ms": now,
         "last_seen_ms": seen_at,
         "away_ms": now - since,
+        "mode": mode,
+        "here_ms": here,
+        "needs_you": needs,
+        "blocked": blocked,
         "tiles": { "done": done.len(), "decided": decided.len(), "waiting": open.len(), "learned": learned.len() },
         "decided_by": { "you": by("you"), "rule": by("rule:"), "terminal": by("terminal") },
         "done": done.iter().map(|o| o.to_json(sup)).collect::<Vec<_>>(),
@@ -211,4 +317,67 @@ pub fn digest(sup: &Supervisor, lv: &Levels, since: Option<i64>, repo: Option<&s
         "happened": !evs.is_empty() || !done.is_empty() || !decided.is_empty(),
         "missing": missing,
     }))
+}
+
+/// `POST /api/away/leave`: "I'm stepping away". Marks the moment (the next
+/// digest counts from it) and answers nothing for you; it says which
+/// agents are likely to need you while you are gone: those waiting now,
+/// those idle (they have nothing to do), and those that asked you lately.
+pub fn leave(sup: &Supervisor) -> Result<Json, ApiError> {
+    let now = now_ms();
+    set_seen(sup, "last_seen", &now.to_string())?;
+    set_seen(sup, "away_mark", &now.to_string())?;
+    let agents: Vec<Agent> = sup.agent_rows().into_iter().filter(|a| sup.is_running(&a.id)).collect();
+    let qs = questions::all(sup);
+    let mut warn = Vec::new();
+    for a in &agents {
+        let asked: Vec<&questions::Question> = qs.iter().filter(|q| q.agent.as_deref() == Some(&a.id) && q.created >= now - ASKS_RECENT_MS && matches!(q.kind.as_str(), "permission" | "ask")).collect();
+        let open = qs.iter().find(|q| q.agent.as_deref() == Some(&a.id) && q.state == "open");
+        let (level, text) = if let Some(q) = open {
+            ("now", format!("waits for you now: {}", one_line(q.context.as_deref().unwrap_or(&q.text), 120)))
+        } else if a.state == "waiting" {
+            ("now", format!("waits for you now: {}", one_line(a.waiting_for.as_deref().unwrap_or("a prompt in its terminal"), 120)))
+        } else if a.state == "idle" {
+            ("idle", "is idle: it has nothing to do until you give it something".to_string())
+        } else if !asked.is_empty() {
+            ("soon", format!("asked you {} in the last {} min: it will likely ask again", match asked.len() {
+                1 => "once".to_string(),
+                2 => "twice".to_string(),
+                n => format!("{n} times"),
+            }, ASKS_RECENT_MS / 60_000))
+        } else {
+            ("ok", "is working and has not asked you lately".to_string())
+        };
+        warn.push(json!({ "agent": a.id, "name": a.name, "level": level, "text": text }));
+    }
+    let rank = |w: &Json| match w["level"].as_str() {
+        Some("now") => 0,
+        Some("soon") => 1,
+        Some("idle") => 2,
+        _ => 3,
+    };
+    warn.sort_by_key(rank);
+    Ok(json!({ "ok": true, "at_ms": now, "agents": warn }))
+}
+
+pub fn routes() -> Router<App> {
+    Router::new().route("/api/away/leave", post(leave_route)).route("/api/here", post(here_route))
+}
+
+async fn leave_route(State(app): State<App>, _body: Bytes) -> ApiResult {
+    let sup = app.sup.clone();
+    Ok(AxJson(blocking(move || leave(&sup)).await?).into_response())
+}
+
+/// `POST /api/here`: the page is shown and in use (a heartbeat, at most a
+/// minute apart): you are not away.
+async fn here_route(State(app): State<App>, _body: Bytes) -> ApiResult {
+    let sup = app.sup.clone();
+    Ok(AxJson(blocking(move || {
+        let t = now_ms();
+        set_seen(&sup, "here", &t.to_string())?;
+        Ok(json!({ "ok": true, "here_ms": t }))
+    })
+    .await?)
+    .into_response())
 }

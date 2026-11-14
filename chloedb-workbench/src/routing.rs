@@ -285,7 +285,16 @@ pub fn suggest(sup: &Supervisor, repo: &str, task: &str) -> Json {
         .min_by(|a, b| (a.1.cost / a.1.n.max(1) as f64).total_cmp(&(b.1.cost / b.1.n.max(1) as f64)))
         .map(|a| (a.0.clone(), a.1));
     let similar = past.len();
+    // Sixth build: fewer than APPLY_AT similar tasks is no basis for a
+    // suggestion ("0 of 1 like this finished"): say so, suggest nothing.
+    let thin = similar > 0 && similar < APPLY_AT;
+    let pick = if thin { None } else { pick };
     let why = match (&pick, alts.first()) {
+        (None, _) if thin => format!(
+            "Not enough history: {} similar past task{} in this repository, and Workbench suggests a model from {APPLY_AT}. The model is your choice.",
+            similar,
+            if similar == 1 { "" } else { "s" }
+        ),
         (None, _) => "No past task of this repository is like this one yet: the model is your choice.".to_string(),
         (Some((m, t)), Some((bm, bt))) if *bm != m => format!(
             "{} finished {} of {} tasks like this at {} on average; {} finished {} of {} at {}: about as often, for less.",
@@ -304,6 +313,7 @@ pub fn suggest(sup: &Supervisor, repo: &str, task: &str) -> Json {
     json!({
         "available": true,
         "similar": similar,
+        "enough": similar >= APPLY_AT,
         "apply": similar >= APPLY_AT && pick.is_some(),
         "suggestion": pick.as_ref().map(|(m, t)| t.to_json(m)),
         "why": why,

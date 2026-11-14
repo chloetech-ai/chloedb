@@ -1790,6 +1790,49 @@ fn the_digest_tells_what_happened_since_you_last_looked() {
     assert_eq!(d["tiles"]["decided"], 1);
 }
 
+#[test]
+fn away_counts_from_the_first_agent_says_who_was_blocked_and_marks_stepping_away() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "rounding", "task": "ASK first", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "waiting");
+    s.get_until(&format!("/api/questions?agent={id}&state=open"), "a question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    std::thread::sleep(Duration::from_millis(300));
+
+    // The first look: since the agent started, not a made-up day.
+    let (status, d) = s.get("/api/digest");
+    assert_eq!(status, 200, "{d}");
+    assert_eq!(d["mode"], "first", "{d}");
+    let started = s.agent(&id)["started_ms"].as_i64().unwrap();
+    assert!((d["since_ms"].as_i64().unwrap() - started).abs() < 1000, "{d}");
+    assert!(d["away_ms"].as_i64().unwrap() < 60_000, "{d}");
+    // What needs you, as the top bar counts it.
+    assert_eq!(d["needs_you"].as_array().unwrap().len(), 1, "{d}");
+    assert_eq!((d["needs_you"][0]["agent"].as_str(), d["needs_you"][0]["state"].as_str()), (Some(id.as_str()), Some("waiting")), "{d}");
+    // How long it was blocked on you, and on what.
+    let b = find(&d["blocked"], "/agent", &id);
+    assert!(b["wait_ms"].as_i64().unwrap() >= 250, "{b}");
+    assert_eq!((b["waits"][0]["kind"].as_str(), b["waits"][0]["open"].as_bool()), (Some("permission"), Some(true)), "{b}");
+
+    // "I'm stepping away": the moment, and who is likely to need you.
+    let (status, l) = s.post("/api/away/leave", json!({}));
+    assert_eq!(status, 200, "{l}");
+    let w = find(&l["agents"], "/agent", &id);
+    assert_eq!(w["level"], "now", "{w}");
+    assert!(w["text"].as_str().unwrap().starts_with("waits for you now"), "{w}");
+    let (_, d) = s.get("/api/digest");
+    assert_eq!((d["mode"].as_str(), d["since_ms"].as_i64()), (Some("stepped"), l["at_ms"].as_i64()), "{d}");
+
+    // Seen long ago, but the page was in use since: you were here.
+    let long_ago = l["at_ms"].as_i64().unwrap() - 300_000;
+    s.post("/api/seen", json!({ "ts_ms": long_ago }));
+    let (status, _) = s.post("/api/here", json!({}));
+    assert_eq!(status, 200);
+    let (_, d) = s.get("/api/digest");
+    assert_eq!((d["mode"].as_str(), d["since_ms"].as_i64()), (Some("here"), Some(long_ago)), "{d}");
+}
+
 // The levels: Map, Preview, Flow.
 
 fn find<'a>(list: &'a Value, key: &str, want: &str) -> &'a Value {
@@ -2272,19 +2315,22 @@ fn health_records_test_runs_and_the_radar_finds_flaky_and_newly_failing() {
     let pre = evs.iter().find(|e| e["kind"] == "PreToolUse" && e["data"].as_str().is_some_and(|d| d.contains("\"tu2\""))).unwrap();
     assert_eq!(runs[0]["seq"], pre["seq"]);
 
-    // A runner it does not parse: one row for the command, with its exit code.
+    // A runner it does not parse: a command with its exit code, and no
+    // test made up from the command (sixth build).
     bash_as(&s, &id, "tu3", "make check", "all good\n", false);
     let v = s.get_until(&radar, "make check", |v| v["totals"]["commands"] == 3);
-    let mk = find(&v["tests"], "/test", "make check");
-    assert_eq!((mk["runner"].as_str(), mk["passed"].as_i64()), (Some("other"), Some(1)), "{mk}");
+    let mk = find(&v["commands"], "/command", "make check");
+    assert_eq!((mk["exit_code"].as_i64(), mk["tests"].as_i64(), mk["counted"].as_bool()), (Some(0), Some(0), Some(false)), "{mk}");
+    assert!(v["tests"].as_array().unwrap().iter().all(|t| t["test"] != "make check"), "{v}");
+    assert_eq!(v["totals"]["tests"], 2, "{v}");
 
     // A failed run with no PostToolUse (Claude Code fires none then) is
     // read from the transcript when the turn ends.
     s.post(&format!("/api/agents/{id}/input"), json!({ "text": "FAIL error: could not compile calc" }));
     s.wait(&id, "idle");
     let v = s.get_until(&radar, "the failed run from the transcript", |v| v["totals"]["commands"] == 4);
-    let calc = find(&v["tests"], "/test", "cargo test -p calc");
-    assert_eq!(calc["last"]["outcome"], "failed", "{calc}");
+    let calc = find(&v["commands"], "/command", "cargo test -p calc");
+    assert_eq!(calc["exit_code"], 1, "{calc}");
 
     // Other agents' MCP: the radar and one test's history as text.
     let mut m = Mcp::start(&s, &id);
@@ -2296,6 +2342,105 @@ fn health_records_test_runs_and_the_radar_finds_flaky_and_newly_failing() {
     let (text, err) = m.tool("test_history", json!({ "test": "totals::coupon" }));
     assert!(!err && text.contains("failed") && text.contains("by cart"), "{text}");
     assert_eq!(s.get("/api/tests/runs").0, 400);
+}
+
+/// A pytest junit report (xunit1) of test_coupons.py: test_a passed,
+/// test_promo_window as `promo_ok` says.
+fn junit_of(promo_ok: bool) -> String {
+    let promo = if promo_ok { String::new() } else { "<failure message=\"assert 0.151 &gt; 0.2\">E   assert 0.151 &gt; 0.2</failure>".to_string() };
+    format!(
+        "<?xml version=\"1.0\"?><testsuites><testsuite name=\"pytest\" time=\"0.020\"><testcase classname=\"test_coupons\" file=\"test_coupons.py\" name=\"test_a\" time=\"0.001\"/><testcase classname=\"test_coupons\" file=\"test_coupons.py\" name=\"test_promo_window\" time=\"0.002\">{promo}</testcase></testsuite></testsuites>"
+    )
+}
+
+#[test]
+fn health_counts_tests_by_name_without_permission_waits_and_runs_one_again() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "flake", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let a = s.until(&id, "started", |a| a["session_id"].is_string());
+    let junit = s.data.join("sessions").join(&id).join("pytest-junit.xml");
+    // The session's pytest writes its junit report where Workbench reads it.
+    #[cfg(target_os = "linux")]
+    {
+        let env = std::fs::read(format!("/proc/{}/environ", a["pid"])).unwrap_or_default();
+        let env = String::from_utf8_lossy(&env);
+        assert!(env.contains(&format!("PYTEST_ADDOPTS=--junitxml='{}'", junit.display())), "the agent's environment has no PYTEST_ADDOPTS");
+    }
+    let radar = format!("/api/tests?repo={}", r.display());
+
+    // A quiet pass with no report: its count, no test made up.
+    bash_as(&s, &id, "q0", "python3 -m pytest -q", "..\n2 passed in 0.02s\n", false);
+    let v = s.get_until(&radar, "the quiet run", |v| v["totals"]["commands"] == 1);
+    assert_eq!((v["totals"]["tests"].as_i64(), v["totals"]["quiet"]["passed"].as_i64()), (Some(0), Some(2)), "{v}");
+    assert_eq!(v["commands"][0]["source"], "summary", "{v}");
+
+    // Ten runs on one commit, test_promo_window failing twice: every test
+    // of every run from the reports, so it is flaky.
+    for i in 0..10 {
+        let ok = i != 3 && i != 7;
+        let out = if ok { "..\n2 passed in 0.02s\n".to_string() } else { ".F\nFAILED test_coupons.py::test_promo_window - assert 0.151 > 0.2\n1 failed, 1 passed in 0.02s\n".to_string() };
+        // pytest writes its report while the call runs.
+        let uid = format!("p{i}");
+        hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": uid, "tool_input": { "command": "python3 -m pytest -q" } }));
+        std::thread::sleep(Duration::from_millis(60));
+        std::fs::write(&junit, junit_of(ok)).unwrap();
+        if ok {
+            hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": uid, "tool_input": { "command": "python3 -m pytest -q" }, "tool_response": { "stdout": out, "stderr": "", "interrupted": false } }));
+        } else {
+            hook_as(&s, &id, json!({ "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": uid, "tool_input": { "command": "python3 -m pytest -q" }, "error": format!("Exit code 1\n{out}") }));
+        }
+        s.get_until(&radar, "the run", |v| v["totals"]["commands"] == i + 2);
+    }
+    let v = s.get(&radar).1;
+    let promo = find(&v["tests"], "/test", "test_coupons.py::test_promo_window");
+    assert_eq!((promo["runs"].as_i64(), promo["failed"].as_i64(), promo["flaky"].as_bool(), promo["runner"].as_str()), (Some(10), Some(2), Some(true), Some("pytest")), "{promo}");
+    assert_eq!(promo["own_ms"], true, "{promo}");
+    assert_eq!(find(&v["tests"], "/test", "test_coupons.py::test_a")["runs"], 10, "{v}");
+    assert_eq!(v["totals"]["flaky"], 1, "{v}");
+    assert_eq!(v["commands"][0]["source"], "junit", "{v}");
+    assert_eq!(v["commands"][0]["complete"], true, "{v}");
+
+    // A permission prompt between PreToolUse and PostToolUse: the run's
+    // time is pytest's own, not the wait; with no time of its own and the
+    // prompt answered in the terminal, its time is not known (not 1.5 s).
+    for (uid, cmd, out, want) in [("w1", "python3 -m pytest -q test_coupons.py", "2 passed in 0.30s\n", Some(300)), ("w2", "make test", "ok\n", None)] {
+        hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": uid, "tool_input": { "command": cmd } }));
+        hook_as(&s, &id, json!({ "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash" }));
+        std::thread::sleep(Duration::from_millis(1500));
+        hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": uid, "tool_input": { "command": cmd }, "tool_response": { "stdout": out, "stderr": "", "interrupted": false } }));
+        let v = s.get_until(&radar, "the waited run", |v| v["commands"].as_array().unwrap().iter().any(|c| c["command"] == cmd));
+        let c = find(&v["commands"], "/command", cmd);
+        assert_eq!(c["ms"].as_i64(), want, "{c}");
+    }
+
+    // Run it N times: Workbench runs the one test itself (here a pytest
+    // the repository brings) and records each run as its own.
+    let fake = r.join("pytest");
+    std::fs::write(&fake, "#!/bin/sh\nfor a; do t=$a; done\necho \"PASSED $t\"\necho '1 passed in 0.01s'\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bash_as(&s, &id, "own", "./pytest -q", "PASSED test_coupons.py::test_promo_window\n1 passed in 0.01s\n", false);
+    s.get_until(&radar, "the run", |v| v["commands"].as_array().unwrap().iter().any(|c| c["command"] == "./pytest -q"));
+    let (status, h) = s.get(&format!("/api/tests/history?repo={}&test=test_coupons.py::test_promo_window", r.display()));
+    assert_eq!(status, 200, "{h}");
+    assert_eq!(h["rerun"], "./pytest -q -rA -p no:cacheprovider test_coupons.py::test_promo_window", "{h}");
+    let (status, rr) = s.post("/api/tests/rerun", json!({ "repo": r, "test": "test_coupons.py::test_promo_window", "n": 5 }));
+    assert_eq!(status, 200, "{rr}");
+    let rid = rr["rerun"]["id"].as_str().unwrap().to_string();
+    let rr = s.get_until(&format!("/api/tests/rerun/{rid}"), "five runs", |v| v["rerun"]["state"] != "running");
+    assert_eq!((rr["rerun"]["state"].as_str(), rr["rerun"]["passed"].as_i64(), rr["rerun"]["failed"].as_i64()), (Some("done"), Some(5), Some(0)), "{rr}");
+    let v = s.get(&radar).1;
+    let promo = find(&v["tests"], "/test", "test_coupons.py::test_promo_window");
+    // Stable since its last failure: the passes after it, with how likely
+    // they were had nothing changed.
+    assert_eq!(promo["stable"]["runs"], 8, "{promo}");
+    assert_eq!(promo["stable"]["by_workbench"], 5, "{promo}");
+    assert!(promo["stable"]["chance_if_unchanged"].as_f64().is_some(), "{promo}");
+    assert_eq!(s.post("/api/tests/rerun", json!({ "repo": r, "test": "nosuch" })).0, 404);
 }
 
 #[test]
@@ -3095,6 +3240,10 @@ fn routing_suggests_the_model_similar_tasks_did_best_on() {
     assert_eq!((other["similar"].as_u64(), other["apply"].as_bool()), (Some(0), Some(false)), "{other}");
     let (_, unlike) = s.get(&q("write the quarterly billing report"));
     assert_eq!(unlike["apply"], false, "{unlike}");
+    // One similar task is no basis for a suggestion (sixth build).
+    let (_, one) = s.get(&q("design the refunds service schema again"));
+    assert_eq!((one["similar"].as_u64(), one["suggestion"].is_null(), one["enough"].as_bool()), (Some(1), true, Some(false)), "{one}");
+    assert!(one["why"].as_str().unwrap().starts_with("Not enough history: 1 similar past task"), "{one}");
 
     // spawn_agent without a model takes the suggestion; with one, its own.
     let lead = s.spawn(json!({ "repo": r, "name": "lead", "worktree": false }));
@@ -3923,8 +4072,12 @@ fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() 
     // The revert commit, and the edit cart put back.
     assert_eq!(c["reverts"], 2, "{c}");
     assert_eq!((c["test_fails"].as_i64(), c["flaky"].as_i64(), c["steers"].as_i64()), (Some(2), Some(0), Some(1)), "{c}");
-    // 3 re-edits + 1 more agent + 2 reverts + 2 failures + 1 correction.
-    assert_eq!(h["score"], json!(3.0 + 2.0 + 6.0 + 3.0 + 3.0), "{h}");
+    // The git log seeds it too (sixth build): three commits on main.
+    assert_eq!((c["commits"].as_i64(), c["fixes"].as_i64()), (Some(3), Some(0)), "{c}");
+    let commits = h["reasons"].as_array().unwrap().iter().find(|r| r["kind"] == "commits").unwrap_or_else(|| panic!("{}", h["reasons"]));
+    assert_eq!(commits["text"], "changed in 3 commits (on main)", "{commits}");
+    // 3 re-edits + 1 more agent + 2 reverts + 2 failures + 1 correction + 2 more commits.
+    assert_eq!(h["score"], json!(3.0 + 2.0 + 6.0 + 3.0 + 3.0 + 3.0), "{h}");
     assert_eq!(h["level"], "hot");
     let kinds: Vec<&str> = h["reasons"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds[0], "reverts", "{}", h["reasons"]);
@@ -3940,8 +4093,10 @@ fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() 
     assert_eq!(h["suggestion"]["kind"], "rule", "{}", h["suggestion"]);
     assert_eq!(h["suggestion"]["rule"], "No, don't round per unit: round once, on the line total.");
     assert_eq!(h["churn"].as_array().unwrap().len(), 14);
-    assert_eq!(h["churn"].as_array().unwrap().last().unwrap()[1], 5);
+    assert_eq!(h["churn"].as_array().unwrap().last().unwrap()[1], 8, "five edits and three commits today");
     assert_eq!(v["totals"]["hotspots"], 1);
+    // The header's counts are the files' own: every edit, every failure after an edit.
+    assert_eq!((v["totals"]["edits"].as_i64(), v["totals"]["test_fails"].as_i64(), v["totals"]["mild"].as_i64()), (Some(6), Some(2), Some(0)), "{}", v["totals"]);
     assert_eq!(v["ctx"]["available"], false, "{}", v["ctx"]);
     assert!(v["agents"].as_array().unwrap().iter().any(|a| a["name"] == "cart"));
     let hid = h["id"].as_str().unwrap().to_string();
@@ -3964,7 +4119,7 @@ fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() 
     let out = pre_edit(&s, &checkout, &totals, "sess-1");
     let text = out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("{out}"));
     assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-    assert!(text.starts_with("Workbench: src/totals.rs is a hotspot of this repository (score 17 in 14 days)"), "{text}");
+    assert!(text.starts_with("Workbench: src/totals.rs is a hotspot of this repository (score 20 in 14 days)"), "{text}");
     assert!(text.contains("- totals::coupon failed twice after edits here"), "{text}");
     assert!(text.contains("the user corrected work here: \"No, don't round per unit: round once, on the line total.\""), "{text}");
     assert!(text.contains("ask the user (ask_human)"), "{text}");
@@ -3999,7 +4154,7 @@ fn hotspots_rank_the_file_agents_keep_correcting_and_tell_the_next_agent_once() 
     m.send("initialize", json!({}));
     m.notify("notifications/initialized");
     let (text, err) = m.tool("hotspots", json!({}));
-    assert!(!err && text.contains("src/totals.rs › round_line_total [hot 17.0]"), "{text}");
+    assert!(!err && text.contains("src/totals.rs › round_line_total [hot 20.0]"), "{text}");
     let (text, err) = m.tool("hotspots", json!({ "file": "src/totals.rs" }));
     assert!(!err && text.starts_with("Workbench: src/totals.rs is a hotspot") && text.contains("totals::coupon (2 runs, 2 failed)"), "{text}");
     let (text, err) = m.tool("hotspots", json!({ "file": "README" }));

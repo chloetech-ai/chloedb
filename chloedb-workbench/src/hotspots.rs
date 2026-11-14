@@ -61,8 +61,22 @@ const CTX_KEEP: Duration = Duration::from_secs(120);
 /// The most evidence kept of a hotspot.
 const EVIDENCE_MAX: usize = 80;
 
-/// Points per counted thing; `agents` counts each agent after the first.
-pub const W: [(&str, f64); 9] = [("re_edits", 1.0), ("agents", 2.0), ("reverts", 3.0), ("test_fails", 1.5), ("flaky", 3.0), ("errors", 2.5), ("steers", 3.0), ("questions", 1.5), ("incidents", 2.0)];
+/// Points per counted thing; `agents` counts each agent after the first,
+/// `commits` each commit after the first (sixth build: the git log seeds
+/// the score, so a file changed back and forth before any agent shows).
+pub const W: [(&str, f64); 11] = [
+    ("re_edits", 1.0),
+    ("agents", 2.0),
+    ("reverts", 3.0),
+    ("test_fails", 1.5),
+    ("flaky", 3.0),
+    ("errors", 2.5),
+    ("steers", 3.0),
+    ("questions", 1.5),
+    ("incidents", 2.0),
+    ("commits", 1.5),
+    ("fixes", 1.5),
+];
 
 fn weight(kind: &str) -> f64 {
     W.iter().find(|(k, _)| *k == kind).map_or(0.0, |(_, w)| *w)
@@ -121,14 +135,16 @@ struct Item {
     /// The test's name (test_fail), the error's hits.
     key: Option<String>,
     n: i64,
+    /// The branch it came from: the agent's, or the commit's.
+    branch: Option<String>,
 }
 
 impl Item {
     fn new(id: String, kind: &'static str, ts_ms: i64, agent: Option<String>, text: String) -> Item {
-        Item { id, kind, ts_ms, agent, text, detail: None, link: Json::Null, key: None, n: 1 }
+        Item { id, kind, ts_ms, agent, text, detail: None, link: Json::Null, key: None, n: 1, branch: None }
     }
     fn to_json(&self) -> Json {
-        json!({ "id": self.id, "kind": self.kind, "ts_ms": self.ts_ms, "ts": iso(self.ts_ms), "agent": self.agent, "text": self.text, "detail": self.detail, "link": self.link })
+        json!({ "id": self.id, "kind": self.kind, "ts_ms": self.ts_ms, "ts": iso(self.ts_ms), "agent": self.agent, "text": self.text, "detail": self.detail, "link": self.link, "branch": self.branch })
     }
 }
 
@@ -151,10 +167,11 @@ struct Signals {
     /// Per file: the evidence, by kind.
     items: BTreeMap<String, Vec<Item>>,
     tests: HashMap<String, TestStat>,
-    totals: Totals,
     missing: Vec<String>,
 }
 
+/// A repository's totals over a window: the sums of every file's counts
+/// (sixth build: one set of rows for the header and the ranks).
 #[derive(Default, Clone, Copy)]
 struct Totals {
     files: i64,
@@ -163,6 +180,29 @@ struct Totals {
     test_fails: i64,
     errors: i64,
     steers: i64,
+    commits: i64,
+    fixes: i64,
+}
+
+impl Totals {
+    fn of(all: &[Scored]) -> Totals {
+        let sum = |f: &dyn Fn(&Counts) -> i64| all.iter().map(|x| f(&x.counts)).sum::<i64>();
+        Totals {
+            files: all.len() as i64,
+            edits: sum(&|c| c.edits),
+            reverts: sum(&|c| c.reverts),
+            test_fails: sum(&|c| c.test_fails + c.flaky_fails),
+            errors: sum(&|c| c.errors),
+            steers: sum(&|c| c.steers),
+            commits: sum(&|c| c.commits),
+            fixes: sum(&|c| c.fixes),
+        }
+    }
+    fn to_json(self, hotspots: &[Json]) -> Json {
+        let level = |l: &str| hotspots.iter().filter(|h| h["level"] == l).count();
+        json!({ "hotspots": hotspots.len(), "hot": level("hot"), "warm": level("warm"), "mild": level("mild"), "files": self.files, "edits": self.edits, "reverts": self.reverts,
+                "test_fails": self.test_fails, "errors": self.errors, "steers": self.steers, "commits": self.commits, "fixes": self.fixes })
+    }
 }
 
 impl Signals {
@@ -208,13 +248,11 @@ fn collect(db: &StateDb, repo: &str, since_ms: i64, agents: &HashMap<String, Str
             for r in rows {
                 let (Some(f), Some(a)) = (get_str(&r[0]), get_str(&r[1])) else { continue };
                 let n = get_int(&r[2]).unwrap_or(0);
-                s.totals.edits += n;
                 s.edits.entry(f).or_default().insert(a, (n, get_ms(&r[3]).unwrap_or(0), get_ms(&r[4]).unwrap_or(0)));
             }
         }
         Err(e) => miss(&mut s, "file_edits could not be read", e),
     }
-    s.totals.files = s.edits.len() as i64;
     match db.query("SELECT file, date_bin('1 day', ts) AS d, COUNT(*) AS n FROM file_edits WHERE repo = :repo AND ts >= :since GROUP BY file, d LIMIT 100000", &p) {
         Ok(rows) => {
             for r in rows {
@@ -252,7 +290,6 @@ fn collect(db: &StateDb, repo: &str, since_ms: i64, agents: &HashMap<String, Str
     for r in db.query("SELECT test, COUNT(*) AS runs, COUNT(*) FILTER (WHERE outcome = 'failed') AS failed FROM test_runs WHERE repo = :repo AND ts >= :since GROUP BY test LIMIT 100000", &p).unwrap_or_default() {
         let Some(t) = get_str(&r[0]) else { continue };
         let failed = get_int(&r[2]).unwrap_or(0);
-        s.totals.test_fails += failed;
         s.tests.insert(t, TestStat { runs: get_int(&r[1]).unwrap_or(0), failed, ..TestStat::default() });
     }
     match db.query("SELECT test, \"commit\", tree, COUNT(*) FILTER (WHERE outcome = 'passed') AS p, COUNT(*) FILTER (WHERE outcome = 'failed') AS f FROM test_runs WHERE repo = :repo AND ts >= :since GROUP BY test, \"commit\", tree HAVING p > 0 AND f > 0 LIMIT 10000", &p) {
@@ -314,7 +351,6 @@ fn collect(db: &StateDb, repo: &str, since_ms: i64, agents: &HashMap<String, Str
                 it.detail = Some(format!("{} at {file}:{} · {}", get_str(&r[8]).unwrap_or_else(|| "error".into()), get_int(&r[7]).unwrap_or(0), plural(hits as usize, "hit", "hits")));
                 it.link = json!({ "error": id });
                 it.n = hits;
-                s.totals.errors += 1;
                 s.add(&file, it);
             }
         }
@@ -364,7 +400,26 @@ fn collect(db: &StateDb, repo: &str, since_ms: i64, agents: &HashMap<String, Str
         it.detail = Some(format!("you, to {name}{}", if kind == "steer" { "" } else { " (typed in its terminal)" }));
         it.link = json!({ "story": { "agent": agent, "at_ms": at } });
         it.key = Some(agent);
-        s.totals.steers += 1;
+        s.add(&file, it);
+    }
+
+    // An edit you refused at its permission prompt ("No"): a correction of
+    // the file it would have changed.
+    let refused = db.query("SELECT id, agent, context, text, answer, answered FROM questions WHERE repo = :repo AND kind = 'permission' AND answered >= :since LIMIT 10000", &p).unwrap_or_default();
+    for r in refused {
+        let (Some(id), Some(agent)) = (get_str(&r[0]), get_str(&r[1])) else { continue };
+        let answer = get_str(&r[4]).unwrap_or_default();
+        if !answer.trim_start().to_ascii_lowercase().starts_with("no") || !agents.contains_key(&agent) {
+            continue;
+        }
+        let words = format!("{} {}", get_str(&r[2]).unwrap_or_default(), get_str(&r[3]).unwrap_or_default());
+        let Some(file) = known_file_in(&words, repo, &s) else { continue };
+        let at = get_ms(&r[5]).unwrap_or(0);
+        let name = agents.get(&agent).cloned().unwrap_or_else(|| agent.clone());
+        let mut it = Item::new(id.clone(), "steer", at, None, format!("No: {}", one_line(&words, 200)));
+        it.detail = Some(format!("you refused {name}'s change at its permission prompt"));
+        it.link = json!({ "question": id });
+        it.key = Some(agent);
         s.add(&file, it);
     }
 
@@ -451,7 +506,7 @@ fn undone_edits(sup: &Supervisor, repo: &str, since_ms: i64, s: &mut Signals) {
                 let mut it = Item::new(id.clone(), "revert", at, Some(a.id.clone()), if own { "Put back its own edit".into() } else { "Put back another agent's edit".into() });
                 it.detail = Some(format!("{} → {}, the text of {} before", one_line(&old, 50), one_line(&new, 50), if mins < 1 { "a moment".into() } else { plural(mins as usize, "min", "min") }));
                 it.link = json!({ "story": { "agent": a.id, "at_ms": at } });
-                s.totals.reverts += 1;
+                it.branch = a.branch.clone();
                 s.items.entry(rel.clone()).or_default().push(it);
             }
             earlier.push((old, new, a.id.clone(), at));
@@ -464,23 +519,59 @@ fn git_out(dir: &FsPath, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Revert commits on any branch since `since_ms`, and the files each touched.
-fn git_reverts(main: &FsPath, since_ms: i64, s: &mut Signals) {
+/// A file of the repository a text names: one the agents edited, else a
+/// path in it that exists in the checkout.
+fn known_file_in(text: &str, repo: &str, s: &Signals) -> Option<String> {
+    if let Some(f) = s.edits.keys().find(|f| text.contains(f.as_str())) {
+        return Some(f.clone());
+    }
+    let prefix = format!("{}/", repo.trim_end_matches('/'));
+    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ',' | '(' | ')'))
+        .map(|w| w.trim_end_matches([':', '.', '?']))
+        .filter(|w| w.contains('.') && !w.starts_with('-'))
+        .map(|w| w.strip_prefix(&prefix).unwrap_or(w).trim_start_matches("./").to_string())
+        .find(|w| !w.starts_with('/') && FsPath::new(repo).join(w).is_file())
+}
+
+/// Words with which a commit's subject says it fixes something.
+const FIXING: [&str; 9] = ["fix", "fixes", "fixed", "bug", "broken", "wrong", "regression", "hotfix", "correct"];
+
+fn is_fix(subject: &str) -> bool {
+    subject.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| FIXING.contains(&w))
+}
+
+/// The git log since `since_ms` (sixth build: it seeds the scores, so a
+/// file changed back and forth shows before any agent touches it):
+/// revert commits on any branch, and every other commit (no merges) with
+/// the files it touched, each with its branch: the main checkout's when
+/// its HEAD has it, else the branch the log reached it from.
+fn git_log(main: &FsPath, since_ms: i64, s: &mut Signals) {
     let since = format!("--since=@{}", since_ms / 1000);
-    let Some(out) = git_out(main, &["log", "--all", &since, "-i", "-E", "--grep=^revert", "--name-only", "--format=%x1e%H%x1f%ct%x1f%s"]) else { return };
+    let head_branch = git_out(main, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| b.trim().to_string()).filter(|b| !b.is_empty() && b != "HEAD").unwrap_or_else(|| "main".into());
+    let on_head: HashSet<String> = git_out(main, &["rev-list", "HEAD", &since]).unwrap_or_default().lines().map(str::to_string).collect();
+    let Some(out) = git_out(main, &["log", "--all", "--source", "--no-merges", &since, "--name-only", "--format=%x1e%H%x1f%ct%x1f%S%x1f%s"]) else { return };
     for c in out.split('\x1e').filter(|c| !c.trim().is_empty()) {
         let mut lines = c.lines();
         let head: Vec<&str> = lines.next().unwrap_or("").split('\x1f').collect();
-        if head.len() < 3 {
+        if head.len() < 4 {
             continue;
         }
-        let (sha, at, subject) = (head[0], head[1].parse::<i64>().unwrap_or(0) * 1000, head[2]);
-        s.totals.reverts += 1;
+        let (sha, at, source, subject) = (head[0], head[1].parse::<i64>().unwrap_or(0) * 1000, head[2], head[3]);
+        let branch = if on_head.contains(sha) { head_branch.clone() } else { source.trim_start_matches("refs/heads/").trim_start_matches("refs/remotes/").to_string() };
+        let short: String = sha.chars().take(8).collect();
+        let kind = if subject.to_lowercase().starts_with("revert") {
+            "revert"
+        } else if is_fix(subject) {
+            "fix"
+        } else {
+            "commit"
+        };
         for f in lines.map(str::trim).filter(|l| !l.is_empty()) {
-            let mut it = Item::new(sha.chars().take(8).collect(), "revert", at, None, one_line(subject, 160));
-            it.detail = Some(format!("commit {}", sha.chars().take(8).collect::<String>()));
+            let mut it = Item::new(short.clone(), kind, at, None, one_line(subject, 160));
+            it.detail = Some(format!("commit {short} on {branch}"));
             it.link = json!({ "commit": sha });
             it.key = Some(sha.to_string());
+            it.branch = Some(branch.clone());
             s.items.entry(f.to_string()).or_default().push(it);
         }
     }
@@ -501,6 +592,13 @@ pub struct Counts {
     pub steers: i64,
     pub questions: i64,
     pub incidents: i64,
+    /// Commits that touched it in the window (git log, any branch), and
+    /// those whose subject says they fix something.
+    pub commits: i64,
+    pub fixes: i64,
+    /// Failures after edits of a flaky test (not scored as failures, but
+    /// counted in the header's "test failures").
+    pub flaky_fails: i64,
 }
 
 impl Counts {
@@ -515,14 +613,16 @@ impl Counts {
             "steers" => self.steers,
             "questions" => self.questions,
             "incidents" => self.incidents,
+            "commits" => self.commits,
+            "fixes" => self.fixes,
             _ => 0,
         }
     }
     fn to_json(self) -> Json {
-        json!({ "edits": self.edits, "re_edits": self.re_edits, "agents": self.agents, "reverts": self.reverts, "test_fails": self.test_fails, "flaky": self.flaky, "errors": self.errors, "steers": self.steers, "questions": self.questions, "incidents": self.incidents })
+        json!({ "edits": self.edits, "re_edits": self.re_edits, "agents": self.agents, "reverts": self.reverts, "test_fails": self.test_fails, "flaky": self.flaky, "errors": self.errors, "steers": self.steers, "questions": self.questions, "incidents": self.incidents, "commits": self.commits, "fixes": self.fixes })
     }
     pub fn score(&self) -> f64 {
-        round1(W.iter().map(|(k, w)| w * if *k == "agents" { (self.agents - 1).max(0) } else { self.get(k) } as f64).sum())
+        round1(W.iter().map(|(k, w)| w * if matches!(*k, "agents" | "commits") { (self.get(k) - 1).max(0) } else { self.get(k) } as f64).sum())
     }
 }
 
@@ -538,6 +638,8 @@ struct Scored {
     tests: Vec<(String, TestStat, i64)>,
 }
 
+/// Every file with a signal, scored, best first: the hotspots are those
+/// scoring [`MIN_SCORE`] or more, and the totals sum them all.
 fn score_files(s: &Signals) -> Vec<Scored> {
     let files: HashSet<&String> = s.edits.keys().chain(s.items.keys()).collect();
     let mut out = Vec::new();
@@ -555,13 +657,13 @@ fn score_files(s: &Signals) -> Vec<Scored> {
         let flaky_of = |t: &str| s.tests.get(t).is_some_and(|x| x.flaky);
         c.test_fails = by_test.iter().filter(|(t, _)| !flaky_of(t)).map(|(_, n)| n).sum();
         c.flaky = by_test.keys().filter(|t| flaky_of(t)).count() as i64;
+        c.flaky_fails = by_test.iter().filter(|(t, _)| flaky_of(t)).map(|(_, n)| n).sum();
         c.errors = of("error");
         c.steers = of("steer") + of("prompt");
         c.questions = items.iter().filter(|i| i.kind == "question").map(|i| &i.id).collect::<HashSet<_>>().len() as i64;
         c.incidents = items.iter().filter(|i| i.kind == "incident").map(|i| &i.id).collect::<HashSet<_>>().len() as i64;
-        if c.score() < MIN_SCORE {
-            continue;
-        }
+        c.commits = items.iter().filter(|i| matches!(i.kind, "commit" | "fix" | "revert") && i.link.get("commit").is_some()).map(|i| &i.id).collect::<HashSet<_>>().len() as i64;
+        c.fixes = items.iter().filter(|i| i.kind == "fix").map(|i| &i.id).collect::<HashSet<_>>().len() as i64;
         let mut agents: Vec<(String, i64)> = per.clone();
         for i in &items {
             if let Some(a) = i.agent.as_ref().or(i.key.as_ref().filter(|_| matches!(i.kind, "steer" | "prompt"))) {
@@ -658,6 +760,19 @@ fn reasons(x: &Scored, names: &HashMap<String, String>) -> Vec<Json> {
     push("steers", c.steers, format!("you corrected it {}", times(c.steers as usize)), ids(&["steer", "prompt"]));
     push("questions", c.questions, format!("{} to you", plural(c.questions as usize, "question", "questions")), ids(&["question"]));
     push("incidents", c.incidents, format!("in {}", plural(c.incidents as usize, "incident", "incidents")), ids(&["incident"]));
+    if c.commits >= 2 {
+        let mut branches: Vec<String> = Vec::new();
+        for i in x.items.iter().filter(|i| matches!(i.kind, "commit" | "fix" | "revert")) {
+            if let Some(b) = i.branch.as_ref().filter(|b| !branches.contains(b)) {
+                branches.push(b.clone());
+            }
+        }
+        let on = if branches.is_empty() { String::new() } else { format!(" (on {})", branches.join(", ")) };
+        push("commits", c.commits, format!("changed in {} commits{on}", c.commits), ids(&["commit", "fix", "revert"]));
+    }
+    if let Some(f) = x.items.iter().rev().find(|i| i.kind == "fix") {
+        push("fixes", c.fixes, format!("{}, the last “{}”", plural(c.fixes as usize, "fix commit", "fix commits"), one_line(&f.text, 60)), ids(&["fix"]));
+    }
     out.sort_by(|a, b| b.0.total_cmp(&a.0));
     out.into_iter().map(|(_, j)| j).collect()
 }
@@ -705,6 +820,24 @@ fn symbols_of(sup: &Supervisor, repo: &str, file: &str, agent: Option<&str>) -> 
     syms
 }
 
+/// The line (1-based) in a chunk's span that defines its symbol: it names
+/// the symbol after a word that makes definitions.
+fn def_line(lines: &[&str], s: &Sym) -> Option<i64> {
+    const DEFINES: [&str; 16] = ["def", "fn", "class", "function", "func", "struct", "enum", "trait", "impl", "interface", "type", "const", "let", "var", "async", "static"];
+    let from = (s.line.max(1) - 1) as usize;
+    let to = (s.end.max(s.line) as usize).min(lines.len());
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    (from..to)
+        .find(|&i| {
+            let l = lines[i];
+            l.match_indices(s.symbol.as_str()).any(|(at, _)| {
+                let before: Vec<&str> = l[..at].split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| !w.is_empty()).collect();
+                !word(l[..at].chars().next_back()) && !word(l[at + s.symbol.len()..].chars().next()) && before.iter().any(|w| DEFINES.contains(w))
+            })
+        })
+        .map(|i| i as i64 + 1)
+}
+
 /// The edits of a file per definition, most first, from `runtime_edits`'
 /// lines.
 fn symbol_edits(sup: &Supervisor, repo: &str, file: &str, since_ms: i64, agent: Option<&str>) -> Vec<Sym> {
@@ -714,6 +847,18 @@ fn symbol_edits(sup: &Supervisor, repo: &str, file: &str, since_ms: i64, agent: 
         return Vec::new();
     }
     let mut syms = symbols_of(sup, repo, file, agent);
+    // A chunk starts with what is attached above its definition (imports,
+    // comments, decorators): the definition's own span starts at the line
+    // that names it (sixth build: an import line is no edit of test_pct).
+    let text = agent.and_then(|a| sup.agent_row(a)).map(|a| PathBuf::from(a.cwd)).into_iter().chain([PathBuf::from(repo)]).find_map(|d| std::fs::read_to_string(d.join(file)).ok());
+    if let Some(text) = &text {
+        let lines: Vec<&str> = text.lines().collect();
+        for s in syms.iter_mut() {
+            if let Some(at) = def_line(&lines, s) {
+                s.line = at;
+            }
+        }
+    }
     for l in lines {
         // The innermost definition holding the line.
         if let Some(s) = syms.iter_mut().filter(|s| s.line <= l && l <= s.end.max(s.line)).min_by_key(|s| s.end - s.line) {
@@ -884,8 +1029,9 @@ pub fn context_of(h: &Json) -> String {
 pub struct Made {
     pub hotspots: Vec<Json>,
     pub evidence: HashMap<String, Vec<Json>>,
-    totals: Totals,
-    hot: usize,
+    /// The sums of every file's counts, hotspot or not, with the
+    /// hotspots by level: `/api/hotspots`'s `totals`.
+    totals: Json,
     pub missing: Vec<String>,
     ctx: Json,
 }
@@ -901,7 +1047,24 @@ pub fn make(sup: &Supervisor, repo: &str, since_ms: i64) -> Made {
     let names = names_of(sup, repo);
     let mut s = collect(sup.db(), repo, since_ms, &names);
     undone_edits(sup, repo, since_ms, &mut s);
-    git_reverts(FsPath::new(repo), since_ms, &mut s);
+    git_log(FsPath::new(repo), since_ms, &mut s);
+    // Each agent's evidence names its branch.
+    let branches: HashMap<String, String> = sup.agent_rows().into_iter().filter(|a| a.repo == repo).filter_map(|a| Some((a.id, a.branch?))).collect();
+    for items in s.items.values_mut() {
+        for it in items.iter_mut().filter(|i| i.branch.is_none()) {
+            let who = it.agent.as_ref().or(it.key.as_ref().filter(|_| matches!(it.kind, "steer" | "prompt")));
+            it.branch = who.and_then(|a| branches.get(a)).cloned();
+        }
+    }
+    // Commits per day join the edits per day.
+    for (f, items) in &s.items {
+        let mut days: HashSet<(i64, &str)> = HashSet::new();
+        for i in items.iter().filter(|i| matches!(i.kind, "commit" | "fix" | "revert") && i.link.get("commit").is_some()) {
+            if days.insert((i.ts_ms, i.id.as_str())) {
+                *s.churn.entry(f.clone()).or_default().entry(i.ts_ms.div_euclid(86_400_000) * 86_400_000).or_default() += 1;
+            }
+        }
+    }
     if let Err(e) = crate::runtime::sync_edits(sup) {
         s.missing.push(format!("the edits' lines could not be read: {}", e.message));
     }
@@ -916,7 +1079,9 @@ pub fn make(sup: &Supervisor, repo: &str, since_ms: i64) -> Made {
     let today = now.div_euclid(86_400_000) * 86_400_000;
     let mut hotspots = Vec::new();
     let mut evidence = HashMap::new();
-    for x in score_files(&s) {
+    let all = score_files(&s);
+    let totals = Totals::of(&all);
+    for x in all.into_iter().filter(|x| x.counts.score() >= MIN_SCORE) {
         let id = id_of(repo, &x.file);
         let syms = symbol_edits(sup, repo, &x.file, since_ms, x.per_agent.first().map(|a| a.0.as_str()));
         let top = syms.first().filter(|t| t.edits >= 2 && t.edits * 10 >= syms.iter().map(|s| s.edits).sum::<i64>() * 4).cloned();
@@ -954,8 +1119,8 @@ pub fn make(sup: &Supervisor, repo: &str, since_ms: i64) -> Made {
             "pinned_test": Json::Null, "routed_model": Json::Null, "context": Json::Null,
         }));
     }
-    let hot = hotspots.iter().filter(|h| h["level"] == "hot").count();
-    Made { hotspots, evidence, totals: s.totals, hot, missing: s.missing, ctx }
+    let totals = totals.to_json(&hotspots);
+    Made { hotspots, evidence, totals, missing: s.missing, ctx }
 }
 
 /// One refresh at a time per repository.
@@ -1008,11 +1173,7 @@ pub fn refresh(sup: &Supervisor, repo: &str) -> Result<(usize, u128), ApiError> 
         )
         .map_err(ApiError::internal)?;
     }
-    let t = &m.totals;
-    let meta = json!({
-        "updated_ms": now, "days": WINDOW_DAYS, "missing": m.missing, "ctx": m.ctx,
-        "totals": { "hotspots": m.hotspots.len(), "hot": m.hot, "files": t.files, "edits": t.edits, "reverts": t.reverts, "test_fails": t.test_fails, "errors": t.errors, "steers": t.steers },
-    });
+    let meta = json!({ "updated_ms": now, "days": WINDOW_DAYS, "missing": m.missing, "ctx": m.ctx, "totals": m.totals });
     sup.set_mark(&format!("hotspots:{repo}"), &meta.to_string())?;
     Ok((m.hotspots.len(), t0.elapsed().as_millis()))
 }
@@ -1070,11 +1231,7 @@ pub fn list(sup: &Supervisor, q: &ListQ) -> Result<Json, ApiError> {
         stored(sup, &repo, if q.file.is_some() { 1000 } else { limit })?
     } else {
         let m = make(sup, &repo, since.unwrap_or(now - days * 86_400_000));
-        let t = m.totals;
-        let meta = json!({
-            "updated_ms": now, "missing": m.missing, "ctx": m.ctx,
-            "totals": { "hotspots": m.hotspots.len(), "hot": m.hot, "files": t.files, "edits": t.edits, "reverts": t.reverts, "test_fails": t.test_fails, "errors": t.errors, "steers": t.steers },
-        });
+        let meta = json!({ "updated_ms": now, "missing": m.missing, "ctx": m.ctx, "totals": m.totals });
         (m.hotspots.into_iter().map(|h| decorate(sup, h)).collect::<Vec<_>>(), meta)
     };
     if let Some(f) = q.file.as_deref().filter(|f| !f.is_empty()) {
@@ -1436,10 +1593,15 @@ mod tests {
         let names: HashMap<String, String> = [("a1".to_string(), "cart".to_string()), ("a2".to_string(), "checkout".to_string())].into();
         let s = collect(&db, "/r", t0 - m, &names);
         assert!(s.missing.is_empty(), "{:?}", s.missing);
-        assert_eq!(s.totals.edits, 8);
         assert_eq!(s.edits["src/totals.rs"]["a1"].0, 5);
         assert!(s.tests["totals::flaky"].flaky && !s.tests["totals::coupon"].flaky);
         let scored = score_files(&s);
+        // The header's totals are the sums of the files' own counts: no
+        // "2 test failures after an edit" beside "0 edits".
+        let t = Totals::of(&scored);
+        assert_eq!(t.edits, 8);
+        assert_eq!(t.test_fails, s.items.values().flatten().filter(|i| i.kind == "test_fail").count() as i64);
+        assert_eq!(t.files, scored.len() as i64);
         let top = &scored[0];
         assert_eq!(top.file, "src/totals.rs");
         let c = top.counts;
@@ -1450,7 +1612,7 @@ mod tests {
         assert_eq!(c.score(), 25.0);
         assert_eq!(level_of(c.score()), "hot");
         // The README's failure blames README; one edit and one failure stay under the bar.
-        assert!(scored.iter().all(|x| x.file != "README.md"));
+        assert!(scored.iter().filter(|x| x.file == "README.md").all(|x| x.counts.score() < MIN_SCORE));
         let rs = reasons(top, &names);
         assert_eq!(rs[0]["kind"], "steers");
         assert_eq!(rs[0]["text"], "you corrected it twice");
@@ -1461,6 +1623,22 @@ mod tests {
         let summ = summary(top, Some("round_line_total"), &rs, &[], &names);
         assert!(summ.starts_with("agents re-edited round_line_total 5 times in 30 min (cart 5, checkout 2)"), "{summ}");
         db.close();
+    }
+
+    #[test]
+    fn a_line_is_a_functions_only_inside_its_span() {
+        // The code index's chunk of test_pct starts at the imports above it.
+        let text = "import pytest\nfrom money import pct\n\n\ndef test_pct():\n    assert pct(5) == 1\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let s = Sym { symbol: "test_pct".into(), kind: "function".into(), line: 1, end: 6, edits: 0 };
+        assert_eq!(def_line(&lines, &s), Some(5));
+        let s = Sym { symbol: "pct".into(), kind: "function".into(), line: 1, end: 6, edits: 0 };
+        assert_eq!(def_line(&lines, &s), None, "an import of pct defines nothing");
+        assert!(is_fix("Fix rounding: totals a cent short") && is_fix("money: correct the half-up bug") && !is_fix("Prefix the totals"));
+        // Commits seed the score: a file changed three times in a week.
+        let c = Counts { commits: 3, fixes: 1, ..Counts::default() };
+        assert_eq!(c.score(), 4.5);
+        assert!(c.score() >= MIN_SCORE);
     }
 
     #[test]

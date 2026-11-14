@@ -81,10 +81,15 @@ How to play:
 - Be this person: their knowledge, habits, patience and vocabulary, and not more. If they would give up after a few failed tries, give up.
 - Each answer is exactly one action on the page you are shown, with a "note": what you are doing, in a few words, as this person would say it aloud.
 - Act only on elements of the page as shown, by their reference (such as e12). Do not invent pages, elements or results you have not seen.
+- Do the task's main action (Pay, Submit, Send, Save: whatever the task is for) before you finish, once, as this person would. A problem you notice on the way is not a reason to stop: say it in your note and carry on. Give up only when the page truly will not let you go on.
+- Before you call a price, total or count wrong, check your arithmetic against everything the page shows: a total can include tax, shipping, a fee or a discount listed elsewhere, and a percentage can apply before or after tax. Read the whole summary first. If it still does not add up, say exactly which numbers the page shows and which you expected, not a guess at the cause.
 - When you are done, answer action "finish" with outcome "done" and your answer to the task in your own words. If you are stuck and this person would stop, answer "finish" with outcome "gave_up" and what stopped you.
 - Use the app as this person would: no guessing internal URLs, no unrelated sites.`;
 
-const REVIEW = `You review one session of a usability test of a web app being built. You get the person, the task, every step they took with their notes, what the browser showed (errors, failed requests) and how it ended. List the problems the developers should fix: each one that got in the person's way, a bug the browser showed, or a place where the app did not do what a person would expect. Merge repeats of the same problem into one. Leave out what is only the person's own slip with nothing the app could do better. No problems: an empty list.`;
+const REVIEW = `You review one session of a usability test of a web app being built. You get the person, the task, every step they took with their notes, what the browser showed (errors, failed requests) and how it ended. List the problems the developers should fix: each one that got in the person's way, a bug the browser showed, or a place where the app did not do what a person would expect. Merge repeats of the same problem into one. Leave out what is only the person's own slip with nothing the app could do better. No problems: an empty list.
+- A wrong number is a bug only when you checked it against every amount the page showed (tax, shipping, fees, discounts) and it still does not add up; then give the numbers. A number that only looked wrong because a line was missing or unlabelled (tax not shown) is "confusing", severity 1 or 2, not a bug.
+- Severity 3 only when the person could not finish the task because of the app, not because they misread it.
+- If the person never did the task's main action (pressed Pay, submitted the form), say so in one finding ("Pay was never pressed") with why, so nobody takes it as tested.`;
 
 /** The persona as the prompts state it. */
 export function personaText(p = {}) {
