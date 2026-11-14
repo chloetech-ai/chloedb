@@ -103,6 +103,23 @@ fn syntax_error(message: &str, sql_text: &str) -> String {
             return out;
         }
     }
+    // `body MATCH 'words'`, as SQLite's FTS writes it: ChloeDB's MATCH is
+    // a function of the field and the words.
+    if let (Some((line, col)), Some(rest)) = (at, m.strip_prefix("No infix parser for token ")) {
+        if let Some(word) = rest.split("value: \"").nth(1).and_then(|r| r.split('"').next()) {
+            let mut out = format!("SQL syntax error at line {line}, column {col}");
+            if let Some(near) = near(sql_text, line, col) {
+                out.push_str(&format!(" (near \"{near}\")"));
+            }
+            if word.eq_ignore_ascii_case("MATCH") {
+                let (field, words) = infix_match(sql_text, line, col).unwrap_or_else(|| ("field".into(), "'words'".into()));
+                out.push_str(&format!(": MATCH is written as a function of the field and the words, MATCH({field}, {words}), not between them; ORDER BY bm25({field}, {words}) DESC ranks by it"));
+            } else {
+                out.push_str(&format!(": {word} cannot follow what comes before it here; between two values comes an operator (=, <, LIKE, IN, AND, OR)"));
+            }
+            return out;
+        }
+    }
     let mut out = String::from("SQL syntax error");
     if let Some((line, col)) = at {
         out.push_str(&format!(" at line {line}, column {col}"));
@@ -143,6 +160,31 @@ fn alias_typo(sql_text: &str, line: usize, col: usize) -> Option<(String, u64, u
     }
     let kw = *super::hint::nearest(&w.value.to_ascii_uppercase(), CLAUSES.iter().copied()).first()?;
     Some((w.value.clone(), prev.span.start.line, prev.span.start.column, kw))
+}
+
+/// The field before and the text after the `MATCH` at (`line`, `col`) of
+/// `body MATCH 'words'`, as the function call writes them.
+fn infix_match(sql_text: &str, line: usize, col: usize) -> Option<(String, String)> {
+    let tokens = Tokenizer::new(&GenericDialect {}, sql_text).tokenize_with_location().ok()?;
+    let at = tokens.iter().position(|t| t.span.start.line == line as u64 && t.span.start.column == col as u64)?;
+    let solid = |t: &&TokenWithSpan| !matches!(t.token, Token::Whitespace(_));
+    let prev = tokens[..at].iter().rev().find(solid)?;
+    let mut after = tokens[at + 1..].iter().filter(solid);
+    let next = after.next()?;
+    let field = match &prev.token {
+        Token::Word(w) => w.to_string(),
+        _ => return None,
+    };
+    let words = match &next.token {
+        Token::SingleQuotedString(_) | Token::Placeholder(_) => next.token.to_string(),
+        // `:q`, a parameter, as the tokenizer reads it: a colon, then a name.
+        Token::Colon => match &after.next()?.token {
+            Token::Word(w) => format!(":{}", w.value),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((field, words))
 }
 
 /// The parser's names of what it expected, as a sentence says them.
@@ -421,6 +463,21 @@ fn chains(t: &Token) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_infix_match_says_how_chloedb_writes_it() {
+        let e = parse("SELECT id FROM t WHERE body MATCH 'red mug' LIMIT 3").unwrap_err().to_string();
+        assert!(e.contains("MATCH(body, 'red mug')") && e.contains("bm25(body, 'red mug')"), "{e}");
+        let e = parse("SELECT id FROM t WHERE title MATCH :q").unwrap_err().to_string();
+        assert!(e.contains("MATCH(title, :q)"), "{e}");
+        let hint = |sql: &str, rows, zero| crate::query::hint::of_answer(sql, rows, zero);
+        assert!(hint("SELECT id FROM t WHERE MATCH(body, 'red mug cup')", 0, false).is_some_and(|h| h.contains("'red OR mug OR cup'")));
+        assert_eq!(hint("SELECT id FROM t WHERE MATCH(body, 'red OR mug')", 0, false), None);
+        assert_eq!(hint("SELECT id FROM t WHERE MATCH(body, 'red')", 0, false), None);
+        assert_eq!(hint("SELECT id FROM t WHERE MATCH(body, 'red mug')", 3, false), None);
+        assert!(hint("SELECT id, score() FROM t WHERE MATCH(body, 'red')", 3, true).is_some_and(|h| h.contains("ORDER BY bm25")));
+        assert_eq!(hint("SELECT id, score() FROM t WHERE MATCH(body, 'red') ORDER BY bm25(body, 'red') DESC", 3, true), None);
+    }
 
     #[test]
     fn max_k_per_parses_as_the_last_ordering() {

@@ -1932,6 +1932,13 @@ async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principa
 /// (`"objects": true`; [`as_objects`]).
 fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
     let mut j = answer(a);
+    // Why a MATCH of several words found nothing, or why score() is 0.
+    if let Some(sql) = b.get("sql").and_then(|s| s.as_str()) {
+        let zero = !a.rs.scores.is_empty() && a.rs.scores.iter().all(|s| *s == 0.0);
+        if let Some(h) = chloedb::query::hint::of_answer(sql, a.rs.rows.len(), zero) {
+            j["hint"] = json!(h);
+        }
+    }
     if !wants_steps(b) && !body_bool(b, "shard")? {
         without_steps(&mut j);
     }
