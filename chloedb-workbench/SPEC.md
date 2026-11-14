@@ -1561,3 +1561,108 @@ edit), Send to <agent> (a steer with the error and its frames), Resolved.
   reported; injecting a first, small listener in `<head>` would need a
   second change to the proxy. A `fetch("/api/…")` with an absolute path
   from the previewed page goes to Workbench, not to the app, as before.
+
+### Trace (as built)
+
+Trace answers a question like "when and why did we change the cart total
+rounding from floor to half-up, and how does it work" with the evidence:
+the commits and edits that made the change, the decisions, questions,
+rules and goals behind them, the state of the fleet then, and the code as
+it is now. No model reads the question or writes the answer; one is called
+only when the user presses Explain.
+
+**Backend** (`src/trace.rs`, routes merged in `server.rs`):
+
+- `GET /api/trace?q&repo|agent[&x&y&topic&subject&in&kinds]` answers
+  `{question, repo, reading, answer, timeline, now, links, missing, ms}` (400 without `q`).
+  The optional parameters replace what the reading found (the chips the
+  user edited); `kinds` is a comma list of `when,why,how,who`.
+- `POST /api/trace/explain` takes the same fields as JSON, traces again
+  and runs `chloectx ask --deep --json -- <question and the evidence,
+  tagged E1..>` (5 minutes at most), answering `{available, answer, text,
+  ids, confidence, cost_usd, ms, evidence}`, or `{available: false, why}`
+  when ChloeCtx is not installed or fails.
+- `GET /api/trace/commit?repo|agent&sha` answers one commit's diff
+  (`git show -U0`, parsed); the sha must be hex.
+
+**Reading** (`read`): quoted strings, `code`, identifiers (snake, camel,
+dotted, ALLCAPS of 4 or more), file names, "in api/" (a path), and the
+change: "from x to y", "x to y" after a change verb, "x -> y" and "x → y".
+"change ROUND to half_up" makes the identifier a subject, with no x. The
+words before the change, without stop words, are the topic. The kind is
+when, why, how or who from the question's words; with none, all of them.
+The reading is returned as chips `{key, label, text}`.
+
+**Needles**: at most 4 strings to look for (y, x, subjects, quotes). They
+are matched case-insensitively with `-`, `_` and spaces dropped, so
+"half-up" finds `round_half_up` and `HalfUp`. A weak value (a number or
+fewer than 3 characters) is kept with the word before it and must come
+within 40 characters after that word ("retries … 5").
+
+**When**: `git log --all -G <ERE>` per needle (the ERE spells each letter
+`[aA]` and joins parts with `[-_ ]?`), then `git show -U0` of each commit,
+classed `changed` (x removed and y added), `added`, `added_x`, `removed` or
+`touched`; with both x and y, a commit that touches neither side's lines
+is dropped. At most 12 commits, oldest first. A commit belongs to an agent
+when it is on the agent's branch and not in its base
+(`git merge-base --is-ancestor`), else to the agent whose Bash
+`git commit` event was within 120 s of it. Agents' uncommitted edits come
+from PostToolUse events of Edit, MultiEdit, Write and NotebookEdit. An edit
+whose added line a commit of the same agent also adds is folded into that
+commit as `written` (when it was written, by which tool).
+
+**Why**: ChloeCtx's `ask --json`, then `sql --json` over `memory`
+(`kind IN ('decision','preference','fact')`, `MATCH(body, ...)`; memory
+indexes `body`, not `text`) and `blame <path:line> --json` of the first
+line of code now; Decide's questions (with the answer and who gave it) and
+rules; and the goal and outcome of each agent involved. Without
+`chloectx`, `missing` says so and decisions are left out.
+
+**Timeline items** `{id, kind, ts, ts_ms, tag, title, agent, ..., links}`
+with ids `c-<short>`, `w-<agent>-<seq>`, `d-<ctx id>`, `q-<id>`, `r-<id>`,
+`g-<goal>-<agent>`, sorted by time and tagged E1, E2, ... Each item's
+`links` are `{story: {agent, at_ms}, rewind: {agent, from_ms, to_ms,
+at_ms}, why: {agent|repo, path, line}, diff: {sha}, time_ms}`.
+
+**Answer**: one sentence assembled from the key item, for example "The
+cart total rounding went from floor to half-up {when} in Dana Okafor's
+commit f00093d “...”", with a clause for the answered question, rule or
+decision behind it. `{when}` is filled by the UI in the viewer's time;
+`plain` has it in UTC. `evidence` counts the items by kind.
+
+**How it works now**: when the Search part's table `code_chunks` exists,
+BM25 over the main checkout's chunks with `PACK 1200 TOKENS OF text`;
+else `git grep` in passes (y alone first, then all needles) over the main
+checkout, then the involved agents' worktrees, each hit shown with the
+definition around it (its doc comment included; a hit in a doc comment is
+about the definition below). `doc_pages`, when it exists, adds up to 3 doc
+pages.
+
+**MCP**: tool `trace {question, repo?}` calls `GET /api/trace` (as the
+calling agent when `repo` is left out) and answers the evidence as text.
+
+**UI** (`ui/levels/trace.js`, level 1, nav link after Decide): the screen
+reads `#/trace?q=...` (and `ctx.params.q`) and keeps the question in the
+hash. The reading is chips the user can remove or edit (x red, y green),
+with toggles for when, why, how and who; the answer card with "Explain ·
+calls a model", whose `[En]` cites scroll to and flash the card; the
+timeline of evidence cards (Diff inline, Why for the line, Story, Rewind,
+Mission then and Map then); and a right column with the code now and the
+state then. The fixtures are `ui/dev/fixtures/trace.mjs`.
+
+#### Deviations (Trace)
+
+- The Why card for a line of the main checkout (not an agent's worktree)
+  is drawn inside Trace from `/api/why?repo=`, since `ctx.openWhy` takes
+  an agent's line only.
+- Story links go to `#/story/<agent>`; Story has no anchor for a turn yet.
+- "Mission then" and "Map then" link to `#/mission?at=<ms>` and
+  `#/map?at=<ms>`, shown only when `GET /api/time` answers (a 404 hides
+  them) and the moment is within a day (snapshots are kept a day); the
+  time bar has to read `?at=` for them to land on that moment.
+- `app.js` keeps a screen's `?query` in the hash (`openLevel(..., {query})`)
+  and remounts the screen when it changes.
+- Quick search (`ui/levels/quicksearch.js`) is not changed: it should hand a
+  question to Trace with `ctx.go('#/trace?q=' + encodeURIComponent(text))`,
+  for input that starts with when, why, how or who, or from a "Trace this"
+  row.

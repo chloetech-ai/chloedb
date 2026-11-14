@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors", "trace"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -3220,4 +3220,180 @@ fn persona_tests_say_why_they_cannot_run() {
     let mut m = Mcp::start(&s, &id);
     let (text, err) = m.tool("test_with_persona", json!({ "task": "buy", "persona": "a man in a hurry" }));
     assert!(err && text.contains("not available"), "{text}");
+}
+
+// Fourth build: Trace (a question in a sentence, answered with where it
+// happened: commits, edits, decisions, answers and rules, the code now).
+
+fn item<'a>(t: &'a Value, f: impl Fn(&Value) -> bool) -> Option<&'a Value> {
+    t["timeline"].as_array().unwrap().iter().find(|i| f(i))
+}
+
+fn enc_q(q: &str) -> String {
+    q.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+#[test]
+fn trace_finds_where_x_became_y_who_made_it_and_why() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    std::fs::write(r.join("calc.py"), "MODE = floor\n").unwrap();
+    git(&r, &["add", "calc.py"]);
+    git(&r, &["commit", "-q", "-m", "calc: rounding mode floor"]);
+
+    // cart writes the new mode with its Edit tool, then commits on its branch.
+    let cart = s.spawn(json!({ "repo": r, "name": "cart", "task": "WRITE calc.py MODE = half_up" }));
+    let cart_id = cart["id"].as_str().unwrap().to_string();
+    let cart = s.wait(&cart_id, "idle");
+    let cwd = PathBuf::from(cart["cwd"].as_str().unwrap());
+    std::fs::write(cwd.join("calc.py"), "MODE = half_up\n").unwrap();
+    git(&cwd, &["commit", "-q", "-am", "calc: round half up"]);
+    let sha = git(&cwd, &["rev-parse", "HEAD"]);
+    // web writes it too, and does not commit.
+    let web = s.spawn(json!({ "repo": r, "name": "web", "task": "WRITE web.js const MODE = half_up" }));
+    let web_id = web["id"].as_str().unwrap().to_string();
+    s.wait(&web_id, "idle");
+    // cart asked, and you answered and made a rule.
+    let (status, q) = s.post("/api/questions", json!({ "agent": cart_id, "question": "Keep floor or round half_up?", "options": ["half_up", "floor"] }));
+    assert_eq!(status, 201, "{q}");
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0, "rule": "Totals round half_up, never floor" }));
+    assert_eq!(status, 200, "{v}");
+
+    // ChloeCtx: what ask found, the records sql answers (one about it from
+    // cart's session, one about something else).
+    let sid = cart["session_id"].as_str().unwrap().to_string();
+    let sid8: String = sid.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let now = now_s();
+    std::fs::write(ctx.path().join("ask.json"), json!({ "text": "- [decision] Round half_up", "ids": [format!("{sid8}:9")], "ms": 2 }).to_string()).unwrap();
+    std::fs::write(
+        ctx.path().join("sql.json"),
+        json!({ "text": "", "count": 2, "columns": ["id", "kind", "tag", "ts", "session", "text", "files", "links"], "rows": [
+            [format!("{sid8}:9"), "decision", "", now, sid, "Round MODE half_up: floor lost a cent on 3 carts", "calc.py", null],
+            ["other000:4", "decision", "", now, "other-session", "Use tabs in the Makefile", "Makefile", null]
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+
+    let question = "when and why did we change MODE from floor to half_up, and how does it work now?";
+    let (status, t) = s.get(&format!("/api/trace?repo={}&q={}", enc_q(&r.to_string_lossy()), enc_q(question)));
+    assert_eq!(status, 200, "{t}");
+    // The reading.
+    let rd = &t["reading"];
+    assert_eq!((rd["x"].as_str(), rd["y"].as_str(), rd["topic"].as_str()), (Some("floor"), Some("half_up"), Some("MODE")), "{rd}");
+    assert_eq!(rd["kinds"], json!(["when", "why", "how"]));
+    assert!(rd["chips"].as_array().unwrap().iter().any(|c| c["key"] == "x" && c["text"] == "floor"), "{rd}");
+    // When: cart's commit, floor out and half_up in, written by its edit.
+    let c = item(&t, |i| i["kind"] == "commit" && i["commit"]["sha"] == sha.as_str()).unwrap_or_else(|| panic!("no commit {sha}: {t}"));
+    assert_eq!(c["change"], "changed", "{c}");
+    assert_eq!(c["agent"]["name"], "cart", "{c}");
+    assert!(c["commit"]["branches"].as_array().unwrap().contains(&json!("wb/cart")), "{c}");
+    assert_eq!(c["written"]["tool"], "Edit", "{c}");
+    assert_eq!(c["written"]["file"], "calc.py");
+    let signs: Vec<(&str, &str)> = c["lines"].as_array().unwrap().iter().map(|l| (l["sign"].as_str().unwrap(), l["text"].as_str().unwrap())).collect();
+    assert_eq!(signs, [("-", "MODE = floor"), ("+", "MODE = half_up")]);
+    assert_eq!(c["links"]["why"], json!({ "agent": cart_id, "path": "calc.py", "line": 1 }));
+    assert_eq!(c["links"]["story"]["agent"], json!(cart_id));
+    assert!(c["links"]["rewind"]["from_ms"].is_i64(), "{c}");
+    assert_eq!(c["key"], true);
+    // Where floor came in counts; the README's commit does not.
+    let first = item(&t, |i| i["kind"] == "commit" && i["title"] == "calc: rounding mode floor").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((first["change"].as_str(), first["agent"].is_null()), (Some("added"), true), "{first}");
+    assert!(item(&t, |i| i["title"] == "first").is_none());
+    // cart's edit is folded into its commit; web's is not committed.
+    let e = item(&t, |i| i["kind"] == "edit").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((e["agent"]["name"].as_str(), e["committed"].as_bool(), e["change"].as_str()), (Some("web"), Some(false), Some("added")), "{e}");
+    assert_eq!(e["links"]["why"]["agent"], json!(web_id));
+    assert_eq!(t["timeline"].as_array().unwrap().iter().filter(|i| i["kind"] == "edit").count(), 1, "{t}");
+    // Why: cart's decision (not the other), your answer, the rule.
+    let d = item(&t, |i| i["kind"] == "decision").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((d["ctx"]["id"].as_str(), d["agent"]["name"].as_str()), (Some(format!("{sid8}:9").as_str()), Some("cart")), "{d}");
+    assert!(item(&t, |i| i["ctx"]["id"] == "other000:4").is_none(), "{t}");
+    let qi = item(&t, |i| i["kind"] == "question").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((qi["question"]["answer"].as_str(), qi["by"].as_str()), (Some("half_up"), Some("you")), "{qi}");
+    assert!(item(&t, |i| i["kind"] == "rule" && i["title"] == "Totals round half_up, never floor").is_some(), "{t}");
+    // Tags in time order.
+    let tags: Vec<&str> = t["timeline"].as_array().unwrap().iter().map(|i| i["tag"].as_str().unwrap()).collect();
+    assert_eq!(tags[0], "E1");
+    let ts: Vec<i64> = t["timeline"].as_array().unwrap().iter().map(|i| i["ts_ms"].as_i64().unwrap()).collect();
+    assert!(ts.windows(2).all(|w| w[0] <= w[1]), "{ts:?}");
+    // The answer.
+    let a = t["answer"]["text"].as_str().unwrap();
+    assert!(a.starts_with("The MODE went from floor to half_up {when} in cart's edit to calc.py (committed as "), "{a}");
+    assert_eq!(t["answer"]["key"], c["id"]);
+    assert!(t["answer"]["plain"].as_str().unwrap().contains(" UTC "), "{}", t["answer"]);
+    // How it works now: half_up is only in cart's worktree (and web's).
+    let code = &t["now"]["code"][0];
+    assert_eq!((code["path"].as_str(), code["tree"].as_str(), t["now"]["source"].as_str()), (Some("calc.py"), Some("cart"), Some("git grep")), "{}", t["now"]);
+    assert_eq!(code["hits"], json!([1]));
+    // ChloeCtx was asked the question, and for the records naming it.
+    assert_eq!(args_of(ctx.path(), "ask")[1..], ["ask", "--json", "--", question]);
+    let sql = args_of(ctx.path(), "sql");
+    assert!(sql[3].contains("MATCH(body, '") && sql[3].contains("half") && sql[3].contains(&format!("'{sid8}:9'")), "{sql:?}");
+
+    // An edited reading: y alone, in another place: nothing there.
+    let (_, t2) = s.get(&format!("/api/trace?repo={}&q=why&x=&y=half_up&in=docs/", enc_q(&r.to_string_lossy())));
+    assert_eq!((t2["reading"]["x"].is_null(), t2["reading"]["paths"].clone()), (true, json!(["docs/"])), "{}", t2["reading"]);
+    assert_eq!(t2["timeline"].as_array().unwrap().iter().filter(|i| i["kind"] == "commit").count(), 0, "{t2}");
+    // A commit's diff.
+    let (status, d) = s.get(&format!("/api/trace/commit?repo={}&sha={sha}", enc_q(&r.to_string_lossy())));
+    assert_eq!(status, 200, "{d}");
+    assert_eq!((d["subject"].as_str(), d["files"][0]["path"].as_str()), (Some("calc: round half up"), Some("calc.py")));
+    assert_eq!(s.get(&format!("/api/trace/commit?repo={}&sha=nothex", enc_q(&r.to_string_lossy()))).0, 400);
+    assert_eq!(s.get(&format!("/api/trace?repo={}", enc_q(&r.to_string_lossy()))).0, 400);
+
+    // Explain asks ChloeCtx with a model, with the evidence to cite.
+    let (status, x) = s.post("/api/trace/explain", json!({ "q": question, "repo": r }));
+    assert_eq!(status, 200, "{x}");
+    assert_eq!(x["available"], true);
+    let ask = args_of(ctx.path(), "ask");
+    assert_eq!(ask[1..4], ["ask", "--deep", "--json"]);
+    assert!(ask.join("\n").contains("[E1]") && ask.join("\n").contains("calc: round half up"), "{ask:?}");
+
+    // Agents ask it too, as text with citations.
+    let mut m = Mcp::start(&s, &cart_id);
+    let (text, err) = m.tool("trace", json!({ "question": question }));
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Answer: The MODE went from floor to half_up on "), "{text}");
+    assert!(text.contains("[E1]") && text.contains("calc: round half up") && text.contains("How it works now"), "{text}");
+}
+
+#[test]
+fn trace_without_chloectx_answers_from_git() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    std::fs::create_dir(r.join("api")).unwrap();
+    std::fs::write(r.join("api/client.rs"), "/// How often an upload is tried.\npub fn retries() -> u32 {\n    let retries = 3;\n    retries\n}\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "client: retry uploads"]);
+    std::fs::write(r.join("api/client.rs"), "/// How often an upload is tried.\npub fn retries() -> u32 {\n    let retries = 5;\n    retries\n}\n").unwrap();
+    git(&r, &["commit", "-q", "-am", "client: retry 5 times, uploads are flaky"]);
+
+    let (status, t) = s.get(&format!("/api/trace?repo={}&q={}", enc_q(&r.to_string_lossy()), enc_q("when did we change `retries` from 3 to 5 in api/?")));
+    assert_eq!(status, 200, "{t}");
+    assert_eq!((t["reading"]["x"].as_str(), t["reading"]["y"].as_str()), (Some("3"), Some("5")), "{}", t["reading"]);
+    assert_eq!(t["reading"]["paths"], json!(["api/"]));
+    assert_eq!(t["reading"]["needles"], json!(["retries … 3", "retries … 5", "retries"]));
+    let c = item(&t, |i| i["title"] == "client: retry 5 times, uploads are flaky").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((c["change"].as_str(), c["by"].as_str(), c["agent"].is_null()), (Some("changed"), Some("Test"), true), "{c}");
+    assert_eq!(c["links"]["why"], json!({ "repo": r, "path": "api/client.rs", "line": 3 }));
+    assert!(t["answer"]["text"].as_str().unwrap().starts_with("The retries went from 3 to 5 {when} in Test's commit "), "{}", t["answer"]);
+    // No ChloeCtx: no decisions, and it says so.
+    assert!(item(&t, |i| i["kind"] == "decision").is_none());
+    assert!(t["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("ChloeCtx is not installed")), "{}", t["missing"]);
+    // The code now: the function around the line, from git grep.
+    let code = &t["now"]["code"][0];
+    assert_eq!((code["path"].as_str(), code["symbol"].as_str(), code["start_line"].as_i64(), code["end_line"].as_i64()), (Some("api/client.rs"), Some("retries"), Some(1), Some(5)), "{code}");
+    assert_eq!(code["hits"], json!([3]));
+    // Explain says what is missing instead of failing.
+    let (status, x) = s.post("/api/trace/explain", json!({ "q": "why is `retries` 5?", "repo": r }));
+    assert_eq!((status, x["available"].as_bool()), (200, Some(false)), "{x}");
 }

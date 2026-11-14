@@ -2720,8 +2720,8 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // #/mission, #/story/<agent>, …; the top bar's level switch and [ ] move
 // between Intent, Plan, Story, Changes and Terminal for what is in focus.
 
-const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library"];
-const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, library: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
+const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library", "trace"];
+const LEVEL_OF = { mission: 0, away: 0, decide: 1, flow: 1, health: 1, library: 1, trace: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
 // Search (fourth build): the top bar's quick search over code, docs and decisions; `/` opens it.
 const quickCtx = () => ({ api, go: (hash) => route(hash, { push: true }), openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }), repo: () => pickRepo() || "", openDecisions: () => openDecisions() });
 function openQuickSearch() { import("/levels/quicksearch.js").then((m) => m.open(quickCtx())).catch((err) => console.error(err)); }
@@ -2759,21 +2759,23 @@ function hideOtherViews() {
   $("grid-view").hidden = true;
 }
 
-async function openLevel(screen, param, { how = "push" } = {}) {
+async function openLevel(screen, param, { how = "push", query = "" } = {}) {
   if (!SCREENS.includes(screen)) return;
   if ((screen === "story" || screen === "preview" || screen === "ship") && !param) {
     param = focusAgent() || [...S.agents.values()].filter((a) => a.running).sort(byCreated).find((a) => a.state === "working")?.id
       || [...S.agents.values()].sort(byCreated)[0]?.id || null;
   }
-  const hash = `#/${screen}${param ? "/" + param : ""}`;
+  // A screen's own parameters ride after "?" (#/trace?q=…) and stay in the hash.
+  const hash = `#/${screen}${param ? "/" + param : ""}${query ? "?" + query : ""}`;
   if (how === "push" && location.hash !== hash) history.pushState({ level: hash }, "", hash);
   else if (how === "replace") history.replaceState({ level: hash, root: true }, "", hash);
   if (param) L.focus = param;
-  if (L.screen === screen && L.param === param && L.view) { markLevels(); return; }
+  if (L.screen === screen && L.param === param && L.view && (L.query || "") === query) { markLevels(); return; }
   hideOtherViews();
   closeLevelView();
   L.screen = screen;
   L.param = param;
+  L.query = query;
   document.body.classList.add("levels-on");
   const host = $("level-view");
   host.hidden = false;
@@ -2847,7 +2849,9 @@ function goLevel(n) {
 function route(hash, { push = false } = {}) {
   const how = push ? "push" : "none";
   if (hash.startsWith("#/")) {
-    const [screen, param] = hash.slice(2).split("/");
+    const qi = hash.indexOf("?");
+    const query = qi >= 0 ? hash.slice(qi + 1) : "";
+    const [screen, param] = (qi >= 0 ? hash.slice(2, qi) : hash.slice(2)).split("/");
     if (screen === "grid") {
       leaveLevels();
       if (S.zoomed) unzoom({ fromHistory: true });
@@ -2859,7 +2863,7 @@ function route(hash, { push = false } = {}) {
       return;
     }
     if (screen === "zoom" && param) { leaveLevels(); zoom(param, { history: push ? "push" : "none" }); markLevels(); return; }
-    openLevel(screen, param ? decodeURIComponent(param) : null, { how });
+    openLevel(screen, param ? decodeURIComponent(param) : null, { how, query });
     return;
   }
   leaveLevels();

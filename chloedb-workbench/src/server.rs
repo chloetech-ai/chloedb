@@ -149,6 +149,7 @@ pub fn router(app: App) -> Router {
         // Preview lab: persona tests, runtime errors and POST /v1/logs.
         .merge(crate::swarm::routes())
         .merge(crate::runtime::routes())
+        .merge(crate::trace::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -208,6 +209,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("route-hint.js", include_str!("../ui/levels/route-hint.js")),
     ("library.js", include_str!("../ui/levels/library.js")),
     ("quicksearch.js", include_str!("../ui/levels/quicksearch.js")),
+    ("trace.js", include_str!("../ui/levels/trace.js")),
 ];
 
 async fn ui_level(State(app): State<App>, Path(file): Path<String>) -> Response {

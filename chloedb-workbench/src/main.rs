@@ -15,6 +15,7 @@ mod preview;
 mod recording;
 mod server;
 mod trail;
+mod trace;
 mod supervisor;
 // The levels (SPEC.md, "Levels (third build)").
 mod digest;

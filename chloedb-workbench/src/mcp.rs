@@ -212,6 +212,18 @@ fn tools() -> Value {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
                 }
             }
+        },
+        {
+            "name": "trace",
+            "description": "Ask, in a sentence, when, why or how something in the repository changed: \"why is retries 5?\", \"when and why did we change the rounding from floor to half-up?\". Answers from git on every branch (other agents' too), the edits Workbench saw, ChloeCtx's decisions and the user's answers and rules, with the code as it is now, each piece tagged [E1], [E2]. Ask it before changing something that someone decided, and cite what it found.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The question; put a value, identifier or file in quotes or backticks to be exact." },
+                    "repo": { "type": "string", "description": "The repository's absolute path; yours when left out." }
+                },
+                "required": ["question"]
+            }
         }
     ])
 }
@@ -528,6 +540,19 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
         "search_code" | "search_docs" => search_tool(c, name, args),
         "test_with_persona" => crate::swarm::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
         "runtime_errors" => crate::runtime::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
+        "trace" => {
+            let question = s(args, "question").trim();
+            if question.is_empty() {
+                return Err("question is required".into());
+            }
+            let place = match args.get("repo").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+                Some(r) => format!("repo={}", enc(r)),
+                None if !c.env.agent.is_empty() => format!("agent={}", enc(&c.env.agent)),
+                None => return Err("repo is required outside a Workbench session".into()),
+            };
+            let v = c.call("GET", &format!("/api/trace?q={}&{place}", enc(question)), None, Duration::from_secs(240))?;
+            Ok(crate::trace::as_text(&v))
+        }
         other => Err(format!("no tool {other}")),
     }
 }
