@@ -90,6 +90,8 @@ The engine enforces who may read and write a table, on the server, for every rea
 
 Whenever the request says who may see or change data (only signed-in people, the owner, admins, roles, each person's or each company's own data), declare access for every table of the app, including the ones that stay open (ALLOW READ ON t TO everyone): a build that asks for it and declares none is refused.
 
+Access follows who the data is for, said or not. Data the request treats as someone's own business (a company's finances, salaries, customers and what they owe, a person's health, budget or diary, staff records, private notes) is for its owner or its team: declare it (ALLOW ALL ON t TO owner, or TO members when a team shares it), so a link that gets out shows a sign-in, never the figures. Data meant for the public (a menu, prices, a timetable, a portfolio) is read by everyone and changed by the owner. An app with both says each table's own.
+
 # SQL (Strata's dialect: read-only SELECT through app.sql)
 
 - Strings in single quotes. Parameters are :name, bound from the params object: app.sql('SELECT * FROM tasks WHERE status = :s', {s: 'open'}).
@@ -214,6 +216,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
   "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "imagery": "none", "action": "Start lesson 1"},
   "currency": "EUR",
+  "locale": "es-ES",
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "access": ["ALLOW ALL ON tasks TO members WHERE owner_id = :user_id"],
@@ -235,6 +238,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 - ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). When the request asks the app to show something (a summary, what is owed, a streak, a total, what is on), the first screen shows that result, and an input done often goes on it as a quick add beside the result, not as an opening screen of its own that hides it. On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
 ${ART_DOC}
 - currency: the ISO code of the app's money ("EUR", "GBP", "JPY") when it handles money and the request or its data says which; leave it out otherwise (an attached sheet's money says it too). Every app.fmt.money then reads in it.
+- locale: the BCP 47 tag of the app's language and place ("es-ES", "en-GB", "pt-BR", "en-US"), from the language the request is written in and where it is (an address, a currency); for a new app, or when asked to change its language. Every price, number and date then reads as there ("28 €" in Spain, "£24.00" in Britain): write amounts with app.fmt.money and app.fmt.number, never by hand.
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - access: ALLOW statements (see Access) for the tables whose access is new or changes; leave it out otherwise (a table keeps the access it has).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
@@ -1128,7 +1132,8 @@ export async function buildContext(engine, appId, request) {
     if (brief?.art) parts.push(`## Its art direction\n${ART.map((k) => `- ${k}: ${brief.art[k] || '-'}`).join('\n')}\n\nWhat you add keeps to it (its words, its photos). Give "art" again only when the request asks for another feel.`);
     // What the person uploaded to the app (photos, documents): the model
     // sees them by id and name, and uses them where the request names them.
-    const uploads = await store.db.query('SELECT id, name, type FROM sa_files WHERE app = :a ORDER BY created DESC LIMIT 60', { a: appId }).catch(() => []);
+    const uploads = (await store.db.query('SELECT id, name, type, author FROM sa_files WHERE app = :a ORDER BY created DESC LIMIT 60', { a: appId }).catch(() => []))
+      .filter((f) => f.author !== 'photos' && !/^[0-9]{10,}-[0-9a-f]+\.jpg$/i.test(String(f.name || '')));
     if (uploads.length) parts.push(`## Files the person uploaded to the app\n${uploads.map((f) => `- ${f.id}: ${f.name || 'unnamed'} (${f.type || 'file'})`).join('\n')}\n\nThese are the person's own: where the request names them, or asks for their photos (a gallery, the hero, a team), show them by id ("src": "<id>" in a block, app.fileUrl(id) in code), never a searched "photo" in their place.`);
     const tables = [];
     for (const t of view.tables) {
@@ -1874,8 +1879,16 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
 function photoOptions(engine, appId, plan, view) {
   const files = engine.services?.filesDir;
   if (files) photoCache(path.join(files, '..', 'photo-cache'));
-  const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta)).id : null;
+  // (a photo found on the web and kept is the engine's, not the owner's)
+  const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta, 'photos')).id : null;
   return { save, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
+}
+
+// The photos the owner uploaded to the app (not the ones the engine kept
+// from the web), newest first.
+async function ownPhotos(engine, appId) {
+  const rows = await engine.store.db.query("SELECT id, name, author FROM sa_files WHERE app = :a AND type LIKE 'image/%' ORDER BY created DESC LIMIT 40", { a: appId }).catch(() => []);
+  return rows.filter((r) => r.author !== 'photos' && !/^[0-9]{10,}-[0-9a-f]+\.jpg$/i.test(String(r.name || ''))).map((r) => r.id);
 }
 
 export async function forge(engine, appId, request, progress = () => {}) {
@@ -1957,6 +1970,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // euros), so every price reads in it (the kit's app.fmt.money default).
   // The plan's own word first; else, once, an attached sheet's money; the
   // request's own words only as the last fallback.
+  // Its locale likewise: how money, numbers and dates read (web/frame.js).
+  if (typeof plan.locale === 'string' && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(plan.locale.trim())) {
+    try { new Intl.NumberFormat(plan.locale.trim()); await store.putSetting(appId, 'locale', plan.locale.trim()).catch(() => {}); } catch { /* not a locale */ }
+  }
   if (typeof plan.currency === 'string' && /^[A-Z]{3}$/.test(plan.currency.trim())) await store.putSetting(appId, 'currency', plan.currency.trim()).catch(() => {});
   else if (!(await store.setting(appId, 'currency').catch(() => null))) {
     const cur = currencyOf(sheets, `${request.text || ''}\n${view.app?.description || ''}`);
@@ -1964,7 +1981,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   }
   // The photos the screens and example rows name are searched for while the
   // tables are made and the queries run (engine/photos.mjs).
-  const photoOpts = photoOptions(engine, appId, plan, view);
+  const photoOpts = { ...photoOptions(engine, appId, plan, view), own: await ownPhotos(engine, appId) };
   warmPhotos(plan).catch(() => {});
   // A new app's three designs are made from its art direction, beside the
   // storing (the server's hook; the drawn-page check waits for them).
@@ -2457,7 +2474,7 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (photos && !ex.problems.length) withPhotos(ex.screen, photos);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
   // A photo the edit names is found as for a built screen.
-  if (!problems.length) await placeScreenPhotos(ex.screen, { ...photoOptions(engine, appId, null, view), used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
+  if (!problems.length) await placeScreenPhotos(ex.screen, { ...photoOptions(engine, appId, null, view), own: await ownPhotos(engine, appId), used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);

@@ -149,9 +149,18 @@
     // header of a front page, which has no tabs: the ones the person may
     // open (the studio gives a visitor no owner's screen), less any the
     // header links already by name.
-    const screenLinks = (links, s, path, close) => {
+    // Where a link goes, and what it says: two links to one place (or one
+    // the header's action already offers) are one.
+    const aims = (l, s, path) => {
+      const o = typeof l === 'string' ? { label: l } : l && typeof l === 'object' ? l : {};
+      const out = [`label:${String(tx(o.label, s, path) ?? '').trim().toLowerCase()}`];
+      if (o.open !== undefined) out.push(`open:${tx(o.open, s, path)}`);
+      if (o.href !== undefined) out.push(`href:${tx(o.href, s, path)}`);
+      return out;
+    };
+    const screenLinks = (links, s, path, close, taken = new Set()) => {
       const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
-      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()));
+      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !said.has(String(x.title).trim().toLowerCase()) && !taken.has(`open:${x.slug}`) && !taken.has(`label:${String(x.title).trim().toLowerCase()}`));
       const out = screens.map((x, i) => { const a = action({ label: x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1); a && a.addEventListener('click', close); return a; });
       // An app with screens for its members offers a visitor the way in:
       // "Sign in" (or create an account) until someone is signed in.
@@ -165,7 +174,14 @@
       return out;
     };
     F.nav = (b, s, path) => {
-      const links = list(b.links, s, `${path}.links`);
+      const act0 = b.action !== undefined ? val(b.action, s, `${path}.action`) : undefined;
+      const taken = new Set(act0 !== undefined ? aims(act0, s, path) : []);
+      const links = list(b.links, s, `${path}.links`).filter((l, i) => {
+        const k = aims(l, s, `${path}.links[${i}]`);
+        if (k.some((x) => taken.has(x) && x !== 'label:')) return false;
+        k.forEach((x) => taken.add(x));
+        return true;
+      });
       let el;
       const close = () => el && el.classList.remove('open');
       // A long name and a long action do not both fit a phone's bar beside
@@ -182,7 +198,7 @@
           const a = action(typeof l === 'string' ? { label: l } : { ...l, style: 'navlink' }, s, `${path}.links[${i}]`, 1);
           a && a.addEventListener('click', close);
           return a;
-        }), screenLinks(links, s, path, close), inMenu),
+        }), screenLinks(links, s, path, close, taken), inMenu),
         act !== undefined ? action(act, s, `${path}.action`, 0) : null,
         h('button', { class: 'fp-menu', type: 'button', 'aria-label': 'Menu', onclick: () => el.classList.toggle('open') }, h('i'), h('i'))));
       return el;

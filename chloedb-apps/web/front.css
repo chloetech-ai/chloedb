@@ -39,7 +39,9 @@ body.front #root { max-width: none; gap: 0; }
 }
 .fp-btn.primary { background: var(--accent); color: var(--accent-fg); box-shadow: 0 10px 28px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
 .fp-btn.primary:hover { background: color-mix(in srgb, var(--accent) 90%, var(--fg)); transform: translateY(-1px); box-shadow: 0 16px 36px -12px color-mix(in srgb, var(--accent) 75%, transparent); }
-.fp-btn.secondary { background: var(--fill); color: var(--fg); }
+/* a secondary button is quieter than the main one, never faint: a clear
+   outline and its words in the page's own ink */
+.fp-btn.secondary { background: color-mix(in srgb, var(--fg) 6%, var(--card)); color: var(--fg); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--fg) 28%, transparent); }
 .fp-btn.secondary:hover { background: color-mix(in srgb, var(--fg) 12%, var(--card)); }
 .fp-btn.link, .fp-btn.navlink { background: transparent; padding: .3em 0; box-shadow: none; color: var(--accent); font-weight: 500; border-radius: 4px; }
 .fp-btn.navlink { color: var(--fg); font-size: 15px; }
@@ -64,14 +66,16 @@ body.front #root { max-width: none; gap: 0; }
 }
 .fp-dark .fp-btn.primary { background: #fff; color: #0b0b0f; box-shadow: 0 10px 30px -10px rgba(0,0,0,.45); }
 .fp-dark .fp-btn.primary:hover { background: rgba(255,255,255,.9); }
-.fp-dark .fp-btn.secondary { background: rgba(255,255,255,.16); color: #fff; -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%); }
+.fp-dark .fp-btn.secondary { background: rgba(255,255,255,.16); color: #fff; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%); }
 /* over a photo a second button is filled solid enough to read on any photo, with an edge */
 .fp-hero.look-photo .fp-btn.secondary, .fp-band.look-photo .fp-btn.secondary { background: rgba(12, 12, 16, .62); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.72); }
 .fp-hero.look-photo .fp-btn.secondary:hover, .fp-band.look-photo .fp-btn.secondary:hover { background: rgba(12, 12, 16, .78); }
 .fp-dark .fp-btn.secondary:hover { background: rgba(255,255,255,.26); }
 .fp-dark .fp-btn.link { color: #fff; }
 .fp-dark .fp-eyebrow { color: rgba(255,255,255,.88); }
-.fp-dark .fp-em { background-image: linear-gradient(100deg, #fff, color-mix(in srgb, var(--g1) 45%, #fff) 50%, color-mix(in srgb, var(--g3) 45%, #fff)); }
+/* over a dark band or a photo the emphasised words stay near white: a tint,
+   never a mid tone the photo behind them swallows */
+.fp-dark .fp-em { background-image: linear-gradient(100deg, #fff, color-mix(in srgb, var(--g1) 22%, #fff) 50%, color-mix(in srgb, var(--g3) 22%, #fff)); }
 
 /* gradient: three soft lights drifting over the page, with a little grain */
 .fp-blobs { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
