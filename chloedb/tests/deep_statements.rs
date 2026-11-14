@@ -8,6 +8,7 @@
 //! it, on the operators and on DataFusion.
 
 use chloedb::db::Db;
+use chloedb::query::compound;
 use chloedb::query::exec::{Engine, ExecOptions};
 use chloedb::query::parse::{nests_deep, parse, MAX_EXPR_DEPTH, SET_OP_LEVELS};
 use chloedb::query::Params;
@@ -110,4 +111,27 @@ fn a_query_joining_many_queries_answers_their_rows() {
     let mut ids: Vec<String> = rs.rows.iter().map(|r| format!("{:?}", r[0])).collect();
     ids.sort();
     assert_eq!(ids.len(), 3, "{ids:?}");
+}
+
+#[test]
+fn planning_stops_at_the_deadline_and_when_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path());
+    let schema = db.schema();
+    let catalog = [&*schema];
+    let ctes: Vec<String> = std::iter::once("c0 AS (SELECT id FROM t1)".to_string()).chain((1..400).map(|i| format!("c{i} AS (SELECT id FROM c{})", i - 1))).collect();
+    let sql = format!("WITH {} SELECT COUNT(*) FROM c399", ctes.join(", "));
+    let plan = |opts: &ExecOptions| compound::planning_under(opts, || compound::plan_read(&sql, &catalog, &Params::new(), &|_, _| None));
+    assert!(plan(&ExecOptions::default()).is_ok());
+    let past = ExecOptions { deadline: Some(std::time::Instant::now()), ..ExecOptions::default() };
+    assert!(matches!(plan(&past), Err(Error::Timeout(_))), "past its deadline");
+    let cancelled = ExecOptions { cancel: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))), ..ExecOptions::default() };
+    assert!(matches!(plan(&cancelled), Err(Error::Timeout(_))), "cancelled");
+    // Outside planning_under, no limit holds.
+    assert!(plan(&ExecOptions::default()).is_ok());
+    // A query of the database plans under its own deadline.
+    match db.query_with(&sql, &Params::new(), &ExecOptions { deadline: Some(std::time::Instant::now()), ..db.exec.clone() }) {
+        Err(Error::Timeout(m)) => assert!(m.contains("planned"), "{m}"),
+        r => panic!("{:?}", r.map(|rs| rs.rows.len())),
+    }
 }

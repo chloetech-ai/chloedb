@@ -2186,7 +2186,7 @@ impl Service {
     /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
-    async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
         let mut embedded = self.embed_texts(sql, params).await?;
         // A rank profile whose body takes text where a vector goes
@@ -2206,24 +2206,45 @@ impl Service {
             Some((s, p)) => (s.as_str(), p),
             None => (sql, params),
         };
-        let functions = self.functions();
-        // A statement that nests deep plans on a thread with the stack for it.
-        let deep = chloedb::query::parse::nests_deep(sql);
-        let run = || {
-            chloedb::query::parse::deep_stack(deep, || {
-                let c = self.readable();
-                let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
-                compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
-            })
-        };
-        let plan = match run() {
-            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => run()?,
+        let deadline = Instant::now() + timeout;
+        let plan = match self.plan_read(sql, params, deadline).await {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.message.contains(m))) && self.learn_tables(false).await => self.plan_read(sql, params, deadline).await?,
             r => r?,
         };
         Ok(match profiled {
             Some((table, r)) => profile::mark(plan, &table, &r),
             None => plan,
         })
+    }
+
+    /// The plan of the read `sql` over the tables a query may read
+    /// ([`compound::plan_read_calling`]), stopped at `deadline` or once
+    /// the caller stops waiting for it. A short statement plans here; a
+    /// longer one, whose planning may take long (thousands of `WITH`
+    /// results, a long chain of `UNION`s), on a blocking thread, so that
+    /// it holds none of the threads that serve the other requests, and a
+    /// deep one with the stack for it.
+    async fn plan_read(self: &Arc<Self>, sql: &str, params: &Params, deadline: Instant) -> Result<Plan, ApiError> {
+        let cancel = Cancel::default();
+        let opts = ExecOptions { deadline: Some(deadline), cancel: Some(cancel.0.clone()), ..ExecOptions::default() };
+        let deep = chloedb::query::parse::nests_deep(sql);
+        let plan = move |me: &Service, sql: &str, params: &Params| {
+            chloedb::query::parse::deep_stack(deep, || {
+                let functions = me.functions();
+                let c = me.readable();
+                let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
+                compound::planning_under(&opts, || compound::plan_read_calling(sql, &refs, params, &|t, n| me.rank_profile(t, n), &functions))
+            })
+        };
+        if sql.len() <= PLAN_INLINE_BYTES {
+            return Ok(plan(self, sql, params)?);
+        }
+        let (me, sql, params) = (self.clone(), sql.to_string(), params.clone());
+        // Dropped with this future (the client went away), `cancel` stops
+        // the planning at its next step.
+        let r = tokio::task::spawn_blocking(move || plan(&me, &sql, &params)).await.map_err(ApiError::internal)?;
+        drop(cancel);
+        Ok(r?)
     }
 
     /// Query `sql` written out with the rank profile it ranks by
@@ -3182,7 +3203,7 @@ impl Service {
         let tp = Instant::now();
         let plan = match &req.plan {
             Some(p) => Ok(p.clone()),
-            None => self.bound_read(&req.sql, &req.params).await.map(Arc::new),
+            None => self.bound_read(&req.sql, &req.params, timeout).await.map(Arc::new),
         };
         // A plan made with a rank profile runs only on a database whose
         // profile of that name is the same.
@@ -3810,7 +3831,7 @@ impl Service {
     pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         // Statistics are a shard's: its coordinator scores with the
         // cross-encoders.
@@ -3851,7 +3872,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: a guard's levels are counted over one table's rows: a query without subqueries"));
@@ -3886,7 +3907,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: the next codes count one table's rows: a condition without subqueries"));
@@ -6200,6 +6221,11 @@ impl Drop for Cancel {
         self.0.store(true, Ordering::Relaxed);
     }
 }
+
+/// The longest statement a request plans on the thread that serves it:
+/// planning one this short takes microseconds. A longer one plans on a
+/// blocking thread ([`Service::plan_read`]).
+const PLAN_INLINE_BYTES: usize = 2048;
 
 /// Operations one shared transaction takes at most (an SQL write counts
 /// its rows or keys, [`PreparedWrite::weight`]).
