@@ -83,6 +83,51 @@ each other in a graph that ChloeDB walks.
   functions (where `app.user` is the person whose action led to the call).
   Each app also has a page of its own at `/a/<id>`, without the studio
   around it, for a phone or to hand to someone.
+- **It enforces who sees what, on the server.** Each table declares its
+  access as SQL the planner writes in the plan's `"access"`, kept in the
+  table's spec (so a version carries the access it had) and shown after its
+  CREATE TABLE (`engine/access.mjs`):
+
+  ```sql
+  ALLOW READ ON products TO everyone;
+  ALLOW WRITE ON products TO owner;
+  ALLOW ALL ON receivables TO members;
+  ALLOW ALL ON notes TO members WHERE owner_id = :user_id;
+  ALLOW ALL ON invoices TO members WHERE company_id = :company_id;
+  ALLOW ALL ON invoices TO admins;
+  ```
+
+  What is READ, ADD, CHANGE, REMOVE, WRITE (the three writes) or ALL; who is
+  everyone (visitors too), members (signed in to the app), admins (whom the
+  owner makes admins: `POST /api/apps/<id>/people/role {person, role}`) or
+  the owner, each including the ones after it; WHERE keeps a person to their
+  own rows or their company's. The engine holds every read and write of the
+  app's people to it (`/sql`, `/insert`, `/update`, `/remove`, and `/call`,
+  whose functions and rules run as the person who called them; triggers and
+  schedules run as the app): a read of a table they may not see is a 401
+  ("Sign in first: ...") for a visitor and a 403 for a member; a scoped read
+  gets the scope's condition joined to the WHERE of every SELECT that reads
+  the table (so MATCH, bm25 and joins keep working on its scan); an add
+  fills the scope's column and is refused when it names someone else; a
+  change or remove reaches only rows in scope and cannot move one out.
+  `:user_id`, `:user_email`, `:user_name` and `:company_id` are the engine's
+  to bind (a page cannot send someone else's), and a query or function that
+  names one with nobody signed in is refused as a 401 "Sign in first", not
+  sent to ChloeDB unbound. Companies are the engine's, never the app's:
+  `sa_companies` and `sa_memberships`, a person making one becomes its admin
+  and adds people who have an account (`GET/POST /api/apps/<id>/companies`,
+  `POST .../companies/members {company, email, role}`,
+  `.../companies/members/remove`; `app.companies()`, `app.company()`,
+  `app.createCompany(name)`, `app.useCompany(id)`, `app.addToCompany(...)` in
+  views), and the one a person works in now is the `x-sa-company` header's
+  when they belong to it, else their first. A table with no ALLOW statement is
+  as tables were before (open to whoever the publish choice lets in), so apps
+  built before keep working; the studio (the builder, not the public path)
+  has every row. A request that asks for signed-in people only, roles or
+  companies fails the build's checks until the plan declares access for every
+  table. On a laptop with no login every caller is the studio, so access
+  applies to a published app's public beside a cluster and to "See it as a
+  stranger".
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request
@@ -294,6 +339,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/checks.mjs` | a build's tests, run on its new tables, and opening each view in a headless browser |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
+| `engine/access.mjs` | declared access: ALLOW statements per table (what, to whom, which rows by `:user_id` or `:company_id`), the decision for a person, the scope's SQL, and the forge's check that a request asking for sign-in declares it |
 | `engine/publish.mjs` | apps open to the public: the Publish switch, `/a/<id>` and `<name>.<domain>` (`STRATA_APPS_DOMAIN`), hosts of the owner's own, what the public may call, and each visitor's rate ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 | `web/cc-view.js`, `engine/provenance.mjs` | the app creator, a page of a cluster's command center (Apps → App creator): describe and build apps, the live app on a phone, tablet or desktop, and **Made of**, how much of the code that runs the engine generated from CREATE statements and how much the agent wrote from scratch, piece by piece (`GET /api/apps/:id/made`); it gets the frame's runtime from `GET /api/kit` and live updates from long polls of `GET /api/events` ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 
@@ -361,8 +407,9 @@ that fails gets one more try with the problems listed.
 A prototype: people can sign in to apps, but run alone the studio itself
 has no sign-in (anyone who can reach it can change any app; put it behind
 `deploy/gate.mjs` to share it, or run it beside a cluster, where it signs in
-the cluster's admins), app data is not yet limited by row
-rules on the server (`lib.access` checks in views and functions only), what
+the cluster's admins), a table limits its rows only as far as its ALLOW
+statements say (a WHERE compares one column with the person or their
+company, no richer row rules yet), what
 the model costs is limited only in all (`STRATA_APPS_SPEND_CAP_USD`, with a
 share kept apart for apps' own questions) and per app for apps' own
 questions (a count and dollars a day), and a capability that passes the checks can

@@ -72,7 +72,7 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, waitMs
   let waited = 0;
   // Refusals (a service switched off, a limit reached) stay refusals when the
   // function lets them through: an answer for the person, not a bug.
-  const refusals = new Set();
+  const refusals = new Map(); // message -> its status (a 401 "sign in first" stays one)
   const used = () => Date.now() - started - waited;
   try {
     vm.runtime.setMemoryLimit(memoryBytes);
@@ -88,7 +88,7 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, waitMs
         const out = await host(method, args);
         return vm.newString(JSON.stringify({ ok: out === undefined ? null : out }));
       } catch (e) {
-        if (e && e.refused) refusals.add(String(e.message));
+        if (e && e.refused) refusals.set(String(e.message), e.status || null);
         return vm.newString(JSON.stringify({ err: String(e && e.message || e) }));
       } finally {
         if (WAITS.has(method)) waited += Date.now() - t0;
@@ -101,7 +101,7 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, waitMs
     logFn.dispose();
     const arg = JSON.stringify(input === undefined ? null : input);
     const libs = helpers.map((x) => `lib[${JSON.stringify(x.name)}] = (function () {\n${x.code}\n;return helper();\n})();`).join('\n');
-    const who = user ? JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role }) : 'null';
+    const who = user ? JSON.stringify({ id: user.id, name: String(user.name || '').trim() || user.email || 'you', email: user.email, role: user.role }) : 'null';
     const program = `const __user = Object.freeze(${who});\n${PRELUDE}\nconst lib = {};\n${libs}\n${code}\n;globalThis.__last = run(${arg}, app);\nJSON.stringify({ result: globalThis.__last === undefined ? null : globalThis.__last });`;
     const res = await vm.evalCodeAsync(program, 'capability.js');
     if (res.error) {
@@ -109,7 +109,8 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, waitMs
       res.error.dispose();
       const err = new Error(text);
       err.logs = logs;
-      if ([...refusals].some((m) => text.includes(m))) err.refused = true;
+      const hit = [...refusals].find(([m]) => text.includes(m));
+      if (hit) { err.refused = true; if (hit[1]) err.status = hit[1]; }
       throw err;
     }
     const out = JSON.parse(vm.getString(res.value));

@@ -720,11 +720,37 @@ const routes = [
     const r = await submit(id, text, source);
     return { request: r.id };
   }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
+  // Reads and writes: for the app's people (the public path) under the
+  // tables' declared access (access.mjs, ctx.as); the studio has every row.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id], url, cx) => ({ rows: await engine.sql(id, b.sql, b.params, { user: await cx.user(id), as: await cx.as(id), company: await cx.company(id) }) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, await cx.writer(id)); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, await cx.writer(id)); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, await cx.writer(id)); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, await cx.writer(id)); noteActivity(id); return out; }],
+  // Companies (services.mjs): the ones the signed-in person works in and the
+  // one they work in now (x-sa-company, else their first); made by a member,
+  // who becomes its admin; its admins add people who have an account.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => ({ company: await services.createCompany(id, (await cx.user(id))?.id, b) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+    return { member: await services.addToCompany(id, b.company, cx.public ? user.id : null, b) };
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members\/remove$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+    return services.removeFromCompany(id, b.company, cx.public ? user.id : null, String(b.person || ''));
+  }],
+  // A member made an admin, or a member again: by the app's owner (or the studio).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/people\/role$/, async (b, [id], url, cx) => {
+    if (cx.public) {
+      const user = await cx.user(id);
+      if (!user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+      if (user.role !== 'owner') throw Object.assign(new Error("Only the app's owner can change who is an admin"), { status: 403 });
+    }
+    return { person: await services.setRole(id, b.person, String(b.role || '')) };
+  }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -978,8 +1004,25 @@ const server = http.createServer(async (req, res) => {
     const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']), ...(Number.isInteger(taps) && taps >= 0 && taps < 10000 ? { taps } : {}) });
     const join = !cx0.public;
     // A stranger is nobody signed in, whatever the studio's session.
-    const personOf = (appId) => (cx0.stranger ? Promise.resolve(null) : userOf(req, appId, { join }));
-    const cx = { ...cx0, req, res, where, user: personOf, who: async (appId) => (await personOf(appId))?.id || visitorOf(req) };
+    const people = new Map(); // app -> the person, once per request
+    const personOf = (appId) => {
+      if (cx0.stranger) return Promise.resolve(null);
+      if (!people.has(appId)) people.set(appId, userOf(req, appId, { join }));
+      return people.get(appId);
+    };
+    // The company the person works in now (services.companyOf).
+    const companyOf = async (appId) => { const u = await personOf(appId); return u ? services.companyOf(appId, u.id, tag(req.headers['x-sa-company'])) : null; };
+    // Who a read or write is for, against the tables' declared access
+    // (access.mjs): one of the app's people on the public path (a visitor
+    // when nobody is signed in), or null for the studio, which has every row.
+    const asOf = async (appId) => {
+      if (!cx0.public) return null;
+      const user = await personOf(appId);
+      return { role: user ? user.role || 'member' : 'visitor', user, company: user ? await companyOf(appId) : null };
+    };
+    const who = async (appId) => (await personOf(appId))?.id || visitorOf(req);
+    const writer = async (appId) => ({ user: await personOf(appId), who: await who(appId), visitor: !!cx0.public, ownRows: cx0.access === 'add', ...where(), pub: !!cx0.public, as: await asOf(appId), company: await companyOf(appId) });
+    const cx = { ...cx0, req, res, where, user: personOf, who, as: asOf, company: companyOf, writer };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {

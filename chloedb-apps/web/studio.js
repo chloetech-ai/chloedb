@@ -32,8 +32,11 @@ function h(tag, props, ...children) {
 // row they opened, then the form they gave up on) is told apart from the next.
 const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.getItem(k) || (sessionStorage.setItem(k, Math.random().toString(36).slice(2, 12)), sessionStorage.getItem(k)); } catch { return Math.random().toString(36).slice(2, 12); } })();
 
+// The company the app's person works in now (app.useCompany), sent with
+// every call so rows scoped by :company_id are that company's.
+const companyHeader = () => (S.company ? { 'x-sa-company': S.company } : {});
 async function api(method, url, body, more) {
-  const headers = { 'x-sa-session': SESSION, ...AS_STRANGER, ...(more || {}) };
+  const headers = { 'x-sa-session': SESSION, ...AS_STRANGER, ...companyHeader(), ...(more || {}) };
   if (body) headers['content-type'] = 'application/json';
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
@@ -1658,6 +1661,11 @@ window.addEventListener('message', async (e) => {
         case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
         case 'signOut': value = await api('POST', '/api/signout'); authChanged(); break;
         case 'people': value = (await api('GET', `${base}/people`)).people; break;
+        case 'companies': value = (await api('GET', `${base}/companies`, null, companyHeader())).companies; break;
+        case 'company': value = (await api('GET', `${base}/companies`, null, companyHeader())).current; break;
+        case 'createCompany': value = (await api('POST', `${base}/companies`, { name: a })).company; S.company = value.id; authChanged(); break;
+        case 'useCompany': S.company = a || null; value = (await api('GET', `${base}/companies`, null, companyHeader())).current; authChanged(); break;
+        case 'addToCompany': value = (await api('POST', `${base}/companies/members`, { company: a, email: b, role: c || 'member' })).member; break;
         case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
         case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
         case 'geocode': value = (await api('GET', `/api/geocode?q=${encodeURIComponent(a || '')}`)).places; break;

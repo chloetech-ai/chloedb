@@ -1116,7 +1116,9 @@ __sa_ready();
             case 'remove': value = await post(`${base}/remove${atV()}`, { table: a, id: b }); break;
             case 'call': value = (await post(`${base}/call${atV()}`, { name: a, input: b })).result; break;
             case 'me': value = null; break; // people sign in on the app's own page
-            case 'signIn': case 'signUp': case 'signOut': throw new Error('People sign in on the app’s own page; here you see the app as a visitor does');
+            case 'companies': value = []; break;
+            case 'company': value = null; break;
+            case 'signIn': case 'signUp': case 'signOut': case 'createCompany': case 'useCompany': case 'addToCompany': throw new Error('People sign in on the app’s own page; here you see the app as a visitor does');
             case 'people': value = (await api(`${base}/people`)).people; break;
             case 'files': value = (await post(`${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: `${kit.base}${f.url}` })); break;
             case 'email': value = (await post(`${base}/email`, a)).email; break;
