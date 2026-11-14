@@ -268,10 +268,11 @@ export const startLibrary = {
       if (near.covered) continue;
       const title = h.title.split(/[:;(]/)[0].trim();
       const cos = Number(h.cosine) || 0;
-      const usedBy = users.length ? ` ${plural(users.length, 'app')} here use${users.length === 1 ? 's' : ''} it (${users.slice(0, 3).map((u) => u.name).join(', ')}).` : '';
+      const usedBy = users.length ? ` ${users.length === 1 ? 'Another app' : `${users.length} other apps`} here already ${users.length === 1 ? 'has' : 'have'} it (${users.slice(0, 3).map((u) => u.name).join(', ')}).` : '';
       out.push({ key: `lib:${h.kind}/${h.slug}`, basis: 'start.library', source: 'start', cap: h.id,
         text: `Add ${title.charAt(0).toLowerCase()}${title.slice(1)}`,
-        why: clip(`The library has a ${h.kind} that fits this app${h.found === 'meaning' || h.found === 'both' ? ` (close in meaning, ${cos.toFixed(2)})` : ''} and the app does not use it yet.${usedBy}`, 240),
+        // (in plain words: how close it came is the confidence, not the reason)
+        why: clip(`It fits what this app is for, and the app has nothing like it yet.${usedBy}`, 240),
         confidence: Math.min(0.75, 0.2 + 0.5 * cos + 0.04 * Math.min(users.length, 5) + (i < 3 ? 0.05 : 0)) * (1 - 0.5 * near.best),
         change: h.kind === 'pattern'
           ? { kind: 'pattern', name: h.slug, ref: h.id, example: ctx.example(h.slug), hint: `The library's "${h.slug}" pattern does this: a block ${JSON.stringify(ctx.example(h.slug) || { use: h.slug })} on the screen where it fits, with this app's own tables and columns.` }

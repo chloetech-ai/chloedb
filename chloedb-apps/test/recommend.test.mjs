@@ -98,7 +98,9 @@ test('cold start: a library pattern that fits and is not used, with the block th
   assert.deepEqual(out.map((c) => c.key), ['lib:pattern/board']);
   assert.equal(out[0].change.kind, 'pattern');
   assert.match(out[0].change.hint, /"use":"board"/);
-  assert.match(out[0].why, /2 apps here use it \(Bakery, Cafe\)/);
+  assert.match(out[0].why, /2 other apps here already have it \(Bakery, Cafe\)/);
+  // the reason is in words: no score, no internal name
+  assert.doesNotMatch(out[0].why, /\d\.\d|pattern|component|meaning/);
 });
 
 test('ranking: one per key and per meaning, nothing offered or dismissed again, two of a source at most', () => {
