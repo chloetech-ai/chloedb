@@ -146,6 +146,9 @@ pub fn router(app: App) -> Router {
         .merge(crate::routing::routes())
         .merge(crate::search::routes(&app))
         .merge(crate::library::routes())
+        // Preview lab: persona tests, runtime errors and POST /v1/logs.
+        .merge(crate::swarm::routes())
+        .merge(crate::runtime::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -192,6 +195,7 @@ const LEVELS: &[(&str, &str)] = &[
     ("decide.js", include_str!("../ui/levels/decide.js")),
     ("map.js", include_str!("../ui/levels/map.js")),
     ("preview.js", include_str!("../ui/levels/preview.js")),
+    ("preview-lab.js", include_str!("../ui/levels/preview-lab.js")),
     ("flow.js", include_str!("../ui/levels/flow.js")),
     ("away.js", include_str!("../ui/levels/away.js")),
     ("ship.js", include_str!("../ui/levels/ship.js")),

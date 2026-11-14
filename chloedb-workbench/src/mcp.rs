@@ -185,6 +185,33 @@ fn tools() -> Value {
                 },
                 "required": ["query"]
             }
+        },
+        // Preview lab (SPEC.md, "Fourth build", use cases 2 and 3).
+        {
+            "name": "test_with_persona",
+            "description": "Have a simulated user try your app in your preview (set_preview first): a persona (first-timer, keyboard, careful, hurried, edge-cases, or a sentence describing someone) does a task in a real browser, driven by a model, and what got in their way comes back as findings. The user watches it in Workbench's Preview. It takes minutes and costs tokens: use it when a change is ready to be tried, not after every edit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "What the person tries to do, in their words, e.g. 'buy two mugs and pay with a card'." },
+                    "persona": { "type": "string", "description": "A persona id (first-timer, keyboard, careful, hurried, edge-cases) or a sentence describing the person; first-timer when left out." },
+                    "model": { "type": "string", "description": "The model playing the persona: haiku (the default), sonnet or opus." },
+                    "wait": { "type": "boolean", "description": "Wait for the run to end and answer its findings (default true)." },
+                    "timeout_s": { "type": "integer", "minimum": 10, "maximum": 1800, "description": "How long to wait, default 600." }
+                },
+                "required": ["task"]
+            }
+        },
+        {
+            "name": "runtime_errors",
+            "description": "The open runtime errors of your app: what the previewed page threw or logged with console.error, the 5xx answers through the preview, and error logs your dev server sent over OTLP. Each comes with its stack and, when Workbench can tell, the edit that probably caused it (whose, which file and line, when).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "all": { "type": "boolean", "description": "Every agent's errors in this repository, not only your app's." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                }
+            }
         }
     ])
 }
@@ -499,6 +526,8 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             ))
         }
         "search_code" | "search_docs" => search_tool(c, name, args),
+        "test_with_persona" => crate::swarm::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
+        "runtime_errors" => crate::runtime::mcp_tool(&|m, p, b, t| c.call(m, p, b, Duration::from_secs(t)), &c.env.agent, args),
         other => Err(format!("no tool {other}")),
     }
 }

@@ -184,6 +184,7 @@ async fn proxy(app: App, agent: String, rest: String, method: Method, uri: Uri, 
     let Some(base) = a.preview_url.clone() else {
         return page(StatusCode::NOT_FOUND, &format!("{} has no preview yet: it sets one with the set_preview tool, or PUT /api/agents/{agent}/preview.", a.name));
     };
+    let (req_method, req_rest) = (method.clone(), rest.clone());
     let req = Upstream { base, prefix: format!("{prefix}/"), rest, query, method, headers, body };
     let name = a.name.clone();
     let mut res = match tokio::task::spawn_blocking(move || req.send()).await {
@@ -191,6 +192,8 @@ async fn proxy(app: App, agent: String, rest: String, method: Method, uri: Uri, 
         Ok(Err(e)) => page(StatusCode::BAD_GATEWAY, &format!("{name}'s preview does not answer: {e}")),
         Err(e) => page(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
+    // Runtime blame: a 5xx is recorded as an error of the agent's app.
+    res = crate::runtime::after_proxy(&app, &agent, &req_method, &req_rest, res).await;
     if let Some(c) = set_cookie.and_then(|c| HeaderValue::from_str(&c).ok()) {
         res.headers_mut().append(header::SET_COOKIE, c);
     }

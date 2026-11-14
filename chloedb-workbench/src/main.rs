@@ -33,6 +33,9 @@ mod timetravel;
 // Search (SPEC.md, "Fourth build", rows 1 and 10).
 mod library;
 mod search;
+// The Preview lab (SPEC.md, "Fourth build", use cases 2 and 3).
+mod runtime;
+mod swarm;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

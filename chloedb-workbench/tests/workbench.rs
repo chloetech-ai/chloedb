@@ -689,7 +689,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview", "ask_human", "add_outcome", "update_outcome", "list_incidents", "test_history", "blast_radius", "prepare_pr", "propose_change", "search_code", "search_docs", "test_with_persona", "runtime_errors"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -2893,4 +2893,331 @@ fn libraries_come_from_manifests_and_a_crawl_is_searched_and_cited() {
     assert_eq!(st, 400);
     let (st, _) = s.post("/api/library/crawl", json!({ "repo": r, "library": "crates-nope" }));
     assert_eq!(st, 404);
+}
+
+// Fourth build: Preview lab (use cases 2 and 3): persona tests through the
+// preview, and runtime errors joined to the edit that probably caused them.
+
+/// A server with extra environment (the persona runner's, here).
+fn start_lab(envs: &[(&str, &str)]) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let fake = write_fake(dir.path());
+    let mut child = Command::new(BIN)
+        .args(["serve", "--addr", "127.0.0.1:0", "--token", TOKEN])
+        .arg("--data-dir")
+        .arg(&data)
+        .arg("--claude-bin")
+        .arg(&fake)
+        .args(["--chloectx-bin", "/nonexistent/chloectx", "--no-chloectx"])
+        .envs(envs.iter().copied())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    let url = line.trim().strip_prefix("Workbench: ").unwrap_or_else(|| panic!("no URL in {line:?}")).split("/?token=").next().unwrap().to_string();
+    std::thread::spawn(move || {
+        let mut sink = String::new();
+        let _ = out.read_to_string(&mut sink);
+    });
+    Server { child, url, data, _dir: dir }
+}
+
+/// An app that answers every request with `status` and `body`.
+fn failing_app(status: u16, body: String) -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut c) = conn else { continue };
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let _ = write!(c, "HTTP/1.1 {status} Oops\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            });
+        }
+    });
+    port
+}
+
+fn error_of<'a>(list: &'a Value, source: &str) -> &'a Value {
+    list["errors"].as_array().unwrap().iter().find(|e| e["source"] == source).unwrap_or_else(|| panic!("no {source} error in {list}"))
+}
+
+#[test]
+fn runtime_errors_are_recorded_and_put_down_to_an_agents_edit() {
+    let s = start_lab(&[]);
+    let (_d, r) = repo();
+    let web = s.spawn(json!({ "repo": r, "name": "web", "task": "WRITE money.js function total(cart) { return cart.items.length }" }));
+    let api = s.spawn(json!({ "repo": r, "name": "api", "task": "WRITE server/orders.js function placeOrder() { throw new Error(boom) }" }));
+    let (web, api) = (web["id"].as_str().unwrap().to_string(), api["id"].as_str().unwrap().to_string());
+    s.wait(&web, "idle");
+    s.wait(&api, "idle");
+    let api_cwd = s.agent(&api)["cwd"].as_str().unwrap().to_string();
+    assert_ne!(api_cwd, s.agent(&web)["cwd"].as_str().unwrap(), "each in its own worktree");
+    let (_, v) = s.get(&format!("/api/runtime/errors?agent={web}"));
+    assert_eq!(v["errors"], json!([]), "{v}");
+    assert!(v["otlp"]["endpoint"].as_str().unwrap().ends_with("/v1/logs"), "{v}");
+
+    // A 5xx through the preview, whose stack names api's file in its worktree.
+    let port = failing_app(500, format!("Error: order failed\n    at placeOrder ({api_cwd}/server/orders.js:1:30)\n    at node:internal/process:1:1\n"));
+    assert_eq!(s.put(&format!("/api/agents/{web}/preview"), json!({ "url": format!("http://127.0.0.1:{port}") })).0, 200);
+    let jar = format!("wb_preview={TOKEN}");
+    let mut res = http_raw().get(format!("{}/preview/{web}/api/orders", s.url)).header("cookie", &jar).call().unwrap();
+    assert_eq!(res.status().as_u16(), 500);
+    assert!(res.body_mut().read_to_string().unwrap().starts_with("Error: order failed"), "the answer goes on unchanged");
+    let (_, v) = s.get(&format!("/api/runtime/errors?agent={web}"));
+    assert_eq!(v["missing"], json!([]), "the ASOF JOIN ran: {v}");
+    let e = error_of(&v, "proxy");
+    assert_eq!((e["status"].as_i64(), e["message"].as_str(), e["file"].as_str(), e["line"].as_i64()), (Some(500), Some("500 GET /api/orders: Error: order failed"), Some("server/orders.js"), Some(1)), "{e}");
+    assert_eq!(e["cwd"], json!(api_cwd));
+    let c = &e["culprit"];
+    assert_eq!((c["agent_id"].as_str(), c["how"].as_str(), c["file"].as_str(), c["line"].as_i64()), (Some(api.as_str()), Some("stack"), Some("server/orders.js"), Some(1)), "{c}");
+    assert!(c["edit_ms"].as_i64().unwrap() <= e["first_ms"].as_i64().unwrap());
+    let frames = e["frames"].as_array().unwrap();
+    assert_eq!((frames[0]["in_repo"].as_bool(), frames[1]["in_repo"].as_bool()), (Some(true), Some(false)), "{frames:?}");
+
+    // What the page threw, from the overlay, on the preview's cookie; a
+    // repeat is counted, not added.
+    let report = json!({ "kind": "error", "message": "TypeError: cart.items is undefined", "stack": format!("TypeError: cart.items is undefined\n    at total (http://127.0.0.1:{port}/preview/{web}/money.js:1:40)\n    at http://127.0.0.1:{port}/preview/{web}/node_modules/react/index.js:9:1"), "filename": format!("http://127.0.0.1:{port}/preview/{web}/money.js"), "lineno": 1, "colno": 40, "url": "/cart" });
+    let overlay = format!("{}/preview/{web}/__wb/runtime", s.url);
+    assert_eq!(http_raw().post(&overlay).header("origin", &s.url).send_json(&report).unwrap().status().as_u16(), 401);
+    for _ in 0..2 {
+        let mut res = http_raw().post(&overlay).header("cookie", &jar).header("origin", &s.url).send_json(&report).unwrap();
+        assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(res.body_mut().read_json::<Value>().unwrap()["ok"], true);
+    }
+    http_raw().post(&overlay).header("cookie", &jar).header("origin", &s.url).send_json(json!({ "kind": "console", "message": "Warning: Each child in a list should have a unique key prop." })).unwrap();
+    // One with no stack: the last edit in its worktree, by time.
+    let (status, v) = s.post("/api/runtime/errors", json!({ "agent": web, "message": "Checkout hangs" }));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["error"]["source"], "api");
+    let (_, v) = s.get(&format!("/api/runtime/errors?agent={web}"));
+    assert_eq!(v["total"], 4, "{v}");
+    let e = error_of(&v, "overlay");
+    assert_eq!((e["count"].as_i64(), e["file"].as_str(), e["line"].as_i64(), e["col"].as_i64(), e["url"].as_str()), (Some(2), Some("money.js"), Some(1), Some(40), Some("/cart")), "{e}");
+    assert_eq!((e["culprit"]["agent_id"].as_str(), e["culprit"]["how"].as_str()), (Some(web.as_str()), Some("stack")), "{e}");
+    assert!(e["frames"].as_array().unwrap().iter().any(|f| f["file"].as_str().unwrap().contains("node_modules") && f["in_repo"] == false), "{e}");
+    assert_eq!(error_of(&v, "console")["level"], "warn");
+    let e = error_of(&v, "api");
+    assert_eq!((e["culprit"]["agent_id"].as_str(), e["culprit"]["how"].as_str(), e["culprit"]["file"].as_str()), (Some(web.as_str()), Some("time"), Some("money.js")), "{e}");
+
+    // OTLP/HTTP JSON logs: the token, JSON only, errors only, and the agent
+    // from the service's name.
+    let logs = format!("{}/v1/logs", s.url);
+    let otlp = json!({ "resourceLogs": [
+        { "resource": { "attributes": [{ "key": "service.name", "value": { "stringValue": "api" } }] },
+          "scopeLogs": [{ "logRecords": [
+            { "severityNumber": 9, "severityText": "INFO", "body": { "stringValue": "listening on 8080" } },
+            { "severityNumber": 17, "severityText": "ERROR", "body": { "stringValue": "insert failed" }, "attributes": [
+                { "key": "exception.type", "value": { "stringValue": "DbError" } },
+                { "key": "exception.message", "value": { "stringValue": "connection refused" } },
+                { "key": "exception.stacktrace", "value": { "stringValue": format!("DbError: connection refused\n    at placeOrder ({api_cwd}/server/orders.js:1:12)") } },
+                { "key": "url.path", "value": { "stringValue": "/api/orders" } } ] } ] }] },
+        { "resource": { "attributes": [{ "key": "service.name", "value": { "stringValue": "ghost" } }] },
+          "scopeLogs": [{ "logRecords": [{ "severityNumber": 18, "body": { "stringValue": "who am I" } }] }] }
+    ]});
+    assert_eq!(http_raw().post(&logs).send_json(&otlp).unwrap().status().as_u16(), 401);
+    assert_eq!(http_raw().post(&logs).header("authorization", format!("Bearer {TOKEN}")).header("content-type", "application/x-protobuf").send("x").unwrap().status().as_u16(), 415);
+    let mut res = http_raw().post(&logs).header("authorization", format!("Bearer {TOKEN}")).send_json(&otlp).unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let v: Value = res.body_mut().read_json().unwrap();
+    assert_eq!(v["partialSuccess"]["rejectedLogRecords"], 1, "{v}");
+    let (_, v) = s.get(&format!("/api/runtime/errors?agent={api}"));
+    let e = error_of(&v, "otlp");
+    assert_eq!((e["message"].as_str(), e["service"].as_str(), e["url"].as_str(), e["file"].as_str()), (Some("DbError: connection refused"), Some("api"), Some("/api/orders"), Some("server/orders.js")), "{e}");
+    assert_eq!(e["culprit"]["agent_id"], json!(api));
+    let (_, v) = s.get(&format!("/api/runtime/errors?repo={}", r.display()));
+    assert_eq!(v["total"], 5, "{v}");
+
+    // An agent reads them with runtime_errors.
+    let mut m = Mcp::start(&s, &web);
+    let (text, err) = m.tool("runtime_errors", json!({}));
+    assert!(!err, "{text}");
+    assert!(text.contains("500 GET /api/orders") && text.contains("probably api's edit to server/orders.js") && !text.contains("connection refused"), "{text}");
+    let (text, _) = m.tool("runtime_errors", json!({ "all": true }));
+    assert!(text.contains("DbError: connection refused"), "{text}");
+
+    // Resolved, it leaves the open list.
+    let (_, v) = s.get(&format!("/api/runtime/errors?agent={web}"));
+    let id = error_of(&v, "proxy")["id"].as_str().unwrap().to_string();
+    let (status, v) = s.post(&format!("/api/runtime/errors/{id}/resolve"), json!({}));
+    assert_eq!((status, v["error"]["state"].as_str()), (200, Some("resolved")), "{v}");
+    assert_eq!(s.get(&format!("/api/runtime/errors?agent={web}")).1["total"], 3);
+    assert_eq!(s.get(&format!("/api/runtime/errors?agent={web}&state=resolved")).1["total"], 1);
+    // Bad reports.
+    assert_eq!(s.post("/api/runtime/errors", json!({ "message": "x" })).0, 400);
+    assert_eq!(s.post("/api/runtime/errors", json!({ "agent": "a00000000", "message": "x" })).0, 404);
+    assert_eq!(s.post("/api/runtime/errors", json!({ "agent": web, "message": " " })).0, 400);
+    assert_eq!(s.post("/api/runtime/errors/e00000000/resolve", json!({})).0, 404);
+}
+
+/// The persona runner, faked: it answers `--check`, opens the preview with
+/// the token it was given, and reports steps, findings and the end. Its
+/// task picks what it does: SLOW plays until stopped, CRASH fails.
+const FAKE_RUNNER: &str = r#"#!/usr/bin/env python3
+import json, os, sys, urllib.request, http.cookiejar
+if "--check" in sys.argv:
+    print(json.dumps({"ok": True, "why": None, "adapter": "fake"}))
+    sys.exit(0)
+job = json.loads(sys.stdin.read())
+def out(o):
+    print(json.dumps(o), flush=True)
+out({"type": "start", "adapter": "fake"})
+if "CRASH" in job["task"]:
+    sys.stderr.write("boom: no browser here\n")
+    sys.exit(1)
+op = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+page = op.open(job["url"] + "/?token=" + job["token"]).read().decode()
+clean = "CHLOEDB_WORKBENCH_TOKEN" not in os.environ and "CHLOEDB_WORKBENCH_AGENT" not in os.environ
+out({"type": "step", "step": 1, "action": "click", "input": {"ref": "e1", "name": "Buy"}, "thought": "Buying it" + (" (clean)" if clean else ""), "ok": True, "url": job["url"] + "/", "events": [], "ms": 5})
+if "SLOW" in job["task"]:
+    os.execvp("sleep", ["sleep", "60"])
+out({"type": "finding", "kind": "bug", "severity": 3, "title": "Pay does nothing", "detail": "The page said " + ("Hello preview" if "Hello preview" in page else "nothing"), "step": 1, "url": job["url"] + "/"})
+out({"type": "finding", "kind": "slow", "severity": 2, "title": "Checkout is slow", "detail": "It took a while", "step": 1})
+out({"type": "finding", "kind": "copy", "severity": 1, "title": "The labels are small", "detail": "Hard to read"})
+out({"type": "done", "outcome": "done", "answer": "I bought it as " + job["persona"]["name"] + " with " + job["model"], "cost_usd": 0.01})
+"#;
+
+fn run_until(s: &Server, id: &str, f: impl Fn(&Value) -> bool) -> Value {
+    s.get_until(&format!("/api/swarm/runs/{id}"), "the run's state", f)
+}
+
+fn finding<'a>(run: &'a Value, title: &str) -> &'a Value {
+    run["findings"].as_array().unwrap().iter().find(|f| f["title"] == title).unwrap_or_else(|| panic!("no finding {title} in {run}"))
+}
+
+#[test]
+fn a_persona_tests_the_preview_and_its_findings_go_to_the_agent_or_to_decide() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().unwrap();
+    let runner = bin.path().join("fake-runner");
+    std::fs::write(&runner, FAKE_RUNNER).unwrap();
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_SWARM_CMD", runner.to_str().unwrap())]);
+    let (_d, r) = repo();
+    let (port, _seen) = tiny_app();
+    let shop = s.spawn(json!({ "repo": r, "name": "shop", "task": "WRITE page.html <h1>Hello preview</h1>", "worktree": false }));
+    let other = s.spawn(json!({ "repo": r, "name": "other", "task": "WRITE other.txt x", "worktree": false }));
+    let (id, other) = (shop["id"].as_str().unwrap().to_string(), other["id"].as_str().unwrap().to_string());
+    s.wait(&id, "idle");
+    s.wait(&other, "idle");
+
+    let (_, v) = s.get("/api/swarm/personas");
+    assert_eq!((v["available"].as_bool(), v["adapter"].as_str()), (Some(true), Some("fake")), "{v}");
+    let ids: Vec<&str> = v["personas"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["first-timer", "keyboard", "careful", "hurried", "edge-cases"]);
+    // Only an agent with a preview, a task and a persona.
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": other, "persona": "careful", "task": "buy" })).0, 409);
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": "a00000000", "persona": "careful", "task": "buy" })).0, 404);
+    assert_eq!(s.put(&format!("/api/agents/{id}/preview"), json!({ "url": format!("http://127.0.0.1:{port}") })).0, 200);
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": id, "persona": "careful" })).0, 400);
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": id, "persona": "nobody", "task": "buy" })).0, 400);
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": id, "task": "buy" })).0, 400);
+
+    // A run: its steps, findings and end, from the runner's lines.
+    let (status, v) = s.post("/api/swarm/runs", json!({ "agent": id, "persona": "careful", "task": "Buy a mug", "model": "sonnet" }));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!((v["run"]["state"].as_str(), v["run"]["by"].as_str()), (Some("starting"), Some("you")), "{v}");
+    let rid = v["run"]["id"].as_str().unwrap().to_string();
+    let v = run_until(&s, &rid, |v| v["run"]["state"] == "done");
+    let run = &v["run"];
+    assert_eq!((run["outcome"].as_str(), run["answer"].as_str(), run["adapter"].as_str()), (Some("done"), Some("I bought it as Ruth Alvarez with sonnet"), Some("fake")), "{v}");
+    assert_eq!(run["persona"]["name"], "Ruth Alvarez");
+    assert_eq!(run["step_count"], 1);
+    assert_eq!(run["cost_usd"], 0.01);
+    let step = &run["steps"][0];
+    assert_eq!((step["action"].as_str(), step["input"]["name"].as_str(), step["thought"].as_str()), (Some("click"), Some("Buy"), Some("Buying it (clean)")), "the runner gets no token in its environment: {step}");
+    assert_eq!(v["findings"].as_array().unwrap().len(), 3, "{v}");
+    let pay = finding(&v, "Pay does nothing");
+    assert_eq!((pay["severity"].as_i64(), pay["state"].as_str(), pay["detail"].as_str()), (Some(3), Some("open"), Some("The page said Hello preview")), "it opened the preview: {pay}");
+    let (_, list) = s.get(&format!("/api/swarm/runs?agent={id}"));
+    assert_eq!(list["runs"][0]["id"], json!(rid), "{list}");
+    assert_eq!(list["runs"][0]["findings_count"], 3, "{list}");
+
+    // Send: a steer to the preview's agent.
+    let fid = pay["id"].as_str().unwrap().to_string();
+    let (status, a) = s.post(&format!("/api/swarm/findings/{fid}/send"), json!({ "text": "the button is the green one" }));
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["finding"]["state"], "sent");
+    assert!(a["finding"]["steer"].is_string(), "{a}");
+    let steered = |want: &str| s.events(&id).iter().any(|e| e["kind"] == "steer" && e.to_string().contains(want));
+    assert!(steered("Pay does nothing") && steered("the button is the green one"));
+    // Ask: a question in Decide; its answer sends the finding.
+    let slow = finding(&v, "Checkout is slow")["id"].as_str().unwrap().to_string();
+    let (status, a) = s.post(&format!("/api/swarm/findings/{slow}/ask"), json!({}));
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["finding"]["state"], "asked");
+    assert_eq!(s.post(&format!("/api/swarm/findings/{slow}/ask"), json!({})).0, 409);
+    let qs = s.get_until(&format!("/api/questions?state=open&agent={id}"), "the finding's question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let q = &qs["questions"][0];
+    assert_eq!((q["kind"].as_str(), q["recommended"].as_i64()), (Some("ask"), Some(0)), "{q}");
+    assert!(q["text"].as_str().unwrap().contains("Checkout is slow"), "{q}");
+    assert_eq!(q["options"][0]["label"], "Send it to shop");
+    let (status, _) = s.post(&format!("/api/questions/{}/answer", q["id"].as_str().unwrap()), json!({ "option": 0, "text": "make it fast" }));
+    assert_eq!(status, 200);
+    run_until(&s, &rid, |v| finding(v, "Checkout is slow")["state"] == "sent");
+    assert!(steered("Checkout is slow") && steered("make it fast"));
+    // Dismiss.
+    let small = finding(&v, "The labels are small")["id"].as_str().unwrap().to_string();
+    let (_, a) = s.post(&format!("/api/swarm/findings/{small}/dismiss"), json!({}));
+    assert_eq!(a["finding"]["state"], "dismissed");
+    assert_eq!(s.post(&format!("/api/swarm/findings/{small}/burn"), json!({})).0, 400);
+    assert_eq!(s.post("/api/swarm/findings/f00000000/send", json!({})).0, 404);
+
+    // A person in words; one run at a time per preview; Stop.
+    let (status, v) = s.post("/api/swarm/runs", json!({ "agent": id, "persona_text": "a night-shift nurse on her phone", "task": "SLOW browse" }));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!((v["run"]["persona"]["role"].as_str(), v["run"]["persona"]["device"].as_str()), (Some("a night-shift nurse on her phone"), Some("phone")));
+    let slow_run = v["run"]["id"].as_str().unwrap().to_string();
+    run_until(&s, &slow_run, |v| v["run"]["step_count"] == 1);
+    assert_eq!(s.post("/api/swarm/runs", json!({ "agent": id, "persona": "hurried", "task": "again" })).0, 409);
+    let (status, v) = s.post(&format!("/api/swarm/runs/{slow_run}/stop"), json!({}));
+    assert_eq!(status, 200, "{v}");
+    let v = run_until(&s, &slow_run, |v| v["run"]["ended_ms"].is_i64());
+    assert_eq!((v["run"]["state"].as_str(), v["run"]["outcome"].as_str()), (Some("stopped"), Some("stopped")), "{v}");
+    // A runner that fails: the run says why.
+    let (_, v) = s.post("/api/swarm/runs", json!({ "agent": id, "persona": "hurried", "task": "CRASH it" }));
+    let crash = v["run"]["id"].as_str().unwrap().to_string();
+    let v = run_until(&s, &crash, |v| v["run"]["state"] == "failed");
+    assert!(v["run"]["error"].as_str().unwrap().contains("boom: no browser here"), "{v}");
+
+    // An agent tests its own preview with test_with_persona, and waits.
+    let mut m = Mcp::start(&s, &id);
+    let (text, err) = m.tool("test_with_persona", json!({ "task": "Buy a mug", "persona": "keyboard" }));
+    assert!(!err, "{text}");
+    assert!(text.contains("Ken Okafor") && text.contains("done after 1 steps") && text.contains("[blocker] Pay does nothing"), "{text}");
+    let (_, list) = s.get(&format!("/api/swarm/runs?agent={id}"));
+    assert_eq!(list["runs"][0]["by"], json!(id), "{list}");
+    let (text, err) = m.tool("test_with_persona", json!({}));
+    assert!(err && text.contains("task is required"), "{text}");
+}
+
+#[test]
+fn persona_tests_say_why_they_cannot_run() {
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_SWARM_CMD", "/nonexistent/swarm-runner")]);
+    let (_d, r) = repo();
+    let (port, _seen) = tiny_app();
+    let a = s.spawn(json!({ "repo": r, "name": "shop", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let (_, v) = s.get("/api/swarm/personas");
+    assert_eq!(v["available"], false, "{v}");
+    assert!(v["why"].as_str().unwrap().contains("cannot run /nonexistent/swarm-runner"), "{v}");
+    assert_eq!(v["personas"].as_array().unwrap().len(), 5);
+    assert_eq!(s.put(&format!("/api/agents/{id}/preview"), json!({ "url": format!("http://127.0.0.1:{port}") })).0, 200);
+    let (status, v) = s.post("/api/swarm/runs", json!({ "agent": id, "persona": "careful", "task": "buy" }));
+    assert_eq!((status, v["available"].as_bool(), v["run"].is_null()), (200, Some(false), true), "{v}");
+    assert_eq!(s.get(&format!("/api/swarm/runs?agent={id}")).1["runs"], json!([]));
+    let mut m = Mcp::start(&s, &id);
+    let (text, err) = m.tool("test_with_persona", json!({ "task": "buy", "persona": "a man in a hurry" }));
+    assert!(err && text.contains("not available"), "{text}");
 }

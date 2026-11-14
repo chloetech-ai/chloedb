@@ -7,6 +7,7 @@
 import {
   h, useStyle, agentColor, avatar, agentChip, ctxChip, pill, fmtAgo, fmtClock, toMs, onEscape, token, card, setFleet, throttle,
 } from "./common.js";
+import { mountLab } from "./preview-lab.js";
 
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 const URL_OK = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}(\/.*)?$/;
@@ -439,6 +440,7 @@ export function mount(root, ctx) {
   window.addEventListener("resize", onResize);
 
   render();
+  mountLab(el, ctx, () => S.agentId); // Preview lab: persona tests and runtime errors (preview-lab.js)
   loadSide().catch(() => {});
   // The agents' diffs and edits again, at most every 15 s while they work.
   const refreshSide = throttle(() => loadSide().catch(() => {}), 15000);

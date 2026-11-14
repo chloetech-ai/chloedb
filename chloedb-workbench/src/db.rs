@@ -105,6 +105,16 @@ const SEARCH_TABLES: [&str; 6] = [
     "CREATE TABLE IF NOT EXISTS doc_cites (id KEYWORD PRIMARY KEY, ts TIMESTAMP, repo KEYWORD, agent KEYWORD, lib KEYWORD, url KEYWORD, title TEXT, q TEXT)",
 ];
 
+/// The Preview lab's tables (SPEC.md, "Fourth build", use cases 2 and 3):
+/// persona runs and their findings, runtime errors, and the agents' edits
+/// that the errors are joined to (`ASOF JOIN` on `ts_ms`).
+const PREVIEW_LAB_TABLES: [&str; 4] = [
+    "CREATE TABLE IF NOT EXISTS swarm_runs (id KEYWORD PRIMARY KEY, agent KEYWORD, repo KEYWORD, persona TEXT, task TEXT, model KEYWORD, adapter KEYWORD, started_by KEYWORD, state KEYWORD, outcome KEYWORD, answer TEXT, steps TEXT, step_count INT, max_steps INT, error TEXT, cost_usd FLOAT, created TIMESTAMP, ended TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS swarm_findings (id KEYWORD PRIMARY KEY, run KEYWORD, agent KEYWORD, repo KEYWORD, kind KEYWORD, severity INT, title TEXT, detail TEXT, step INT, url TEXT, state KEYWORD, question KEYWORD, steer KEYWORD, created TIMESTAMP, updated TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS runtime_errors (id KEYWORD PRIMARY KEY, agent KEYWORD, repo KEYWORD, cwd KEYWORD, source KEYWORD, level KEYWORD, message TEXT, stack TEXT, file KEYWORD, line INT, col INT, url TEXT, status INT, service KEYWORD, fingerprint KEYWORD, hits INT, first_ms INT, last_ms INT, state KEYWORD)",
+    "CREATE TABLE IF NOT EXISTS runtime_edits (id KEYWORD PRIMARY KEY, seq INT, ts_ms INT, agent KEYWORD, repo KEYWORD, cwd KEYWORD, file KEYWORD, line INT, tool KEYWORD)",
+];
+
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
   seq INT,
@@ -310,6 +320,9 @@ impl StateDb {
         }
         db.sql(EVENTS, &Params::new()).map_err(e)?;
         for t in HEALTH_TABLES {
+            db.sql(t, &Params::new()).map_err(e)?;
+        }
+        for t in PREVIEW_LAB_TABLES {
             db.sql(t, &Params::new()).map_err(e)?;
         }
         let db = Arc::new(db);

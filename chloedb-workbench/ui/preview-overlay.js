@@ -164,4 +164,52 @@
     }
   });
   send({ type: "wb-ready", url: location.pathname + location.search });
+
+  // Runtime blame (SPEC.md, "Fourth build"): what the page throws, its
+  // unhandled rejections and its console.error calls go to Workbench at
+  // /preview/<agent>/__wb/runtime (the preview's cookie is the token there),
+  // framed or not, at most 30 a minute. The page's own behaviour is kept:
+  // console.error still prints, and nothing is caught or swallowed.
+  const agent = (location.pathname.match(/^\/preview\/([^/]+)\//) || [])[1];
+  if (agent) {
+    const endpoint = `/preview/${agent}/__wb/runtime`;
+    let start = Date.now(), n = 0, inside = false;
+    const text = (v) => {
+      if (v instanceof Error) return `${v.name}: ${v.message}`;
+      if (typeof v === "string") return v;
+      try { return JSON.stringify(v); } catch (_) { return String(v); }
+    };
+    const report = (r) => {
+      const now = Date.now();
+      if (now - start > 60000) { start = now; n = 0; }
+      if (++n > 30 || inside) return;
+      inside = true;
+      try {
+        const body = JSON.stringify({ ...r, message: String(r.message || "").slice(0, 2000), stack: String(r.stack || "").slice(0, 8000), url: location.pathname + location.search, ts_ms: now });
+        const blob = new Blob([body], { type: "application/json" });
+        if (!(navigator.sendBeacon && navigator.sendBeacon(endpoint, blob))) {
+          fetch(endpoint, { method: "POST", body, headers: { "content-type": "application/json" }, credentials: "same-origin", keepalive: true }).catch(() => {});
+        }
+      } catch (_) {
+        // Reporting never breaks the page.
+      } finally {
+        inside = false;
+      }
+    };
+    window.addEventListener("error", (e) => {
+      if (!(e instanceof ErrorEvent)) return; // a resource that did not load
+      const err = e.error;
+      report({ kind: "error", message: err ? text(err) : e.message, stack: (err && err.stack) || "", filename: e.filename || "", lineno: e.lineno || 0, colno: e.colno || 0 });
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const r = e.reason;
+      report({ kind: "unhandledrejection", message: `Unhandled rejection: ${text(r)}`, stack: (r && r.stack) || "" });
+    });
+    const orig = console.error;
+    console.error = function (...args) {
+      const err = args.find((a) => a instanceof Error);
+      report({ kind: "console", message: args.map(text).join(" "), stack: (err && err.stack) || (new Error().stack || "").split("\n").slice(2).join("\n") });
+      return orig.apply(this, args);
+    };
+  }
 })();

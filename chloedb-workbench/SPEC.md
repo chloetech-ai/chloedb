@@ -1415,3 +1415,149 @@ of a temporary folder through.
 - Without curl, the crawler reports `available: false` with the reason, and search over pages already kept still works.
 - There are no embeddings (chloedb is built without models), so search is BM25 only.
 - Docs search ranks pages, not passages. The excerpt is the stretch with most of the query's words.
+
+### Preview lab as built (use cases 2 and 3)
+
+Simulated users (`src/swarm.rs`) and runtime blame (`src/runtime.rs`),
+shown in Preview by `ui/levels/preview-lab.js`, which `preview.js` mounts
+in one place.
+
+#### Tables
+
+| table | what |
+|---|---|
+| `swarm_runs` | a persona run: `agent` (whose preview), `repo`, `persona` (JSON: id, name, role, traits, device), `task`, `model`, `adapter` (`claude -p`, `api`, or the runner's word), `started_by` (`you` or the calling agent's id), `state` (`starting`, `running`, `done`, `failed`, `stopped`), `outcome` (`done`, `gave_up`, `steps`, `time`, `error`, `stopped`), `answer`, `steps` (JSON, at most 200), `step_count`, `max_steps`, `error`, `cost_usd`, `created`, `ended` |
+| `swarm_findings` | what a run found: `run`, `agent`, `repo`, `kind` (bug, confusing, accessibility, slow, copy), `severity` (3 blocker, 2 major, 1 minor), `title`, `detail`, `step`, `url`, `state` (`open`, `sent`, `asked`, `dismissed`), `question` (the Decide question made from it), `steer` (the steer that sent it) |
+| `runtime_errors` | one error of an agent's app, repeats counted: `agent` (whose app), `repo`, `cwd` (the worktree the error's top frame of the repository lies in, else the agent's), `source` (`overlay`, `console`, `proxy`, `otlp`, `api`), `level`, `message`, `stack`, `file` and `line`, `col` (the top frame in the repository, relative to `cwd`), `url`, `status`, `service`, `fingerprint` (agent, source, message with numbers masked, file), `hits`, `first_ms`, `last_ms`, `state` (`open`, `resolved`) |
+| `runtime_edits` | the agents' edits, from the `PostToolUse` events of the edit tools (kept up to date at each read, after the mark `runtime:edits_seq`): `seq`, `ts_ms`, `agent`, `repo`, `cwd`, `file` (relative), `line` (where the edit's new text is in the file now), `tool` |
+
+A report that matches an open error's fingerprint within 15 minutes adds
+a hit to it.
+
+#### The culprit (ASOF JOIN)
+
+Each open error is put down to an edit, when one fits, at each read of
+the list:
+
+```sql
+SELECT e.id, d.id, d.agent, d.file, d.line, d.ts_ms, e.first_ms
+FROM runtime_errors e ASOF JOIN runtime_edits d
+  MATCH_CONDITION (e.first_ms >= d.ts_ms)
+  ON e.cwd = d.cwd AND e.file = d.file
+WHERE e.state = 'open' [AND e.repo = :repo]
+```
+
+`how: "stack"`: the last edit, before the error first happened, to the
+file its stack names, in the worktree that file is in (so an error of the
+`checkout` agent's page whose stack is in the `api` agent's worktree is
+put down to `api`). Errors without one get the same join `ON e.cwd =
+d.cwd` (`how: "time"`: the last edit in that worktree, when at most an
+hour before). If the join fails, the same lookup runs over the rows in
+order and `missing` says so. An absolute path in a stack is matched to
+the agents' worktrees of the repository and its main checkout; a URL's
+path (with `/preview/<agent>/`, the preview URL's path and Vite's `/@fs/`
+taken off) is a file of the reporting agent's worktree when it is there;
+`node_modules` is never the repository's.
+
+#### Endpoints
+
+| route | what |
+|---|---|
+| `GET /api/runtime/errors?agent=&repo=&state=open\|resolved\|all&limit=50` | `{errors, total, missing, otlp: {endpoint, env}}`; each error with `agent_name`, `frames` (`fn`, `file`, `line`, `col`, `in_repo`, `raw`), `count`, `first`/`last` (ISO), and `culprit` (`agent` as the agents list has it, `agent_id`, `file`, `line`, `edit_line`, `edit_ms`, `before_ms`, `how`, `event`) or null |
+| `POST /api/runtime/errors` | a report from anything with the token: `{agent (or x-workbench-agent), message, stack?, source?, level?, url?, status?, service?, filename?, lineno?, colno?, ts_ms?}`; 201 `{error}` |
+| `POST /api/runtime/errors/:id/resolve` | `{error}`, its state `resolved` |
+| `POST /preview/:agent/__wb/runtime` | the overlay's reports (`kind`: `error`, `unhandledrejection`, `console`; `message`, `stack`, `filename`, `lineno`, `colno`, `url`, `ts_ms`), on the preview's cookie (or the token), at most 64 KiB |
+| `POST /v1/logs` | OTLP/HTTP logs in JSON, with the token as a Bearer; protobuf gets 415. Records of severity ERROR or above (`severityNumber` ≥ 17 or the text), or with `exception.*` attributes, become errors (`source: otlp`): `exception.type: exception.message` or the body is the message, `exception.stacktrace` (or a body with frames) the stack, `url.path`/`http.target`/`http.route` the URL. The agent is the header `x-workbench-agent`, else the resource's `workbench.agent`, else its `service.name` when that is an agent's id or name. Answers `{}`, or `{partialSuccess: {rejectedLogRecords, errorMessage}}` |
+| the preview proxy | an answer of 500 or more through `/preview/:agent/` is recorded (`source: proxy`): `"<status> <METHOD> /<path>: <the body's first line>"`, the body as the stack when it holds frames; the answer goes on unchanged |
+| `GET /api/swarm/personas` | `{personas, available, why, adapter, models, default_model}` |
+| `GET /api/swarm/runs?agent=&limit=` | `{runs}`, newest first, without steps |
+| `POST /api/swarm/runs` | `{agent, persona (an id) or persona_text (words, at most 500 bytes), task, model? (default haiku), max_steps? (3 to 60, default 25)}`; the caller is `x-workbench-agent`'s agent or `you`. 201 `{run, available: true}`; 200 `{available: false, why, run: null}` when no runner can start here; 409 without a preview or with a run of that preview playing; 429 past two playing |
+| `GET /api/swarm/runs/:id` | `{run (with steps), findings}` |
+| `POST /api/swarm/runs/:id/stop` | the runner gets SIGTERM; the run ends `stopped` |
+| `POST /api/swarm/findings/:id/send` | `{text?}`: a steer to the preview's agent (what the persona ran into, the task, the step and URL, and what you add); the finding is `sent` |
+| `POST /api/swarm/findings/:id/ask` | a Decide question (kind `ask`, options "Send it to <agent>" and "Not a problem", recommended by severity); its answer sends the finding (with the words you add) or dismisses it; expired, the finding is open again |
+| `POST /api/swarm/findings/:id/dismiss` | the finding is `dismissed` |
+
+#### Pointing a dev server's logs at Workbench
+
+Each session already has `CHLOEDB_WORKBENCH_URL`, `_TOKEN` and `_AGENT`.
+A dev server with an OpenTelemetry SDK started in it sends its error logs
+with:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=$CHLOEDB_WORKBENCH_URL \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json \
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $CHLOEDB_WORKBENCH_TOKEN,x-workbench-agent=$CHLOEDB_WORKBENCH_AGENT" \
+npm run dev
+```
+
+(`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=$CHLOEDB_WORKBENCH_URL/v1/logs` when
+only logs should go there.) The list's `otlp` field and the empty state
+of the strip say the same.
+
+#### The persona runner
+
+`chloedb-swarm/src/workbench.mjs` (Node 20, Playwright and Chromium from
+wherever the machine has them): Workbench runs `node workbench.mjs`
+(`CHLOEDB_WORKBENCH_NODE` names the node; the script is
+`CHLOEDB_WORKBENCH_SWARM`, a file or a chloedb-swarm checkout, else
+`chloedb-swarm/src/workbench.mjs` beside an ancestor of the binary or of
+the source tree; `CHLOEDB_WORKBENCH_SWARM_CMD` replaces the whole command,
+which the tests use). `--check --claude BIN` answers `{ok, why, adapter}`
+(kept a minute); a run gets the job on stdin (`url` of the preview,
+Workbench's token, which it trades once for the preview's cookie as the
+user's browser does, `persona`, `task`, `model`, `max_steps`,
+`max_seconds` 900, `claude_bin`, `workdir` under the data dir's `swarm/`)
+and answers lines of JSON: `start`, `step` (`step`, `action`, `input`
+with the element's `name`, `thought`, `ok`, `error`, `url`, `events`,
+`ms`), `finding`, `done` (`outcome`, `answer`, `cost_usd`), `error`. The
+runner's environment has no `CHLOEDB_WORKBENCH_TOKEN` or `_AGENT`. The
+model is `claude -p` on the user's login (stateless per step:
+`--output-format json --json-schema <one action> --tools "" --strict-mcp-config
+--settings '{"disableAllHooks":true}' --no-session-persistence`), or the
+Anthropic API when `CHLOEDB_SWARM_ANTHROPIC_KEY` or `ANTHROPIC_API_KEY` is
+set and the SDK is installed. Findings: the page's uncaught exceptions
+and 5xx answers the browser saw (one per message), then one review call
+over the steps, and a blocker when the persona gave up. A run starts only
+from the user's click or an agent's `test_with_persona`.
+
+#### MCP tools
+
+- `test_with_persona {task, persona?, model?, wait? (true), timeout_s? (600)}`:
+  starts a run on the caller's preview and waits, answering the outcome,
+  the answer and the findings; says why when no runner can start.
+- `runtime_errors {all?, limit?}`: the open errors of the caller's app
+  (`all`: of its repository), each with its count, place, stack frames of
+  the repository and "probably <agent>'s edit to <file> at <time>".
+
+#### UI
+
+In Preview: a "Test with a persona" button in the browser's chrome opens
+a drawer over the side panel (personas as cards and "Someone else" in
+words, the task, suggestions, the model, Start; the earlier runs; a run's
+live view with its progress, Stop, findings with Send to <agent> / Ask me
+/ Dismiss, its steps); when no runner can start, the drawer says why
+instead of Start. Under the page, a strip of the open errors, one line
+when closed (the count, the newest, its culprit); open, each error with
+its source, count and culprit, and the chosen one's frames and a card:
+"Why? file:line" (`ctx.openWhy`), Rewind (`ctx.openRewind` around the
+edit), Send to <agent> (a steer with the error and its frames), Resolved.
+
+#### Deviations
+
+- The overlay reports to `/preview/:agent/__wb/runtime`, not to `/api`:
+  the previewed page has the preview's cookie, never the token.
+- The culprit's join is on the worktree too (`cwd`), so the same file
+  edited in two worktrees is told apart.
+- `tests/workbench.rs`'s MCP test checks that the tool list starts with
+  the earlier tools, so new tools can follow.
+- The levels mock serves the story "shop" when the page's URL has
+  `story=shop` (`ui/dev/fixtures/previewlab.mjs`); other stories are as
+  before.
+- `ui/levels/common.js`: the `useStyle("common-helpers", …)` template is
+  closed (the branch's fix 7ccb756b).
+- Not done: the overlay is injected at the end of `<body>`, so what a page
+  throws before it loads (a script that fails as it is parsed) is not
+  reported; injecting a first, small listener in `<head>` would need a
+  second change to the proxy. A `fetch("/api/…")` with an absolute path
+  from the previewed page goes to Workbench, not to the app, as before.
