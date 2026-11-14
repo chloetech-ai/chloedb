@@ -273,7 +273,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | | |
 |---|---|
 | `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
-| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Doable, Claude Code, Codex): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish) |
+| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish) |
 | `engine/forge.mjs` | the forge: the prompt, the context it reads from ChloeDB (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following ChloeDB's feed |
 | `engine/store.mjs` | the system tables in ChloeDB and the app's tables |

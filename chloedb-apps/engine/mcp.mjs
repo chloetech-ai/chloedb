@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The engine as an MCP server, for an agent that builds apps (Doable, Claude
-// Code, Codex). A separate process: it speaks the Model Context Protocol over
+// The engine as an MCP server, for an agent that builds apps (Claude Code,
+// Codex, or any MCP client). A separate process: it speaks the Model Context Protocol over
 // stdio (JSON-RPC 2.0, one message per line) and each tool is a thin call to
 // a running engine's HTTP API.
 //
