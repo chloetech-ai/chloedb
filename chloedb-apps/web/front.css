@@ -247,11 +247,10 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-track > * { scroll-snap-align: start; }
 .fp-ctrl { display: flex; gap: 10px; justify-content: flex-end; }
 @media (max-width: 760px) { .fp-track { grid-auto-columns: 84%; gap: 14px; } }
-/* a short shelf on a phone: the cards stacked, two to a row where they are
-   small enough (no photo), every price in view */
+/* a short shelf on a phone: the cards stacked, every price and action in
+   view (two to a row left a card's quantity and button no room) */
 @media (max-width: 760px) {
   .fp-carousel.cards.short .fp-track { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); overflow: visible; scroll-snap-type: none; gap: 14px; -webkit-mask-image: none; mask-image: none; }
-  .fp-carousel.cards.short:not(:has(img, .fp-ph)) .fp-track { grid-template-columns: repeat(auto-fill, minmax(min(168px, 100%), 1fr)); }
   .fp-carousel.cards.short .fp-ctrl { display: none; }
 }
 /* a short shelf on a wide screen: every card in view, wrapping on a narrow
