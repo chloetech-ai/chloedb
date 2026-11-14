@@ -26,6 +26,7 @@ it a repository path and a task. The settings:
 | `--claude-bin` | `CHLOEDB_WORKBENCH_CLAUDE` | `claude` |
 | `--max-agents` | | 8 running at once |
 | `--max-depth` | | 2: an agent you start may start agents, and those may not |
+| `--chloectx-bin` | `CHLOEDB_WORKBENCH_CHLOECTX` | `chloectx` (the decision trail) |
 | `--token` | `CHLOEDB_WORKBENCH_TOKEN` | random |
 
 The data dir holds:
@@ -67,6 +68,36 @@ gets. Its tools are `spawn_agent`, `list_agents`, `read_agent`,
 `wait_agent`, `send_to_agent` and `stop_agent`, which let an agent start
 other agents and steer them while you watch.
 
+## The decision trail
+
+Workbench records every session's terminal to
+`sessions/<id>/term.cast` (asciicast v2, at most 64 MiB a session; past
+that it stops and an event of kind `recording` says so). It keeps each
+agent's `base`, the commit its worktree started from, and `started_ms`,
+the zero of its recording. On top of those, and of ChloeCtx when it is
+installed, these routes answer for any line an agent wrote:
+
+- `GET /api/agents/:id/recording?from_ms=&to_ms=`: the window's events
+  (`[ms, "o"|"r", data]`), the terminal's size at `from_ms`, and `before`,
+  the screen's last 256 KiB before it, so a player can start mid-session
+- `GET /api/agents/:id/diff`: what the agent changed since `base`, committed
+  or not, with untracked files as added
+- `GET /api/why?agent=<id>&path=<rel>&line=<n>` (or `repo=`): the decision
+  card. It runs `chloectx blame <path>:<line> --json` in the worktree, maps
+  the edit's session to its agent, walks the agent's parents, finds the
+  prompt and who gave it (you, or the agent that spawned it or typed it with
+  `send_to_agent`), and places Rewind 20 s before the edit's tool call. When
+  ChloeCtx is missing or has no record, it answers from git blame and
+  Workbench's events; `found` says where the answer came from and `missing`
+  what could not be found
+- `GET /api/decisions?repo=&limit=`: the repository's decision notes, through
+  `chloectx sql --json`
+- `POST /api/ask {repo, question}`: `chloectx ask --json`, plus the agent of
+  each record whose session is one of Workbench's
+
+`--chloectx-bin` (`CHLOEDB_WORKBENCH_CHLOECTX`, default `chloectx`) names the
+ChloeCtx program. The tests use a fake one that prints canned JSON.
+
 ## Tests
 
 ```bash
@@ -85,5 +116,5 @@ settings file it is given, so they call no model.
   with the same name picks up its worktree again. Nothing removes them.
 - Claude Code's first-run questions (theme, trusting the folder) appear in
   the terminal. Answer them there.
-- Not in this build: the board, capsules on handoff, review with blame,
+- Not in this build: the board, capsules on handoff,
   change requests for shell actions, a desktop shell (Tauri) and team mode.

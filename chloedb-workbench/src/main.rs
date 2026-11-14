@@ -6,7 +6,9 @@ mod db;
 mod git;
 mod hook;
 mod mcp;
+mod recording;
 mod server;
+mod trail;
 mod supervisor;
 
 use std::net::SocketAddr;
@@ -50,6 +52,13 @@ struct Serve {
     /// agent started by you may start no more.
     #[arg(long, default_value_t = 2)]
     max_depth: i64,
+    /// The ChloeCtx program the decision trail asks (`chloectx blame`,
+    /// `sql`, `ask`); without it the trail answers from git and Workbench.
+    #[arg(long, env = "CHLOEDB_WORKBENCH_CHLOECTX", default_value = "chloectx")]
+    chloectx_bin: String,
+    /// The most a session's terminal recording grows to, in bytes.
+    #[arg(long, env = "CHLOEDB_WORKBENCH_RECORD_MAX", default_value_t = recording::MAX_BYTES, hide = true)]
+    record_max_bytes: u64,
     /// The token every /api route wants (random when left out).
     #[arg(long, env = "CHLOEDB_WORKBENCH_TOKEN", hide_env_values = true)]
     token: Option<String>,
@@ -92,7 +101,7 @@ fn serve(s: Serve) -> Result<(), String> {
         let listener = tokio::net::TcpListener::bind(s.addr).await.map_err(|e| format!("cannot listen on {}: {e}", s.addr))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let url = format!("http://{addr}");
-        let cfg = supervisor::Config { data_dir: data_dir.clone(), claude_bin: s.claude_bin, max_agents: s.max_agents, max_depth: s.max_depth, token: token.clone(), url: url.clone(), exe };
+        let cfg = supervisor::Config { data_dir: data_dir.clone(), claude_bin: s.claude_bin, max_agents: s.max_agents, max_depth: s.max_depth, token: token.clone(), url: url.clone(), exe, chloectx_bin: s.chloectx_bin, record_max: s.record_max_bytes };
         let sup = supervisor::Supervisor::open(cfg)?;
         let ui_dir = std::env::var_os("CHLOEDB_WORKBENCH_UI_DIR").map(PathBuf::from);
         println!("Workbench: {url}/?token={token}");

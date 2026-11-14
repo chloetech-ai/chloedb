@@ -23,6 +23,19 @@
   <symbol id="i-act" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
   <symbol id="i-turn" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-trail" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 8.2v7.6M8 7c5 1 7.5 2.3 8.2 3.6M8 17c5-1 7.5-2.3 8.2-3.6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" stroke-width="3"/></symbol>
+  <symbol id="i-rewind" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/><path d="M12 8v4.5l3 1.8"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.4h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.5L4 8.5"/><path d="M4 4v4.5h4.5"/><path d="M4 13a8 8 0 0 0 14.3 4.5l1.7-2"/><path d="M20 20v-4.5h-4.5"/></symbol>
+  <symbol id="i-ask" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+  <symbol id="i-commit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7 14h10"/></symbol>
 </svg>
 
@@ -38,6 +51,7 @@
   <div class="sep"></div>
   <span class="prefix-ind" id="prefix-ind" hidden title="Prefix armed: press a key, ? for the list">C-b</span>
   <span class="conn" id="conn" data-state="connecting" title="The live stream of changes"><span id="conn-text">connecting</span></span>
+  <button class="btn" id="dec-btn" title="Decisions: every decision of the repository, by agent (d)" aria-label="Decisions"><svg class="i"><use href="#i-trail"/></svg><span class="wide-only">Decisions</span><kbd class="wide-only">d</kbd></button>
   <button class="btn ghost icon" id="help-btn" title="Keys (Ctrl-b ?)" aria-label="Keyboard shortcuts"><svg class="i"><use href="#i-key"/></svg></button>
   <button class="btn primary" id="new-btn" title="New agent (n)"><svg class="i"><use href="#i-plus"/></svg><span class="wide-only">New agent</span><span class="narrow-only">New</span><kbd class="wide-only">n</kbd></button>
 </header>
@@ -78,9 +92,10 @@
         <span class="br" id="z-branch"></span>
         <span class="since" id="z-since"></span>
         <span class="sep"></span>
-        <div class="ztabs" role="tablist">
-          <button role="tab" id="tab-term" aria-selected="true">Terminal</button>
-          <button role="tab" id="tab-events" aria-selected="false">Events</button>
+        <div class="ztabs" role="tablist" aria-label="View">
+          <button role="tab" id="tab-term" aria-selected="true" title="Terminal (t)">Terminal</button>
+          <button role="tab" id="tab-changes" aria-selected="false" title="Changes: what it changed from its base (c)">Changes<span class="tabn" id="tab-changes-n"></span></button>
+          <button role="tab" id="tab-events" aria-selected="false" class="narrow-tab">Events</button>
         </div>
         <span class="hint"><kbd>C-b</kbd><kbd>z</kbd> back</span>
         <button class="btn sm" id="z-stop" title="Stop (Ctrl-b x)"><svg class="i sm"><use href="#i-stop"/></svg><span>Stop</span></button>
@@ -88,6 +103,15 @@
       <div class="zask" id="z-ask" hidden><svg class="i"><use href="#i-bell"/></svg><span id="z-ask-text"></span></div>
       <div class="zbody" id="z-body" data-tab="term">
         <div class="termbox" id="termbox"><div class="xt" id="z-term"></div><div class="overlay" id="z-overlay" hidden></div></div>
+        <div class="changes" id="z-changes" aria-label="Changes">
+          <div class="ch-head">
+            <span class="ch-sum" id="ch-sum"></span>
+            <span class="sep"></span>
+            <span class="ch-keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>y</kbd> why?</span>
+            <button class="btn ghost icon sm" id="ch-refresh" title="Read the diff again" aria-label="Read the diff again"><svg class="i sm"><use href="#i-refresh"/></svg></button>
+          </div>
+          <div class="ch-scroll" id="ch-scroll" tabindex="0"></div>
+        </div>
         <aside class="side">
           <div class="facts" id="z-facts"></div>
           <div class="evhead"><h3>Events</h3><span class="n" id="ev-n"></span></div>
@@ -99,8 +123,41 @@
         <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="cc">^C</button><button data-k="enter">⏎</button>
       </div>
     </section>
+
+    <section class="view" id="dec-view" hidden aria-label="Decisions">
+      <div class="dec-top">
+        <div class="dec-title">
+          <button class="btn ghost icon" id="dec-back" title="Back (Esc)" aria-label="Back"><svg class="i"><use href="#i-back"/></svg></button>
+          <h2>Decisions</h2>
+          <select id="dec-repo" aria-label="Repository"></select>
+          <span class="dec-n" id="dec-n"></span>
+          <span class="sep"></span>
+          <span class="dec-legend" id="dec-legend"></span>
+        </div>
+        <form class="ask" id="ask-form" autocomplete="off">
+          <svg class="i"><use href="#i-ask"/></svg>
+          <input type="text" id="ask-q" placeholder="Ask why: why do we round tax half up?" aria-label="Ask ChloeCtx why" spellcheck="false">
+          <kbd class="ask-k">/</kbd>
+          <button class="btn primary sm" type="submit" id="ask-go">Ask why</button>
+        </form>
+        <div class="answer" id="ask-out" hidden></div>
+      </div>
+      <div class="tl-wrap" id="tl-wrap"><div class="tl" id="tl"></div><svg class="tl-links" id="tl-links" aria-hidden="true"></svg><svg class="tl-hot" id="tl-hot" aria-hidden="true"></svg></div>
+    </section>
   </main>
 </div>
+
+<aside class="sheet" id="sheet" hidden aria-labelledby="sh-title" tabindex="-1">
+  <div class="sh-head">
+    <button class="btn ghost icon sm" id="sh-back" hidden title="Back" aria-label="Back"><svg class="i sm"><use href="#i-back"/></svg></button>
+    <span class="sh-kicker" id="sh-title"><svg class="i sm"><use href="#i-trail"/></svg><span id="sh-kind">Decision trail</span></span>
+    <span class="sh-loc" id="sh-loc"></span>
+    <span class="sep"></span>
+    <button class="btn ghost icon sm" id="sh-wide" title="Theatre: a wider sheet (f)" aria-label="Wider" aria-pressed="false"><svg class="i sm"><use href="#i-expand"/></svg></button>
+    <button class="btn ghost icon sm" id="sh-close" title="Close (Esc)" aria-label="Close"><svg class="i sm"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="sh-body" id="sh-body"></div>
+</aside>
 
 <dialog id="new-dialog" aria-labelledby="new-title">
   <form id="new-form" method="dialog" novalidate>
@@ -153,8 +210,20 @@
       <dt><span class="then">then</span><kbd>x</kbd></dt><dd>Stop the agent (asks first)</dd>
       <dt><span class="then">then</span><kbd>Ctrl</kbd><kbd>b</kbd></dt><dd>Send a literal Ctrl-b to the terminal</dd>
       <dt><span class="then">then</span><kbd>?</kbd></dt><dd>This list</dd>
-      <dt><kbd>n</kbd> <kbd>z</kbd> <kbd>Enter</kbd> <kbd>?</kbd></dt><dd>The same without the prefix, outside a terminal</dd>
-      <dt><kbd>Esc</kbd></dt><dd>Back to the grid, outside a terminal</dd>
+      <dt><span class="then">then</span><kbd>c</kbd> <kbd>t</kbd></dt><dd>In zoom: the agent's Changes, or its Terminal</dd>
+      <dt><span class="then">then</span><kbd>d</kbd></dt><dd>Decisions: the repository's decisions, one lane per agent</dd>
+      <dt><kbd>n</kbd> <kbd>z</kbd> <kbd>c</kbd> <kbd>t</kbd> <kbd>d</kbd> <kbd>?</kbd></dt><dd>The same without the prefix, outside a terminal</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close the card, or back, outside a terminal</dd>
+    </dl>
+    <h3 class="keyh">Changes and the decision card</h3>
+    <dl class="keys">
+      <dt><kbd>j</kbd> <kbd>k</kbd> <kbd>↓</kbd> <kbd>↑</kbd></dt><dd>Move between lines (between decisions on the Decisions screen)</dd>
+      <dt><kbd>]</kbd> <kbd>[</kbd></dt><dd>Next or previous file</dd>
+      <dt><kbd>y</kbd> or <kbd>Alt</kbd>-click</dt><dd>Why? The decision card of an added line: who, when, where, what it knew</dd>
+      <dt><kbd>r</kbd></dt><dd>Rewind: play the agent's terminal as it wrote the line</dd>
+      <dt><kbd>Space</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>Pause or play the Rewind, two seconds back or on</dd>
+      <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>4</kbd> <kbd>f</kbd></dt><dd>Its speed, and theatre (a wider card)</dd>
+      <dt><kbd>/</kbd></dt><dd>On the Decisions screen: Ask why</dd>
     </dl>
     <p class="keynote">Inside a zoomed terminal every key goes to the agent, Esc included (Claude Code uses it to interrupt). Use <kbd>Ctrl</kbd><kbd>b</kbd> <kbd>z</kbd> to leave.</p>
   </div>

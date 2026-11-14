@@ -3,16 +3,22 @@
 // a few agents that change state over time and print a Claude Code-like
 // screen. Node 22, standard library only (the WebSocket is written by hand).
 //
-//   node chloedb-workbench/ui/dev/mock-server.mjs [--port 7741] [--token dev] [--agents 5] [--fast]
+//   node chloedb-workbench/ui/dev/mock-server.mjs [--port 7741] [--token dev] [--agents 4] [--fast] [--no-story]
 //
 // Then open the URL it prints. Keystrokes typed into a zoomed terminal are
 // echoed; Enter answers a waiting agent or gives an idle one a new turn.
+//
+// The decision trail (SPEC.md, second build) is faked by ./trail-story.mjs:
+// a lead agent in /home/user/src/invoicer that spawned two workers, their
+// diffs, the decisions ChloeCtx distilled, a recording of each session, and
+// the routes /diff, /recording, /api/why, /api/decisions and /api/ask.
 
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildStory } from "./trail-story.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name, def) => {
@@ -21,7 +27,8 @@ const opt = (name, def) => {
 };
 const PORT = Number(opt("port", 7741));
 const TOKEN = opt("token", "dev");
-const START_AGENTS = Number(opt("agents", 5));
+const START_AGENTS = Number(opt("agents", 4));
+const STORY = !args.includes("--no-story");
 const FAST = args.includes("--fast");
 const MAX_AGENTS = 8;
 const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -247,10 +254,11 @@ function spawn({ repo, task, name, branch, model, worktree = true, parent = null
       id, name: nm, repo, cwd: worktree ? `/home/user/.local/share/chloedb-workbench/worktrees/${repoName}-${hex(4)}/${nm}` : repo,
       branch: branch || (worktree ? `wb/${nm}` : "main"), task: task || null, parent, depth: parent ? (agents.get(parent)?.row.depth ?? 0) + 1 : 0,
       state: "starting", state_since: t, waiting_for: null, last_event: null, session_id: crypto.randomUUID(), pid: 40000 + Math.floor(Math.random() * 20000),
-      exit_code: null, model: model || null, created: t - 60_000 * Math.random(), ended: null,
+      exit_code: null, model: model || null, created: t - 60_000 * Math.random(), ended: null, base: hex(20),
     },
     buf: Buffer.alloc(0), socks: new Set(), timer: null, step: 0, line: "", preset: p, asking: false,
   };
+  a.row.started_ms = Math.round(a.row.created);
   agents.set(id, a);
   addEvent(a, "spawned", null, `Spawned${parent ? ` by ${agents.get(parent)?.row.name}` : ""} in ${a.row.cwd}`, t);
   broadcast("agent", agentJson(a));
@@ -301,6 +309,23 @@ if (START_AGENTS >= 3) {
     boot(c, "working");
   }
 }
+
+// A row made whole by the caller (the story), with no events or screen yet.
+function makeAgent(fields, preset) {
+  const id = `a${hex(4)}`;
+  const row = {
+    id, name: null, repo: null, cwd: null, branch: null, task: null, parent: null, depth: 0, state: "starting", state_since: now(),
+    waiting_for: null, last_event: null, session_id: crypto.randomUUID(), pid: null, exit_code: null, model: null, created: now(), ended: null,
+    base: null, started_ms: null, ...fields,
+  };
+  const a = { row, buf: Buffer.alloc(0), socks: new Set(), timer: null, step: 0, line: "", preset: preset || { files: ["src/main.rs"], grep: "TODO", cmd: "make", n: 0 }, asking: false };
+  agents.set(id, a);
+  return a;
+}
+
+// The decision trail's story (./trail-story.mjs), and its routes.
+const trail = buildStory({ agents, makeAgent, addEvent, agentJson, now, events });
+if (!STORY) for (const a of Object.values(trail.story)) agents.delete(a.row.id);
 
 // ------------------------------------------------------------- websocket
 
@@ -412,7 +437,35 @@ const server = http.createServer(async (req, res) => {
     const list = running().filter((a) => a.row.state === "waiting" || a.row.state === "idle").sort((x, y) => x.row.state_since - y.row.state_since);
     return send(res, 200, { agents: list.map(agentJson) });
   }
-  const m = p.match(/^\/api\/agents\/([^/]+)(?:\/(events|input|resize|stop|pty))?$/);
+  if (p === "/api/why") {
+    // A blame can take a moment; so does this, a little.
+    await new Promise((r) => setTimeout(r, FAST ? 80 : 450));
+    const id = url.searchParams.get("agent");
+    const repo = url.searchParams.get("repo");
+    const rel = url.searchParams.get("path") || "";
+    const n = Number(url.searchParams.get("line"));
+    if (!rel || !Number.isInteger(n) || n < 1) return fail(res, 400, "bad_request", "path and line (from 1) are required");
+    if (!id && !repo) return fail(res, 400, "bad_request", "agent or repo is required");
+    const a = id ? agents.get(id) : null;
+    if (id && !a) return fail(res, 404, "not_found", `no agent ${id}`);
+    if (!a) return fail(res, 404, "not_found", `${rel}:${n} is not a line of a file in ${repo}`);
+    const card = trail.why(a, rel, n);
+    if (!card) return fail(res, 404, "not_found", `${rel}:${n} is not a line of a file in ${a.row.cwd}`);
+    return send(res, 200, card);
+  }
+  if (p === "/api/decisions") {
+    const repo = url.searchParams.get("repo");
+    if (!repo) return fail(res, 400, "bad_request", "repo is required");
+    await new Promise((r) => setTimeout(r, FAST ? 30 : 160));
+    return send(res, 200, { decisions: trail.decisions(repo, Number(url.searchParams.get("limit") || 200)), missing: [] });
+  }
+  if (p === "/api/ask" && req.method === "POST") {
+    const b = await readBody(req);
+    if (!b || !b.repo || !String(b.question || "").trim()) return fail(res, 400, "bad_request", "repo and question are required");
+    await new Promise((r) => setTimeout(r, FAST ? 80 : 700));
+    return send(res, 200, trail.ask(b.repo, String(b.question)));
+  }
+  const m = p.match(/^\/api\/agents\/([^/]+)(?:\/(events|input|resize|stop|pty|diff|recording))?$/);
   if (!m) return fail(res, 404, "not_found", "no such route");
   const a = agents.get(m[1]);
   if (!a) return fail(res, 404, "not_found", `no agent ${m[1]}`);
@@ -422,6 +475,13 @@ const server = http.createServer(async (req, res) => {
     const after = Number(url.searchParams.get("after") || 0);
     const limit = Math.min(Number(url.searchParams.get("limit") || 200), 1000);
     return send(res, 200, { events: events.filter((e) => e.agent === a.row.id && e.seq > after).slice(0, limit) });
+  }
+  if (sub === "diff") return send(res, 200, trail.diff(a));
+  if (sub === "recording") {
+    const num = (k) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
+    const rec = trail.recording(a, num("from_ms"), num("to_ms"));
+    if (!rec) return fail(res, 404, "not_found", `no recording for ${a.row.name}`);
+    return send(res, 200, rec);
   }
   if (req.method !== "POST") return fail(res, 400, "bad_request", "POST only");
   const b = await readBody(req);

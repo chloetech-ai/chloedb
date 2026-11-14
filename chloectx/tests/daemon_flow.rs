@@ -66,6 +66,10 @@ fn sessions_tools_compaction_and_memory_tools() {
     let id = r["id"].as_str().unwrap().to_string();
     let r = call(&d, json!({"op": "sql", "sql": "SELECT id, text FROM memory WHERE kind = 'decision' LIMIT 5"}));
     assert!(r["text"].as_str().unwrap().contains("i64 cents"), "{r}");
+    let r = call(&d, json!({"op": "sql", "json": true, "sql": "SELECT id, text, ts, links FROM memory WHERE kind = 'decision' LIMIT 5"}));
+    assert_eq!(r["columns"], json!(["id", "text", "ts", "links"]), "{r}");
+    assert_eq!(r["rows"][0][1], json!("Balances are i64 cents."), "{r}");
+    assert_eq!(r["count"], json!(1), "{r}");
     let r = call(&d, json!({"op": "remember", "kind": "decision", "text": "Balances are i128 cents.", "supersedes": id}));
     let new_id = r["id"].as_str().unwrap().to_string();
     let r = call(&d, json!({"op": "sql", "sql": format!("SELECT tag FROM memory WHERE id = '{id}' LIMIT 1")}));

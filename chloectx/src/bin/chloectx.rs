@@ -106,7 +106,12 @@ enum Cmd {
     },
     /// Run read-only SQL over the memory table.
     #[command(hide = true)]
-    Sql { sql: String },
+    Sql {
+        sql: String,
+        /// Print `{"columns", "rows", "count", "text"}` (at most 1000 rows).
+        #[arg(long)]
+        json: bool,
+    },
     /// Store a decision, preference, fact, todo or note.
     #[command(display_order = 8)]
     Remember { kind: String, text: String },
@@ -495,7 +500,14 @@ fn main() {
                 text(&r);
             }
         }
-        Cmd::Sql { sql } => text(&send(&project, json!({"op": "sql", "sql": sql}), 30)),
+        Cmd::Sql { sql, json: as_json } => {
+            let r = send(&project, json!({"op": "sql", "sql": sql, "json": as_json}), 30);
+            if as_json {
+                println!("{}", serde_json::to_string(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
         Cmd::Blame { target, no_replay, json: as_json } => {
             // Relative to where it is typed, not to the daemon's directory.
             let (path, line) = chloectx::blame::parse_target(&target);

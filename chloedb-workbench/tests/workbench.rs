@@ -41,6 +41,14 @@ turn() {
   hook UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"'"$1"'","session_id":"'"$SID"'"}'
   hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"session_id":"'"$SID"'"}'
   case "$1" in
+    WRITE\ *)
+      # WRITE <file> <text>: a line written with the Edit tool.
+      local rest="${1#WRITE }"; local file="${rest%% *}"; local text="${rest#* }"
+      local edit='{"hook_event_name":"%s","tool_name":"Edit","tool_input":{"file_path":"'"$PWD/$file"'","old_string":"","new_string":"'"$text"'"},"session_id":"'"$SID"'"}'
+      echo "EDITING $file: $text"
+      hook PreToolUse "$(printf "$edit" PreToolUse)"
+      printf '%s\n' "$text" >> "$file"
+      hook PostToolUse "$(printf "$edit" PostToolUse)";;
     *ASK*)
       hook Notification '{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
       read -r answer
@@ -706,4 +714,311 @@ fn the_hook_subcommand_never_fails() {
     assert!(out.status.success());
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
     assert!(t.elapsed() < Duration::from_secs(5));
+}
+
+// The decision trail.
+
+/// A fake `chloectx`: it prints the canned JSON of `<dir>/<command>.json`
+/// and keeps where it ran and its arguments in `<dir>/<command>.args`.
+fn fake_chloectx(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("fake-chloectx");
+    let script = format!(
+        r#"#!/bin/bash
+D='{}'
+printf '%s\n' "$PWD" "$@" > "$D/$1.args"
+[ -f "$D/$1.json" ] || {{ echo "chloectx: no store for $PWD" >&2; exit 1; }}
+cat "$D/$1.json"
+"#,
+        dir.display()
+    );
+    std::fs::write(&p, script).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+fn args_of(dir: &Path, cmd: &str) -> Vec<String> {
+    std::fs::read_to_string(dir.join(format!("{cmd}.args"))).unwrap().lines().map(str::to_string).collect()
+}
+
+fn texts(rec: &Value) -> String {
+    rec["events"].as_array().unwrap().iter().filter(|e| e[1] == "o").map(|e| e[2].as_str().unwrap()).collect()
+}
+
+#[test]
+fn the_terminal_is_recorded_and_a_window_starts_from_the_screen_before_it() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let started = a["started_ms"].as_i64().unwrap();
+    assert!(started > 0, "{a}");
+    assert_eq!(a["base"].as_str().unwrap(), git(&r, &["rev-parse", "HEAD"]));
+    s.wait(&id, "idle");
+    std::thread::sleep(Duration::from_millis(150));
+    s.post(&format!("/api/agents/{id}/resize"), json!({ "cols": 100, "rows": 40 }));
+    std::thread::sleep(Duration::from_millis(150));
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "hello there" }));
+    s.wait(&id, "idle");
+    ws_read_until(&s, &id, "DONE: hello there", &[]);
+
+    // The whole of it.
+    let (status, all) = s.get(&format!("/api/agents/{id}/recording"));
+    assert_eq!(status, 200, "{all}");
+    assert_eq!((all["width"].as_i64(), all["height"].as_i64(), all["started_ms"].as_i64()), (Some(120), Some(32), Some(started)));
+    assert_eq!(all["before"], "");
+    let evs = all["events"].as_array().unwrap();
+    assert!(texts(&all).contains("FAKE CLAUDE") && texts(&all).contains("GOT: hello there"), "{all}");
+    assert!(evs.iter().any(|e| e[1] == "r" && e[2] == "100x40"), "{all}");
+    let ms: Vec<i64> = evs.iter().map(|e| e[0].as_i64().unwrap()).collect();
+    assert!(ms.windows(2).all(|w| w[0] <= w[1]));
+    let got = evs.iter().find(|e| e[1] == "o" && e[2].as_str().unwrap().contains("GOT: hello")).unwrap()[0].as_i64().unwrap();
+
+    // From the moment the line was typed: the screen before it, at its size.
+    let (_, w) = s.get(&format!("/api/agents/{id}/recording?from_ms={got}"));
+    assert_eq!((w["width"].as_i64(), w["height"].as_i64()), (Some(100), Some(40)), "{w}");
+    let before = w["before"].as_str().unwrap();
+    assert!(before.contains("DONE: say hi") && !before.contains("GOT: hello"), "{before}");
+    assert!(texts(&w).contains("GOT: hello there"));
+    assert!(w["events"].as_array().unwrap().iter().all(|e| e[0].as_i64().unwrap() >= got));
+    let (_, w) = s.get(&format!("/api/agents/{id}/recording?from_ms=0&to_ms={}", got - 1));
+    assert!(!texts(&w).contains("GOT: hello") && texts(&w).contains("DONE: say hi"), "{w}");
+
+    // asciicast v2, kept after the agent exits.
+    let cast = s.data.join("sessions").join(&id).join("term.cast");
+    let body = std::fs::read_to_string(&cast).unwrap();
+    let header: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+    assert_eq!((header["version"].as_i64(), header["width"].as_i64(), header["height"].as_i64()), (Some(2), Some(120), Some(32)));
+    assert_eq!(header["timestamp"].as_i64(), Some(started / 1000));
+    s.post(&format!("/api/agents/{id}/stop"), json!({}));
+    s.until(&id, "stopped", |a| a["running"] == false);
+    let (status, w) = s.get(&format!("/api/agents/{id}/recording"));
+    assert_eq!(status, 200);
+    assert!(texts(&w).contains("GOT: hello there"));
+    assert_eq!(s.get(&format!("/api/agents/{id}/recording?from_ms=5&to_ms=1")).0, 400);
+    assert_eq!(s.get("/api/agents/a00000000/recording").0, 404);
+    drop(s);
+
+    // Past its cap it stops, and says so.
+    let s = Server::start(&["--record-max-bytes", "400"]);
+    let a = s.spawn(json!({ "repo": r, "task": "say hi", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let end = Instant::now() + Duration::from_secs(30);
+    while !s.events(&id).iter().any(|e| e["kind"] == "recording") {
+        assert!(Instant::now() < end, "{:?}", s.events(&id));
+        s.post(&format!("/api/agents/{id}/input"), json!({ "text": "more output please" }));
+        s.wait(&id, "idle");
+    }
+    let ev = s.events(&id).into_iter().find(|e| e["kind"] == "recording").unwrap();
+    assert!(ev["summary"].as_str().unwrap().contains("recording stopped"), "{ev}");
+    assert!(std::fs::metadata(s.data.join("sessions").join(&id).join("term.cast")).unwrap().len() <= 400);
+}
+
+#[test]
+fn the_diff_holds_committed_uncommitted_and_untracked_changes() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let head = git(&r, &["rev-parse", "HEAD"]);
+    let a = s.spawn(json!({ "repo": r, "name": "differ", "task": "WRITE notes.txt first note" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    assert_eq!(a["base"], json!(head));
+    s.wait(&id, "idle");
+    let cwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    std::fs::write(cwd.join("lib.txt"), "one\ntwo\n").unwrap();
+    git(&cwd, &["add", "lib.txt"]);
+    git(&cwd, &["commit", "-q", "-m", "add lib"]);
+    std::fs::write(cwd.join("README"), "hello\nmore\n").unwrap();
+
+    let (status, d) = s.get(&format!("/api/agents/{id}/diff"));
+    assert_eq!(status, 200, "{d}");
+    assert_eq!(d["base"], json!(head));
+    let files = d["files"].as_array().unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+    assert_eq!(paths, ["README", "lib.txt", "notes.txt"], "{d}");
+    assert_eq!(files[0]["status"], "modified");
+    let lines = &files[0]["hunks"][0]["lines"];
+    assert_eq!(lines[0]["kind"], " ");
+    assert_eq!(lines[1], json!({ "kind": "+", "text": "more", "new_line": 2, "old_line": null }));
+    assert_eq!(files[0]["hunks"][0]["new_start"], 1);
+    assert_eq!(files[1]["status"], "added");
+    assert_eq!(files[1]["hunks"][0]["lines"][1]["text"], "two");
+    assert_eq!(files[2]["status"], "added");
+    assert_eq!(files[2]["untracked"], true);
+    assert_eq!(files[2]["hunks"][0]["lines"][0], json!({ "kind": "+", "text": "first note", "new_line": 1, "old_line": null }));
+    // The main checkout is untouched, and an unknown agent is not found.
+    assert!(!r.join("notes.txt").exists());
+    assert_eq!(s.get("/api/agents/a00000000/diff").0, 404);
+}
+
+#[test]
+fn why_maps_chloectxs_blame_to_the_agent_its_lineage_and_its_rewind() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let lead = s.spawn(json!({ "repo": r, "name": "lead", "worktree": false }));
+    let lead_id = lead["id"].as_str().unwrap().to_string();
+    let mut m = Mcp::start(&s, &lead_id);
+    let (text, err) = m.tool("spawn_agent", json!({ "task": "WRITE calc.py total = round(x)", "name": "fixer" }));
+    assert!(!err, "{text}");
+    let (_, v) = s.get("/api/agents");
+    let child = v["agents"].as_array().unwrap().iter().find(|a| a["name"] == "fixer").unwrap().clone();
+    let cid = child["id"].as_str().unwrap().to_string();
+    let child = s.wait(&cid, "idle");
+    let cwd = child["cwd"].as_str().unwrap().to_string();
+    let sid = child["session_id"].as_str().unwrap().to_string();
+    let sid8: String = sid.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let blame = json!({
+        "text": "$ chloectx blame calc.py:1\n", "file": "calc.py", "line": 1, "line_text": "total = round(x)",
+        "how": "the newest recorded edit that added the line",
+        "edit": { "id": format!("{sid8}:5"), "session": sid, "kind": "tool_call", "tag": "Edit", "turn": 1, "seq": 5, "ts": now, "files": "calc.py", "text": "Edit calc.py: replaced\n\nwith\ntotal = round(x)" },
+        "prompt": { "id": format!("{sid8}:2"), "session": sid, "kind": "prompt", "turn": 1, "seq": 2, "ts": now - 1, "text": "WRITE calc.py total = round(x)" },
+        "calls": [],
+        "notes": [
+            { "id": format!("{sid8}:9"), "kind": "decision", "text": "Round half up for totals", "ts": now },
+            { "id": format!("{sid8}:10"), "kind": "todo", "text": "check the tax", "ts": now }
+        ],
+        "receipts": [{ "receipt": "rc-1", "turn": 1, "source": "prompt", "rows": [
+            { "row": { "id": "old0000:31", "kind": "decision", "score": 0.81, "decision": "knowledge" }, "now": ["superseded since, by old0000:58"], "text": "Round half even" },
+            { "row": { "id": "web0000:3", "kind": "tool_result", "score": 0.5, "decision": "excerpt" }, "now": ["untrusted source: the web"], "text": "a page on rounding" }
+        ]}],
+        "causes": ["old0000:31 (decision) was in context before the edit and is superseded since, by old0000:58"],
+        "edits": 1
+    });
+    std::fs::write(ctx.path().join("blame.json"), blame.to_string()).unwrap();
+
+    let (status, w) = s.get(&format!("/api/why?agent={cid}&path=calc.py&line=1"));
+    assert_eq!(status, 200, "{w}");
+    assert_eq!(args_of(ctx.path(), "blame"), [cwd.as_str(), "blame", "calc.py:1", "--json"]);
+    assert_eq!(w["found"], "chloectx", "{w}");
+    assert_eq!(w["line"], json!({ "path": "calc.py", "line": 1, "text": "total = round(x)" }));
+    assert_eq!(w["where"]["worktree"], json!(cwd));
+    assert_eq!(w["where"]["branch"], "wb/fixer");
+    assert_eq!(w["where"]["repo"], json!(r));
+    assert_eq!(w["where"]["commit"], Value::Null);
+    assert_eq!(w["who"]["agent"]["id"], json!(cid));
+    let lineage: Vec<&str> = w["who"]["lineage"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
+    assert_eq!(lineage, [lead_id.as_str()]);
+    assert_eq!(w["who"]["prompt"]["text"], "WRITE calc.py total = round(x)");
+    assert_eq!(w["who"]["prompt"]["by"], "lead", "{w}");
+    assert_eq!(w["when"]["session"], json!(sid));
+    assert_eq!(w["when"]["turn"], 1);
+    let knew = w["knew"].as_array().unwrap();
+    assert_eq!(knew.len(), 2);
+    assert_eq!(knew[0]["now"], "superseded by old0000:58");
+    assert_eq!(knew[0]["text"], "Round half even");
+    assert_eq!((knew[0]["untrusted"].as_bool(), knew[1]["untrusted"].as_bool(), knew[1]["now"].as_str()), (Some(false), Some(true), Some("current")));
+    assert_eq!(w["why"].as_array().unwrap().len(), 1, "a todo is not a reason: {w}");
+    assert_eq!(w["why"][0]["kind"], "decision");
+    assert_eq!(w["worth_a_look"].as_array().unwrap().len(), 1);
+    assert!(w["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("not committed")), "{w}");
+    // Rewind: 20 s before the edit's tool call to 3 s after, in the recording.
+    let rw = &w["rewind"];
+    assert_eq!(rw["agent"], json!(cid));
+    let (from, to) = (rw["from_ms"].as_i64().unwrap(), rw["to_ms"].as_i64().unwrap());
+    assert!(to > from && to - from <= 23_000 && to >= 3_000, "{rw}");
+    let (_, rec) = s.get(&format!("/api/agents/{cid}/recording?from_ms={from}&to_ms={to}"));
+    assert!(texts(&rec).contains("EDITING calc.py: total = round(x)"), "{rec}");
+
+    // A prompt the lead typed with send_to_agent, which ChloeCtx knows nothing of.
+    let (_, err) = m.tool("send_to_agent", json!({ "id": cid, "text": "WRITE calc.py tax = 2" }));
+    assert!(!err);
+    s.wait(&cid, "idle");
+    std::fs::write(ctx.path().join("blame.json"), json!({ "text": "", "file": "calc.py", "line": 2, "git": null, "edit": null, "edits": 0 }).to_string()).unwrap();
+    let (_, w) = s.get(&format!("/api/why?agent={cid}&path=calc.py&line=2"));
+    assert_eq!(w["found"], "workbench", "{w}");
+    assert_eq!(w["who"]["agent"]["id"], json!(cid));
+    assert_eq!(w["who"]["prompt"]["text"], "WRITE calc.py tax = 2");
+    assert_eq!(w["who"]["prompt"]["by"], "lead", "{w}");
+    assert!(w["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("no record of an edit")), "{w}");
+    assert!(w["rewind"].is_object());
+
+    // Decisions, through `chloectx sql --json`, newest first.
+    let sql = json!({
+        "text": "2 rows", "columns": ["id", "ts", "session", "text", "tag", "files", "links"],
+        "rows": [
+            [format!("{sid8}:9"), now, sid, "Round half up for totals", "", "calc.py", []],
+            ["old0000:31", now - 100, "another-session", "Round half even", "superseded", "calc.py lib.rs", [{ "label": "superseded_by", "to": format!("{sid8}:9") }]]
+        ]
+    });
+    std::fs::write(ctx.path().join("sql.json"), sql.to_string()).unwrap();
+    let (status, d) = s.get(&format!("/api/decisions?repo={}&limit=5", r.display()));
+    assert_eq!(status, 200, "{d}");
+    let a = args_of(ctx.path(), "sql");
+    assert_eq!((a[0].as_str(), a[1].as_str(), a[2].as_str()), (r.to_str().unwrap(), "sql", "--json"));
+    assert!(a[3].contains("kind = 'decision'") && a[3].ends_with("ORDER BY ts DESC LIMIT 5"), "{a:?}");
+    let ds = d["decisions"].as_array().unwrap();
+    assert_eq!(ds.len(), 2);
+    assert_eq!(ds[0]["agent"]["id"], json!(cid));
+    assert_eq!(ds[0]["superseded_by"], Value::Null);
+    assert!(ds[0]["ts"].as_str().unwrap().contains('T'), "{d}");
+    assert_eq!(ds[1]["agent"], Value::Null);
+    assert_eq!(ds[1]["superseded_by"], json!(format!("{sid8}:9")));
+    assert_eq!(ds[1]["files"], json!(["calc.py", "lib.rs"]));
+
+    // Ask: as chloectx prints it, plus the agents of its records.
+    std::fs::write(ctx.path().join("ask.json"), json!({ "text": "Totals round half up.", "ids": [format!("{sid8}:9"), "old0000:31"], "answer": "Because the lead decided so", "confidence": 0.8 }).to_string()).unwrap();
+    let (status, v) = s.post("/api/ask", json!({ "repo": r, "question": "why do we round half up?" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(args_of(ctx.path(), "ask")[1..], ["ask", "--json", "--", "why do we round half up?"]);
+    assert_eq!(v["answer"], "Because the lead decided so");
+    assert_eq!(v["agents"][format!("{sid8}:9")]["id"], json!(cid));
+    assert!(v["agents"].get("old0000:31").is_none());
+    assert_eq!(s.post("/api/ask", json!({ "repo": r, "question": " " })).0, 400);
+}
+
+#[test]
+fn why_without_chloectx_answers_from_git_and_workbench() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "solo", "task": "WRITE calc.py total = 1" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let cwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    git(&cwd, &["add", "calc.py"]);
+    git(&cwd, &["commit", "-q", "-m", "add the total"]);
+    let sha = git(&cwd, &["rev-parse", "HEAD"]);
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "WRITE calc.py tax = 2" }));
+    s.wait(&id, "idle");
+
+    let (status, w) = s.get(&format!("/api/why?agent={id}&path=calc.py&line=1"));
+    assert_eq!(status, 200, "{w}");
+    assert_eq!(w["found"], "workbench", "{w}");
+    assert!(w["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("not installed")), "{w}");
+    assert_eq!(w["where"]["commit"]["sha"], json!(sha));
+    assert_eq!(w["where"]["commit"]["subject"], "add the total");
+    assert_eq!(w["who"]["agent"]["id"], json!(id));
+    assert_eq!(w["who"]["lineage"], json!([]));
+    assert_eq!(w["who"]["prompt"]["text"], "WRITE calc.py total = 1");
+    assert_eq!(w["who"]["prompt"]["by"], "you");
+    assert!(w["when"]["edit_ts"].is_string());
+    assert!(w["rewind"]["to_ms"].as_i64().unwrap() > 0, "{w}");
+    assert_eq!((w["knew"].as_array().unwrap().len(), w["why"].as_array().unwrap().len()), (0, 0));
+    let (_, w) = s.get(&format!("/api/why?agent={id}&path=calc.py&line=2"));
+    assert_eq!(w["who"]["prompt"]["text"], "WRITE calc.py tax = 2", "{w}");
+    assert_eq!(w["who"]["prompt"]["by"], "you");
+    assert_eq!(w["where"]["commit"], Value::Null);
+
+    // A line of the main checkout that came before any agent: git alone.
+    let (status, w) = s.get(&format!("/api/why?repo={}&path=README&line=1", r.display()));
+    assert_eq!(status, 200, "{w}");
+    assert_eq!(w["found"], "git", "{w}");
+    assert_eq!(w["who"]["agent"], Value::Null);
+    assert_eq!(w["where"]["commit"]["subject"], "first");
+    assert_eq!(w["rewind"], Value::Null);
+    // Decisions and ask say what is missing.
+    let (status, d) = s.get(&format!("/api/decisions?repo={}", r.display()));
+    assert_eq!(status, 200);
+    assert_eq!(d["decisions"], json!([]));
+    assert!(d["missing"][0].as_str().unwrap().contains("not installed"), "{d}");
+    let (_, v) = s.post("/api/ask", json!({ "repo": r, "question": "why?" }));
+    assert!(v["missing"][0].as_str().unwrap().contains("not installed"), "{v}");
+    // Bad requests.
+    assert_eq!(s.get(&format!("/api/why?agent={id}&line=1")).0, 400);
+    assert_eq!(s.get(&format!("/api/why?agent={id}&path=calc.py&line=99")).0, 400);
+    assert!(matches!(s.get(&format!("/api/why?agent={id}&path=../../../../etc/hostname&line=1")).0, 400 | 404));
+    assert_eq!(s.get("/api/why?path=calc.py&line=1").0, 400);
+    assert_eq!(http().get(format!("{}/api/why?agent={id}&path=calc.py&line=1", s.url)).call().unwrap().status().as_u16(), 401);
 }

@@ -76,7 +76,10 @@ impl Client {
         let url = format!("{}{path}", self.env.url);
         let agent = http_agent(timeout);
         let auth = format!("Bearer {}", self.env.token);
+        // Who calls: the input it types is recorded as this agent's.
+        let me = self.env.agent.as_str();
         let res = match body {
+            Some(b) if !me.is_empty() => agent.post(&url).header("authorization", &auth).header("x-workbench-agent", me).send_json(b),
             Some(b) => agent.post(&url).header("authorization", &auth).send_json(b),
             None if method == "POST" => agent.post(&url).header("authorization", &auth).send_empty(),
             None => agent.get(&url).header("authorization", &auth).call(),

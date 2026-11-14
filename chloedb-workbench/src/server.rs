@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::supervisor::{ApiError, Change, SpawnRequest, Supervisor};
+use crate::trail;
 
 #[derive(Clone)]
 pub struct App {
@@ -114,6 +115,11 @@ pub fn router(app: App) -> Router {
         .route("/api/agents/:id/resize", post(resize))
         .route("/api/agents/:id/stop", post(stop))
         .route("/api/agents/:id/pty", get(pty))
+        .route("/api/agents/:id/recording", get(recording))
+        .route("/api/agents/:id/diff", get(diff))
+        .route("/api/why", get(why))
+        .route("/api/decisions", get(decisions))
+        .route("/api/ask", post(ask))
         .route("/api/attention", get(attention))
         .route("/api/wait", get(wait))
         .route("/api/hook", post(hook))
@@ -219,15 +225,17 @@ struct InputB {
     enter: Option<bool>,
 }
 
-async fn input(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> ApiResult {
+async fn input(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, body: Bytes) -> ApiResult {
     let b: InputB = parse_body(&body)?;
     let text = b.text.unwrap_or_default();
     let enter = b.enter.unwrap_or(true);
     if text.is_empty() && !enter {
         return Err(ApiError::bad("text is empty and enter is false: nothing to type"));
     }
+    // The agent that typed it (send_to_agent), for the decision trail.
+    let by = headers.get("x-workbench-agent").and_then(|h| h.to_str().ok()).map(str::to_string);
     let sup = app.sup.clone();
-    blocking(move || sup.input(&id, &text, enter)).await?;
+    blocking(move || sup.input(&id, &text, enter, by.as_deref())).await?;
     ok()
 }
 
@@ -390,6 +398,53 @@ async fn terminal(socket: WebSocket, sup: Arc<Supervisor>, id: String) {
         }
     }
     keys.abort();
+}
+
+// The decision trail.
+
+#[derive(Deserialize)]
+struct RecordingQ {
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
+}
+
+async fn recording(State(app): State<App>, Path(id): Path<String>, Query(q): Query<RecordingQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    Ok(Json(blocking(move || trail::recording(&sup, &id, q.from_ms, q.to_ms)).await?).into_response())
+}
+
+async fn diff(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let sup = app.sup.clone();
+    Ok(Json(blocking(move || trail::diff(&sup, &id)).await?).into_response())
+}
+
+async fn why(State(app): State<App>, Query(q): Query<trail::WhyQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    Ok(Json(blocking(move || trail::why(&sup, q)).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct DecisionsQ {
+    repo: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn decisions(State(app): State<App>, Query(q): Query<DecisionsQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    Ok(Json(blocking(move || trail::decisions(&sup, q.repo.as_deref(), limit)).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct AskB {
+    repo: Option<String>,
+    question: Option<String>,
+}
+
+async fn ask(State(app): State<App>, body: Bytes) -> ApiResult {
+    let b: AskB = parse_body(&body)?;
+    let sup = app.sup.clone();
+    Ok(Json(blocking(move || trail::ask(&sup, b.repo.as_deref(), b.question.as_deref().unwrap_or(""))).await?).into_response())
 }
 
 /// Serves until SIGINT or SIGTERM, then stops the agents and exits.

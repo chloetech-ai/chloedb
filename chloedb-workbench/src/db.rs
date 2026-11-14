@@ -32,8 +32,13 @@ const AGENTS: &str = "CREATE TABLE IF NOT EXISTS agents (
   exit_code INT,
   model KEYWORD,
   created TIMESTAMP,
-  ended TIMESTAMP
+  ended TIMESTAMP,
+  base KEYWORD,
+  started_ms INT
 )";
+
+/// The columns the decision trail added, for a database made before them.
+const AGENTS_ADDED: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS base KEYWORD, ADD COLUMN IF NOT EXISTS started_ms INT";
 
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
@@ -46,7 +51,7 @@ const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   data TEXT
 )";
 
-const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended";
+const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended, base, started_ms";
 const EVENT_COLS: &str = "id, seq, ts, agent, kind, tool, summary, data";
 
 /// Milliseconds since the Unix epoch.
@@ -80,6 +85,11 @@ pub struct Agent {
     pub model: Option<String>,
     pub created: i64,
     pub ended: Option<i64>,
+    /// The commit its worktree started from.
+    pub base: Option<String>,
+    /// When its process started (milliseconds since the Unix epoch): the
+    /// zero of its terminal recording.
+    pub started_ms: Option<i64>,
 }
 
 impl Agent {
@@ -105,6 +115,8 @@ impl Agent {
             "model": self.model,
             "created": iso(self.created),
             "ended": self.ended.map(iso),
+            "base": self.base,
+            "started_ms": self.started_ms,
             "running": running,
             "children": children,
         })
@@ -204,6 +216,7 @@ impl StateDb {
         };
         let db = if path.exists() { Db::open(&path, opts) } else { Db::create_empty(&path, opts) }.map_err(|err| format!("cannot open {}: {err}", path.display()))?;
         db.sql(AGENTS, &Params::new()).map_err(e)?;
+        db.sql(AGENTS_ADDED, &Params::new()).map_err(e)?;
         db.sql(EVENTS, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
@@ -238,7 +251,9 @@ impl StateDb {
             .set("exit_code", opt_int(a.exit_code))
             .set("model", opt_str(&a.model))
             .set("created", ts(a.created))
-            .set("ended", a.ended.map_or(Value::Null, ts));
+            .set("ended", a.ended.map_or(Value::Null, ts))
+            .set("base", opt_str(&a.base))
+            .set("started_ms", opt_int(a.started_ms));
         let names: Vec<String> = AGENT_COLS.split(", ").map(|c| format!(":{c}")).collect();
         let sql = format!("INSERT OR REPLACE INTO agents ({AGENT_COLS}) VALUES ({})", names.join(", "));
         self.db.sql(&sql, &p).map_err(e)?;
@@ -269,6 +284,8 @@ impl StateDb {
                 model: get_str(&r[15]),
                 created: get_ms(&r[16]).unwrap_or(0),
                 ended: get_ms(&r[17]),
+                base: r.get(18).and_then(get_str),
+                started_ms: r.get(19).and_then(get_int),
             })
             .collect())
     }
@@ -296,6 +313,11 @@ impl StateDb {
         Ok(rows.iter().map(event_of).collect())
     }
 
+    /// Every event of `agent`, oldest first.
+    pub fn all_events(&self, agent: &str) -> Result<Vec<Event>> {
+        self.events(agent, i64::MIN, 1_000_000)
+    }
+
     /// The highest event number written, or 0.
     pub fn last_seq(&self) -> Result<i64> {
         let rows = self.rows("SELECT seq FROM events ORDER BY seq DESC LIMIT 1", &Params::new())?;
@@ -318,5 +340,31 @@ fn event_of(r: &Vec<Value>) -> Event {
         tool: get_str(&r[5]),
         summary: get_str(&r[6]),
         data: get_str(&r[7]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_database_from_before_the_decision_trail_opens_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let db = Db::create_empty(&dir.path().join("workbench.chloedb"), DbOptions::default()).unwrap();
+            let old = AGENTS.split("  base KEYWORD").next().unwrap().trim_end().trim_end_matches(',').to_string() + "\n)";
+            db.sql(&old, &Params::new()).unwrap();
+            db.sql("INSERT INTO agents (id, name, repo, cwd, depth, state, created) VALUES ('a1', 'old', '/r', '/r', 0, 'exited', '2026-10-01T12:30:00Z')", &Params::new()).unwrap();
+            db.close().unwrap();
+        }
+        let s = StateDb::open(dir.path()).unwrap();
+        let mut a = s.agents().unwrap().pop().unwrap();
+        assert_eq!((a.id.as_str(), a.base.as_deref(), a.started_ms), ("a1", None, None));
+        a.base = Some("abc".into());
+        a.started_ms = Some(42);
+        s.put_agent(&a).unwrap();
+        let b = s.agents().unwrap().pop().unwrap();
+        assert_eq!((b.base.as_deref(), b.started_ms), (Some("abc"), Some(42)));
+        s.close();
     }
 }

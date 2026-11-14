@@ -1643,6 +1643,11 @@ impl Daemon {
     fn op_sql(&self, req: &Json) -> Result<Json> {
         let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
         let rs = self.store.query_guarded(sql, &chloedb::query::Params::new(), &crate::sqlguard::Limits::TOOL)?;
+        if req.get("json").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // The cells as JSON values, for programs (`chloectx sql --json`).
+            let rows: Vec<Json> = rs.rows.iter().take(1000).map(|r| Json::Array(r.iter().map(value_json).collect())).collect();
+            return Ok(json!({"text": rows_text(&rs), "columns": rs.columns, "rows": rows, "count": rs.rows.len()}));
+        }
         Ok(json!({"text": rows_text(&rs)}))
     }
 
@@ -2001,6 +2006,21 @@ pub fn timeline_text(store: &Store, id: &str, before: usize, after: usize) -> Re
         text += &format!("{}{}\n\n", if r.id == rec.id { ">> " } else { "" }, recall::fmt_record(r, &body, now()));
     }
     Ok(text)
+}
+
+/// A cell as JSON: numbers, text and lists as themselves, a timestamp as
+/// its text, a vector as its length (`"vector(384)"`).
+pub fn value_json(v: &chloedb::Value) -> Json {
+    match v {
+        chloedb::Value::Null => Json::Null,
+        chloedb::Value::Int(x) => json!(x),
+        chloedb::Value::Float(x) => json!(x),
+        chloedb::Value::Str(s) => json!(s),
+        chloedb::Value::Vector(v) => json!(format!("vector({})", v.len())),
+        chloedb::Value::List(xs) => Json::Array(xs.iter().map(value_json).collect()),
+        chloedb::Value::Bool(b) => json!(b),
+        chloedb::Value::Timestamp(t) => json!(chloedb::timestamp::format(*t)),
+    }
 }
 
 /// A result set as `memory_sql` shows it: a header, at most 100 rows of

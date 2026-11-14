@@ -308,3 +308,283 @@ agent, its task, the time from git) and says what it could not find.
   from its turn. An **Ask why** box above it asks ChloeCtx in a sentence
   ("why do we round half up?") and answers with the records and their
   agents.
+
+## Levels (third build)
+
+The user's ask: Workbench must be significantly more than terminals in a
+grid: more abstraction, with the detail there when needed, from ChloeCtx.
+The answer is **semantic zoom**. Everything can be read at five levels,
+and the terminal is the last of them:
+
+| level | for the fleet | for one agent |
+|---|---|---|
+| Intent | **Mission** (goal, outcomes, one sentence per agent), **Away** (the digest) | its outcome and its sentence |
+| Plan | **Decide** (questions with precedent, rules), **Flow** (where time went, coach) | its questions |
+| Story | | **Story** (chapters per turn, grouped steps, what it knew, déjà vu) |
+| Changes | **Map** (territory, collisions, ◆ decisions), **Preview** (the running app) | its diff with Why? (second build) |
+| Terminal | the grid (first build) | its terminal |
+
+`[` and `]` move one level down or up for what is in focus; the top bar
+shows the level. Concept screens: `/mnt/project-files/workbench/concepts/`
+(`1-mission.png` … `7-away.png`, with their HTML). The real screens take
+their look (layout, density, the ChloeCtx ◆ chips), in the existing
+Workbench theme, light and dark.
+
+Nothing here calls a model on its own, except where marked *optional*
+(off unless `--narrate-model` is set). Everything is derived from
+Workbench's rows, the hook payloads, the session transcripts (read from
+`transcript_path` in the hook payloads) and `chloectx` run in the repo.
+
+### New tables
+
+```sql
+CREATE TABLE goals (
+  id KEYWORD PRIMARY KEY,  -- 'g' + 8 hex
+  repo KEYWORD, text TEXT, state KEYWORD,   -- active | done | dropped
+  lead KEYWORD,            -- the agent planning it, if any
+  created TIMESTAMP, done TIMESTAMP
+);
+CREATE TABLE outcomes (
+  id KEYWORD PRIMARY KEY,  -- 'o' + 8 hex
+  goal KEYWORD, title TEXT, detail TEXT,
+  state KEYWORD,           -- next | active | needs_you | done | dropped
+  agent KEYWORD,           -- who works on it (NULL while next)
+  ord INT, after KEYWORD,  -- shown order; an outcome it waits for
+  progress INT,            -- 0..100, set by the agent or derived
+  created TIMESTAMP, updated TIMESTAMP
+);
+CREATE TABLE questions (
+  id KEYWORD PRIMARY KEY,  -- 'q' + 8 hex
+  agent KEYWORD, outcome KEYWORD, repo KEYWORD,
+  kind KEYWORD,            -- ask (from ask_human) | permission (a Notification asking to use a tool)
+  text TEXT, context TEXT,
+  options TEXT,            -- JSON [{label, detail?}]
+  recommended INT,
+  precedent TEXT,          -- JSON: what `chloectx ask --json` found when it was asked
+  state KEYWORD,           -- open | answered | expired
+  answer TEXT, answered_by KEYWORD,  -- 'you' | 'rule:<id>' | 'terminal'
+  rule KEYWORD,            -- the rule made from the answer, if any
+  created TIMESTAMP, answered TIMESTAMP
+);
+CREATE TABLE rules (
+  id KEYWORD PRIMARY KEY,  -- 'r' + 8 hex
+  repo KEYWORD, text TEXT,
+  question KEYWORD,        -- where it came from
+  ctx_id KEYWORD,          -- the ChloeCtx record id (`chloectx remember decision`)
+  active BOOL, created TIMESTAMP
+);
+CREATE TABLE deliveries (  -- what each agent has been told (rules, steers)
+  id KEYWORD PRIMARY KEY,  -- agent + ':' + item id
+  agent KEYWORD, item KEYWORD, ts TIMESTAMP
+);
+CREATE TABLE marks (       -- small key/value state: last_seen, preview urls, allow-lists
+  key KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP
+);
+```
+
+`agents` gains `goal`, `outcome`, `narration` (one sentence), `narration_ts`
+and `preview_url`.
+
+### Narration (one live sentence per agent)
+
+After each `PostToolUse`, `Stop` and `UserPromptSubmit`, the server reads
+the tail of the session's transcript (the `transcript_path` of the payload;
+read at most the last 256 KiB) and sets `narration` to the first sentence
+of the latest assistant text block (at most 160 characters, Markdown
+stripped). When the latest thing is a tool call with no text after it, it
+is a sentence made from the call ("Running `cargo test -p harbor`",
+"Editing src/ledger/post.rs", "Reading 4 files in src/refunds"). A waiting
+agent's sentence is its question. *Optional:* with `--narrate-model M`,
+each finished turn also gets a chapter title and a two-line summary from
+`claude -p --model M` (one call per turn, never more than one in flight
+per agent), cached in the event's data.
+
+### Goals and outcomes (Mission)
+
+- `POST /api/goals {repo, text, plan?: true}` makes a goal; with `plan`, it
+  spawns a lead agent (name `lead`, or `lead-2`…) whose task is the goal
+  plus instructions to break it into 3 to 8 outcomes with `add_outcome`,
+  start an agent per outcome with `spawn_agent(outcome=…)`, ask the user
+  through `ask_human` rather than in its terminal, and mark outcomes done.
+- `GET /api/goals?repo=` → `{goals: [Goal]}`; `GET /api/goals/:id` →
+  `{goal, outcomes: [Outcome], agents: [Agent], open_questions: n,
+  learned: [Record], heads_up: [HeadsUp], pulse: [[minute_ms, count]]}`
+  where `learned` is today's ChloeCtx decision, preference, fact and
+  error-fix records of the repo (`chloectx sql --json`), `heads_up` the
+  collisions from the map, and `pulse` the events per minute for the last
+  60 minutes.
+- `POST /api/outcomes {goal, title, detail?, after?}`, `PATCH
+  /api/outcomes/:id {title?, state?, progress?, agent?}`.
+- An outcome's state follows its agent unless set: agent working →
+  `active`, waiting or with an open question → `needs_you`, exited with code
+  0 after marking it → `done`.
+
+### Questions and rules (Decide)
+
+- MCP tool `ask_human {question, options: [{label, detail?}], recommended?,
+  context?}`: posts `POST /api/questions`, then waits (polling `/api/wait`
+  style, `GET /api/questions/:id/wait?timeout_s=30`, up to 30 minutes) and
+  returns the answer text. The agent's state is `waiting` meanwhile, with
+  `waiting_for` = the question.
+- A `Notification` that asks permission for a tool also makes a question,
+  `kind: permission`, options Yes / Yes, and don't ask again / No (answering
+  types `1`, `2` or `3` and Enter into its terminal). Answering in the
+  terminal instead marks it `answered_by: terminal`.
+- On creation the server runs `chloectx ask --json -- <question>` in the
+  repo and stores what it found as `precedent` (records with their agents,
+  as `/api/ask` answers). When a precedent record is a Workbench rule or a
+  decision whose words match an option's label, that option is marked
+  `matches_precedent`.
+- `GET /api/questions?repo=&state=` → `{questions: [Question]}`.
+- `POST /api/questions/:id/answer {option?: n, text?, rule?: "text"}`:
+  answers it (the agent's `ask_human` returns), and with `rule`, runs
+  `chloectx remember decision "<rule>"` in the repo and adds a `rules` row.
+- `GET /api/rules?repo=`, `PATCH /api/rules/:id {active}`.
+- **Delivery.** The `hook` subcommand now prints what the server answers
+  to `POST /api/hook` when it is a `UserPromptSubmit`, `SessionStart` or
+  `PostToolUse`: `{"hookSpecificOutput": {"hookEventName": E,
+  "additionalContext": "..."}}` holding active rules of the repo and
+  steers this agent has not been told yet (recorded in `deliveries`).
+  It still never fails the hook: any error prints nothing.
+- `POST /api/agents/:id/steer {text}`: an idle agent gets it typed with
+  Enter; a working one gets it as additional context at its next
+  `PostToolUse` ("The user adds: …").
+
+### Story (one agent)
+
+`GET /api/agents/:id/story` →
+
+```
+{
+  "agent": Agent, "intent": "its outcome's title, or its task",
+  "chapters": [{
+    "turn": n, "prompt": {"text", "by"}, "started_ms", "ended_ms",
+    "title",            -- the optional model title, or the prompt's first words
+    "summary",          -- the turn's last assistant text, first two sentences
+    "state": "done" | "now",
+    "steps": [{"kind": "read"|"search"|"edit"|"run"|"memory"|"agents"|"web"|"other",
+               "label": "Read 12 files", "detail": "src/ledger/*, …",
+               "count", "started_ms", "ms", "failed": n, "events": [seq...]}]
+  }],
+  "knew": [{"id", "kind", "text", "score", "turn", "deja_vu": bool}],
+  "deja_vu": [{"text", "record", "when", "shown_ms"}],
+  "tokens": {"input", "output", "cache_read"}       -- summed from the transcript's usage
+}
+```
+
+Steps group consecutive tool events of one kind within a turn (Read, Grep,
+Glob, LS → read/search; Edit, MultiEdit, Write, NotebookEdit → edit; Bash →
+run, grouped by the command's first two words; `mcp__chloectx__*` → memory;
+`mcp__workbench__*` → agents; WebFetch, WebSearch → web). `knew` comes from
+`chloectx receipts --session <session_id> --json` (add `--json` to it if it
+is missing). A recalled record of kind `fix` (ChloeCtx's error → fix), or
+one recalled right after a failed tool call, is a **déjà vu**.
+
+### Map
+
+`GET /api/map?repo=` →
+
+```
+{
+  "tree": {"name", "path", "lines", "children": [...]},   -- git ls-files of the main checkout, line counts, folders to depth 3, small files folded into "…"
+  "agents": [{"agent": Agent, "files": [{"path", "added", "removed"}], "reading": [path]}],
+  "collisions": [{"path", "agents": [id], "kind": "both_changed" | "heading_into", "detail"}],
+  "pins": [{"path", "line": n|null, "record": {"id", "kind", "text", "ts"}, "agent": Agent|null}]
+}
+```
+
+An agent's files are its diff from `base` (as `/diff`) and its `reading`
+the files it read in the last 10 minutes. `both_changed`: two agents'
+diffs touch one file. `heading_into`: one agent changed a file another has
+read in the last 10 minutes. Pins are ChloeCtx decision, preference and
+fact records that name files; a pin opens the Why card (second build) for
+its line when it has one, or the record's own card otherwise.
+
+### Preview
+
+- `PUT /api/agents/:id/preview {url}` (and MCP tool `set_preview {url}`,
+  so an agent that starts a dev server can say where): only
+  `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+- `GET /preview/:agent/<path>` proxies to that URL (GET, HEAD and POST;
+  no WebSocket in this build), and into an HTML answer it injects
+  `<script src="/preview-overlay.js"></script>` before `</body>`. The
+  token comes in `?token=` on the first load and is kept in a cookie
+  scoped to `/preview/`.
+- `ui/preview-overlay.js` (compiled in): outlines what the pointer is on;
+  a click sends the parent `postMessage({type: "wb-pick", selector, text,
+  html (at most 2 KB), rect})` and stops the page's own handler; it also
+  answers `wb-who` with the text of each element, so the parent can label
+  what an agent changed.
+- `POST /api/preview/route {agent, pick}` → `{owner: Agent, files: [path],
+  related: [Record]}`: the agent whose diff contains the picked element's
+  text or class names (else the preview's own agent), and ChloeCtx records
+  about those files. Sending the request is `/steer` to the owner with the
+  pick's selector, text and HTML in the message.
+
+### Flow
+
+`GET /api/flow?repo=&minutes=60` →
+
+```
+{
+  "window": {"from_ms", "to_ms"},
+  "totals": {"model_ms", "tools_ms", "tests_ms", "waiting_ms", "redo_ms", "idle_ms"},
+  "agents": [{"agent": Agent, "model_ms", "tools_ms", "tests_ms", "waiting_ms", "redo_ms", "idle_ms",
+              "segments": [[start_ms, end_ms, "model"|"tools"|"tests"|"waiting"|"redo"|"idle"]]}],
+  "tokens": {"input", "output", "cache_read"},
+  "suggestions": [{"id", "title", "detail", "saves", "action": {"kind", ...} | null}],
+  "report": {...}        -- `chloectx report --json --days 1` in the repo, as it prints it, or null
+}
+```
+
+From Workbench's events: tools = PreToolUse to PostToolUse (tests when the
+command runs a test runner: `cargo test`, `pytest`, `npm test`, `go test`,
+…), waiting = Notification or an open question to the next event, model =
+the rest of a turn, idle = Stop to the next prompt, redo = a tool call that
+failed with the same error text as an earlier failure in the window.
+Suggestions (each one a function over those rows, with an id): a Bash
+prefix approved 3+ times → `{kind: "allow", pattern}` (Apply adds it to
+`permissions.allow` in the settings of agents started from then on, kept
+in `marks`); the same error 3+ times → `{kind: "fix", error}` (Apply asks
+for the fix text and runs `chloectx remember`); a file read 4+ times by
+one agent → `{kind: "capsule"}` (says how; no action); a collision twice →
+`{kind: "sequence"}`; and the report's own suggestions passed through.
+`POST /api/flow/apply {id}` applies one.
+
+### Away
+
+- `POST /api/seen` sets `last_seen` (the UI calls it when the page is
+  visible and when it is hidden).
+- `GET /api/digest?since=<ms>` (default `last_seen`) →
+  `{since_ms, until_ms, tiles: {done, decided, waiting, learned},
+  story: [{ts, agent: Agent|null, text, chips: [{kind, text}]}],
+  questions: [Question], rules: [Rule], replay: [{agent, from_ms, to_ms,
+  label}]}`: outcomes done, questions answered (by you, a rule or the
+  terminal), questions still open, ChloeCtx records learned, and a story
+  line per agent from its narrations and chapters; `replay` is the moments
+  of decisions (each answered question and each decision record with a
+  rewind), for the Rewind player to play one after another.
+- The UI opens on Away instead of Mission when `last_seen` is more than 30
+  minutes old and something happened since.
+
+### UI
+
+- `ui/app.js` keeps the shell (top bar, stream, token, terminal grid and
+  zoom, decision trail). The new screens are ES modules in
+  `ui/levels/`: `mission.js`, `story.js`, `decide.js`, `map.js`,
+  `preview.js`, `flow.js`, `away.js`, and `common.js` (shared bits:
+  agent chip, ◆ ChloeCtx chip, time, a small chart helper). Each exports
+  `mount(root, ctx)` → `{update(state), unmount()}`, where `ctx` has
+  `api(path, opts)`, `state` (agents, events from the stream), `go(hash)`,
+  `openWhy(args)`, `openRewind(args)`, `zoom(agentId)`. The server
+  compiles them in and serves `/levels/<name>.js` (and
+  `/preview-overlay.js`), from disk under `CHLOEDB_WORKBENCH_UI_DIR`.
+- A left rail: Mission, Decide (with the count of open questions), Map,
+  Story, Preview, Flow, Away, and Terminals (the grid). Routes are hashes:
+  `#/mission`, `#/decide`, `#/map`, `#/story/<agent>`, `#/preview/<agent>`,
+  `#/flow`, `#/away`, `#/grid`, `#/zoom/<agent>`.
+- Mission is the default screen once a goal exists; before that, the grid
+  with a "Set a goal" box above it.
+- `ui/dev/mock-server.mjs` serves fixtures for every new route (a story of
+  a payments repo, as in the concepts), so each screen can be built and
+  screenshotted without a model.

@@ -16,6 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::db::{now_ms, Agent, Event, StateDb};
 use crate::git;
+use crate::recording::{Recorder, Wrote};
 
 /// What a terminal keeps of its output for a WebSocket that attaches.
 pub const SCROLLBACK: usize = 256 * 1024;
@@ -35,6 +36,10 @@ pub struct Config {
     pub url: String,
     /// This program, which sessions' hooks and MCP servers run.
     pub exe: PathBuf,
+    /// The ChloeCtx program the decision trail asks.
+    pub chloectx_bin: String,
+    /// The most a session's terminal recording grows to.
+    pub record_max: u64,
 }
 
 /// An error the API answers with.
@@ -81,6 +86,8 @@ pub struct Term {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     output: Mutex<Output>,
+    /// Its recording, `sessions/<id>/term.cast`, while it records.
+    rec: Mutex<Option<Recorder>>,
     alive: AtomicBool,
     pid: i32,
 }
@@ -453,25 +460,36 @@ impl Supervisor {
             id = format!("a{}", hex(8));
         }
 
-        // Where it runs.
-        let (cwd, branch) = if worktree {
+        // Where it runs, and the commit it starts from.
+        let (cwd, branch, base) = if worktree {
             let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| format!("wb/{name}"));
             let dir = git::worktrees_dir(&self.cfg.data_dir, &co.main);
             let mut wt = dir.join(&name);
             // The worktree an earlier agent of this name left, on this
             // branch: the new one carries on there.
             let reuse = wt.is_dir() && git::current_branch(&wt).as_deref() == Some(branch.as_str());
-            if !reuse {
+            let base = if reuse {
+                // Where the earlier agent of this worktree started.
+                let wt_s = wt.canonicalize().unwrap_or(wt.clone()).to_string_lossy().to_string();
+                let inner = self.inner.lock().unwrap();
+                let mut earlier: Vec<&Agent> = inner.slots.values().map(|s| &s.agent).filter(|a| a.cwd == wt_s && a.base.is_some()).collect();
+                earlier.sort_by_key(|a| a.created);
+                earlier.first().and_then(|a| a.base.clone()).or_else(|| git::rev_parse(&wt, "HEAD"))
+            } else {
                 if wt.exists() {
                     wt = dir.join(format!("{name}-{id}"));
                 }
+                let from = if git::branch_exists(&co.main, &branch) { branch.clone() } else { req.base.clone().unwrap_or_else(|| "HEAD".into()) };
+                let base = git::rev_parse(&co.main, &from);
                 git::add_worktree(&co.main, &wt, &branch, req.base.as_deref()).map_err(|e| ApiError::conflict(format!("cannot add a worktree: {e}")))?;
-            }
-            (wt.canonicalize().unwrap_or(wt), Some(branch))
+                base
+            };
+            (wt.canonicalize().unwrap_or(wt), Some(branch), base)
         } else {
             let cwd = path.canonicalize().unwrap_or(path);
             let branch = git::current_branch(&cwd);
-            (cwd, branch)
+            let base = git::rev_parse(&cwd, "HEAD");
+            (cwd, branch, base)
         };
 
         // Its settings and MCP config.
@@ -517,8 +535,11 @@ impl Supervisor {
         let pair = native_pty_system()
             .openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| ApiError::internal(format!("cannot open a terminal: {e}")))?;
+        let started = Instant::now();
+        let started_ms = now_ms();
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| ApiError::bad(format!("cannot start {}: {e}", self.cfg.claude_bin)))?;
         drop(pair.slave);
+        let rec = Recorder::create(&session_dir.join("term.cast"), COLS, ROWS, started, started_ms, self.cfg.record_max);
         let pid = child.process_id().map_or(0, |p| p as i32);
         let reader = pair.master.try_clone_reader().map_err(|e| ApiError::internal(e.to_string()))?;
         let writer = pair.master.take_writer().map_err(|e| ApiError::internal(e.to_string()))?;
@@ -527,6 +548,7 @@ impl Supervisor {
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             output: Mutex::new(Output { ring: VecDeque::with_capacity(64 * 1024), tx: Some(out_tx) }),
+            rec: Mutex::new(rec),
             alive: AtomicBool::new(true),
             pid,
         });
@@ -551,6 +573,8 @@ impl Supervisor {
             model,
             created: now,
             ended: None,
+            base,
+            started_ms: Some(started_ms),
         };
         let json = {
             let mut inner = self.inner.lock().unwrap();
@@ -569,9 +593,10 @@ impl Supervisor {
 
         // Its output.
         let t = term.clone();
+        let (sup, aid) = (self.clone(), id.clone());
         std::thread::Builder::new()
             .name(format!("pty-{id}"))
-            .spawn(move || read_output(reader, &t))
+            .spawn(move || read_output(reader, &t, &sup, &aid))
             .map_err(|e| ApiError::internal(e.to_string()))?;
         // Its exit.
         let sup = self.clone();
@@ -638,7 +663,8 @@ impl Supervisor {
 
     /// Types into an agent's terminal, from the API: an `input` event, and
     /// a waiting agent goes back to working.
-    pub fn input(&self, id: &str, text: &str, enter: bool) -> Result<(), ApiError> {
+    /// `by` is the agent that typed it (`send_to_agent`), or `None` for you.
+    pub fn input(&self, id: &str, text: &str, enter: bool, by: Option<&str>) -> Result<(), ApiError> {
         let term = self.term(id)?;
         term.write(text.as_bytes()).map_err(|e| ApiError::internal(format!("cannot write to the terminal: {e}")))?;
         if enter {
@@ -658,7 +684,9 @@ impl Supervisor {
             }
         }
         let summary = if text.is_empty() && enter { "input: Enter".to_string() } else { format!("input: {}", one_line(text, 200)) };
-        self.record(&mut inner, id, "input", None, summary, None)
+        let by = by.filter(|b| *b != id && inner.slots.contains_key(*b));
+        let data = by.map(|b| json!({ "by": b }).to_string());
+        self.record(&mut inner, id, "input", None, summary, data)
     }
 
     /// Keystrokes from a terminal's WebSocket. Enter while the agent waits
@@ -686,7 +714,47 @@ impl Supervisor {
         }
         let term = self.term(id)?;
         let m = term.master.lock().unwrap();
-        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| ApiError::internal(e.to_string()))
+        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| ApiError::internal(e.to_string()))?;
+        drop(m);
+        let full = term.rec.lock().unwrap().as_mut().map(|r| r.resize(cols, rows));
+        self.recording_full(id, &term, full);
+        Ok(())
+    }
+
+    /// When a recording reached its cap: it stops, and an event says so.
+    fn recording_full(&self, id: &str, term: &Term, wrote: Option<Wrote>) {
+        if wrote != Some(Wrote::Full) {
+            return;
+        }
+        *term.rec.lock().unwrap() = None;
+        let mut inner = self.inner.lock().unwrap();
+        let mib = self.cfg.record_max as f64 / (1024.0 * 1024.0);
+        let _ = self.record(&mut inner, id, "recording", None, format!("terminal recording stopped: it reached {mib:.0} MiB"), None);
+    }
+
+    /// An agent's row.
+    pub fn agent_row(&self, id: &str) -> Option<Agent> {
+        self.inner.lock().unwrap().slots.get(id).map(|s| s.agent.clone())
+    }
+
+    /// Every agent's row.
+    pub fn agent_rows(&self) -> Vec<Agent> {
+        self.inner.lock().unwrap().slots.values().map(|s| s.agent.clone()).collect()
+    }
+
+    /// An agent as the API answers it, or `None`.
+    pub fn agent_json_of(&self, id: &str) -> Option<Json> {
+        Self::agent_json(&self.inner.lock().unwrap(), id)
+    }
+
+    /// Every event of an agent, oldest first, with its data.
+    pub fn all_events(&self, id: &str) -> Result<Vec<Event>, ApiError> {
+        self.db.all_events(id).map_err(ApiError::internal)
+    }
+
+    /// Where an agent's session files are: its settings, its recording.
+    pub fn session_dir(&self, id: &str) -> PathBuf {
+        self.cfg.data_dir.join("sessions").join(id)
     }
 
     /// Stops an agent: SIGHUP to its process group, then SIGKILL after 5 s.
@@ -770,12 +838,14 @@ fn kill(t: &Term) {
     }
 }
 
-fn read_output(mut reader: Box<dyn Read + Send>, term: &Term) {
+fn read_output(mut reader: Box<dyn Read + Send>, term: &Term, sup: &Supervisor, id: &str) {
     let mut buf = [0u8; 16 * 1024];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                let wrote = term.rec.lock().unwrap().as_mut().map(|r| r.output(&buf[..n]));
+                sup.recording_full(id, term, wrote);
                 let mut out = term.output.lock().unwrap();
                 out.ring.extend(&buf[..n]);
                 let excess = out.ring.len().saturating_sub(SCROLLBACK);
