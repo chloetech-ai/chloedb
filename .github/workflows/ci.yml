@@ -828,7 +828,7 @@ jobs:
           workspaces: |
             chloedb-py
             chloedb-server
-          key: python
+          shared-key: python
       # The client tests run against a real server: on Linux the one job
       # server-bin built, on macOS (the nightly run) one built here.
       # chloedb-server's binary from job server-bin.
@@ -875,6 +875,48 @@ jobs:
           # optimisation and single codegen unit took most of this step.
           maturin develop --profile ci --locked
           pytest tests -v
+      # On Linux the recommender gate and Clippy run in job python-gate, at
+      # the same time as these tests (one after the other they took 23
+      # minutes, the longest job of a run once the engine's tests moved to
+      # the on-demand runner).
+      - name: Clippy
+        if: runner.os != 'Linux'
+        working-directory: chloedb-py
+        run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
+  # The Python package's recommender gate and Clippy, on Linux, beside job
+  # python's tests rather than after them. It needs no chloedb-server.
+  python-gate:
+    name: Python package, recommender gate and clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      # Job python's cache (the same shared-key), read only: that job saves it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: false
+          workspaces: |
+            chloedb-py
+            chloedb-server
+          shared-key: python
+      - name: Build
+        working-directory: chloedb-py
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          maturin develop --profile ci --locked
       # The recommender gate (chloedb/results/sequence/gate.py): every
       # candidate source and two baselines on MovieLens-1M, checked against
       # chloedb/tests/fixtures/recsys_gate.json and recsys_gate_time.json.
@@ -883,7 +925,6 @@ jobs:
       # after the other they took 6 and 2 minutes), and their output is
       # printed when both have ended.
       - name: Recommender gate
-        if: runner.os == 'Linux'
         working-directory: chloedb-py
         run: |
           . .venv/bin/activate
@@ -1172,7 +1213,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java, docs-site, docs-bins, docs]
+    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, python-gate, javascript, java, docs-site, docs-bins, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

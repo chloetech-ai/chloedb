@@ -81,7 +81,7 @@
       <span class="eyebrow">Start</span>
       <h1>Build an app on chloedb-server</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">docs/chloedb/build-an-app.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.2.</p>
+      <p class="doc-version">These docs describe release 0.3.3.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-a-server">Run a server</a></li><li><a href="#make-the-tables">Make the tables</a></li><li><a href="#write-rows">Write rows</a></li><li><a href="#search">Search</a></li><li><a href="#read-one-row-by-its-key">Read one row by its key</a></li><li><a href="#sell-stock-without-overselling">Sell stock without overselling</a></li><li><a href="#hold-an-item-for-ten-minutes">Hold an item for ten minutes</a></li><li><a href="#count-events-exactly-once">Count events exactly once</a></li><li><a href="#when-a-write-fails">When a write fails</a></li><li><a href="#grow-to-a-cluster">Grow to a cluster</a></li></ol></details>
     <div class="doc-body">
@@ -89,7 +89,7 @@
 <p>A shop in one page: search, stock that never oversells, holds that expire, and click events counted exactly once. Each part is a few lines of SQL or JSON over HTTP, with links to the reference for the rest.</p>
 <h2 id="run-a-server">Run a server<a class="anchor" href="#run-a-server" aria-label="Link to this section">#</a></h2>
 <p>Download the server for your machine (no Rust or build needed), and start it on a new database:</p>
-<pre data-lang="sh">v=0.3.2 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+<pre data-lang="sh">v=0.3.3 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; cp chloedb-server-$p/chloedb-server ./chloedb-server
 ./chloedb-server --db shop.chloedb --seq-no</pre>

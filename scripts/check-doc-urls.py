@@ -10,7 +10,7 @@ and the release snapshots, the website's own pages and docs/install.sh) and
 checks, over the network, each of:
 
 - a release download URL (github.com/<repo>/releases/download/<tag>/<asset>,
-  with the shell variables a block sets, `v=0.3.2 p=macos-arm64`, put in)
+  with the shell variables a block sets, `v=0.3.3 p=macos-arm64`, put in)
   and a release's `expanded_assets` page: the release has that asset;
 - the installer, docs/install.sh: the latest release (docs/site/versions.json)
   has the server's archive and its .sha256 for every platform, and those of
