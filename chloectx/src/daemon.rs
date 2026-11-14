@@ -1902,7 +1902,11 @@ impl Daemon {
     }
 
     fn op_remember(&self, req: &Json) -> Result<Json> {
-        let kind = req.get("kind").and_then(|v| v.as_str()).and_then(Kind::parse).unwrap_or(Kind::Note);
+        // A kind that is not one is refused rather than stored as a note.
+        let kind = match req.get("kind").and_then(|v| v.as_str()).filter(|k| !k.is_empty()) {
+            None => Kind::Note,
+            Some(k) => Kind::parse(k).filter(|k| k.is_knowledge()).ok_or_else(|| err(format!("no kind {k:?}: a record to remember is a decision, preference, fact, todo or note")))?,
+        };
         let text = crate::redact::redact(req.get("text").and_then(|v| v.as_str()).unwrap_or("").trim());
         if text.is_empty() {
             return Err(err("text is empty"));
@@ -1912,7 +1916,7 @@ impl Daemon {
         let sid = if sid.is_empty() { "manual".to_string() } else { sid };
         let turn = self.with_session(&sid, |s| s.turn);
         let old = match req.get("supersedes").and_then(|v| v.as_str()).filter(|o| !o.is_empty()) {
-            Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede")))?),
+            Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede: nothing was stored")))?),
             None => None,
         };
         // Who asks to keep it: `by` (the CLI says `user`: a person ran it,
