@@ -4195,8 +4195,10 @@ impl Coordinator {
                 replicas.push(j);
             }
             let counted = counted.or(answering);
-            every_shard &= counted.is_some();
-            let (d, s, per_table) = counted.unwrap_or((0, 0, Some(Default::default())));
+            let answered = counted.is_some();
+            every_shard &= answered;
+            // A shard that does not answer: its rows are not known, nor the sum.
+            let (d, s, per_table) = counted.unwrap_or((0, 0, None));
             match (tables.as_mut(), per_table) {
                 (Some(all), Some(these)) => {
                     for (t, n) in these {
@@ -4208,7 +4210,7 @@ impl Coordinator {
             }
             docs += d;
             segments += s;
-            let status = if counted.is_none() { "down" } else { "ok" };
+            let status = if answered { "ok" } else { "down" };
             let mut shard = json!({"url": t.shards[i], "status": status, "docs": d, "segments": s});
             // Two copies taking writes, each in its own term: the older
             // has not heard of the newer yet.
