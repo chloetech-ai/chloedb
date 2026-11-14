@@ -7,7 +7,11 @@
 //              files) and actions: pause the agent, ask me, resolve.
 //   Rules:     the rules as rows; edit the SQL and test it now.
 //   Tests:     the flaky test radar: flaky, newly failing, slow, and each
-//              test's runs with p50/p99.
+//              test's runs with p50/p99. Sixth build: failures fixed in
+//              the same session are not counted against the pass rate, a
+//              test says how long it has been stable, "Run it N times"
+//              runs it again (POST /api/tests/rerun), and commands that
+//              printed only a count say so instead of making up a test.
 // Routes: #/health, #/health/rules, #/health/tests, #/health/<incident id>.
 import {
   h, useStyle, avatar, agentChip, ctxChip, pill, empty, fmtDur, fmtClock, fmtAgo, fmtNum, fmtSpan, toMs, tooltip,
@@ -49,7 +53,7 @@ function mountHealth(root, ctx) {
     sel: first && /^i[0-9a-f]{8}$/.test(first) ? first : null,
     inc: null, incErr: null, boards: new Map(), showResolved: false,
     rules: null, rulesErr: null, ruleSel: null, draft: null, result: null, testing: false, saving: false, ruleMsg: null,
-    tests: null, testsErr: null, filter: "", only: "all", testSel: null, hist: new Map(),
+    tests: null, testsErr: null, filter: "", only: "all", testSel: null, hist: new Map(), reruns: new Map(), rerunN: 10,
     acting: new Set(), actErr: null, agents: new Map(),
   };
   if (S.sel) S.tab = "incidents";
@@ -115,6 +119,29 @@ function mountHealth(root, ctx) {
       S.hist.set(test, d);
     } catch (e) { S.hist.set(test, { error: e.message || String(e) }); }
     render();
+  }
+  // Run it N times: Workbench runs the test itself, then reads it again.
+  async function rerun(test, n) {
+    S.reruns.set(test, { state: "starting", n, done: 0 });
+    render();
+    try {
+      const body = { test, n };
+      const r = repoOf(ctx); if (r) body.repo = r;
+      const d = await ctx.api("/api/tests/rerun", { method: "POST", body });
+      S.reruns.set(test, d.rerun);
+      followRerun(test, d.rerun.id);
+    } catch (e) { S.reruns.set(test, { state: "failed", n, done: 0, error: e.message || String(e) }); }
+    render();
+  }
+  async function followRerun(test, id) {
+    while (alive) {
+      await new Promise((res) => setTimeout(res, 1000));
+      let d;
+      try { d = (await ctx.api(`/api/tests/rerun/${enc(id)}`)).rerun; } catch (e) { S.reruns.set(test, { ...S.reruns.get(test), state: "failed", error: e.message || String(e) }); render(); return; }
+      S.reruns.set(test, d);
+      if (d.state !== "running") { S.hist.delete(test); await loadHist(test); await loadTests(); return; }
+      render();
+    }
   }
   function loadTab() {
     if (S.tab === "incidents") loadIncidents();
@@ -502,10 +529,10 @@ function mountHealth(root, ctx) {
     if (!tests.length) return h("div", { class: "hl-tests" }, h("section", { class: "lv-card" }, empty("No test runs yet. Every cargo test, pytest, jest, vitest, go test or npm test an agent runs lands here, test by test.")), (d.missing || []).length ? h("div", { class: "hl-missing" }, d.missing.join(" ")) : null);
     return h("div", { class: "hl-tests" },
       h("section", { class: "lv-card hl-nums" },
-        num(pct(t.pass_rate), "pass rate", `${fmtNum(t.runs)} runs of ${t.tests} tests in ${d.window?.days ?? 7} days`, t.pass_rate >= 0.95 ? "good" : "warn"),
+        num(pct(t.pass_rate), "pass rate", `${fmtNum(t.runs)} runs of ${t.tests} tests in ${d.window?.days ?? 7} days${t.fixed ? ` · ${t.fixed} failed and fixed in the same session, not counted` : ""}`, t.pass_rate >= 0.95 ? "good" : "warn"),
         num(String(t.flaky ?? 0), "flaky", "passed and failed on the same code", "warn", () => { S.only = "flaky"; render(); }),
         num(String(t.newly_failing ?? 0), "newly failing", "passed before, fail in the last runs", "crit", () => { S.only = "newly"; render(); }),
-        num(String(t.slow ?? 0), "slow", "p99 over 5 s, or 3× its p50", "lane-4", () => { S.only = "slow"; render(); }),
+        num(String(t.slow ?? 0), "slow", "its own time: p99 over 5 s, or 3× its p50; waits for you excluded", "lane-4", () => { S.only = "slow"; render(); }),
         h("div", { class: "hl-num hl-cmds" }, h("div", { class: "hl-n" }, fmtNum(t.commands)), h("div", { class: "hl-l" }, "test commands"), h("div", { class: "hl-s" }, `by ${new Set(tests.flatMap((x) => x.agents || [])).size} agents`))),
       h("div", { class: "hl-tgrid" },
         radar(tests),
@@ -513,9 +540,38 @@ function mountHealth(root, ctx) {
           flagList("Flaky", tests.filter((x) => x.flaky), "warn", (x) => x.flaky_why),
           flagList("Newly failing", tests.filter((x) => x.newly_failing), "crit", (x) => `last pass ${lastPass(x)} · ${x.failed} of ${x.runs} failed`),
           flagList("Slow", tests.filter((x) => x.slow).sort((a, b) => b.p99_ms - a.p99_ms), "lane-4", (x) => `p50 ${fmtMs(x.p50_ms)} · p99 ${fmtMs(x.p99_ms)}`))),
+      quietNote(t),
       table(tests, d),
       recent(d.commands || []),
-      h("p", { class: "hl-foot" }, d.percentiles === "approx_percentile" ? "p50 and p99 are ChloeDB's approx_percentile over test_runs (a DDSketch, within 1%)." : "p50 and p99 are computed from the runs.", " A test's time is its own when the runner reports it (cargo --report-time, pytest --durations, jest, vitest, go -v), else its command's."));
+      personaCard(),
+      h("p", { class: "hl-foot" }, d.percentiles === "approx_percentile" ? "p50 and p99 are ChloeDB's approx_percentile over test_runs (a DDSketch, within 1%)." : "p50 and p99 are computed from the runs.", " A test's time is its own when the runner reports it (cargo --report-time, pytest's junit report or --durations, jest, vitest, go -v), else its command's when it was the command's only test. The time a command waited for your permission is never test time."));
+  }
+  // Commands that printed only a count (or only an exit code): counted,
+  // and said so, but no test is made up for them.
+  function quietNote(t) {
+    const q = t.quiet || {};
+    if (!q.commands && !t.waited_ms) return null;
+    const counts = [q.passed ? `${fmtNum(q.passed)} passed` : null, q.failed ? `${fmtNum(q.failed)} failed` : null, q.skipped ? `${fmtNum(q.skipped)} skipped` : null].filter(Boolean).join(", ");
+    return h("section", { class: "lv-card hl-quiet" },
+      q.commands ? h("div", null,
+        h("b", null, `${q.commands} test command${q.commands === 1 ? "" : "s"} named no test: `),
+        [q.counted ? `${q.counted} printed only a summary${counts ? ` (${counts})` : ""}` : null, q.commands - q.counted ? `${q.commands - q.counted} printed only an exit code` : null].filter(Boolean).join(", "),
+        ". They are under Recent test commands, not in the table: Workbench names a test only when the runner does (pytest -v or -rA, or the junit report pytest writes by itself in an agent's session; cargo test, jest, vitest, go test -v).") : null,
+      t.waited_ms ? h("div", { class: "lv-sub" }, `Agents' test commands waited ${fmtSpan(t.waited_ms)} in all for your permission; that time is left out of every test time here.`) : null);
+  }
+  // Test with a persona: the Preview lab's drawer, for an agent whose app
+  // is running (ui/levels/preview-lab.js reads the flag).
+  function personaCard() {
+    const withApp = (ctx.state?.agents || []).filter((a) => a.preview_url);
+    const go = (a) => {
+      try { sessionStorage.setItem("wb.persona", JSON.stringify({ agent: a.id })); } catch {}
+      ctx.go(`#/preview/${enc(a.id)}`);
+    };
+    return h("section", { class: "lv-card hl-persona" },
+      h("div", { class: "hl-pc-t" }, h("h2", { class: "lv-h2" }, "Test with a persona"),
+        h("span", { class: "lv-sub" }, "Tests check code; a persona checks the app: a simulated user tries a task on an agent's running app, checks the numbers it shows against everything on the page, does the task's main action once, and reports what got in the way.")),
+      withApp.length ? h("div", { class: "hl-pc-l" }, withApp.slice(0, 6).map((a) => h("button", { class: "btn sm", onclick: () => go(a) }, avatar(a, 14), `Test ${nameOf(a)}'s app`)))
+        : h("div", { class: "lv-sub" }, "No agent has a running app with a preview URL yet; set one in Preview."));
   }
   function lastPass(x) { const p = [...(x.history || [])].reverse().find((r) => r.outcome === "passed"); return p ? fmtAgo(p.ts_ms) : "never"; }
 
@@ -594,7 +650,7 @@ function mountHealth(root, ctx) {
 
   function table(tests, d) {
     const q = S.filter.trim().toLowerCase();
-    const rows = tests.filter((t) => (!q || t.test.toLowerCase().includes(q)) && (S.only === "all" || (S.only === "flaky" && t.flaky) || (S.only === "newly" && t.newly_failing) || (S.only === "slow" && t.slow) || (S.only === "failing" && t.last?.outcome === "failed")))
+    const rows = tests.filter((t) => (!q || t.test.toLowerCase().includes(q)) && (S.only === "all" || (S.only === "flaky" && t.flaky) || (S.only === "newly" && t.newly_failing) || (S.only === "slow" && t.slow) || (S.only === "failing" && t.last?.outcome === "failed" && !t.gone)))
       .sort((a, b) => (b.newly_failing - a.newly_failing) || (b.flaky - a.flaky) || (a.pass_rate - b.pass_rate) || (b.p99_ms - a.p99_ms));
     const filter = h("input", { class: "hl-in hl-filter", placeholder: "Filter tests", value: S.filter, "aria-label": "Filter tests" });
     filter.addEventListener("input", later(() => { S.filter = filter.value; render(); requestAnimationFrame(() => { const f = el.querySelector(".hl-filter"); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }); }, 120));
@@ -607,7 +663,9 @@ function mountHealth(root, ctx) {
         h("thead", null, h("tr", null, h("th", null, "Test"), h("th", null, "Runner"), h("th", { class: "num" }, "Runs"), h("th", null, "Passed"), h("th", null, "Last 20"), h("th", { class: "num" }, "p50"), h("th", { class: "num" }, "p99"), h("th", null, "Last run"))),
         h("tbody", null, rows.map((t) => [
           h("tr", { class: `${S.testSel === t.test ? "on" : ""}`, tabindex: "0", "data-nav": "", "data-key": `t:${t.test}`, onclick: () => openTest(t.test), onkeydown: (e) => { if (e.key === "Enter") openTest(t.test); } },
-            h("td", { class: "hl-tn-c" }, h("code", { class: "hl-tname" }, t.test), t.newly_failing ? pill("newly failing", "crit") : null, t.flaky ? pill("flaky", "warn") : null, t.slow ? h("span", { class: "lv-pill hl-slow" }, "slow") : null),
+            h("td", { class: "hl-tn-c" }, h("code", { class: "hl-tname" }, t.test), t.newly_failing ? pill("newly failing", "crit") : null, t.flaky ? pill("flaky", "warn") : null, t.slow ? h("span", { class: "lv-pill hl-slow" }, "slow") : null,
+              t.gone ? h("span", { class: "lv-pill hl-gone", title: "its command ran again after its last run and did not run it: renamed or removed" }, "not run any more") : null,
+              t.fixed && !t.flaky ? h("span", { class: "lv-pill hl-fixed", title: "failed, then passed for the same agent after it changed the code: not counted against the pass rate" }, `${t.fixed} fixed in session`) : null),
             h("td", null, h("span", { class: "hl-run" }, t.runner)),
             h("td", { class: "num" }, String(t.runs)),
             h("td", null, h("div", { class: "hl-pr" }, h("div", { class: "lv-bar" }, h("b", { style: { width: `${t.pass_rate * 100}%`, background: t.pass_rate >= 0.999 ? "var(--good)" : t.pass_rate >= 0.8 ? "var(--warn)" : "var(--crit)" } })), h("span", null, pct(t.pass_rate)))),
@@ -626,27 +684,78 @@ function mountHealth(root, ctx) {
     const runs = d.runs || [];
     return h("div", { class: "hl-hist" },
       t.flaky_why ? h("div", { class: "hl-why" }, h("b", null, "Flaky: "), t.flaky_why) : null,
+      stableLine(d.stable || t.stable, d),
+      rerunBox(t, d),
       h("table", { class: "hl-tbl hl-ht" },
         h("thead", null, h("tr", null, h("th", null, "When"), h("th", null, "Agent"), h("th", null, "Outcome"), h("th", { class: "num" }, "Time"), h("th", null, "Commit"), h("th", null, "Command"))),
         h("tbody", null, runs.slice(0, 30).map((r) => h("tr", null,
           h("td", null, `${fmtClock(r.ts_ms)} · ${fmtAgo(r.ts_ms)}`),
-          h("td", null, h("span", { class: "hl-ag" }, avatar(agentOf(r.agent), 14), nameOf(agentOf(r.agent)))),
-          h("td", null, h("span", { class: r.outcome === "failed" ? "hl-bad" : r.outcome === "passed" ? "hl-ok" : "lv-sub" }, r.outcome)),
-          h("td", { class: "num" }, r.ms == null ? "—" : fmtMs(r.ms)),
+          h("td", null, h("span", { class: "hl-ag" }, avatar(agentOf(r.agent), 14), r.by_workbench ? `Workbench, in ${nameOf(agentOf(r.agent))}'s checkout` : nameOf(agentOf(r.agent)))),
+          h("td", null, h("span", { class: r.outcome === "failed" ? "hl-bad" : r.outcome === "passed" ? "hl-ok" : "lv-sub" }, r.outcome),
+            r.fixed ? h("span", { class: "lv-sub", title: "the same agent changed the code and it passed: not counted against the pass rate" }, " · fixed in this session") : null),
+          h("td", { class: "num", title: r.wait_ms ? `the command also waited ${fmtSpan(r.wait_ms)} for your permission, not counted` : "" }, r.ms == null ? "—" : fmtMs(r.ms), r.wait_ms ? h("span", { class: "lv-sub" }, ` +${fmtSpan(r.wait_ms)} wait`) : null),
           h("td", null, h("code", { class: "lv-code" }, String(r.commit || "").slice(0, 8)), r.tree && r.tree !== "clean" ? h("span", { class: "lv-sub", title: "uncommitted changes: the hash of git diff" }, ` +${String(r.tree).slice(0, 4)}`) : null),
           h("td", null, h("code", { class: "hl-cmd" }, r.command)))))));
+  }
+
+  // Stable since <commit>: N runs, 0 failures (and how likely that was if
+  // nothing had changed, for a test that was flaky).
+  function stableLine(s, d) {
+    if (!s || !s.runs) return null;
+    const commit = s.since_commit ? String(s.since_commit).slice(0, 8) : "the first run";
+    const dirty = s.since_tree && s.since_tree !== "clean" ? " (with uncommitted changes)" : "";
+    const parts = [h("b", null, "Stable since "), h("code", { class: "lv-code" }, commit), `${dirty}, ${fmtAgo(s.since_ms)}: ${s.runs} run${s.runs === 1 ? "" : "s"}, 0 failures`,
+      s.by_workbench ? ` (${s.by_workbench} by Run it N times)` : "", "."];
+    if (s.after_failure) parts.push(` Before that it failed ${s.failed_before} of ${s.runs_before} runs.`);
+    if (s.chance_if_unchanged != null) parts.push(` A test still failing that often would pass ${s.runs} times in a row ${pct(s.chance_if_unchanged)} of the time${s.chance_if_unchanged > 0.2 ? ": run it more before you call it fixed" : ""}.`);
+    return h("div", { class: `hl-stable${d.flaky ? " warn" : ""}` }, ...parts);
+  }
+  // Run it N times: the button, its progress and its result.
+  function rerunBox(t, d) {
+    const r = S.reruns.get(t.test);
+    const running = r && (r.state === "running" || r.state === "starting");
+    const n = h("select", { class: "hl-in hl-rn", "aria-label": "How many times", disabled: running ? true : null, onchange: (e) => { S.rerunN = Number(e.target.value); } },
+      [5, 10, 20, 50].map((k) => h("option", { value: String(k), selected: S.rerunN === k ? true : null }, `${k} times`)));
+    const last = (d.runs || [])[0];
+    const ask = last && agentOf(last.agent);
+    const askBtn = ask && ask.running !== false ? h("button", { class: "btn sm ghost", onclick: async (e) => {
+      const b = e.currentTarget; b.disabled = true;
+      try { await ctx.api(`/api/agents/${enc(ask.id)}/steer`, { method: "POST", body: { text: `Please run ${t.test} 10 times in a row (only that test) and tell me how many runs failed, with the output of a failure if there is one.` } }); b.textContent = `Asked ${nameOf(ask)}`; } catch (err) { b.textContent = err.message || String(err); }
+    } }, `Ask ${nameOf(ask)} to run it 10 times`) : null;
+    let res = null;
+    if (r && r.state === "failed") res = h("span", { class: "err" }, r.error || "It did not run.");
+    else if (r && r.state === "starting") res = h("span", { class: "lv-sub" }, "Starting…");
+    else if (r) {
+      const fin = r.state !== "running";
+      res = h("span", { class: "hl-rr-res" },
+        h("span", { class: "lv-bar hl-rr-bar" }, h("b", { style: { width: `${(r.done / r.n) * 100}%`, background: r.failed ? "var(--crit)" : "var(--good)" } })),
+        h("span", { class: r.failed ? "hl-bad" : fin ? "hl-ok" : "lv-sub" }, fin ? `${r.passed} of ${r.n} passed${r.failed ? `, ${r.failed} failed` : ""}${r.commit ? ` on ${String(r.commit).slice(0, 8)}` : ""}` : `run ${r.done + 1} of ${r.n}: ${r.passed} passed, ${r.failed} failed so far`),
+        fin && !r.failed ? h("span", { class: "lv-sub" }, r.n >= 20 ? " · stable on this code" : " · more runs make it surer") : null);
+    }
+    return h("div", { class: "hl-rr" },
+      d.rerun ? [h("button", { class: "btn sm", disabled: running ? true : null, onclick: () => rerun(t.test, S.rerunN) }, running ? "Running…" : "Run it N times"), n,
+        h("code", { class: "hl-cmd hl-rr-c", title: "what Workbench runs, in the checkout of the agent that ran it last, without a shell" }, d.rerun)]
+        : [h("span", { class: "lv-sub" }, `Workbench cannot run one ${d.runner || ""} test by itself.`), askBtn],
+      res);
   }
 
   function recent(cmds) {
     if (!cmds.length) return null;
     return h("section", { class: "lv-card hl-recent" },
-      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Recent test commands"), h("span", { class: "lv-sub" }, "an unknown runner is one row: its command and exit code")),
-      h("ul", { class: "hl-cl" }, cmds.slice(0, 12).map((c) => h("li", null,
-        avatar(agentOf(c.agent), 16),
-        h("code", { class: "hl-cmd" }, c.command),
-        c.running ? pill("running", "acc") : c.failed ? pill(`${c.failed} failed`, "crit") : pill(c.passed ? `${c.passed} passed` : `exit ${c.exit_code}`, c.exit_code ? "crit" : "good"),
-        c.failed && c.passed ? h("span", { class: "lv-sub" }, `${c.passed} passed`) : null,
-        h("span", { class: "lv-sub hl-cm-t" }, `${c.ms != null ? fmtSpan(c.ms) + " · " : ""}${fmtAgo(c.ts_ms)}`)))));
+      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Recent test commands"), h("span", { class: "lv-sub" }, "what each printed: its tests, a summary's counts, or only its exit code")),
+      h("ul", { class: "hl-cl" }, cmds.slice(0, 12).map((c) => {
+        const what = c.running ? pill("running", "acc")
+          : c.counted === false ? pill(`exit ${c.exit_code}`, c.exit_code ? "crit" : "good")
+          : c.failed ? pill(`${c.failed} failed`, "crit") : pill(`${c.passed ?? 0} passed`, "good");
+        const extra = [c.failed && c.passed ? `${c.passed} passed` : null, c.ignored ? `${c.ignored} skipped` : null,
+          c.counted === false ? "printed no count" : c.named === 0 ? "only a summary, no test names" : null].filter(Boolean).join(" · ");
+        return h("li", null,
+          avatar(agentOf(c.agent), 16),
+          h("code", { class: "hl-cmd" }, c.command),
+          what,
+          extra ? h("span", { class: "lv-sub" }, extra) : null,
+          h("span", { class: "lv-sub hl-cm-t" }, `${c.ms != null ? fmtSpan(c.ms) + " · " : ""}${c.wait_ms ? `waited ${fmtSpan(c.wait_ms)} for you · ` : ""}${c.by_workbench ? "Workbench · " : ""}${fmtAgo(c.ts_ms)}`));
+      })));
   }
 
   function errorBox(text, retry) {
@@ -856,6 +965,20 @@ useStyle("health", `
 .hl-tt tbody tr.hl-det{cursor:default}.hl-tt tbody tr.hl-det td{background:var(--surface-2)}
 .hl-tn-c{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:260px}
 .hl-slow{background:color-mix(in srgb,var(--lane-4) 16%,transparent);color:var(--lane-4)}
+.hl-gone{background:var(--surface-2);color:var(--muted);border:1px dashed var(--line-2)}
+.hl-fixed{background:color-mix(in srgb,var(--good) 14%,transparent);color:var(--good)}
+.hl-quiet{display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:1.5;padding:12px 16px}
+.hl-persona{display:flex;flex-direction:column;gap:10px}
+.hl-pc-t{display:flex;flex-direction:column;gap:4px}
+.hl-pc-l{display:flex;flex-wrap:wrap;gap:8px}
+.hl-pc-l .btn{display:inline-flex;align-items:center;gap:6px}
+.hl-stable{font-size:13px;line-height:1.5;padding:8px 12px;border-radius:8px;background:color-mix(in srgb,var(--good) 9%,transparent);border:1px solid color-mix(in srgb,var(--good) 30%,transparent)}
+.hl-stable.warn{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.hl-rr{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;margin:8px 0}
+.hl-rr .hl-rn{width:auto;padding:4px 8px}
+.hl-rr-c{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hl-rr-res{display:inline-flex;align-items:center;gap:8px}
+.hl-rr-bar{width:120px}
 .hl-run{font:11px var(--mono);background:var(--surface-3);border-radius:4px;padding:1px 6px;color:var(--text-2)}
 .hl-pr{display:flex;align-items:center;gap:8px;min-width:110px}.hl-pr .lv-bar{flex:1}.hl-pr span{font:12px var(--mono);color:var(--text-2);width:34px;text-align:right}
 .hl-hist{display:flex;flex-direction:column;gap:8px;padding:4px 0}

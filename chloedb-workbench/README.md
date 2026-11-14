@@ -296,9 +296,44 @@ a model.
   --json`), déjà vus marked.
 - **Away**: `POST /api/seen` and `GET /api/digest` tell what happened since
   you last looked: outcomes done, questions decided and open, what was
-  learned, a line per agent, and the moments of decisions to replay.
+  learned, a line per agent, how long each agent waited on you, and the
+  moments of decisions to replay. The first time, it counts from when your
+  first agent started. While the page is open and used, it posts
+  `POST /api/here` once a minute, so time at your desk is not called
+  "away". "I'm stepping away" (`POST /api/away/leave`) marks the moment
+  and lists the agents likely to need you while you are gone; it answers
+  nothing for you.
 
 SPEC.md, "The levels' backend as built", has the JSON shapes.
+
+## What Health's numbers count
+
+- **Tests by name.** Workbench records every test of every run the agents
+  make when the runner names them: cargo test, jest, vitest, go test -v,
+  pytest with `-v` or `-rA`, and pytest's junit report. Each session gets
+  `PYTEST_ADDOPTS=--junitxml=<session dir>/pytest-junit.xml`, added to your
+  own value; it is left out when the repository's pytest config already
+  writes a junit report. A command that prints only a summary ("12 passed")
+  or only an exit code is counted as a command and named as such; no test
+  is made up from it.
+- **Flaky** means passed and failed on the same commit. A failure the same
+  agent fixed in its session (it failed, the agent changed the code, it
+  passed) is not counted against the pass rate and is shown as "fixed in
+  this session".
+- **Test time** is the runner's own. The time a command waited for your
+  permission is never counted as test time.
+- **Run it N times**, in a test's history, has Workbench run that one test
+  N times in the checkout of the agent that last ran it (pytest, cargo and
+  go tests; no shell, 5 minutes a run at most) and shows how many passed.
+  "Stable since <commit>: N runs, 0 failures" says how long it has passed.
+- **Test with a persona**, at the foot of Tests, opens Preview's persona
+  test on an agent's running app.
+- **Hotspots** count from Workbench's rows and from `git log` (every
+  commit, fix commits named as such), and name the branch on each piece of
+  evidence.
+- **Model routing**, in the New agent dialog, suggests a model only from 5
+  similar past tasks in the repository; with fewer it says there is not
+  enough history.
 
 ## Tests
 

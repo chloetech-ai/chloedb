@@ -3,6 +3,11 @@
 // with ◆ chips, the open questions answered inline, a rule proposal to
 // adopt, and "Replay the evening": the decision moments played one after
 // another through the Rewind player. Mounting it marks the fleet seen.
+// Sixth build: the digest says what it counts from (`mode`: away, since
+// the first agent started, since you stepped away, or you were here), the
+// "need you" tile is the top bar's count, each agent's blocked time is a
+// line, an answer in a terminal is yours, and "I'm stepping away" marks
+// the moment and says who is likely to need you (POST /api/away/leave).
 import {
   h, useStyle, avatar, agentChip, ctxChip, pill, empty, fmtDur, fmtClock, fmtAgo, toMs, md, card, setFleet, precedentOf,
 } from "./common.js";
@@ -15,7 +20,7 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 export function mount(root, ctx) {
   const S = { d: null, err: null, answered: new Map(), busy: new Set(), errs: new Map(), ruleOn: new Map(), ruleText: new Map(), freeText: new Map(),
-    dismissed: new Set(), adopted: new Set(), playing: -1, stop: false };
+    dismissed: new Set(), adopted: new Set(), playing: -1, stop: false, leaving: false, left: null, leaveErr: null };
   const el = h("div", { class: "lv-screen aw" });
   root.append(el);
   let alive = true, waitT = null, waitRes = null;
@@ -42,34 +47,96 @@ export function mount(root, ctx) {
     const since = toMs(d.since_ms), until = toMs(d.until_ms) || Date.now();
     const t = d.tiles || {};
     const open = openQuestions();
-    const waiting = open.length;
+    const need = needYou();
     const done = num(t.done), learned = num(t.learned);
-    // decided_by: {you, rule, terminal}; "without you" is what rules and
-    // terminals answered.
+    // decided_by: {you, rule, terminal}. Only a rule decides without you:
+    // an answer at the prompt in a terminal was yours.
     const by = d.decided_by || {};
-    const without = d.decided_by ? num(by.rule) + num(by.terminal) : num(t.decided);
+    const without = d.decided_by ? num(by.rule) : num(t.decided);
     const decided = num(t.decided) + S.answered.size;
     el.replaceChildren(
-      h("div", { class: "aw-eyebrow" }, `You were away ${fmtDur(until - since)} · ${fmtClock(since)} → ${fmtClock(until)}`),
-      h("h1", { class: "aw-h1" }, headline(done, waiting, without)),
+      h("div", { class: "aw-top" },
+        h("div", { class: "aw-eyebrow" }, eyebrow(d, since, until)),
+        h("button", { class: "btn sm aw-leave", disabled: S.leaving ? true : null, title: "Marks now as when you left: the next digest counts from here", onclick: leave }, S.leaving ? "Marking…" : "I'm stepping away")),
+      h("h1", { class: "aw-h1" }, headline(done, need.length, without)),
+      leftCard() || "",
       h("div", { class: "aw-tiles" },
         tile(done, "good", "outcomes done", done ? "finished and marked done by their agents" : "none finished yet", () => ctx.go("#/mission")),
         tile(without, "ctx", "decided without you", decidedSub(decided), () => ctx.go("#/decide")),
-        tile(waiting, "warn", "waiting on you", waitingSub(open), waiting ? () => el.querySelector(".aw-q button, .aw-q textarea")?.focus() : null),
+        tile(need.length, "warn", need.length === 1 ? "agent needs you" : "agents need you", needSub(need, open), open.length ? () => el.querySelector(".aw-q button, .aw-q textarea")?.focus() : need.length ? () => ctx.go("#/") : null),
         tile(learned, "acc", "new things learned", learnedSub(learned), null)),
       h("div", { class: "aw-grid" },
         h("div", { class: "aw-col" }, storyCard(d), nowCard()),
-        h("div", { class: "aw-col" }, replayCard(d), questionsCard(open))));
+        h("div", { class: "aw-col" }, blockedCard(d), replayCard(d), questionsCard(open))));
   }
 
-  function headline(done, waiting, decided) {
-    if (!done && !waiting && !decided && !(S.d.story || []).length) return "Welcome back. Nothing happened while you were away.";
+  // What the digest counts from, said as it is.
+  function eyebrow(d, since, until) {
+    const span = `${fmtClock(since)} → ${fmtClock(until)}`;
+    switch (d.mode) {
+      case "first": return `Since your first agent started, ${fmtDur(until - since)} ago · ${span}`;
+      case "stepped": return `You stepped away ${fmtDur(until - since)} ago · ${span}`;
+      case "here": return `Since ${fmtClock(since)}; you have been here, last at ${fmtClock(toMs(d.here_ms))} · ${span}`;
+      case "since": return `Since ${fmtClock(since)}, ${fmtDur(until - since)} · ${span}`;
+      default: return `You were away ${fmtDur(until - since)} · ${span}`;
+    }
+  }
+
+  function headline(done, need, decided) {
+    const back = S.d.mode === "away" || S.d.mode === "stepped";
+    const lead = back ? "Welcome back. " : "";
+    if (!done && !need && !decided && !(S.d.story || []).length) return back ? "Welcome back. Nothing happened while you were away." : "Nothing has happened yet.";
     const parts = [];
     if (done) parts.push(`${plural(done, "outcome")} done`);
-    if (decided) parts.push(`${decided} decided without you`);
-    const head = parts.length ? parts.join(", ") : "The fleet kept working";
-    const tail = waiting ? (waiting === 1 ? "one question needs you." : `${waiting} questions need you.`) : "nothing needs you.";
-    return `Welcome back. ${head}; ${tail}`;
+    if (decided) parts.push(`${decided} decided by your rules`);
+    const head = parts.length ? parts.join(", ") : back ? "The fleet kept working" : "The fleet is working";
+    const tail = need ? (need === 1 ? "one agent needs you." : `${need} agents need you.`) : "nothing needs you.";
+    return `${lead}${head}; ${tail}`;
+  }
+
+  // The top bar's count: running agents waiting on you or idle at their prompt.
+  const needYou = () => (ctx.state?.agents || []).filter((a) => a.running !== false && a.state !== "exited" && (a.state === "waiting" || a.state === "idle"));
+
+  // ------------------------------------------------------- stepping away
+  async function leave() {
+    S.leaving = true; S.leaveErr = null; render();
+    try { S.left = await ctx.api("/api/away/leave", { method: "POST", body: {} }); } catch (e) { S.leaveErr = e.message || String(e); }
+    S.leaving = false;
+    render();
+  }
+  function leftCard() {
+    if (S.leaveErr) return h("div", { class: "err" }, `It could not be marked: ${S.leaveErr}`);
+    if (!S.left) return null;
+    const warn = (S.left.agents || []).filter((w) => w.level !== "ok");
+    const fine = (S.left.agents || []).length - warn.length;
+    const tone = { now: "crit", soon: "warn", idle: "mut" };
+    return h("section", { class: "lv-card aw-left" },
+      h("div", { class: "aw-left-h" }, h("b", null, `Marked at ${fmtClock(toMs(S.left.at_ms))}.`), " The next digest counts from here; nothing is answered for you.",
+        h("button", { class: "btn ghost sm", onclick: () => { S.left = null; render(); } }, "Close")),
+      warn.length ? h("ul", { class: "aw-warn" }, warn.map((w) => h("li", null,
+        pill(w.level === "now" ? "needs you now" : w.level === "soon" ? "likely soon" : "idle", tone[w.level] || "mut"),
+        agentChip(agentOf(w.agent) || { id: w.agent, name: w.name }, ctx), h("span", null, w.text))))
+        : h("div", { class: "lv-sub" }, "No agent is waiting on you or has asked you lately."),
+      fine ? h("div", { class: "lv-sub" }, `${plural(fine, "other agent")} ${fine === 1 ? "is" : "are"} working and has not asked you lately.`) : null);
+  }
+
+  // ------------------------------------------------- who waited on you
+  function blockedCard(d) {
+    const list = d.blocked || [];
+    if (!list.length) return null;
+    const what = { permission: "for a permission", ask: "for your answer" };
+    return h("section", { class: "lv-card aw-blocked" },
+      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Who waited on you"), h("span", { class: "lv-sub" }, "from when it asked to when it was answered")),
+      h("ul", { class: "aw-bl" }, list.map((b) => {
+        const kinds = new Map();
+        for (const w of b.waits || []) kinds.set(w.kind, (kinds.get(w.kind) || 0) + w.ms);
+        const bits = [...kinds].map(([k, ms]) => `waited ${fmtDur(ms)} ${what[k] || "for you"}`);
+        if (b.idle_ms) bits.push(`sat idle ${fmtDur(b.idle_ms)} at its prompt`);
+        const still = (b.waits || []).find((w) => w.open);
+        return h("li", null, agentChip(agentOf(b.agent) || { id: b.agent, name: b.name }, ctx),
+          h("span", null, bits.join(", and ")),
+          still ? pill("still waiting", "warn") : null);
+      })));
   }
 
   function tile(n, tone, label, sub, go) {
@@ -83,17 +150,16 @@ export function mount(root, ctx) {
     const byRule = by ? num(by.rule) : qs.filter((q) => String(q.answered_by || "").startsWith("rule:")).length;
     const byTerm = by ? num(by.terminal) : qs.filter((q) => q.answered_by === "terminal").length;
     const byYou = (by ? num(by.you) : qs.length - byRule - byTerm) + S.answered.size;
-    const bits = [];
-    if (byRule) bits.push(`${byRule} by your rules`);
-    if (byTerm) bits.push(`${byTerm} in a terminal`);
-    if (!bits.length) return total ? `all ${total} answered by you` : "nothing yet: rules you make answer for you";
-    return bits.join(", ") + (byYou ? `; ${byYou} more by you` : "");
+    const yours = byYou + byTerm;
+    if (!byRule) return total ? `all ${total} answered by you${byTerm ? `, ${byTerm} in a terminal` : ""}` : "nothing yet: rules you make answer for you";
+    return `by your rules${yours ? `; ${yours} more by you${byTerm ? `, ${byTerm} of them in a terminal` : ""}` : ""}`;
   }
-  function waitingSub(open) {
-    if (!open.length) return "nothing; the fleet is unblocked";
-    const oldest = open.reduce((a, b) => (toMs(a.created) < toMs(b.created) ? a : b));
-    const names = [...new Set(open.map((q) => nameOf(agentOf(q.agent))))];
-    return `${names.slice(0, 2).join(", ")}${names.length > 2 ? ` and ${names.length - 2} more` : ""}, ${fmtAgo(oldest.created).replace(" ago", "")}`;
+  function needSub(need, open) {
+    if (!need.length) return open.length ? `${plural(open.length, "question")} still open` : "nothing; the fleet is unblocked";
+    const waiting = need.filter((a) => a.state === "waiting").length, idle = need.length - waiting;
+    const bits = [waiting ? `${waiting} waiting` : null, idle ? `${idle} idle at its prompt` : null].filter(Boolean).join(", ");
+    const names = need.map((a) => nameOf(a));
+    return `${bits}: ${names.slice(0, 2).join(", ")}${names.length > 2 ? ` and ${names.length - 2} more` : ""}`;
   }
   function learnedSub(n) {
     const props = proposals().length;
@@ -126,7 +192,7 @@ export function mount(root, ctx) {
     // answer is a ChloeCtx chip.
     if (k === "decided") {
       const term = c.by === "terminal";
-      const text = term ? "answered in its terminal" : `you: ${String(c.text || "").split("\n")[0]}`;
+      const text = term ? "you, in its terminal" : `you: ${String(c.text || "").split("\n")[0]}`;
       return h("span", { class: "aw-chip", title: term ? "answered at the prompt in its terminal" : "your answer" }, pill(text, "acc"));
     }
     if (k === "rule") return h("span", { class: "aw-chip" }, ctxChip(`rule: ${String(c.text || "").split("\n")[0]}`, "answered by a rule you made, from ChloeCtx"));
@@ -181,7 +247,7 @@ export function mount(root, ctx) {
     const since = toMs(d.since_ms), until = toMs(d.until_ms) || Date.now();
     const playing = S.playing >= 0;
     return h("section", { class: "lv-card aw-replay" },
-      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Replay the evening"),
+      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, `Replay ${partOfDay(since, until)}`),
         h("span", { class: "lv-sub" }, moments.length ? `${fmtDur(until - since)} in ${fmtDur(total)}` : "")),
       moments.length ? h("div", { class: "aw-reel" }, moments.map((m, i) => {
         const a = agentOf(m.agent);
@@ -194,7 +260,7 @@ export function mount(root, ctx) {
         h("span", { class: "aw-cl" }, m.label || ""),
         h("span", { class: "aw-cf" }, avatar(a, 14), h("span", null, nameOf(a)), h("span", { class: "aw-ct" }, t ? fmtClock(t) : "")),
         S.playing === i ? h("span", { class: "aw-prog", style: `animation-duration:${clipMs(m)}ms` }) : null);
-      })) : h("div", { class: "lv-sub" }, "No decision was made while you were away."),
+      })) : h("div", { class: "lv-sub" }, "No decision was made in this time."),
       moments.length ? h("div", { class: "aw-acts" },
         playing
           ? h("button", { class: "btn primary sm", onclick: stopPlay }, "■ Stop")
@@ -202,6 +268,13 @@ export function mount(root, ctx) {
         h("span", { class: "lv-sub" }, playing ? `${S.playing + 1} of ${moments.length}: ${nameOf(agentOf(moments[S.playing].agent))}` : `${plural(moments.length, "moment")}, one after another`)) : null);
   }
 
+  // "Replay the morning": the part of the day the span was mostly in.
+  function partOfDay(since, until) {
+    if (until - since > 86_400_000) return "the decisions";
+    if (until - since > 10 * 3_600_000) return "the day";
+    const hr = new Date((since + until) / 2).getHours();
+    return hr >= 5 && hr < 12 ? "the morning" : hr >= 12 && hr < 17 ? "the afternoon" : hr >= 17 && hr < 22 ? "the evening" : "the night";
+  }
   const clipMs = (m) => Math.min(60000, Math.max(3000, toMs(m.to_ms) - toMs(m.from_ms)));
   const argsOf = (m) => ({ agent: agentOf(m.agent)?.id || m.agent, from_ms: toMs(m.from_ms), to_ms: toMs(m.to_ms), label: m.label });
 
@@ -320,6 +393,11 @@ export function mount(root, ctx) {
 useStyle("away", `
 .aw{display:flex;flex-direction:column}
 .aw-eyebrow{color:var(--muted);font-weight:650;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.aw-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.aw-leave{margin-left:auto}
+.aw-left{margin-top:14px;display:flex;flex-direction:column;gap:8px;padding:14px 18px}
+.aw-left-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aw-left-h .btn{margin-left:auto}
+.aw-warn,.aw-bl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.aw-warn li,.aw-bl li{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13.5px;color:var(--text-2)}
 .aw-h1{margin:4px 0 0;font-size:26px;font-weight:700;letter-spacing:-.015em;line-height:1.25}
 .aw-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px}
 .aw-tile{text-align:left;font:inherit;color:inherit;padding:16px 18px;display:flex;flex-direction:column;gap:2px}

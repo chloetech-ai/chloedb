@@ -2937,3 +2937,160 @@ prompt's labels and the choice of "Yes" on its screen.
   (Claude Code does on a resize), so zooming a terminal does not change
   the prompt Workbench reads. The signature ignores blanks, so Claude
   Code's own rewrapping does not change it either.
+
+## Sixth build: B Honest numbers
+
+Every number that Health, Away, Hotspots and the model hint show is now
+checked against the rows it comes from, and each says what it counts. The
+causes and fixes, item by item:
+
+1. **Every test of every run** (`src/testruns.rs`). Health said 0 flaky
+   for `test_promo_window` because `pytest -q` prints no test names. The
+   run became one made-up "test" named after its command. Now:
+   - Each session's environment has
+     `PYTEST_ADDOPTS=--junitxml='<session dir>/pytest-junit.xml' -o junit_family=xunit1`.
+     It is appended to the user's own value, and left out when
+     `pytest.ini`, `pyproject.toml`, `setup.cfg` or `tox.ini` mention junit.
+   - A report counts for a call only when both are true:
+     - It was written inside the call: from 50 ms before its PreToolUse to
+       5 s after its PostToolUse.
+     - No other call has read it already. A call that starts right after
+       another must not read the first one's report.
+   - A `--junitxml` path in the command is read too.
+   - Test names: xunit1 names tests by their file
+     (`test_coupons.py::test_x`). An xunit2 dotted class name is matched
+     against the checkout.
+   - The console parsers read `pytest -v` and `-rA` lines. They also read
+     every runner's summary counts (cargo, pytest, jest, vitest, go).
+   - A command that names no test is only a row of the new table
+     `test_summaries`. That table has one row per test command:
+     - counts and exit code;
+     - `complete`;
+     - `source`: junit, console, summary or exit;
+     - `ms` and `wait_ms`.
+   - `test_runs` holds named tests only. Old rows with `runner = 'other'`
+     are left out of the statistics.
+   - Flaky keeps its definition: passed and failed on the same commit, or
+     flipped twice within a day on one commit.
+   - A test is `gone` ("not run any more") when its command ran again
+     without it. A gone test is not counted as newly failing.
+   - `./pytest`, `-m pytest` and `.../py.test` now count as test commands
+     (`is_test_command`). `flow::is_test` is left as it is.
+2. **Waits and fixes.**
+   - Claude Code fires PreToolUse before the permission prompt, so the
+     prompt's wait is inside the Pre-to-Post span. The brief assumed the
+     reverse.
+   - A run's time is the first of these that is known:
+     - the runner's own total;
+     - else the span minus the time its permission questions were open,
+       when each was answered in Workbench;
+     - else unknown. A prompt answered in the terminal says nothing about
+       when the run began.
+   - A test gets the run's time only when it was the run's only test, or
+     when the runner gave a total. `slow` needs a test's own times.
+   - "Fixed in this session": a failure followed, for the same agent, by a
+     pass after the code changed (`fixed_in_session`, public for Ship). It
+     is shown, and left out of the pass rate.
+   - Recent test commands say how long a command waited, as in "waited
+     4 s for you".
+3. **Stable since and Run it N times.**
+   - Each test has `stable`:
+     - the commit and time of the first pass after its last failure;
+     - the runs since then;
+     - the failures before;
+     - for a flaky test, how likely that many passes in a row would be if
+       nothing had changed: (1-f)^n.
+   - The history has "Run it N times" (5 to 50).
+     `POST /api/tests/rerun {test, n}` runs the one test:
+     - pytest by node id;
+     - cargo with `--exact`;
+     - go with `-run ^X$`.
+   - The rerun happens in the checkout of the agent that ran the test
+     last, with these settings:
+     - no shell, `CI=1`, no `PYTEST_ADDOPTS`;
+     - no bytecode written;
+     - 5 minutes per run at most.
+   - Each run is recorded like an agent's, and marked as Workbench's
+     (`by_workbench`).
+   - `GET /api/tests/rerun/:id` follows the rerun. The page shows its
+     progress, then a result such as "10 of 10 passed on c4617594".
+   - For a runner where Workbench cannot run a single test, the page
+     offers "Ask <agent> to run it 10 times" (a steer).
+4. **Test with a persona** is a card at the foot of Tests.
+   - It has a button per agent with a preview URL. The button opens
+     Preview with the persona drawer open. A `sessionStorage` flag,
+     `wb.persona`, is read once by `ui/levels/preview-lab.js`.
+   - The persona prompts (`chloedb-swarm/src/workbench.mjs`) now say:
+     - do the task's main action once, and keep going past problems;
+     - before calling a number wrong, check it against every amount the
+       page shows.
+   - The review now says:
+     - a wrong number is a bug only after that check;
+     - severity 3 only when the app stopped the task;
+     - "Pay was never pressed" when the main action was not done.
+5. **Away** (`src/digest.rs`, `ui/levels/away.js`).
+   - Since: the `since` parameter, else when you last looked, else when
+     the first agent started. A first visit used to count from 24 h ago.
+   - `mode` says which, and "Welcome back" shows only for `away` and
+     `stepped`:
+     - `first`: since the first agent started;
+     - `away`: since you last looked;
+     - `stepped`: since "I'm stepping away";
+     - `here`: the page's heartbeat came 90 s or more after `since`. The
+       page posts `POST /api/here` once a minute while it is shown and
+       used;
+     - `since`: from the `since` parameter.
+   - "Replay the morning", "afternoon", "evening" or "night" comes from
+     the middle hour of the span. It says "the day" over 10 h, and "the
+     decisions" over a day.
+   - The "need you" tile is the top bar's count: running agents waiting or
+     idle. The digest's `needs_you` is the same list.
+   - "Who waited on you" shows, per agent:
+     - how long its questions were open, by kind;
+     - its idle stretches, from Stop to the next prompt.
+     Both are clipped to the window.
+   - An answer in a terminal counts as yours. Only rules decide "without
+     you".
+   - "I'm stepping away" (`POST /api/away/leave`) marks the moment and
+     lists:
+     - who needs you now;
+     - who asked you in the last 15 min;
+     - who is idle.
+     It answers nothing.
+6. **Hotspots** (`src/hotspots.rs`, `ui/levels/hotspots.js`).
+   - The header's totals are the sums of every scored file's counts
+     (`Totals::of`), with the hotspots by level, as in "2 hotspots, 1 warm
+     · 1 mild". The list and the header can no longer disagree.
+   - `git log --all`, without merges, seeds the score:
+     - each commit after the first: 1.5;
+     - each fix commit: 1.5. A fix commit's subject has fix, bug, broken,
+       wrong, regression, hotfix or correct.
+   - Commits join the churn per day.
+   - A function gets an edit only inside its own span.
+     - The code index's chunk starts at what is attached above the
+       definition (imports, comments).
+     - The span now starts at the line that defines the name
+       (`def_line`): a whole-word match after def, fn, class and similar
+       words.
+   - Each piece of evidence names its branch:
+     - the agent's branch;
+     - or, for a commit, HEAD's branch when HEAD reaches it, else the ref
+       git names.
+   - A permission you refused counts as a correction of the file it named.
+7. **Model routing** (`src/routing.rs`, `ui/levels/route-hint.js`).
+   - With 1 to 4 similar past tasks there is no suggestion. The hint says
+     only "Not enough history: N similar past tasks …. The model is your
+     choice." The `enough` field says which case applies.
+   - A cost of $0.00, meaning none was recorded, is not shown.
+
+Left out, and why:
+- No per-test pass is inferred from a summary line without names: a
+  count is shown as a count.
+- `flow::is_test`, which Flow uses for test time, is unchanged. The wider
+  match is in `testruns::is_test_command` only, so Flow's numbers do not
+  move here.
+- Part A may change how permissions are answered. `permission_wait` counts
+  only questions answered in Workbench, and says "unknown" otherwise, so
+  it stays true whatever A changes.
+- Run it N times keeps its progress in memory. A restart forgets the
+  progress, not the recorded runs.

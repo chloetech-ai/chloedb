@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -896,17 +896,39 @@ fn permission_wait(sup: &Supervisor, agent: &str, start: i64, end: i64) -> Optio
 }
 
 /// A junit report written during a call (after its PreToolUse, by `end + 5 s`).
-fn fresh_junit(path: &Path, start: Option<i64>, end: i64, dir: &Path) -> Option<Parsed> {
+fn fresh_junit(path: &Path, start: Option<i64>, end: i64, dir: &Path, use_id: Option<&str>) -> Option<Parsed> {
     let md = std::fs::metadata(path).ok()?;
     if md.len() > 64 << 20 {
         return None;
     }
-    let mt = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
+    let at = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let mt = at.as_millis() as i64;
     if mt < start.map_or(end - 120_000, |s| s - 50) || mt > end + 5000 {
         return None;
     }
+    // A report is one call's: a call that starts right after another
+    // (within the slack above) must not read the report the first wrote.
+    let key = (path.to_path_buf(), at.as_nanos(), md.len());
+    let mut read = junits_read().lock().unwrap();
+    if read.get(&key).is_some_and(|u| use_id.is_none() || u.as_deref() != use_id) {
+        return None;
+    }
     let p = parse_junit(&std::fs::read_to_string(path).ok()?, Some(dir));
-    (!p.tests.is_empty()).then_some(p)
+    if p.tests.is_empty() {
+        return None;
+    }
+    if read.len() > 4096 {
+        read.clear();
+    }
+    read.insert(key, use_id.map(str::to_string));
+    Some(p)
+}
+
+/// The junit reports already read, by file, time and size, with the call
+/// that read each (the same call may be recorded again).
+fn junits_read() -> &'static std::sync::Mutex<HashMap<(PathBuf, u128, u64), Option<String>>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<HashMap<(PathBuf, u128, u64), Option<String>>>> = std::sync::OnceLock::new();
+    R.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 /// Writes a call's tests as rows of `test_runs`, one per test it names
@@ -928,7 +950,7 @@ fn record(sup: &Supervisor, agent: &str, call: Call) {
     };
     let dir = Path::new(&a.cwd);
     let console = parse(&call.command, &call.output);
-    let junit = if mine { None } else { [junit_named(&call.command, dir), Some(junit_path(&sup.session_dir(agent)))].into_iter().flatten().find_map(|p| fresh_junit(&p, start, call.end_ms, dir)) };
+    let junit = if mine { None } else { [junit_named(&call.command, dir), Some(junit_path(&sup.session_dir(agent)))].into_iter().flatten().find_map(|p| fresh_junit(&p, start, call.end_ms, dir, call.use_id.as_deref())) };
     let source = if junit.is_some() { "junit" } else if !console.tests.is_empty() { "console" } else if console.counts.is_some() { "summary" } else { "exit" };
     let (runner, tests, total_ms, counts) = match junit {
         Some(j) => {
@@ -1660,6 +1682,8 @@ fn run_once(words: &[String], dir: &Path) -> Result<(String, i64), String> {
         .args(&words[1..])
         .current_dir(dir)
         .env("CI", "1")
+        // Workbench's own runs leave the checkout as they found it.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove("CHLOEDB_WORKBENCH_TOKEN")
         .env_remove("PYTEST_ADDOPTS")
@@ -1990,6 +2014,14 @@ E       assert 0.151 &gt; 0.2</failure></testcase>
         std::fs::write(dir.path().join("pytest.ini"), "[pytest]\naddopts = --junitxml=out.xml\n").unwrap();
         assert!(session_env(dir.path(), Path::new("/data/sessions/a1")).is_empty());
         assert_eq!(junit_named("python3 -m pytest --junitxml=r/out.xml -q", Path::new("/w")), Some(Path::new("/w/r/out.xml").to_path_buf()));
+        // A report belongs to the call that read it: the next call, even
+        // one that starts within the time slack, does not read it again.
+        let report = dir.path().join("report.xml");
+        std::fs::write(&report, xml).unwrap();
+        let now = now_ms();
+        assert!(fresh_junit(&report, Some(now - 1000), now, dir.path(), Some("call-1")).is_some());
+        assert!(fresh_junit(&report, Some(now - 1000), now, dir.path(), Some("call-1")).is_some(), "the same call, recorded again");
+        assert!(fresh_junit(&report, Some(now), now + 10, dir.path(), Some("call-2")).is_none(), "the next call's report is its own");
     }
 
     #[test]

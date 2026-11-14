@@ -411,6 +411,8 @@ export function mountLab(host, ctx, getAgent) {
 
   attach();
   reload();
+  // Sixth build: Health's "Test with a persona" opens this drawer (ui/levels/health.js).
+  try { const want = JSON.parse(sessionStorage.getItem("wb.persona") || "null"); if (want && want.agent === L.agent) { sessionStorage.removeItem("wb.persona"); toggle(true); } } catch {}
   return { unmount: stop, open: () => toggle(true), refresh: reload };
 }
 

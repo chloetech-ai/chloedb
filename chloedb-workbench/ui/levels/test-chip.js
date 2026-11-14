@@ -27,13 +27,17 @@ function fill(el, ctx, step, runs) {
   const passed = sum("passed"), failed = sum("failed"), flaky = new Set(mine.flatMap((r) => r.flaky_tests || [])).size;
   const newly = new Set(mine.flatMap((r) => r.newly_failing || []));
   const failedNames = [...new Set(mine.flatMap((r) => r.failed_tests || []))];
-  const unknown = mine.every((r) => !r.tests && r.exit_code != null);
+  // Sixth build: a run that printed no count is only its exit code; none
+  // is made up into a test.
+  const unknown = mine.every((r) => r.counted === false || (r.counted == null && !r.tests && r.exit_code != null));
+  const waited = mine.reduce((n, r) => n + (r.wait_ms || 0), 0);
   const parts = unknown
     ? [h("b", { class: mine.some((r) => r.exit_code) ? "f" : "p" }, mine.some((r) => r.exit_code) ? `exit ${mine.find((r) => r.exit_code).exit_code}` : "exit 0")]
     : [passed ? h("b", { class: "p" }, `${passed} passed`) : null, failed ? h("b", { class: "f" }, `${failed} failed`) : null, flaky ? h("b", { class: "w" }, `${flaky} flaky`) : null, newly.size ? h("b", { class: "f" }, `${newly.size} newly failing`) : null];
   const title = [
     `${mine.length} test run${mine.length === 1 ? "" : "s"} in this step`,
     failedNames.length ? `failed: ${failedNames.slice(0, 6).join(", ")}${failedNames.length > 6 ? ", …" : ""}` : null,
+    waited >= 1000 ? `waited ${Math.round(waited / 1000)} s for a permission (not counted as test time)` : null,
     "Open Health's Tests",
   ].filter(Boolean).join("\n");
   el.hidden = false;

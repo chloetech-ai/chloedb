@@ -38,11 +38,13 @@ const KIND = {
   re_edits: ["re-edits", "re-edited", "warn"], agents: ["agents", "agents", "mut"], reverts: ["reverts", "reverted", "crit"],
   test_fails: ["test fails", "failed tests", "crit"], flaky: ["flaky", "flaky", "warn"], errors: ["errors", "runtime errors", "crit"],
   steers: ["corrections", "corrected by you", "acc"], questions: ["questions", "asked you", "acc"], incidents: ["incidents", "incidents", "crit"],
+  commits: ["commits", "commits", "mut"], fixes: ["fix commits", "fix commits", "warn"],
 };
 const EV = {
   edit: ["Edit", "var(--accent)"], revert: ["Revert", "var(--crit)"], test_fail: ["Test failed", "var(--crit)"], flaky: ["Flaky", "var(--warn)"],
   error: ["Runtime error", "var(--crit)"], steer: ["You said", "var(--good)"], prompt: ["Prompted again", "var(--good)"], question: ["Asked you", "var(--ctx)"],
   incident: ["Incident", "var(--warn)"], record: ["ChloeCtx", "var(--ctx)"],
+  commit: ["Commit", "var(--muted)"], fix: ["Fix commit", "var(--warn)"],
 };
 const chipText = (r) => {
   const n = r.n;
@@ -56,6 +58,8 @@ const chipText = (r) => {
     case "steers": return `${n} correction${n === 1 ? "" : "s"}`;
     case "questions": return `${n} question${n === 1 ? "" : "s"}`;
     case "incidents": return `${n} incident${n === 1 ? "" : "s"}`;
+    case "commits": return `${n} commit${n === 1 ? "" : "s"}`;
+    case "fixes": return `${n} fix commit${n === 1 ? "" : "s"}`;
     default: return `${n} ${r.kind}`;
   }
 };
@@ -378,12 +382,16 @@ export function withHotspots(mountHealth) {
     function stats() {
       const t = S.data.totals || {};
       const tile = (n, label, sub, tone) => h("div", { class: "hs-tile" }, h("b", { class: tone ? `t-${tone}` : "" }, String(n ?? 0)), h("span", { class: "hs-tl" }, label), h("span", { class: "lv-sub" }, sub));
+      // Sixth build: every count is the sum of the files' own counts, so the
+      // tiles add up with the list (hotspots or not).
+      const levels = [t.hot ? `${t.hot} hot` : null, t.warm ? `${t.warm} warm` : null, t.mild ? `${t.mild} mild` : null].filter(Boolean).join(" · ") || "none over the bar";
       return h("section", { class: "lv-card hs-stats" },
-        tile(t.hotspots, "hotspots", `${t.hot || 0} hot · scored from ${t.files || 0} edited files`, "crit"),
+        tile(t.hotspots, t.hotspots === 1 ? "hotspot" : "hotspots", `${levels} · of ${t.files || 0} files with signals`, "crit"),
         tile(t.edits, "agent edits", `in the last ${S.data.window?.days || S.days} days`),
+        tile(t.commits, "commits", `${t.fixes ? `${t.fixes} of them fixes · ` : ""}from git log, on every branch`),
         tile(t.reverts, "reverts", "revert commits and edits put back", "warn"),
         tile(t.test_fails, "test failures", "right after an edit to the file", "warn"),
-        tile(t.steers, "corrections", "your steers and prompts mid-work", "acc"),
+        tile(t.steers, "corrections", "your steers, prompts mid-work and permissions you refused", "acc"),
         h("div", { class: "hs-win" },
           h("div", { class: "hs-filters" }, [7, 14, 30].map((d) => h("button", { class: "hs-f" + (S.days === d ? " on" : ""), onclick: () => { S.days = d; S.boards.clear(); fetchList(); } }, `${d} d`))),
           h("span", { class: "lv-sub" }, S.data.updated_ms ? `scored ${fmtAgo(S.data.updated_ms)}` : "scored now"),
@@ -461,7 +469,8 @@ export function withHotspots(mountHealth) {
           h("span", { class: "hs-when", title: new Date(e.ts_ms).toLocaleString() }, fmtWhen(e.ts_ms)),
           h("i", { class: "hs-dot" }),
           h("div", { class: "hs-eb" },
-            h("div", { class: "hs-eh" }, h("span", { class: "hs-ek" }, label), a ? h("span", { class: "hs-ea" }, avatar(a, 14), a.name) : e.kind === "steer" ? h("span", { class: "hs-ea" }, avatar("you", 14), "you") : null),
+            h("div", { class: "hs-eh" }, h("span", { class: "hs-ek" }, label), a ? h("span", { class: "hs-ea" }, avatar(a, 14), a.name) : e.kind === "steer" ? h("span", { class: "hs-ea" }, avatar("you", 14), "you") : null,
+              e.branch ? h("span", { class: "hs-br", title: "the branch this happened on" }, `on ${e.branch}`) : null),
             h("div", { class: "hs-et" }, inlineCode(e.text)),
             e.detail ? h("div", { class: "hs-ed lv-sub" }, inlineCode(e.detail)) : null),
           link(e));
@@ -479,7 +488,7 @@ export function withHotspots(mountHealth) {
       if (l.incident) return h("button", { class: "lv-link hs-go", onclick: () => ctx.go(`#/health/${l.incident}`) }, "Board");
       if (l.question) return h("button", { class: "lv-link hs-go", onclick: () => ctx.go("#/decide") }, "Decide");
       if (l.error) return h("button", { class: "lv-link hs-go", onclick: () => ctx.go(`#/preview/${e.agent || ""}`) }, "Error");
-      if (l.commit) return h("button", { class: "lv-link hs-go", onclick: () => ctx.go(`#/trace?q=${enc(`why was ${l.commit} reverted`)}`) }, l.commit.slice(0, 7));
+      if (l.commit) return h("button", { class: "lv-link hs-go", onclick: () => ctx.go(`#/trace?q=${enc(e.kind === "revert" ? `why was ${l.commit} reverted` : `why did ${l.commit} change ${S.boards.get(S.sel)?.hotspot?.file || "this file"}`)}`) }, l.commit.slice(0, 7));
       return h("span");
     }
 
@@ -660,7 +669,7 @@ useStyle("hotspots", `
 .hs-spark{display:block;flex:none}
 .hs-tab{display:inline-flex;align-items:center;gap:6px}
 .hs-panel{display:flex;flex-direction:column;gap:16px}
-.hs-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;gap:14px;align-items:center;padding:16px 20px}
+.hs-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr)) auto;gap:14px;align-items:center;padding:16px 20px}
 .hs-tile{display:flex;flex-direction:column;gap:2px;min-width:0}
 .hs-tile>b{font-size:30px;line-height:1.05;font-weight:720;letter-spacing:-.02em}
 .hs-tile>b.t-crit{color:var(--crit-ink)}.hs-tile>b.t-warn{color:var(--warn-ink)}.hs-tile>b.t-acc{color:var(--accent)}
@@ -710,6 +719,7 @@ useStyle("hotspots", `
 .hs-eh{display:flex;align-items:center;gap:8px}
 .hs-ek{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--c)}
 .hs-ea{display:inline-flex;align-items:center;gap:5px;color:var(--text-2);font-size:12px}
+.hs-br{font:11px var(--mono);color:var(--muted);background:var(--surface-2);border-radius:5px;padding:0 5px}
 .hs-et{margin-top:1px}
 .hs-ed{font-size:12px;margin-top:1px}
 .hs-go{font-size:12px;padding-top:2px}

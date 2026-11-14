@@ -3091,6 +3091,14 @@ function markSeen() {
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") markSeen(); });
 window.addEventListener("pagehide", markSeen);
+// Sixth build: while the page is shown and used, say so once a minute, so
+// Away does not call a morning at the desk "away" (src/digest.rs).
+let lastInput = Date.now();
+for (const k of ["pointerdown", "keydown", "wheel"]) document.addEventListener(k, () => { lastInput = Date.now(); }, { passive: true, capture: true });
+setInterval(() => {
+  if (!S.token || document.visibilityState !== "visible" || Date.now() - lastInput > 120000) return;
+  fetch("/api/here", { method: "POST", headers: { Authorization: `Bearer ${S.token}`, "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+}, 60000);
 
 let started = false;
 function start() {

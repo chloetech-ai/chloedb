@@ -11,7 +11,9 @@ import { h, useStyle, fmtTokens } from "./common.js";
 const enc = encodeURIComponent;
 const NAMES = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus", default: "the default" };
 const nice = (m) => NAMES[m] || m;
-const usd = (x) => (x == null ? "" : x < 0.995 ? `$${x.toFixed(2)}` : `$${x.toFixed(x < 9.95 ? 2 : 0)}`);
+// Sixth build: no cost recorded is no cost shown, not "$0.00"; with fewer
+// than 5 similar tasks there is no suggestion, only why (src/routing.rs).
+const usd = (x) => (x == null || !(x > 0) ? "" : x < 0.995 ? `$${x.toFixed(2)}` : `$${x.toFixed(x < 9.95 ? 2 : 0)}`);
 
 export function attach(dialog, { api }) {
   if (!dialog || dialog.dataset.routeHint) return;
@@ -60,12 +62,12 @@ export function attach(dialog, { api }) {
         routeIcon(),
         h("div", { class: "rh-main" },
           h("div", { class: "rh-line" }, "Suggested: ", h("b", {}, nice(s.model)), h("span", { class: "rh-sep" }, "·"),
-            h("span", {}, `${s.done} of ${s.n} like this finished`), h("span", { class: "rh-sep" }, "·"), h("span", {}, `${usd(s.avg_cost_usd)} avg`),
+            h("span", {}, `${s.done} of ${s.n} like this finished`), usd(s.avg_cost_usd) ? [h("span", { class: "rh-sep" }, "·"), h("span", {}, `${usd(s.avg_cost_usd)} avg`)] : null,
             s.avg_minutes != null ? [h("span", { class: "rh-sep" }, "·"), h("span", {}, `${Math.round(s.avg_minutes)} min`)] : null),
           h("div", { class: "rh-why" }, v.why || "")),
         use),
       h("div", { class: "rh-alts" }, alts.map((a) => h("button", {
-        type: "button", class: "rh-alt" + (a.model === s.model ? " best" : ""), title: `${a.done} of ${a.n} finished · ${usd(a.avg_cost_usd)} avg${a.avg_tokens ? ` · ${fmtTokens(a.avg_tokens)} tokens` : ""}`,
+        type: "button", class: "rh-alt" + (a.model === s.model ? " best" : ""), title: `${a.done} of ${a.n} finished${usd(a.avg_cost_usd) ? ` · ${usd(a.avg_cost_usd)} avg` : ""}${a.avg_tokens ? ` · ${fmtTokens(a.avg_tokens)} tokens` : ""}`,
         onclick: () => { model.value = a.model === "default" ? "" : a.model; render(v); },
       },
         h("b", {}, nice(a.model)),
@@ -73,7 +75,7 @@ export function attach(dialog, { api }) {
         h("span", {}, `${a.done}/${a.n}`), h("span", { class: "rh-dim" }, usd(a.avg_cost_usd))))),
       v.apply === false ? h("div", { class: "rh-foot rh-dim" }, `${v.similar} similar past task${v.similar === 1 ? "" : "s"}: an agent's spawn_agent keeps the default model until there are 5.`)
         : (v.examples || []).length ? h("div", { class: "rh-foot" }, h("span", { class: "rh-dim" }, "Like "), v.examples.slice(0, 2).map((e, i) => [i ? h("span", { class: "rh-dim" }, ", ") : null,
-          h("span", { class: "rh-ex", title: `${e.name}: ${e.model}, ${e.done ? "finished" : "not finished"}, ${usd(e.cost_usd)}` }, `“${clip(e.task, 54)}”`, h("span", { class: "rh-dim" }, ` ${nice(e.model)}, ${usd(e.cost_usd)}`))]),
+          h("span", { class: "rh-ex", title: `${e.name}: ${e.model}, ${e.done ? "finished" : "not finished"}${usd(e.cost_usd) ? `, ${usd(e.cost_usd)}` : ""}` }, `“${clip(e.task, 54)}”`, h("span", { class: "rh-dim" }, ` ${nice(e.model)}${usd(e.cost_usd) ? `, ${usd(e.cost_usd)}` : ""}`))]),
           h("span", { class: "rh-dim" }, ` · from ${v.similar} past tasks in this repository`)) : null);
   }
 
