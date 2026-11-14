@@ -140,7 +140,7 @@ window.__sa_numbers = (() => {
   window.__sa_screen = async (root, app, spec) => {
     if (spec && spec.gate && !spec.preview) {
       const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
-      if (!me) { root.replaceChildren(gateView(app, spec.gate)); return; }
+      if (!me) { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
     }
     const E = window.__SA_EXPR || [];
     const SRC = window.__SA_EXPR_SRC || [];
@@ -1084,6 +1084,7 @@ window.__sa_numbers = (() => {
             root.replaceChildren(h('div', { class: `screen front${layout ? ` layout-${layout}` : ''}` }, front.page(spec.body, scope(), layout)));
           } else root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange(blocks(spec.body, scope(), 'body'))));
           if (front) front.after(root);
+          window.__sa_gated?.(gated);
           restore(f);
           tidy();
         } while (again);

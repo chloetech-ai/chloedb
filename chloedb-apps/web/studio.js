@@ -695,7 +695,7 @@ function renderApp() {
       st.views.length ? h('a', { class: 'navlink small own', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
   }
   const views = st.views;
-  if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
+  if (!views.find((v) => v.slug === S.view)) S.view = (BARE && views.find((v) => !isDetailOnly(v, views))?.slug) || views[0]?.slug || null;
   // An app of one screen on its own (a clock, a timer, a calculator) is
   // that screen, whole: no app bar, no tab of its one screen.
   document.body.classList.toggle('one-screen', !!BARE && views.length === 1);
@@ -705,14 +705,24 @@ function renderApp() {
     const first = views.find((v) => v.slug === S.view);
     if (first) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: S.view, cap: first.id }).catch(() => {});
   }
-  // tabs
+  // tabs: on the app's own page a screen of one row (a DETAIL opened from
+  // a list, with the row's id) is reached from its list, not a tab beside it.
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  const tabbed = BARE ? views.filter((v) => !isDetailOnly(v, views)) : views;
+  tabs.replaceChildren(...(tabbed.length ? tabbed : views).map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
   renderFrames();
   renderPanel();
+}
+
+// A screen that shows one row, opened from another screen with its id
+// (app.open("project", {id})): a DETAIL that another view opens.
+function isDetailOnly(v, views) {
+  if (!(v.spec?.patterns || []).includes('detail')) return false;
+  const opens = new RegExp(`app\\.open\\(\\\\?["'\`]${v.slug}\\\\?["'\`]\\s*,`);
+  return views.some((o) => o !== v && opens.test(o.code || ''));
 }
 
 // An icon for a screen, from the words of its title (the bold look shows
@@ -1105,6 +1115,7 @@ function renderFrames() {
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
   for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view || !!S.activity;
+  document.body.classList.toggle('gated', !!BARE && !!S.frames.get(S.view)?.gated);
   if (S.activity && !BARE) {
     if (!S.act || !box.contains(S.act.box)) {
       S.act?.destroy();
@@ -1662,6 +1673,12 @@ window.addEventListener('message', async (e) => {
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
   if (m.kind === 'tap') { if (!entry.preview) S.taps = (S.taps || 0) + 1; return; }
+  if (m.kind === 'gate') {
+    const f = S.frames.get(entry.slug);
+    if (f) f.gated = !!m.on;
+    if (entry.slug === S.view) document.body.classList.toggle('gated', !!BARE && !!m.on);
+    return;
+  }
   const on = entry.preview ? {} : { 'x-sa-view': entry.slug };
   if (!entry.preview && m.kind === 'rpc' && ['insert', 'update', 'remove', 'call'].includes(m.method)) { on['x-sa-taps'] = String(S.taps || 0); S.taps = 0; }
   try {

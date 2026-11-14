@@ -25,6 +25,10 @@
   };
   window.__sa_report = report;
   window.__sa_ready = () => post({ kind: 'ready' });
+  // Whether the screen shows its sign-in (a visitor signed out of a screen
+  // kept to signed-in people): the app's own page then shows no tabs.
+  let gatedNow = null;
+  window.__sa_gated = (on) => { if (gatedNow === !!on) return; gatedNow = !!on; post({ kind: 'gate', on: gatedNow }); };
   // Every tap in the app is counted (the studio sends the count with the
   // next write): how many taps it takes to do something is a measure of use.
   document.addEventListener('click', (e) => { if (e.isTrusted && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
