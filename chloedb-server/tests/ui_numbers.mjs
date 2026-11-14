@@ -201,6 +201,16 @@ data.state.alerts.rules[0].severity = "info";
 assert.deepEqual([data.homeProblems(), data.homeStatus()], [[], "ok"]);
 data.state.fleet = null; data.state.alerts = null;
 
+// LIV-12: the apps' tables are the apps', not the owner's own: netops's and
+// ChloeCtx's fold away, and netops's syslog stays a source for Logs, named
+// as the app's.
+const owners = await import(new URL("owners.js", app));
+assert.deepEqual(["netops_sites", "chloectx_memory", "ctx_spaces", "fs_items", "products"].map((t) => owners.ownerOf(t)?.owner ?? null), ["Network operations", "ChloeCtx", "ChloeCtx", "Feature store", null]);
+assert.deepEqual(owners.byOwner(["products", "netops_sites", "netops_links"]).mine, ["products"]);
+const logsView = await import(new URL("views/logs.js", app));
+const syslog = { table: "netops_syslog", short: { fields: [{ name: "ts", type: "timestamp" }, { name: "body", type: "text" }] } };
+assert.deepEqual(logsView.logTables([syslog]).map((x) => x.table), ["netops_syslog"]);
+
 // CCW-10: the shell knows each view before its code loads: what views/index.js
 // says of a view (its title, icon, layout, the words the palette finds it by)
 // is what the view's module says, and each view's code loads.
