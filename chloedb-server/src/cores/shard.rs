@@ -416,8 +416,21 @@ impl Replica {
         let following = self.kept.follows.as_ref().map_or(0, |f| f.1);
         if !r.pre && r.term > following && r.term > self.asked_term {
             self.asked_term = r.term;
-            self.serves_reads = false;
         }
+    }
+
+    /// Whether a vote request of a newer term than its primary's holds its
+    /// reads ([`Self::saw_vote`]). Apart from `serves_reads`, which says it
+    /// is caught up (and so a member, [`Self::joined`]): a refused vote of
+    /// another copy must not keep it from joining.
+    fn read_hold(&self) -> bool {
+        self.asked_term > self.kept.follows.as_ref().map_or(0, |f| f.1)
+    }
+
+    /// Whether it serves reads now: caught up with its primary, and no
+    /// vote of a newer term than its primary's holds them.
+    pub fn reads_open(&self) -> bool {
+        self.serves_reads && !self.read_hold()
     }
 
     /// Answers vote `r` ([`decide`]) at `n`, and what to keep (the vote)
@@ -483,7 +496,7 @@ impl Replica {
     /// holds reaches the primary's last.
     pub fn applied(&mut self, term: u64, behind: bool, global_checkpoint: u64, applied: Result<Applied, ApiError>, db_term: u64) -> Result<pb::ReplicateResponse, ApiError> {
         let replica_term = db_term.max(term);
-        self.serves_reads = matches!(applied, Ok(Applied::At(_))) && !behind && term >= self.asked_term;
+        self.serves_reads = matches!(applied, Ok(Applied::At(_))) && !behind;
         Ok(match applied? {
             Applied::At(at) => {
                 self.global_checkpoint = global_checkpoint.min(at.seq);
@@ -575,8 +588,11 @@ impl Replica {
     /// until a call finds it behind, it fails to apply one or it installs
     /// a copy. Refused otherwise (503), as it is catching up.
     pub fn readable(&self) -> Result<(), ApiError> {
-        if self.serves_reads {
+        if self.reads_open() {
             return Ok(());
+        }
+        if self.serves_reads {
+            return Err(unavailable(format!("a copy asked this replica for a vote in term {}, newer than its primary's: that term may have a primary already, so it serves no reads until one calls it; read from another copy or the primary", self.asked_term)));
         }
         let why = match self.called_at {
             None => "its primary has not called since it started",
@@ -1820,6 +1836,8 @@ mod tests {
         assert!(r.readable().is_err(), "term 2 may have a primary already");
         r.applied(1, false, 0, Ok(at), 1).unwrap();
         assert!(r.readable().is_err(), "the primary of term 1 does not bring reads back");
+        assert!(r.serves_reads, "it is caught up (and so may join the shard): only its reads are held");
+        r.kept.follows = Some(("x".into(), 2));
         r.applied(2, false, 0, Ok(at), 2).unwrap();
         assert!(r.readable().is_ok(), "term 2's primary called and it caught up");
         r.saw_vote(&ask(2, "y", (1, 150), false));

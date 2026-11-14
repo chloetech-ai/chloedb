@@ -1800,7 +1800,7 @@ impl Follow {
     /// Whether it serves reads now: its primary's last call reached the
     /// primary's last transaction.
     pub fn serves_reads(&self) -> bool {
-        self.core().serves_reads
+        self.core().reads_open()
     }
 
     /// The transaction it holds under a term and number as another than
@@ -1814,11 +1814,12 @@ impl Follow {
     /// What `/v1/health` shows of replication.
     pub async fn health(&self) -> Json {
         let core = self.core().clone();
+        let reads_open = core.reads_open();
         let kept = core.kept;
         let n = self.db.storage().numbering().unwrap_or_default();
         let mut h = json!({
             "role": "replica", "id": kept.id, "term": n.term, "seq_no": n.seq, "global_checkpoint": core.global_checkpoint,
-            "restores": self.restores.load(Ordering::Relaxed), "serves_reads": core.serves_reads,
+            "restores": self.restores.load(Ordering::Relaxed), "serves_reads": reads_open,
             "read_waits": self.read_waits.load(Ordering::Relaxed), "reads_refused": self.reads_refused.load(Ordering::Relaxed),
             "digests": self.digests.load(Ordering::Relaxed), "txn_mismatches": core.mismatches,
         });
