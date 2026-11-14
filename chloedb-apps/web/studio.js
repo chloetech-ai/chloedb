@@ -696,6 +696,9 @@ function renderApp() {
   }
   const views = st.views;
   if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
+  // An app of one screen on its own (a clock, a timer, a calculator) is
+  // that screen, whole: no app bar, no tab of its one screen.
+  document.body.classList.toggle('one-screen', !!BARE && views.length === 1);
   // The first screen shown is opened too.
   if (S.view && !S.viewSince && !S.activity) {
     S.viewSince = Date.now();

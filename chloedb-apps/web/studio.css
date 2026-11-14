@@ -199,8 +199,8 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
 /* an app on its own (/a/<id>) */
 .bare #nav-library, .bare .panel, .bare .mobile-only { display: none !important; }
 .bare .appview { grid-template-columns: minmax(0, 1fr); }
-.bare.front-view .top, .bare.front-view #tabs { display: none !important; }
-.bare.front-view .stage.designed.nav-sidebar { display: flex; flex-direction: column; }
+.bare:is(.front-view, .one-screen) .top, .bare:is(.front-view, .one-screen) #tabs { display: none !important; }
+.bare:is(.front-view, .one-screen) .stage.designed.nav-sidebar { display: flex; flex-direction: column; }
 
 /* a build's timeline */
 :root { --t-strata: #0c8599; --t-plan: #7048e8; --t-model: #ae3ec9; --t-write: #3b5bdb; --t-fix: #e8590c; --t-check: #2b8a3e; }
@@ -418,7 +418,7 @@ body.bare.designed { background: var(--bg); }
 @media (max-width: 560px) {
   /* room for the tab bar only while it shows: a front page hides it, and the
      reserve left behind read as a blank band over the page's lists */
-  .bare.designed:not(.front-view):is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  .bare.designed:not(.front-view, .one-screen):is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
   .bare.designed:is(.look-bold, .look-native) #tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0; width: auto; max-width: none; border-radius: 0;
     display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; align-self: stretch;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--card); border: 0; border-top: 1px solid var(--line); box-shadow: none; }
