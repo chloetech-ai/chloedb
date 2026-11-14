@@ -20,7 +20,25 @@
     return '';
   };
 
+  // A visitor's entry to a screen whose data is kept to signed-in people
+  // (spec.gate, set by the forge from the app's access): what the app is,
+  // what signing in gives, and the sign-in form. Returns the element.
+  const gateView = (app, gate) => {
+    const g = gate || {};
+    return h('div', { class: 'col screen gate' },
+      h('div', { class: 'gate-about' },
+        h('h1', null, String(g.title || 'Sign in')),
+        g.text ? h('p', { class: 'gate-text' }, String(g.text)) : null,
+        Array.isArray(g.points) && g.points.length ? h('ul', { class: 'gate-points' }, g.points.map((p) => h('li', null, String(p)))) : null),
+      h('div', { class: 'gate-form' }, typeof ui !== 'undefined' && ui.signIn ? ui.signIn({ title: 'Sign in', note: g.note || '' }) : null));
+  };
+  window.__sa_gateView = gateView;
+
   window.__sa_screen = async (root, app, spec) => {
+    if (spec && spec.gate && !spec.preview) {
+      const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
+      if (!me) { root.replaceChildren(gateView(app, spec.gate)); return; }
+    }
     const E = window.__SA_EXPR || [];
     const SRC = window.__SA_EXPR_SRC || [];
     const CODE = window.__SA_CODE || [];

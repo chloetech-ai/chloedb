@@ -993,9 +993,14 @@ const webHosts = () => (S.app?.reach?.on?.fetch ? (S.app.reach.on.hosts || []).m
 
 function srcdoc(view, params, components, helpers, design = S.designCss) {
   const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
+  // A view in JavaScript whose data is kept to signed-in people shows a
+  // visitor the sign-in entry first (view.spec.gate, set by the forge;
+  // drawn by web/screen.js's gateView).
+  const gate = !screen && view.spec && view.spec.gate ? JSON.stringify(view.spec.gate).replace(/</g, '\\u003c') : null;
   const code = screen
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
-    : noClose(view.code);
+    : gate ? `${noClose(view.code)}\n;{ const __inner = render; render = async (root, app) => { const me = await Promise.resolve(app.me()).catch(() => null); if (!me) { root.replaceChildren(window.__sa_gateView(app, ${gate})); return; } return __inner(root, app); }; }`
+      : noClose(view.code);
   const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {} }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
@@ -1009,7 +1014,7 @@ ${noClose(c.code)}
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
-${screen ? `<script>${FRONT}</script>\n<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
+${screen ? `<script>${FRONT}</script>\n<script>${SCREEN}</script>\n${screen.scripts || ''}` : gate ? `<script>${SCREEN}</script>` : ''}
 ${libs}
 ${comps}
 <script>
