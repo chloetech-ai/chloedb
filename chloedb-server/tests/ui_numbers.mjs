@@ -211,6 +211,25 @@ const logsView = await import(new URL("views/logs.js", app));
 const syslog = { table: "netops_syslog", short: { fields: [{ name: "ts", type: "timestamp" }, { name: "body", type: "text" }] } };
 assert.deepEqual(logsView.logTables([syslog]).map((x) => x.table), ["netops_syslog"]);
 
+// LIV-11: a memory request is not a limit: no restart is foretold without
+// one, but a request under what a copy holds is said; a limit under it
+// restarts the copy.
+const { SETTINGS } = await import(new URL("spec.js", app));
+const memory = SETTINGS.find((x) => x.label === "Memory per server");
+const L = { rss: 608e6, file: 1e8 };
+const noLimit = { L, d: { resources: { requests: { memory: "512Mi" } } } };
+assert.match(memory.warn("512Mi", noLimit), /scheduler may put more on a node/);
+assert.doesNotMatch(memory.warn("512Mi", noLimit) + memory.effect("512Mi", noLimit), /restart(ed)? (it|by)/);
+const limited = { L, d: { resources: { requests: { memory: "512Mi" }, limits: { memory: "512Mi" } } } };
+assert.match(memory.warn("512Mi", limited), /a limit of 512Mi would restart it/);
+assert.equal(memory.warn("1Gi", { L, d: { resources: { requests: { memory: "1Gi" } } } }), null);
+
+// LIV-10: advice names the spec's field when an operator runs the cluster, the flag otherwise.
+assert.equal(data.howToSet({ flag: "--environment", field: "spec.environment", value: "production" }), "start the server with --environment production");
+data.state.kube = { managed: true, namespace: "chloedb", name: "e2e" };
+assert.equal(data.howToSet({ flag: "--environment", field: "spec.environment", value: "production", or: "staging" }), "set spec.environment: production (or staging) in the StrataCluster chloedb/e2e");
+data.state.kube = null;
+
 // CCW-10: the shell knows each view before its code loads: what views/index.js
 // says of a view (its title, icon, layout, the words the palette finds it by)
 // is what the view's module says, and each view's code loads.

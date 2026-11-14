@@ -9,11 +9,12 @@ import { can, h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tip
 import { tables as catalogTables } from "../catalog.js";
 import { isMine } from "../owners.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus } from "../data.js";
+import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus, kubeInfo, managed, specName, howToSet } from "../data.js";
 
 export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render };
 // Its count in the navigation is the shell's (main.js), from homeProblems() as here.
 
+const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 const SLO_ERR = 0.01, SLO_P99 = 250;
 const check = (id) => (state.fleet?.checks || []).find((c) => c.id === id) || null;
 const sloErr = () => check("error_ratio")?.slo ?? SLO_ERR;
@@ -678,6 +679,7 @@ function render(page, r0) {
   }
   function drawReady() {
     const w = state.whoami, a = state.alerts, env = environment();
+    kubeInfo();
     const rules = (a?.rules || []).filter((r) => r.enabled !== false);
     // CCW-13: a rule shipped with the server has its runbook compiled in
     // (runbook_docs); `webhook` is true when there are routes, not one more.
@@ -686,11 +688,11 @@ function render(page, r0) {
     const shards = state.cluster?.shards || [];
     const single = !isCoordinator();
     const items = [
-      { ok: env != null, title: env != null ? `Environment named: ${env}` : "No environment named", fix: "Start the server with --environment production (or staging): the command center then asks before writes and drops.", href: "#/system" },
-      { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: "Start it with --token, then give each person, app and agent its own key, limited to its tables.", href: "#/access?tab=keys" },
+      { ok: env != null, title: env != null ? `Environment named: ${env}` : "No environment named", fix: `${cap(howToSet({ flag: "--environment", field: "spec.environment", value: "production", or: "staging" }))}: the command center then asks before writes and drops.`, href: "#/system" },
+      { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: `${managed() ? `Set spec.tokenSecret in the StrataCluster ${specName()}` : "Start it with --token"}, then give each person, app and agent its own key, limited to its tables.`, href: "#/access?tab=keys" },
       { ok: routes > 0, title: routes ? `Alerts go somewhere: ${fmt.plural(routes, "route")}` : "Alerts go nowhere: no route (Slack, PagerDuty, a webhook)", fix: "Add a route in Alerts, so that a firing alert reaches a person.", href: "#/alerts?routes=1" },
       { ok: rules.length ? told === rules.length : null, title: rules.length ? `${told} of ${rules.length} alert rules say who owns them and what to do` : "No alert rules", fix: "Give each rule an owner and a runbook URL: the person paged knows it is theirs and where to start.", href: "#/alerts" },
-      { ok: auditKnown ? !!auditFile : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : "Audit log kept in memory only: a restart loses who changed what", fix: "Start the server with --audit-log FILE (the operator: spec.coordinatorStorage, a volume for each coordinator's audit log, events and alerts).", href: "#/access" },
+      { ok: auditKnown ? !!auditFile : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : "Audit log kept in memory only: a restart loses who changed what", fix: managed() ? `Give each coordinator a volume: spec.coordinatorStorage in the StrataCluster ${specName()} keeps its audit log, events and alerts on it.` : "Start the server with --audit-log FILE.", href: "#/access" },
       single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
         : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : (() => { const n = shards.filter((sh) => (sh.replicas || []).length < 2).length; return `${fmt.plural(n, "shard")} ${n === 1 ? "has" : "have"} one copy`; })(), fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
     ];
@@ -720,7 +722,7 @@ function render(page, r0) {
   function drawCluster() { drawHead(); drawWhere(); drawCapacity(); drawKpis(); drawBanner(); }
   drawFleet(); drawCluster(); drawCharts(); drawEvents(); drawWho(); drawReady(); drawStart();
   const offs = [
-    bus.on("alerts", drawReady), bus.on("whoami", () => { drawReady(); loadAudit(); }), bus.on("cluster", drawReady), every(60000, loadAudit),
+    bus.on("alerts", drawReady), bus.on("kube", drawReady), bus.on("whoami", () => { drawReady(); loadAudit(); }), bus.on("cluster", drawReady), every(60000, loadAudit),
     bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", () => { drawBanner(); drawProblems(); }),
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
     bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),

@@ -28,6 +28,8 @@ export const state = {
   /** Where the points come from: "memory" (2 s points) or "load" (per-minute); `partial` when the server lacks part of the window. */
   series: { source: "memory", interval_ms: 2000, from: null, to: null, partial: false, loaded_ms: null },
   health: null, system: null, alerts: null, cluster: null, whoami: null,
+  /** GET /v1/kube, once a view asked (kubeInfo()): whether an operator manages the cluster. */
+  kube: null,
   /** GET /v1/health/fleet, or the same shape worked out here from the cluster when the server lacks it (`derived: true`). */
   fleet: null,
   /** Why the key may not see the fleet's health (a key limited to tables), or null. */
@@ -529,6 +531,32 @@ export function deriveFleet() {
     since_ms: worst?.since_ms || null, api: { ok: connection().ok }, checks, problems,
     coordinators: hl?.role === "coordinator" || c ? [{ url: location.origin, name: location.host, qps: mean((p) => p.qps), p99_ms: p99, error_ratio: errRatio, cpu: mean((p) => p.cpu), this: true }] : [],
   };
+}
+
+// ---------------------------------------------------------------- how the cluster is run
+// LIV-10: an operator-managed cluster takes its settings from its
+// StrataCluster's spec, not from flags: advice names what to change where
+// it is changed. GET /v1/kube, asked once (a minute at most) by a view
+// that gives advice; "kube" says it changed.
+let kubeAt = 0;
+export function kubeInfo() {
+  if (Date.now() - kubeAt > 60e3) { kubeAt = Date.now(); api("/v1/kube", T).then((k) => { state.kube = k; bus.emit("kube"); }, () => { state.kube = state.kube || { managed: false }; }); }
+  return state.kube || null;
+}
+/** Whether an operator manages this cluster (its spec holds its settings). */
+export const managed = () => !!kubeInfo()?.managed;
+/** The StrataCluster, as people name it: "ns/name". */
+export const specName = () => (state.kube?.managed ? `${state.kube.namespace}/${state.kube.name}` : null);
+/**
+ * How to set something: with the operator, the spec field
+ * ("spec.environment"), else the server's flag ("--environment"). Returns
+ * text: "set spec.environment: production (or staging) in the StrataCluster
+ * ns/name" or "start the server with --environment production (or staging)".
+ */
+export function howToSet({ flag, field, value = "", or = "" }) {
+  const alt = or ? ` (or ${or})` : "";
+  if (managed() && field) return `set ${field}${value ? ": " + value : ""}${alt} in the StrataCluster ${specName()}`;
+  return `start the server with ${flag}${value ? " " + value : ""}${alt}`;
 }
 
 // ---------------------------------------------------------------- proposals waiting
