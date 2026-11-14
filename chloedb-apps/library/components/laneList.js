@@ -1,5 +1,5 @@
 // title: Lane list
-// description: Cards grouped into lanes along a rail, one lane per value of a meaningful dimension (time of day, stage, day, room): a ring and the lane's name with a short note, then its cards, each with its name, a detail line, small badges that point at related rows ("Conflicts with Iron") and its actions on the right. For a person's own routine, a pipeline or a schedule, where a flat table would hide the shape of the day.
+// description: Cards grouped into lanes along a rail, one lane per value of a meaningful dimension (time of day, stage, day, room): a ring and the lane's name with a short note, then its cards, each with its name, a detail line, small badges that point at related rows ("Overlaps with Room B") and its actions on the right. For a person's own routine, a pipeline or a schedule, where a flat table would hide the shape of the day.
 // props: items: [{id, lane (the lane it belongs to), title, detail? (short text drawn in the mono face, a dose or a size), sub? (muted text after it),
 //   badges?: [text | {text, tone? ('warn' | 'bad' | 'ok' | 'info')}], actions?: [{label, onClick(item), style? ('primary' | 'quiet')}], onClick?(item)}];
 //   lanes: [name | {name, note?}] in their order (default: lanes in the order first seen; a lane with no items is not shown unless listed with show: true);
@@ -26,6 +26,8 @@ function component(props) {
 .sa-lane-badge svg{width:13px;height:13px;flex:none}
 .sa-lane-acts{display:flex;flex-wrap:wrap;gap:6px;flex:none;align-items:center}
 .sa-lane-acts button{min-height:40px;border-radius:999px;padding:0 16px}
+.sa-lane-acts button:not(.primary){background:transparent;color:var(--fg);border-color:transparent;box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--fg) 26%,transparent)}
+.sa-lane-acts button:not(.primary):hover{background:color-mix(in srgb,var(--fg) 7%,transparent)}
 @media (max-width:520px){.sa-lane-card{flex-wrap:wrap}.sa-lane-acts{width:100%;justify-content:flex-end}}
 `);
   const tones = { warn: 'var(--warn)', bad: 'var(--bad)', ok: 'var(--ok)', info: 'var(--info)' };

@@ -3397,3 +3397,11 @@ test('HEADER, LANES and CALLOUTS: a header line with its actions, cards in lanes
   assert.deepEqual(set, { active: false });
   assert.throws(() => compileStatement("CREATE SCREEN d TITLE 'D'\nLANES items\n  NAME name"), /BY/);
 });
+
+test('ASK: a panel where the model reads the rows a query gives and answers a standing question', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN s TITLE 'S'\nASK 'A read of your month'\n  OVER (SELECT category, amount FROM spending)  PROMPT 'Say where the money went.'  BUTTON 'Read my month'  INPUT 'Anything it should know (optional)'  WEB").screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.data.ask, 'SELECT category, amount FROM spending');
+  assert.deepEqual(e.screen.body[0], { ui: 'askPanel', props: { title: 'A read of your month', rows: '=ask', prompt: 'Say where the money went.', button: 'Read my month', input: 'Anything it should know (optional)', web: true } });
+});

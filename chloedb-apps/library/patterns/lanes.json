@@ -1,6 +1,6 @@
 {
  "title": "Rows as cards in lanes along a rail, one lane per value of a meaningful column (time of day, stage, day, room), with badges from related rows",
- "about": "A person's routine, a pipeline, a day's plan: each row a card in its lane (Morning, Evening; To do, Doing, Done; Monday...), its name, a short detail in the mono face (a dose, a size, a time), a muted line, badges that point at related rows (FLAGS: a query giving each row's badges, such as 'Conflicts with Iron' from the rows it clashes with) and its action on the right. Choose it over a table when the rows have a natural grouping the person thinks in; a table stays for comparing many columns.",
+ "about": "A person's routine, a pipeline, a day's plan: each row a card in its lane (Morning, Evening; To do, Doing, Done; Monday...), its name, a short detail in the mono face (a dose, a size, a time), a muted line, badges that point at related rows (FLAGS: a query giving each row's badges, such as 'Overlaps with Room B' from the rows it clashes with) and its action on the right. Choose it over a table when the rows have a natural grouping the person thinks in; a table stays for comparing many columns.",
  "params": {
   "table": {
    "about": "the table",
