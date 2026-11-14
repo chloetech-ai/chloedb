@@ -268,6 +268,8 @@ useStyle("common-helpers", `
 .lv-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px;box-shadow:var(--shadow-1)}
 .lv-bars{display:flex;align-items:flex-end;gap:3px}.lv-bars>i{flex:1;min-width:2px;border-radius:2px 2px 0 0}
 .lv-vio{background:color-mix(in srgb,var(--ctx) 14%,transparent);color:var(--ctx)}
+`);
+
 // ---------------------------------------------------------------------------
 // More shared pieces: the page frame, cards, a tooltip, Esc handling, short
 // inline formatting, numbers.
