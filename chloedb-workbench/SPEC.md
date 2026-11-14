@@ -889,3 +889,44 @@ now), tokens, txn, query}]}`.
 - `ui/dev/mock-server.mjs` serves fixtures for every new route (a story of
   a payments repo, as in the concepts), so each screen can be built and
   screenshotted without a model.
+
+## Fourth build: what only ChloeDB makes possible
+
+The user's ask: use cases 1 to 11 of the list "unique to ChloeDB", each
+with UI where it makes sense, in new screens or in the existing ones. Five
+parts, each built by one agent that owns the files named here. Shared
+files take only additive, one-place edits (a line in `server.rs`'s route
+merges and `LEVELS`, a table const in `db.rs`, tool entries and match arms
+in `mcp.rs`, a link in `index.html`'s `#lvnav`, `SCREENS` and `LEVEL_OF`
+in `app.js`, tests appended at the end of `tests/workbench.rs` under the
+part's own heading, fixtures as new files in `ui/dev/fixtures/`).
+
+Everything degrades when a helper is missing (`chloectx`, `chloedb-crawl`,
+Node, Playwright): the UI says what is missing and how to get it, the API
+answers `{"available": false, "why": ...}`, and the tests do not need it.
+No model is called without the user starting it.
+
+| # | use case | part | backend | MCP | UI |
+|---|---|---|---|---|---|
+| 1 | code search for agents | Search | `src/search.rs`: a per-repo index of the worktree's files in the state DB (`code_files`, `code_chunks`: path, symbol, lines, text with a code analyzer), reindexed from `git ls-files` and the agents' edits (PostToolUse Edit/Write); `GET /api/search/code?repo&q&agent&tokens` answers chunks and, with `tokens`, a `PACK n TOKENS` text | `search_code` | **Library** screen (new, level Plan): Code tab; and `/` in the top bar opens a quick search over code, docs, decisions |
+| 10 | docs on tap | Search | `src/library.rs`: the repo's dependencies (Cargo.toml, package.json, pyproject, go.mod) to doc sites; fetched by `chloedb-crawl` when it is on PATH, else a small built-in fetcher (same host, depth 1, 200 pages); pages as rows `doc_pages`; `POST /api/library/crawl`, `GET /api/library`, `GET /api/search/docs` | `search_docs` (answers with URLs to cite) | Library screen: Docs tab (each library, pages, crawl state, which agents cited what) |
+| 2 | simulated users | Preview lab | `src/swarm.rs`: runs `chloedb-swarm`'s persona runner (Node, Playwright) against `/preview/:agent/`, a persona and a task; findings as rows `swarm_runs`, `swarm_findings`; a finding becomes a Decide question or a steer to the owning agent | `test_with_persona` | Preview: "Test with a persona" panel (persona, task, live steps, findings with Send to agent / Ask me) |
+| 3 | runtime blame | Preview lab | `src/runtime.rs`: `POST /v1/logs` (OTLP/HTTP JSON) and the preview proxy's 5xx and the overlay's `window.onerror` as rows `runtime_errors`; each error is joined (ASOF JOIN on time, and the file in its stack) to the agent's last edit before it; `GET /api/runtime/errors` | `runtime_errors` | Preview: an errors strip; each error says "probably <agent>'s edit to <file> at 7:12" and opens the Why card for that line |
+| 4 | fleet alerts as SQL | Health | `src/alerts.rs`: rules as rows `alert_rules` (a SQL over `events`, `agents`, `test_runs`, a threshold, a window) checked every 30 s; firings group into `incidents` (same agent, repo or file within 10 min) with a board (the firings, the agents' sentences, the events around them); built-in rules: a test re-run failing 5 times, tokens per hour above a limit, two agents editing one file, an agent idle while asked; actions: notify, ask, pause the agent | `list_incidents` | **Health** screen (new, level Plan): Incidents (board per incident), Rules (edit the SQL, test it now); a count on the nav |
+| 5 | flaky test radar | Health | `src/testruns.rs`: every test run an agent makes (Bash PostToolUse of cargo test, npm test, pytest, go test, jest/vitest; parsed per test) as rows `test_runs` (test, agent, commit, passed, ms); p50/p99 with `approx_percentile`, pass rate, flakiness (passed and failed on one commit); `GET /api/tests` | `test_history` | Health screen: Tests tab (radar: flaky, slow, newly failing) and a chip on Story's steps that ran tests |
+| 7 | blast radius | Ship | `src/blast.rs`: from an agent's diff (functions changed) to the tests that cover them (test files that name them, `test_runs`), the decisions about those lines (`chloectx blame`, the ChloeCtx graph), and the other agents touching the same files or callers; `GET /api/agents/:id/blast` | `blast_radius` | **Ship** screen (new, level Changes, per agent): a radial graph and lists; the Changes tab gets a "Blast radius" summary |
+| 11 | capsule with every PR | Ship | `src/capsule.rs`: `chloectx pack` of the agent's decisions (its session, since its start) into `<session dir>/capsule`; a PR body section that links it and says how to ask it (`chloectx mount`); `POST /api/agents/:id/capsule`, `GET /api/agents/:id/pr` (title, body with the decisions, blast radius, tests) | `prepare_pr` | Ship screen: the PR draft and its capsule, "Ask the capsule" box |
+| 8 | time travel | Time and guard | `src/timetravel.rs`: snapshots of the state DB every 10 min and at each goal change (`link_from`, kept a day), with the commit of each worktree at that time; `GET /api/time?at=ts` answers Mission's and Map's data as of then | | a time scrubber on Mission and Map ("what did the fleet know at 7:12") |
+| 9 | guarded actions | Time and guard | `src/guarded.rs`: `change_requests` (a migration, a deploy, a push to main, any command named in the repo's guarded list); an agent's key can only propose; the user approves in Decide and Workbench runs it in the agent's worktree, keeping its output; PreToolUse denies the guarded commands with a pointer to `propose_change` | `propose_change` | Decide: "Change requests" section (command, why, diff, risk, Approve and run / Decline) |
+| 6 | model routing that learns | Time and guard | `src/routing.rs`: per finished task, features (words of the task, files, repo, model, tokens, minutes, redo: reopened or steered, outcome done) as rows `task_features`; a suggestion for a new task from the nearest past tasks (BM25 over their task text) weighted by outcome and cost; `GET /api/route?repo&task` | (spawn_agent's `model` defaults to the suggestion when left out) | the New agent dialog: "Suggested: Haiku, 9 of 11 like this finished, $0.40 avg" with the alternatives |
+
+New screens join `SCREENS` and the nav: Library (`ui/levels/library.js`),
+Health (`ui/levels/health.js`), Ship (`ui/levels/ship.js`). Additions to
+existing screens are separate modules that the screen imports and mounts
+in one place: `ui/levels/preview-lab.js`, `ui/levels/timebar.js`,
+`ui/levels/change-requests.js`, `ui/levels/route-hint.js`.
+
+Each part first builds its UI on fixtures in the levels mock
+(`ui/dev/levels-mock.mjs`) and screenshots it dark and light at 1440x900
+into `/mnt/project-files/workbench/fourth/` (`<n>-<name>-{dark,light}.png`),
+then the backend, then the UI against the real API.
