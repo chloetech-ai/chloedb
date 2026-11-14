@@ -1785,17 +1785,24 @@ const STATE_COLOR = { ok: "var(--good)", warn: "var(--warn)", bad: "var(--crit)"
 function diagnosePage(body, app, path) {
   const { h, C, charts } = app;
   const hero = h("div"), grid = h("div"), listEl = h("div"), inv = h("div"), estateEl = h("div"), side = h("div", { class: "no-col" });
+  // The investigation, and a note above it when what it is about has moved on.
+  const invNote = h("div"), invBody = h("div");
+  inv.append(invNote, invBody);
   body.append(hero, h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, C.card({ title: "The stack, by place", sub: "customers at the top, power at the bottom: a fault shows on its own layer and on every layer above it", body: [grid, listEl] }), inv), side));
   let sel = null, picked = null, last = null, auto = true;
+  // What the card investigates: whether the page picked it (auto), whether it was the start then, and when.
+  let pickedAuto = false, pickedStart = false, pickedAt = 0;
+  const keyOf = (o) => (o ? `${o.kind}:${o.id}` : "");
   const openIt = (o) => o.kind === "link" ? linkDrawer(app, o.id) : o.kind === "device" ? deviceDrawer(app, o.id) : o.kind === "service" ? serviceDrawer(app, o.id) : app.go("customers", o.id);
 
   // One broken thing, asked five ways of the same database.
-  const investigate = async (o) => {
-    picked = o;
+  const investigate = async (o, how = {}) => {
     if (o.kind === "customer") { app.go("customers", o.id); return; }
-    put(inv, C.card({ title: `Investigating ${o.id}`, body: h("div", { class: "muted" }, "Asking the graph, the logs, the history and the past…") }));
+    picked = o; pickedAuto = !!how.auto; pickedStart = how.start ?? keyOf(o) === keyOf(last?.start?.first); pickedAt = Date.now();
+    put(invNote);
+    put(invBody, C.card({ title: `Investigating ${o.id}`, body: h("div", { class: "muted" }, "Asking the graph, the logs, the history and the past…") }));
     let j;
-    try { j = await app.call(`/v1/investigate?kind=${o.kind}&id=${encodeURIComponent(o.id)}`); } catch (e) { put(inv, C.failure(e, "The investigation")); return; }
+    try { j = await app.call(`/v1/investigate?kind=${o.kind}&id=${encodeURIComponent(o.id)}`); } catch (e) { if (picked === o) put(invBody, C.failure(e, "The investigation")); return; }
     if (picked !== o) return;
     const L = Object.fromEntries(j.lenses.map((l) => [l.id, l]));
     const total = j.lenses.reduce((a, l) => a + l.ms, 0), nq = j.lenses.reduce((a, l) => a + l.queries, 0);
@@ -1807,7 +1814,7 @@ function diagnosePage(body, app, path) {
     const fields = j.kind === "link" ? [["loss", "Loss", (v) => v.toFixed(2) + "%"], ["rx_dbm", "Receive power", (v) => v.toFixed(1) + " dBm"], ["util", "Load", (v) => pct(v)], ["errors", "Errors", (v) => C.fmt.n(v)]]
       : j.kind === "device" ? [["cpu", "CPU", (v) => v.toFixed(0) + "%"], ["bgp_up", "BGP sessions", (v) => String(v)], ["temp_c", "Temperature", (v) => v.toFixed(0) + " °C"]]
       : [["errors", "Failing requests", (v) => C.fmt.n(v)], ["latency_p95", "p95 latency", (v) => v.toFixed(0) + " ms"]];
-    put(inv, C.card({ title: j.title, sub: j.now.length ? j.now.join(" · ") : "nothing wrong with it in the last three minutes",
+    put(invBody, C.card({ title: j.title, sub: j.now.length ? j.now.join(" · ") : "nothing wrong with it in the last three minutes",
       tools: h("span", { class: "row nw", style: { gap: "6px" } }, j.incident ? h("button", { class: "btn xs primary", onclick: () => app.go("incidents", j.incident) }, `Open ${j.incident}`) : null, h("button", { class: "btn xs", onclick: () => openIt(o) }, "Open it")),
       body: [
         h("div", { class: "no-lenses" },
@@ -1843,9 +1850,17 @@ function diagnosePage(body, app, path) {
         h("div", { class: "row", style: { gap: "8px", marginBottom: "4px" } }, C.pill(s.state === "bad" ? "bad" : "warn", "start here"), h("span", { class: "small muted" }, `the lowest layer where something is ${s.state === "bad" ? "broken" : "worn"} · as of ${utc(j.at)} UTC`)),
         h("h2", {}, `${s.layer_name}, ${colName}: ${f.id} ${f.reading}`),
         h("p", {}, `${f.where}${f.circuit ? ` · circuit ${f.circuit} from ${f.provider}` : ""}. `, s.above.length ? `What shows on ${s.above.join(", ")} above it most likely follows from this.` : "Nothing above it is affected yet.", f.change ? ` ${f.change.id} was carried out here ${C.fmt.ago(T(f.change.executed))}.` : "")),
-        h("div", { class: "row", style: { gap: "8px" } }, f.incident ? h("button", { class: "btn", onclick: () => app.go("incidents", f.incident) }, `Open ${f.incident}`) : null, h("button", { class: "btn primary", onclick: () => { auto = false; investigate(f); } }, C.icon("search"), "Investigate"))));
-      if (auto && !picked) investigate(f);
+        h("div", { class: "row", style: { gap: "8px" } }, f.incident ? h("button", { class: "btn", onclick: () => app.go("incidents", f.incident) }, `Open ${f.incident}`) : null, h("button", { class: "btn primary", onclick: () => { auto = false; investigate(f, { start: true }); } }, C.icon("search"), "Investigate"))));
     } else put(hero, h("div", { class: "no-hero calm" }, h("div", {}, h("h2", {}, "Nothing is broken on any layer"), h("p", {}, `Every link, device and service was inside its limits in the last three minutes (as of ${utc(j.at)} UTC). Trace a path on the right, or inject a fault at the top to see this page work.`))));
+    // The investigation follows the start while the page picks it; one picked by hand stays, marked when it has moved on.
+    const startKey = keyOf(s?.first);
+    if (s && auto && (!picked || (pickedAuto && keyOf(picked) !== startKey))) investigate(s.first, { auto: true, start: true });
+    else if (picked) {
+      const pk = keyOf(picked), broken = j.offenders.some((o) => keyOf(o) === pk);
+      const why = !broken ? `${picked.id} is no longer broken` : pickedStart && pk !== startKey ? `${picked.id} is no longer where to start` : "";
+      putIf(invNote, [why, startKey, pickedAt], () => why ? h("div", { class: "banner no-stale", style: { marginBottom: "8px", borderColor: "var(--warn)" } }, C.icon("clock"), h("span", {}, ` This investigation is as of ${utc(new Date(pickedAt).toISOString())} UTC: ${why}${s ? `; the start now is ${s.first.id}` : "; nothing is broken on any layer now"}. `),
+        h("span", { class: "row nw", style: { gap: "6px", display: "inline-flex" } }, h("button", { class: "btn xs", onclick: () => investigate(picked, { auto: pickedAuto, start: false }) }, C.icon("refresh"), "Investigate it again"), s ? h("button", { class: "btn xs primary", onclick: () => { auto = true; investigate(s.first, { auto: true, start: true }); } }, `Investigate ${s.first.id}`) : null)) : null);
+    }
     const layers = [...j.layers].reverse();
     put(grid, h("div", { class: "no-stack", style: { gridTemplateColumns: `170px repeat(${j.cols.length}, minmax(44px, 1fr))` } },
       h("span", {}), j.cols.map((c) => h("span", { class: "ch", title: c.city }, c.name)),
@@ -1874,7 +1889,7 @@ function diagnosePage(body, app, path) {
         h("div", {}, h("b", {}, "Or follow a path. "), "Trace walks from a customer or a device to another, hop by hop, and marks the hop where it goes wrong.")) }));
   };
   const stop = live(app, body, "/v1/where", draw, 20000);
-  if (path[1] && path[2]) { auto = false; investigate({ kind: path[1], id: decodeURIComponent(path[2]) }); }
+  if (path[1] && path[2]) { auto = false; investigate({ kind: path[1], id: decodeURIComponent(path[2]) }, { start: false }); }
   return stop;
 }
 
