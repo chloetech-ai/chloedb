@@ -27,6 +27,7 @@ test('builders: what each role may do in the studio', () => {
     assert.equal(builderRefusal(editor, 'POST', `/api/apps/abc123/${rest}`), null, rest);
   }
   assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments'), null, 'a viewer leaves notes');
+  assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/presence'), null, 'a viewer is seen working on it');
   assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/reply'), null);
   assert.equal(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/resolve'), null);
   assert.match(builderRefusal(viewer, 'POST', '/api/apps/abc123/comments/c1/delete'), /viewer can look/);
@@ -176,6 +177,13 @@ test('builders over a real server: invited, joined once, held to their app and r
     assert.equal((await call(`/api/apps/${app}/comments?status=open`)).body.comments.length, 0, 'a resolved note takes its replies with it');
     assert.equal((await call(`/api/apps/${app}/comments/${note.body.comment.id}/delete`, {})).body.replies, 1);
     assert.equal((await call(`/api/apps/${app}/comments`, { body: '  ' })).status, 400);
+
+    // Who is working on it now: the owner and an admin builder, each named.
+    await call(`/api/apps/${app}/presence`, { name: 'Ana', screen: 'home' });
+    const here = await call(`/api/apps/${app}/presence`, { screen: 'home' }, vicKey);
+    assert.deepEqual(here.body.here.map((p) => [p.name, p.role]), [['Ana', 'owner'], ['vic@example.com', 'admin']]);
+    await call(`/api/apps/${app}/presence`, { leave: true }, vicKey);
+    assert.deepEqual((await call(`/api/apps/${app}/presence`)).body.here.map((p) => p.name), ['Ana']);
 
     // The studio sees every company of the app with who works in it.
     const signed = await fetch(`${base}/api/apps/${app}/signup`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ email: 'olive@example.com', name: 'Olive', password: 'correct horse' }) });

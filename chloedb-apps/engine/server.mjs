@@ -39,6 +39,7 @@ import { ask as askModel } from './llm.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
 import { Comments } from './comments.mjs';
+import { Presence } from './presence.mjs';
 import { Builders, builderRefusal, keyOf as builderKeyOf, COOKIE as BUILDER_COOKIE } from './builders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,8 @@ engine.services = services;
 const builders = new Builders(engine.db);
 // Notes on an app's screens.
 const comments = new Comments(engine.db);
+// Who is working on each app right now.
+const presence = new Presence();
 // A model and the web for apps, each switched on per app (reach.mjs).
 // Apps' secrets (API keys) are sealed with STRATA_APPS_SECRET_KEY, or with a
 // key kept in DATA/secret.key, made on first start.
@@ -854,6 +857,16 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/reply$/, async (b, [id, cid], url, cx) => { const out = await comments.reply(id, cid, b.body, authorOf(cx, b)); broadcast('comments', { app: id }); return { comment: out }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/resolve$/, async (b, [id, cid]) => { const out = await comments.resolve(id, cid, { reopen: !!b.reopen }); broadcast('comments', { app: id }); return { comment: out }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/delete$/, async (b, [id, cid]) => { const out = await comments.remove(id, cid); broadcast('comments', { app: id }); return out; }],
+  // Who is working on the app now: a heartbeat every few seconds while it is
+  // open, and leaving; everyone working on it hears of arrivals and leavings.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/presence$/, async (b, [id]) => ({ here: presence.here(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/presence$/, async (b, [id], url, cx) => {
+    await engine.view(id);
+    const who = cx.builder ? { id: cx.builder.id, name: cx.builder.name || cx.builder.email || '', role: cx.builder.role } : { id: 'owner', name: String(b?.name || '').trim().slice(0, 80), role: 'owner' };
+    const changed = b?.leave ? presence.leave(id, who.id) : presence.beat(id, { ...who, screen: b?.screen });
+    if (changed) broadcast('presence', { app: id });
+    return { here: presence.here(id), me: who.id };
+  }],
   // An invitation taken, from the studio or another client: the key to use.
   ['POST', /^\/api\/builders\/join$/, async (b, m, url, cx) => { const out = await builders.join(b.token, { name: b.name }); setBuilderCookie(cx.res, out.key); return out; }],
   // People: one account for every app here; joining an app on first use.

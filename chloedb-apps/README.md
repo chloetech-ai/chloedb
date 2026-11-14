@@ -152,6 +152,11 @@ each other in a graph that ChloeDB walks.
   route, a selector, the words shown and where on them), `.../comments/<c>/reply
   {body}`, `.../resolve {reopen}`, `.../delete`. A builder is named by their
   key; every builder, a viewer too, may leave and resolve notes.
+- **Presence.** Who is working on an app now (`engine/presence.mjs`, in
+  memory): `POST /api/apps/<id>/presence {screen, name}` every few seconds
+  while it is open (`{leave: true}` on closing), `GET .../presence` for who is
+  here; a heartbeat counts for 30 seconds, and arrivals and leavings are a
+  `presence` event on the stream. A builder is named by their key.
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request

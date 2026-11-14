@@ -60,7 +60,7 @@ export function builderRefusal(b, method, pathname) {
     const rest = m[2] || '';
     if (ADMIN_READS.has(rest) && RANK[b.role] < RANK.admin) return 'only the app\'s owner and admins see this';
     if (get) return null;
-    if (READS.has(rest) || NOTES.test(rest)) return null;
+    if (READS.has(rest) || NOTES.test(rest) || rest === 'presence') return null;
     if (b.role === 'viewer') return 'a viewer can look at this app but not change it; ask its owner to make you an editor';
     if (/^builders(\/|$)/.test(rest) && RANK[b.role] < RANK.admin) return 'only the app\'s owner and admins decide who builds it';
     if (rest === 'delete' || rest === 'duplicate') return 'only the app\'s owner can delete or copy it';
