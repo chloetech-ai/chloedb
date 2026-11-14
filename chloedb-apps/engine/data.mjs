@@ -1,7 +1,7 @@
 // What an app holds when it opens: the person's attached data (sheets of a
 // workbook given as CSV text in the request), imported whole and typed, and
 // example rows that line up across tables; and the figures a build checks
-// against them (totals, top-N, group sums, aging buckets), computed here in
+// against them (totals, top-N, group sums, counts per range), computed here in
 // plain code from the rows, apart from the screens' own SQL.
 
 // ---- CSV and attached sheets
@@ -123,7 +123,7 @@ The request attaches ${sheets.length === 1 ? 'a sheet' : `${sheets.length} sheet
 ${sheets.map((s) => `- "${s.name}": ${s.rows.length} row${s.rows.length === 1 ? '' : 's'}; columns ${cols(s)}`).join('\n')}
 
 - Give each sheet a table in "tables", with a column for every one of its columns (named as the header in snake_case unless you map it otherwise) and of the type shown: money and numbers as float or int (never keyword, so sums and formats work), days as keyword "YYYY-MM-DD". Then say which table each sheet goes to: "import": {"Sheet name": "table"} (or {"Sheet name": {"table": "t", "columns": {"Header": "column"}}} when a column is named otherwise). Show money in the sheet's currency: app.fmt.money(n, '${sheets.flatMap((s) => s.columns).find((c) => c.currency)?.currency || 'USD'}').
-- Every figure a screen computes from these rows (a total, a count, a top N, a sum per group, aging buckets) is declared in "figures" (see the plan's fields), so the engine checks the screen's query against the rows.`;
+- Every figure a screen computes from these rows (a total, a count, a top N, a sum per group, a count per range) is declared in "figures" (see the plan's fields), so the engine checks the screen's query against the rows.`;
 }
 
 // ---- which table each sheet goes to
@@ -478,7 +478,7 @@ export function gateOf(screen, accessOf, { name = '', welcome = null, ux = null,
 }
 
 // The name a request gives the app's main heading or the app itself
-// ("Rename the main heading to Northwind at a glance", "call the app X"),
+// ("Rename the main heading to Acme at a glance", "call the app X"),
 // or null. The header shows the app's name, so such a request renames it.
 export function renameIn(text) {
   const s = String(text || '');

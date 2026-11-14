@@ -5,10 +5,10 @@
    "args": [
     [
      "pizza",
-     "tacos",
+     "noodles",
      "pizza",
      "sushi",
-     "tacos",
+     "noodles",
      "pizza"
     ]
    ],
@@ -19,7 +19,7 @@
      "pct": 50
     },
     {
-     "option": "tacos",
+     "option": "noodles",
      "votes": 2,
      "pct": 33.3
     },
@@ -101,7 +101,7 @@
       "pct": 50
      },
      {
-      "option": "tacos",
+      "option": "noodles",
       "votes": 2,
       "pct": 33.3
      }

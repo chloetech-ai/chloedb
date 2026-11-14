@@ -315,11 +315,13 @@ export class Services {
 
   // ---- card payments
   //
-  // app.pay({table, id, description}) asks for a payment of a row (an
-  // order): only the one who placed it (the person, or the visitor's
-  // browser, as the engine saw the insert: sa_rowmakers) or the app's owner
-  // may ask. The amount is the row's own total (or amount, or price times
-  // qty). The payer pays on a hosted page, /pay/<id>?t=<token>, the token
+  // app.pay({table, id, amount: '<column>', status: '<column>', description})
+  // asks for a payment of a row (an order, a booking): only the one who
+  // placed it (the person, or the visitor's browser, as the engine saw the
+  // insert: sa_rowmakers) or the app's owner may ask. The amount is the
+  // row's column the call names (a column named total or amount, or price
+  // times qty, only when it names none); the status column it names is the
+  // one set when the payment is paid, and no other. The payer pays on a hosted page, /pay/<id>?t=<token>, the token
   // the server's own, single use and kept only as its hash, so the app
   // never sees a card and a page cannot pay for an order by its id alone.
   //
@@ -335,7 +337,8 @@ export class Services {
   }
 
   async pay(appId, req = {}, { who = null, owner = false } = {}) {
-    let amount = Number(req.amount);
+    let amount = typeof req.amount === 'string' ? NaN : Number(req.amount);
+    let statusCol = null;
     const table = req.table ? String(req.table) : null;
     const refId = req.id !== undefined && req.id !== null ? String(req.id) : null;
     if (!owner && !(table && refId)) throw err('pay: say the row it pays for ({table, id}), an order you placed', 400);
@@ -348,11 +351,16 @@ export class Services {
       const db = await this.engine.dbOf(appId);
       const [row] = await db.get(physical(appId, spec.name), [refId]);
       if (!row) throw err(`pay: no row ${refId} in ${table}`, 404);
-      if (/^paid\b/i.test(String(row.status || ''))) throw err('This order is paid already', 409);
       const n = (k) => (row[k] === null || row[k] === undefined || row[k] === '' ? null : Number(row[k]));
-      const own = n('total') ?? n('amount') ?? (n('price') !== null ? n('price') * (n('qty') ?? n('quantity') ?? 1) : null);
+      const cols = new Set((spec.columns || []).map((c) => c.name));
+      const named = (k, what) => { if (k === undefined || k === null || k === '') return null; if (typeof k !== 'string' || !cols.has(k)) throw err(`pay: ${what} names a column of ${table} (its columns: ${[...cols].join(', ')})`); return k; };
+      const amountCol = typeof req.amount === 'string' ? named(req.amount, 'amount') : null;
+      statusCol = named(req.status, 'status');
+      if (statusCol && (row[statusCol] === true || /^paid\b/i.test(String(row[statusCol] ?? '')))) throw err('This is paid already', 409);
+      // the amount: the column named, else (a fallback) one called total or amount, or price times qty
+      const own = amountCol ? n(amountCol) : n('total') ?? n('amount') ?? (n('price') !== null ? n('price') * (n('qty') ?? n('quantity') ?? 1) : null);
       if (own !== null && Number.isFinite(own)) amount = own;
-      else if (!owner) throw err(`pay: ${table} has no total (or amount, or price) to charge`, 400);
+      else if (!owner || amountCol) throw err(`pay: ${amountCol ? `${table}.${amountCol} is empty` : `name the column of ${table} that holds the amount (amount: '<column>')`}`, 400);
     }
     if (!Number.isFinite(amount) || amount <= 0) throw err('pay: give the amount (or the row it pays for, with a total)');
     if (amount > 100000) throw err('pay: at most 100,000 in one payment');
@@ -360,7 +368,7 @@ export class Services {
     const id = newId(16);
     const token = randomBytes(24).toString('base64url');
     const doc = { id, app: appId, amount: Math.round(amount * 100) / 100, currency, description: String(req.description || '').slice(0, 300), ref_table: table || '', ref_id: refId || '',
-      email: String(req.email || '').slice(0, 200), mode: this.payProvider ? 'live' : 'test', status: 'open', token_hash: createHash('sha256').update(token).digest('hex'), payer: who ? String(who).slice(0, 80) : '' };
+      email: String(req.email || '').slice(0, 200), mode: this.payProvider ? 'live' : 'test', status: 'open', token_hash: createHash('sha256').update(token).digest('hex'), payer: who ? String(who).slice(0, 80) : '', status_col: statusCol || '' };
     await this.db.write([{ op: 'insert', table: 'sa_payments', doc }]);
     this.store.track(appId, 'action', '', 'payment asked').catch(() => {});
     return { id, url: `/pay/${id}?t=${token}`, mode: doc.mode, amount: doc.amount, currency };
@@ -394,14 +402,14 @@ export class Services {
   async settle(p, status) {
     const done = { ...p, status: status === 'paid' ? 'paid' : 'paid_test', paid: new Date().toISOString(), token_hash: '' };
     await this.db.write([{ op: 'upsert', table: 'sa_payments', doc: done }]);
-    if (p.ref_table && p.ref_id) {
+    // only the status column the payment was asked with is set: a bool one
+    // true when paid for real, a text one 'paid' or 'paid (test)'
+    if (p.ref_table && p.ref_id && p.status_col) {
       try {
         const spec = await this.engine.tableSpec(p.app, p.ref_table);
-        const cols = new Map((spec.columns || []).map((c) => [c.name, c.type]));
-        const fields = {};
-        if (cols.has('status')) fields.status = status;
-        if (cols.get('paid') === 'bool' && status === 'paid') fields.paid = true;
-        if (Object.keys(fields).length) await this.engine.update(p.app, p.ref_table, p.ref_id, fields, {});
+        const type = (spec.columns || []).find((c) => c.name === p.status_col)?.type;
+        const value = type === 'bool' ? status === 'paid' : status;
+        await this.engine.update(p.app, p.ref_table, p.ref_id, { [p.status_col]: value }, {});
       } catch (e) { this.log(`payment ${p.id}: ${e.message}`); }
     }
     return done;

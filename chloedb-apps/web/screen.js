@@ -28,7 +28,7 @@ window.__sa_numbers = (() => {
     return neg ? -n : n;
   };
   const NOT_FIGURE = /(^id$|_id$|\byear\b|phone|zip|postcode|sku|\bcode\b|^no$|#|invoice number|order number)/i;
-  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget|increase|decrease|\brise\b|\bdrop\b)/i;
+  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget)/i;
   // Amounts that add up down a column; rates, prices and averages do not.
   const ADDS = /(revenue|sales|cost|amount|total|spend|spent|expense|paid|owed|owing|due|invoiced|billed|balance|outstanding|income|profit|hours|fee|budget|actual|current|\d+\s*[-–]\s*\d+|over \d+|overdue|receivable|payable|tax|net|gross|value|subtotal|refund|collected|earned)/i;
   const NOT_ADDS = /(price|rate|avg|average|mean|median|percent|pct|%|margin|ratio|score|rating|\bage\b|share|per |each|unit cost|unit price|days|min|max)/i;
@@ -43,9 +43,10 @@ window.__sa_numbers = (() => {
       const vs = (values[i] || []).filter((v) => v != null && v !== '');
       const nums = vs.map(parseNum).filter((n) => n !== null);
       const looksMoney = c.format === 'money' || (vs.length > 0 && vs.filter((v) => typeof v === 'string' && /[$€£¥]/.test(v)).length >= vs.length * 0.8);
-      const numeric = !NOT_FIGURE.test(name) && !c.badge && (NUMERIC_FORMATS.includes(c.format) || (vs.length > 0 && nums.length >= vs.length * 0.8));
+      const numeric = !NOT_FIGURE.test(name) && !c.badge && (NUMERIC_FORMATS.includes(c.format) || c.format === 'change' || (vs.length > 0 && nums.length >= vs.length * 0.8));
       const pct = c.format === 'percent' || c.format === 'pct' || (vs.length > 0 && vs.every((v) => typeof v === 'string' && /%\s*$/.test(v)));
-      const change = numeric && CHANGE.test(name);
+      // a change is said by the column ("change": true, or "format": "change"), or by its name
+      const change = numeric && (c.change === true || c.format === 'change' || CHANGE.test(name));
       const adds = numeric && !change && !pct && (looksMoney || c.format === 'hours') && ADDS.test(name) && !NOT_ADDS.test(name);
       return { numeric, change, adds, money: numeric && looksMoney, pct, max: nums.length ? Math.max(...nums.map(Math.abs)) : 0, negative: nums.some((n) => n < 0) };
     });
@@ -105,7 +106,7 @@ window.__sa_numbers = (() => {
     if (m && MONTHS.includes(m[1].toLowerCase()) && (!m[2] || full.includes(x.toLowerCase().replace('.', '')))) return { mon: m[1].toLowerCase(), year: '' };
     return null;
   }
-  return { parseNum, kinds, tone, barColumn, totals, short, monthOf, CHANGE };
+  return { parseNum, kinds, tone, barColumn, totals, short, monthOf };
 })();
 
 (() => {
@@ -349,7 +350,7 @@ window.__sa_numbers = (() => {
           const kpiTone = (k) => {
             if (zero(k)) return '';
             if (URGENT.test(String(k.label || ''))) { if (alarmed) return ''; alarmed = true; return ' attn'; }
-            const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || '') }], [[k.raw]])[0], k.raw);
+            const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || ''), change: k.change === true }], [[k.raw]])[0], k.raw);
             return t ? ` ${t}` : '';
           };
           return h('div', { class: `kpis${lookIs() !== 'plain' ? ' sumcards' : ''}${first ? ' first' : ''}`, 'data-n': String(ks.length) }, ks.map((k) => h('div', { class: `kpi${zero(k) ? ' zero' : ''}${kpiTone(k)}`, 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted hint' }, k.hint) : null)));
@@ -606,6 +607,7 @@ window.__sa_numbers = (() => {
       money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(num(v) == null ? v : Math.round(num(v) * 100) / 100),
       percent: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 100)}%`), pct: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10}%`),
       hours: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10} h`),
+      change: (v) => (num(v) == null ? '' : `${num(v) > 0 ? '+' : ''}${app.fmt.number(Math.round(num(v) * 100) / 100)}`),
       duration: (v) => { const m = num(v); if (m == null) return ''; const t = Math.round(m); return t < 60 ? `${t} min` : `${Math.floor(t / 60)} h ${two(t % 60)}`; },
       clock: (v) => { const x = num(v); if (x == null) return ''; const t = Math.round(x); const h = Math.floor(t / 3600); return h ? `${h}:${two(Math.floor(t / 60) % 60)}:${two(t % 60)}` : `${Math.floor(t / 60)}:${two(t % 60)}`; },
       days: (v) => {
@@ -751,7 +753,7 @@ window.__sa_numbers = (() => {
       const badge = cols.findIndex((c) => c.badge);
       const numeric = cols.map((c, i) => {
         if (i === tick || i === badge || NOT_FIGURE.test(name(c, i))) return false;
-        if (['money', 'number', 'percent', 'pct', 'hours', 'duration'].includes(c.format)) return true;
+        if (['money', 'number', 'percent', 'pct', 'hours', 'duration', 'change'].includes(c.format)) return true;
         const vs = rows.map((r) => raw(c, i, r)).filter((v) => v != null && v !== '');
         return vs.length > 0 && vs.filter((v) => isNum(v) || NUM.parseNum(v) !== null).length >= vs.length * 0.8;
       });
@@ -775,7 +777,7 @@ window.__sa_numbers = (() => {
         let t = text(i).trim();
         if (!t) return null;
         // a change says its sign, as the table's column does ("+$5,400")
-        if (R.numeric[i] && NUM.CHANGE.test(`${c.key || ''} ${heads[i] || ''}`) && (NUM.parseNum(R.raw(c, i, r)) || 0) > 0 && !/^\+/.test(t)) t = `+${t}`;
+        if (R.numeric[i] && (c.change === true || c.format === 'change') && (NUM.parseNum(R.raw(c, i, r)) || 0) > 0 && !/^\+/.test(t)) t = `+${t}`;
         return R.numeric[i] || c.format ? `${heads[i]} ${t}` : t;
       }).filter(Boolean).slice(0, phone.matches ? 2 : 4);
       return { text, state, tone, sub };

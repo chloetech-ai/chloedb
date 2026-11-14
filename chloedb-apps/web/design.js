@@ -42,7 +42,7 @@ export function pairFor(d, subject = '') {
 // The title families each pairing belongs to (the "titles" token).
 const TYPE_FAMILY = { system: 'system', ledger: 'serif', classic: 'serif', elegant: 'serif', grotesk: 'system', bricolage: 'system', rounded: 'rounded', mono: 'mono' };
 // The pairing a design uses: its own when it fits its titles, else the one
-// its titles and its subject suggest (a ledger's warm serif, a salon's
+// its titles and its subject suggest (a ledger's warm serif, a boutique's
 // high-contrast one, a studio's light one; a technical grotesque for data,
 // a bold one for clubs and events).
 export function typeOf(d, subject = '') {
@@ -56,7 +56,7 @@ export function typeOf(d, subject = '') {
   }
   if (titles === 'rounded') return 'rounded';
   if (titles === 'mono') return 'mono';
-  if (/club|run|race|sport|team|gym|fitness|league|event|festival|truck|taco|street|music|kids|game/.test(t)) return 'bricolage';
+  if (/club|run|race|sport|team|gym|fitness|league|event|festival|street|music|kids|game/.test(t)) return 'bricolage';
   if (/dashboard|data|api|engineer|metric|analytics|sales|report|server|database|code|dev|crm|pipeline/.test(t)) return 'grotesk';
   return 'system';
 }
@@ -66,7 +66,7 @@ export const CHOICES = {
   scheme: { auto: 'follows the device: light by day, dark at night', light: 'always light', dark: 'always dark' },
   font: { system: 'San Francisco, neutral', rounded: 'SF Rounded, friendly', serif: 'New York, editorial', mono: 'SF Mono, technical' },
   titles: { system: 'San Francisco', rounded: 'SF Rounded', serif: 'New York', mono: 'SF Mono' },
-  type: { system: 'system titles, quiet', ledger: 'Fraunces, a warm serif (ledgers, food, craft, books)', classic: 'Playfair Display, a high-contrast serif (salons, fashion, hospitality)', elegant: 'Instrument Serif, a light display serif (studios, agencies, portfolios)', grotesk: 'Space Grotesk, a technical sans (data, engineering, tools)', bricolage: 'Bricolage Grotesque, a bold sans with character (clubs, sports, events, street food)', rounded: 'Nunito, friendly and rounded (families, learning)', mono: 'JetBrains Mono (technical)' },
+  type: { system: 'system titles, quiet', ledger: 'Fraunces, a warm serif (ledgers, food, craft, books)', classic: 'Playfair Display, a high-contrast serif (beauty, fashion, hospitality)', elegant: 'Instrument Serif, a light display serif (studios, agencies, portfolios)', grotesk: 'Space Grotesk, a technical sans (data, engineering, tools)', bricolage: 'Bricolage Grotesque, a bold sans with character (clubs, sports, events, street food)', rounded: 'Nunito, friendly and rounded (families, learning)', mono: 'JetBrains Mono (technical)' },
   corners: { round: 'capsule buttons and 16px cards', soft: '7-10px corners, precise', square: '4px corners, crisp' },
   density: { airy: 'larger text, more space', regular: 'balanced: 14px text, 32px controls', compact: 'dense, for many rows and fields' },
   surface: { outlined: 'hairline boxes on a neutral page, like a console', grouped: 'borderless white cards on a tinted page (iOS Settings)', raised: 'cards lifted by a soft shadow' },

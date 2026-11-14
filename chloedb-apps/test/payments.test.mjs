@@ -3,7 +3,7 @@
 // payer placed, its hosted page pays only with the server's single-use
 // token, test mode marks "paid (test)" and never "paid", only a provider's
 // signed notice could mark "paid", and visitors and members do not read the
-// payments or the orders.
+// payments or the rows they pay for.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,10 +25,11 @@ test('payments: bound to the order placed, a single-use token, test mode said, o
   try {
     const store = new Store(client, () => {});
     await store.init();
-    const app = await store.createApp({ name: 'Candles', description: 'A candle shop, prices in £' });
+    const app = await store.createApp({ name: 'Kiosk', description: 'A small shop' });
+    await store.putSetting(app, 'currency', 'EUR');
     const tables = [
-      { name: 'orders', columns: [{ name: 'product', type: 'keyword' }, { name: 'qty', type: 'int' }, { name: 'total', type: 'float' }, { name: 'status', type: 'keyword' }],
-        access: ['ALLOW ADD ON orders TO everyone', 'ALLOW READ, CHANGE, REMOVE ON orders TO owner'] },
+      { name: 'requests', columns: [{ name: 'item', type: 'keyword' }, { name: 'due', type: 'float' }, { name: 'state', type: 'keyword' }, { name: 'note', type: 'keyword' }],
+        access: ['ALLOW ADD ON requests TO everyone', 'ALLOW READ, CHANGE, REMOVE ON requests TO owner'] },
     ];
     const caps = [];
     const have = new Set(await store.tableNames());
@@ -36,8 +37,8 @@ test('payments: bound to the order placed, a single-use token, test mode said, o
       await store.ensureTable(app, spec, have);
       caps.push(await store.putCapability({ app, slug: spec.name, kind: 'table', title: spec.name, spec, code: '' }));
     }
-    await store.writeComposition(app, caps, 'first', 'a shop');
-    await store.putSetting(app, 'publish', JSON.stringify({ on: true, name: 'candles', access: 'change' }));
+    await store.writeComposition(app, caps, 'first', 'a kiosk');
+    await store.putSetting(app, 'publish', JSON.stringify({ on: true, name: 'kiosk', access: 'change' }));
 
     const TOKEN = 'pay-test-token';
     const env = { ...process.env, STRATA_APP_TOKEN: TOKEN, STRATA_APPS_SCHEDULES: 'off', STRATA_APPS_AUTOREPAIR: '0', STRATA_APPS_TILES: 'off', STRATA_APPS_GEOCODER: 'off' };
@@ -78,20 +79,20 @@ test('payments: bound to the order placed, a single-use token, test mode said, o
     const V1 = await visitor();
     const V2 = await visitor();
     assert.notEqual(V1.cookie, V2.cookie);
-    const placed = await call('/insert', { table: 'orders', row: { product: 'ember', qty: 1, total: 26, status: 'awaiting payment' } }, V1);
+    const placed = await call('/insert', { table: 'requests', row: { item: 'k1', due: 26, state: 'new', note: 'keep' } }, V1);
     assert.equal(placed.status, 200, JSON.stringify(placed.body));
     const orderId = placed.body.row.id;
-    assert.equal((await call('/pay', { table: 'orders', id: orderId }, V2)).status, 403, 'another visitor');
-    assert.equal((await call('/pay', { table: 'orders', id: orderId }, {})).status, 403, 'nobody');
-    assert.equal((await call('/pay', { table: 'orders', id: orderId }, B)).status, 403, 'a member who did not place it');
+    assert.equal((await call('/pay', { table: 'requests', id: orderId, amount: 'due', status: 'state' }, V2)).status, 403, 'another visitor');
+    assert.equal((await call('/pay', { table: 'requests', id: orderId, amount: 'due', status: 'state' }, {})).status, 403, 'nobody');
+    assert.equal((await call('/pay', { table: 'requests', id: orderId, amount: 'due', status: 'state' }, B)).status, 403, 'a member who did not place it');
     assert.equal((await call('/pay', { amount: 5, description: 'anything' }, V1)).status, 400, 'a visitor pays only for an order');
 
     // Its payer asks: the amount is the order's own, the url carries a token.
-    const asked = await call('/pay', { table: 'orders', id: orderId, amount: 1, description: '1 x Ember Spice' }, V1);
+    const asked = await call('/pay', { table: 'requests', id: orderId, amount: 'due', status: 'state', description: 'One k1' }, V1);
     assert.equal(asked.status, 200, JSON.stringify(asked.body));
     const pmt = asked.body.payment;
     assert.equal(pmt.amount, 26, 'the row\'s total, not the page\'s amount');
-    assert.equal(pmt.currency, 'GBP');
+    assert.equal(pmt.currency, 'EUR');
     assert.equal(pmt.mode, 'test');
     const [path, token] = pmt.url.split('?t=');
     assert.ok(token && token.length >= 24);
@@ -108,10 +109,10 @@ test('payments: bound to the order placed, a single-use token, test mode said, o
     const paid = await page(path, { t: token });
     assert.equal(paid.status, 200);
     assert.match(paid.text, /Paid in test mode\. No money moved\./);
-    const after = await call('/sql', { sql: 'SELECT status FROM orders WHERE id = :id', params: { id: orderId } }, { studio: true });
-    assert.deepEqual(after.body.rows, [{ status: 'paid (test)' }]);
+    const after = await call('/sql', { sql: 'SELECT state, note FROM requests WHERE id = :id', params: { id: orderId } }, { studio: true });
+    assert.deepEqual(after.body.rows, [{ state: 'paid (test)', note: 'keep' }], 'only the status column named is set');
     assert.equal((await page(path, { t: token })).text.match(/Paid in test mode/g).length, 1, 'a spent token pays nothing again');
-    assert.equal((await call('/pay', { table: 'orders', id: orderId }, V1)).status, 409, 'an order paid already');
+    assert.equal((await call('/pay', { table: 'requests', id: orderId, amount: 'due', status: 'state' }, V1)).status, 409, 'an order paid already');
 
     // Only a provider's signed notice could mark "paid": none is configured.
     const notice = await fetch(`${base}/api/payments/notice`, { method: 'POST', headers: { 'x-payment-signature': 'sha256=00' }, body: JSON.stringify({ payment: pmt.id, status: 'paid' }) });
@@ -128,10 +129,19 @@ test('payments: bound to the order placed, a single-use token, test mode said, o
     assert.deepEqual(listed.body.payments.map((p) => [p.ref_id, p.status, p.mode]), [[orderId, 'paid_test', 'test']]);
     assert.ok(!('token_hash' in listed.body.payments[0]), 'no token in the list');
     assert.equal((await call('/payments', undefined, { studio: true })).status, 200);
-    const sql = (opts) => call('/sql', { sql: 'SELECT id, status FROM orders' }, opts);
+    const sql = (opts) => call('/sql', { sql: 'SELECT id, state FROM requests' }, opts);
     assert.equal((await sql(V1)).status, 401);
     assert.equal((await sql(B)).status, 403);
-    assert.deepEqual((await sql(O)).body.rows, [{ id: orderId, status: 'paid (test)' }]);
+    assert.deepEqual((await sql(O)).body.rows, [{ id: orderId, state: 'paid (test)' }]);
+
+    // A payment that names no status column changes no column of its row,
+    // and a column that is not the row's is refused.
+    const other = (await call('/insert', { table: 'requests', row: { item: 'k2', due: 9, state: 'new' } }, V1)).body.row.id;
+    assert.equal((await call('/pay', { table: 'requests', id: other, amount: 'nope' }, V1)).status, 400);
+    const plain = (await call('/pay', { table: 'requests', id: other, amount: 'due' }, V1)).body.payment;
+    const [p2, t2] = plain.url.split('?t=');
+    assert.equal((await page(p2, { t: t2 })).status, 200);
+    assert.deepEqual((await call('/sql', { sql: 'SELECT state FROM requests WHERE id = :id', params: { id: other } }, { studio: true })).body.rows, [{ state: 'new' }]);
   } finally {
     if (engineProc) { engineProc.kill('SIGTERM'); await new Promise((r) => { if (engineProc.exitCode !== null) r(); else engineProc.on('exit', r); }); }
     strata.kill();

@@ -27,7 +27,7 @@ export const LAYOUTS = {
   dashboard: 'the numbers that matter in a band at the top, then cards in a two or three column grid (status, charts, recent rows)',
   gallery: 'photos or cards first, in a tight grid of tiles (products, rooms, works, dishes)',
   tool: 'one focused tool in a centered panel: the input or the main action large and first, results under it (a calculator, a quick add, a check-in)',
-  report: 'a finished report read top to bottom, as a board or an accountant would be handed it: its title and when it was prepared, then numbered sections (1. Revenue variance, 2. Receivables aging) with strong headings, each its figures, its table and a short note (variance, aging, a monthly pack)',
+  report: 'a finished report read top to bottom: its title and when it was prepared, then numbered sections with strong headings, one per thing the request names, in its order, each its figures, its table and a short note',
 };
 export const LAYOUT_NAMES = Object.keys(LAYOUTS);
 // The same, in a few words each, for the statement's reference.
@@ -51,11 +51,11 @@ export function parseLayout(v) {
 
 export const ART_DOC = `- art: the app's art direction, for a new app, decided with the brief and before the screens; the designs and screens follow it. Invent ONE direction for this product, never a generic one:
   "concept": one sentence from the subject's own world ("a chalkboard menu by the truck's window", "a quiet ledger for a corner bakery"); "mood": three words;
-  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a taco truck: "editorial, the menu as a chalkboard list"; a course: "split, lessons beside progress"); vary it by subject, not by habit;
+  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a bakery: "editorial, the day's bread as a chalkboard list"; a course: "split, lessons beside progress"); vary it by subject, not by habit;
   "type": the title face, "system", "serif" (editorial, food, books), "rounded" (friendly, families, learning) or "mono" (technical), with the pairing ("serif titles over plain text");
-  "accent": the one color of the main buttons, named as the subject would ("salsa red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
-  "imagery": what the photos show, the real product itself (the tacos on the plate, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job, or when the brand is its name, its dates and its voice (a club, an event, a poster, a festival): then the first screen is type-led, a big bold headline in the accent over the design's color and the next event or offer right under it, never a stock photo standing in;
-  "action": the one main action and its words, a concrete verb ("Order tacos", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
+  "accent": the one color of the main buttons, named as the subject would ("brick red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
+  "imagery": what the photos show, the real product itself (the bread on the counter, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job or there is no real photo of the product to show: then the first screen is type-led (a hero with "look": "type"), never a stock photo standing in;
+  "action": the one main action and its words, a concrete verb ("Order a loaf", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)
 - Pages are white, a faint paper tint or genuinely dark; no strong beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.

@@ -72,7 +72,7 @@ const SYSTEM_TABLES = {
   // row it pays for, and whether it was paid. Never a card's details: the
   // payer pays on a hosted page.
   sa_payments: `CREATE TABLE sa_payments (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, amount FLOAT, currency KEYWORD, description TEXT, ref_table KEYWORD, ref_id KEYWORD,
-    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, token_hash KEYWORD, payer KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, token_hash KEYWORD, payer KEYWORD, status_col KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Who added each row (a person's id, or a visitor's), as the engine saw
   // the write: what binds a payment to the order its payer placed.
   sa_rowmakers: `CREATE TABLE sa_rowmakers (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, tbl KEYWORD, rid KEYWORD, who KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,

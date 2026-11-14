@@ -3225,15 +3225,15 @@ test('each app reads and writes with a key of its own, held to its tables by the
 test('VARIANCE: periods compared, with the change, the change in percent and the biggest moves', async () => {
   const { compileStatement } = await import('../engine/statement.mjs');
   const expandScreen = expandWith;
-  const w = compileStatement(`CREATE SCREEN revenue TITLE 'Revenue'
-VARIANCE monthly_sales AS rev
-  PERIOD month  VALUE revenue  ORDER BY CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END
-  LABEL 'Revenue'  NAME 'Month'  FORMAT money  FILE 'revenue.csv'`);
-  assert.deepEqual(w.screen.body[0], { use: 'variance', table: 'monthly_sales', key: 'rev', period: 'month', value: 'revenue', order: "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END", label: 'Revenue', periodLabel: 'Month', format: 'money', file: 'revenue.csv' });
+  const w = compileStatement(`CREATE SCREEN amount TITLE 'Amount'
+VARIANCE tallies AS rev
+  PERIOD month  VALUE amount  ORDER BY CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END
+  LABEL 'Amount'  NAME 'Month'  FORMAT money  FILE 'amount.csv'`);
+  assert.deepEqual(w.screen.body[0], { use: 'variance', table: 'tallies', key: 'rev', period: 'month', value: 'amount', order: "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END", label: 'Amount', periodLabel: 'Month', format: 'money', file: 'amount.csv' });
   const we = expandScreen(w.screen);
   assert.deepEqual(we.problems, []);
-  assert.equal(we.screen.data.rev, "SELECT month AS p, revenue AS v, NULL AS c, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM monthly_sales LIMIT 500");
-  assert.deepEqual(checkScreen(we.screen, (t) => ({ monthly_sales: new Set(['id', 'created', 'month', 'revenue']) })[t] || null), []);
+  assert.equal(we.screen.data.rev, "SELECT month AS p, amount AS v, NULL AS c, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM tallies LIMIT 500");
+  assert.deepEqual(checkScreen(we.screen, (t) => ({ tallies: new Set(['id', 'created', 'month', 'amount']) })[t] || null), []);
   const table = JSON.stringify(we.screen.body);
   assert.match(table, /"Change %"/);
   assert.match(table, /Biggest increase/);
@@ -3255,15 +3255,15 @@ VARIANCE costs
   assert.equal((table.match(/"barChart"/g) || []).length, 1);
   assert.match(table, /value: r\.value\}/);
   const two = expandScreen(compileStatement(`CREATE SCREEN d
-VARIANCE sales
-  PERIOD month  VALUE revenue  COMPARE cost_of_goods + marketing  AGAINST 'Costs'  ORDER BY n`).screen);
+VARIANCE tallies2
+  PERIOD month  VALUE amount  COMPARE spent_a + spent_b  AGAINST 'Spent'  ORDER BY n`).screen);
   assert.deepEqual(two.problems, []);
-  assert.match(two.screen.data.sales_var, /cost_of_goods \+ marketing AS c/);
+  assert.match(two.screen.data.tallies2_var, /spent_a \+ spent_b AS c/);
   assert.match(JSON.stringify(two.screen.body), /values: \[r\.value, r\.compare \|\| 0\]/);
   const none = expandScreen(compileStatement(`CREATE SCREEN d
-VARIANCE sales
-  PERIOD month  VALUE revenue  CHART none`).screen);
+VARIANCE tallies2
+  PERIOD month  VALUE amount  CHART none`).screen);
   assert.doesNotMatch(JSON.stringify(none.screen.body), /barChart/);
   // MONEY alone says the format, as it does for a KPI (a round 2 plan wrote it so)
-  assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE sales\n  PERIOD month  VALUE revenue  MONEY").screen.body[0].format, 'money');
+  assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE tallies2\n  PERIOD month  VALUE amount  MONEY").screen.body[0].format, 'money');
 });

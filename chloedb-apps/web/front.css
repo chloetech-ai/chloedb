@@ -455,3 +455,10 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 /* what is no longer on offer says so: the chip in the danger tone, the card quieter */
 .fp-chip.out { background: color-mix(in srgb, #c0352b 12%, var(--card)); color: #a52a21; }
 .fp-card.out .fp-price, .fp-card.out h3 { opacity: .6; }
+
+/* a type-led hero: the headline is the picture */
+.fp-hero.look-type > .fp-wrap { padding-block: 120px 72px; }
+.fp-hero.look-type .fp-display { font-size: clamp(48px, 9vw, 112px); line-height: .95; letter-spacing: -.04em; font-weight: 800; color: var(--fg); max-width: 14ch; }
+.fp-hero.look-type .fp-display .fp-em { background: none; -webkit-text-fill-color: currentColor; color: var(--accent); }
+.fp-hero.look-type .fp-lead { font-size: clamp(18px, 2.2vw, 22px); }
+@media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 88px 40px; } }

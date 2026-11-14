@@ -1,6 +1,6 @@
 {
  "title": "A value compared period by period: the change and the change in percent, and the biggest moves",
- "about": "Revenue month over month, costs quarter over quarter, members week over week: one row per period in order, each with its value, its change from the period before and that change in percent (signed, coloured, with bars), the biggest gain and the biggest drop as big numbers, a bar chart of the value per period (with a second value such as costs beside it), and the table as a CSV to download. Rows that are one per period already (a month column): give PERIOD and ORDER BY. Rows to add up per period: PERIOD date_trunc('month', day), VALUE SUM(amount), GROUP BY date_trunc('month', day).",
+ "about": "A total month over month, quarter over quarter or week over week: one row per period in order, each with its value, its change from the period before and that change in percent (signed, coloured, with bars), the biggest gain and the biggest drop as big numbers, a bar chart of the value per period (with a second value beside it), and the table as a CSV to download. Rows that are one per period already (a month column): give PERIOD and ORDER BY. Rows to add up per period: PERIOD date_trunc('month', day), VALUE SUM(amount), GROUP BY date_trunc('month', day).",
  "params": {
   "table": {
    "about": "the table",
@@ -26,8 +26,8 @@
    "default": "NULL"
   },
   "compareLabel": {
-   "about": "what the second value is",
-   "default": "Costs"
+   "about": "what the second value is (named in the chart's legend)",
+   "default": "{{compare}}"
   },
   "group": {
    "about": "the SQL to group rows by, when the value adds rows up (usually the same as period)"
@@ -66,12 +66,12 @@
  },
  "example": {
   "use": "variance",
-  "table": "monthly_sales",
-  "title": "Revenue, month over month",
-  "period": "month",
-  "value": "revenue",
-  "order": "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 WHEN 'Mar' THEN 3 WHEN 'Apr' THEN 4 WHEN 'May' THEN 5 WHEN 'Jun' THEN 6 WHEN 'Jul' THEN 7 WHEN 'Aug' THEN 8 WHEN 'Sep' THEN 9 WHEN 'Oct' THEN 10 WHEN 'Nov' THEN 11 ELSE 12 END",
-  "label": "Revenue",
+  "table": "entries",
+  "title": "Spending, month over month",
+  "period": "date_trunc('month', day)",
+  "value": "SUM(amount)",
+  "group": "date_trunc('month', day)",
+  "label": "Spent",
   "periodLabel": "Month",
   "format": "money"
  },
@@ -106,12 +106,14 @@
      {
       "label": "={{key}}_up ? 'Biggest increase, ' + {{key}}_up.period : 'Biggest increase'",
       "value": "={{key}}_up ? {{key}}_signed({{key}}_up.change) : '—'",
-      "hint": "={{key}}_up ? {{key}}_pct({{key}}_up.pct) + ' vs ' + {{key}}_up.prior : 'No period went up'"
+      "hint": "={{key}}_up ? {{key}}_pct({{key}}_up.pct) + ' vs ' + {{key}}_up.prior : 'No period went up'",
+      "change": true
      },
      {
       "label": "={{key}}_down ? 'Biggest decrease, ' + {{key}}_down.period : 'Biggest decrease'",
       "value": "={{key}}_down ? {{key}}_signed({{key}}_down.change) : '—'",
-      "hint": "={{key}}_down ? {{key}}_pct({{key}}_down.pct) + ' vs ' + {{key}}_down.prior : 'No period went down'"
+      "hint": "={{key}}_down ? {{key}}_pct({{key}}_down.pct) + ' vs ' + {{key}}_down.prior : 'No period went down'",
+      "change": true
      }
     ]
    },
@@ -157,12 +159,14 @@
        {
         "key": "change",
         "label": "Change",
-        "format": "{{format}}"
+        "format": "{{format}}",
+        "change": true
        },
        {
         "key": "pct",
         "label": "Change %",
-        "format": "pct"
+        "format": "pct",
+        "change": true
        }
       ],
       "empty": "Nothing to compare yet."
