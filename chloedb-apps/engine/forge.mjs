@@ -241,7 +241,7 @@ ${ART_DOC}
 - locale: the BCP 47 tag of the app's language and place ("es-ES", "en-GB", "pt-BR", "en-US"), from the language the request is written in and where it is (an address, a currency); for a new app, or when asked to change its language. Every price, number and date then reads as there ("28 €" in Spain, "£24.00" in Britain): write amounts with app.fmt.money and app.fmt.number, never by hand.
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - access: ALLOW statements (see Access) for the tables whose access is new or changes; leave it out otherwise (a table keeps the access it has).
-- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
+- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes); a view and a function never share one, since each code block is named by its slug (the enrolling screen "enrol", its rule "take-enrolment"). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
 - upgrade: names of components or helpers this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
@@ -1444,7 +1444,7 @@ export async function validate(plan, code, view, library, shared = new Map(), re
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
       if (!SLUG_RE.test(item.slug || '')) { problems.push(`${kind} slug ${JSON.stringify(item.slug)}: lowercase letters, digits and dashes`); continue; }
-      if (slugs.has(item.slug)) problems.push(`${item.slug} is given twice`);
+      if (slugs.has(item.slug)) problems.push(`${item.slug} is given twice: a view and a function never share a slug (each code block is named by it); rename the ${kind}, and every call and ALLOW CALL that names it`);
       slugs.add(item.slug);
       if (kind === 'view' && item.screen) {
         for (const x of checkScreen(item.screen, columnsFor(view, plan))) problems.push(`view ${item.slug}: ${x}`);
