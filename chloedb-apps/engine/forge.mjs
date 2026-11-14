@@ -1664,6 +1664,13 @@ async function pool(items, n, fn) {
   return out;
 }
 
+// How hard the model thinks while it plans a first version. That answer is
+// the longest of a build (the plan, the screens' statements and the example
+// rows), and at the CLI's default effort most of its output was thinking: a
+// course site's plan wrote 24,000 tokens in 149 s, at medium 15,000 in 96 s,
+// the app as good. STRATA_APPS_PLAN_EFFORT (or STRATA_APPS_EFFORT) sets it.
+export const PLAN_EFFORT = process.env.STRATA_APPS_PLAN_EFFORT || process.env.STRATA_APPS_EFFORT || 'medium';
+
 async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null, onPlan = null }, progress, tr = new Trace()) {
   let cost = 0;
   let plan;
@@ -1677,7 +1684,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
