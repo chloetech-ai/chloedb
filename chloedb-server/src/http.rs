@@ -464,7 +464,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
         .route("/v1/admin/connectors/:name/run", post(connectors_run))
         .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
-        .route("/v1/connectors/:name/push", post(connectors_push).layer(rows.clone()))
+        .route("/v1/connectors/:name/push", post(connectors_push).layer(DefaultBodyLimit::max(app.svc.max_body.min(crate::connectors::PUSH_BODY_MAX))))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))

@@ -21,6 +21,7 @@ export default {
 const HEALTH = {
   ok: ["ok", "ok"],
   failing: ["failing", "failing"],
+  invalid: ["failing", "invalid"],
   stale: ["warn", "stale"],
   running: ["info", "running"],
   pending: ["pending", "not run yet"],
@@ -257,10 +258,12 @@ function render(page) {
       ["Runs", fmt.n(st.runs || 0)], ["Rows written", fmt.n(st.rows_total || 0)], ["Last ok", st.last_ok_ms ? fmt.ago(st.last_ok_ms) : "never"],
       ["Cursor", h("span", { class: "mono small", style: { wordBreak: "break-all" } }, (st.cursor || "–").slice(0, 120))],
       ["Secrets", c.secrets?.length ? h("span", { class: "mono" }, c.secrets.join(", ")) : "none"],
+      ["Changed", c.updated_ms ? `${fmt.ago(c.updated_ms)}${c.updated_by ? ` by ${c.updated_by}` : ""}` : "–"],
       c.push ? ["Push to", h("span", { class: "mono small" }, `POST ${c.push.url}`)] : null,
     ].filter(Boolean);
     const d = drawer({ title: name, sub: `${kindTitle(c.kind)} into ${c.target}`, wide: true, body: h("div", { class: "stack", style: { gap: "14px" } },
       h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, runBtn, dry, toggleBtn, keyBtn, del),
+      c.invalid ? h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "small" }, `This config does not run: ${c.invalid}. Change it here, or delete it.`)) : null,
       st.last_error ? h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "small" }, st.last_error)) : null,
       out,
       h("table", { class: "t compact" }, h("tbody", {}, facts.map(([k, x]) => h("tr", {}, h("td", { class: "dim small", style: { width: "130px" } }, k), h("td", {}, x))))),

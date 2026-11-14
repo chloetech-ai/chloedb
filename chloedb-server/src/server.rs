@@ -182,6 +182,9 @@ pub struct Options {
     pub hub_file: Option<PathBuf>,
     /// The connectors' secrets (default: DB.connectors.json beside --db).
     pub connector_secrets: Option<PathBuf>,
+    /// The prefix of the variables connectors' `env:` secrets may name
+    /// (default [`crate::connectors::ENV_PREFIX`]).
+    pub connector_env_prefix: Option<String>,
     /// Pulls of the connectors run here on their schedules.
     pub connectors: bool,
     /// Who this hub's calls to other clusters say they come from.
@@ -535,6 +538,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     let connector_secrets = o.connector_secrets.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::connectors::Connectors::file_of));
     if let Some(file) = connector_secrets {
         svc.connectors.keep_secrets(file)?;
+    }
+    if let Some(p) = &o.connector_env_prefix {
+        svc.connectors.set_env_prefix(p)?;
     }
     if o.connectors {
         svc.connectors.enable();
