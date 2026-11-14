@@ -277,6 +277,10 @@ function setConn(state) {
   $("conn-text").textContent = { live: "live", connecting: "connecting", reconnecting: "reconnecting", offline: "offline" }[state];
 }
 
+/** Settles once the stream's first snapshot of the agents is in. */
+let gotSnapshot;
+const firstSnapshot = new Promise((r) => { gotSnapshot = r; });
+
 function connectStream() {
   clearTimeout(esTimer);
   es?.close();
@@ -292,6 +296,7 @@ function connectStream() {
     for (const [id, a] of S.agents) if (a.running && !ids.has(id)) S.agents.delete(id);
     for (const a of list) upsert(a);
     setConn("live");
+    gotSnapshot();
     loadAll();
   });
   es.addEventListener("agent", (e) => {
@@ -2707,7 +2712,9 @@ function levelCtx(param) {
   return {
     api,
     state: levelState(),
-    params: { agent: param || null, repo: pickRepo?.() || null },
+    // The repository: read when a screen asks, so it follows the agents the
+    // stream has brought in by then.
+    params: { agent: param || null, get repo() { return pickRepo() || null; } },
     go: (hash) => route(hash, { push: true }),
     openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }),
     openRewind: (o) => openRewindCard(o),
@@ -2754,7 +2761,9 @@ async function openLevel(screen, param, { how = "push" } = {}) {
   markLevels();
   const req = ++L.req;
   try {
-    const mod = await import(`/levels/${screen}.js`);
+    // The agents first (the stream's snapshot), so a screen opened by its
+    // address knows the fleet and its repository.
+    const [mod] = await Promise.all([import(`/levels/${screen}.js`), Promise.race([firstSnapshot, new Promise((r) => setTimeout(r, 3000))])]);
     if (req !== L.req) return;
     host.replaceChildren();
     L.view = mod.mount(host, levelCtx(param));
@@ -2858,8 +2867,13 @@ for (const a of document.querySelectorAll("#lvnav a")) a.addEventListener("click
 });
 
 function levelKey(e) {
-  if (e.key === "[" ) { goLevel(currentLevel() - 1); return true; }
-  if (e.key === "]") { goLevel(currentLevel() + 1); return true; }
+  const d = e.key === "[" ? -1 : e.key === "]" ? 1 : 0;
+  // A screen with levels of its own (Story) moves through them first.
+  if (d && L.view && typeof L.view.levelKey === "function") {
+    try { if (L.view.levelKey(d)) return true; } catch (err) { console.error(err); }
+  }
+  if (d < 0) { goLevel(currentLevel() - 1); return true; }
+  if (d > 0) { goLevel(currentLevel() + 1); return true; }
   if (L.screen && e.key === "Escape" && L.screen !== "mission") { route("#/mission", { push: true }); return true; }
   return false;
 }
@@ -2876,6 +2890,17 @@ function renderLevels() {
 
 // ----------------------------------------------------------------- start
 
+/** You stop looking: the page is hidden or left. The digest (Away) counts
+ *  from here. */
+function markSeen() {
+  if (!S.token) return;
+  try {
+    fetch("/api/seen", { method: "POST", keepalive: true, headers: { Authorization: `Bearer ${S.token}`, "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+  } catch { /* leaving: nothing to do */ }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") markSeen(); });
+window.addEventListener("pagehide", markSeen);
+
 let started = false;
 function start() {
   if (!started) {
@@ -2887,7 +2912,17 @@ function start() {
   }
   const id = location.hash.slice(1);
   if (id.startsWith("/")) route(location.hash);
-  else if (!id) api("/api/goals").then((g) => { if (!location.hash && (g.goals || []).some((x) => x.state === "active")) { history.replaceState({ level: "#/mission", root: true }, "", "#/mission"); route("#/mission"); } }, () => {});
+  else if (!id) {
+    // Away when you were gone over 30 minutes and something happened since,
+    // else Mission once a goal exists, else the grid (SPEC.md, Levels).
+    const open = (hash) => { if (location.hash) return; history.replaceState({ level: hash, root: true }, "", hash); route(hash); };
+    const digest = api("/api/digest").catch(() => null);
+    api("/api/goals").then(async (g) => {
+      const d = await digest;
+      if (d && d.happened && (d.away_ms || 0) > 30 * 60 * 1000) open("#/away");
+      else if ((g.goals || []).some((x) => x.state === "active")) open("#/mission");
+    }, () => {});
+  }
   else if (id === "decisions") S.pendingDec = true;
   else if (id) S.pendingZoom = id;
   connectStream();

@@ -6,7 +6,7 @@
 // for you today, and the rules, each one on or off.
 import {
   h, useStyle, toMs, fmtDur, fmtClock, avatar, pill, repoOf, mergeAgents, inlineCode, parseJSON, fmtDay,
-  keyNav, rerender, routeParam,
+  keyNav, rerender, routeParam, precedentOf,
 } from "./common.js";
 
 const enc = encodeURIComponent;
@@ -22,6 +22,7 @@ export function mount(root, ctx) {
     repo: repoOf(ctx), open: [], answered: [], rules: [], outcomes: [], stream: (ctx.state && ctx.state.agents) || [],
     sel: wanted || null, loaded: false, error: null, choice: new Map(), ruleOn: new Map(), ruleText: new Map(), own: new Map(),
     sending: null, done: null, review: false, fresh: new Set(), toggling: new Set(),
+    seq: (((ctx.state && ctx.state.events) || []).at(-1) || {}).seq || 0,
   };
   const el = h("div", { class: "lv-screen de" });
   root.append(el);
@@ -44,6 +45,10 @@ export function mount(root, ctx) {
       S.loaded = true; S.error = null;
       if (alive) render();
       loadOutcomes();
+      // ChloeCtx answers about a new question a moment after it is asked.
+      clearTimeout(S.again);
+      if (alive && S.open.some((x) => x.kind !== "permission" && precedentOf(x).pending) && (S.tries = (S.tries || 0) + 1) <= 15) S.again = setTimeout(load, 2000);
+      else S.tries = 0;
     } catch (e) {
       S.error = e.message || String(e); S.loaded = true;
       if (alive) render();
@@ -65,7 +70,7 @@ export function mount(root, ctx) {
   const agents = () => mergeAgents(S.stream);
   const agentOf = (id) => agents().get(id) || null;
   const opts = (q) => (q.kind === "permission" ? PERM_LABELS.map((label, i) => ({ label, detail: (parseJSON(q.options, []) || [])[i]?.label })) : parseJSON(q.options, []) || []);
-  const prec = (q) => parseJSON(q.precedent, null) || {};
+  const prec = (q) => precedentOf(q);
   const matchIdx = (q) => opts(q).findIndex((o) => o.matches_precedent);
   const defaultChoice = (q) => (q.kind === "permission" ? 0 : matchIdx(q) >= 0 ? matchIdx(q) : q.recommended ?? 0);
   const choiceOf = (q) => (S.choice.has(q.id) ? S.choice.get(q.id) : defaultChoice(q));
@@ -139,6 +144,7 @@ export function mount(root, ctx) {
     const auto = String(q.answered_by || "").startsWith("rule:");
     const tag = q.state !== "open" ? (auto ? pill("auto", "good") : pill(q.answered_by === "you" ? "you" : q.answered_by || "answered", "mut"))
       : q.kind === "permission" ? pill("permission", "mut")
+      : p.pending ? pill("asking ChloeCtx…", "mut")
       : matchIdx(q) >= 0 ? h("span", { class: "lv-pill lv-vio" }, "precedent found")
       : recs.length || (p.ids && p.ids.length) ? h("span", { class: "lv-pill lv-vio dim" }, "related memory")
       : pill("no precedent", "mut");
@@ -248,20 +254,23 @@ export function mount(root, ctx) {
     const p = prec(q);
     const recs = p.records || [];
     if (!recs.length) {
+      if (p.pending) return h("div", { class: "de-prec none" }, h("h2", { class: "lv-h" }, "Asking ChloeCtx…"), h("div", { class: "muted" }, "What was decided before about this shows here in a moment."));
       if (p.text && p.text.trim() && !/found nothing/i.test(p.text)) return h("div", { class: "de-prec" }, h("h2", { class: "lv-h" }, "ChloeCtx found"), h("pre", { class: "de-prec-raw" }, p.text.trim()));
-      return h("div", { class: "de-prec none" }, h("h2", { class: "lv-h" }, "No precedent"), h("div", { class: "muted" }, "ChloeCtx found nothing about this in memory. Your answer can be the first rule."));
+      return h("div", { class: "de-prec none" }, h("h2", { class: "lv-h" }, "No precedent"), h("div", { class: "muted" }, p.missing.length ? p.missing.join(" ") : "ChloeCtx found nothing about this in memory. Your answer can be the first rule."));
     }
     const [top, ...rest] = recs;
     const mine = top.by === "you";
-    const who = mine ? "you" : top.agent ? top.agent : { name: top.by || "?" };
+    const who = mine ? "you" : top.agent ? top.agent : { name: top.by || "ChloeCtx" };
     const files = (top.files || []).map((f) => f.split("/").pop());
+    // A note's date has no time of day (ChloeCtx's ask prints dates).
+    const when = (t) => (!t ? null : /^\d{4}-\d{2}-\d{2}$/.test(t) ? fmtDay(t) : `${fmtDay(t)}, ${fmtClock(t)}`);
     return h("div", { class: "de-prec" },
       h("h2", { class: "lv-h" }, mine ? "You decided this before" : matchIdx(q) >= 0 ? "Decided before" : "ChloeCtx remembers"),
       h("div", { class: "de-prec-r" }, avatar(who, 30),
         h("div", { class: "de-prec-b" },
           h("b", { class: "de-quote" }, "“", inlineCode(top.text), "”"),
           h("div", { class: "muted de-prec-m" },
-            [mine ? "you" : top.by, top.ts ? `${fmtDay(top.ts)}, ${fmtClock(top.ts)}` : null, top.session_title ? `session “${top.session_title}”` : null, top.agent ? `agent ${top.agent.name}` : null, top.kind && top.kind !== "decision" ? top.kind : null].filter(Boolean).join(" · "),
+            [mine ? "you, as a rule" : top.by || "a session before Workbench", when(top.ts), top.session_title ? `session “${top.session_title}”` : null, top.kind && top.kind !== "decision" ? top.kind : null].filter(Boolean).join(" · "),
             top.rewind ? [" · ", h("button", { class: "de-link acc", "data-key": `rwd:${q.id}`, onclick: () => ctx.openRewind(top.rewind) }, "Rewind ▶")] : null),
           files.length ? h("div", { class: "de-prec-f" }, "Applied since in ", files.map((f, i) => [i ? (i === files.length - 1 ? " and " : ", ") : "", h("code", { class: "lv-code" }, f)]), top.against === 0 ? "; no one has gone against it." : ".") : null)),
       rest.length ? h("div", { class: "de-prec-more" }, h("span", { class: "muted" }, "Also related: "), rest.map((r, i) => [i ? " · " : "", inlineCode(r.text), h("span", { class: "muted" }, ` (${[r.kind, r.by || r.agent?.name].filter(Boolean).join(", ")})`)])) : null);
@@ -323,11 +332,17 @@ export function mount(root, ctx) {
       if (!state) return;
       const before = new Map(S.stream.map((a) => [a.id, a.state]));
       S.stream = state.agents || S.stream;
-      // An agent that starts or stops waiting may have asked or been answered.
-      if ((S.stream || []).some((a) => before.get(a.id) !== a.state && (a.state === "waiting" || before.get(a.id) === "waiting"))) load();
+      // A question asked or answered (its events), or an agent that starts
+      // or stops waiting, is worth a reload.
+      const evs = state.events || [];
+      const last = evs.length ? evs[evs.length - 1].seq : 0;
+      const asked = evs.some((e) => e.seq > (S.seq || 0) && (e.kind === "question" || e.kind === "answered" || e.kind === "Notification"));
+      const was = S.seq;
+      S.seq = Math.max(S.seq || 0, last || 0);
+      if ((was != null && asked) || (S.stream || []).some((a) => before.get(a.id) !== a.state && (a.state === "waiting" || before.get(a.id) === "waiting"))) load();
       else render();
     },
-    unmount() { alive = false; offKeys(); el.remove(); },
+    unmount() { alive = false; clearTimeout(S.again); offKeys(); el.remove(); },
   };
 }
 

@@ -581,11 +581,16 @@ Node = {"name", "path", "kind": "dir", "lines", "files", "children": [Node], "co
   ≤ 2048 bytes), rect: {x, y, width, height}, url}`. It takes messages
   from its parent only: `{type: "wb-pick-mode", on}` turns picking off
   and on (on by default in a frame, off on its own); `{type: "wb-who",
-  id, texts?: [string], selector?, max?: 300}` is answered with `{type:
-  "wb-who", id, items: [{selector, text, rect}]}`, the visible elements
-  with text of their own (under `selector`; with `texts`, those whose text
-  holds one of them or is held by one, so the parent can pass an agent's
-  added lines). On load it posts `{type: "wb-ready", url}`.
+  id, texts?: [string], selector?, max?: 300, watch?: bool}` is answered
+  with `{type: "wb-who", id, items: [{selector, text, classes, rect}]}`,
+  the visible elements with text of their own (under `selector`; with
+  `texts`, those whose text holds one of them or is held by one, so the
+  parent can pass an agent's added lines); `classes` are the element's
+  and its parent's (at most 12), which the Preview screen matches against
+  the class names in an agent's added lines. With `watch`, the same
+  answer comes again, under the same id, after the page scrolls, resizes
+  or changes (debounced), until the next `wb-who`. On load it posts
+  `{type: "wb-ready", url}`, and the parent asks again.
 - `POST /api/preview/route {agent, pick}` →
 
   ```
@@ -704,7 +709,7 @@ Node = {"name", "path", "kind": "dir", "lines", "files", "children": [Node], "co
 - `POST /api/preview/route` adds `matched`, `score`, `message` and
   `missing`; `related` records are `{id, kind, text, ts, files}`.
 - The overlay also takes `wb-pick-mode`, posts `wb-ready`, and `wb-who`
-  takes `texts`, `selector` and `max`.
+  takes `texts`, `selector`, `max` and `watch`; its items carry `classes`.
 - Flow adds `repo`, `window.minutes`, per-agent `tokens`, `missing`, and
   on each suggestion `kind`, `saves_ms`, `applied` (and `from` for the
   report's); `apply` takes `repo` (and `text` for a fix).
@@ -885,10 +890,20 @@ now), tokens, txn, query}]}`.
   `#/mission`, `#/decide`, `#/map`, `#/story/<agent>`, `#/preview/<agent>`,
   `#/flow`, `#/away`, `#/grid`, `#/zoom/<agent>`.
 - Mission is the default screen once a goal exists; before that, the grid
-  with a "Set a goal" box above it.
+  with a "Set a goal" box above it. Opened without a route after more than
+  30 minutes away (`/api/digest`'s `away_ms`) when something happened, it
+  opens Away; leaving the page (hidden or closed) marks it seen
+  (`POST /api/seen`).
 - `ui/dev/mock-server.mjs` serves fixtures for every new route (a story of
   a payments repo, as in the concepts), so each screen can be built and
   screenshotted without a model.
+- `ui/dev/seed-real.mjs --start` runs the real server instead, with the
+  tests' fake `claude` and `ui/dev/fake-chloectx.mjs` (which answers
+  `ask`, `sql`, `receipts`, `remember`, `blame`, `report` and `wiring` in
+  chloectx's formats, from a JSON file), and seeds it through the HTTP
+  API: a repository, a goal with its outcomes, agents that write, read,
+  fail and ask, questions with a precedent, a rule, steers, a collision
+  and a preview. Re-runnable; the header says how.
 
 ## ChloeCtx is required
 

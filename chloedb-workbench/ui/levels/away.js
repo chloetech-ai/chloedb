@@ -4,7 +4,7 @@
 // adopt, and "Replay the evening": the decision moments played one after
 // another through the Rewind player. Mounting it marks the fleet seen.
 import {
-  h, useStyle, avatar, agentChip, ctxChip, pill, empty, fmtDur, fmtClock, fmtAgo, toMs, md, card, setFleet,
+  h, useStyle, avatar, agentChip, ctxChip, pill, empty, fmtDur, fmtClock, fmtAgo, toMs, md, card, setFleet, precedentOf,
 } from "./common.js";
 
 const nameOf = (a) => (a && (a.name || a.id)) || "?";
@@ -43,13 +43,18 @@ export function mount(root, ctx) {
     const t = d.tiles || {};
     const open = openQuestions();
     const waiting = open.length;
-    const done = num(t.done), decided = num(t.decided) + [...S.answered.values()].length, learned = num(t.learned);
+    const done = num(t.done), learned = num(t.learned);
+    // decided_by: {you, rule, terminal}; "without you" is what rules and
+    // terminals answered.
+    const by = d.decided_by || {};
+    const without = d.decided_by ? num(by.rule) + num(by.terminal) : num(t.decided);
+    const decided = num(t.decided) + S.answered.size;
     el.replaceChildren(
       h("div", { class: "aw-eyebrow" }, `You were away ${fmtDur(until - since)} · ${fmtClock(since)} → ${fmtClock(until)}`),
-      h("h1", { class: "aw-h1" }, headline(done, waiting, decided)),
+      h("h1", { class: "aw-h1" }, headline(done, waiting, without)),
       h("div", { class: "aw-tiles" },
         tile(done, "good", "outcomes done", done ? "finished and marked done by their agents" : "none finished yet", () => ctx.go("#/mission")),
-        tile(decided, "ctx", "decided without you", decidedSub(), () => ctx.go("#/decide")),
+        tile(without, "ctx", "decided without you", decidedSub(decided), () => ctx.go("#/decide")),
         tile(waiting, "warn", "waiting on you", waitingSub(open), waiting ? () => el.querySelector(".aw-q button, .aw-q textarea")?.focus() : null),
         tile(learned, "acc", "new things learned", learnedSub(learned), null)),
       h("div", { class: "aw-grid" },
@@ -72,17 +77,17 @@ export function mount(root, ctx) {
     return go ? h("button", { class: "lv-card aw-tile", onclick: go }, body) : h("div", { class: "lv-card aw-tile" }, body);
   }
 
-  function decidedSub() {
+  function decidedSub(total) {
     const qs = (S.d.questions || []).filter((q) => q.state === "answered");
-    const byRule = qs.filter((q) => String(q.answered_by || "").startsWith("rule:")).length;
-    const byTerm = qs.filter((q) => q.answered_by === "terminal").length;
+    const by = S.d.decided_by;
+    const byRule = by ? num(by.rule) : qs.filter((q) => String(q.answered_by || "").startsWith("rule:")).length;
+    const byTerm = by ? num(by.terminal) : qs.filter((q) => q.answered_by === "terminal").length;
+    const byYou = (by ? num(by.you) : qs.length - byRule - byTerm) + S.answered.size;
     const bits = [];
-    const byYou = qs.length - byRule - byTerm;
     if (byRule) bits.push(`${byRule} by your rules`);
     if (byTerm) bits.push(`${byTerm} in a terminal`);
-    if (byYou) bits.push(`${byYou} by you`);
-    if (S.answered.size) bits.push(`${S.answered.size} just now`);
-    return bits.length ? bits.join(", ") + "; each can be undone" : "by your rules; each can be undone";
+    if (!bits.length) return total ? `all ${total} answered by you` : "nothing yet: rules you make answer for you";
+    return bits.join(", ") + (byYou ? `; ${byYou} more by you` : "");
   }
   function waitingSub(open) {
     if (!open.length) return "nothing; the fleet is unblocked";
@@ -117,6 +122,15 @@ export function mount(root, ctx) {
 
   function chip(c) {
     const k = String(c.kind || "").toLowerCase();
+    // A question answered: by you, or in its terminal (`by`); a rule's
+    // answer is a ChloeCtx chip.
+    if (k === "decided") {
+      const term = c.by === "terminal";
+      const text = term ? "answered in its terminal" : `you: ${String(c.text || "").split("\n")[0]}`;
+      return h("span", { class: "aw-chip", title: term ? "answered at the prompt in its terminal" : "your answer" }, pill(text, "acc"));
+    }
+    if (k === "rule") return h("span", { class: "aw-chip" }, ctxChip(`rule: ${String(c.text || "").split("\n")[0]}`, "answered by a rule you made, from ChloeCtx"));
+    if (k === "edits") return h("span", { class: "aw-chip" }, pill(c.text, "mut"));
     if (CTX_KINDS.has(k)) return h("span", { class: "aw-chip" }, ctxChip(c.text, `${k.replace("_", " ")}, from ChloeCtx`));
     if (k === "waiting" || k === "question") return h("span", { class: "aw-chip" }, pill(c.text, "warn"));
     if (k === "test" || k === "pr" || k === "done") return h("span", { class: "aw-chip" }, pill(c.text, "good"));
@@ -153,6 +167,7 @@ export function mount(root, ctx) {
   // A moment's times are since its agent's session started (as Rewind
   // counts them); the clock time is that plus the session's start.
   function clockOf(m) {
+    if (m.at_ms) return toMs(m.at_ms); // the moment itself, since the epoch
     const from = toMs(m.from_ms);
     if (from > 1e12) return from;
     const a = agentOf(m.agent);
@@ -236,8 +251,7 @@ export function mount(root, ctx) {
   function question(q) {
     const a = agentOf(q.agent);
     const opts = parse(q.options) || [];
-    const prec = parse(q.precedent);
-    const recs = Array.isArray(prec) ? prec : prec?.records || prec?.hits || prec?.results || [];
+    const recs = q.kind === "permission" ? [] : precedentOf(q).records;
     const done = S.answered.get(q.id);
     if (done) {
       return h("div", { class: "aw-q done" },

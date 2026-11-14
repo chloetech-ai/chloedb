@@ -5,7 +5,7 @@
 // what the fleet learned today. Without a goal: a box to set one.
 import {
   h, useStyle, toMs, fmtDur, fmtClock, avatar, ctxChip, pill, repoOf, mergeAgents, inlineCode, parseJSON,
-  fmtTokens, barChart, keyNav, rerender, later,
+  fmtTokens, barChart, keyNav, rerender, later, precedentOf,
 } from "./common.js";
 
 const COLS = [["done", "Done"], ["active", "In motion"], ["needs_you", "Needs you"], ["next", "Next"]];
@@ -43,6 +43,9 @@ export function mount(root, ctx) {
       if (!alive) return;
       render();
       loadStories();
+      // ChloeCtx answers about a new question a moment after it is asked.
+      if (S.questions.some((q) => q.kind !== "permission" && precedentOf(q).pending) && (S.tries = (S.tries || 0) + 1) <= 15) reloadSoon();
+      else S.tries = 0;
     } catch (e) {
       S.error = e.message || String(e);
       S.loaded = true;
@@ -141,13 +144,15 @@ export function mount(root, ctx) {
   function chipsOf(o, a, q, os) {
     const out = [];
     if (q) {
-      const p = parseJSON(q.precedent, null);
-      const recs = (p && p.records) || [];
+      const p = precedentOf(q);
+      const recs = p.records;
       const opts = parseJSON(q.options, []) || [];
       const hit = recs[0];
-      if (opts.some((x) => x.matches_precedent) && hit) out.push([`precedent: ${hit.by === "you" ? "you decided" : "decided"} this before`, "ChloeCtx found a past decision that matches an option"]);
-      else if (recs.length || (p && p.ids && p.ids.length)) out.push([`${plural(recs.length || p.ids.length, "related record")} in memory`, "ChloeCtx found related records, none deciding it"]);
-      else out.push(["no precedent in memory", "ChloeCtx found nothing about this question"]);
+      if (q.kind === "permission") return out;
+      if (p.pending) out.push(["asking ChloeCtx…", "ChloeCtx is looking for what was decided before"]);
+      else if (opts.some((x) => x.matches_precedent) && hit) out.push([`precedent: ${hit.by === "you" ? "you decided" : "decided"} this before`, "ChloeCtx found a past decision that matches an option"]);
+      else if (recs.length || p.ids.length) out.push([`${plural(recs.length || p.ids.length, "related record")} in memory`, "ChloeCtx found related records, none deciding it"]);
+      else out.push(["no precedent in memory", p.missing[0] || "ChloeCtx found nothing about this question"]);
       return out;
     }
     if (o.state === "next") {
@@ -276,8 +281,10 @@ export function mount(root, ctx) {
     if (!hs.length) return null;
     return h("section", { class: "lv-card mi-heads" }, h("h2", { class: "lv-h" }, "Heads up"),
       hs.map((c, i) => {
+        // both_changed: [changer, changer…]; heading_into: [changer, reader].
         const who = c.agents.map((id) => agents.get(id)).filter(Boolean);
         const [first, ...rest] = who;
+        const heading = c.kind === "heading_into";
         const key = `${c.path}:${c.agents.join(",")}`;
         const told = S.steered.has(key);
         const wait = async (btn) => {
@@ -289,8 +296,10 @@ export function mount(root, ctx) {
           render();
         };
         return h("div", { class: "mi-hu" },
-          h("div", {}, h("b", {}, `${names(who.map((x) => x.name))} ${c.kind === "both_changed" ? "both changed" : "are both heading into"} `), h("code", { class: "lv-code" }, c.path), "."),
-          c.detail ? h("div", { class: "muted mi-hu-d" }, c.detail) : null,
+          heading && first && rest.length
+            ? h("div", {}, h("b", {}, `${names(rest.map((x) => x.name))} is heading into `), h("code", { class: "lv-code" }, c.path), `, which ${first.name} changed.`)
+            : h("div", {}, h("b", {}, `${names(who.map((x) => x.name))} ${who.length > 2 ? "all" : "both"} changed `), h("code", { class: "lv-code" }, c.path), "."),
+          c.detail && heading ? h("div", { class: "muted mi-hu-d" }, c.detail) : null,
           h("div", { class: "mi-q-acts" },
             first && rest.length ? h("button", { class: "btn sm", "data-key": `hu:${i}`, disabled: told, onclick: (e) => wait(e.currentTarget) }, told ? `✓ Told ${names(rest.map((x) => x.name))} to wait` : `Let ${first.name} finish first`) : null,
             h("button", { class: "btn sm ghost", "data-key": `hm:${i}`, onclick: () => ctx.go("#/map") }, "Show map")));

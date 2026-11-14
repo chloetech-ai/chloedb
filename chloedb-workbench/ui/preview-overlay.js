@@ -4,10 +4,12 @@
 // html (at most 2 KB), rect, url} instead of reaching the page. The parent
 // may send {type: "wb-pick-mode", on} to turn picking off and on (on by
 // default in a frame, off when the page is opened on its own), and
-// {type: "wb-who", id, texts?, selector?, max?}, answered with
-// {type: "wb-who", id, items: [{selector, text, rect}]}: the elements with
-// text of their own (whose text one of `texts` holds, or that holds one,
-// when given), so the parent can label what an agent changed. Messages
+// {type: "wb-who", id, texts?, selector?, max?, watch?}, answered with
+// {type: "wb-who", id, items: [{selector, text, classes, rect}]}: the
+// elements with text of their own (whose text one of `texts` holds, or that
+// holds one, when given), with their classes and their parent's, so the
+// parent can label what an agent changed; with `watch`, answered again
+// whenever the page scrolls, is resized or changes. Messages
 // are taken from the parent only, and sent to Workbench's origin only.
 (() => {
   if (window.__wbOverlay) return;
@@ -105,7 +107,25 @@
     });
   }, true);
 
+  // With `watch`, the answer is sent again (same id) when the page scrolls,
+  // is resized or changes, so the parent's labels follow the elements.
+  let watching = null, again = 0;
+  const resend = () => {
+    if (!watching) return;
+    clearTimeout(again);
+    again = setTimeout(() => watching && who(watching), 250);
+  };
+  window.addEventListener("scroll", resend, true);
+  window.addEventListener("resize", resend);
+  const watchDom = () => {
+    if (!document.body || !window.MutationObserver) return;
+    new MutationObserver((ms) => { if (ms.some((m) => !box.contains(m.target) && m.target !== box)) resend(); })
+      .observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "hidden"] });
+  };
+  if (document.body) watchDom(); else document.addEventListener("DOMContentLoaded", watchDom, { once: true });
+
   function who(m) {
+    watching = m.watch ? m : null;
     const want = Array.isArray(m.texts) ? m.texts.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim()) : null;
     let root = document.body;
     try {
@@ -125,7 +145,10 @@
       if (want && !want.some((t) => own.includes(t) || (own.length >= 3 && t.includes(own)))) continue;
       const rect = rectOf(el);
       if (!rect.width && !rect.height) continue;
-      items.push({ selector: selector(el), text: own.slice(0, 200), rect });
+      // Its classes and its parent's (a label's text often sits in a
+      // span of the element an agent's diff names).
+      const classes = [...new Set([...el.classList, ...(el.parentElement ? el.parentElement.classList : [])])].slice(0, 12);
+      items.push({ selector: selector(el), text: own.slice(0, 200), classes, rect });
     }
     send({ type: "wb-who", id: m.id ?? null, items });
   }

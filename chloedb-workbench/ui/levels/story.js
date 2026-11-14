@@ -3,7 +3,8 @@
 // Steps (its tool calls grouped, each opening to its events) and Terminal
 // (the last lines, and the way to the live one). Beside them: its déjà vus,
 // what ChloeCtx put in its context (and left out), and a box to steer it at
-// the level you are reading. `[` goes a level down, `]` a level up.
+// the level you are reading. `]` goes a level deeper (toward the terminal),
+// `[` a level back up, as the top bar's level switch does.
 import {
   h, useStyle, toMs, fmtDur, fmtClock, avatar, ctxChip, pill, routeParam, mergeAgents, inlineCode,
   fmtTokens, fmtSpan, fmtDay, keyNav, rerender, later,
@@ -154,7 +155,7 @@ export function mount(root, ctx) {
           pill(status[0], status[1]),
           h("div", { class: "sy-levels", role: "tablist", "aria-label": "Level" },
             LEVELS.map(([n, label]) => h("button", { role: "tab", "aria-selected": S.level === n ? "true" : "false", class: S.level === n ? "on" : null, "data-key": `lvl:${n}`, onclick: () => setLevel(n) }, label)),
-            h("span", { class: "sy-keys", title: "[ goes a level down, ] a level up" }, h("kbd", {}, "["), h("kbd", {}, "]"))))));
+            h("span", { class: "sy-keys", title: "] goes a level deeper, toward the terminal; [ a level back up" }, h("kbd", {}, "["), h("kbd", {}, "]"))))));
   }
 
   function statusText(a) {
@@ -232,7 +233,7 @@ export function mount(root, ctx) {
   function step(c, s) {
     const k = stepKey(c, s);
     const open = S.open.has(k);
-    const running = s.ms == null && c.state === "now";
+    const running = s.running != null ? !!s.running && c.state === "now" : s.ms == null && c.state === "now";
     const toggle = () => { if (open) S.open.delete(k); else { S.open.add(k); loadEvents(s); } S.level = "steps"; render(); };
     return h("div", { class: `sy-stepw${open ? " open" : ""}` },
       h("button", { class: `sy-step${open ? " open" : ""}`, "data-nav": "", "data-key": `st:${k}`, "aria-expanded": open ? "true" : "false", onclick: toggle },
@@ -356,8 +357,7 @@ export function mount(root, ctx) {
   // ------------------------------------------------------------- life
   const offKeys = keyNav(el, {
     onKey: (e) => {
-      if (e.key === "[") { move(1); return true; }
-      if (e.key === "]") { move(-1); return true; }
+      // [ and ] come through the shell's levelKey (below), as on every screen.
       if (e.key === "t" && S.story) { setLevel("terminal"); return true; }
       return false;
     },
@@ -371,6 +371,9 @@ export function mount(root, ctx) {
   load();
 
   return {
+    /** The top bar's [ (-1, up toward Intent) and ] (+1, down toward the
+     *  terminal) move through this agent's own levels first. */
+    levelKey(d) { move(d); return true; },
     update(state) {
       if (!state) return;
       S.stream = state.agents || S.stream;

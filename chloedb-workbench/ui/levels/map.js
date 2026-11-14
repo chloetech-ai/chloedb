@@ -89,6 +89,7 @@ export function mount(root, ctx) {
     const walk = (n) => {
       I.nodes.set(n.path, n);
       const agg = { by: new Map(), coll: [], pins: 0, files: 0, changedFiles: [] };
+      if (n.collapsed) agg.files = n.files || 0; // a deep folder, sent without its children
       if (n.children) {
         for (const c of n.children) {
           const g = walk(c);
@@ -97,7 +98,7 @@ export function mount(root, ctx) {
           agg.changedFiles.push(...g.changedFiles);
         }
       } else {
-        agg.files = n.folded || 1;
+        agg.files = n.kind === "more" ? n.files || 1 : n.folded || 1;
         for (const c of I.changed.get(n.path) || []) agg.by.set(c.agent.id, (agg.by.get(c.agent.id) || 0) + c.added + c.removed);
         if (I.changed.has(n.path)) agg.changedFiles.push(n.path);
         if (I.coll.has(n.path)) agg.coll.push(I.coll.get(n.path));
@@ -155,7 +156,7 @@ export function mount(root, ctx) {
         }, h("i"), h("span", { class: "mp-key-n" }, nameOf(r.agent)),
         h("span", { class: "mp-key-d" }, r.files.length ? `+${add} −${del}` : "reading"));
       }),
-      I.pins.size ? h("span", { class: "mp-key-pin" }, h("span", { class: "mp-dia" }), `${[...I.pins.values()].flat().length} decisions`) : null,
+      I.pins.size ? h("span", { class: "mp-key-pin" }, h("span", { class: "mp-dia" }), `${new Set([...I.pins.values()].flat().map((p) => p.record.id || p.record.text)).size} decisions`) : null,
     );
   }
 
@@ -221,9 +222,11 @@ export function mount(root, ctx) {
   function drawNode(n0, r, depth) {
     if (r.w < 3 || r.h < 3) return;
     const pos = { left: Math.round(r.x) + "px", top: Math.round(r.y) + "px", width: Math.round(r.w) + "px", height: Math.round(r.h) + "px" };
-    if (n0.name === "…" || n0.folded) {
-      tm.append(h("div", { class: "mp-c mp-fold", style: pos, "data-path": n0.path, "data-folded": n0.folded || "" },
-        r.w > 40 && r.h > 16 ? h("span", { class: "mp-cn" }, `… ${n0.folded || ""} small`) : null));
+    if (n0.kind === "more" || n0.name === "…" || n0.folded) {
+      // GET /api/map folds small files into {kind: "more", files: n}.
+      const k = n0.files || n0.folded || "";
+      tm.append(h("div", { class: "mp-c mp-fold", style: pos, "data-path": n0.path, "data-folded": k || "?" },
+        r.w > 40 && r.h > 16 ? h("span", { class: "mp-cn" }, `… ${k} small`) : null));
       return;
     }
     if (!n0.children) return drawFile(n0, r, pos);
@@ -500,16 +503,23 @@ export function mount(root, ctx) {
   function pinsCard() {
     const pins = S.data.pins || [];
     if (!pins.length) return card(null, null, h("div", { class: "lv-sub" }, "ChloeCtx has no decision that names a file of this repository yet."));
-    const here = pins.filter((p) => under(p.path, S.path));
+    // A record that names several files is pinned on each; listed once.
+    const byRec = new Map();
+    for (const p of pins.filter((p) => under(p.path, S.path))) {
+      const k = p.record.id || p.record.text;
+      if (byRec.has(k)) byRec.get(k).paths.push(p);
+      else byRec.set(k, { ...p, paths: [p] });
+    }
+    const here = [...byRec.values()];
     return h("section", { class: "lv-card" },
       h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2 mp-vio" }, h("span", { class: "mp-dia" }), ` ${here.length} decision${here.length === 1 ? "" : "s"} ${S.path ? "in " + S.path : "on this map"}`)),
       here.length ? h("div", { class: "mp-plist" }, here.map((p) => h("button", {
-        class: "mp-pr" + (S.sel && S.sel.pin === p ? " on" : ""), onclick: () => openPin(p),
+        class: "mp-pr" + (S.sel && p.paths.includes(S.sel.pin) ? " on" : ""), onclick: () => openPin(p.paths[0]),
         onmouseenter: () => el.querySelectorAll(".mp-pin").forEach((x) => x.classList.toggle("hi", x.getAttribute("aria-label").includes(p.record.text))),
         onmouseleave: () => el.querySelectorAll(".mp-pin.hi").forEach((x) => x.classList.remove("hi")),
       },
       h("span", { class: "mp-pt" }, p.record.text),
-      h("span", { class: "mp-pm" }, h("code", null, base(p.path) + (p.line != null ? ":" + p.line : "")), " · ", p.record.kind,
+      h("span", { class: "mp-pm" }, p.paths.map((q, i) => [i ? ", " : null, h("code", null, base(q.path) + (q.line != null ? ":" + q.line : ""))]), " · ", p.record.kind,
         p.agent ? [" · ", p.agent.name] : "", p.line != null ? h("span", { class: "mp-why" }, "Why?") : null)))) : h("div", { class: "lv-sub" }, "None in this folder."));
   }
 

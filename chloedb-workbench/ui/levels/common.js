@@ -178,6 +178,37 @@ export function parseJSON(v, fallback = null) {
   try { return JSON.parse(v); } catch { return fallback; }
 }
 
+/** A question's precedent as records to show. The server keeps what
+ *  `chloectx ask --json` printed ({text, ids, agents: {id: Agent}, missing,
+ *  rules: [{id, text, option}]}): the notes are the text's "- <date> <kind>:
+ *  <text>" lines, in the order of `ids`. Rules of the repository that speak
+ *  for an option come first, as yours. Each record is {id, kind, text, ts,
+ *  agent, by}; `by` is "you", the agent's name, or null (a session before
+ *  Workbench). */
+export function precedentOf(q) {
+  const p = parseJSON(q && q.precedent, null);
+  if (!p || typeof p !== "object") return { records: [], ids: [], text: "", missing: [], pending: true };
+  if (Array.isArray(p.records)) return { ids: [], missing: [], ...p };
+  const ids = Array.isArray(p.ids) ? p.ids : [];
+  const agents = p.agents || {};
+  const records = [];
+  const seen = new Set();
+  for (const r of p.rules || []) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    records.push({ id: r.id, kind: "rule", text: r.text, ts: null, agent: null, by: "you", option: r.option });
+  }
+  let i = 0;
+  for (const line of String(p.text || "").split("\n")) {
+    const m = line.match(/^- (\d{4}-\d{2}-\d{2}) ([\w-]+): (.*)$/);
+    if (!m) continue;
+    const id = ids[i++] || null;
+    const agent = (id && agents[id]) || null;
+    records.push({ id, kind: m[2], text: m[3].trim(), ts: m[1], agent, by: agent ? agent.name : null });
+  }
+  return { records, ids, text: p.text || "", missing: p.missing || [], pending: false };
+}
+
 /** 950, 41k, 1.2M. */
 export function fmtTokens(n) {
   if (n == null || !isFinite(n)) return "";

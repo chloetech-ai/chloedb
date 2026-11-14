@@ -224,7 +224,9 @@ export function mount(root, ctx) {
   async function apply(s, text) {
     S.busy.add(s.id); S.errs.delete(s.id); render();
     try {
-      await ctx.api("/api/flow/apply", { method: "POST", body: text != null ? { id: s.id, text } : { id: s.id } });
+      const body = { id: s.id, repo: S.data?.repo || repoOf(ctx), minutes: S.data?.window?.minutes || minutes() };
+      if (text != null) body.text = text;
+      await ctx.api("/api/flow/apply", { method: "POST", body });
       S.applied.add(s.id);
       if (S.fixOpen === s.id) { S.fixOpen = null; S.fixText = ""; }
     } catch (e) { S.errs.set(s.id, e.message || String(e)); }
@@ -233,13 +235,19 @@ export function mount(root, ctx) {
   }
 
   function coach(d) {
-    const sugg = d.suggestions || [];
+    // The server folds the report's own suggestions in (`from: "chloectx"`,
+    // no action); they go under the report's heading. When it does not, the
+    // report's are read from `report` itself.
+    const all = d.suggestions || [];
+    const sugg = all.filter((s) => s.from !== "chloectx");
     const kinds = new Set(sugg.map((s) => s.action?.kind).filter(Boolean));
     const said = sugg.map((s) => `${s.title} ${s.detail}`).join(" ");
-    const extra = (d.report?.suggestions || []).filter((r) => ![...kinds].some((k) => COVERS[k] === r.kind) && !said.includes(String(r.text).slice(0, 40)));
+    const folded = all.filter((s) => s.from === "chloectx").map((s) => ({ kind: s.kind, text: s.title, saves: s.saves, seconds: s.saves_ms != null ? s.saves_ms / 1000 : null }));
+    const extra = (folded.length ? folded : d.report?.suggestions || []).filter((r) => ![...kinds].some((k) => COVERS[k] === r.kind) && !said.includes(String(r.text).slice(0, 40)));
     const items = sugg.map((s, i) => {
       const a = s.action, done = S.applied.has(s.id), busy = S.busy.has(s.id);
-      const can = a && a.kind !== "capsule";
+      // Only an allow and a fix have something to switch on (SPEC.md, Flow).
+      const can = a && (a.kind === "allow" || a.kind === "fix");
       let act = null;
       if (done) act = pill(a?.kind === "allow" ? "Allowed for agents started from now" : "Applied", "good");
       else if (can && a.kind === "fix" && S.fixOpen === s.id) {
@@ -252,13 +260,13 @@ export function mount(root, ctx) {
             h("button", { class: "btn sm", onclick: () => { S.fixOpen = null; render(); } }, "Cancel")));
       } else if (can) {
         act = h("button", { class: "btn sm primary", disabled: busy ? true : null, onclick: () => (a.kind === "fix" ? (S.fixOpen = s.id, render()) : apply(s)) }, busy ? "Applying…" : actionLabel(s));
-      } else act = h("span", { class: "fl-how" }, "By hand: there is nothing to switch on");
+      } else act = h("span", { class: "fl-how" }, a?.kind === "sequence" ? "By hand: give the file to one agent, or start the next when the first is done" : a?.kind === "capsule" ? "By hand: nothing to switch on here" : "By hand: there is nothing to switch on");
       return h("li", { class: "fl-sg" + (done ? " done" : "") },
         h("span", { class: "fl-sn" }, done ? "✓" : String(i + 1)),
         h("div", { class: "fl-sb" },
           h("div", { class: "fl-st" }, md(s.title)),
           s.detail ? h("div", { class: "fl-sd" }, md(s.detail)) : null,
-          h("div", { class: "fl-acts" }, act, s.saves && !(S.fixOpen === s.id) ? h("span", { class: "fl-saves" }, `saves ${s.saves}`) : null),
+          h("div", { class: "fl-acts" }, act, s.saves && s.saves_ms !== 0 && !/~0 s\b/.test(s.saves) && !(S.fixOpen === s.id) ? h("span", { class: "fl-saves" }, /^(saves|bears)\b/.test(s.saves) ? s.saves : `saves ${s.saves}`) : null),
           S.errs.has(s.id) ? h("div", { class: "err" }, S.errs.get(s.id)) : null));
     });
     return h("aside", { class: "lv-card fl-coach" },

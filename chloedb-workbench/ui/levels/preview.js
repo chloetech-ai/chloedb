@@ -5,7 +5,7 @@
 // (POST /api/agents/:id/steer). The overlay toggle labels what each agent
 // changed on the page ("wb-who" against the agents' diffs).
 import {
-  h, useStyle, agentColor, avatar, agentChip, ctxChip, pill, fmtAgo, fmtClock, toMs, onEscape, token, card, setFleet,
+  h, useStyle, agentColor, avatar, agentChip, ctxChip, pill, fmtAgo, fmtClock, toMs, onEscape, token, card, setFleet, throttle,
 } from "./common.js";
 
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -191,6 +191,7 @@ export function mount(root, ctx) {
       try {
         const r = await ctx.api(`/api/agents/${encodeURIComponent(a.id)}/preview`, { method: "PUT", body: { url } });
         Object.assign(a, r.agent || { preview_url: url });
+        shown = a.preview_url || null;
         S.setting = false; S.setErr = null; S.path = "/";
         render();
       } catch (err) { S.setErr = err.message || String(err); renderFrame(); }
@@ -220,7 +221,11 @@ export function mount(root, ctx) {
   function askWho() {
     if (!frame || !frame.contentWindow) return;
     S.whoId++;
-    try { frame.contentWindow.postMessage({ type: "wb-who", id: S.whoId, watch: true }, "*"); } catch {}
+    // The overlay (ui/preview-overlay.js) answers {type: "wb-who", id, items:
+    // [{selector, text, classes, rect}]}, and again on scroll, resize and
+    // changes while `watch` holds. Same origin: the preview is served by
+    // Workbench under /preview/<agent>/.
+    try { frame.contentWindow.postMessage({ type: "wb-who", id: S.whoId, watch: true, max: 800 }, location.origin); } catch {}
   }
   function reload() { closeBubble(false); try { frame.contentWindow.location.reload(); } catch { frame.src = previewSrc(current()); } }
 
@@ -420,9 +425,12 @@ export function mount(root, ctx) {
   // -------------------------------------------------------------- messages
   function onMessage(e) {
     if (!frame || e.source !== frame.contentWindow || !e.data || typeof e.data !== "object") return;
+    if (e.origin !== location.origin) return;
     if (e.data.type === "wb-pick") onPick(e.data);
+    else if (e.data.type === "wb-ready") askWho(); // a page loaded inside the frame (its load event may come later)
     else if (e.data.type === "wb-who") {
-      S.who = (e.data.elements || e.data.items || []).filter((x) => x && x.rect);
+      if (e.data.id != null && e.data.id !== S.whoId) return; // an answer to an older ask
+      S.who = (e.data.items || e.data.elements || []).filter((x) => x && x.rect);
       rematch();
     }
   }
@@ -432,15 +440,20 @@ export function mount(root, ctx) {
 
   render();
   loadSide().catch(() => {});
+  // The agents' diffs and edits again, at most every 15 s while they work.
+  const refreshSide = throttle(() => loadSide().catch(() => {}), 15000);
+  let shown = current()?.preview_url || null;
   return {
     update(state) {
       if (state) ctx.state = { ...ctx.state, ...state };
       setFleet(ctx.state?.agents || []);
       const a = current();
-      const had = el.querySelector(".pv-frame") != null;
-      if (a && !!a.preview_url !== had && !S.setting) render();
+      // A preview URL set, changed or cleared (by set_preview, or here).
+      if (a && (a.preview_url || null) !== shown && !S.setting) { shown = a.preview_url || null; render(); }
+      refreshSide();
     },
     unmount() {
+      refreshSide.cancel();
       window.removeEventListener("message", onMessage);
       window.removeEventListener("resize", onResize);
       dropEsc?.();
