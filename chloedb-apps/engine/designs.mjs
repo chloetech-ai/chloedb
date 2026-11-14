@@ -4,7 +4,7 @@
 // person using the app on its own can pick their own. Picking one swaps a
 // block of CSS variables in each view: no code changes, nothing is rebuilt.
 import { ask } from './llm.mjs';
-import { CHOICES, checkDesign, presetDesigns, hslOf, typeOf, pairFor } from '../web/design.js';
+import { CHOICES, checkDesign, presetDesigns, hslOf, typeOf, pairFor, PRESETS } from '../web/design.js';
 
 export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haiku-5-5';
 
@@ -170,4 +170,35 @@ export function ensureDesigns(store, appId, { fresh = false, onMade = () => {}, 
   })().finally(() => making.delete(appId));
   making.set(appId, p);
   return p;
+}
+
+// A design's tokens changed by hand (a builder picks a new accent, page or
+// card color, or another corner, density or title style): the design stays
+// itself, checked again so its text stays readable. Colors are set for the
+// light or the dark scheme; only the tokens a design has are taken.
+export const COLOR_TOKENS = ['accent', 'bg', 'card', 'fg'];
+const HEX6 = /^#[0-9a-f]{6}$/i;
+export function tuneDesign(d, { scheme = 'light', colors = {}, ...shape } = {}) {
+  if (!['light', 'dark'].includes(scheme)) throw Object.assign(new Error('scheme is light or dark'), { status: 400 });
+  const next = { ...d, light: { ...d.light }, dark: { ...d.dark } };
+  for (const [k, v] of Object.entries(colors || {})) {
+    if (!COLOR_TOKENS.includes(k)) throw Object.assign(new Error(`a color token is ${COLOR_TOKENS.join(', ')}`), { status: 400 });
+    if (!HEX6.test(String(v))) throw Object.assign(new Error(`${k} is a color like #2f5bd3`), { status: 400 });
+    next[scheme][k] = String(v).toLowerCase();
+  }
+  for (const [k, v] of Object.entries(shape)) {
+    if (!['corners', 'density', 'titles', 'font', 'surface'].includes(k)) throw Object.assign(new Error(`${k} is not a design token`), { status: 400 });
+    if (!Object.hasOwn(CHOICES[k], v)) throw Object.assign(new Error(`${k} is one of ${Object.keys(CHOICES[k]).join(', ')}`), { status: 400 });
+    next[k] = v;
+  }
+  return checkDesign(next);
+}
+
+// Colors to choose from for a token: the app's other designs' and the
+// presets', the one in use first, without repeats.
+export function tokenChoices(designs, chosen = 0, scheme = 'light') {
+  const out = {};
+  const sets = [designs[chosen], ...designs.filter((_, i) => i !== chosen), ...PRESETS.map((p) => checkDesign(p))].filter(Boolean);
+  for (const k of COLOR_TOKENS) out[k] = [...new Set(sets.map((d) => d?.[scheme]?.[k]).filter((v) => HEX6.test(String(v || ''))).map((v) => v.toLowerCase()))].slice(0, 12);
+  return out;
 }

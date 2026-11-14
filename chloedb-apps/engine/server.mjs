@@ -31,7 +31,7 @@ import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
 import { Scheduler } from './schedule.mjs';
-import { ensureDesigns } from './designs.mjs';
+import { ensureDesigns, tuneDesign, tokenChoices } from './designs.mjs';
 import { currencyOf } from './data.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
@@ -751,6 +751,20 @@ const routes = [
     return next;
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs\/new$/, async (b, [id]) => designsOf(id, true)],
+  // The design in use, its tokens changed by hand; and what to choose from.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs\/tune$/, async (b, [id]) => {
+    const cur = await designsOf(id);
+    const designs = cur.designs.slice();
+    designs[cur.chosen] = tuneDesign(designs[cur.chosen], b || {});
+    const next = { ...cur, designs };
+    await engine.store.putDesigns(id, next);
+    broadcast('design', { app: id, chosen: cur.chosen });
+    return next;
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/designs\/choices$/, async (b, [id], url) => {
+    const cur = await designsOf(id);
+    return { choices: tokenChoices(cur.designs, cur.chosen, url.searchParams.get('scheme') === 'dark' ? 'dark' : 'light') };
+  }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/traces\/([A-Za-z0-9_-]+)$/, async (b, [id, rid]) => {
     const trace = await engine.store.trace(rid);
     if (!trace) throw Object.assign(new Error('no timeline for this build (it ran before timelines were recorded)'), { status: 404 });
