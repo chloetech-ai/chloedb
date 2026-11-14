@@ -25,10 +25,14 @@ pub enum Kind {
     /// Records link to it, so records about the same thing are one hop
     /// apart through it.
     Entity,
+    /// A moment of a session that is not part of the conversation: a
+    /// notification (a permission prompt, an idle notice) or a sub-agent
+    /// that finished. Kept for `chloectx report`, never recalled.
+    Event,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 14] = [
         Kind::Prompt,
         Kind::Answer,
         Kind::ToolCall,
@@ -42,6 +46,7 @@ impl Kind {
         Kind::Todo,
         Kind::Note,
         Kind::Entity,
+        Kind::Event,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -59,6 +64,7 @@ impl Kind {
             Kind::Todo => "todo",
             Kind::Note => "note",
             Kind::Entity => "entity",
+            Kind::Event => "event",
         }
     }
 
@@ -76,13 +82,19 @@ impl Kind {
             Kind::Error | Kind::Episode => 0.6,
             Kind::Answer => 0.5,
             Kind::ToolCall | Kind::ToolResult => 0.3,
-            Kind::Entity => 0.0,
+            Kind::Entity | Kind::Event => 0.0,
         }
     }
 
     /// Durable knowledge (shown in briefings, pinned).
     pub fn is_knowledge(self) -> bool {
         matches!(self, Kind::Preference | Kind::Decision | Kind::Fact | Kind::Todo | Kind::Note)
+    }
+
+    /// Records search and recall never return unless asked for by kind:
+    /// entities (what records link to) and events (not what was said).
+    pub fn is_hidden(self) -> bool {
+        matches!(self, Kind::Entity | Kind::Event)
     }
 }
 

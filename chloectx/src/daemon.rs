@@ -143,6 +143,17 @@ pub struct Session {
     /// Failed commands followed until they pass ([`crate::fixes`]).
     #[serde(default)]
     pub fixes: crate::fixes::Tracker,
+    /// The folder the session runs in, as its hooks name it: a worktree of
+    /// the repository whose store this is, which may not be the folder the
+    /// daemon was started for ([`crate::paths::store_root`]). Its paths
+    /// are relative to it and its notes are checked against its files.
+    /// Empty for a session whose hooks predate it: the daemon's project.
+    #[serde(default)]
+    pub worktree: String,
+    /// When each tool call of the turn was made, by `tool_use_id`, from the
+    /// transcript, kept until its result arrives ([`crate::report`]).
+    #[serde(skip)]
+    pub calls: HashMap<String, i64>,
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -341,7 +352,9 @@ impl Daemon {
             "ping" => Ok((json!({"ok": true, "pid": std::process::id(), "records": self.store.len()}), None)),
             "hook" => {
                 self.note_hook_settings(req);
-                self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), req.get("payload").unwrap_or(&Json::Null))
+                let payload = req.get("payload").unwrap_or(&Json::Null);
+                self.note_worktree(payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown"), req);
+                self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), payload)
             }
             "search" => self.op_search(req).map(|r| (r, Some(self.after(|me| me.keep_after_recall())))),
             "receipts" => self.op_receipts(req).map(|r| (r, None)),
@@ -368,9 +381,10 @@ impl Daemon {
             // shows a space of the cluster ([`crate::app::view`]).
             "view" => crate::app::view::by_name(&self.store.pinned(), req).map(|r| (r, None)),
             "capsule" => self.op_capsule(req).map(|r| (r, None)),
+            "report" => self.op_report(req).map(|r| (r, None)),
             "briefing" => {
                 let sid = req.get("session").and_then(|v| v.as_str()).unwrap_or("");
-                let mut ck = self.checker();
+                let mut ck = self.checker_in(&self.tree_of(req));
                 recall::briefing_checked(&self.store, sid, self.cfg.briefing_chars, now(), Some(&mut ck)).map(|(t, _)| (json!({"text": t}), None))
             }
             "sync" => self.op_sync(req).map(|r| (r, None)),
@@ -507,7 +521,7 @@ impl Daemon {
                     }
                     s.last_prompts.clone()
                 });
-                let mut ck = self.checker();
+                let mut ck = self.checker_in(&self.tree(&sid));
                 let pinned = self.store.pinned();
                 let (mut text, shown) = recall::briefing_checked(&pinned, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
                 if !shown.is_empty() {
@@ -623,6 +637,15 @@ impl Daemon {
                 ))
             }
             "PreToolUse" => {
+                // When the call was made, which its result's record notes.
+                if let Some(id) = p.get("tool_use_id").and_then(|v| v.as_str()).filter(|i| !i.is_empty()) {
+                    let mut st = self.state.lock().unwrap();
+                    let s = st.sessions.entry(sid.clone()).or_default();
+                    if s.calls.len() > 64 {
+                        s.calls.clear();
+                    }
+                    s.calls.insert(id.to_string(), now());
+                }
                 if !self.cfg.file_notes {
                     return Ok((json!({"output": null}), None));
                 }
@@ -631,7 +654,8 @@ impl Daemon {
                 if !matches!(tool, "Edit" | "MultiEdit" | "Write") || path.is_empty() {
                     return Ok((json!({"output": null}), None));
                 }
-                let rel = path.strip_prefix(&self.project).map(|x| x.trim_start_matches('/')).unwrap_or(path).to_string();
+                let tree = self.tree(&sid);
+                let rel = path.strip_prefix(tree.as_str()).map(|x| x.trim_start_matches('/')).unwrap_or(path).to_string();
                 let mut text = self.file_notes(&sid, &rel)?;
                 if self.cfg.next_files {
                     let next = self.next_file_notes(&sid, &rel, &text)?;
@@ -649,12 +673,16 @@ impl Daemon {
                 if event == "PostToolUseFailure" {
                     resp = json!({"is_error": true, "error": p.get("error").cloned().unwrap_or(resp)});
                 }
-                let project = self.project.clone();
+                let project = self.tree(&sid);
                 let fixes_on = self.cfg.error_fixes;
-                let (turn, ctx, fixed) = self.with_session(&sid, |s| {
+                let end = now();
+                let call_id = p.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tpath = p.get("transcript_path").and_then(|v| v.as_str()).map(String::from);
+                let (turn, ctx, fixed, started) = self.with_session(&sid, |s| {
+                    let started = s.calls.remove(&call_id);
                     s.episode.add_tool(&tool, &input, &resp, &project);
                     let fixed = if fixes_on { s.fixes.observe(&tool, &input, &resp, &project) } else { Vec::new() };
-                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed)
+                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed, started)
                 });
                 let mut text = self.take_deep(&sid, turn, false).unwrap_or_default();
                 if fixes_on && tool == "Bash" {
@@ -667,6 +695,12 @@ impl Daemon {
                     ctx_out(event, text),
                     Some(self.after(move |me| {
                         let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        // How long the call took: from its PreToolUse, else
+                        // from its message in the transcript.
+                        let started = started.or_else(|| tpath.as_deref().and_then(|t| crate::transcript::call_ts(Path::new(t), &call_id)));
+                        if let Some(t0) = started {
+                            capture::took(&mut drafts, end - t0);
+                        }
                         if !fixed.is_empty() {
                             let from = me.prompt_of(&sid, turn);
                             for f in &fixed {
@@ -678,7 +712,7 @@ impl Daemon {
                             }
                             me.log(&json!({"ts": now(), "event": "fix", "session": sid, "turn": turn, "fixes": fixed.len()}));
                         }
-                        if let Err(e) = me.store.append(&sid, turn, now(), drafts) {
+                        if let Err(e) = me.store.append(&sid, turn, end, drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PostToolUse"}));
                         }
                         me.store.warm();
@@ -745,12 +779,38 @@ impl Daemon {
             "PreCompact" => {
                 let tpath = p.get("transcript_path").and_then(|v| v.as_str()).map(String::from);
                 let (turn, prompt) = self.with_session(&sid, |s| (s.turn, s.episode.prompt.clone()));
+                // When it started, for `chloectx report`.
+                let started = capture::event_draft(event, p);
+                let at = now();
                 Ok((
                     json!({"output": null}),
                     Some(self.after(move |me| {
+                        if let Some(d) = started {
+                            if let Err(e) = me.store.append(&sid, turn, at, vec![d]) {
+                                me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PreCompact"}));
+                            }
+                        }
                         if let Some(t) = &tpath {
                             let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                             me.sync_narration(&sid, turn, t, "", &ctx);
+                        }
+                    })),
+                ))
+            }
+            // When the agent waited for the user (a permission prompt, an
+            // idle notice) and when a sub-agent finished: recorded for
+            // `chloectx report`, never shown ([`Kind::Event`]). Nothing is
+            // answered, so a sub-agent is never held back.
+            "Notification" | "SubagentStop" => {
+                let Some(draft) = capture::event_draft(event, p) else { return Ok((json!({"output": null}), None)) };
+                let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
+                let at = now();
+                let event = event.to_string();
+                Ok((
+                    json!({"output": null}),
+                    Some(self.after(move |me| {
+                        if let Err(e) = me.store.append(&sid, turn, at, vec![draft]) {
+                            me.log(&json!({"ts": now(), "error": e.to_string(), "event": event}));
                         }
                     })),
                 ))
@@ -804,6 +864,7 @@ impl Daemon {
                 let source = self.prompt_of(sid, turn);
                 let n = d.drafts.len();
                 let mut drafts = Vec::new();
+                let tree = self.tree(sid);
                 for x in d.drafts {
                     let t = terms(&x.text);
                     let dup = seen.iter().any(|s| {
@@ -814,7 +875,7 @@ impl Daemon {
                     if !dup {
                         seen.push(t);
                         // Anchored to the code the note is about, as it is now.
-                        let a = anchor::make(Path::new(&self.project), &x.text, &x.files, files);
+                        let a = anchor::make(Path::new(&tree), &x.text, &x.files, files);
                         let ctx = if a.is_empty() { ctx.clone() } else { format!("{ctx}\n{}", a.to_line()) };
                         let mut x = x.ctx(ctx);
                         if let Some(src) = &source {
@@ -915,8 +976,43 @@ impl Daemon {
         self.from_hooks.lock().unwrap().1.clone().unwrap_or_else(|| self.cfg.deep.clone())
     }
 
-    fn checker(&self) -> Checker {
-        Checker::new(Path::new(&self.project))
+    /// A checker of notes against the files of `tree` (a worktree).
+    fn checker_in(&self, tree: &str) -> Checker {
+        Checker::new(Path::new(tree))
+    }
+
+    /// The folder session `sid` runs in: the worktree its hooks named,
+    /// else the daemon's project.
+    fn tree(&self, sid: &str) -> String {
+        let st = self.state.lock().unwrap();
+        st.sessions.get(sid).map(|s| s.worktree.clone()).filter(|w| !w.is_empty()).unwrap_or_else(|| self.project.clone())
+    }
+
+    /// The folder a request came from (`worktree`, which the clients send),
+    /// else the daemon's project.
+    fn tree_of(&self, req: &Json) -> String {
+        req.get("worktree").and_then(|v| v.as_str()).filter(|w| !w.is_empty()).map(String::from).unwrap_or_else(|| self.project.clone())
+    }
+
+    /// Remembers the folder a session's hooks run in (they may come from
+    /// any worktree of the repository) and, when it is new for the session,
+    /// logs it with the branch checked out there.
+    fn note_worktree(&self, sid: &str, req: &Json) {
+        let Some(wt) = req.get("worktree").and_then(|v| v.as_str()).filter(|w| !w.is_empty()) else { return };
+        let changed = {
+            let mut st = self.state.lock().unwrap();
+            let s = st.sessions.entry(sid.to_string()).or_default();
+            let changed = s.worktree != wt;
+            if changed {
+                s.worktree = wt.to_string();
+            }
+            changed
+        };
+        if changed {
+            self.dirty.store(true, Ordering::Release);
+            let (head, branch) = anchor::git_head(Path::new(wt));
+            self.log(&json!({"ts": now(), "event": "worktree", "session": sid, "worktree": wt, "branch": branch, "head": head}));
+        }
     }
 
     /// Runs query understanding for a prompt of a session: the context
@@ -928,7 +1024,8 @@ impl Daemon {
             (s.window_start, s.injected)
         };
         let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
-        let project = Path::new(&self.project);
+        let tree = self.tree(sid);
+        let project = Path::new(&tree);
         let res = crate::deep::run(&self.store, &self.deep_cfg(), &self.distill_cfg(), prompt, recent, &filter, Some(project), now());
         let text = crate::deep::format(&res, &shown, now(), Some(project));
         let mut log = crate::deep::log_json(&res);
@@ -972,7 +1069,7 @@ impl Daemon {
         if !capture::looks_like_error(resp, &text) {
             return String::new();
         }
-        let Some((sig, _)) = crate::fixes::signature(&text, &self.project) else { return String::new() };
+        let Some((sig, _)) = crate::fixes::signature(&text, &self.tree(sid)) else { return String::new() };
         // Not one the model was shown, nor one of this session's live window
         // (in its context already).
         let (shown, window) = self.with_session(sid, |s| (s.injected.clone(), s.window_start));
@@ -1050,7 +1147,8 @@ impl Daemon {
         if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
             filter.exclude_window = Some((active.clone(), w));
         }
-        let project = Path::new(&self.project);
+        let tree = self.tree_of(req);
+        let project = Path::new(&tree);
         let distill = self.distill_cfg();
         let mut res = crate::deep::run(&self.store, &cfg, &distill, &q, &[], &filter, Some(project), now());
         // A question asked on purpose gets an answer even when the planner
@@ -1157,7 +1255,7 @@ impl Daemon {
         let out = crate::receipt::retrieve(&store, &inputs)?;
         let decision = out.decision.unwrap_or(Decision::Skip);
         let mut parts = Vec::new();
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&self.tree(sid));
         if !out.known.is_empty() {
             parts.push(recall::fmt_knowledge_checked(&out.known, now(), Some(&mut ck)));
         }
@@ -1262,7 +1360,7 @@ impl Daemon {
             return Ok(String::new());
         }
         let mut s = format!("ChloeCtx notes on {rel} from earlier work (newest first):\n");
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&self.tree(sid));
         for r in recs.iter().take(2) {
             let snip: String = r.text.chars().take(500).collect();
             let label = if r.kind.is_knowledge() { ck.check_record(&r).label() } else { String::new() };
@@ -1284,7 +1382,8 @@ impl Daemon {
             nf.update(&self.store)?;
             nf.after(rel, 2, 1.0)
         };
-        let next: Vec<String> = next.into_iter().map(|(f, _)| f).filter(|f| Path::new(&self.project).join(f).exists()).collect();
+        let tree = self.tree(sid);
+        let next: Vec<String> = next.into_iter().map(|(f, _)| f).filter(|f| Path::new(&tree).join(f).exists()).collect();
         if next.is_empty() {
             return Ok(String::new());
         }
@@ -1293,7 +1392,7 @@ impl Daemon {
         let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
         let mut s = format!("In earlier work, edits of {rel} were usually followed by edits of: {}.\n", next.join(", "));
         let mut shown = shown.to_string();
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&tree);
         for f in &next {
             let terms: Vec<String> = chloedb::text::analyze(f);
             if terms.is_empty() {
@@ -1463,7 +1562,7 @@ impl Daemon {
         let target = req.get("target").and_then(|v| v.as_str()).ok_or_else(|| err("blame needs a target: path or path:line"))?;
         let replay = req.get("replay").and_then(|v| v.as_bool()).unwrap_or(true);
         self.save_receipts();
-        crate::blame::blame(&self.store, self.receipts.get(), &self.snapshots, &self.project, target, replay)
+        crate::blame::blame(&self.store, self.receipts.get(), &self.snapshots, &self.tree_of(req), target, replay)
     }
 
     /// `{"op": "snapshot", "what": "keep" | "list" | "drop", "name"?}`.
@@ -1566,7 +1665,7 @@ impl Daemon {
                 replaced = Some(old.to_string());
             }
         }
-        let a = anchor::make(Path::new(&self.project), &text, &files, &[]);
+        let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
         let mut d = Draft::new(kind, text).files(files).tag("remembered");
         if !a.is_empty() {
             d = d.ctx(a.to_line());
@@ -1825,6 +1924,22 @@ impl Daemon {
         Ok(json!({"dir": dir, "capsules": list}))
     }
 
+    /// `chloectx report`: where the time went ([`crate::report`]), from the
+    /// records of the last `days` days; reads, writes nothing.
+    fn op_report(&self, req: &Json) -> Result<Json> {
+        let days = req.get("days").and_then(|v| v.as_f64()).filter(|d| *d > 0.0).unwrap_or(7.0);
+        let session = req.get("session").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+        let at = now();
+        let since = at - (days * 86_400.0) as i64;
+        let kinds = "'prompt', 'answer', 'episode', 'tool_call', 'tool_result', 'error', 'summary', 'event'";
+        let rs = self.store.query(&format!("SELECT {} FROM memory WHERE ts >= {since} AND kind IN ({kinds}) ORDER BY seq ASC LIMIT 10000000", crate::record::COLUMNS))?;
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        let worktrees: HashMap<String, String> = self.state.lock().unwrap().sessions.iter().map(|(k, s)| (k.clone(), s.worktree.clone())).collect();
+        let opts = crate::report::Options { project: self.project.clone(), days, session, now: at };
+        let r = crate::report::build(&recs, &worktrees, &opts);
+        Ok(json!({"text": crate::report::render(&r), "report": r}))
+    }
+
     fn op_stats(&self) -> Result<Json> {
         let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
         let fs = db.storage().file_stats();
@@ -1874,7 +1989,9 @@ pub fn search_text(store: &Store, q: &str, f: &Filter, rank: &RankParams, limit:
 pub fn timeline_text(store: &Store, id: &str, before: usize, after: usize) -> Result<String> {
     let store = store.pinned();
     let rec = store.get(&[id.to_string()])?.pop().ok_or_else(|| err(format!("no record {id}")))?;
-    let near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
+    // Events (notifications, sub-agents' ends) are not part of what was said.
+    let mut near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
+    near.retain(|r| r.kind != Kind::Event || r.id == rec.id);
     let at = near.iter().position(|r| r.id == rec.id).unwrap_or(0);
     let lo = at.saturating_sub(before);
     let hi = (at + after + 1).min(near.len());
@@ -2015,9 +2132,21 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
 }
 
 /// Sends one request to the project's daemon, starting it if needed.
+/// `project` is the folder the request comes from: it travels with the
+/// request as `worktree` (the daemon serves every worktree of a
+/// repository), and the daemon is started for the folder its store is
+/// keyed by ([`crate::paths::store_root`]).
 pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Result<Json> {
     let paths = StorePaths::new(dir);
     let deadline = Instant::now() + timeout;
+    let mut with_tree;
+    let req = if !project.is_empty() && req.is_object() && req.get("worktree").is_none() {
+        with_tree = req.clone();
+        with_tree["worktree"] = json!(project);
+        &with_tree
+    } else {
+        req
+    };
     match try_request(&paths.socket, req, deadline) {
         Ok(r) => return Ok(r),
         Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(err(format!("daemon: {e}"))),
@@ -2120,7 +2249,8 @@ fn spawn(paths: &StorePaths, project: &str) -> Result<()> {
     let exe: PathBuf = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(&paths.log)?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["serve", "--dir"]).arg(&paths.dir).arg("--project").arg(project);
+    let root = if project.is_empty() { PathBuf::new() } else { crate::paths::store_root(Path::new(project)) };
+    cmd.args(["serve", "--dir"]).arg(&paths.dir).arg("--project").arg(&root);
     cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
     // SAFETY: setsid is async-signal-safe; it detaches the daemon from the hook's session.
     unsafe {

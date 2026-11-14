@@ -129,7 +129,7 @@ It is also the quickest way to debug an install. A `DISTILL` event with an error
 | binary | `~/.local/bin/chloectx` (from `install.sh` or `cargo install --root ~/.local`) |
 | hooks | `~/.claude/settings.json` (user install) or the project's `.claude/settings.local.json` |
 | MCP server | `~/.claude.json` at user scope, or the project's `.mcp.json` |
-| stores | `~/.local/share/chloectx/projects/<folder>-<hash>/`, one per project directory: `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt`. A machine that has `~/.local/share/engram` from before the rename, and no `~/.local/share/chloectx`, keeps using the old folder |
+| stores | `~/.local/share/chloectx/projects/<folder>-<hash>/`, one per project directory (a repository's worktrees share its main checkout's): `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt`. A machine that has `~/.local/share/engram` from before the rename, and no `~/.local/share/chloectx`, keeps using the old folder |
 | embedding model | `~/.local/share/chloectx/models/potion-retrieval-32M/` (or in the old folder, as the stores) |
 | daemon socket | `engram.sock` in the store, or, when that path is too long, `$XDG_RUNTIME_DIR`, `/tmp/engram-<uid>/` or `~/.cache/chloectx/`: the first that is a directory of yours alone (a `/tmp/engram-<uid>` another user made, or a link, is skipped) |
 | model calls' working directory | `distill/` in the stores' folder, private to you (the distiller's `claude -p` reads project settings from where it runs) |

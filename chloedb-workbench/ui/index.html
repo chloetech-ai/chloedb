@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Workbench</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='9' height='9' rx='2.5' fill='%232f5bd3'/%3E%3Crect x='13' y='2' width='9' height='9' rx='2.5' fill='%2396a3b8'/%3E%3Crect x='2' y='13' width='9' height='9' rx='2.5' fill='%2396a3b8'/%3E%3Crect x='13' y='13' width='9' height='9' rx='2.5' fill='%23e3a008'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11.5 8.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.6 2.5L16 9.5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-act" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-turn" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7 14h10"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="9" height="9" rx="2.5" fill="var(--accent)"/><rect x="13" y="2" width="9" height="9" rx="2.5" fill="var(--line-2)"/><rect x="2" y="13" width="9" height="9" rx="2.5" fill="var(--line-2)"/><rect x="13" y="13" width="9" height="9" rx="2.5" fill="var(--warn)"/></svg>
+    <span>Workbench</span><span class="sub">ChloeDB</span>
+  </div>
+  <div class="counts">
+    <span class="pill run-pill" id="run-pill" title="Agents running now"><b id="run-n">0</b><span id="run-max"></span> running</span>
+    <span class="pill warn" id="need-pill" hidden><b id="need-n">0</b> need you</span>
+  </div>
+  <div class="sep"></div>
+  <span class="prefix-ind" id="prefix-ind" hidden title="Prefix armed: press a key, ? for the list">C-b</span>
+  <span class="conn" id="conn" data-state="connecting" title="The live stream of changes"><span id="conn-text">connecting</span></span>
+  <button class="btn ghost icon" id="help-btn" title="Keys (Ctrl-b ?)" aria-label="Keyboard shortcuts"><svg class="i"><use href="#i-key"/></svg></button>
+  <button class="btn primary" id="new-btn" title="New agent (n)"><svg class="i"><use href="#i-plus"/></svg><span class="wide-only">New agent</span><span class="narrow-only">New</span><kbd class="wide-only">n</kbd></button>
+</header>
+
+<div class="shell">
+  <aside class="rail" aria-label="Needs you">
+    <div class="rail-head"><h2>Needs you</h2><span class="n" id="rail-n"></span></div>
+    <ol id="rail-list"></ol>
+    <div class="rail-empty" id="rail-empty"><svg class="i"><use href="#i-check"/></svg>Nothing is waiting for you.</div>
+    <div class="rail-foot">
+      <span><kbd>C-b</kbd><kbd>?</kbd> keys</span>
+      <span><kbd>z</kbd> zoom</span>
+      <span><kbd>n</kbd> new</span>
+    </div>
+  </aside>
+
+  <main>
+    <section class="view" id="grid-view" aria-label="Agents">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <svg class="art" viewBox="0 0 84 64" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="36" height="26" rx="5"/><rect x="46" y="2" width="36" height="26" rx="5"/><rect x="2" y="36" width="36" height="26" rx="5"/><rect x="46" y="36" width="36" height="26" rx="5" stroke-dasharray="4 4"/><path d="M10 12h12M10 18h18M54 12h10M10 46h14"/></svg>
+        <h3>No agents running</h3>
+        <p>Start a Claude Code session in its own worktree. Each one gets a real terminal you can watch here and step into.</p>
+        <button class="btn primary" id="empty-new"><svg class="i"><use href="#i-plus"/></svg>New agent<kbd>n</kbd></button>
+      </div>
+      <details class="fold" id="fold" hidden>
+        <summary><svg class="i sm"><use href="#i-chev"/></svg>Exited <span id="fold-n"></span></summary>
+        <div class="exited" id="exited"></div>
+      </details>
+    </section>
+
+    <section class="view" id="zoom-view" hidden aria-label="Agent">
+      <div class="zhead">
+        <button class="btn ghost icon" id="z-back" title="Back to the grid (Ctrl-b z)" aria-label="Back to the grid"><svg class="i"><use href="#i-back"/></svg></button>
+        <span class="nm" id="z-name"></span>
+        <span class="chip" id="z-chip"></span>
+        <span class="brk"></span>
+        <span class="br" id="z-branch"></span>
+        <span class="since" id="z-since"></span>
+        <span class="sep"></span>
+        <div class="ztabs" role="tablist">
+          <button role="tab" id="tab-term" aria-selected="true">Terminal</button>
+          <button role="tab" id="tab-events" aria-selected="false">Events</button>
+        </div>
+        <span class="hint"><kbd>C-b</kbd><kbd>z</kbd> back</span>
+        <button class="btn sm" id="z-stop" title="Stop (Ctrl-b x)"><svg class="i sm"><use href="#i-stop"/></svg><span>Stop</span></button>
+      </div>
+      <div class="zask" id="z-ask" hidden><svg class="i"><use href="#i-bell"/></svg><span id="z-ask-text"></span></div>
+      <div class="zbody" id="z-body" data-tab="term">
+        <div class="termbox" id="termbox"><div class="xt" id="z-term"></div><div class="overlay" id="z-overlay" hidden></div></div>
+        <aside class="side">
+          <div class="facts" id="z-facts"></div>
+          <div class="evhead"><h3>Events</h3><span class="n" id="ev-n"></span></div>
+          <ol class="events" id="z-events"></ol>
+        </aside>
+      </div>
+      <div class="keybar" id="keybar" aria-label="Keys for the terminal">
+        <button data-k="esc">Esc</button><button data-k="tab">Tab</button><button data-k="stab">⇧Tab</button>
+        <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="cc">^C</button><button data-k="enter">⏎</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="new-dialog" aria-labelledby="new-title">
+  <form id="new-form" method="dialog" novalidate>
+    <div class="dhead"><h2 id="new-title">New agent</h2><button type="button" class="btn ghost icon" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <div class="dbody">
+      <div class="field">
+        <label for="f-repo">Repository</label>
+        <input type="text" class="mono" id="f-repo" name="repo" list="repo-list" placeholder="/home/you/src/project" autocomplete="off" spellcheck="false" required>
+        <datalist id="repo-list"></datalist>
+        <span class="help">The absolute path of a git checkout. Remembered for next time.</span>
+      </div>
+      <div class="field">
+        <label for="f-task">Task <span class="opt">optional</span></label>
+        <textarea id="f-task" name="task" placeholder="What should it do? Leave empty to start at a prompt."></textarea>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="f-name">Name <span class="opt">optional</span></label>
+          <input type="text" class="mono" id="f-name" name="name" placeholder="picked for you" maxlength="32" autocomplete="off" spellcheck="false" pattern="[a-z0-9-]{1,32}">
+        </div>
+        <div class="field">
+          <label for="f-model">Model <span class="opt">optional</span></label>
+          <input type="text" class="mono" id="f-model" name="model" list="model-list" placeholder="Claude Code's default" autocomplete="off" spellcheck="false">
+          <datalist id="model-list"><option value="opus"><option value="sonnet"><option value="haiku"></datalist>
+        </div>
+      </div>
+      <label class="check" for="f-wt">
+        <input type="checkbox" id="f-wt" name="worktree" checked>
+        <span><b>Own worktree</b><span id="wt-help">A new branch <code>wb/&lt;name&gt;</code> from the repository's HEAD, so agents don't step on each other.</span></span>
+      </label>
+      <div class="err" id="new-err" hidden></div>
+    </div>
+    <div class="dfoot">
+      <span class="left"><kbd>Ctrl</kbd><kbd>Enter</kbd> start</span>
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn primary" id="new-go">Start agent</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="help-dialog" aria-labelledby="help-title">
+  <div class="dhead"><h2 id="help-title">Keys</h2><button type="button" class="btn ghost icon" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
+  <div class="dbody">
+    <dl class="keys">
+      <dt><kbd>Ctrl</kbd><kbd>b</kbd></dt><dd>The prefix, as in tmux. It works everywhere, inside a terminal too.</dd>
+      <dt><span class="then">then</span><kbd>n</kbd></dt><dd>New agent</dd>
+      <dt><span class="then">then</span><kbd>z</kbd></dt><dd>Zoom the selected agent, or back to the grid</dd>
+      <dt><span class="then">then</span><kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd></dt><dd>Move between tiles (in zoom: the previous or next agent)</dd>
+      <dt><span class="then">then</span><kbd>1</kbd>…<kbd>9</kbd></dt><dd>Zoom agent number 1 to 9</dd>
+      <dt><span class="then">then</span><kbd>x</kbd></dt><dd>Stop the agent (asks first)</dd>
+      <dt><span class="then">then</span><kbd>Ctrl</kbd><kbd>b</kbd></dt><dd>Send a literal Ctrl-b to the terminal</dd>
+      <dt><span class="then">then</span><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>n</kbd> <kbd>z</kbd> <kbd>Enter</kbd> <kbd>?</kbd></dt><dd>The same without the prefix, outside a terminal</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Back to the grid, outside a terminal</dd>
+    </dl>
+    <p class="keynote">Inside a zoomed terminal every key goes to the agent, Esc included (Claude Code uses it to interrupt). Use <kbd>Ctrl</kbd><kbd>b</kbd> <kbd>z</kbd> to leave.</p>
+  </div>
+  <div class="dfoot"><span class="left" id="help-version"></span><button type="button" class="btn" data-close autofocus>Close</button></div>
+</dialog>
+
+<dialog id="confirm-dialog" aria-labelledby="confirm-title">
+  <div class="dhead"><h2 id="confirm-title">Stop agent?</h2></div>
+  <div class="dbody"><p id="confirm-text"></p></div>
+  <div class="dfoot"><span class="left"><kbd>y</kbd> / <kbd>n</kbd></span><button type="button" class="btn" id="confirm-no">Cancel</button><button type="button" class="btn danger" id="confirm-yes">Stop agent</button></div>
+</dialog>
+
+<div class="gate" id="gate" hidden>
+  <div class="gate-card">
+    <div class="brand"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="9" height="9" rx="2.5" fill="var(--accent)"/><rect x="13" y="2" width="9" height="9" rx="2.5" fill="var(--line-2)"/><rect x="2" y="13" width="9" height="9" rx="2.5" fill="var(--line-2)"/><rect x="13" y="13" width="9" height="9" rx="2.5" fill="var(--warn)"/></svg><span>Workbench</span></div>
+    <h2 id="gate-title">Open the link the server printed</h2>
+    <p id="gate-text"><code>chloedb-workbench serve</code> prints a URL with a token in it. Open that URL, or paste it (or the token) here.</p>
+    <form id="gate-form"><input type="password" id="gate-input" placeholder="http://127.0.0.1:7740/?token=…" autocomplete="off" spellcheck="false" aria-label="URL or token"><button class="btn primary" type="submit">Connect</button></form>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

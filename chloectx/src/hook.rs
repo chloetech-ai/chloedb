@@ -24,6 +24,8 @@ fn budget(event: &str, deep: &crate::deep::DeepConfig) -> Duration {
         "Stop" if deep.mode == "async" && deep.stop_recheck => 3000 + 1000 * deep.stop_wait_secs,
         "PostCompact" => 5000,
         "PreToolUse" => 1500,
+        // Recorded and answered at once; nothing waits on them.
+        "Notification" | "SubagentStop" => 1000,
         _ => 2000,
     })
 }

@@ -110,7 +110,7 @@
 <li><strong>Reads in parallel, one writer.</strong> Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results/writes">results</a>).</li>
 <li><strong>Never in the way.</strong> A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.</li>
 </ul>
-<p>The store lives outside the repository, in <code>${CHLOECTX_HOME:-~/.local/share/chloectx}/&lt;project-slug&gt;/</code> (in <code>~/.local/share/engram</code> on a machine that has it from before the rename), because transcripts can contain secrets. A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as <code>DB_PASSWORD</code> with markers before anything is stored or synced; <code>chloectx redact</code> applies it to a store written before (<a href="chloectx-setup.html#secrets-and-chloectx-redact">what is redacted</a>).</p>
+<p>The store lives outside the repository, in <code>${CHLOECTX_HOME:-~/.local/share/chloectx}/&lt;project-slug&gt;/</code> (in <code>~/.local/share/engram</code> on a machine that has it from before the rename), because transcripts can contain secrets. A repository has one store, whichever of its git worktrees a session runs in: the slug of a linked worktree (a folder whose <code>.git</code> file points at <code>&lt;repo&gt;/.git/worktrees/&lt;name&gt;</code>) is that of the same folder in the main checkout, so agents in different worktrees read and add to one memory, through one daemon. A main checkout and a folder outside git keep the slug they always had. Each session remembers the folder it runs in (in the store's session state, and in <code>events.log</code> with its branch): its paths are stored relative to it, and notes tied to the code are checked against its files, not the main checkout's. <code>CHLOECTX_PER_WORKTREE=1</code> gives each worktree its own store again. A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as <code>DB_PASSWORD</code> with markers before anything is stored or synced; <code>chloectx redact</code> applies it to a store written before (<a href="chloectx-setup.html#secrets-and-chloectx-redact">what is redacted</a>).</p>
 <h2 id="the-data-model">The data model<a class="anchor" href="#the-data-model" aria-label="Link to this section">#</a></h2>
 <p>One ChloeDB table, <code>memory</code>. Each record is one key–value pair with attributes.</p>
 <div class="doc-table"><table>
@@ -135,7 +135,7 @@
 <tr>
 <td><code>kind</code></td>
 <td>KEYWORD</td>
-<td><code>prompt</code>, <code>answer</code>, <code>tool_call</code>, <code>tool_result</code>, <code>error</code>, <code>episode</code>, <code>summary</code>, <code>decision</code>, <code>preference</code>, <code>fact</code>, <code>todo</code>, <code>note</code></td>
+<td><code>prompt</code>, <code>answer</code>, <code>tool_call</code>, <code>tool_result</code>, <code>error</code>, <code>episode</code>, <code>summary</code>, <code>decision</code>, <code>preference</code>, <code>fact</code>, <code>todo</code>, <code>note</code>, <code>entity</code>, <code>event</code></td>
 </tr>
 <tr>
 <td><code>tag</code></td>
@@ -212,7 +212,7 @@
 </tr>
 <tr>
 <td><code>PostToolUse</code></td>
-<td><code>tool_call</code> and <code>tool_result</code> (or <code>error</code>), asynchronously</td>
+<td><code>tool_call</code> and <code>tool_result</code> (or <code>error</code>), asynchronously; a call that took a second or more says how long (<code>Took: 12s</code> in its context, timed from its message in the transcript)</td>
 </tr>
 <tr>
 <td><code>Stop</code></td>
@@ -220,11 +220,19 @@
 </tr>
 <tr>
 <td><code>PreCompact</code></td>
-<td>commentary not yet captured</td>
+<td>commentary not yet captured; an <code>event</code> (<code>compact_start</code>)</td>
 </tr>
 <tr>
 <td><code>PostCompact</code></td>
 <td>the summary, by section; the live window restarts here</td>
+</tr>
+<tr>
+<td><code>Notification</code></td>
+<td>an <code>event</code> tagged <code>notification:&lt;type&gt;</code> (<code>permission_prompt</code>, <code>idle_prompt</code>, ...)</td>
+</tr>
+<tr>
+<td><code>SubagentStop</code></td>
+<td>an <code>event</code> tagged <code>subagent_stop</code></td>
 </tr>
 <tr>
 <td><code>SessionEnd</code></td>
@@ -232,6 +240,7 @@
 </tr>
 </tbody>
 </table></div>
+<p>Events are records of when something happened rather than of what was said: a permission prompt, an idle notice, a built-in sub-agent that finished, a compaction that started. They are never injected or returned by search, recall or a timeline unless asked for by kind; <a href="#where-the-time-went"><code>chloectx report</code></a> reads them.</p>
 <p><code>chloectx ingest-transcript</code> back-fills old sessions from Claude Code's JSONL transcripts.</p>
 <h3 id="distilled-knowledge">Distilled knowledge<a class="anchor" href="#distilled-knowledge" aria-label="Link to this section">#</a></h3>
 <p>Raw records hold what was <em>said</em>; a later session needs what was <em>agreed</em>: a decision and its reason, a client's rule, the requirements of work announced for later. Much of it never reaches the code, and a request that depends on it rarely sounds like earlier work, so search alone misses it.</p>
@@ -562,10 +571,46 @@ chloectx distill                                                          # dist
 chloectx consolidate                                                      # merge overlapping notes now
 chloectx backup ~/backups/chloectx-2026-10-28                             # a consistent copy of this project&#x27;s store
 chloectx redact [--all] [--dry-run]                                       # redact secrets a store recorded before redaction caught them
+chloectx report [--days 7] [--session ID] [--json]                         # where the project&#x27;s time went
 chloectx stats | briefing | stop
 chloectx pack ./work.capsule                                              # a capsule another agent mounts
 chloectx mount ./work.capsule                                             # serve it as MCP tools (stdio)</pre>
 <p>A capsule hands a slice of this memory to another agent as one read-only file it queries: <a href="chloectx-capsules.html">capsules</a>.</p>
+<h3 id="where-the-time-went">Where the time went<a class="anchor" href="#where-the-time-went" aria-label="Link to this section">#</a></h3>
+<p><code>chloectx report</code> reads the store and writes nothing. For each session of the last <code>--days</code> days (7 by default; <code>--session</code> picks one by its id or the start of it) and in all, it splits the time between the records into:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>share</th>
+<th>from</th>
+<th>to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>model</td>
+<td>a prompt, or a tool's result</td>
+<td>the next tool call, or the answer</td>
+</tr>
+<tr>
+<td>tools</td>
+<td>a tool call</td>
+<td>its result (while any call runs)</td>
+</tr>
+<tr>
+<td>waiting</td>
+<td>an answer, or a notification (a permission prompt, an idle notice)</td>
+<td>the next prompt; one wait counts up to 30 minutes, the rest is <em>away</em>, counted apart</td>
+</tr>
+<tr>
+<td>compaction</td>
+<td>a compaction's start</td>
+<td>its summary</td>
+</tr>
+</tbody>
+</table></div>
+<p>Anything that ends in a prompt is waiting (a turn the user interrupted, which has no answer). A permission wait lasts until the tool's result, so it includes the tool's own run after the user answered. Records keep Unix seconds, so every span is whole seconds, and a tool call has a length only when its record says how long it took: calls under a second, and calls recorded before ChloeCtx timed them, count as instants.</p>
+<p>Then: the commands that took most time, normalised as <a href="#when-to-load">error to fix</a> matches them (<code>cd x &amp;&amp; cargo test 2&gt;&amp;1 | tail</code> is <code>cargo test</code>), with their runs, time per run and failures; time by tool; errors seen three or more times, by signature, with the session they came back most often in; files read four or more times in one session; compactions per hour of use. Last, up to five suggestions, each with the numbers behind it: a slow command run often, a loop on one error, a file reread often, permissions waited on often, frequent compactions. <code>--json</code> prints the same as JSON.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -577,6 +622,10 @@ chloectx mount ./work.capsule                                             # serv
 <tr>
 <td><code>CHLOECTX_DISABLE=1</code></td>
 <td>turns the hooks off</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_PER_WORKTREE=1</code></td>
+<td>a store for each git worktree, instead of one for the repository</td>
 </tr>
 <tr>
 <td><code>CHLOECTX_HOME</code>, <code>CHLOECTX_MODELS</code></td>

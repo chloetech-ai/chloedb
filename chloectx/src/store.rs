@@ -74,8 +74,8 @@ impl Filter {
 
     /// The filter's conditions, which name the values of
     /// [`Filter::params`] (`:window_session`, `:session`) rather than
-    /// quote them. Entity records are never results unless asked for by
-    /// kind.
+    /// quote them. Entity and event records are never results unless asked
+    /// for by kind ([`Kind::is_hidden`]).
     pub fn conds(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some((_, w)) = &self.exclude_window {
@@ -96,6 +96,7 @@ impl Filter {
         }
         if self.kinds.is_empty() {
             parts.push("kind != 'entity'".into());
+            parts.push("kind != 'event'".into());
         }
         parts
     }
@@ -620,7 +621,7 @@ impl Store {
 
     /// The newest `n` records of `session`, newest first, with their vectors.
     pub fn tail(&self, session: &str, n: usize) -> Result<Vec<(Record, Option<Vec<f32>>)>> {
-        let sql = format!("SELECT {COLUMNS}, emb FROM memory WHERE session = :session ORDER BY seq DESC LIMIT {n}");
+        let sql = format!("SELECT {COLUMNS}, emb FROM memory WHERE session = :session AND kind != 'event' ORDER BY seq DESC LIMIT {n}");
         let rs = self.query_with(&sql, &Params::new().set("session", Value::Str(session.to_string())))?;
         Ok(rs
             .rows

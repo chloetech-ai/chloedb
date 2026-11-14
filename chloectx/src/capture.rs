@@ -346,6 +346,79 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
     d
 }
 
+/// The line a tool call's record carries in its context when the call took
+/// a second or more: how long, in whole seconds, from the call to its
+/// result (`chloectx report` reads it; the record's `ts` is the result's).
+pub const TOOK: &str = "Took: ";
+
+/// Notes on the first tool call of `drafts` that the call took `secs`
+/// seconds (nothing under a second).
+pub fn took(drafts: &mut [Draft], secs: i64) {
+    if secs < 1 {
+        return;
+    }
+    if let Some(d) = drafts.iter_mut().find(|d| d.kind == Kind::ToolCall) {
+        d.ctx = if d.ctx.is_empty() { format!("{TOOK}{secs}s") } else { format!("{}\n{TOOK}{secs}s", d.ctx) };
+    }
+}
+
+/// The seconds a tool call's record says it took ([`took`]); 0 when it says
+/// nothing.
+pub fn took_of(ctx: &str) -> i64 {
+    ctx.lines().find_map(|l| l.strip_prefix(TOOK)).and_then(|s| s.trim_end_matches('s').parse().ok()).unwrap_or(0)
+}
+
+/// The tag of an event record of a sub-agent that finished.
+pub const SUBAGENT_STOP: &str = "subagent_stop";
+/// The tag of an event record of a notification: `notification:<type>`
+/// (`permission_prompt`, `idle_prompt`, ...), or `notification` alone.
+pub const NOTIFICATION: &str = "notification";
+
+/// The event record of a `Notification`, `SubagentStop` or `PreCompact`
+/// hook, which recall never shows ([`Kind::Event`]). A notification's type comes from
+/// the payload, or for an older Claude Code that sends none from its
+/// message ("Claude needs your permission to use Bash" is a permission
+/// prompt, "Claude is waiting for your input" an idle one).
+pub fn event_draft(event: &str, p: &Json) -> Option<Draft> {
+    let s = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    match event {
+        "Notification" => {
+            let message = clip(&redact(&s("message")), 300);
+            let mut ty = s("notification_type");
+            if ty.is_empty() {
+                let m = message.to_lowercase();
+                ty = if m.contains("permission") {
+                    "permission_prompt".into()
+                } else if m.contains("waiting for your input") || m.contains("idle") {
+                    "idle_prompt".into()
+                } else {
+                    String::new()
+                };
+            }
+            let ty: String = ty.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect();
+            let tag = if ty.is_empty() { NOTIFICATION.to_string() } else { format!("{NOTIFICATION}:{ty}") };
+            let text = if message.is_empty() { format!("Notification ({})", if ty.is_empty() { "no message" } else { &ty }) } else { format!("Notification: {message}") };
+            Some(Draft::new(Kind::Event, text).tag(tag))
+        }
+        "SubagentStop" => {
+            let ty = clip(&s("agent_type"), 80);
+            let id = clip(&s("agent_id"), 80);
+            let mut text = if ty.is_empty() { "A sub-agent finished".to_string() } else { format!("Sub-agent {ty} finished") };
+            if !id.is_empty() {
+                text += &format!(" (agent {id})");
+            }
+            Some(Draft::new(Kind::Event, text).tag(SUBAGENT_STOP))
+        }
+        // When a compaction started, which its summary (`PostCompact`) ends.
+        "PreCompact" => {
+            let trigger: String = s("trigger").chars().filter(|c| c.is_ascii_alphanumeric()).take(20).collect();
+            let text = if trigger.is_empty() { "Compaction started".to_string() } else { format!("Compaction started ({trigger})") };
+            Some(Draft::new(Kind::Event, text).tag(crate::report::COMPACT_START))
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------- answers and summaries
 
 /// Assistant text between tool calls: what the model concluded along the way.
@@ -532,6 +605,28 @@ mod tests {
         // Another server's tools still are.
         assert!(!tool_drafts("mcp__github__get_issue", &json!({"n": 1}), &answer, "/p").is_empty());
         assert!(!tool_drafts("mcp__capsule__other", &json!({}), &answer, "/p").is_empty());
+    }
+
+    #[test]
+    fn events_and_tool_durations() {
+        let d = event_draft("Notification", &json!({"message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"})).unwrap();
+        assert_eq!((d.kind, d.tag.as_str(), d.text.as_str()), (Kind::Event, "notification:permission_prompt", "Notification: Claude needs your permission to use Bash"));
+        // An older Claude Code names no type: told from the message.
+        assert_eq!(event_draft("Notification", &json!({"message": "Claude is waiting for your input"})).unwrap().tag, "notification:idle_prompt");
+        assert_eq!(event_draft("Notification", &json!({})).unwrap().tag, "notification");
+        let d = event_draft("SubagentStop", &json!({"agent_type": "Explore", "agent_id": "a1"})).unwrap();
+        assert_eq!((d.tag.as_str(), d.text.as_str()), (SUBAGENT_STOP, "Sub-agent Explore finished (agent a1)"));
+        assert!(event_draft("Stop", &json!({})).is_none());
+        assert!(d.files.is_empty() && d.links.is_empty());
+
+        let mut d = tool_drafts("Bash", &json!({"command": "cargo build"}), &json!({"stdout": "Finished"}), "/p");
+        d.iter_mut().for_each(|x| x.ctx = "Turn 1 request: build".into());
+        took(&mut d, 0);
+        assert_eq!(took_of(&d[0].ctx), 0);
+        took(&mut d, 42);
+        assert_eq!(d[0].ctx, "Turn 1 request: build\nTook: 42s");
+        assert_eq!(took_of(&d[0].ctx), 42);
+        assert_eq!(took_of(&d[1].ctx), 0, "only the call carries it");
     }
 
     #[test]

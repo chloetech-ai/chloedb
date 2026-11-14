@@ -27,7 +27,8 @@ use serde_json::{json, Value as Json};
 
 use crate::{err, Result};
 
-const EVENTS: [(&str, Option<&str>, u64); 9] = [
+/// The hooks installed: event, matcher, timeout in seconds.
+pub const EVENTS: [(&str, Option<&str>, u64); 11] = [
     ("SessionStart", None, 15),
     // Long enough for query understanding in `sync` mode.
     ("UserPromptSubmit", None, 90),
@@ -39,6 +40,10 @@ const EVENTS: [(&str, Option<&str>, u64); 9] = [
     ("PreCompact", None, 15),
     ("PostCompact", None, 15),
     ("SessionEnd", None, 10),
+    // Recorded for `chloectx report` (when the agent waited for the user,
+    // when a sub-agent finished), never recalled.
+    ("Notification", None, 5),
+    ("SubagentStop", None, 5),
 ];
 
 /// The MCP server's name; its tools are `mcp__chloectx__*`.

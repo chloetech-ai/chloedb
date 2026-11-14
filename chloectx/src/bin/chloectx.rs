@@ -19,7 +19,7 @@ as usual; it records each session, recalls what bears on each prompt and writes
 down decisions and rules. `chloectx doctor` says whether that is happening.
 
 More commands (`chloectx help <command>` explains each):
-  look into memory   blame, receipts, receipt, snapshot, sql, stats, briefing
+  look into memory   report, blame, receipts, receipt, snapshot, sql, stats, briefing
   maintain a store   redact, distill, consolidate, backup, fetch-model, ingest-transcript
   share memory       sync, pack, mount, app
   run by Claude Code (not by hand): hook, mcp, serve, rpc";
@@ -164,6 +164,23 @@ enum Cmd {
     /// Counts and sizes.
     #[command(hide = true)]
     Stats,
+    /// Where the project's time went, from what the store recorded: the
+    /// model's, the tools', waiting for you and compactions, for each
+    /// session and in all; the commands that took most time, errors seen
+    /// again and again, files read many times, and up to five suggestions.
+    /// Reads the store and writes nothing. Times are whole seconds.
+    #[command(hide = true)]
+    Report {
+        /// The last N days.
+        #[arg(long, default_value_t = 7.0)]
+        days: f64,
+        /// Only this session (its id, or the start of it).
+        #[arg(long)]
+        session: Option<String>,
+        /// Print the JSON report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
     /// log. To restore, run `chloectx stop` and copy the files back.
@@ -444,7 +461,9 @@ fn main() {
         Cmd::Mcp => std::process::exit(mcp::run()),
         Cmd::Serve { dir } => {
             let dir = dir.unwrap_or_else(|| paths::store_dir(&project));
-            if let Err(e) = daemon::serve(&dir, &project.to_string_lossy()) {
+            // The folder the store is keyed by: a worktree's sessions reach
+            // the daemon of its repository's main checkout.
+            if let Err(e) = daemon::serve(&dir, &paths::store_root(&project).to_string_lossy()) {
                 eprintln!("chloectx serve: {e}");
                 std::process::exit(1);
             }
@@ -511,6 +530,14 @@ fn main() {
             text(&send(&project, req, 600));
         }
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t}), 30)),
+        Cmd::Report { days, session, json: as_json } => {
+            let r = send(&project, json!({"op": "report", "days": days, "session": session}), 120);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r["report"]).unwrap());
+            } else {
+                print!("{}", r["text"].as_str().unwrap_or(""));
+            }
+        }
         Cmd::Stats => println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "stats"}), 30)).unwrap()),
         Cmd::Backup { dest } => {
             let dest = std::path::absolute(&dest).unwrap_or(dest);

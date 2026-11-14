@@ -242,7 +242,7 @@ Pick the records an assistant working on this request should see: those that sta
 Output {"relevant": [{"id": "<id>", "why": "<under 20 words: what it tells the assistant>"}], "answer": "<for a question about earlier work or conversations, 1 to 3 sentences answering it from the picked records, citing ids; otherwise the one or two things the assistant must keep in mind; empty if nothing applies>", "confidence": "high" or "medium" or "low" or "none"}"#;
 
 fn kinds_of(v: &Json) -> Vec<Kind> {
-    v.get("kinds").and_then(|k| k.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().and_then(Kind::parse)).filter(|k| *k != Kind::Entity).collect()).unwrap_or_default()
+    v.get("kinds").and_then(|k| k.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().and_then(Kind::parse)).filter(|k| !k.is_hidden()).collect()).unwrap_or_default()
 }
 
 /// Parses the planner's reply.
@@ -350,7 +350,7 @@ pub fn plan(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
 pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<Vec<Record>> {
     let mut f = filter.clone();
     f.kinds = q.kinds.clone();
-    let useful = |r: &Record| r.kind != Kind::Entity && r.tag != "uncertain" && r.tag != "superseded";
+    let useful = |r: &Record| !r.kind.is_hidden() && r.tag != "uncertain" && r.tag != "superseded";
     let out: Vec<Record> = match q.kind.as_str() {
         "text" => recall::search(store, &q.q, &f, &RankParams { n: n.max(20), ..Default::default() })?.0.into_iter().map(|h| h.record).collect(),
         "keywords" => {
