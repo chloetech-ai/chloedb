@@ -31,6 +31,8 @@ const CSS = `
 .no-head h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
 .no-head .sub { color: var(--muted); font-size: 12.5px; }
 .no-head .tools { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.no-root .tabs .no-more { margin-left: auto; position: sticky; right: 0; background: var(--bg, var(--surface)); }
+.no-root .tabs .no-more .i { width: 14px; height: 14px; }
 .no-synth { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--line-2); color: var(--text-2); }
 .no-sim { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 .no-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px; margin-bottom: 14px; }
@@ -417,8 +419,9 @@ function render(el, ctx) {
     const main = el.closest("main");
     if (main) main.scrollTop = 0;
     const page = path[0] || "";
-    for (const b of tabs.children) b.setAttribute("aria-selected", String(b.dataset.p === page));
+    for (const b of tabs.querySelectorAll("button[data-p]")) b.setAttribute("aria-selected", String(b.dataset.p === page));
     tabs.style.display = page === "leadership" ? "none" : "";
+    fitTabs();
     drawAlt(page);
     if (!ready) return;
     if (page !== "map") app.map = null;
@@ -426,12 +429,32 @@ function render(el, ctx) {
     const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
   };
+  // The tabs that do not fit go into a "More" menu at the end of the row, the page in view always shown.
+  const more = h("button", { class: "no-more", "aria-haspopup": "menu", title: "The other pages" }, "More", h("span", { class: "n", hidden: true }), C.icon("down"));
+  const fitTabs = () => {
+    const btns = [...tabs.querySelectorAll("button[data-p]")];
+    for (const b of btns) b.style.display = "";
+    more.style.display = "none";
+    if (!tabs.clientWidth || tabs.scrollWidth <= tabs.clientWidth + 1) return;
+    more.style.display = "";
+    const page = (current || [])[0] || "";
+    for (let k = btns.length - 1; k >= 0 && tabs.scrollWidth > tabs.clientWidth + 1; k--) if (btns[k].dataset.p !== page) btns[k].style.display = "none";
+    const rest = btns.filter((b) => b.style.display === "none");
+    const flagged = rest.filter((b) => b.querySelector(".n")).length;
+    const n = more.querySelector(".n");
+    n.hidden = !flagged; n.textContent = String(flagged);
+    more.title = `The other pages: ${rest.map((b) => b.dataset.label).join(", ")}`;
+    more.onclick = () => C.menu(more, rest.map((b) => ({ label: b.dataset.label + (b.querySelector(".n") ? ` (${b.querySelector(".n").textContent})` : ""), onclick: () => b.click() })));
+  };
   const drawTabs = (st) => {
     const badge = { map: st?.estate?.broken || 0, diagnose: st?.open_incidents ? "!" : 0, incidents: st?.open_incidents || 0, alerts: st?.firing || 0, "": st?.waiting || 0, carriers: st?.notices || 0 };
     const page = (current || [])[0] || "";
-    tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)));
+    tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p, label }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)), more);
+    fitTabs();
   };
   drawTabs(null);
+  const tabsSeen = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitTabs()) : null;
+  tabsSeen?.observe(tabs);
   const setup = h("div", { class: "no-setup" });
   const poll = async () => {
     let st;
@@ -459,7 +482,7 @@ function render(el, ctx) {
   const stopPoll = C.every(5000, poll, true, { always: true });
   current = ctx.path();
   ctx.onPath(show);
-  return () => { stopPoll(); app.agent?.stop(); try { stop?.(); } catch (e) { console.warn(e); } };
+  return () => { stopPoll(); tabsSeen?.disconnect(); app.agent?.stop(); try { stop?.(); } catch (e) { console.warn(e); } };
 }
 
 // ---------------------------------------------------------------- shared pieces
