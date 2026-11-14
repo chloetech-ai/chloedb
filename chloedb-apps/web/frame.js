@@ -166,6 +166,9 @@
     // payment on a hosted page; resolves to {url, mode, amount, currency}.
     // Open the url from a tap (window.open(url)); the app never sees a card.
     pay: (opts) => rpc('pay', [opts || {}]),
+    // payNow(payment, note): a sheet with the payment's amount and a "Pay
+    // by card" button that opens its hosted page (the tap the browser wants)
+    payNow: (p, note) => (window.__sa_paySheet ? window.__sa_paySheet(p, note) : (p && p.url ? window.open(p.url) : null)),
     signUp: (fields) => rpc('signUp', [fields || {}]),
     signOut: () => rpc('signOut', []),
     people: () => rpc('people', []),

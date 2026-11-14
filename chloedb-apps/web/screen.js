@@ -259,6 +259,19 @@ window.__sa_numbers = (() => {
       document.body.append(sheet);
     }));
     window.__sa_askSignIn = askSignIn;
+    // A payment to make now (app.payNow, after app.pay): its amount, what is
+    // done so far, and a button that opens its hosted page from a tap.
+    window.__sa_paySheet = (p, note) => {
+      if (!p || !p.url) return;
+      let amount = `${p.amount} ${p.currency || ''}`.trim();
+      try { amount = Number(p.amount).toLocaleString(undefined, { style: 'currency', currency: p.currency || 'USD' }); } catch { /* as it is */ }
+      const box = h('div', { class: 'sa-sheet-box card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pay' });
+      const sheet = h('div', { class: 'sa-sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, box);
+      box.replaceChildren(h('h3', null, note ? String(note) : 'One step left'), h('p', { class: 'muted small' }, `Pay ${amount} by card on a secure page.${p.mode === 'test' ? ' Test mode: no card is charged.' : ''}`),
+        h('button', { class: 'primary', type: 'button', onclick: () => { window.open(p.url); sheet.remove(); } }, `Pay ${amount} by card`),
+        h('button', { type: 'button', class: 'ghost small', onclick: () => sheet.remove() }, 'Later'));
+      document.body.append(sheet);
+    };
     const run = async (fn, args, where, again = true) => {
       refusals.delete(where);
       window.__sa_refusal = null;

@@ -3290,3 +3290,13 @@ test('LESSONS NEEDS keeps the lessons shut until its query gives a row, with wha
   const open = expandWith(compileStatement("CREATE SCREEN learn TITLE 'Learn'\nLESSONS lessons\n  PROGRESS progress  OPEN lesson").screen);
   assert.equal(open.screen.data.lessons_ok, undefined);
 });
+
+test('OFFERS PAY: a one-tap booking takes a card payment for the row its rule returns', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN home TITLE 'Home'\nOFFERS sessions\n  LEFT seats  NAME title  PRICE price  CALL book  PAY bookings  CHARGE amount  PAID status  ACTION 'Book a seat'  DONE 'Booked'");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.let.sessions_act, /app\.call\("book", \{id: item\.id\}\)/);
+  assert.match(e.screen.let.sessions_act, /app\.pay\(\{table: "bookings", id, amount: "amount", status: "status"/);
+  assert.match(e.screen.let.sessions_act, /app\.payNow\(p, "Booked"\)/);
+});
