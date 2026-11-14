@@ -1155,7 +1155,9 @@ window.__sa_numbers = (() => {
       for (; i < list.length; i++) {
         // a group starts at a heading, a row of numbers, or a titled section
         // (its heading inside it: what it titles never leaves it)
-        if (!groups.length || ((headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('section.section'))) && groups.at(-1).length)) groups.push([]);
+        // (an ask panel is a part of its own: it heads the column beside)
+        const own = (el) => el.nodeType === 1 && (el.matches('section.section, .sa-ask') || !!el.querySelector(':scope > .sa-ask'));
+        if (!groups.length || ((headLike(list[i]) || own(list[i])) && groups.at(-1).length)) groups.push([]);
         groups.at(-1).push(list[i]);
       }
       // A group of controls alone (a heading over a week's arrows, a filter
