@@ -31,6 +31,16 @@ const CSS = `
 .no-head h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
 .no-head .sub { color: var(--muted); font-size: 12.5px; }
 .no-head .tools { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.no-hmenu { display: none; }
+@media (max-width: 600px) {
+  .no-head { flex-wrap: nowrap; gap: 8px; margin-bottom: 8px; }
+  .no-head h1 { font-size: 17px; white-space: nowrap; }
+  .no-head .sub { display: none; }
+  .no-head .tools { flex-wrap: nowrap; }
+  .no-head .tools > :not(.no-hmenu) { display: none; }
+  .no-head .no-hmenu { display: inline-flex; }
+  .no-root .tabs { margin-bottom: 10px; }
+}
 .no-root .tabs .no-more { margin-left: auto; position: sticky; right: 0; background: var(--bg, var(--surface)); }
 .no-root .tabs .no-more .i { width: 14px; height: 14px; }
 .no-synth { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--line-2); color: var(--text-2); }
@@ -388,8 +398,19 @@ function render(el, ctx) {
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
   const synth = h("span", { class: "no-synth", title: "Everything on these pages is made up: a simulated carrier network, written into ChloeDB tables every minute" }, "synthetic data");
+  // On a phone the header's actions fold into one menu, so the page starts on the first screen.
+  const headMenu = h("button", { class: "btn sm no-hmenu", title: "The view, the simulator and the SQL", "aria-label": "Menu", "aria-haspopup": "menu" }, C.icon("menu"));
+  headMenu.onclick = () => {
+    const page = (current || [])[0] || "", sim = app.status?.sim;
+    C.menu(headMenu, [
+      page === "leadership" ? { label: "Engineer view", icon: "user", onclick: () => app.go() } : { label: "Leadership view", icon: "overview", onclick: () => app.go("leadership") },
+      sim?.simulate && sim.fault_active ? { label: `End the fault (${sim.fault_phase})`, icon: "stop", onclick: async () => { try { await ctx.api("/v1/sim/end", { body: {} }); C.toast("The fault was repaired; its alerts clear within a few minutes", "ok"); poll(); } catch (e) { C.toast(e.message, "bad"); } } } : null,
+      sim?.simulate ? { label: "Inject a fault…", icon: "bolt", onclick: () => injectMenu(app, headMenu) } : null,
+      { label: sqlN.textContent, icon: "sql", onclick: () => showSql(app) },
+    ].filter(Boolean));
+  };
   el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth,
-    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
+    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
   el.classList.add("no-root");
   assistant(app, el);
 
@@ -2609,9 +2630,39 @@ function mapPage(body, app, path) {
     Object.assign(view, { k, tx: px - wx(px) * k, ty: py - wy(py) * k });
     draw(); moved();
   }, { passive: false });
-  canvas.addEventListener("pointerdown", (e) => { const [px, py] = pos(e); drag = { px, py, tx: view.tx, ty: view.ty, moved: false }; canvas.setPointerCapture(e.pointerId); });
+  // Two fingers pinch: the place under their middle stays under it while the scale follows their distance.
+  const fingers = new Map();
+  let pinch = null;
+  const pair = () => { const [a, b] = [...fingers.values()]; return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 }; };
+  canvas.addEventListener("pointerdown", (e) => {
+    const [px, py] = pos(e);
+    fingers.set(e.pointerId, [px, py]);
+    canvas.setPointerCapture(e.pointerId);
+    if (fingers.size === 2) {
+      const q = pair();
+      cancelAnimationFrame(anim);
+      pinch = { d: q.d, k: view.k, wx: wx(q.mx), wy: wy(q.my) };
+      drag = null; tip.style.display = "none";
+      return;
+    }
+    if (fingers.size === 1) drag = { px, py, tx: view.tx, ty: view.ty, moved: false };
+  });
+  const lift = (e) => {
+    fingers.delete(e.pointerId);
+    if (pinch && fingers.size < 2) { pinch = null; drag = null; moved(); return true; }
+    return !!pinch;
+  };
+  canvas.addEventListener("pointercancel", (e) => { lift(e); drag = null; });
   canvas.addEventListener("pointermove", (e) => {
     const [px, py] = pos(e);
+    if (fingers.has(e.pointerId)) fingers.set(e.pointerId, [px, py]);
+    if (pinch) {
+      if (fingers.size < 2) return;
+      const q = pair(), k = Math.max(fitK * 0.6, Math.min(base ? 260 / base.site_r : 400, pinch.k * q.d / pinch.d));
+      Object.assign(view, { k, tx: q.mx - pinch.wx * k, ty: q.my - pinch.wy * k });
+      draw();
+      return;
+    }
     if (drag) {
       if (Math.hypot(px - drag.px, py - drag.py) > 3) drag.moved = true;
       if (drag.moved) { cancelAnimationFrame(anim); view.tx = drag.tx + px - drag.px; view.ty = drag.ty + py - drag.py; draw(); }
@@ -2627,6 +2678,7 @@ function mapPage(body, app, path) {
     tip.style.left = Math.min(W - 260, px + 14) + "px"; tip.style.top = Math.min(H - 50, py + 14) + "px";
   });
   canvas.addEventListener("pointerup", (e) => {
+    if (lift(e)) return;
     const d = drag; drag = null;
     if (!d) return;
     if (d.moved) { moved(); return; }
