@@ -55,6 +55,8 @@ test('numbers: a short figure for a chart and a month for a phone row', () => {
   assert.equal(short(980), '980');
   assert.deepEqual({ ...monthOf('January 2026') }, { mon: 'jan', year: '2026' });
   assert.deepEqual({ ...monthOf('2026-03') }, { mon: 'mar', year: '2026' });
+  assert.deepEqual({ ...monthOf('Jan') }, { mon: 'jan', year: '' });
+  assert.equal(monthOf('Janet'), null);
   assert.equal(monthOf('1-30 days'), null);
   assert.equal(monthOf('Bramble & Co'), null);
 });

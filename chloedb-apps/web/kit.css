@@ -736,3 +736,8 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
   .kpis.sumcards[data-n="3"] > .kpi .value, .kpis.sumcards.first[data-n="3"] > .kpi:first-child .value { font-size: 19px !important; letter-spacing: -.02em; }
   .kpis.sumcards[data-n="3"] > .kpi .label { font-size: 12px; }
 }
+/* on a phone a screen's title takes the line; its button starts the next */
+@media (max-width: 560px) {
+  .row:has(> :is(h1, h2)) > :is(h1, h2) { flex: 1 1 100%; }
+  .row:has(> :is(h1, h2)) > button.right, .row:has(> :is(h1, h2)) > button { margin-left: 0; }
+}

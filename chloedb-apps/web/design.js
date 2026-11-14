@@ -295,5 +295,6 @@ export function presetDesigns(seed = '') {
   let hsh = 0;
   for (const ch of String(seed)) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;
   const by = (nav) => PRESETS.filter((p) => p.nav === nav);
-  return ['segmented', 'tabs', 'sidebar'].map((nav, i) => { const list = by(nav); return checkDesign(list[(hsh + i) % list.length]); });
+  // the one in use at first is a light one (a dark page is a choice, not a default)
+  return ['segmented', 'tabs', 'sidebar'].map((nav, i) => { const list = by(nav).filter((p) => i > 0 || p.scheme !== 'dark'); return checkDesign(list[(hsh + i) % list.length]); });
 }

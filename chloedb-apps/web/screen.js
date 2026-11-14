@@ -99,6 +99,10 @@ window.__sa_numbers = (() => {
     if (m && +m[2] >= 1 && +m[2] <= 12) return { mon: MONTHS[+m[2] - 1], year: m[1] };
     m = /^([A-Za-z]{3})[a-z]*\.?,?\s+(\d{4})$/.exec(x);
     if (m && MONTHS.includes(m[1].toLowerCase())) return { mon: m[1].toLowerCase(), year: m[2] };
+    // a month named alone ("Jan", "March")
+    m = /^([A-Za-z]{3})([a-z]*)\.?$/.exec(x);
+    const full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    if (m && MONTHS.includes(m[1].toLowerCase()) && (!m[2] || full.includes(x.toLowerCase().replace('.', '')))) return { mon: m[1].toLowerCase(), year: '' };
     return null;
   }
   return { parseNum, kinds, tone, barColumn, totals, short, monthOf };
@@ -840,7 +844,7 @@ window.__sa_numbers = (() => {
           const day = needs ? null : dayOf(name);
           const month = needs || day ? null : NUM.monthOf(name);
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
-            : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, `’${month.year.slice(2)}`), h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
+            : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, month.year ? h('small', null, `’${month.year.slice(2)}`) : null, h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
             // initials only for a name of a person or a firm ("Bramble & Co"), never "1D" for "1-30 days"
             : tone || /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))+$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•')
