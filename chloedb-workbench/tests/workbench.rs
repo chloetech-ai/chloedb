@@ -31,16 +31,33 @@ done
 echo "FAKE CLAUDE sid=$SID model=$MODEL agent=$CHLOEDB_WORKBENCH_AGENT"
 echo "TASK: $TASK"
 echo "CWD: $(pwd)"
+# Its transcript, beside its settings: an assistant line with usage per
+# turn, and the error of each FAIL turn. Every hook payload names it.
+TR="$(dirname "$SETTINGS")/transcript.jsonl"
+N=0
 hook() {
   local cmd
   cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"][sys.argv[2]][0]["hooks"][0]["command"])' "$SETTINGS" "$1")
-  printf '%s' "$2" | eval "$cmd"
+  printf '%s' "$2" | sed "s|\"session_id\":|\"transcript_path\":\"$TR\",\"session_id\":|" | eval "$cmd"
 }
 hook SessionStart '{"hook_event_name":"SessionStart","source":"startup","session_id":"'"$SID"'"}'
 turn() {
+  N=$((N+1))
   hook UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"'"$1"'","session_id":"'"$SID"'"}'
+  printf '%s\n' '{"type":"assistant","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'","message":{"id":"msg_'"$N"'","role":"assistant","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}}}' >> "$TR"
   hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"session_id":"'"$SID"'"}'
   case "$1" in
+    READ\ *)
+      # READ <file>: the Read tool on it.
+      local read='{"hook_event_name":"%s","tool_name":"Read","tool_input":{"file_path":"'"$PWD/${1#READ }"'"},"session_id":"'"$SID"'"}'
+      hook PreToolUse "$(printf "$read" PreToolUse)"
+      hook PostToolUse "$(printf "$read" PostToolUse)";;
+    FAIL\ *)
+      # FAIL <text>: a test run that fails with <text>: no PostToolUse, and
+      # the error in the transcript.
+      local id="tu_fail_$N"
+      hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"'"$id"'","tool_input":{"command":"cargo test -p calc"},"session_id":"'"$SID"'"}'
+      printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"'"$id"'","is_error":true,"content":"'"${1#FAIL }"'"}]}}' >> "$TR";;
     WRITE\ *)
       # WRITE <file> <text>: a line written with the Edit tool.
       local rest="${1#WRITE }"; local file="${rest%% *}"; local text="${rest#* }"
@@ -127,6 +144,12 @@ impl Server {
 
     fn post(&self, path: &str, body: Value) -> (u16, Value) {
         let mut r = http().post(format!("{}{path}", self.url)).header("authorization", format!("Bearer {TOKEN}")).send_json(body).unwrap();
+        let status = r.status().as_u16();
+        (status, r.body_mut().read_json().unwrap_or(Value::Null))
+    }
+
+    fn put(&self, path: &str, body: Value) -> (u16, Value) {
+        let mut r = http().put(format!("{}{path}", self.url)).header("authorization", format!("Bearer {TOKEN}")).send_json(body).unwrap();
         let status = r.status().as_u16();
         (status, r.body_mut().read_json().unwrap_or(Value::Null))
     }
@@ -648,7 +671,7 @@ fn mcp_spawns_lists_and_waits_for_agents() {
     m.notify("notifications/initialized");
     let tools = m.send("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent"]);
+    assert_eq!(names, ["spawn_agent", "list_agents", "read_agent", "wait_agent", "send_to_agent", "stop_agent", "set_preview"]);
 
     let (text, err) = m.tool("spawn_agent", json!({ "task": "ASK the user", "name": "helper" }));
     assert!(!err, "{text}");
@@ -1021,4 +1044,347 @@ fn why_without_chloectx_answers_from_git_and_workbench() {
     assert!(matches!(s.get(&format!("/api/why?agent={id}&path=../../../../etc/hostname&line=1")).0, 400 | 404));
     assert_eq!(s.get("/api/why?path=calc.py&line=1").0, 400);
     assert_eq!(http().get(format!("{}/api/why?agent={id}&path=calc.py&line=1", s.url)).call().unwrap().status().as_u16(), 401);
+}
+
+// The levels: Map, Preview, Flow.
+
+fn now_s() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+fn find<'a>(list: &'a Value, key: &str, want: &str) -> &'a Value {
+    list.as_array().unwrap().iter().find(|x| x.pointer(key).and_then(Value::as_str) == Some(want)).unwrap_or_else(|| panic!("no {key} = {want} in {list}"))
+}
+
+#[test]
+fn the_map_shows_territory_collisions_and_pins() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    // Territory: a big file, two small ones, a deep folder.
+    std::fs::create_dir_all(r.join("src/deep/er/still")).unwrap();
+    std::fs::write(r.join("src/main.rs"), "fn main() {}\n".repeat(200)).unwrap();
+    std::fs::write(r.join("src/a.rs"), "a\n").unwrap();
+    std::fs::write(r.join("src/b.rs"), "b\n").unwrap();
+    std::fs::write(r.join("src/deep/er/still/x.rs"), "x\n".repeat(10)).unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "territory"]);
+    let now = now_s();
+    let sql = json!({
+        "text": "", "count": 5, "columns": ["id", "kind", "text", "ts", "files", "ctx", "session", "tag"],
+        "rows": [
+            ["s1:1", "decision", "Say hello first", now, "README", "Turn 1\nAnchor: head=abc branch=main files=README#h1 idents=hello", "other-session", ""],
+            ["s1:2", "fact", "calc.py holds the totals", now, ["calc.py:1"], "", "other-session", ""],
+            ["s1:3", "decision", "Say bye first", now, "README", "", "other-session", "superseded"],
+            ["s1:4", "preference", "A file that is gone", now, "gone.rs", "", "other-session", ""],
+            ["s1:5", "todo", "Not a pin", now, "README", "", "other-session", ""]
+        ]
+    });
+    std::fs::write(ctx.path().join("sql.json"), sql.to_string()).unwrap();
+
+    let one = s.spawn(json!({ "repo": r, "name": "one", "task": "WRITE calc.py x = 1" }));
+    let two = s.spawn(json!({ "repo": r, "name": "two", "task": "WRITE calc.py y = 2" }));
+    let (one, two) = (one["id"].as_str().unwrap().to_string(), two["id"].as_str().unwrap().to_string());
+    s.wait(&one, "idle");
+    s.wait(&two, "idle");
+    s.post(&format!("/api/agents/{one}/input"), json!({ "text": "WRITE notes.md hello" }));
+    s.wait(&one, "idle");
+    s.post(&format!("/api/agents/{two}/input"), json!({ "text": "READ notes.md" }));
+    s.wait(&two, "idle");
+
+    let (status, m) = s.get(&format!("/api/map?repo={}", r.display()));
+    assert_eq!(status, 200, "{m}");
+    // The tree: line counts, small files folded, deep folders shut.
+    let t = &m["tree"];
+    assert_eq!((t["name"].as_str(), t["lines"].as_u64(), t["files"].as_u64()), (Some("proj"), Some(213), Some(5)), "{t}");
+    let src = find(&t["children"], "/name", "src");
+    let names: Vec<&str> = src["children"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["deep", "main.rs", "…"], "{src}");
+    assert_eq!((src["children"][2]["kind"].as_str(), src["children"][2]["files"].as_u64(), src["children"][2]["lines"].as_u64()), (Some("more"), Some(2), Some(2)));
+    let er = &src["children"][0]["children"][0];
+    assert_eq!(er["path"], "src/deep/er");
+    assert_eq!((er["children"][0]["path"].as_str(), er["children"][0]["collapsed"].as_bool(), er["children"][0]["lines"].as_u64()), (Some("src/deep/er/still"), Some(true), Some(10)));
+
+    // Each agent's changes and reading.
+    let a1 = find(&m["agents"], "/agent/id", &one);
+    let paths: Vec<&str> = a1["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
+    assert_eq!(paths, ["calc.py", "notes.md"], "{a1}");
+    assert_eq!((a1["files"][0]["added"].as_i64(), a1["files"][0]["removed"].as_i64()), (Some(1), Some(0)));
+    let a2 = find(&m["agents"], "/agent/id", &two);
+    assert_eq!(a2["files"].as_array().unwrap().len(), 1);
+    assert_eq!(a2["reading"], json!(["notes.md"]));
+
+    // Collisions: both changed calc.py; two read what one changed.
+    let cs = m["collisions"].as_array().unwrap();
+    assert_eq!(cs.len(), 2, "{m}");
+    let both = find(&m["collisions"], "/kind", "both_changed");
+    assert_eq!((both["path"].as_str(), both["agents"].clone()), (Some("calc.py"), json!([one, two])));
+    assert_eq!(both["detail"], "one and two both changed calc.py");
+    let into = find(&m["collisions"], "/kind", "heading_into");
+    assert_eq!((into["path"].as_str(), into["changed_by"].as_str(), into["read_by"].as_str()), (Some("notes.md"), Some(one.as_str()), Some(two.as_str())));
+
+    // Pins: a decision on the README at the line its anchor names, a fact
+    // on a line of calc.py (which only the agents have); not the
+    // superseded one, the gone file or the todo.
+    let a = args_of(ctx.path(), "sql");
+    assert_eq!((a[0].as_str(), a[1].as_str(), a[2].as_str()), (r.to_str().unwrap(), "sql", "--json"));
+    assert!(a[3].contains("kind = 'decision'"), "{a:?}");
+    let pins = m["pins"].as_array().unwrap();
+    assert_eq!(pins.len(), 2, "{m}");
+    let readme = find(&m["pins"], "/path", "README");
+    assert_eq!((readme["line"].as_i64(), readme["record"]["id"].as_str(), readme["record"]["kind"].as_str()), (Some(1), Some("s1:1"), Some("decision")));
+    assert!(readme["record"]["ts"].as_str().unwrap().contains('T'));
+    assert_eq!(readme["agent"], Value::Null);
+    assert_eq!(find(&m["pins"], "/path", "calc.py")["line"], 1);
+    assert_eq!(m["missing"], json!([]));
+
+    assert_eq!(s.get("/api/map").0, 400);
+    assert_eq!(http().get(format!("{}/api/map?repo={}", s.url, r.display())).call().unwrap().status().as_u16(), 401);
+    // Without ChloeCtx: no pins, and it says why.
+    std::fs::remove_file(ctx.path().join("sql.json")).unwrap();
+    let (_, m) = s.get(&format!("/api/map?repo={}", r.display()));
+    assert_eq!(m["pins"], json!([]));
+    assert!(m["missing"][0].as_str().unwrap().contains("chloectx sql failed"), "{m}");
+}
+
+/// A tiny app on loopback: `/` is HTML, `/old` redirects, `/form` echoes a
+/// POST and sets a cookie. Keeps the head of each request it got.
+fn tiny_app() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::sync::{Arc, Mutex};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut c) = conn else { continue };
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                let mut body = vec![0; len];
+                r.read_exact(&mut body).unwrap();
+                seen.lock().unwrap().push(head.clone());
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let html = "<html><head><link rel=stylesheet href=\"/style.css\"></head><body><h1 class=\"title\">Hello preview</h1><a href=\"/about\">about</a></body></html>";
+                let (status, ctype, extra, body) = match path.as_str() {
+                    "/" | "/?x=1" => ("200 OK", "text/html; charset=utf-8", String::new(), html.to_string()),
+                    "/old" => ("302 Found", "text/plain", format!("Location: http://127.0.0.1:{port}/about\r\n"), String::new()),
+                    "/form" => ("200 OK", "text/plain", "Set-Cookie: sid=7; Path=/; Domain=127.0.0.1\r\n".to_string(), format!("got {}", String::from_utf8_lossy(&body))),
+                    _ => ("404 Not Found", "text/plain", String::new(), "no".to_string()),
+                };
+                let _ = write!(c, "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}", body.len());
+            });
+        }
+    });
+    (port, seen)
+}
+
+/// An HTTP client that does not follow redirects.
+fn http_raw() -> ureq::Agent {
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).http_status_as_error(false).max_redirects(0).proxy(None).build().into()
+}
+
+#[test]
+fn the_preview_proxies_an_agents_app_with_the_overlay() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let (port, seen) = tiny_app();
+    let web = s.spawn(json!({ "repo": r, "name": "web", "task": "WRITE page.html <h1 class=title>Hello preview</h1>" }));
+    let dev = s.spawn(json!({ "repo": r, "name": "dev", "task": "WRITE other.txt nothing here" }));
+    let (web, dev) = (web["id"].as_str().unwrap().to_string(), dev["id"].as_str().unwrap().to_string());
+    s.wait(&web, "idle");
+    s.wait(&dev, "idle");
+
+    // Only loopback http, with a port, and not Workbench's own.
+    let own = s.url.rsplit(':').next().unwrap();
+    for bad in ["http://example.com:80", "https://127.0.0.1:5173", "http://127.0.0.1", "http://10.0.0.1:80", "http://user@127.0.0.1:80", &format!("http://127.0.0.1:{own}")] {
+        let (status, v) = s.put(&format!("/api/agents/{dev}/preview"), json!({ "url": bad }));
+        assert_eq!(status, 400, "{bad}: {v}");
+    }
+    assert_eq!(s.put("/api/agents/a00000000/preview", json!({ "url": format!("http://127.0.0.1:{port}") })).0, 404);
+    let (status, v) = s.put(&format!("/api/agents/{dev}/preview"), json!({ "url": format!("http://127.0.0.1:{port}/") }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["agent"]["preview_url"], json!(format!("http://127.0.0.1:{port}")));
+    assert_eq!(s.agent(&dev)["preview_url"], json!(format!("http://127.0.0.1:{port}")));
+
+    // The token: none, a wrong one, then the right one once, as a cookie.
+    let base = format!("{}/preview/{dev}/", s.url);
+    assert_eq!(http_raw().get(&base).call().unwrap().status().as_u16(), 401);
+    assert_eq!(http_raw().get(format!("{base}?token=nope")).call().unwrap().status().as_u16(), 401);
+    assert_eq!(http_raw().get(&base).header("cookie", "wb_preview=nope").call().unwrap().status().as_u16(), 401);
+    let res = http_raw().get(format!("{base}?x=1&token={TOKEN}")).call().unwrap();
+    assert_eq!(res.status().as_u16(), 303);
+    assert_eq!(res.headers().get("location").unwrap(), &format!("/preview/{dev}/?x=1"));
+    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    assert!(cookie.starts_with(&format!("wb_preview={TOKEN};")) && cookie.contains("Path=/preview/") && cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"), "{cookie}");
+    let jar = format!("wb_preview={TOKEN}");
+    // The cookie opens no /api route.
+    assert_eq!(http_raw().get(format!("{}/api/agents", s.url)).header("cookie", &jar).call().unwrap().status().as_u16(), 401);
+
+    // HTML gets the overlay and its absolute links through the proxy.
+    let mut res = http_raw().get(format!("{base}?x=1")).header("cookie", &jar).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    assert_eq!(res.headers().get("x-frame-options").unwrap(), "SAMEORIGIN");
+    let body = res.body_mut().read_to_string().unwrap();
+    assert!(body.contains("<script src=\"/preview-overlay.js\"></script></body>"), "{body}");
+    assert!(body.contains(&format!("href=\"/preview/{dev}/style.css\"")) && body.contains(&format!("href=\"/preview/{dev}/about\"")), "{body}");
+    {
+        let heads = seen.lock().unwrap();
+        assert!(heads.iter().any(|h| h.starts_with("GET /?x=1 ")), "{heads:?}");
+        assert!(heads.iter().all(|h| !h.contains("wb_preview") && !h.contains("token=")), "the app saw Workbench's token: {heads:?}");
+    }
+    // A redirect stays in the preview; a POST is passed on, its cookie kept
+    // to the preview; a POST from another origin, or another host, is refused.
+    let res = http_raw().get(format!("{base}old")).header("cookie", &jar).call().unwrap();
+    assert_eq!(res.status().as_u16(), 302);
+    assert_eq!(res.headers().get("location").unwrap(), &format!("/preview/{dev}/about"));
+    let mut res = http_raw().post(format!("{base}form")).header("cookie", &jar).header("content-type", "application/x-www-form-urlencoded").header("origin", &s.url).send("a=1").unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    assert_eq!(res.headers().get("set-cookie").unwrap(), &format!("sid=7; Path=/preview/{dev}/"));
+    assert_eq!(res.body_mut().read_to_string().unwrap(), "got a=1");
+    assert!(seen.lock().unwrap().iter().any(|h| h.starts_with("POST /form ") && h.to_ascii_lowercase().contains(&format!("origin: http://127.0.0.1:{port}"))));
+    assert_eq!(http_raw().post(format!("{base}form")).header("cookie", &jar).header("origin", "http://evil.example").send("a=1").unwrap().status().as_u16(), 403);
+    assert_eq!(http_raw().get(&base).header("cookie", &jar).header("host", &format!("evil.example:{own}")).call().unwrap().status().as_u16(), 403);
+    // An agent with no preview, and the overlay's script.
+    assert_eq!(http_raw().get(format!("{}/preview/{web}/", s.url)).header("cookie", &jar).call().unwrap().status().as_u16(), 404);
+    let mut res = http_raw().get(format!("{}/preview-overlay.js", s.url)).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let js = res.body_mut().read_to_string().unwrap();
+    assert!(js.contains("wb-pick") && js.contains("wb-who"), "{js}");
+
+    // A pick goes to the agent whose diff holds its text and classes,
+    // with ChloeCtx's records about the files.
+    let sql = json!({ "text": "", "columns": ["id", "kind", "text", "ts", "files", "session"], "rows": [
+        ["s1:1", "decision", "Titles are h1", now_s(), "page.html", "x"],
+        ["s1:2", "fact", "Unrelated", now_s(), "lib.rs", "x"]
+    ]});
+    std::fs::write(ctx.path().join("sql.json"), sql.to_string()).unwrap();
+    let pick = json!({ "selector": "body > h1.title", "text": "Hello preview", "html": "<h1 class=\"title\">Hello preview</h1>", "rect": { "x": 0, "y": 0, "width": 100, "height": 20 } });
+    let (status, v) = s.post("/api/preview/route", json!({ "agent": dev, "pick": pick }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["owner"]["id"], json!(web), "{v}");
+    assert_eq!(v["files"], json!(["page.html"]));
+    assert_eq!(v["related"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["related"][0]["id"], "s1:1");
+    assert!(v["message"].as_str().unwrap().contains("body > h1.title"), "{v}");
+    // Nothing matches: the preview's own agent.
+    let (_, v) = s.post("/api/preview/route", json!({ "agent": dev, "pick": { "selector": "p.zzz", "text": "zzz qqq", "html": "<p class=\"zzz\">zzz qqq</p>" } }));
+    assert_eq!(v["owner"]["id"], json!(dev), "{v}");
+    assert_eq!(v["files"], json!([]));
+    assert_eq!(s.post("/api/preview/route", json!({ "agent": dev })).0, 400);
+
+    // An agent says where its app runs with set_preview.
+    let mut m = Mcp::start(&s, &web);
+    let (text, err) = m.tool("set_preview", json!({ "url": format!("http://localhost:{port}") }));
+    assert!(!err, "{text}");
+    assert_eq!(s.agent(&web)["preview_url"], json!(format!("http://localhost:{port}")));
+    let (text, err) = m.tool("set_preview", json!({ "url": "http://example.com:80" }));
+    assert!(err, "{text}");
+    let (_, err) = m.tool("set_preview", json!({ "url": "" }));
+    assert!(!err);
+    assert_eq!(s.agent(&web)["preview_url"], Value::Null);
+}
+
+#[test]
+fn flow_shows_where_time_went_and_applies_an_allow() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    let report = json!({ "project": "proj", "days": 1.0, "suggestions": [{ "kind": "slow_command", "text": "cargo test took 5m 10s over 5 runs", "seconds": 310 }] });
+    std::fs::write(ctx.path().join("report.json"), report.to_string()).unwrap();
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "busy", "worktree": false, "task": "ASK first" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    // Approved three times; failed three times with one error; one file
+    // read four times.
+    for i in 0..3 {
+        if i > 0 {
+            s.post(&format!("/api/agents/{id}/input"), json!({ "text": "ASK again" }));
+        }
+        s.wait(&id, "waiting");
+        s.post(&format!("/api/agents/{id}/input"), json!({ "text": "yes" }));
+        s.wait(&id, "idle");
+    }
+    for _ in 0..3 {
+        s.post(&format!("/api/agents/{id}/input"), json!({ "text": "FAIL error: sqlx offline data missing" }));
+        s.wait(&id, "idle");
+    }
+    for _ in 0..4 {
+        s.post(&format!("/api/agents/{id}/input"), json!({ "text": "READ src.txt" }));
+        s.wait(&id, "idle");
+    }
+
+    let (status, f) = s.get(&format!("/api/flow?repo={}&minutes=60", r.display()));
+    assert_eq!(status, 200, "{f}");
+    let w = &f["window"];
+    assert_eq!(w["to_ms"].as_i64().unwrap() - w["from_ms"].as_i64().unwrap(), 3_600_000);
+    let ag = &f["agents"][0];
+    assert_eq!(ag["agent"]["id"], json!(id));
+    let kinds: std::collections::BTreeSet<&str> = ag["segments"].as_array().unwrap().iter().map(|s| s[2].as_str().unwrap()).collect();
+    for k in ["model", "tools", "tests", "waiting", "redo", "idle"] {
+        assert!(kinds.contains(k), "no {k} segment: {ag}");
+        assert!(ag[format!("{k}_ms")].as_i64().unwrap() > 0, "{k}: {ag}");
+        assert_eq!(ag[format!("{k}_ms")], f["totals"][format!("{k}_ms")]);
+    }
+    let segs = ag["segments"].as_array().unwrap();
+    assert!(segs.windows(2).all(|p| p[0][1].as_i64() <= p[1][0].as_i64()), "{ag}");
+    // Ten turns of the fake's usage.
+    assert_eq!(f["tokens"], json!({ "input": 100, "output": 50, "cache_read": 1000 }));
+    assert_eq!(ag["tokens"], f["tokens"]);
+
+    // The coach.
+    let allow = find(&f["suggestions"], "/kind", "allow");
+    assert_eq!(allow["id"], "allow:Bash(echo hi:*)");
+    assert_eq!(allow["action"], json!({ "kind": "allow", "pattern": "Bash(echo hi:*)" }));
+    assert_eq!(allow["applied"], false);
+    assert!(allow["detail"].as_str().unwrap().contains("approved it 3 times"), "{allow}");
+    let fix = find(&f["suggestions"], "/kind", "fix");
+    assert_eq!(fix["action"]["error"], "error: sqlx offline data missing");
+    assert!(fix["title"].as_str().unwrap().contains("3 times"), "{fix}");
+    let capsule = find(&f["suggestions"], "/kind", "capsule");
+    assert_eq!(capsule["action"]["files"], json!(["src.txt"]));
+    let from_report = find(&f["suggestions"], "/from", "chloectx");
+    assert_eq!((from_report["id"].as_str(), from_report["title"].as_str(), from_report["saves_ms"].as_i64()), (Some("report:0"), Some("cargo test took 5m 10s over 5 runs"), Some(310_000)));
+    assert_eq!(f["report"], report);
+    assert_eq!(args_of(ctx.path(), "report"), [r.to_str().unwrap(), "report", "--json", "--days", "1"]);
+
+    // Apply: the pattern is kept, and agents started from then on have it.
+    let (status, v) = s.post("/api/flow/apply", json!({ "id": "allow:Bash(echo hi:*)", "repo": r }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["allowed"], json!(["Bash(echo hi:*)"]));
+    let (_, f2) = s.get(&format!("/api/flow?repo={}", r.display()));
+    assert_eq!(find(&f2["suggestions"], "/kind", "allow")["applied"], true);
+    let b = s.spawn(json!({ "repo": r, "name": "later", "worktree": false }));
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(b["id"].as_str().unwrap()).join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["permissions"]["allow"], json!(["Bash(echo hi:*)"]));
+    assert!(settings["hooks"]["Stop"].is_array());
+    let first: Value = serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(&id).join("settings.json")).unwrap()).unwrap();
+    assert!(first.get("permissions").is_none(), "{first}");
+
+    // A fix is remembered through ChloeCtx; the others say how and apply nothing.
+    let fix_id = fix["id"].as_str().unwrap();
+    assert_eq!(s.post("/api/flow/apply", json!({ "id": fix_id, "repo": r })).0, 400);
+    std::fs::write(ctx.path().join("remember.json"), "Stored fact as s1:9.").unwrap();
+    let (status, v) = s.post("/api/flow/apply", json!({ "id": fix_id, "repo": r, "text": "run cargo sqlx prepare" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(args_of(ctx.path(), "remember")[1..], ["remember", "fact", "When this error comes back: “error: sqlx offline data missing”, the fix is: run cargo sqlx prepare"]);
+    let (_, f3) = s.get(&format!("/api/flow?repo={}", r.display()));
+    assert_eq!(find(&f3["suggestions"], "/kind", "fix")["applied"], true);
+    assert_eq!(s.post("/api/flow/apply", json!({ "id": capsule["id"], "repo": r })).0, 400);
+    assert_eq!(s.get("/api/flow").0, 400);
 }

@@ -3,9 +3,12 @@
 //! events as rows of a ChloeDB database. See SPEC.md.
 
 mod db;
+mod flow;
 mod git;
 mod hook;
+mod map;
 mod mcp;
+mod preview;
 mod recording;
 mod server;
 mod trail;

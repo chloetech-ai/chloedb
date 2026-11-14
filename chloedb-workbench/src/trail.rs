@@ -79,13 +79,13 @@ pub fn run_chloectx(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> 
     }
 }
 
-fn not_installed(bin: &str) -> String {
+pub(crate) fn not_installed(bin: &str) -> String {
     format!("ChloeCtx is not installed (no program {bin}), so there are no memory records, notes or receipts to show")
 }
 
 /// `ts` of ChloeCtx (seconds since the epoch; milliseconds when it is that
 /// large; text as it is) as ISO 8601 text.
-fn ctx_time(v: &Json) -> Json {
+pub(crate) fn ctx_time(v: &Json) -> Json {
     match v {
         Json::Number(n) => {
             let t = n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0);
@@ -141,13 +141,13 @@ impl Sessions {
     }
 }
 
-fn agent_json(sup: &Supervisor, a: &Agent) -> Json {
+pub(crate) fn agent_json(sup: &Supervisor, a: &Agent) -> Json {
     sup.agent_json_of(&a.id).unwrap_or(Json::Null)
 }
 
 // Workbench's events of an edit.
 
-fn data_of(ev: &Event) -> Option<Json> {
+pub(crate) fn data_of(ev: &Event) -> Option<Json> {
     ev.data.as_deref().and_then(|d| serde_json::from_str(d).ok())
 }
 
@@ -505,7 +505,7 @@ fn guess_agent(sup: &Supervisor, s: &Sessions, asked: Option<&Agent>, dir: &Path
 }
 
 /// A request's repository: a git checkout's main one, or the folder.
-fn repo_dir(repo: Option<&str>) -> Result<PathBuf, ApiError> {
+pub(crate) fn repo_dir(repo: Option<&str>) -> Result<PathBuf, ApiError> {
     let r = repo.filter(|r| !r.is_empty()).ok_or_else(|| ApiError::bad("repo is required"))?;
     let p = PathBuf::from(r);
     if !p.is_absolute() || !p.is_dir() {
@@ -540,7 +540,7 @@ fn links_of(v: &Json) -> Vec<(String, String)> {
     }
 }
 
-fn files_of(v: &Json) -> Vec<String> {
+pub(crate) fn files_of(v: &Json) -> Vec<String> {
     match v {
         Json::String(s) => s.split_whitespace().map(str::to_string).collect(),
         Json::Array(a) => a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect(),

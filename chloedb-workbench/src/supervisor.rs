@@ -498,7 +498,8 @@ impl Supervisor {
         let settings = session_dir.join("settings.json");
         let mcp = session_dir.join("mcp.json");
         let exe = self.cfg.exe.to_string_lossy().to_string();
-        write_private(&settings, &settings_json(&exe))?;
+        // Bash prefixes allowed from Flow's suggestions, for this repository.
+        write_private(&settings, &crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy())))?;
         write_private(&mcp, &mcp_json(&exe, &self.cfg.url, &self.cfg.token, &id))?;
 
         // The process.
@@ -575,6 +576,7 @@ impl Supervisor {
             ended: None,
             base,
             started_ms: Some(started_ms),
+            preview_url: None,
         };
         let json = {
             let mut inner = self.inner.lock().unwrap();
@@ -817,6 +819,35 @@ impl Supervisor {
         let back = out.ring.make_contiguous().to_vec();
         let rx = out.tx.as_ref().map(|tx| tx.subscribe());
         Ok((back, rx))
+    }
+}
+
+// The levels' state: marks (small key/value rows) and an agent's preview.
+impl Supervisor {
+    /// A mark's value, or `None`.
+    pub fn mark(&self, key: &str) -> Option<String> {
+        self.db.mark(key).ok().flatten().map(|(v, _)| v)
+    }
+
+    pub fn set_mark(&self, key: &str, value: &str) -> Result<(), ApiError> {
+        self.db.set_mark(key, value).map_err(ApiError::internal)
+    }
+
+    /// The `permissions.allow` patterns applied for a repository (Flow's
+    /// "allow" suggestions), kept in the mark `allow:<repo>`.
+    pub fn allowed(&self, repo: &str) -> Vec<String> {
+        self.mark(&format!("allow:{repo}")).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Sets (or with `None` clears) where an agent's app runs, and sends
+    /// the agent's change.
+    pub fn set_preview_url(&self, id: &str, url: Option<String>) -> Result<Json, ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        let slot = inner.slots.get_mut(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
+        slot.agent.preview_url = url;
+        self.db.put_agent(&slot.agent).map_err(ApiError::internal)?;
+        self.emit_agent(&inner, id);
+        Ok(Self::agent_json(&inner, id).unwrap_or(Json::Null))
     }
 }
 

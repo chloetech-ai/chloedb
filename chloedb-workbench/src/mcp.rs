@@ -63,6 +63,11 @@ fn tools() -> Value {
             "name": "stop_agent",
             "description": "Stop an agent: its session ends (its worktree and branch are kept).",
             "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }
+        },
+        {
+            "name": "set_preview",
+            "description": "Say where the app you are working on runs (a dev server you started), so that the user sees it in Workbench's Preview and can point at what to change. Only http://127.0.0.1:<port> or http://localhost:<port>; an empty url clears it.",
+            "inputSchema": { "type": "object", "properties": { "url": { "type": "string", "description": "Such as http://127.0.0.1:5173" } }, "required": ["url"] }
         }
     ])
 }
@@ -79,6 +84,7 @@ impl Client {
         // Who calls: the input it types is recorded as this agent's.
         let me = self.env.agent.as_str();
         let res = match body {
+            Some(b) if method == "PUT" => agent.put(&url).header("authorization", &auth).send_json(b),
             Some(b) if !me.is_empty() => agent.post(&url).header("authorization", &auth).header("x-workbench-agent", me).send_json(b),
             Some(b) => agent.post(&url).header("authorization", &auth).send_json(b),
             None if method == "POST" => agent.post(&url).header("authorization", &auth).send_empty(),
@@ -241,6 +247,17 @@ fn tool(c: &Client, name: &str, args: &Value) -> Result<String, String> {
             let id = id_arg(args)?;
             c.call("POST", &format!("/api/agents/{id}/stop"), None, Duration::from_secs(15))?;
             Ok(format!("stopping {} (SIGHUP, then SIGKILL after 5 s)", s(args, "id")))
+        }
+        "set_preview" => {
+            if c.env.agent.is_empty() {
+                return Err("set_preview is for an agent of Workbench: CHLOEDB_WORKBENCH_AGENT is not set".into());
+            }
+            let url = s(args, "url").trim();
+            let v = c.call("PUT", &format!("/api/agents/{}/preview", enc(&c.env.agent)), Some(json!({ "url": url })), Duration::from_secs(15))?;
+            Ok(match v["agent"]["preview_url"].as_str() {
+                Some(u) => format!("The preview is {u}: the user sees it in Workbench's Preview, and can pick an element there to send you."),
+                None => "The preview is cleared.".into(),
+            })
         }
         other => Err(format!("no tool {other}")),
     }

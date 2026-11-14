@@ -98,6 +98,44 @@ installed, these routes answer for any line an agent wrote:
 `--chloectx-bin` (`CHLOEDB_WORKBENCH_CHLOECTX`, default `chloectx`) names the
 ChloeCtx program. The tests use a fake one that prints canned JSON.
 
+## Map, Preview and Flow
+
+Three of the levels in [SPEC.md](SPEC.md) ("Levels (third build)") have
+their backend here. Each reads Workbench's rows, git and, when it is
+installed, ChloeCtx:
+
+- `GET /api/map?repo=`: the repository as territory. You get the tracked
+  files sized by lines (folders to depth 3, small files folded into "…"),
+  each agent's changes since `base`, and the files it read in the last 10
+  minutes. It also lists collisions: `both_changed` when two agents
+  changed one file, `heading_into` when one agent changed a file another
+  just read. Pins are ChloeCtx's decisions, preferences and facts on the
+  files they name, at a line when the record's anchor points at one.
+- `PUT /api/agents/:id/preview {url}` (or the MCP tool `set_preview`, for
+  an agent that started a dev server) takes `http://127.0.0.1:<port>` or
+  `http://localhost:<port>` only. `/preview/<agent>/` then shows that app
+  through Workbench with an overlay: hover outlines an element, and a
+  click sends it to the Workbench page instead of the app.
+  `POST /api/preview/route` finds the agent whose diff made the picked
+  element. Open the preview once with `?token=`; a cookie scoped to
+  `/preview/` carries the token after that. Absolute links in HTML are
+  rewritten to stay in the preview. An app that builds URLs in scripts
+  should run under the base path `/preview/<agent>/` and set its preview
+  URL with that path. The previewed page runs in Workbench's origin, so
+  preview only apps you trust as you trust the agents' code.
+- `GET /api/flow?repo=&minutes=60`: where the last hour went, per agent,
+  as model, tools, tests, waiting on you, redo (a call that failed with an
+  error seen before) and idle. It adds the tokens from the sessions'
+  transcripts and suggestions from a coach. `POST /api/flow/apply {id,
+  repo}` applies one. An "allow" adds a Bash prefix you approved 3 or more
+  times to `permissions.allow` for agents started from then on, in that
+  repository only. A "fix" (with `text`) saves the fix for a repeated
+  error through `chloectx remember`. `chloectx report --json --days 1`
+  comes along as `report`.
+
+The state database also has a `marks` table (small key/value rows: the
+allow-lists, applied suggestions) and `agents.preview_url`.
+
 ## Tests
 
 ```bash
@@ -116,5 +154,7 @@ settings file it is given, so they call no model.
   with the same name picks up its worktree again. Nothing removes them.
 - Claude Code's first-run questions (theme, trusting the folder) appear in
   the terminal. Answer them there.
+- The preview proxies GET, HEAD and POST but not WebSockets, so a dev
+  server's hot reload does not reach the page through it.
 - Not in this build: the board, capsules on handoff,
   change requests for shell actions, a desktop shell (Tauri) and team mode.

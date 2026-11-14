@@ -34,11 +34,21 @@ const AGENTS: &str = "CREATE TABLE IF NOT EXISTS agents (
   created TIMESTAMP,
   ended TIMESTAMP,
   base KEYWORD,
-  started_ms INT
+  started_ms INT,
+  preview_url KEYWORD
 )";
 
 /// The columns the decision trail added, for a database made before them.
 const AGENTS_ADDED: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS base KEYWORD, ADD COLUMN IF NOT EXISTS started_ms INT";
+/// The columns the levels added (Preview), for a database made before them.
+const AGENTS_ADDED_LEVELS: &str = "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preview_url KEYWORD";
+
+/// Small key/value state: allow-lists, applied suggestions.
+const MARKS: &str = "CREATE TABLE IF NOT EXISTS marks (
+  \"key\" KEYWORD PRIMARY KEY,
+  value TEXT,
+  ts TIMESTAMP
+)";
 
 const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   id KEYWORD PRIMARY KEY,
@@ -51,7 +61,7 @@ const EVENTS: &str = "CREATE TABLE IF NOT EXISTS events (
   data TEXT
 )";
 
-const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended, base, started_ms";
+const AGENT_COLS: &str = "id, name, repo, cwd, branch, task, parent, depth, state, state_since, waiting_for, last_event, session_id, pid, exit_code, model, created, ended, base, started_ms, preview_url";
 const EVENT_COLS: &str = "id, seq, ts, agent, kind, tool, summary, data";
 
 /// Milliseconds since the Unix epoch.
@@ -90,6 +100,9 @@ pub struct Agent {
     /// When its process started (milliseconds since the Unix epoch): the
     /// zero of its terminal recording.
     pub started_ms: Option<i64>,
+    /// Where its app runs (Preview): `http://127.0.0.1:<port>` or
+    /// `http://localhost:<port>`.
+    pub preview_url: Option<String>,
 }
 
 impl Agent {
@@ -117,6 +130,7 @@ impl Agent {
             "ended": self.ended.map(iso),
             "base": self.base,
             "started_ms": self.started_ms,
+            "preview_url": self.preview_url,
             "running": running,
             "children": children,
         })
@@ -217,6 +231,8 @@ impl StateDb {
         let db = if path.exists() { Db::open(&path, opts) } else { Db::create_empty(&path, opts) }.map_err(|err| format!("cannot open {}: {err}", path.display()))?;
         db.sql(AGENTS, &Params::new()).map_err(e)?;
         db.sql(AGENTS_ADDED, &Params::new()).map_err(e)?;
+        db.sql(AGENTS_ADDED_LEVELS, &Params::new()).map_err(e)?;
+        db.sql(MARKS, &Params::new()).map_err(e)?;
         db.sql(EVENTS, &Params::new()).map_err(e)?;
         let db = Arc::new(db);
         db.spawn_flusher();
@@ -253,7 +269,8 @@ impl StateDb {
             .set("created", ts(a.created))
             .set("ended", a.ended.map_or(Value::Null, ts))
             .set("base", opt_str(&a.base))
-            .set("started_ms", opt_int(a.started_ms));
+            .set("started_ms", opt_int(a.started_ms))
+            .set("preview_url", opt_str(&a.preview_url));
         let names: Vec<String> = AGENT_COLS.split(", ").map(|c| format!(":{c}")).collect();
         let sql = format!("INSERT OR REPLACE INTO agents ({AGENT_COLS}) VALUES ({})", names.join(", "));
         self.db.sql(&sql, &p).map_err(e)?;
@@ -286,6 +303,7 @@ impl StateDb {
                 ended: get_ms(&r[17]),
                 base: r.get(18).and_then(get_str),
                 started_ms: r.get(19).and_then(get_int),
+                preview_url: r.get(20).and_then(get_str),
             })
             .collect())
     }
@@ -322,6 +340,19 @@ impl StateDb {
     pub fn last_seq(&self) -> Result<i64> {
         let rows = self.rows("SELECT seq FROM events ORDER BY seq DESC LIMIT 1", &Params::new())?;
         Ok(rows.first().and_then(|r| get_int(&r[0])).unwrap_or(0))
+    }
+
+    /// A mark's value and when it was set (milliseconds).
+    pub fn mark(&self, key: &str) -> Result<Option<(String, i64)>> {
+        let rows = self.rows("SELECT value, ts FROM marks WHERE \"key\" = :key LIMIT 1", &Params::new().set("key", Value::Str(key.to_string())))?;
+        Ok(rows.first().and_then(|r| Some((get_str(&r[0])?, get_ms(&r[1]).unwrap_or(0)))))
+    }
+
+    /// Sets a mark, replacing its value.
+    pub fn set_mark(&self, key: &str, value: &str) -> Result<()> {
+        let p = Params::new().set("key", Value::Str(key.to_string())).set("value", Value::Str(value.to_string())).set("ts", ts(now_ms()));
+        self.db.sql("INSERT OR REPLACE INTO marks (\"key\", value, ts) VALUES (:key, :value, :ts)", &p).map_err(e)?;
+        Ok(())
     }
 
     /// Writes what is in memory to the file.
@@ -362,9 +393,18 @@ mod tests {
         assert_eq!((a.id.as_str(), a.base.as_deref(), a.started_ms), ("a1", None, None));
         a.base = Some("abc".into());
         a.started_ms = Some(42);
+        a.preview_url = Some("http://127.0.0.1:5173".into());
         s.put_agent(&a).unwrap();
         let b = s.agents().unwrap().pop().unwrap();
         assert_eq!((b.base.as_deref(), b.started_ms), (Some("abc"), Some(42)));
+        assert_eq!(b.preview_url.as_deref(), Some("http://127.0.0.1:5173"));
+        // Marks.
+        assert_eq!(s.mark("allow:/r").unwrap(), None);
+        s.set_mark("allow:/r", "[\"Bash(ls:*)\"]").unwrap();
+        s.set_mark("allow:/r", "[\"Bash(cargo test:*)\"]").unwrap();
+        let (v, ts) = s.mark("allow:/r").unwrap().unwrap();
+        assert_eq!(v, "[\"Bash(cargo test:*)\"]");
+        assert!(ts > 0);
         s.close();
     }
 }

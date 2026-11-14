@@ -38,7 +38,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-type ApiResult = Result<Response, ApiError>;
+pub(crate) type ApiResult = Result<Response, ApiError>;
 
 fn ok() -> ApiResult {
     Ok(Json(json!({ "ok": true })).into_response())
@@ -56,7 +56,7 @@ fn host_name(host: &str) -> &str {
     }
 }
 
-fn same_bytes(a: &str, b: &str) -> bool {
+pub(crate) fn same_bytes(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -125,6 +125,10 @@ pub fn router(app: App) -> Router {
         .route("/api/wait", get(wait))
         .route("/api/hook", post(hook))
         .route("/api/stream", get(stream))
+        // The levels: Map, Preview, Flow.
+        .merge(crate::map::routes())
+        .merge(crate::preview::routes())
+        .merge(crate::flow::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -206,11 +210,11 @@ async fn list(State(app): State<App>, Query(q): Query<ListQ>) -> Json<Value> {
     Json(json!({ "agents": app.sup.list(truthy(&q.all)) }))
 }
 
-fn parse_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
+pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
     serde_json::from_slice(body).map_err(|e| ApiError::bad(format!("the body is not the JSON this route takes: {e}")))
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ApiError> + Send + 'static) -> Result<T, ApiError> {
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ApiError> + Send + 'static) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::internal(e.to_string()))?
 }
 

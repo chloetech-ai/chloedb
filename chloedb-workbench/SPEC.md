@@ -378,7 +378,7 @@ CREATE TABLE deliveries (  -- what each agent has been told (rules, steers)
   agent KEYWORD, item KEYWORD, ts TIMESTAMP
 );
 CREATE TABLE marks (       -- small key/value state: last_seen, preview urls, allow-lists
-  key KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP
+  "key" KEYWORD PRIMARY KEY, value TEXT, ts TIMESTAMP   -- quoted: KEY is reserved
 );
 ```
 
@@ -482,74 +482,226 @@ one recalled right after a failed tool call, is a **déjà vu**.
 
 ### Map
 
-`GET /api/map?repo=` →
+`GET /api/map?repo=` (`src/map.rs`) →
 
 ```
 {
-  "tree": {"name", "path", "lines", "children": [...]},   -- git ls-files of the main checkout, line counts, folders to depth 3, small files folded into "…"
-  "agents": [{"agent": Agent, "files": [{"path", "added", "removed"}], "reading": [path]}],
-  "collisions": [{"path", "agents": [id], "kind": "both_changed" | "heading_into", "detail"}],
-  "pins": [{"path", "line": n|null, "record": {"id", "kind", "text", "ts"}, "agent": Agent|null}]
+  "repo": "/abs/path/of/the/main/checkout",
+  "tree": Node,
+  "agents": [{"agent": Agent, "files": [{"path", "added", "removed", "status"}], "reading": [path]}],
+  "collisions": [
+    {"path", "agents": [id, id...], "kind": "both_changed", "detail"},
+    {"path", "agents": [changer, reader], "kind": "heading_into", "changed_by", "read_by", "detail"}
+  ],
+  "pins": [{"path", "line": n|null, "record": {"id", "kind", "text", "ts"}, "agent": Agent|null}],
+  "missing": ["what could not be found, in a sentence each"]
 }
+Node = {"name", "path", "kind": "dir", "lines", "files", "children": [Node], "collapsed"?: true}
+     | {"name", "path", "kind": "file", "lines"}
+     | {"name": "…", "path": "<dir>/…", "kind": "more", "lines", "files"}   -- small files folded
 ```
 
-An agent's files are its diff from `base` (as `/diff`) and its `reading`
-the files it read in the last 10 minutes. `both_changed`: two agents'
-diffs touch one file. `heading_into`: one agent changed a file another has
-read in the last 10 minutes. Pins are ChloeCtx decision, preference and
-fact records that name files; a pin opens the Why card (second build) for
-its line when it has one, or the record's own card otherwise.
+- **tree**: `git ls-files` of the main checkout with line counts (binary
+  files count 0; files over 4 MiB, and all files once 256 MiB were read,
+  are estimated at 40 bytes a line), reused for 30 s while HEAD and the
+  index stay the same. The root is depth 0; folders to depth 3 are opened,
+  deeper ones are `collapsed` with their size. In a folder, files under
+  5% of its lines (and under 50 lines), and files past its 16 biggest,
+  fold into one `more` entry, unless an agent changed or read them or a
+  pin names them. Folders come first, biggest first, then files.
+- **agents**: the repository's agents that run, or ended in the last 24
+  hours, oldest first. `files` is the diff from `base` (as `/diff`,
+  untracked files as added); agents that share a folder keep only the
+  files their own edit calls named. `reading` is the files their `Read`
+  calls named in the last 10 minutes, relative to the checkout.
+- **collisions**: `both_changed` for every file in two or more agents'
+  diffs; `heading_into` for every file one agent changed that another,
+  which did not change it, read in the last 10 minutes. `map::collisions(sup,
+  repo) -> Vec<Json>` answers the same list for Mission's `heads_up`.
+- **pins**: `chloectx sql --json "SELECT id, kind, text, ts, files, ctx,
+  session, tag FROM memory WHERE kind = 'decision' OR kind = 'preference'
+  OR kind = 'fact' ORDER BY ts DESC LIMIT 1000"` in the main checkout. A
+  pin per file a record names, when the file is tracked or in an agent's
+  diff; records tagged `superseded` are left out. ChloeCtx's records carry
+  no line, so `line` is the one a file entry names (`path:42`,
+  `path#L42`), else the first line of the file in the main checkout that
+  holds, as a word, one of the identifiers of the record's `Anchor:` line
+  (`idents=` in `ctx`), else null.
 
 ### Preview
 
-- `PUT /api/agents/:id/preview {url}` (and MCP tool `set_preview {url}`,
-  so an agent that starts a dev server can say where): only
-  `http://127.0.0.1:<port>` or `http://localhost:<port>`.
-- `GET /preview/:agent/<path>` proxies to that URL (GET, HEAD and POST;
-  no WebSocket in this build), and into an HTML answer it injects
-  `<script src="/preview-overlay.js"></script>` before `</body>`. The
-  token comes in `?token=` on the first load and is kept in a cookie
-  scoped to `/preview/`.
-- `ui/preview-overlay.js` (compiled in): outlines what the pointer is on;
-  a click sends the parent `postMessage({type: "wb-pick", selector, text,
-  html (at most 2 KB), rect})` and stops the page's own handler; it also
-  answers `wb-who` with the text of each element, so the parent can label
-  what an agent changed.
-- `POST /api/preview/route {agent, pick}` → `{owner: Agent, files: [path],
-  related: [Record]}`: the agent whose diff contains the picked element's
-  text or class names (else the preview's own agent), and ChloeCtx records
-  about those files. Sending the request is `/steer` to the owner with the
-  pick's selector, text and HTML in the message.
+- `PUT /api/agents/:id/preview {url}` → `{agent: Agent}` (`src/preview.rs`):
+  `url` is `http://127.0.0.1:<port>` or `http://localhost:<port>`,
+  optionally with a path, never Workbench's own port; it is kept without
+  a trailing `/` in `agents.preview_url`, and an empty or null `url`
+  clears it. 400 for anything else. The agent's row goes out on the stream.
+- MCP tool `set_preview {url}` (`src/mcp.rs`): the same for the calling
+  agent.
+- `GET|HEAD|POST /preview/:agent/<path>?<query>` proxies to
+  `<preview_url>/<path>?<query>` (`/preview/:agent` redirects to
+  `/preview/:agent/`). Auth: `?token=` on a GET answers `303` to the same
+  address without it and sets `wb_preview=<token>; Path=/preview/;
+  HttpOnly; SameSite=Strict`; after that the cookie (or a Bearer header)
+  is the token. A wrong or missing token is 401, an agent with no preview
+  404, an app that does not answer 502 (small HTML pages, for the frame).
+  The guard checks the host, and the origin of a POST, as on every route;
+  `/api` routes never take the cookie.
+- What goes to the app: `Accept`, `Accept-Language`, `Content-Type`,
+  `User-Agent`, conditional and range headers, `Authorization` unless it
+  is a Bearer token, its own cookies (never `wb_preview`), `Origin` and
+  `Referer` rewritten to the app's, and `Accept-Encoding: identity`.
+  Redirects are not followed.
+- What comes back: hop-by-hop headers and `Content-Length` dropped,
+  `X-Frame-Options: SAMEORIGIN`, `Location` to the app (absolute or
+  `/path`) rewritten to `/preview/:agent/…`, `Set-Cookie` without
+  `Domain` and with its `Path` under `/preview/:agent/`. An HTML answer
+  (`text/html`, not encoded) gets `<script src="/preview-overlay.js">
+  </script>` before its last `</body>` (else `</html>`, else at the end),
+  and its absolute-path links (`src`, `href`, `action`, `formaction`,
+  `poster` values that start with one `/`) are rewritten to
+  `/preview/:agent/…`. URLs that scripts build (`fetch("/x")`, a bundler's
+  module imports) are not: such an app runs its dev server under a base
+  path and sets the preview URL with it (`vite --base
+  /preview/<agent>/` and `http://127.0.0.1:5173/preview/<agent>`), and
+  then links that are already under `/preview/:agent/` are left as they
+  are.
+- `ui/preview-overlay.js` (compiled in, `/preview-overlay.js`, from disk
+  under `CHLOEDB_WORKBENCH_UI_DIR`): in a frame, it outlines the element
+  under the pointer, and a click (with its pointer and mouse events)
+  never reaches the page but posts to the parent, at Workbench's origin:
+  `{type: "wb-pick", selector, text (≤ 1000 chars), html (outerHTML,
+  ≤ 2048 bytes), rect: {x, y, width, height}, url}`. It takes messages
+  from its parent only: `{type: "wb-pick-mode", on}` turns picking off
+  and on (on by default in a frame, off on its own); `{type: "wb-who",
+  id, texts?: [string], selector?, max?: 300}` is answered with `{type:
+  "wb-who", id, items: [{selector, text, rect}]}`, the visible elements
+  with text of their own (under `selector`; with `texts`, those whose text
+  holds one of them or is held by one, so the parent can pass an agent's
+  added lines). On load it posts `{type: "wb-ready", url}`.
+- `POST /api/preview/route {agent, pick}` →
+
+  ```
+  {"owner": Agent, "files": [path], "related": [{"id", "kind", "text", "ts", "files"}],
+   "matched": [{"path", "line", "text"}], "score": n, "message": "...", "missing": [...]}
+  ```
+
+  `agent` is the preview's agent. The pick's needles are its text's
+  lines of 3 characters or more and the class names and id of its HTML's
+  first tag and of its selector. Each agent of the repository on the map
+  scores 3 for each text needle and 1 for each class or id (as a whole
+  word) on each added line of its diff; the best score is the owner
+  (ties to the preview's own agent), else the preview's own agent with
+  no files. `files` are the owner's matching files, best first; `related`
+  ChloeCtx's decision, preference and fact records that name them (at
+  most 20); `message` is the text to `/steer` the owner with (the
+  selector, the text and the HTML).
+- Security: the previewed page is served from Workbench's own origin
+  (the overlay needs its parent, and the cookie its path), so its scripts
+  could reach the Workbench page around it. Preview only an app you trust
+  as you trust the agents' code; Workbench refuses any target but
+  loopback, so it cannot be turned into a proxy to elsewhere.
 
 ### Flow
 
-`GET /api/flow?repo=&minutes=60` →
+`GET /api/flow?repo=&minutes=60` (`src/flow.rs`; `minutes` 1 to 10080) →
 
 ```
 {
-  "window": {"from_ms", "to_ms"},
+  "repo": "/abs/path",
+  "window": {"from_ms", "to_ms", "minutes"},
   "totals": {"model_ms", "tools_ms", "tests_ms", "waiting_ms", "redo_ms", "idle_ms"},
   "agents": [{"agent": Agent, "model_ms", "tools_ms", "tests_ms", "waiting_ms", "redo_ms", "idle_ms",
-              "segments": [[start_ms, end_ms, "model"|"tools"|"tests"|"waiting"|"redo"|"idle"]]}],
+              "segments": [[start_ms, end_ms, "model"|"tools"|"tests"|"waiting"|"redo"|"idle"]],
+              "tokens": {"input", "output", "cache_read"}}],
   "tokens": {"input", "output", "cache_read"},
-  "suggestions": [{"id", "title", "detail", "saves", "action": {"kind", ...} | null}],
-  "report": {...}        -- `chloectx report --json --days 1` in the repo, as it prints it, or null
+  "suggestions": [{"id", "kind", "title", "detail", "saves": "saves ~4 min/h" | null, "saves_ms": n | null,
+                   "action": {"kind", ...} | null, "applied": bool, "from"?: "chloectx"}],
+  "report": {...} | null,
+  "missing": [...]
 }
 ```
 
-From Workbench's events: tools = PreToolUse to PostToolUse (tests when the
-command runs a test runner: `cargo test`, `pytest`, `npm test`, `go test`,
-…), waiting = Notification or an open question to the next event, model =
-the rest of a turn, idle = Stop to the next prompt, redo = a tool call that
-failed with the same error text as an earlier failure in the window.
-Suggestions (each one a function over those rows, with an id): a Bash
-prefix approved 3+ times → `{kind: "allow", pattern}` (Apply adds it to
-`permissions.allow` in the settings of agents started from then on, kept
-in `marks`); the same error 3+ times → `{kind: "fix", error}` (Apply asks
-for the fix text and runs `chloectx remember`); a file read 4+ times by
-one agent → `{kind: "capsule"}` (says how; no action); a collision twice →
-`{kind: "sequence"}`; and the report's own suggestions passed through.
-`POST /api/flow/apply {id}` applies one.
+- **Segments**, from each agent's events (the agents of the repository
+  that ran during the window). Every event ends the stretch before it and
+  starts the one it implies: `spawned`/`SessionStart` idle (or model in a
+  turn), `UserPromptSubmit` model, `PreToolUse` tools (tests when an open
+  Bash call runs a test runner: `cargo test|nextest`, `pytest`, `python
+  -m pytest`, `npm|yarn|pnpm|bun test`, `npm run test*`, `go test`,
+  `jest`, `vitest`, `mvn test|verify`, `gradle test`, `make test|check`,
+  `rspec`, `phpunit`, `ctest`, `tox`, `mix test`, `dotnet test`, `swift
+  test`, …, after `cd …&&` and `VAR=x`), `PostToolUse` back to tools while
+  other calls are open, else model; `Notification` waiting (not an idle
+  notice of a finished turn) until the next `input`, tool event or prompt;
+  `Stop` idle; `exited`/`SessionEnd` nothing. Calls overlap: a PostToolUse
+  ends the call of its `tool_use_id`, else the newest open one with its
+  tool and input. Neighbours of one kind are joined, and segments are
+  clipped to the window.
+- **Failures**: a call whose PostToolUse (or `PostToolUseFailure`) says
+  it failed (`tool_response.is_error` or `.error`), whose transcript
+  `tool_result` of its `tool_use_id` has `is_error: true`, or that is
+  still open when the turn ends (unless the user was asked about it: then
+  it was refused). Its error is the hook's or the transcript's text, else
+  "`<tool>` failed: `<command>`"; the key is its line that says error
+  (else its first), numbers masked. **Redo**: the tool and test time of a
+  failure whose key an earlier failure in the window had, of any agent.
+- **Waiting** is Notification time only for now; open questions join it
+  once Decide is merged.
+- **tokens**: each `transcript_path` the agent's hook payloads named
+  (`.jsonl` files, their last 64 MiB), the `usage` of assistant messages
+  timed in the window, once per message id: `input_tokens`,
+  `output_tokens`, `cache_read_input_tokens`.
+- **Suggestions**, in this order:
+  - `allow`, id `allow:Bash(<prefix>:*)`: a Bash call approved at a
+    permission prompt (a Notification about permission while it was open,
+    then its PostToolUse) 3 or more times with one prefix (the first two
+    words, three after `npm run`, `python -m` and the like; never `rm`,
+    `sudo`, `curl`, `git push`, shells and the like). `action: {kind:
+    "allow", pattern}`; `saves` is the waiting it caused, per hour.
+  - `fix`, id `fix:<hash8 of the key>`: one error 3 or more times.
+    `action: {kind: "fix", error}`; `saves` is its redo time.
+  - `capsule`, id `capsule:<agent>`: files one agent read 4 or more times.
+    `action: {kind: "capsule", agent, files}` (it says how; nothing to
+    apply).
+  - `sequence`, id `sequence:<path>`: agents' edit calls on one file
+    switched between agents twice or more. `action: {kind: "sequence",
+    path, agents}` (nothing to apply).
+  - the report's own, id `report:<i>`, `kind` as the report's, `title` its
+    text, `saves_ms` its seconds, `action: null`, `from: "chloectx"`.
+- `report` is `chloectx report --json --days 1` run in the main checkout,
+  as it prints it, or null (and `missing` says why).
+- `POST /api/flow/apply {id, repo, minutes?, text?}`:
+  - `allow:…` adds the pattern to the mark `allow:<repo>` (a JSON list),
+    and the supervisor writes the repository's list into
+    `permissions.allow` of the settings file of every agent it starts from
+    then on. → `{ok, id, applied: {kind, pattern}, allowed: [pattern],
+    note}`.
+  - `fix:…` needs `text`, the fix; it finds the suggestion in the window
+    (`minutes`, default 60) and runs `chloectx remember fact "When this
+    error comes back: “<error>”, the fix is: <text>"` in the repository.
+    → `{ok, id, applied: {kind, error, text}, chloectx: "<its output>"}`;
+    409 when ChloeCtx fails.
+  - Anything else is 400 (it says how; nothing to apply).
+  - Applied suggestions are kept in marks (`flow:<repo>:<id>`) and come
+    back with `applied: true`.
+
+#### Deviations (Map, Preview, Flow)
+
+- `marks`' column `key` is a reserved word of ChloeDB's SQL, so it is
+  quoted: `"key" KEYWORD PRIMARY KEY` (and `"key"` in every statement).
+  `StateDb::mark`/`set_mark` and `Supervisor::mark`/`set_mark` wrap it.
+- Map adds `repo`, `missing`, and `kind`/`files`/`collapsed` on tree
+  nodes; `heading_into` adds `changed_by` and `read_by`; agent files add
+  `status`.
+- A preview URL may carry a path (a dev server under a base path).
+- `POST /api/preview/route` adds `matched`, `score`, `message` and
+  `missing`; `related` records are `{id, kind, text, ts, files}`.
+- The overlay also takes `wb-pick-mode`, posts `wb-ready`, and `wb-who`
+  takes `texts`, `selector` and `max`.
+- Flow adds `repo`, `window.minutes`, per-agent `tokens`, `missing`, and
+  on each suggestion `kind`, `saves_ms`, `applied` (and `from` for the
+  report's); `apply` takes `repo` (and `text` for a fix).
+- A failure's error comes from the transcript when the hooks do not say
+  (Claude Code runs PostToolUse after successful calls only).
 
 ### Away
 
