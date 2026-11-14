@@ -81,8 +81,19 @@ fn like(text: &[char], pattern: &[char]) -> bool {
 /// `value [NOT] [I]LIKE pattern`, UNKNOWN (false) for NULL.
 fn holds(value: &Value, pattern: &str, ci: bool, negated: bool) -> bool {
     let Some(v) = value.as_str() else { return false };
-    let (t, p): (Vec<char>, Vec<char>) = if ci { (v.to_lowercase().chars().collect(), pattern.to_lowercase().chars().collect()) } else { (v.chars().collect(), pattern.chars().collect()) };
+    let (t, p): (Vec<char>, Vec<char>) = if ci { (fold(v).chars().collect(), fold(pattern).chars().collect()) } else { (v.chars().collect(), pattern.chars().collect()) };
     like(&t, &p) != negated
+}
+
+/// `s` as ILIKE compares it, as PostgreSQL does: each character lowercased
+/// alone to one character, and a final sigma as the other sigma.
+fn fold(s: &str) -> String {
+    s.chars()
+        .map(|c| match c.to_lowercase().next().unwrap() {
+            'ς' => 'σ',
+            c => c,
+        })
+        .collect()
 }
 
 fn ids(db: &Db, sql: &str) -> Vec<String> {
