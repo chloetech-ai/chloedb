@@ -93,8 +93,11 @@ export function briefOf(app) {
 const ADDED_COLUMNS = {
   // The UX brief, as JSON: who, job, often, device, first, glance.
   sa_apps: ['ux TEXT'],
-  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT'],
-  sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
+  // device: phone, tablet or computer, as the page or its browser says.
+  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'device KEYWORD'],
+  // The recommender's (recommend.mjs): the source it came from (basis), its
+  // score, and the change it implies (implies, JSON: kind, what, and a hint for the build).
+  sa_suggestions: ['signal KEYWORD', 'measure TEXT', 'basis KEYWORD', 'confidence FLOAT', 'implies TEXT'],
   // What a piece is and does, embedded, so that pieces are found by meaning
   // as well as by their words (searchCapabilities). A store whose Strata
   // cannot load the model searches by words alone.
@@ -831,7 +834,7 @@ export class Store {
   // label: the name of the row written ("Monstera"), kept with the event so
   // that a removed row is still told by its name. taps: on a write or a run,
   // the taps in the app since the one before it (engine/measures.mjs).
-  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null } = {}) {
+  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, device = null } = {}) {
     const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
     const word = (x, n) => { const t = String(x ?? '').trim(); return t ? t.slice(0, n) : null; };
     const num = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Math.max(0, Math.round(Number(x))));
@@ -839,7 +842,7 @@ export class Store {
       person: word(person, 40), v: Number(v) || null, session: word(session, 40), screen: word(screen, 80), tbl: word(tbl, 80), rid: word(rid, 80),
       // The fields changed, sorted: the same change on row after row is the same value.
       fields: word(Array.isArray(fields) ? [...fields].sort().join(',') : fields, 200),
-      q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps),
+      q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps), device: ['phone', 'tablet', 'computer'].includes(device) ? device : null,
     };
     for (const [k, x] of Object.entries(more)) if (x !== null) doc[k] = x;
     await this.db.write([{ op: 'insert', table: 'sa_events', doc }]);
@@ -852,7 +855,7 @@ export class Store {
   }
 
   async recentEvents(app, limit = 200) {
-    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, taps, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, taps, device, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
   }
 
   async putSuggestions(app, items) {
@@ -864,12 +867,15 @@ export class Store {
   }
 
   async suggestions(app) {
-    return this.db.query(`SELECT id, text, why, source, cap, status, signal, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+    const rows = await this.db.query(`SELECT id, text, why, source, cap, status, signal, basis, confidence, implies, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+    // Newest first; made together (one write, one time), the recommender's best first.
+    const by = (a, b) => String(b.created).localeCompare(String(a.created)) || (Number(b.confidence) || 0) - (Number(a.confidence) || 0);
+    return rows.sort(by).map(({ implies, ...r }) => ({ ...r, confidence: r.confidence === null || r.confidence === undefined ? null : Number(r.confidence), change: implies ? parseSpec(implies) : null }));
   }
 
   // Every suggestion made to an app, with what became of it.
   async suggestionHistory(app, limit = 40) {
-    return this.db.query(`SELECT text, source, status, signal, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT id, text, source, status, signal, basis, implies AS change, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
   }
 
   // ---- candidates: versions the engine built from use, beside the live one

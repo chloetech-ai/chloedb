@@ -34,6 +34,8 @@ import { Scheduler } from './schedule.mjs';
 import { ensureDesigns, tuneDesign, tokenChoices } from './designs.mjs';
 import { currencyOf } from './data.mjs';
 import { Evolver, MODES } from './evolve.mjs';
+import { Recommender, withHint } from './recommend.mjs';
+import { ask as askModel } from './llm.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
 import { Builders, builderRefusal, keyOf as builderKeyOf, COOKIE as BUILDER_COOKIE } from './builders.mjs';
@@ -378,6 +380,7 @@ async function runRequest(req, extra = {}) {
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
+    if (!extra.candidate) recommender.soon(req.app, { delay: 20000, reason: 'build', force: true });
     engine.changes?.soon();
   } catch (e) {
     progress(`Failed: ${e.message}`);
@@ -451,11 +454,16 @@ engine.on('drawn', (d) => {
 // strongest as a version to try. It looks after every 25 actions, at most
 // every 3 minutes, and calls the model only when a new pattern shows.
 const evolver = new Evolver({ engine, submit, broadcast, log, propose: suggestFromUse });
+// The next edit, recommended from use and, before there is any, from what
+// the app is (recommend.mjs): in the background, never during a build.
+const recommender = new Recommender({ engine, ask: askModel, signalsOf: (a, v, e) => evolver.signalsOf(a, v, e), busy: (a) => running.has(a), log,
+  emit: (k, p) => { if (!engine.feed) broadcast(k, p); } });
 const activity = new Map();
 async function noteActivity(appId) {
   const a = activity.get(appId) || { n: 0, last: 0, busy: false };
   a.n++;
   activity.set(appId, a);
+  recommender.soon(appId, { reason: 'use' });
   if (a.n < 25 || a.busy || Date.now() - a.last < 180000 || running.has(appId)) return;
   a.n = 0;
   a.busy = true;
@@ -576,6 +584,7 @@ async function appState(appId) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const evolve = await evolver.state(appId, view).catch((e) => ({ mode: 'off', signals: [], candidates: [], error: e.message }));
+  recommender.soon(appId, { reason: 'open' });
   // A candidate's own version is listed only when it went live as built.
   const unkept = new Set(evolve.candidates.filter((c) => c.n && c.kept !== c.n).map((c) => c.n));
   const tables = [];
@@ -781,7 +790,8 @@ const routes = [
     // A newer shared component is taken without the model: its code is in Strata.
     if (taken?.source === 'component' && taken.cap) return { request: (await submit(id, text, 'component', { cap: taken.cap })).id };
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
-    const r = await submit(id, text, source, provider ? { provider } : {});
+    // A recommended edit says what it implies: it goes with the request.
+    const r = await submit(id, taken ? withHint(text, taken) : text, source, provider ? { provider } : {});
     return { request: r.id };
   }],
   // Reads and writes: for the app's people (the public path) under the
@@ -918,7 +928,9 @@ const routes = [
     const where = cx.where(b.session);
     const screen = kind === 'open' || kind === 'leave' ? String(b.detail || '') : where.screen || b.screen;
     const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms });
+    // The device: as the page says, else as its browser does.
+    const device = ['phone', 'tablet', 'computer'].includes(b.device) ? b.device : /iPad|Tablet/i.test(cx.req.headers['user-agent'] || '') ? 'tablet' : /Mobi|Android|iPhone/i.test(cx.req.headers['user-agent'] || '') ? 'phone' : cx.req.headers['user-agent'] ? 'computer' : null;
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, device });
     noteActivity(id);
     return { ok: true };
   }],
@@ -938,10 +950,13 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggest$/, async (b, [id]) => {
     const out = await evolver.tick(id, { force: true });
     if (out.busy) throw Object.assign(new Error('the engine is already reading this app\'s use'), { status: 409 });
+    const rec = await recommender.refresh(id, { reason: 'asked' }).catch((e) => { log(`[${id}] recommend: ${e.message}`); return { added: [] }; });
     if (!engine.feed) broadcast('suggestions', { app: id });
-    return { suggestions: out.suggestions, building: out.building };
+    return { suggestions: [...(out.suggestions || []), ...rec.added], building: out.building };
   }],
   // Evolving from use: the mode (off, suggest, build), and the candidates.
+  // Every candidate the recommender finds now, scored, with its source and evidence (nothing stored).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/recommend$/, async (b, [id]) => recommender.preview(id)],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => evolver.state(id, await engine.store.resolve(id))],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => ({ mode: await evolver.setMode(id, String(b.mode || '')), modes: MODES })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/candidates\/([a-z0-9]+)$/, async (b, [id, cid]) => {

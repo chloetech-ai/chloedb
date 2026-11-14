@@ -430,6 +430,8 @@ export class Engine extends EventEmitter {
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
       if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call', { visitor: !!(ctx.visitor || ctx.pub) });
+      // A refusal is recorded as use: refused again and again, the app may say it sooner (recommend.mjs).
+      else if (!ctx.depth && !ctx.test) this.store.track(appId, 'refused', fn.id, `${slug}: ${e.message}`, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen }).catch(() => {});
       throw e;
     }
   }
