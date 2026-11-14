@@ -18,7 +18,8 @@ it is needed:
 | made when a run overflows and no droplet is up, and the run waits up to 4 minutes for it | `ci_runner.py want`, ci.yml's job `runner` |
 | destroyed once no CI run has been queued or running for 15 minutes; after 12 hours whatever happens (14 if a job still runs); after 11 minutes if no runner came up | `ci_runner.py reap`, `ci-runner.yml` (after every CI run, and every 15 minutes) |
 | starts from the snapshot `ci-runner-base-<time>`: Ubuntu 24.04, Rust (ci.yml's `RUST_TOOLCHAIN`), the Actions runner | `provision.sh`, `ci_runner.py image`, `ci-runner.yml`'s job `image` (by hand, monthly, and when this folder changes on main) |
-| keeps cargo's registry, the runners' work folders and the build folders on the volume `ci-runner-cache` (100 GB), attached to each new droplet | `boot.sh`, `target-dir.sh` |
+| keeps cargo's registry, the runners' work folders and the build folders on the volume `ci-runner-cache` (250 GB: each runner keeps its own build folders, about 90 GB; a job starts by removing its runner's when under 60 GB are free), attached to each new droplet | `boot.sh`, `target-dir.sh` |
+| shares a compile cache (sccache, 40 GB) between its runners and jobs on the volume, so a build folder that starts over recompiles from the cache | `provision.sh`, `target-dir.sh` |
 | refuses a job of a pull request from a fork, or of another repository, before its first step | `job-started.sh`, the runner's job-started hook |
 
 The droplet is destroyed rather than powered off because DigitalOcean bills a
@@ -59,7 +60,7 @@ too) and `CI_RUNNER_COUNT` (runners on the droplet, default 2).
 
 ## Cost
 
-$0.50 for each hour the droplet exists, billed by the second, plus $10 a
+$0.50 for each hour the droplet exists, billed by the second, plus $25 a
 month for the volume and about $0.10 for the snapshot. It is up while CI
 runs that build the engine and for 15 minutes after the last one: on a
 quiet day nothing, on a day like 12 November (about 100 runs in 10 hours)

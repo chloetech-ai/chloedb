@@ -26,6 +26,12 @@ id runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner
 # Rust for the runner user; dtolnay/rust-toolchain in each job installs the
 # toolchain the job names, which is this one, so it is already there.
 sudo -u runner bash -c "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain $TOOLCHAIN -c clippy"
+# sccache, a compile cache shared by both runners on the volume
+# (target-dir.sh turns it on): a crate compiled once with the same inputs
+# is not compiled again, in any job or build folder.
+curl -sSfL https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz \
+  | tar -xz -C /usr/local/bin --strip-components=1 sccache-v0.10.0-x86_64-unknown-linux-musl/sccache
+chmod 0755 /usr/local/bin/sccache
 # The Actions runner, unconfigured: boot.sh registers it.
 ver=$(curl -sSf https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
 mkdir -p /opt/actions-runner

@@ -55,6 +55,10 @@ order. Auth changes: a connector's push key reads nothing, and
 - A statement that calls a stored function is held, written out, to the
   depth (1,000 levels) and size (250,000 expressions) a statement's text
   may have, and is refused past them with a 400 `query_invalid`.
+- App engine: screen expressions run only in QuickJS, `claude -p` and
+  `codex exec` get a reduced environment, Codex is off unless
+  `STRATA_APPS_CODEX_ON=1`, and its MCP server signs in with the engine's
+  agent token.
 
 ### SQL and the engine
 
@@ -64,7 +68,7 @@ order. Auth changes: a connector's push key reads nothing, and
 - Planning a statement stops at the request's deadline and when the client goes away, with a 504 `deadline_exceeded`. A statement longer than 2 KiB is planned on a blocking thread, so a long one no longer holds a thread that serves the other requests. `Db::query_with` and `Db::sql_with` stop planning at their `ExecOptions` deadline as well. A chain of 2,000 `WITH` results plans in 0.3 s. It took 13.5 s, past the deadline, because each result copied the rest of the statement (audit PRF-2).
 - A write that runs while `ALTER TABLE` adds, renames or drops a column of its table now applies to the table's new columns, as long as it names only columns the table keeps. Before, `/v1/write` answered a 400 `schema_invalid` ("document has 4 values, table has 3 fields", not retryable), and an `INSERT`, `UPDATE` or `DELETE` failed with "table ... was altered ... while the statement ran; run it again". Now a statement whose table changed between binding and writing is bound again and run, up to ten times, on a server and in `Db::sql` (audit PRF-3).
 - A call of a stored function can no longer stop the server with a stack overflow. Calls are written out after the statement's text is checked, so `SELECT f16(n) FROM t` (25 bytes), with sixteen functions each calling the one before and each body a 990-term sum, planned about 16,000 levels deep. Functions whose bodies call one another, or calls nested in arguments, `f1(f1(f1(n)))`, did the same. A call written out is now measured before it is walked into, and a statement whose calls written out nest deeper than 1,000 levels, or hold more than 250,000 expressions (a body that uses its parameter four times and calls one that does too, sixteen deep), is refused with "f2(...) written out nests more than 1000 levels deep ..." or "the calls of g1 written out hold more than 250000 expressions ...". A statement that may call a stored function is planned and run on a thread with 8 MiB of stack, however short its text (audit 4, X-B1).
-- A condition of many parts over rows in memory no longer reaches DataFusion as a chain as deep as it has parts. `tags @> :tags` with a list of 50,000 values (an `IN` for each value, joined by `AND`), or a long `WHERE` over joined rows, became a chain 50,000 levels deep, which DataFusion walks recursively, past the stack. An `AND` or `OR` of up to 1,024 conditions now reaches DataFusion as a balanced tree, and a wider one runs on ChloeDB's operators, which evaluate it in a loop (audit 4, X-B2).
+- A condition of many parts over rows in memory no longer reaches DataFusion as a chain as deep as it has parts. `tags @> :tags` with a list of 2,000 values (an `IN` for each value, joined by `AND`) over 5,000 rows, or a long `WHERE` over joined rows, became a chain as deep as the list, which DataFusion walks recursively, and the process aborted. An `AND` or `OR` of up to 1,024 conditions now reaches DataFusion as a balanced tree, and a wider one runs on ChloeDB's operators, which evaluate it in a loop (audit 4, X-B2).
 - A segment whose graph section holds damaged offsets is refused as corrupt when it opens. Before, offsets that passed the size checks could describe a range of petabytes, and a graph query over them aborted the process trying to allocate it (found by the nightly fuzzer, issue #485).
 
 #### Documentation
@@ -153,6 +157,29 @@ order. Auth changes: a connector's push key reads nothing, and
 - Feature store demo: impressions older than three hours are let go (`--keep`), and a model trains on the last 30 minutes, so training stays quick in a demo left running; the shoppers/s badge counts every shopper thread's requests; `serve --local` no longer starts ChloeCtx beside it; the pipeline diagram scrolls on a phone (audit DAP-12, DAP-15, DAP-16, DAP-23).
 
 ### Apps
+
+#### Security (audit 4: X-G1, X-G6, X-G7)
+
+- A screen's `PARAMS (x = <expression>)` is worked out in a fresh QuickJS
+  interpreter during the build check and screen edits (no Node, 200 ms, 16 MB),
+  never with `new Function` in the engine's process. An expression that reaches
+  for `process`, `require` or `import()` gives no value and its query is not
+  dry-run.
+- `claude -p` and `codex exec` start with a reduced environment (PATH, HOME,
+  user, locale, temp folder, proxy and certificates, and the CLI's own
+  `ANTHROPIC_*`/`CLAUDE_*` or `OPENAI_*`/`CODEX_*`), never the engine's tokens.
+  `STRATA_APPS_CHILD_ENV` names more to keep.
+- The `codex` provider is off unless `STRATA_APPS_CODEX_ON=1` (or
+  `STRATA_APPS_PROVIDER=codex`); a build asking for it otherwise gets a 400.
+  When on, its answers cost what their tokens cost
+  (`STRATA_APPS_CODEX_USD_PER_MTOK`, default `1.25,0.125,10`) against the
+  spending cap, and Stop kills a Codex build at once.
+- The MCP server (`engine/mcp.mjs`) signs in with the engine's agent token
+  (`STRATA_APPS_AGENT_TOKEN`, or `DATA/agent.token`, which the engine makes on
+  first start, mode 0600) and does not start without one. The engine accepts
+  it as a studio sign-in beside a cluster too, and refuses a bearer token that
+  is neither chloedb-server's nor the agent's, with a login or without.
+  MCP `publish` needs `confirm: true` at every access (unpublishing needs none).
 
 #### Changed
 

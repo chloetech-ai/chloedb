@@ -212,8 +212,12 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
-| `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; it reports no cost, so its answers count $0) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
+| `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; off unless turned on, below) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
+| `STRATA_APPS_CODEX_ON=1` | turn the `codex` provider on (`STRATA_APPS_PROVIDER=codex` does too). It is off by default because it answers with this machine's own Codex sign-in, which the engine cannot scope; a build that asks for it otherwise is refused with a 400 |
 | `STRATA_APPS_CODEX`, `STRATA_APPS_CODEX_MODEL` | the Codex binary (default `codex`) and its model (default: Codex's own); the `claude-*` model settings go to claude only |
+| `STRATA_APPS_CODEX_USD_PER_MTOK` | what a Codex answer costs, from the tokens it reports, in US dollars per million tokens as `input,cached input,output` (default `1.25,0.125,10`); it counts against `STRATA_APPS_SPEND_CAP_USD` like Claude's. Stop stops a Codex build as it does a Claude one |
+| `STRATA_APPS_CHILD_ENV` | more variables, separated by commas, to pass to the model's CLI. `claude -p` and `codex exec` start with a reduced environment: PATH, HOME, the user, locale, temporary folder, proxy and certificate settings, and the CLI's own (`ANTHROPIC_*` and `CLAUDE_*`, the cloud's with `CLAUDE_CODE_USE_BEDROCK` or `_VERTEX`; `OPENAI_*` and `CODEX_*`), never the engine's tokens |
+| `STRATA_APPS_AGENT_TOKEN` | the agent token the MCP server signs in with (below); unset, the engine makes one in `DATA/agent.token`, readable by its owner only |
 | `STRATA_APPS_AGY`, `STRATA_APPS_AGY_MODEL` | the same for Antigravity's `agy`, kept for when it is wired |
 | `STRATA_APPS_LIBRARY` | the built-in library's folder (default `library/`) |
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
@@ -330,7 +334,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | | |
 |---|---|
 | `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
-| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish) |
+| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish). It signs in with the engine's agent token (`STRATA_APPS_AGENT_TOKEN`, or the file `--token-file` names, by default `DATA/agent.token`) and does not start without one; `publish` asks for `confirm: true` at every access |
 | `engine/forge.mjs` | the forge: the prompt, the context it reads from ChloeDB (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following ChloeDB's feed |
 | `engine/store.mjs` | the system tables in ChloeDB and the app's tables |

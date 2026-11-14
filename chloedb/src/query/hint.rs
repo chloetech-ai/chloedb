@@ -206,11 +206,19 @@ pub fn of_answer(sql: &str, rows: usize, zero_scores: bool) -> Option<String> {
             let words: Vec<&str> = q.split_whitespace().collect();
             let plain = words.len() >= 2
                 && words.iter().all(|w| w.chars().all(|c| c.is_alphanumeric() || c == '\'') && !["AND", "OR", "NOT", "NEAR"].contains(w));
-            if !plain || !matches!(tokens.get(i + 5), Some(Token::RParen)) {
+            if !plain || !matches!(tokens.get(i + 5), Some(Token::RParen | Token::Comma)) {
                 continue;
             }
+            // The call's options, to its closing parenthesis.
+            let end = tokens[i + 5..].iter().position(|t| *t == Token::RParen).map_or(tokens.len(), |n| i + 5 + n);
+            let fuzzy = tokens[i + 5..end].iter().any(|t| word(t, "fuzzy"));
+            let typos = if fuzzy {
+                String::from(" (fuzzy => 'auto' corrects a word only when the index has no such word and a near one is in more rows)")
+            } else {
+                format!(", and MATCH({field}, '{q}', fuzzy => 'auto') forgives typos")
+            };
             return Some(format!(
-                "MATCH({field}, '{q}') holds for a row that has every one of its {} words, and no row has them all: MATCH({field}, '{}') finds rows with any of them, MATCH({field}, '{q}', min => 2) rows with two, and ORDER BY bm25({field}, '{q}') DESC ranks rows by them",
+                "MATCH({field}, '{q}') holds for a row that has every one of its {} words, and no row has them all: MATCH({field}, '{}') finds rows with any of them, MATCH({field}, '{q}', min => 2) rows with two, ORDER BY bm25({field}, '{q}') DESC ranks rows by them{typos}",
                 words.len(),
                 words.join(" OR "),
             ));

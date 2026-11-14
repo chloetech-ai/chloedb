@@ -78,7 +78,7 @@ enum Act {
     Runbook { query: String },
     /// `import`: rows as text, sent to `POST /v1/import` with their
     /// content type.
-    Import { path: String, content_type: &'static str, data: Vec<u8> },
+    Import { path: String, content_type: &'static str, data: Vec<u8>, create: Option<String> },
 }
 
 /// What a tool keeps of a route's answer.
@@ -250,14 +250,16 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "import",
         title: "Import rows",
-        description: "Load many rows into a table at once: CSV or TSV text (the first line names the columns), JSON lines, a JSON array of objects as text in data, or the objects themselves in rows. The table must exist (list_tables shows it; an admin key makes one with execute and CREATE TABLE). Columns the table has not are skipped and named in the answer; a row with the key of one there replaces it. Answers how many rows it wrote. Needs a write key. For a few rows, write works too.",
+        description: "Load many rows into a table at once: CSV or TSV text (the first line names the columns), JSON lines, a JSON array of objects as text in data, or the objects themselves in rows. The table must exist (list_tables shows it), or with create: true an admin key makes it first from the rows: types from the values (whole numbers INT, numbers FLOAT, true/false BOOL, ISO dates TIMESTAMP, longer text of several words TEXT, other text KEYWORD), the primary key a column named id (or key); the answer shows the CREATE TABLE it ran. Columns the table has not are skipped and named in the answer; a row with the key of one there replaces it. Answers how many rows it wrote. Needs a write key. For a few rows, write works too.",
         schema: || json!({"type": "object", "properties": {
             "table": {"type": "string"},
             "format": {"type": "string", "enum": ["csv", "tsv", "jsonl", "json"], "description": "the format of data (default csv); rows are JSON"},
             "data": {"type": "string", "description": "the rows as text, such as a CSV file's contents"},
             "rows": {"type": "array", "items": {"type": "object"}, "description": "the rows as objects, in place of data"},
             "empty": {"type": "string", "enum": ["default", "null", "text"], "description": "what an empty CSV cell is: the field's DEFAULT (the default), NULL, or empty text"},
-            "strict": {"type": "boolean", "description": "refuse a column the table does not have, rather than skip it"}
+            "strict": {"type": "boolean", "description": "refuse a column the table does not have, rather than skip it"},
+            "create": {"type": "boolean", "description": "make the table from the rows when there is none (needs an admin key)"},
+            "key": {"type": "string", "description": "with create: the column that is the primary key (default a column named id; \"\" for none)"}
         }, "required": ["table"]}),
         read_only: false,
         destructive: true,
@@ -724,6 +726,13 @@ fn import_act(a: &Json) -> Result<Act, Failed> {
         (Some(_), Some(_)) => return Err(Failed::Arguments("send the rows in data (text) or in rows (objects), not both".into())),
         _ => return Err(Failed::Arguments("the arguments need the rows: data, as text (a CSV file's contents), or rows, an array of objects".into())),
     };
+    let create = match a.get("create").and_then(|v| v.as_bool()) {
+        Some(true) => {
+            let f = chloedb::ingest::Format::parse(format).ok_or_else(|| Failed::Arguments(format!("format is csv, tsv, jsonl or json, not {format:?}")))?;
+            Some(chloedb::ingest::create_for(table, &data, f, opt_s(a, "key")).map_err(|e| Failed::Arguments(format!("no table could be made from the rows: {e}")))?)
+        }
+        _ => None,
+    };
     let content_type = match format.to_ascii_lowercase().as_str() {
         "csv" => "text/csv",
         "tsv" => "text/tab-separated-values",
@@ -738,7 +747,7 @@ fn import_act(a: &Json) -> Result<Act, Failed> {
     if a.get("strict").and_then(|v| v.as_bool()) == Some(true) {
         path.push_str("&strict=true");
     }
-    Ok(Act::Import { path, content_type, data })
+    Ok(Act::Import { path, content_type, data, create })
 }
 
 // ----- check_sql
@@ -957,9 +966,18 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
             forward_with(router, caller, method, &path, body, &[("x-strata-reason", reason)]).await.map_err(Failed::Call)?
         }
-        Act::Import { path, content_type, data } => {
+        Act::Import { path, content_type, data, create } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
-            forward_body(router, caller, Method::POST, &path, Some((content_type, data)), &[]).await.map_err(Failed::Call)?
+            let made = match &create {
+                Some(sql) => Some(forward(router, caller, Method::POST, "/v1/sql", Some(json!({"sql": sql}))).await.map_err(|e| Failed::Call(format!("{e} (the import would make the table with {sql})")))?),
+                None => None,
+            };
+            let mut j = forward_body(router, caller, Method::POST, &path, Some((content_type, data)), &[]).await.map_err(Failed::Call)?;
+            if let (Some(sql), Some(_)) = (create, made) {
+                // IF NOT EXISTS: a table that was there already is kept as it was.
+                j["create_table"] = json!(sql);
+            }
+            j
         }
         Act::Route { method, path, body, shape } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
