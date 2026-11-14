@@ -1154,7 +1154,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
     { gallery: [{ photo: 'tram' }] },
     { band: [{ media: ['x'], photo: 'farm' }], photo: '=row.image' },
   ] };
-  const placed = await placeScreenPhotos(screen, { find });
+  const placed = await placeScreenPhotos(screen, { find, drawn: false });
   assert.equal(placed.length, 5);
   assert.deepEqual(asked.map(([q, u]) => `${q}:${u}`), ['coffee:hero', 'bread:slide', 'portrait man:avatar', 'tram:gallery', 'farm:media']);
   assert.equal(screen.body[1].carousel[1].src, 'https://kept', 'a photo with a src is left as it is');
@@ -1166,7 +1166,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
   const plan = { views: [], seed: {
     coffees: [{ name: 'Huila', image: 'photo:latte art coffee' }, { name: 'Sumatra', image: 'photo:Sumatra Mandheling dark roast' }],
     sleds: [{ name: 'Polar', image: 'photo:snowmobile trail' }] } };
-  await placePhotos(plan, {});
+  await placePhotos(plan, {}, { open: false, drawn: false });
   assert.match(plan.seed.coffees[0].image, /^https:\/\/images\.unsplash\.com\/photo-/);
   assert.match(plan.seed.coffees[1].image, /^https:\/\/images\.unsplash\.com\/photo-/);
   assert.notEqual(plan.seed.coffees[1].image, plan.seed.coffees[0].image);
@@ -1179,7 +1179,7 @@ test('a photo named by what it shows is found in the built-in set by its subject
     { name: 'Pumpkin pie', category: 'Pies', image: 'photo:pumpkin pie' },
     { name: 'Cable', image: 'photo:usb charging cable' }] } };
   const code = {};
-  await placePhotos(shop, code);
+  await placePhotos(shop, code, { open: false, drawn: false });
   assert.match(code.home, new RegExp(croissant));
   assert.match(shop.seed.products[0].image, /croissant|photo-/);
   assert.match(builtinPhotos().find((p) => shop.seed.products[1].image.includes(p.id)).tags, /\bpie\b/);
