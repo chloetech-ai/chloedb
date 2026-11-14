@@ -608,6 +608,10 @@
           }
         }, { rootMargin: '0px 0px -6% 0px', threshold: 0.08 });
       }
+      // a window taller than any screen shows the whole page at once
+      const tall = () => { if (innerHeight > 1500) { document.documentElement.classList.add('rv-now'); for (const el of document.querySelectorAll('.rv:not(.in)')) { el.classList.add('in'); seen.add(el.dataset.rk); } } };
+      if (!window.__sa_tallHooked) { window.__sa_tallHooked = true; addEventListener('resize', tall); }
+      tall();
       for (const el of rootEl.querySelectorAll('.rv:not(.in)')) {
         if (!io || still()) { el.classList.add('in'); seen.add(el.dataset.rk); } else io.observe(el);
       }

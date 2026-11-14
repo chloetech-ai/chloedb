@@ -352,7 +352,17 @@ window.__sa_numbers = (() => {
 
     // ---- blocks
     const blocks = (list, s, path) => (Array.isArray(list) ? list : list == null ? [] : [list]).map((b, i) => block(b, s, `${path}[${i}]`));
-    const T = (v, s, where) => { const x = val(v, s, where); return x == null ? '' : String(x); };
+    // A text an expression works out from data that is not there (signed
+    // out, a call refused, a row missing) says nothing rather than "NaN
+    // lessons left" or "undefined": what is missing is never shown as words.
+    const T = (v, s, where) => {
+      const x = val(v, s, where);
+      if (x == null) return '';
+      if (typeof x === 'number' && !Number.isFinite(x)) return '';
+      const str = String(x);
+      if (typeof v === 'string' && v.startsWith('=') && /\bNaN\b|\bundefined\b|\[object Object\]/.test(str)) return '';
+      return str;
+    };
 
     function block(b, s, path) {
       try {
@@ -383,7 +393,15 @@ window.__sa_numbers = (() => {
             else if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
             // "$980.00" reads as "$980": cents only when there are some.
             return { ...k, raw, shown: v == null ? '–' : String(v).replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') };
-          });
+          }).reduce((out, k) => {
+            // Cards in one row that come out the same (all of what is owed
+            // is past due, and all of that over 90 days) are one card saying
+            // so, not three repeating one figure.
+            const twin = !zero(k) && out.find((o) => o.shown === k.shown && !zero(o) && k.shown !== '–');
+            if (twin) { twin.also = [...(twin.also || []), String(k.label || '')].filter(Boolean); return out; }
+            out.push({ ...k });
+            return out;
+          }, []).map((k) => (k.also?.length ? { ...k, hint: [k.hint, `also ${k.also.join(', ')}`].filter(Boolean).join(' · ') } : k));
           if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
           // Summary cards: the screen's first numbers lead it, the first of
           // them the largest; a number that needs doing (overdue, owed...)
@@ -1146,7 +1164,9 @@ window.__sa_numbers = (() => {
           if (!secs.length || (isHeading(list[i]) && secs.at(-1).length)) secs.push([]);
           secs.at(-1).push(list[i]);
         }
-        return [...quiet, h('div', { class: 'lay-head' }, head), ...secs.map((g) => h('div', { class: `lay-group report-sec${isHeading(g[0]) ? '' : ' unnamed'}` }, g))];
+        // (a heading that numbers itself, "1. Revenue", keeps its own number)
+        const ownNum = (el) => el.nodeType === 1 && /^\s*\d+[.)]\s/.test(el.textContent || '');
+        return [...quiet, h('div', { class: 'lay-head' }, head), ...secs.map((g) => h('div', { class: `lay-group report-sec${isHeading(g[0]) ? '' : ' unnamed'}${isHeading(g[0]) && ownNum(g[0]) ? ' own-num' : ''}` }, g))];
       }
       const head = [];
       let i = 0;

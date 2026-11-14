@@ -546,6 +546,39 @@
   // company's "c2" on a deal), alone or between separators ("c2 · 9500"),
   // the row's name (its table's naming column, SA.labels) shows instead.
   // What the person types is left alone.
+  // And emphasis written as *words* (or **words**) anywhere a page draws
+  // text is drawn as emphasis, never as its asterisks.
+  (() => {
+    if (typeof MutationObserver === 'undefined') return;
+    const EM = /(^|[\s(\[“"'¿¡])\*{1,2}(?=\S)([^*\n]{1,80}?)(?<=\S)\*{1,2}(?=$|[\s.,;:!?)\]”"'])/;
+    const skip = (el) => !el || !!el.closest('input, textarea, select, script, style, [contenteditable], code, pre, .md');
+    const fix = (t) => {
+      if (!t.nodeValue || t.nodeValue.indexOf('*') < 0 || skip(t.parentElement)) return;
+      const m = t.nodeValue.match(EM);
+      if (!m) return;
+      const at = m.index + m[1].length;
+      const rest = t.splitText(at);
+      const after = rest.splitText(m[0].length - m[1].length);
+      const em = document.createElement('em');
+      em.className = 'sa-em';
+      em.textContent = m[2];
+      rest.replaceWith(em);
+      fix(after);
+    };
+    const sweep = (root) => {
+      if (!root) return;
+      if (root.nodeType === 3) { fix(root); return; }
+      if (root.nodeType !== 1 || root.textContent.indexOf('*') < 0) return;
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const all = [];
+      for (let n = w.nextNode(); n; n = w.nextNode()) all.push(n);
+      all.forEach(fix);
+    };
+    new MutationObserver((ms) => { for (const m of ms) { if (m.type === 'characterData') fix(m.target); else m.addedNodes.forEach(sweep); } })
+      .observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    document.addEventListener('DOMContentLoaded', () => sweep(document.body));
+  })();
+
   (() => {
     const specs = Array.isArray(SA.labels) ? SA.labels : [];
     if (!specs.length || typeof MutationObserver === 'undefined') return;

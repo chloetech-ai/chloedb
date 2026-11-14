@@ -475,3 +475,19 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-card-act { display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
 .fp-card-act .fp-btn { white-space: nowrap; }
 .fp-qty { width: 4.2em; height: 40px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line, color-mix(in srgb, var(--fg) 18%, transparent)); background: var(--card); color: var(--fg); font: inherit; text-align: center; }
+
+/* The screen's own parts on a front page (a list, a table, a map, a section
+   of the kit) read at the page's scale, not the app's: their titles as the
+   page's section titles, their text and tables at reading size. */
+.screen.front .fp-sec :is(.section, .card) > h3, .screen.front .fp-sec .fp-wrap > :is(h2, h3) {
+  font-family: var(--font-title); font-size: clamp(26px, 3vw, 40px); line-height: 1.1; letter-spacing: -.025em; font-weight: 700;
+  text-transform: none; color: var(--fg); padding: 0; margin: 0 0 8px; text-align: center; text-wrap: balance; }
+.screen.front .fp-sec table { font-size: 16px; }
+.screen.front .fp-sec :is(td, th) { padding-block: 14px; }
+.screen.front .fp-sec td { color: var(--fg); }
+.screen.front .fp-sec th { font-size: 12.5px; }
+.screen.front .fp-sec .muted, .screen.front .fp-sec td.muted { color: color-mix(in srgb, var(--fg) 72%, var(--bg)); }
+/* a part that reveals as the page scrolls never stays faint for long, and
+   a window as tall as the page (a full-page capture) shows it all at once */
+.rv { opacity: .9; transform: translate3d(0, calc(var(--rv) * 14px), 0); transition-duration: .5s; }
+.rv-now .rv { transition: none !important; opacity: 1 !important; transform: none !important; }
