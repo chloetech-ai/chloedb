@@ -83,6 +83,8 @@ function render(page) {
         act: [h("button", { class: "btn", onclick: () => copy(`claude mcp add --transport http chloedb ${location.origin}/v1/mcp --header "Authorization: Bearer $CHLOEDB_TOKEN"`, "Command copied: run it where Claude Code runs") }, icon("copy"), "Copy the Claude Code command"), h("a", { class: "btn ghost", href: "#/access?tab=keys&new=1" }, icon("key"), "Make a read key for it")] },
     ];
     const n = steps.filter((s) => s.done).length;
+    // Its steps done, a bare address opens Home again (main.js).
+    store.set("start.done", n >= steps.filter((s) => !s.optional).length);
     clear(body,
       h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Start here"), h("p", {}, `${clusterName() || location.host}: your data, searchable by words and by meaning, from any language or agent. ${n} of ${steps.filter((s) => !s.optional).length} steps done.`))),
       modeCard(),

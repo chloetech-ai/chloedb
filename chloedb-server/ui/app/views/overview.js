@@ -131,8 +131,16 @@ function render(page, r0) {
   // Home shows its tables instead (rows, disk, reads and writes), from
   // /v1/index/tables, read every 30 s.
   const one = () => !isCoordinator() && !(state.cluster?.shards || []).some((x) => (x.replicas || []).length > 1) && (state.cluster?.shards || []).length <= 1;
-  let tix = null;
-  const loadTix = () => one() ? api("/v1/index/tables", { timeout: 5000 }).then((j) => { tix = j.tables || []; drawWhere(); drawKpis(); }).catch(() => {}) : null;
+  let tixRaw = null;
+  const loadTix = () => one() ? api("/v1/index/tables", { timeout: 5000 }).then((j) => { tixRaw = j.tables || []; drawWhere(); drawKpis(); }).catch(() => {}) : null;
+  // ONB-11: the sizes are kept a while by the server; a table its health
+  // counts that they do not list yet (made since) shows with its rows.
+  const tixNow = () => {
+    if (!tixRaw) return null;
+    const have = new Set(tixRaw.map((x) => x.table));
+    const more = Object.entries(state.health?.tables || {}).filter(([t]) => !have.has(t) && !t.startsWith("_")).map(([t, n]) => ({ table: t, docs: n, bytes: null }));
+    return more.length ? [...tixRaw, ...more] : tixRaw;
+  };
   const probBody = h("div", { class: "stack home-probs" });
   const probTitle = h("h3", {}, "Problems");
   const probSub = h("span", { class: "sub" });
@@ -332,14 +340,17 @@ function render(page, r0) {
     out.push({ key: "copies", label: "Copies answering", icon: "db", val: tot ? [String(upN), h("small", {}, "/" + tot)] : ["–"], tone: cp ? tone(cp.status) : upN < tot ? "warn" : "", sub: downNames.length ? `${downNames.slice(0, 3).join(", ")}${downNames.length > 3 ? ` +${downNames.length - 3}` : ""} down` : tot ? "every copy answers" : "no copies listed", why: downNames.length ? `${fmt.plural(downNames.length, "copy", "copies")} do not answer` : null, link: link("cluster") });
     const lagV = lg?.max_txn ?? null;
     out.push({ key: "lag", label: "Replication lag, max", icon: "layers", val: lagV == null ? ["–"] : [fmt.si(lagV), h("small", {}, "txn")], tone: lg ? tone(lg.status) : "", sub: lagV == null ? "no replica reports one" : lagV === 0 ? "every replica in step" : `${lg.where || ""}${lg.max_s != null ? ` · reads up to ${fmt.dur(lg.max_s)} old` : ""}`, why: lagV ? `${lg.where} is ${fmt.si(lagV)} transactions behind` : null, link: link("cluster", { lens: "lag" }) });
+    const tix = tixNow();
     if (one() && tix) {
       // One server: copies and replicas say nothing; its rows and writes do.
-      const rows = tix.reduce((a, x) => a + (x.docs || 0), 0), bytes = tix.reduce((a, x) => a + (x.bytes || 0), 0);
+      // Rows of your own tables; the apps' (ChloeCtx, Sheets beside it) are said apart (ONB-11).
+      const mine = tix.filter((x) => isMine(x.table)), apps = tix.length - mine.length;
+      const rows = (mine.length ? mine : tix).reduce((a, x) => a + (x.docs || 0), 0), bytes = tix.reduce((a, x) => a + (x.bytes || 0), 0);
       const wr = tix.reduce((a, x) => a + (x.writes_per_min || 0), 0), rd = tix.reduce((a, x) => a + (x.reads_per_min || 0), 0);
       const lastW = Math.max(0, ...tix.map((x) => x.last_write_ms || 0));
       const i = out.findIndex((d) => d.key === "copies");
       out.splice(i, 2,
-        { key: "rows", label: "Rows", icon: "table", val: [fmt.si(rows)], sub: `${fmt.plural(tix.length, "table")} · ${fmt.bytes(bytes)} on disk`, link: "#/table" },
+        { key: "rows", label: "Rows", icon: "table", val: [fmt.si(rows)], sub: `${fmt.plural(mine.length, mine.length && apps ? "table of yours" : "table", mine.length && apps ? "tables of yours" : "tables")}${apps ? `, ${apps} of apps` : ""} · ${fmt.bytes(bytes)} on disk`, link: "#/table" },
         { key: "rw", label: "Reads and writes", icon: "db", val: [fmt.si(rd), h("small", {}, "/min")], sub: `${fmt.si(wr)} writes/min${lastW ? ` · last write ${fmt.ago(lastW)}` : ""}`, link: "#/table" });
     }
     const dkV = dk?.max ?? null;
@@ -362,6 +373,7 @@ function render(page, r0) {
   function drawTables() {
     whereTitle.textContent = "Tables";
     whereTools.style.display = "none";
+    const tix = tixNow();
     if (!tix) { clear(whereBody, empty("table", "Reading the tables…")); whereSub.textContent = ""; return; }
     const list = tix.slice().sort((a, b) => (b.reads_per_min || 0) - (a.reads_per_min || 0) || (b.docs || 0) - (a.docs || 0));
     const mine = list.filter((x) => isMine(x.table));
@@ -375,7 +387,7 @@ function render(page, r0) {
       h("div", { class: "row small", style: { marginTop: "8px" } }, h("a", { href: "#/table" }, "Every table", icon("right")), h("span", { class: "sep" }), h("span", { class: "muted" }, "One server: its health is the numbers above."))] : empty("table", "No tables yet", "Import a file to make one.", h("a", { class: "btn", href: "#/start" }, icon("rocket"), "Start here")));
   }
   function drawWhere() {
-    if (one()) { if (!tix) loadTix(); return drawTables(); }
+    if (one()) { if (!tixRaw) loadTix(); return drawTables(); }
     whereTitle.textContent = "Where";
     whereTools.style.display = "";
     const m = lastModel = model();
@@ -728,6 +740,8 @@ function render(page, r0) {
     bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
     bus.on("answering", () => { drawBanner(); drawHead(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),
     every(15000, loadEvents), every(30000, loadStats), every(30000, loadTix),
+    // A table the health counts and the sizes do not list yet (ONB-11): drawn when the health says it.
+    bus.on("health", () => { const k = Object.keys(state.health?.tables || {}).join(); if (one() && tixRaw && k !== drawWhere.tables) { drawWhere.tables = k; drawWhere(); drawKpis(); } }),
   ];
   return () => offs.forEach((f) => f());
 }

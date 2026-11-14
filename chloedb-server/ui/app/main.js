@@ -864,4 +864,9 @@ loadView(resolve(parse()).v).catch(() => { /* said when it opens */ });
 const who = start();
 // Who is signed in decides what the views offer: ask that first (briefly).
 // start() asks it once (CCW-18: it was asked twice).
-Promise.race([who, new Promise((r) => setTimeout(r, 2500))]).then(() => { route(); drawBadges(); });
+Promise.race([who, new Promise((r) => setTimeout(r, 2500))]).then(() => {
+  // ONB-11: a sandbox (one server on this machine, no environment named)
+  // opened at its bare address lands on Start here until its steps are done.
+  if (!location.hash.replace(/^#\/?/, "") && isSandbox() && !isCoordinator() && !store.get("start.done", false)) { try { history.replaceState(null, "", location.pathname + location.search + "#/start"); } catch { /* old browser */ } }
+  route(); drawBadges();
+});
