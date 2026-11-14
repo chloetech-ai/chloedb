@@ -2224,11 +2224,46 @@ pub fn request_running(dir: &Path, req: &Json, timeout: Duration) -> Result<Json
 /// merges the whole table. The pages the old segments were on are free but
 /// keep their bytes until a later write reuses them; `chloectx redact`
 /// rewrites the whole file for that.
+///
+/// The store's background merger is woken by the flush and may claim the
+/// segment that held the record; a merge here leaves the segments another
+/// one holds alone, and until that merge is installed the old segment,
+/// record and all, is the one a checkpoint copies. So this returns only
+/// once no merge is running and none is left to do: a merge claimed after
+/// the delete rebuilds the segment from its live rows, without the record.
 pub fn compact_deleted(db: &chloedb::db::Db) -> Result<chloedb::storage::MergeStats> {
-    db.storage().flush()?;
+    let wait = Duration::from_secs(60);
+    let s = db.storage();
+    s.flush()?;
     let policy = chloedb::storage::MergePolicy { merge_factor: 1 << 40, max_deleted_ratio: 0.0, ..Default::default() };
-    let stats = db.storage().merge(&policy)?;
-    db.storage().vacuum()?;
+    let deadline = Instant::now() + wait;
+    let idle = || -> Result<()> {
+        while s.merge_status().running > 0 {
+            if Instant::now() >= deadline {
+                return Err(err(format!("a background merge still holds the store's segments after {} s", wait.as_secs())));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    };
+    let mut stats = chloedb::storage::MergeStats::default();
+    loop {
+        idle()?;
+        let m = s.merge(&policy)?;
+        let done = m.merges == 0;
+        stats.merges += m.merges;
+        stats.segments_in += m.segments_in;
+        stats.docs_merged += m.docs_merged;
+        stats.docs_dropped += m.docs_dropped;
+        stats.bytes_written += m.bytes_written;
+        stats.seconds += m.seconds;
+        // Nothing left to merge, and no merge started meanwhile on a
+        // segment this one then skipped.
+        if done && s.merge_status().running == 0 {
+            break;
+        }
+    }
+    s.vacuum()?;
     Ok(stats)
 }
 
