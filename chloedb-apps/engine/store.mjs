@@ -122,6 +122,32 @@ const GRAPH_COLS = 'id, kind, app, slug, title, description, live, version, link
 // A node as the graph's REACHABLE queries above select it.
 const nodeRow = ({ id, kind, app, slug, title, hops }) => ({ id, kind, app, slug, title, hops });
 
+// A short name for an app from its description, until its first plan names
+// it (and for good when that build fails): the words before a colon or a
+// dash, else the first clause, without "A"/"An"/"The" in front, cut at a
+// word, at most 40 characters. "A tiny reading list: links with a title"
+// is "Tiny reading list".
+export function shortName(description) {
+  const first = String(description || '').trim().split(/[.\n!?]/)[0];
+  let s = (first.split(/\s*[:;–—]\s*|\s+-\s+/)[0] || first).split(/,\s*/)[0].trim();
+  if (s.length < 3) s = first.trim();
+  s = s.replace(/^(an?|the|my|our)\s+/i, '');
+  if (s.length > 40) { const cut = s.slice(0, 41); s = /\s/.test(cut) ? cut.replace(/\s+\S*$/, '') : s.slice(0, 40); }
+  for (let k = 0; k < 3; k++) s = s.replace(/[\s,;:–—-]+$/, '').replace(/\s+(and|or|with|of|for|the|an?|to|in|on|my|at|by)$/i, '');
+  return s ? s[0].toUpperCase() + s.slice(1) : 'New app';
+}
+
+// What an app with no version yet is, from its last request: building
+// while it is queued or running, failed once it failed or was stopped, or
+// when it still says running long after any build could (the engine stopped
+// in the middle of it).
+export function firstBuildStatus(last, now = Date.now(), staleMs = 30 * 60 * 1000) {
+  if (!last) return 'building';
+  if (last.status === 'failed' || last.status === 'stopped') return 'failed';
+  if ((last.status === 'queued' || last.status === 'running') && now - new Date(last.created).getTime() > staleMs) return 'failed';
+  return 'building';
+}
+
 export class Store {
   constructor(strata, log = () => {}) {
     this.db = strata;

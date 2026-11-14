@@ -320,6 +320,9 @@ def convert(page, by_source):
     for i, b in enumerate(blocks):
         key = f"CHLOEDBCODEBLOCK{i:05d}X"
         body = body.replace(f"<p>{key}</p>", b).replace(key, b)
+    # Pictures load as they come near the screen: a reference page holds
+    # dozens, most of them far below the fold.
+    body = body.replace("<img ", '<img loading="lazy" decoding="async" ')
     # Wide tables scroll inside the column.
     body = re.sub(r"<table>", '<div class="doc-table"><table>', body).replace("</table>", "</table></div>")
     # Headings get a link to themselves.

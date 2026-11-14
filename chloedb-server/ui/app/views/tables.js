@@ -7,7 +7,7 @@
 // bytes and reads are its drill-down, the index inspector
 // (#/inspector?table=).
 
-import { h, s, clear, fmt, api, card, empty, failure, icon, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, can } from "../core.js";
+import { h, s, clear, fmt, api, card, empty, failure, icon, signInNeeded, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, can } from "../core.js";
 import { state } from "../data.js";
 import { shardTrouble } from "../sqlguard.js";
 import { tables as catalog, table as tableOf } from "../catalog.js";
@@ -350,6 +350,6 @@ function render(page, r) {
   draw();
   load();
   // Again every 30 s (the server keeps an answer 30 s), unless paused or hidden.
-  const again30 = setInterval(() => { if (!state.paused && !document.hidden && page.isConnected && !again.disabled) load(); }, 30e3);
+  const again30 = setInterval(() => { if (!state.paused && !signInNeeded() && !document.hidden && page.isConnected && !again.disabled) load(); }, 30e3);
   return () => { clearInterval(again30); hideTip(); reselect = null; offs.forEach((f) => f()); };
 }

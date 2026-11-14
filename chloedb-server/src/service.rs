@@ -2186,7 +2186,7 @@ impl Service {
     /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
-    async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
         let mut embedded = self.embed_texts(sql, params).await?;
         // A rank profile whose body takes text where a vector goes
@@ -2206,20 +2206,45 @@ impl Service {
             Some((s, p)) => (s.as_str(), p),
             None => (sql, params),
         };
-        let functions = self.functions();
-        let run = || {
-            let c = self.readable();
-            let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
-            compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
-        };
-        let plan = match run() {
-            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => run()?,
+        let deadline = Instant::now() + timeout;
+        let plan = match self.plan_read(sql, params, deadline).await {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.message.contains(m))) && self.learn_tables(false).await => self.plan_read(sql, params, deadline).await?,
             r => r?,
         };
         Ok(match profiled {
             Some((table, r)) => profile::mark(plan, &table, &r),
             None => plan,
         })
+    }
+
+    /// The plan of the read `sql` over the tables a query may read
+    /// ([`compound::plan_read_calling`]), stopped at `deadline` or once
+    /// the caller stops waiting for it. A short statement plans here; a
+    /// longer one, whose planning may take long (thousands of `WITH`
+    /// results, a long chain of `UNION`s), on a blocking thread, so that
+    /// it holds none of the threads that serve the other requests, and a
+    /// deep one with the stack for it.
+    async fn plan_read(self: &Arc<Self>, sql: &str, params: &Params, deadline: Instant) -> Result<Plan, ApiError> {
+        let cancel = Cancel::default();
+        let opts = ExecOptions { deadline: Some(deadline), cancel: Some(cancel.0.clone()), ..ExecOptions::default() };
+        let deep = chloedb::query::parse::nests_deep(sql);
+        let plan = move |me: &Service, sql: &str, params: &Params| {
+            chloedb::query::parse::deep_stack(deep, || {
+                let functions = me.functions();
+                let c = me.readable();
+                let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
+                compound::planning_under(&opts, || compound::plan_read_calling(sql, &refs, params, &|t, n| me.rank_profile(t, n), &functions))
+            })
+        };
+        if sql.len() <= PLAN_INLINE_BYTES {
+            return Ok(plan(self, sql, params)?);
+        }
+        let (me, sql, params) = (self.clone(), sql.to_string(), params.clone());
+        // Dropped with this future (the client went away), `cancel` stops
+        // the planning at its next step.
+        let r = tokio::task::spawn_blocking(move || plan(&me, &sql, &params)).await.map_err(ApiError::internal)?;
+        drop(cancel);
+        Ok(r?)
     }
 
     /// Query `sql` written out with the rank profile it ranks by
@@ -3140,7 +3165,28 @@ impl Service {
         }
     }
 
-    async fn query_once(self: &Arc<Self>, mut req: QueryReq) -> Result<Answer, ApiError> {
+    async fn query_once(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        // A statement that nests deep is bound, planned, run and dropped
+        // on a thread with the stack for it, a worker's 2 MiB being too
+        // little for some (chloedb::query::parse::deep_stack).
+        if chloedb::query::parse::nests_deep(&req.sql) && !chloedb::query::parse::on_deep_stack() {
+            let (me, rt) = (self.clone(), tokio::runtime::Handle::current());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::Builder::new()
+                .name("chloedb-deep".into())
+                .stack_size(chloedb::query::parse::QUERY_STACK)
+                .spawn(move || {
+                    chloedb::query::parse::mark_deep_stack();
+                    let _ = tx.send(rt.block_on(me.query_once_here(req)));
+                })
+                .map_err(ApiError::internal)?;
+            return rx.await.map_err(ApiError::internal)?;
+        }
+        self.query_once_here(req).await
+    }
+
+    /// [`Self::query_once`] on this thread.
+    async fn query_once_here(self: &Arc<Self>, mut req: QueryReq) -> Result<Answer, ApiError> {
         let t0 = Instant::now();
         // A JSON field's paths listing: from this database's terms, or a
         // coordinator's shards' listings summed.
@@ -3157,7 +3203,7 @@ impl Service {
         let tp = Instant::now();
         let plan = match &req.plan {
             Some(p) => Ok(p.clone()),
-            None => self.bound_read(&req.sql, &req.params).await.map(Arc::new),
+            None => self.bound_read(&req.sql, &req.params, timeout).await.map(Arc::new),
         };
         // A plan made with a rank profile runs only on a database whose
         // profile of that name is the same.
@@ -3401,10 +3447,12 @@ impl Service {
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
+                    let deep = chloedb::query::parse::nests_deep(&req.sql);
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = match (scroll, columns) {
+                        // A statement that nests deep runs on a thread with the stack for it.
+                        let r = chloedb::query::parse::deep_stack(deep, || match (scroll, columns) {
                             (Some((page, hold)), _) => db
                                 .scroll(&view, &select, &opts, page, hold)
                                 .map(|(rs, s)| (rs, Vec::new(), Some(s)))
@@ -3415,7 +3463,7 @@ impl Service {
                                 }),
                             (None, Some(over)) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf).map(|(rs, ipc)| (rs, ipc, None)),
                             (None, None) => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new(), None)),
-                        };
+                        });
                         (r, started, Instant::now())
                     })
                     .await;
@@ -3635,19 +3683,23 @@ impl Service {
                 };
                 let db = db.clone();
                 let te = Instant::now();
+                let deep = chloedb::query::parse::nests_deep(&req.sql);
                 let r = tokio::task::spawn_blocking(move || {
                     let _held = (permit, running);
                     let started = Instant::now();
-                    let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-                    let r = ops::run_on_engine(
-                        &plan,
-                        &tables,
-                        &mut |leaf, over| {
-                            let view = snap.table(leaf.table()).ok_or_else(|| chloedb::Error::Query(format!("no such table: {}", leaf.table())))?;
-                            db.execute_leaf(&view, &leaf.to_select(view.schema())?, &opts, over)
-                        },
-                        &opts,
-                    );
+                    // A statement that nests deep runs on a thread with the stack for it.
+                    let r = chloedb::query::parse::deep_stack(deep, || {
+                        let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                        ops::run_on_engine(
+                            &plan,
+                            &tables,
+                            &mut |leaf, over| {
+                                let view = snap.table(leaf.table()).ok_or_else(|| chloedb::Error::Query(format!("no such table: {}", leaf.table())))?;
+                                db.execute_leaf(&view, &leaf.to_select(view.schema())?, &opts, over)
+                            },
+                            &opts,
+                        )
+                    });
                     (r, started, Instant::now())
                 })
                 .await;
@@ -3669,7 +3721,8 @@ impl Service {
                 // The leaves' calls to the shards carry the request's id.
                 let id = obs::current();
                 let trace = telemetry::trace();
-                tokio::task::spawn_blocking(move || {
+                let deep = chloedb::query::parse::nests_deep(&req.sql);
+                tokio::task::spawn_blocking(move || chloedb::query::parse::deep_stack(deep, || {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
@@ -3695,7 +3748,7 @@ impl Service {
                         Ok(m.leaf())
                     }, &checks);
                     rs.map(|rs| (rs, missing))
-                })
+                }))
                 .await
             }
         };
@@ -3778,7 +3831,7 @@ impl Service {
     pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         // Statistics are a shard's: its coordinator scores with the
         // cross-encoders.
@@ -3819,7 +3872,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: a guard's levels are counted over one table's rows: a query without subqueries"));
@@ -3854,7 +3907,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: the next codes count one table's rows: a condition without subqueries"));
@@ -4155,24 +4208,31 @@ impl Service {
         let r = match (&self.backend, ddl) {
             (_, true) => self.ddl(sql, params, timeout_ms, &who.name).await,
             (Backend::Local(db), false) => {
-                let (text, p) = (sql.to_string(), params.clone());
-                let slots_hashed = slots.clone();
-                let only = slots.map(|s| moving::mask_outside(&s));
-                let refused = Arc::new(Mutex::new(None));
-                let guard = self.statement_guard(routed(), refused.clone());
-                let prepare = move |db: &Db| {
-                    let Some(w) = db.prepare_write(&text, &p)? else { return Ok(None) };
-                    let w = match only {
-                        Some(m) => w.masked(m)?,
-                        None => w,
+                let only = slots.as_ref().map(|s| moving::mask_outside(s));
+                let key = key.map(|k| (k, statement_hash(sql, params, slots.as_deref())));
+                let mut tries = 0;
+                loop {
+                    let (text, p, only) = (sql.to_string(), params.clone(), only.clone());
+                    let refused = Arc::new(Mutex::new(None));
+                    let guard = self.statement_guard(routed(), refused.clone());
+                    let prepare = move |db: &Db| {
+                        let Some(w) = db.prepare_write(&text, &p)? else { return Ok(None) };
+                        let w = match only {
+                            Some(m) => w.masked(m)?,
+                            None => w,
+                        };
+                        Ok(Some(w.guarded(guard)))
                     };
-                    Ok(Some(w.guarded(guard)))
-                };
-                let r = self.write_local(db, prepare, timeout_ms, key.map(|k| (k, statement_hash(sql, params, slots_hashed.as_deref())))).await;
-                let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
-                match refusal {
-                    Some(e) if r.is_err() => Err(e),
-                    _ => r,
+                    let r = self.write_local(db, prepare, timeout_ms, key.clone()).await;
+                    let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    match (refusal, r) {
+                        (Some(e), Err(_)) => break Err(e),
+                        // An ALTER TABLE committed between binding the
+                        // statement and writing it, which wrote nothing:
+                        // it is bound again, to the table as it is now.
+                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && chloedb::db::altered_while_running(&e.message) => tries += 1,
+                        (_, r) => break r,
+                    }
                 }
             }
             (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
@@ -4774,7 +4834,7 @@ impl Service {
     /// (skipped). With `opts.strict`, a key twice in the file or one a row
     /// has already is refused before anything is written, and the rows go
     /// as inserts, so that one written meanwhile fails the request too.
-    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format, opts: ImportOpts) -> Result<(Written, Vec<String>), ApiError> {
+    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format, opts: ImportOpts) -> Result<(Written, Vec<String>, u64), ApiError> {
         let schema = match table {
             Some(t) => self.table(t).await?,
             None => self.default_table()?,
@@ -4788,7 +4848,7 @@ impl Service {
                 let pk = s.primary_key.expect("strict needs a key");
                 let mut seen: HashSet<String> = HashSet::new();
                 let mut keys = Vec::new();
-                for (n, d) in Rows::new(&s, std::io::Cursor::new(b), format)?.empty_cells(opts.empty).enumerate() {
+                for (n, d) in Rows::new(&s, std::io::Cursor::new(b), format)?.empty_cells(opts.empty).strict(true).enumerate() {
                     let d = d?;
                     if !seen.insert(js::to_json(&d[pk]).to_string()) {
                         return Err(conflict(format!("strict: row {} repeats key {} of an earlier row; nothing was written", n + 1, key_text(&d[pk]))));
@@ -4808,10 +4868,10 @@ impl Service {
             }
         }
         let (tx, mut rx) = tokio::sync::mpsc::channel::<chloedb::Result<Vec<Json>>>(1);
-        let reader = tokio::task::spawn_blocking(move || -> chloedb::Result<Vec<String>> {
-            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?.empty_cells(opts.empty);
+        let reader = tokio::task::spawn_blocking(move || -> chloedb::Result<(Vec<String>, u64)> {
+            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?.empty_cells(opts.empty).strict(opts.strict);
             check.by_ref().try_for_each(|d| d.map(drop))?;
-            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?.empty_cells(opts.empty);
+            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?.empty_cells(opts.empty).strict(opts.strict);
             // A strict import inserts; a table without a key (log lines)
             // takes its rows as inserts too.
             let kind = if strict || schema.primary_key.is_none() { "insert" } else { "upsert" };
@@ -4830,7 +4890,7 @@ impl Service {
                     break;
                 }
             }
-            Ok(rows.unknown.into_iter().collect())
+            Ok((rows.unknown.into_iter().collect(), rows.ragged))
         });
         let mut all = Written { receipt: Some(Receipt::default()), ..Default::default() };
         while let Some(chunk) = rx.recv().await {
@@ -4840,8 +4900,8 @@ impl Service {
                 all.add(w);
             }
         }
-        let unknown = reader.await.map_err(ApiError::internal)??;
-        Ok((all, unknown))
+        let (unknown, ragged) = reader.await.map_err(ApiError::internal)??;
+        Ok((all, unknown, ragged))
     }
 
     /// Imports the tables of the SQLite file in `body`
@@ -5267,6 +5327,12 @@ impl Service {
                     g.insert("replicas_in_sync", in_sync as f64);
                     g.insert("replicas_out_of_sync", (rs.len() - in_sync) as f64);
                     g.insert("replica_behind_max", rs.iter().filter_map(|r| r["behind"].as_f64()).fold(0.0, f64::max));
+                    // Of the replicas that apply this primary's log: not one
+                    // being sent a whole copy (it is behind by all of it until
+                    // the copy is in), nor one not heard since this primary
+                    // started (its number is not known yet): the lag alert's.
+                    let applying = |r: &&Json| r["copying"] != true && r["member"] != false && r["answered"] != false;
+                    g.insert("replica_behind_applying", rs.iter().filter(applying).filter_map(|r| r["behind"].as_f64()).fold(0.0, f64::max));
                     g.insert("seq_no", h["seq_no"].as_f64().unwrap_or(0.0));
                 }
                 Replication::Replica(f) => {
@@ -5572,6 +5638,12 @@ impl Service {
             one("chloedb_queries_running", "gauge", "Queries running now, those whose callers stopped waiting included.", self.running() as f64),
             Family { name: "chloedb_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("chloedb_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
+            one(
+                "chloedb_connections_closed_past_share_total",
+                "counter",
+                "Connections closed before any request because their client held its share of them (--max-connections-per-client): it saw a reset, not an answer.",
+                crate::listener::CLOSED_PAST_SHARE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+            ),
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {
@@ -5796,7 +5868,8 @@ impl Written {
 /// How an import reads and writes its rows ([`Service::import`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ImportOpts {
-    /// Refuse a key twice in the file or one a row has already, writing
+    /// Refuse a key twice in the file or one a row has already, and a CSV
+    /// or TSV row with more or fewer values than its header, writing
     /// nothing.
     pub strict: bool,
     /// What an empty CSV or TSV cell means.
@@ -6156,6 +6229,11 @@ impl Drop for Cancel {
     }
 }
 
+/// The longest statement a request plans on the thread that serves it:
+/// planning one this short takes microseconds. A longer one plans on a
+/// blocking thread ([`Service::plan_read`]).
+const PLAN_INLINE_BYTES: usize = 2048;
+
 /// Operations one shared transaction takes at most (an SQL write counts
 /// its rows or keys, [`PreparedWrite::weight`]).
 const GROUP_OPS: usize = chloedb::db::GROUP_OPS;
@@ -6420,12 +6498,15 @@ fn commits_in(db: &Db, term: Option<u64>) -> Result<(), ApiError> {
 /// [`apply_keyed`], committing only while the database is at `term`
 /// ([`commits_in`]), checked under the writer.
 fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>, term: Option<u64>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
-    let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
     if mark.is_some() || keys.iter().any(Option::is_some) || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
+    // The tables as the writer sees them: an ALTER TABLE that committed
+    // while this write waited for the writer has changed their fields,
+    // and the documents are made of the fields they have now.
+    let catalog = db.catalog();
     // Under the writer, which a primary's shipped transaction needs too.
     if let Err(e) = commits_in(db, term) {
         t.rollback();
@@ -6451,8 +6532,9 @@ fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u6
 /// [`Service::validate_ops`]: each of `ops` applied in turn in one
 /// transaction, which is rolled back.
 fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
-    let catalog = db.catalog();
     let mut t = db.storage().begin_within(VALIDATE_WAIT)?;
+    // Read under the writer, as [`apply_keyed_in`] reads them.
+    let catalog = db.catalog();
     let mut arrived = arrivals::Group::new(db);
     for (j, op) in ops.iter().enumerate() {
         if let Err(e) = apply_into(&catalog, &mut t, std::slice::from_ref(op), epoch, &mut arrived) {

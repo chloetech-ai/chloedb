@@ -105,11 +105,19 @@ function counted(cost, bucket) {
   saveSpend();
 }
 
-// How long one answer may take. A build is stopped only when the model goes
-// quiet (no new output for IDLE seconds) or runs past the hard cap, so a big
-// app that is still being written is not cut off.
-export const IDLE_S = Number(process.env.STRATA_APPS_IDLE_S) || 180;
+// How long one answer may take. A build is stopped when the model goes
+// quiet (nothing new from it, not even a line of thinking, for IDLE seconds),
+// runs past the hard cap, or its owner stops it (buildScope), so a big app
+// that is still being written is not cut off, and one that says nothing does
+// not hold its app for minutes.
+export const IDLE_S = Number(process.env.STRATA_APPS_IDLE_S) || 90;
 export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
+
+// The build a call belongs to, as the server runs it: buildScope.run({signal},
+// fn). Every model call made inside it (the plan, each piece, each fix
+// round) stops at once when the signal aborts, with an error marked stopped.
+export const buildScope = new AsyncLocalStorage();
+export const stoppedError = () => Object.assign(new Error('stopped by its owner'), { stopped: true });
 
 // onWrite(progress, text) is called as the answer streams in, with
 // {chars, thinking}: characters of answer and of thinking so far, and the
@@ -142,6 +150,8 @@ export function claudeArgs({ system, model = MODEL, effort, tools = [], maxBudge
 function askClaude({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
   const over = overCap(bucket);
   if (over) return Promise.reject(over);
+  const signal = buildScope.getStore()?.signal;
+  if (signal?.aborted) return Promise.reject(stoppedError());
   return new Promise((resolve, reject) => {
     const args = claudeArgs({ system, model, effort, tools, maxBudgetUsd, images });
     const env = { ...process.env, CHLOECTX_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
@@ -153,7 +163,9 @@ function askClaude({ system, prompt, images = [], model = MODEL, effort = proces
     let text = '';
     const seen = { chars: 0, thinking: 0 };
     let settled = false;
-    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); child.kill('SIGKILL'); reject(e); };
+    const onStop = () => fail(stoppedError());
+    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); signal?.removeEventListener('abort', onStop); child.kill('SIGKILL'); reject(e); };
+    signal?.addEventListener('abort', onStop, { once: true });
     const cap = setTimeout(() => fail(new Error(`the model took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
     let idle;
     const quiet = () => {
@@ -187,6 +199,7 @@ function askClaude({ system, prompt, images = [], model = MODEL, effort = proces
       settled = true;
       clearTimeout(cap);
       clearTimeout(idle);
+      signal?.removeEventListener('abort', onStop);
       const data = result;
       if (!data) return reject(new Error(`claude exited ${code}: ${(err || buf || text).slice(0, 600)}`));
       if (data.is_error || data.subtype !== 'success' && data.subtype) {

@@ -14,14 +14,15 @@ use serde_json::{json, Value as Json};
 use crate::{daemon, install, paths};
 
 /// How long each event may wait for the daemon (the first one may start it).
-/// With query understanding on, a prompt may wait for it (`sync`), and the
-/// end of a turn for a search still running (`async`).
+/// With query understanding on, a prompt may wait for it (`sync`), and,
+/// only when `stop_recheck` is turned on, the end of a turn for a search
+/// still running (a few seconds at most).
 fn budget(event: &str, deep: &crate::deep::DeepConfig) -> Duration {
     Duration::from_millis(match event {
         "SessionStart" => 8000,
         "UserPromptSubmit" if deep.mode == "sync" => 1000 + 2 * 1000 * deep.timeout_secs.min(40),
         "UserPromptSubmit" => 3000,
-        "Stop" if deep.mode == "async" && deep.stop_recheck => 3000 + 1000 * deep.stop_wait_secs,
+        "Stop" => 2000 + deep.stop_wait().as_millis() as u64,
         "PostCompact" => 5000,
         "PreToolUse" => 1500,
         _ => 2000,
@@ -54,7 +55,11 @@ pub fn run(event: &str, user: bool) -> i32 {
     // The session's settings travel with each request: the daemon may have
     // been started from elsewhere (a shell, the MCP server) without them.
     let distill_model = std::env::var("CHLOECTX_DISTILL_MODEL").unwrap_or_default();
-    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model, "receipts": daemon::receipts_env()});
+    // Where Claude Code's PATH has the CLI, and whether distillation is
+    // switched off in its environment (CTX-3).
+    let claude = crate::llm::on_path("claude");
+    let distill = std::env::var("CHLOECTX_DISTILL").ok().filter(|v| !v.is_empty()).map(|v| v != "0");
+    let req = json!({"op": "hook", "event": event, "payload": payload, "deep": deep, "distill_model": distill_model, "receipts": daemon::receipts_env(), "claude": claude, "distill": distill});
     let wait = budget(&event, &deep);
     match daemon::request(&dir, &project.to_string_lossy(), &req, wait) {
         Ok(resp) => {
