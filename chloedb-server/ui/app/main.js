@@ -28,7 +28,9 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => bus.
 const brandName = h("b", {}, location.host);
 const brandSub = h("small", {}, "connecting…");
 const brand = h("button", { class: "brand", title: "Which cluster this is, and the others you used", "aria-haspopup": "menu" },
-  h("img", { class: "mark", src: new URL("brand/chloedb-icon.svg", import.meta.url).href, alt: "", width: 28, height: 28 }),
+  h("span", { class: "mark" },
+    h("img", { class: "on-light", src: new URL("brand/chloedb-mark-on-light.svg", import.meta.url).href, alt: "" }),
+    h("img", { class: "on-dark", src: new URL("brand/chloedb-mark.svg", import.meta.url).href, alt: "" })),
   h("div", { class: "clu" }, h("span", { class: "row nw", style: { gap: "4px" } }, brandName, icon("down", "chev")), brandSub));
 
 // Coordinators used from this browser, newest first. Each address keeps its

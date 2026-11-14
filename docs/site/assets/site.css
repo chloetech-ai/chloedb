@@ -129,7 +129,13 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 }
 .top .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 28px; padding-block: 12px; min-height: 64px; }
 .mark { display: inline-flex; align-items: center; gap: 10px; font: 700 1.3rem/1 var(--display); letter-spacing: -0.03em; color: var(--ink); text-decoration: none; }
-.mark img { width: 28px; height: 28px; flex: none; margin-right: -2px; }
+.mark img { height: 32px; width: auto; flex: none; margin-block: -4px; }
+.mark .on-dark { display: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .mark .on-light { display: none; } :root:not([data-theme="light"]) .mark .on-dark { display: block; } }
+:root[data-theme="dark"] .mark .on-light { display: none; }
+:root[data-theme="dark"] .mark .on-dark { display: block; }
+.foot .mark .on-light { display: none; }
+.foot .mark .on-dark { display: block; }
 .mark .db { color: var(--brand-red); margin-left: -10px; }
 .mark:hover { text-decoration: none; }
 .nav { display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 0.94rem; font-weight: 500; flex: 1 1 auto; }
