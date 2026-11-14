@@ -9,6 +9,7 @@ import {
   h, useStyle, toMs, fmtDur, fmtClock, avatar, ctxChip, pill, routeParam, mergeAgents, inlineCode,
   fmtTokens, fmtSpan, fmtDay, keyNav, rerender, later,
 } from "./common.js";
+import { testChip } from "./test-chip.js";
 
 const enc = encodeURIComponent;
 const LEVELS = [
@@ -242,6 +243,7 @@ export function mount(root, ctx) {
         h("b", {}, s.label),
         h("span", { class: "sy-det" }, inlineCode(s.detail || "")),
         s.failed ? pill(`${s.failed} failed`, "crit") : null,
+        s.kind === "run" ? testChip(ctx, S.id, s) : null,
         h("span", { class: `sy-ms${running ? " run" : ""}` }, running ? "running" : s.ms == null ? "—" : fmtSpan(s.ms))),
       open ? eventsOf(s) : null);
   }
