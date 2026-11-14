@@ -1037,7 +1037,9 @@ function compileScreen(text) {
   const scripts = [
     `<script>window.__SA_EXPR = []; window.__SA_CODE = []; window.__SA_EXPR_SRC = ${JSON.stringify(exprs).replace(/</g, '\\u003c')};</script>`,
     ...exprs.map((e, i) => `<script>__SA_EXPR[${i}] = function (s) { with (s) { return (${noClose(e)}\n); } };</script>`),
-    ...codes.map((c, i) => `<script>__SA_CODE[${i}] = function () {\n${noClose(c)}\n;return typeof render === 'function' ? render : null; };</script>`),
+    // A code block sees what an expression of the screen sees by name (params,
+    // today), its own declarations shadowing them.
+    ...codes.map((c, i) => `<script>__SA_CODE[${i}] = function () { var params = (typeof app !== 'undefined' && app.params) || {}; var today = typeof app !== 'undefined' && app.today ? app.today() : ''; return (function () {\n${noClose(c)}\n;return typeof render === 'function' ? render : null; })(); };</script>`),
   ];
   return { spec: compiled, scripts: scripts.join('\n') };
 }

@@ -3277,3 +3277,16 @@ test('a yes/no FILTER says what its chips mean, and a SET action says what it se
   assert.deepEqual(ex.problems, []);
   assert.match(JSON.stringify(ex.screen), /"sets":\{"settled":true\}/);
 });
+
+test('LESSONS NEEDS keeps the lessons shut until its query gives a row, with what unlocks them', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN learn TITLE 'Learn'\nLESSONS lessons\n  PROGRESS progress  NEEDS (SELECT id FROM passes WHERE owner_id = :user_id)  LOCKED 'Get a pass to open them.'  UNLOCK home  OPEN lesson");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.data.lessons_ok, /app\.sql\("SELECT id FROM passes WHERE owner_id = :user_id"\)/);
+  assert.deepEqual(e.screen.body[1].then[0].card.map((b) => b.text || b.button), ['Get a pass to open them.', 'Enrol']);
+  assert.match(e.screen.let.lessons_go, /app\.toast/);
+  // with no NEEDS, nothing is shut
+  const open = expandWith(compileStatement("CREATE SCREEN learn TITLE 'Learn'\nLESSONS lessons\n  PROGRESS progress  OPEN lesson").screen);
+  assert.equal(open.screen.data.lessons_ok, undefined);
+});

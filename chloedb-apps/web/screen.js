@@ -1071,7 +1071,7 @@ window.__sa_numbers = (() => {
       const render = make();
       if (typeof render !== 'function') throw new Error('the code block defines no render(root, ctx)');
       const box = h('div', { class: 'code-box' });
-      const ctx = { state, set, refresh, data: { ...data, ...lets }, app, ...data, ...lets };
+      const ctx = { state, set, refresh, params: app.params, today: app.today(), data: { ...data, ...lets }, app, ...data, ...lets };
       Promise.resolve().then(() => render(box, ctx)).catch((e) => { report(fail(path, e)); box.replaceChildren(h('div', { class: 'small', style: 'color: var(--bad)' }, `This part of the screen failed: ${e.message}`)); });
       return box;
     }
