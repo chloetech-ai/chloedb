@@ -959,7 +959,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         // A key for operations: the server's views, and for `ops` the
         // bounded actions ([`crate::ops::role_may`]).
-        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may_by_role(need, &format!("{method} {route}"), crate::ops::role_may(Some(keys::Role::Ops), &method, route)).err(),
         // An agent says why it changes the server: the audit log keeps it.
         Some(w) if agent_needs_reason(w, &method, route) => Some(ApiError::coded(
             400,
