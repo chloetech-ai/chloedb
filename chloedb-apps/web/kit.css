@@ -793,3 +793,7 @@ form.wide > .actions > button.primary { min-height: 44px; padding-inline: 20px; 
 /* emphasis written as *words* (web/frame.js): the accent in a title, italic in text */
 em.sa-em { font-style: italic; }
 :is(h1, h2, h3, h4, .fp-title, .fp-display) em.sa-em { font-style: normal; color: var(--accent); }
+
+/* a table wider than its page's column (web/screen.js): as wide as it needs,
+   up to the window, centred on the column */
+.tablewrap.bleed { position: relative; left: 50%; transform: translateX(-50%); width: min(var(--want, 100%), calc(100vw - 48px)); max-width: none; }

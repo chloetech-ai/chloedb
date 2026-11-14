@@ -1260,6 +1260,18 @@ window.__sa_numbers = (() => {
           if (front) front.after(root);
           window.__sa_gated?.(gated);
           window.__sa_bounds?.();
+          // A table wider than its page's column (a narrow reading page, a
+          // card) widens past it, up to the window, before it scrolls: its
+          // last columns are never cut off at the right.
+          requestAnimationFrame(() => {
+            for (const w of root.querySelectorAll('.tablewrap')) {
+              w.classList.remove('bleed');
+              if (w.scrollWidth > w.clientWidth + 4 && innerWidth > 860 && !w.closest('.lay-split, .lay-grid, .sa-sheet, .card .card')) {
+                w.classList.add('bleed');
+                w.style.setProperty('--want', `${w.scrollWidth}px`);
+              }
+            }
+          });
           restore(f);
           tidy();
         } while (again);
