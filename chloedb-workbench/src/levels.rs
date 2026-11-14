@@ -41,20 +41,25 @@ pub struct Levels {
     /// Agents whose narration is being made, with the next hook to make it
     /// from when another came meanwhile.
     narrating: Mutex<HashMap<String, Option<Json_>>>,
-    /// Each agent's last `PreToolUse` summary: the context of a permission
-    /// question.
-    last_pre: Mutex<HashMap<String, String>>,
+    /// Each agent's `PreToolUse` hook while it is the last hook it sent:
+    /// what a permission question asks about.
+    pub last_pre: Mutex<HashMap<String, Json_>>,
     /// Each agent's open permission question.
     pub open_perm: Mutex<HashMap<String, String>>,
+    /// Agents Workbench types an answer into now (src/questions.rs).
+    pub typing: Mutex<HashSet<String>>,
 }
 
 impl Levels {
     /// The levels' state; questions a previous server left open expire
     /// (their agents ended with it).
-    pub fn new(sup: &Supervisor) -> Arc<Levels> {
+    /// Starts the screen watcher (src/questions.rs).
+    pub fn new(sup: &Arc<Supervisor>) -> Arc<Levels> {
         let (questions, _) = broadcast::channel(1024);
-        let lv = Arc::new(Levels { questions, write: Mutex::new(()), narrating: Mutex::new(HashMap::new()), last_pre: Mutex::new(HashMap::new()), open_perm: Mutex::new(HashMap::new()) });
+        let lv = Arc::new(Levels { questions, write: Mutex::new(()), narrating: Mutex::new(HashMap::new()), last_pre: Mutex::new(HashMap::new()), open_perm: Mutex::new(HashMap::new()), typing: Mutex::new(HashSet::new()) });
+        questions::migrate(sup);
         questions::expire_stale(sup, &lv);
+        questions::watch_screens(sup.clone(), lv.clone());
         lv
     }
 
@@ -312,15 +317,17 @@ pub fn after_hook(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, hook: &Json
     let tool = hook.get("tool_name").and_then(Json_::as_str).unwrap_or("");
     match kind {
         "PreToolUse" => {
-            lv.last_pre.lock().unwrap().insert(id.to_string(), crate::supervisor::summarize(kind, hook));
+            lv.last_pre.lock().unwrap().insert(id.to_string(), hook.clone());
         }
         "Notification" => {
             if questions::is_permission(hook) {
-                let ctx = lv.last_pre.lock().unwrap().get(id).cloned();
-                questions::create_permission(sup, lv, id, hook, ctx);
+                let pre = lv.last_pre.lock().unwrap().get(id).cloned();
+                questions::create_permission(sup, lv, id, hook, pre);
             }
         }
-        _ => {}
+        _ => {
+            lv.last_pre.lock().unwrap().remove(id);
+        }
     }
     if kind != "Notification" {
         // A permission prompt answered in the terminal: anything else the
@@ -524,7 +531,13 @@ fn deliver(sup: &Supervisor, id: &str, event: &str, source: &str) -> Option<Json
 /// `POST /api/agents/:id/steer`: an idle agent gets it typed with Enter; a
 /// busy one gets it as additional context at its next hook that can carry
 /// it (`PostToolUse`, `UserPromptSubmit`), or typed when its turn ends.
-pub fn steer(sup: &Arc<Supervisor>, _lv: &Levels, id: &str, text: &str) -> Result<Json_, ApiError> {
+///
+/// What its screen shows decides first (SPEC.md, "Sixth build: Safe
+/// answering"): at its text prompt (idle, or interrupted while the hooks
+/// still say working) it is typed in; at a menu nothing is typed, since a
+/// key there chooses an option. `message` says what happened, for the
+/// screen that sent it.
+pub fn steer(sup: &Arc<Supervisor>, lv: &Levels, id: &str, text: &str) -> Result<Json_, ApiError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(ApiError::bad("text is empty"));
@@ -538,18 +551,27 @@ pub fn steer(sup: &Arc<Supervisor>, _lv: &Levels, id: &str, text: &str) -> Resul
     }
     let sid = new_id("s");
     sup.note(id, "steer", format!("steer: {}", one_line(text, 200)), Some(json!({ "id": sid, "text": text }).to_string()), |_| {})?;
-    let delivered = if a.state == "idle" {
-        sup.input(id, text, true, None)?;
-        record_delivery(sup, id, &sid, "typed");
-        "typed"
-    } else {
-        "queued"
+    let w = sup.waits(id);
+    let (delivered, message) = match &w {
+        crate::screen::Waits::Menu(m) => {
+            let what = if m.question.is_empty() { "a choice".to_string() } else { format!("“{}”", one_line(&m.question, 120)) };
+            ("queued", format!("Nothing was typed: {} shows a prompt ({what}), where a key would choose an option. Answer it first (Decide, or its terminal); your words reach {} at its next tool call, or as its next prompt when its turn ends.", a.name, a.name))
+        }
+        _ if a.state == "idle" || matches!(w, crate::screen::Waits::Input { .. }) => {
+            let _typing = questions::Typing::start(lv, id);
+            sup.input(id, text, true, None)?;
+            record_delivery(sup, id, &sid, "typed");
+            let after = if matches!(w, crate::screen::Waits::Input { interrupted: true }) { " It had been interrupted and was waiting for what to do instead." } else { "" };
+            ("typed", format!("Typed into {}'s prompt as its next instruction.{after}", a.name))
+        }
+        _ => ("queued", format!("{} is working: it gets this at its next tool call, or as its next prompt when this turn ends.", a.name)),
     };
-    Ok(json!({ "ok": true, "steer": { "id": sid, "text": text }, "delivered": delivered }))
+    Ok(json!({ "ok": true, "steer": { "id": sid, "text": text }, "delivered": delivered, "message": message }))
 }
 
-/// At the end of a turn, steers that found no hook to ride are typed in.
-fn type_pending_steers(sup: &Arc<Supervisor>, id: &str) {
+/// At the end of a turn (or when its screen shows it idle at its prompt),
+/// steers that found no hook to ride are typed in.
+pub(crate) fn type_pending_steers(sup: &Arc<Supervisor>, id: &str) {
     let told = delivered(sup, id);
     let pending: Vec<Steer> = steers(sup, id).into_iter().filter(|s| !told.contains(&s.id)).collect();
     if pending.is_empty() {

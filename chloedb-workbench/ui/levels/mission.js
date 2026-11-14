@@ -240,13 +240,16 @@ function mountMission(root, ctx) {
     S.flash.set(q.id, { text: `Answered: ${label}`, ok: null });
     render();
     try {
-      await ctx.api(`/api/questions/${enc(q.id)}/answer`, { method: "POST", body: { option } });
+      await ctx.api(`/api/questions/${enc(q.id)}/answer`, { method: "POST", body: q.kind === "permission" ? { option, label } : { option } });
       const a = agentMap().get(q.agent);
       S.flash.set(q.id, { text: `Answered “${label}”.${a ? ` ${a.name} goes on.` : ""}`, ok: true });
       setTimeout(() => { S.flash.delete(q.id); if (alive) render(); }, 4000);
       await load();
     } catch (e) {
-      S.flash.set(q.id, { text: `Not answered: ${e.message}`, ok: false });
+      // A prompt that left its agent's screen: nothing was typed, and its
+      // question is closed (sixth build); say why for a while.
+      S.flash.set(q.id, { text: `Not answered. ${e.message}`, ok: false });
+      if (e.status === 409) { setTimeout(() => { S.flash.delete(q.id); if (alive) render(); }, 9000); await load(); }
       render();
     }
   }
@@ -268,19 +271,26 @@ function mountMission(root, ctx) {
     const n = blocks(q);
     const open = () => { try { sessionStorage.setItem("wb.decide.q", q.id); } catch {} ctx.go("#/decide"); };
     const perm = q.kind === "permission";
-    const pick = perm ? [[0, "Yes"], [1, "Always"], [2, "No"]] : opts.length <= 2 ? opts.map((o, i) => [i, o.label]) : [];
-    const best = perm ? 0 : opts.findIndex((o) => o.matches_precedent) >= 0 ? opts.findIndex((o) => o.matches_precedent) : q.recommended ?? -1;
+    // Sixth build: a prompt's own options (as its screen lists them): its
+    // plain first one and its "No" here, the rest in Decide; none until
+    // they are read.
+    const plain = opts.findIndex((o, i) => i === 0 && !o.no && !o.grants);
+    const no = opts.findIndex((o) => o.no);
+    const pick = perm ? [plain, no].filter((i) => i >= 0).map((i) => [i, opts[i].label]) : opts.length <= 2 ? opts.map((o, i) => [i, o.label]) : [];
+    const best = perm ? plain : opts.findIndex((o) => o.matches_precedent) >= 0 ? opts.findIndex((o) => o.matches_precedent) : q.recommended ?? -1;
+    const d = q.detail || {};
     return h("div", { class: `mi-q${perm ? " perm" : ""}` },
       h("div", { class: "mi-q-top" }, a ? avatar(a, 24) : avatar({ name: "?" }, 24),
         h("div", { class: "mi-q-body" },
-          h("button", { class: "mi-q-t", "data-nav": "", "data-key": `q:${q.id}`, onclick: open, title: "Open in Decide" }, perm ? `${a ? a.name : "An agent"} wants to run` : q.text),
-          perm && q.context ? h("code", { class: "mi-cmd" }, q.context) : null,
+          h("button", { class: "mi-q-t", "data-nav": "", "data-key": `q:${q.id}`, onclick: open, title: "Open in Decide" }, perm ? (d.menu?.kind === "trust" ? `${a ? a.name : "An agent"} asks: trust this folder?` : d.action ? `${a ? a.name : "An agent"} wants to: ${d.action}` : `${a ? a.name : "An agent"} wants to run`) : q.text),
+          perm && q.context && !d.action ? h("code", { class: "mi-cmd" }, q.context) : null,
           h("div", { class: "mi-q-m" }, [a?.name, `waiting ${fmtDur(Date.now() - toMs(q.created))}`, n ? `blocks ${plural(n, "outcome")}` : null].filter(Boolean).join(" · "))),
         pick.length ? h("button", { class: "btn sm ghost icon mi-open", "data-key": `qo:${q.id}`, onclick: open, title: "Open in Decide", "aria-label": "Open in Decide" }, "↗") : null),
       f ? h("div", { class: `mi-flash ${f.ok === false ? "bad" : "ok"}` }, f.ok === null ? h("i", { class: "mi-spin sm" }) : null, f.text) :
         h("div", { class: "mi-q-acts" },
-          pick.map(([i, label]) => h("button", { class: `btn sm${i === best ? " primary" : ""}`, "data-key": `qa:${q.id}:${i}`, title: perm ? opts[i]?.label || label : opts[i]?.detail || "", onclick: () => answer(q, i, label) }, label)),
-          pick.length ? null : h("button", { class: "btn sm", "data-key": `qo:${q.id}`, onclick: open }, "Answer in Decide")));
+          pick.map(([i, label]) => h("button", { class: `btn sm${i === best ? " primary" : ""}`, "data-key": `qa:${q.id}:${i}`, title: perm ? `Choose “${label}” in its prompt` : opts[i]?.detail || "", onclick: () => answer(q, i, label) }, label)),
+          perm && opts.length > pick.length ? h("button", { class: "btn sm ghost", "data-key": `qm:${q.id}`, onclick: open, title: "Every option of its prompt, and the whole command" }, `${opts.length - pick.length} more…`) : null,
+          pick.length ? null : h("button", { class: "btn sm", "data-key": `qo:${q.id}`, onclick: open }, perm && !opts.length ? "Reading its prompt… open in Decide" : "Answer in Decide")));
   }
 
   function headsUp(agents) {

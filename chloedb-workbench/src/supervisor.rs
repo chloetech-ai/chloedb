@@ -91,6 +91,8 @@ pub struct Term {
     output: Mutex<Output>,
     /// Its recording, `sessions/<id>/term.cast`, while it records.
     rec: Mutex<Option<Recorder>>,
+    /// What the terminal shows now (src/screen.rs).
+    screen: Mutex<crate::screen::Screen>,
     alive: AtomicBool,
     pid: i32,
 }
@@ -149,6 +151,9 @@ pub struct SpawnRequest {
     /// Set by [`Supervisor::restart_request`]: the agent this one restarts.
     #[serde(skip)]
     pub restart: Option<Restart>,
+    /// Ask before edits, tests and git in its own worktree (by default
+    /// it does them there without asking: `flow::worktree_allow`).
+    pub ask_edits: Option<bool>,
 }
 
 /// An exited agent started again: same name, task, worktree and model,
@@ -563,7 +568,10 @@ impl Supervisor {
             {
                 let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy()));
                 if read_only {
+                    // Read-only wins: no worktree defaults that allow edits.
                     crate::guarded::read_only_settings(s)
+                } else if worktree && !req.ask_edits.unwrap_or(false) {
+                    crate::flow::with_worktree_defaults(s, &cwd)
                 } else {
                     s
                 }
@@ -638,6 +646,7 @@ impl Supervisor {
             master: Mutex::new(pair.master),
             output: Mutex::new(Output { ring: VecDeque::with_capacity(64 * 1024), tx: Some(out_tx) }),
             rec: Mutex::new(rec),
+            screen: Mutex::new(crate::screen::Screen::new(COLS, ROWS)),
             alive: AtomicBool::new(true),
             pid,
         });
@@ -842,6 +851,7 @@ impl Supervisor {
         let m = term.master.lock().unwrap();
         m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| ApiError::internal(e.to_string()))?;
         drop(m);
+        term.screen.lock().unwrap().resize(cols, rows);
         let full = term.rec.lock().unwrap().as_mut().map(|r| r.resize(cols, rows));
         self.recording_full(id, &term, full);
         Ok(())
@@ -1057,6 +1067,45 @@ impl Supervisor {
     }
 }
 
+// What a running agent's terminal shows, and keys typed into it to answer
+// what it shows (SPEC.md, "Sixth build: Safe answering").
+impl Supervisor {
+    /// The lines its terminal shows now and a number that changes with
+    /// them, or `None` when it does not run.
+    pub fn screen(&self, id: &str) -> Option<(Vec<String>, u64)> {
+        let term = self.term(id).ok()?;
+        let s = term.screen.lock().unwrap();
+        Some((s.lines(), s.version))
+    }
+
+    /// What its screen waits on now (`Unknown` when it does not run).
+    pub fn waits(&self, id: &str) -> crate::screen::Waits {
+        match self.screen(id) {
+            Some((lines, _)) => crate::screen::read(&lines),
+            None => crate::screen::Waits::Unknown,
+        }
+    }
+
+    /// An arrow key as its terminal wants it (`up` or down).
+    pub fn arrow(&self, id: &str, up: bool) -> Result<(), ApiError> {
+        let term = self.term(id)?;
+        let app = term.screen.lock().unwrap().app_cursor();
+        let key: &[u8] = match (app, up) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1bOB",
+            (false, true) => b"\x1b[A",
+            (false, false) => b"\x1b[B",
+        };
+        term.write(key).map_err(|e| ApiError::internal(format!("cannot write to the terminal: {e}")))
+    }
+
+    /// Keys typed as they are, with no event (an answer records its own).
+    pub fn type_raw(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
+        let term = self.term(id)?;
+        term.write(bytes).map_err(|e| ApiError::internal(format!("cannot write to the terminal: {e}")))
+    }
+}
+
 // The levels' state: marks (small key/value rows) and an agent's preview.
 impl Supervisor {
     /// A mark's value, or `None`.
@@ -1112,6 +1161,7 @@ fn read_output(mut reader: Box<dyn Read + Send>, term: &Term, sup: &Supervisor, 
             Ok(n) => {
                 let wrote = term.rec.lock().unwrap().as_mut().map(|r| r.output(&buf[..n]));
                 sup.recording_full(id, term, wrote);
+                term.screen.lock().unwrap().feed(&buf[..n]);
                 let mut out = term.output.lock().unwrap();
                 out.ring.extend(&buf[..n]);
                 let excess = out.ring.len().saturating_sub(SCROLLBACK);

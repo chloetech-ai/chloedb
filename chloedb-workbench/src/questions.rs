@@ -3,10 +3,10 @@
 //! (precedent), your answers, and the rules made from them, which every
 //! agent of the repository is then told.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chloedb::query::Params;
 use chloedb::Value;
@@ -15,11 +15,9 @@ use serde_json::{json, Value as Json};
 
 use crate::db::{get_int, get_ms, get_str, iso, now_ms, opt_int, opt_str, ts};
 use crate::levels::{new_id, Levels};
+use crate::screen::{Menu, MenuKind, Waits};
 use crate::supervisor::{one_line, ApiError, Supervisor};
 use crate::trail::{self, Ran};
-
-/// The options of a permission prompt, as Claude Code numbers them.
-pub const PERMISSION_OPTIONS: [&str; 3] = ["Yes", "Yes, and don't ask again", "No"];
 
 #[derive(Clone, Debug, Default)]
 pub struct Question {
@@ -43,9 +41,19 @@ pub struct Question {
     pub rule: Option<String>,
     pub created: i64,
     pub answered: Option<i64>,
+    /// A permission question's detail (SPEC.md, "Sixth build: Safe
+    /// answering"): the whole command or the diff of the edit, the agent
+    /// another agent's request is about, and `menu`, the prompt as its
+    /// agent's screen showed it (its signature, options and question).
+    pub detail: Option<Json>,
 }
 
-pub(crate) const Q_COLS: &str = "id, agent, outcome, repo, kind, text, context, options, recommended, precedent, state, answer, answered_by, rule, created, answered";
+pub(crate) const Q_COLS: &str = "id, agent, outcome, repo, kind, text, context, options, recommended, precedent, state, answer, answered_by, rule, created, answered, detail";
+
+/// The column the sixth build added.
+pub fn migrate(sup: &Supervisor) {
+    let _ = sup.db().query("ALTER TABLE questions ADD COLUMN IF NOT EXISTS detail TEXT", &Params::new());
+}
 
 impl Question {
     pub(crate) fn of(r: &[Value]) -> Question {
@@ -67,6 +75,7 @@ impl Question {
             rule: get_str(&r[13]),
             created: get_ms(&r[14]).unwrap_or(0),
             answered: get_ms(&r[15]),
+            detail: r.get(16).and_then(js),
         }
     }
 
@@ -91,7 +100,8 @@ impl Question {
             .set("answered_by", opt_str(&self.answered_by))
             .set("rule", opt_str(&self.rule))
             .set("created", ts(self.created))
-            .set("answered", self.answered.map_or(Value::Null, ts));
+            .set("answered", self.answered.map_or(Value::Null, ts))
+            .set("detail", self.detail.as_ref().map_or(Value::Null, |d| Value::Str(d.to_string())));
         let names: Vec<String> = Q_COLS.split(", ").map(|c| format!(":{c}")).collect();
         sup.db().query(&format!("INSERT OR REPLACE INTO questions ({Q_COLS}) VALUES ({})", names.join(", ")), &p).map_err(ApiError::internal)?;
         Ok(())
@@ -105,6 +115,7 @@ impl Question {
             "kind": self.kind, "text": self.text, "context": self.context, "options": self.options, "recommended": self.recommended,
             "precedent": self.precedent, "state": self.state, "answer": self.answer, "answered_by": self.answered_by, "rule": self.rule,
             "created": iso(self.created), "created_ms": self.created, "answered": self.answered.map(iso), "answered_ms": self.answered,
+            "detail": self.detail,
         })
     }
 
@@ -362,37 +373,300 @@ pub fn is_permission(hook: &Json) -> bool {
 }
 
 /// A permission prompt becomes a question (one open at a time per agent).
-pub fn create_permission(sup: &Arc<Supervisor>, lv: &Arc<Levels>, agent: &str, hook: &Json, context: Option<String>) {
+/// `pre` is the `PreToolUse` hook it asks about, when the session's last
+/// hook was one: the whole command, or the edit's diff, come from it. Its
+/// options are the ones its agent's screen shows (none until Workbench has
+/// read them there; the screen watcher fills them in).
+pub fn create_permission(sup: &Arc<Supervisor>, lv: &Arc<Levels>, agent: &str, hook: &Json, pre: Option<Json>) {
     if lv.open_perm.lock().unwrap().contains_key(agent) {
         return;
     }
     let Some(a) = sup.agent_row(agent) else { return };
     let text = one_line(hook.get("message").and_then(Json::as_str).unwrap_or("Claude needs your permission"), 500);
-    let q = Question {
+    let mut q = Question {
         id: new_id("q"),
         agent: Some(a.id.clone()),
         outcome: a.outcome.clone(),
         repo: Some(a.repo.clone()),
         kind: "permission".into(),
         text,
-        context,
-        options: Json::Array(PERMISSION_OPTIONS.iter().map(|l| json!({ "label": l, "matches_precedent": false })).collect()),
+        context: None,
+        options: json!([]),
         recommended: None,
         state: "open".into(),
         created: now_ms(),
         ..Question::default()
     };
-    if q.put(sup).is_err() {
-        return;
+    set_tool(sup, &mut q, pre.as_ref());
+    if let crate::screen::Waits::Menu(m) = sup.waits(agent) {
+        if m.kind != MenuKind::Trust {
+            attach_menu(&mut q, &m);
+        }
     }
-    lv.open_perm.lock().unwrap().insert(a.id.clone(), q.id.clone());
-    // Its Notification event stands for it: no `question` event.
-    let _ = sup.update_agent(&a.id, |ag| {
-        ag.narration = Some(one_line(&q.text, crate::narrate::MAX_CHARS));
+    open_question(sup, lv, q, None);
+}
+
+/// The question's context and detail from the tool call it asks about.
+fn set_tool(sup: &Supervisor, q: &mut Question, pre: Option<&Json>) {
+    let Some(pre) = pre else { return };
+    let d = detail_of(sup, pre);
+    q.context = d["action"].as_str().map(str::to_string).or_else(|| d["summary"].as_str().map(str::to_string));
+    q.detail = Some(d);
+}
+
+/// Saves a new open question, marks it its agent's open prompt and tells
+/// the screens; `note` is the event that says so (none for one a
+/// Notification stands for).
+fn open_question(sup: &Arc<Supervisor>, lv: &Arc<Levels>, q: Question, note: Option<String>) {
+    {
+        let _w = lv.write.lock().unwrap();
+        if q.put(sup).is_err() {
+            return;
+        }
+    }
+    let agent = q.agent.clone().unwrap_or_default();
+    lv.open_perm.lock().unwrap().insert(agent.clone(), q.id.clone());
+    let line = one_line(&q.text, crate::narrate::MAX_CHARS);
+    let waiting = one_line(&q.text, 500);
+    let set = |ag: &mut crate::db::Agent| {
+        ag.narration = Some(line.clone());
         ag.narration_ts = Some(now_ms());
-    });
+    };
+    match note {
+        Some(n) => {
+            let _ = sup.note(&agent, "screen", n, Some(json!({ "question": q.id }).to_string()), |ag| {
+                set(ag);
+                if ag.state != "exited" {
+                    Supervisor::set_agent_state(ag, "waiting");
+                    ag.waiting_for = Some(waiting.clone());
+                }
+            });
+        }
+        None => {
+            let _ = sup.update_agent(&agent, set);
+        }
+    }
     lv.changed(&q.id);
     find_precedent_later(sup, lv, &q.id);
+}
+
+/// The options of a menu as a question keeps them: the label the screen
+/// shows, its number, and what it grants beyond this one call.
+fn options_of(m: &Menu) -> Json {
+    let no = crate::screen::no_option(m);
+    Json::Array(
+        m.options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let mut v = json!({ "label": o.label, "n": o.n, "no": no == Some(i), "matches_precedent": false });
+                if let Some(g) = crate::screen::grants_more(&o.label) {
+                    v["grants"] = json!(g);
+                }
+                v
+            })
+            .collect(),
+    )
+}
+
+/// Gives a question the prompt its agent's screen shows.
+fn attach_menu(q: &mut Question, m: &Menu) {
+    q.options = options_of(m);
+    let mut d = q.detail.clone().unwrap_or_else(|| json!({}));
+    d["menu"] = json!({ "kind": m.kind.as_str(), "question": m.question, "header": m.header, "footer": m.footer, "sig": m.signature(), "labels": m.labels() });
+    q.detail = Some(d);
+}
+
+/// The signature of the prompt a question was read from, if it was.
+fn menu_sig(q: &Question) -> Option<String> {
+    q.detail.as_ref()?.get("menu")?.get("sig")?.as_str().map(str::to_string)
+}
+
+/// What a question shows of the tool call a `PreToolUse` hook made: its
+/// one line (`summary`), the whole command, the diff of an edit, or, for a
+/// request about another agent, that agent by name and state (`action`).
+pub fn detail_of(sup: &Supervisor, pre: &Json) -> Json {
+    let tool = pre.get("tool_name").and_then(Json::as_str).unwrap_or("");
+    let input = pre.get("tool_input").cloned().unwrap_or(Json::Null);
+    let s = |k: &str| input.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+    let mut d = json!({ "tool": tool, "summary": crate::supervisor::summarize("PreToolUse", pre) });
+    let cwd = pre.get("cwd").and_then(Json::as_str).unwrap_or("");
+    match tool {
+        "Bash" => {
+            d["command"] = json!(cap(&s("command"), 64 * 1024));
+            if !s("description").is_empty() {
+                d["description"] = json!(s("description"));
+            }
+        }
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
+            let file = if s("file_path").is_empty() { s("notebook_path") } else { s("file_path") };
+            d["file"] = json!(file);
+            if !cwd.is_empty() {
+                if let Ok(rel) = std::path::Path::new(&file).strip_prefix(cwd) {
+                    d["rel"] = json!(rel.to_string_lossy());
+                    d["summary"] = json!(format!("{tool}: {}", rel.to_string_lossy()));
+                }
+            }
+            let (diff, lines) = edit_diff(tool, &file, &input);
+            d["diff"] = json!(diff);
+            d["diff_lines"] = json!(lines);
+        }
+        t if t.starts_with("mcp__workbench__") => {
+            let short = &t["mcp__workbench__".len()..];
+            let id = s("id");
+            let other = (!id.is_empty()).then(|| sup.agent_row(&id)).flatten();
+            let who = other.as_ref().map(|o| {
+                let running = sup.is_running(&o.id);
+                let state = if !running { "exited".to_string() } else if o.state == "waiting" { "waiting for you".into() } else { o.state.clone() };
+                let oc = o.outcome.as_deref().and_then(|x| crate::goals::outcome(sup, x).ok());
+                d["agent"] = json!({ "id": o.id, "name": o.name, "state": o.state, "running": running, "outcome": oc.as_ref().map(|x| x.title.clone()), "outcome_state": oc.as_ref().map(|x| x.state.clone()) });
+                let mut how = state;
+                if let Some(oc) = &oc {
+                    how.push_str(&format!(", its outcome {}", oc.state.replace('_', " ")));
+                }
+                format!("{} ({how})", o.name)
+            });
+            let who = who.unwrap_or_else(|| if id.is_empty() { String::new() } else { format!("agent {id}, which Workbench does not know") });
+            let action = match short {
+                "stop_agent" => format!("Stop {who}"),
+                "send_to_agent" => format!("Type into {who}: “{}”", one_line(&s("text"), 200)),
+                "wait_agent" => format!("Wait for {who}"),
+                "read_agent" => format!("Read {who}'s events"),
+                "spawn_agent" => format!("Start an agent{}: {}", if s("name").is_empty() { String::new() } else { format!(" named {}", s("name")) }, one_line(&s("task"), 200)),
+                "blast_radius" | "prepare_pr" if !who.is_empty() => format!("{} for {who}", short.replace('_', " ")),
+                other => format!("Use Workbench's {}", other.replace('_', " ")),
+            };
+            d["action"] = json!(action);
+            d["input"] = json!(cap(&input.to_string(), 8 * 1024));
+        }
+        _ if !input.is_null() => d["input"] = json!(cap(&input.to_string(), 8 * 1024)),
+        _ => {}
+    }
+    d
+}
+
+fn cap(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+/// The most lines a question's diff keeps.
+const DIFF_MAX: usize = 600;
+
+/// The diff an edit would make, as lines starting with ` `, `-` or `+`
+/// (`@@ line N` before each hunk when the file shows where), and the number
+/// of lines it changes.
+fn edit_diff(tool: &str, file: &str, input: &Json) -> (String, usize) {
+    let on_disk = std::fs::read_to_string(file).ok();
+    let s = |v: &Json, k: &str| v.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+    let mut out: Vec<String> = Vec::new();
+    let mut changed = 0;
+    let mut hunk = |old: &str, new: &str, at: Option<usize>, out: &mut Vec<String>| {
+        if let Some(n) = at {
+            out.push(format!("@@ line {n}"));
+        }
+        for l in line_diff(old, new) {
+            if !l.starts_with(' ') {
+                changed += 1;
+            }
+            out.push(l);
+        }
+    };
+    let line_of = |old: &str| on_disk.as_deref().and_then(|t| if old.is_empty() { None } else { t.find(old) }).map(|i| on_disk.as_deref().unwrap()[..i].matches('\n').count() + 1);
+    match tool {
+        "Edit" => hunk(&s(input, "old_string"), &s(input, "new_string"), line_of(&s(input, "old_string")), &mut out),
+        "MultiEdit" => {
+            for e in input.get("edits").and_then(Json::as_array).into_iter().flatten() {
+                hunk(&s(e, "old_string"), &s(e, "new_string"), line_of(&s(e, "old_string")), &mut out);
+            }
+        }
+        "Write" => match &on_disk {
+            Some(old) => hunk(old, &s(input, "content"), None, &mut out),
+            None => {
+                out.push("(a new file)".into());
+                hunk("", &s(input, "content"), None, &mut out);
+            }
+        },
+        _ => {
+            let cell = s(input, "cell_id");
+            out.push(format!("({} cell{})", if s(input, "edit_mode").is_empty() { "replaces a" } else { "edits a" }, if cell.is_empty() { String::new() } else { format!(" {cell}") }));
+            hunk("", &s(input, "new_source"), None, &mut out);
+        }
+    }
+    if out.len() > DIFF_MAX {
+        let more = out.len() - DIFF_MAX;
+        out.truncate(DIFF_MAX);
+        out.push(format!("… {more} more lines"));
+    }
+    (out.join("\n"), changed)
+}
+
+/// A line diff of `old` and `new`: unchanged lines start with a space,
+/// removed ones with `-`, added ones with `+`; at most 3 unchanged lines
+/// around a change, `…` for those left out.
+pub fn line_diff(old: &str, new: &str) -> Vec<String> {
+    let a: Vec<&str> = if old.is_empty() { Vec::new() } else { old.lines().collect() };
+    let b: Vec<&str> = if new.is_empty() { Vec::new() } else { new.lines().collect() };
+    let mut ops: Vec<(char, &str)> = Vec::new();
+    if a.len() * b.len() > 4_000_000 {
+        ops.extend(a.iter().map(|l| ('-', *l)));
+        ops.extend(b.iter().map(|l| ('+', *l)));
+    } else {
+        // Longest common subsequence, from the end.
+        let (n, m) = (a.len(), b.len());
+        let mut t = vec![0u32; (n + 1) * (m + 1)];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                t[i * (m + 1) + j] = if a[i] == b[j] { t[(i + 1) * (m + 1) + j + 1] + 1 } else { t[(i + 1) * (m + 1) + j].max(t[i * (m + 1) + j + 1]) };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n || j < m {
+            if i < n && j < m && a[i] == b[j] {
+                ops.push((' ', a[i]));
+                i += 1;
+                j += 1;
+            } else if j < m && (i == n || t[i * (m + 1) + j + 1] >= t[(i + 1) * (m + 1) + j]) {
+                ops.push(('+', b[j]));
+                j += 1;
+            } else {
+                ops.push(('-', a[i]));
+                i += 1;
+            }
+        }
+        // Removals before additions within a change.
+        let mut k = 0;
+        while k < ops.len() {
+            if ops[k].0 == ' ' {
+                k += 1;
+                continue;
+            }
+            let end = (k..ops.len()).find(|&x| ops[x].0 == ' ').unwrap_or(ops.len());
+            ops[k..end].sort_by_key(|o| o.0 != '-');
+            k = end;
+        }
+    }
+    let near = |i: usize| (i.saturating_sub(3)..(i + 4).min(ops.len())).any(|x| ops[x].0 != ' ');
+    let mut out = Vec::new();
+    let mut skipped = false;
+    for (i, (op, l)) in ops.iter().enumerate() {
+        if *op == ' ' && !near(i) {
+            skipped = true;
+            continue;
+        }
+        if skipped {
+            out.push("…".to_string());
+            skipped = false;
+        }
+        out.push(format!("{op}{l}"));
+    }
+    out
 }
 
 /// The agent did something after its permission prompt: it was answered
@@ -410,6 +684,339 @@ pub fn answered_in_terminal(sup: &Supervisor, lv: &Levels, agent: &str) {
             lv.changed(&q.id);
         }
     }
+}
+
+/// Closes an open question whose prompt is gone (`expired`, by `screen`,
+/// the answer saying why), and says so in its agent's events.
+fn close_question(sup: &Supervisor, lv: &Levels, qid: &str, why: &str) {
+    let agent = {
+        let _w = lv.write.lock().unwrap();
+        match get(sup, qid) {
+            Ok(mut q) if q.state == "open" => {
+                q.state = "expired".into();
+                q.answered_by = Some("screen".into());
+                q.answer = Some(why.to_string());
+                q.answered = Some(now_ms());
+                let _ = q.put(sup);
+                q.agent
+            }
+            _ => None,
+        }
+    };
+    let Some(agent) = agent else { return };
+    {
+        let mut open = lv.open_perm.lock().unwrap();
+        if open.get(&agent).map(String::as_str) == Some(qid) {
+            open.remove(&agent);
+        }
+    }
+    let _ = sup.note(&agent, "screen", format!("question closed: {}", one_line(why, 200)), Some(json!({ "question": qid }).to_string()), |_| {});
+    lv.changed(qid);
+}
+
+// The screen watcher.
+
+/// What the watcher remembers of an agent's screen.
+struct Watched {
+    /// What the screen waits on, as a string, and since when.
+    reading: String,
+    since: Instant,
+    /// The trust prompts it has answered (by signature).
+    trusted: HashSet<String>,
+    /// Workbench set the agent waiting from its screen.
+    set_waiting: bool,
+}
+
+/// How long a reading must hold before the watcher acts on it.
+const SETTLE: Duration = Duration::from_millis(600);
+const GONE_AFTER: Duration = Duration::from_millis(1500);
+const IDLE_AFTER: Duration = Duration::from_millis(2500);
+
+fn reading_of(w: &Waits) -> String {
+    match w {
+        Waits::Menu(m) => format!("menu:{}:{}", m.signature(), m.selected),
+        Waits::Input { interrupted } => format!("input:{interrupted}"),
+        Waits::Busy => "busy".into(),
+        Waits::Unknown => "unknown".into(),
+    }
+}
+
+/// Watches every running agent's screen (SPEC.md, "Sixth build: Safe
+/// answering"): a menu that waits on a key becomes a question (a
+/// Notification may come late, or never: the trust prompt, a dialog), the
+/// trust prompt of a worktree Workbench made is answered, a question whose
+/// prompt left the screen is closed, and an agent that sits at its prompt
+/// (after an interrupt, say) is idle, so that a steer reaches it.
+pub fn watch_screens(sup: Arc<Supervisor>, lv: Arc<Levels>) {
+    let _ = std::thread::Builder::new().name("screens".into()).spawn(move || {
+        let mut seen: HashMap<String, Watched> = HashMap::new();
+        loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let ids: Vec<String> = sup.agent_rows().into_iter().map(|a| a.id).filter(|id| sup.is_running(id)).collect();
+            seen.retain(|id, _| ids.contains(id));
+            for id in ids {
+                if lv.typing.lock().unwrap().contains(&id) {
+                    continue;
+                }
+                let w = sup.waits(&id);
+                let r = reading_of(&w);
+                let st = seen.entry(id.clone()).or_insert_with(|| Watched { reading: String::new(), since: Instant::now(), trusted: HashSet::new(), set_waiting: false });
+                if st.reading != r {
+                    st.reading = r;
+                    st.since = Instant::now();
+                }
+                let held = st.since.elapsed();
+                act(&sup, &lv, &id, w, held, st);
+            }
+        }
+    });
+}
+
+fn act(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, w: Waits, held: Duration, st: &mut Watched) {
+    let Some(a) = sup.agent_row(id) else { return };
+    let open = lv.open_perm.lock().unwrap().get(id).cloned().and_then(|q| get(sup, &q).ok()).filter(|q| q.state == "open");
+    match w {
+        Waits::Menu(m) => {
+            if held < SETTLE {
+                return;
+            }
+            let sig = m.signature();
+            if let Some(q) = &open {
+                match menu_sig(q) {
+                    Some(s) if s == sig => return,
+                    None if m.kind != MenuKind::Trust => {
+                        // A Notification's question: now with the options.
+                        let _w = lv.write.lock().unwrap();
+                        if let Ok(mut q) = get(sup, &q.id) {
+                            attach_menu(&mut q, &m);
+                            if q.put(sup).is_ok() {
+                                lv.changed(&q.id);
+                            }
+                        }
+                        return;
+                    }
+                    _ => close_question(sup, lv, &q.id, &format!("{}'s screen shows another prompt now", a.name)),
+                }
+            }
+            if m.kind == MenuKind::Trust && workbench_worktree(sup, &a.cwd) && st.trusted.insert(sig.clone()) {
+                trust_later(sup, lv, id, m);
+                return;
+            }
+            let mut q = Question {
+                id: new_id("q"),
+                agent: Some(a.id.clone()),
+                outcome: a.outcome.clone(),
+                repo: Some(a.repo.clone()),
+                kind: "permission".into(),
+                text: match m.kind {
+                    MenuKind::Trust => "Trust this folder?".into(),
+                    _ if !m.question.is_empty() => one_line(&m.question, 500),
+                    _ => "Claude Code waits on a choice".into(),
+                },
+                options: json!([]),
+                state: "open".into(),
+                created: now_ms(),
+                ..Question::default()
+            };
+            if m.kind == MenuKind::Permission {
+                set_tool(sup, &mut q, lv.last_pre.lock().unwrap().get(id));
+            }
+            if m.kind == MenuKind::Trust {
+                q.context = Some(format!("Claude Code asks whether to trust {}", a.cwd));
+            }
+            attach_menu(&mut q, &m);
+            st.set_waiting = true;
+            let note = format!("waits on a prompt: {}", one_line(&q.text, 200));
+            open_question(sup, lv, q, Some(note));
+        }
+        other => {
+            let input = matches!(other, Waits::Input { .. });
+            if let Some(q) = &open {
+                if menu_sig(q).is_some() && held >= GONE_AFTER {
+                    let why = match other {
+                        Waits::Input { interrupted: true } => format!("The prompt left {}'s screen: it was interrupted (Esc) in its terminal and waits for what to do instead.", a.name),
+                        Waits::Input { .. } => format!("The prompt left {}'s screen: it was answered or cancelled in its terminal.", a.name),
+                        Waits::Busy => format!("The prompt left {}'s screen: it was answered in its terminal, and {} works on.", a.name, a.name),
+                        _ => format!("The prompt is no longer on {}'s screen.", a.name),
+                    };
+                    close_question(sup, lv, &q.id, &why);
+                }
+            }
+            // ask_human keeps its agent in a tool call (busy): an agent at
+            // its text prompt is not waiting on one.
+            if input && held >= IDLE_AFTER && matches!(a.state.as_str(), "working" | "starting" | "waiting") && !asking_ask(sup, id) {
+                let interrupted = matches!(other, Waits::Input { interrupted: true });
+                st.set_waiting = false;
+                let summary = if interrupted { "interrupted: waits at its prompt for what to do instead" } else { "waits at its prompt" };
+                let _ = sup.note(id, "screen", summary.into(), None, |ag| Supervisor::set_agent_state(ag, "idle"));
+                crate::levels::type_pending_steers(sup, id);
+            } else if !input && st.set_waiting && held >= GONE_AFTER && a.state == "waiting" && open.is_none() {
+                st.set_waiting = false;
+                let _ = sup.update_agent(id, |ag| Supervisor::set_agent_state(ag, "working"));
+            }
+        }
+    }
+}
+
+/// Whether the agent has an open `ask_human` question.
+fn asking_ask(sup: &Supervisor, agent: &str) -> bool {
+    open_of(sup, agent).iter().any(|q| q.kind == "ask")
+}
+
+/// Whether a folder is a worktree Workbench made (under its data dir).
+fn workbench_worktree(sup: &Supervisor, cwd: &str) -> bool {
+    let root = sup.cfg.data_dir.join("worktrees");
+    let root = root.canonicalize().unwrap_or(root);
+    std::path::Path::new(cwd).starts_with(&root)
+}
+
+/// Answers Claude Code's trust prompt for a worktree Workbench made, off
+/// the watcher's thread; when it cannot, the prompt becomes a question.
+fn trust_later(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, m: Menu) {
+    let (sup, lv, id) = (sup.clone(), lv.clone(), id.to_string());
+    let _ = std::thread::Builder::new().name(format!("trust-{id}")).spawn(move || {
+        let Some(yes) = m.options.iter().find(|o| o.label.to_lowercase().starts_with("yes") && o.label.to_lowercase().contains("trust")).map(|o| o.label.clone()) else { return };
+        let sig = m.signature();
+        let done = {
+            let _t = Typing::start(&lv, &id);
+            match _t {
+                Some(_) => choose(&sup, &id, &sig, Pick::Label(&yes)),
+                None => return,
+            }
+        };
+        let cwd = sup.agent_row(&id).map(|a| a.cwd).unwrap_or_default();
+        match done {
+            Ok(_) => {
+                let _ = sup.note(&id, "screen", format!("Workbench trusted {cwd} for it: a worktree Workbench made (Claude Code's trust prompt, answered “{yes}”)"), Some(json!({ "trusted": cwd }).to_string()), |_| {});
+            }
+            Err(e) => {
+                let _ = sup.note(&id, "screen", format!("Workbench could not answer the trust prompt: {}", e.reason), None, |_| {});
+            }
+        }
+    });
+}
+
+/// An agent being typed into by Workbench: the watcher leaves it alone
+/// meanwhile, and a second answer waits its turn.
+pub struct Typing<'a> {
+    lv: &'a Levels,
+    id: String,
+}
+
+impl<'a> Typing<'a> {
+    /// `None` when something else types into it now.
+    pub fn start(lv: &'a Levels, id: &str) -> Option<Typing<'a>> {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if lv.typing.lock().unwrap().insert(id.to_string()) {
+                return Some(Typing { lv, id: id.to_string() });
+            }
+            if Instant::now() > until {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Typing<'_> {
+    fn drop(&mut self) {
+        self.lv.typing.lock().unwrap().remove(&self.id);
+    }
+}
+
+/// What to choose in a menu.
+pub enum Pick<'a> {
+    /// The option with this label.
+    Label(&'a str),
+    /// Esc: cancel it (a permission prompt reads it as no).
+    Esc,
+}
+
+/// Why an answer was not typed; `gone` when the prompt is not on the
+/// screen (or is another one), so that its question closes.
+#[derive(Debug)]
+pub struct NotTyped {
+    pub reason: String,
+    pub gone: bool,
+}
+
+/// Moves the cursor of the menu with signature `sig` on `id`'s screen to
+/// `pick` and presses Enter (or Esc), reading the screen before each key:
+/// a key is typed only into that prompt, and Enter only with the cursor on
+/// the option chosen. Answers what was chosen.
+pub fn choose(sup: &Supervisor, id: &str, sig: &str, pick: Pick) -> Result<String, NotTyped> {
+    let name = sup.agent_row(id).map(|a| a.name).unwrap_or_else(|| id.to_string());
+    let gone = |reason: String| NotTyped { reason, gone: true };
+    let failed = |reason: String| NotTyped { reason, gone: false };
+    let read = || match sup.waits(id) {
+        Waits::Menu(m) => Some(m),
+        _ => None,
+    };
+    let Some(mut m) = read() else {
+        return Err(gone(match sup.waits(id) {
+            Waits::Input { interrupted: true } => format!("the prompt is no longer on {name}'s screen: it was interrupted (Esc) and waits at its text prompt, where a key would be a new message"),
+            Waits::Input { .. } => format!("the prompt is no longer on {name}'s screen: it waits at its text prompt, where a key would be a new message"),
+            _ => format!("the prompt is no longer on {name}'s screen"),
+        }));
+    };
+    if m.signature() != sig {
+        return Err(gone(format!("{name}'s screen shows another prompt now")));
+    }
+    let wait_gone = |what: String| -> Result<String, NotTyped> {
+        let until = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+            if read().is_none_or(|n| n.signature() != sig) {
+                return Ok(what);
+            }
+        }
+        Err(failed(format!("Workbench chose “{what}”, but the prompt is still on {name}'s screen")))
+    };
+    let target = match pick {
+        Pick::Esc => {
+            sup.type_raw(id, b"\x1b").map_err(|e| failed(e.message))?;
+            return wait_gone("Esc".into());
+        }
+        Pick::Label(l) => {
+            let at: Vec<usize> = m.options.iter().enumerate().filter(|(_, o)| o.label == l).map(|(i, _)| i).collect();
+            match at.as_slice() {
+                [one] => *one,
+                _ => return Err(gone(format!("{name}'s prompt has no option “{l}” now"))),
+            }
+        }
+    };
+    let mut keys = 0;
+    while m.selected != target {
+        keys += 1;
+        if keys > m.options.len() * 2 + 4 {
+            return Err(failed(format!("Workbench could not move the cursor of {name}'s prompt to “{}”", m.options[target].label)));
+        }
+        let before = m.selected;
+        sup.arrow(id, before > target).map_err(|e| failed(e.message))?;
+        let until = Instant::now() + Duration::from_millis(800);
+        loop {
+            std::thread::sleep(Duration::from_millis(30));
+            match read() {
+                Some(n) if n.signature() == sig => {
+                    m = n;
+                    if m.selected != before {
+                        break;
+                    }
+                }
+                _ => return Err(gone(format!("the prompt on {name}'s screen changed while Workbench moved its cursor"))),
+            }
+            if Instant::now() > until {
+                // The key was lost (it happens with the first key a
+                // program reads): the loop types it again.
+                break;
+            }
+        }
+    }
+    // The cursor is on it, on this prompt: Enter.
+    let label = m.options[target].label.clone();
+    sup.type_raw(id, b"\r").map_err(|e| failed(e.message))?;
+    wait_gone(label)
 }
 
 /// `ask_human` returned without an answer (it timed out): its question
@@ -458,16 +1065,24 @@ fn find_precedent_later(sup: &Arc<Supervisor>, lv: &Arc<Levels>, qid: &str) {
 }
 
 /// What `POST /api/questions/:id/answer` takes: `option` (from 0), `text`
-/// (said with it, or instead), `rule` (a rule made from the answer).
+/// (said with it, or instead), `rule` (a rule made from the answer); for a
+/// permission question, `cancel` (Esc) instead of an option.
 #[derive(Debug, Default, Deserialize)]
 pub struct AnswerBody {
     pub option: Option<usize>,
     pub text: Option<String>,
     pub rule: Option<String>,
+    pub cancel: Option<bool>,
+    /// The label the card showed for `option`: when given, it must be the
+    /// prompt's label at that index, or nothing is typed.
+    pub label: Option<String>,
 }
 
 /// `POST /api/questions/:id/answer`.
 pub fn answer(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, b: AnswerBody) -> Result<Json, ApiError> {
+    if get(sup, id)?.kind == "permission" {
+        return answer_prompt(sup, lv, id, b);
+    }
     let text = b.text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     let q = {
         let _w = lv.write.lock().unwrap();
@@ -480,9 +1095,6 @@ pub fn answer(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, b: AnswerBody) 
             Some(n) => Some(labels.get(n).cloned().ok_or_else(|| ApiError::bad(format!("option is an index from 0 to {}", labels.len().saturating_sub(1))))?),
             None => None,
         };
-        if q.kind == "permission" && label.is_none() {
-            return Err(ApiError::bad("a permission question is answered with an option: 0 yes, 1 yes and don't ask again, 2 no"));
-        }
         let answer = match (&label, &text) {
             (Some(l), Some(t)) => format!("{l}\n{t}"),
             (Some(l), None) => l.clone(),
@@ -497,32 +1109,19 @@ pub fn answer(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, b: AnswerBody) 
         q
     };
     let agent = q.agent.clone().unwrap_or_default();
-    if q.kind == "permission" {
-        lv.open_perm.lock().unwrap().remove(&agent);
-        let key = (b.option.unwrap_or(0) + 1).to_string();
-        if let Err(e) = sup.input(&agent, &key, true, None) {
-            // Not typed: the question stays open.
-            let _w = lv.write.lock().unwrap();
-            let mut back = q.clone();
-            back.state = "open".into();
-            back.answer = None;
-            back.answered_by = None;
-            back.answered = None;
-            let _ = back.put(sup);
-            lv.open_perm.lock().unwrap().insert(agent.clone(), back.id.clone());
-            return Err(e);
+    let _ = sup.note(&agent, "answered", format!("answered: {}", one_line(q.answer.as_deref().unwrap_or(""), 200)), Some(json!({ "question": q.id, "by": "you" }).to_string()), |a| {
+        if a.state == "waiting" {
+            Supervisor::set_agent_state(a, "working");
         }
-    } else {
-        let _ = sup.note(&agent, "answered", format!("answered: {}", one_line(q.answer.as_deref().unwrap_or(""), 200)), Some(json!({ "question": q.id, "by": "you" }).to_string()), |a| {
-            if a.state == "waiting" {
-                Supervisor::set_agent_state(a, "working");
-            }
-        });
-    }
-    let mut q = q;
+    });
+    finish_answer(sup, lv, q, b.rule.as_deref())
+}
+
+/// The rule made from an answer, if one was asked for, and the answer.
+fn finish_answer(sup: &Supervisor, lv: &Levels, mut q: Question, rule: Option<&str>) -> Result<Json, ApiError> {
     let mut missing = Vec::new();
     let mut rule_json = Json::Null;
-    if let Some(r) = b.rule.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(r) = rule.map(str::trim).filter(|r| !r.is_empty()) {
         let repo = q.repo.clone().unwrap_or_default();
         let (rule, m) = add_rule(sup, &repo, r, Some(&q.id));
         missing = m;
@@ -533,6 +1132,137 @@ pub fn answer(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, b: AnswerBody) 
     }
     lv.changed(&q.id);
     Ok(json!({ "question": q.to_json(sup), "rule": rule_json, "missing": missing }))
+}
+
+/// A permission question (a prompt on its agent's screen) is answered by
+/// choosing its option on that screen: the option with the label you
+/// chose, the cursor moved to it and checked there before Enter, and only
+/// while that same prompt is on the screen. When it is not, nothing is
+/// typed and the question closes, saying why.
+fn answer_prompt(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, b: AnswerBody) -> Result<Json, ApiError> {
+    let q = get(sup, id)?;
+    if q.state != "open" {
+        return Err(ApiError::conflict(format!("question {id} is {}{}", q.state, q.answer.as_deref().filter(|_| q.answered_by.as_deref() == Some("screen")).map(|w| format!(": {w}")).unwrap_or_default())));
+    }
+    let agent = q.agent.clone().unwrap_or_default();
+    let name = sup.agent_row(&agent).map(|a| a.name).unwrap_or_else(|| agent.clone());
+    let labels = q.labels();
+    let Some(sig) = menu_sig(&q) else {
+        return unread_prompt(sup, lv, &q, &name, b);
+    };
+    let pick = match (b.option, b.cancel) {
+        (Some(n), _) => Some(labels.get(n).cloned().ok_or_else(|| ApiError::bad(format!("option is an index from 0 to {}, as the prompt lists them", labels.len().saturating_sub(1))))?),
+        (None, Some(true)) => None,
+        _ => return Err(ApiError::bad("a permission question is answered with option (the index of one of its options, as its prompt lists them) or cancel: true (Esc)")),
+    };
+    if let (Some(want), Some(have)) = (b.label.as_deref(), pick.as_deref()) {
+        if want != have {
+            return Err(ApiError::new(409, "not_typed", format!("Nothing was typed: option {} of this prompt is “{have}”, not “{want}”", b.option.unwrap_or(0) + 1)));
+        }
+    }
+    let typed = {
+        let Some(_t) = Typing::start(lv, &agent) else {
+            return Err(ApiError::conflict(format!("Workbench is typing into {name} already; try again in a moment")));
+        };
+        choose(sup, &agent, &sig, match &pick {
+            Some(l) => Pick::Label(l),
+            None => Pick::Esc,
+        })
+    };
+    if let Err(e) = typed {
+        if e.gone {
+            close_question(sup, lv, id, &format!("Not typed: {}.", e.reason));
+            return Err(ApiError::new(409, "prompt_gone", format!("Nothing was typed: {}. The question is closed.", e.reason)));
+        }
+        return Err(ApiError::new(409, "not_typed", format!("{}. Answer it in {name}'s terminal.", e.reason)));
+    }
+    let answer = pick.clone().unwrap_or_else(|| "Cancelled (Esc)".into());
+    let q = {
+        let _w = lv.write.lock().unwrap();
+        let mut q = get(sup, id)?;
+        q.state = "answered".into();
+        q.answer = Some(answer.clone());
+        q.answered_by = Some("you".into());
+        q.answered = Some(now_ms());
+        q.put(sup)?;
+        q
+    };
+    {
+        let mut open = lv.open_perm.lock().unwrap();
+        if open.get(&agent).map(String::as_str) == Some(id) {
+            open.remove(&agent);
+        }
+    }
+    let n = b.option.map(|i| i + 1);
+    let _ = sup.note(&agent, "input", format!("input: chose “{}” in its prompt", one_line(&answer, 160)), Some(json!({ "question": id, "by": "you", "option": n }).to_string()), |a| {
+        if a.state == "waiting" {
+            Supervisor::set_agent_state(a, "working");
+        }
+    });
+    finish_answer(sup, lv, q, b.rule.as_deref())
+}
+
+/// A permission question whose prompt Workbench has not read off the
+/// screen (no menu it knows was drawn there). Only the two answers that
+/// mean the same in every Claude Code prompt are typed: the first option,
+/// its plain "Yes", by its number, and Esc, which cancels. And only while
+/// the screen shows neither Claude Code's text prompt (where "1" would be a
+/// message) nor a working spinner (the prompt has gone).
+fn unread_prompt(sup: &Arc<Supervisor>, lv: &Arc<Levels>, q: &Question, name: &str, b: AnswerBody) -> Result<Json, ApiError> {
+    let agent = q.agent.clone().unwrap_or_default();
+    let esc = b.cancel == Some(true) && b.option.is_none();
+    let answer = match b.option {
+        Some(0) if b.label.as_deref().is_none_or(|l| l == "Yes") => "Yes",
+        None if esc => "Cancelled (Esc)",
+        _ => {
+            return Err(ApiError::conflict(format!(
+                "Workbench has not read this prompt's options from {name}'s screen, so it types only its first option (Yes) or Esc: answer it in {name}'s terminal"
+            )))
+        }
+    };
+    {
+        let Some(_t) = Typing::start(lv, &agent) else {
+            return Err(ApiError::conflict(format!("Workbench is typing into {name} already; try again in a moment")));
+        };
+        let not = match sup.waits(&agent) {
+            Waits::Input { .. } => Some(format!("{name} is at its text prompt, where a key would be a new message")),
+            Waits::Busy => Some(format!("{name} is working again: its prompt has gone")),
+            Waits::Menu(_) => Some(format!("{name} shows a prompt Workbench has not matched to this question yet; try again in a moment")),
+            Waits::Unknown => None,
+        };
+        if let Some(why) = not {
+            return Err(ApiError::new(409, "not_typed", format!("Nothing was typed: {why}.")));
+        }
+        if esc {
+            sup.type_raw(&agent, b"\x1b")?;
+        } else {
+            sup.type_raw(&agent, b"1")?;
+            std::thread::sleep(Duration::from_millis(150));
+            sup.type_raw(&agent, b"\r")?;
+        }
+    }
+    let q = {
+        let _w = lv.write.lock().unwrap();
+        let mut q = get(sup, &q.id)?;
+        q.state = "answered".into();
+        q.answer = Some(answer.into());
+        q.answered_by = Some("you".into());
+        q.answered = Some(now_ms());
+        q.put(sup)?;
+        q
+    };
+    {
+        let mut open = lv.open_perm.lock().unwrap();
+        if open.get(&agent) == Some(&q.id) {
+            open.remove(&agent);
+        }
+    }
+    let _ = sup.note(&agent, "input", format!("input: chose “{answer}” in its prompt (typed as {})", if esc { "Esc" } else { "1" }), Some(json!({ "question": q.id, "by": "you", "option": b.option.map(|i| i + 1) }).to_string()), |a| {
+        if a.state == "waiting" {
+            Supervisor::set_agent_state(a, "working");
+        }
+    });
+    finish_answer(sup, lv, q, b.rule.as_deref())
 }
 
 /// A rule of a repository, kept in ChloeCtx too (`chloectx remember

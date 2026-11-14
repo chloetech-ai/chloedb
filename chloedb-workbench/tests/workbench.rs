@@ -60,6 +60,48 @@ tr() {
   python3 -c 'import json,sys,datetime; e=json.loads(sys.argv[2]); e["timestamp"]=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z"); open(sys.argv[1],"a").write(json.dumps(e)+"\n")' "$TR" "$1"
 }
 USAGE='{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}'
+# menu KIND QUESTION OPTION...: a menu as Claude Code draws one (the
+# testers' screens): the options numbered (none in the trust prompt), a ❯
+# on the chosen one, moved by the arrow keys; Enter chooses, Esc cancels, a
+# digit chooses its option at once. After the first drawing it runs
+# $NOTIFY (a hook) if set. Sets CHOSE and prints "CHOSE: <label>".
+menu() {
+  local kind="$1" q="$2"; shift 2
+  local opts=("$@") sel=0 k rest i label n=$#
+  while true; do
+    printf '\033[2J\033[H'
+    case "$kind" in
+      trust) printf ' Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one you trust?\n\n' "$PWD";;
+      perm) printf ' Bash command\n\n   %s\n   Run it\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n This command requires approval\n\n' "$CMD";;
+      create) printf ' Create file\n ────────────────────────────────────────\n   %s\n ────────────────────────────────────────\n' "$CMD";;
+    esac
+    printf ' %s\n' "$q"
+    for i in "${!opts[@]}"; do
+      if [ "$kind" = trust ]; then label="${opts[$i]}"; else label="$((i+1)). ${opts[$i]}"; fi
+      if [ "$i" = "$sel" ]; then printf ' ❯ %s\n' "$label"; else printf '   %s\n' "$label"; fi
+    done
+    if [ "$kind" = trust ]; then printf '\n Enter to confirm · Esc to cancel\n'; else printf '\n Esc to cancel · Tab to amend\n'; fi
+    if [ -n "$NOTIFY" ]; then hook Notification "$NOTIFY"; NOTIFY=; fi
+    IFS= read -rsn1 k
+    case "$k" in
+      $'\033') rest=; IFS= read -rsn2 -t 0.2 rest
+        case "$rest" in
+          '[A'|'OA') [ "$sel" -gt 0 ] && sel=$((sel-1));;
+          '[B'|'OB') [ "$sel" -lt $((n-1)) ] && sel=$((sel+1));;
+          '') CHOSE=Esc; break;;
+        esac;;
+      '') CHOSE="${opts[$sel]}"; break;;
+      [1-9]) if [ "$kind" != trust ] && [ "$k" -le "$n" ]; then CHOSE="${opts[$((k-1))]}"; break; fi;;
+    esac
+  done
+  printf '\033[2J\033[H'
+  echo "CHOSE: $CHOSE"
+}
+# What Claude Code shows after No or Esc: the turn ends with no more hooks
+# (no Stop), at its text prompt between two rules.
+interrupted() {
+  printf '  ⎿  Interrupted · What should Claude do instead?\n\n%s\n❯ \n%s\n' "────────────────────────────────────────────────────────────" "────────────────────────────────────────────────────────────"
+}
 hook SessionStart '{"hook_event_name":"SessionStart","source":"startup","session_id":"'"$SID"'"}'
 turn() {
   N=$((N+1))
@@ -93,6 +135,29 @@ turn() {
       # process group, as a command an agent backgrounds is.
       setsid python3 -m http.server "${1#SERVE }" --bind 127.0.0.1 >/dev/null 2>&1 < /dev/null &
       ;;
+    PERM3\ *|PERM4\ *)
+      # PERM3 / PERM4 <text>: Claude Code's permission prompt for the Bash
+      # command, in its 3- and 4-option forms, then its Notification; No
+      # or Esc ends the turn as Claude Code does.
+      CMD="echo hi"
+      NOTIFY='{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
+      if [ "${1%% *}" = PERM4 ]; then
+        menu perm "Do you want to proceed?" "Yes" "Yes, and don't ask again for echo commands in $PWD" "Yes, and switch to auto mode · auto mode handles these prompts for you" "No"
+      else
+        menu perm "Do you want to proceed?" "Yes" "Yes, and switch to auto mode · auto mode handles these prompts for you" "No"
+      fi
+      case "$CHOSE" in Yes*) ;; *) interrupted; return;; esac;;
+    CREATE\ *)
+      # CREATE <file>: Claude Code's prompt to create a file, with no
+      # Notification (it comes late, or never); No interrupts the turn.
+      CMD="${1#CREATE }"
+      menu create "Do you want to create ${1#CREATE }?" "Yes" "Yes, allow all edits during this session (shift+tab)" "No, and tell Claude what to do differently (esc)"
+      case "$CHOSE" in Yes*) ;; *) interrupted; return;; esac;;
+    TRUST\ *)
+      # TRUST <text>: Claude Code's trust prompt, "No, exit" first and no
+      # numbers; No exits, as it does.
+      menu trust "Do you trust the files in this folder?" "No, exit" "Yes, I trust this folder"
+      [ "$CHOSE" = "Yes, I trust this folder" ] || exit 1;;
     *ASK*)
       hook Notification '{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
       read -r answer
@@ -1400,26 +1465,28 @@ fn ask_human_waits_for_the_answer_and_a_rule_is_told_and_answers_again() {
 fn permission_prompts_are_questions_and_steers_reach_the_agent() {
     let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
     let (_d, r) = repo();
-    let a = s.spawn(json!({ "repo": r, "task": "ASK first", "worktree": false }));
+    // Sixth build: the prompt on the screen (PERM3), its options read from
+    // there (they were a fixed Yes / Always / No before).
+    let a = s.spawn(json!({ "repo": r, "task": "PERM3 first", "worktree": false }));
     let id = a["id"].as_str().unwrap().to_string();
     s.wait(&id, "waiting");
-    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a permission question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1));
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a permission question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
     let q = &v["questions"][0];
     let qid = q["id"].as_str().unwrap().to_string();
     assert_eq!((q["kind"].as_str(), q["text"].as_str(), q["context"].as_str()), (Some("permission"), Some("Claude needs your permission to use Bash"), Some("Bash: echo hi")), "{q}");
     let labels: Vec<&str> = q["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
-    assert_eq!(labels, ["Yes", "Yes, and don't ask again", "No"]);
+    assert_eq!(labels, ["Yes", "Yes, and switch to auto mode", "No"]);
     assert_eq!(s.agent(&id)["narration"], "Claude needs your permission to use Bash");
 
     // A steer while it waits rides its next PostToolUse.
     let (status, v) = s.post(&format!("/api/agents/{id}/steer"), json!({ "text": "also check the docs" }));
     assert_eq!(status, 200, "{v}");
     assert_eq!(v["delivered"], "queued");
-    // A permission question is answered by typing the option's number.
+    // A permission question is answered by choosing its option on the screen.
     let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0 }));
     assert_eq!(status, 200, "{v}");
     s.wait(&id, "idle");
-    ws_read_until(&s, &id, "ANSWER: 1", &[]);
+    ws_read_until(&s, &id, "CHOSE: Yes", &[]);
     let (_, v) = s.get(&format!("/api/questions/{qid}"));
     assert_eq!((v["question"]["state"].as_str(), v["question"]["answered_by"].as_str(), v["question"]["answer"].as_str()), (Some("answered"), Some("you"), Some("Yes")));
     let told = contexts(&s.hook_out(&id), "PostToolUse");
@@ -1458,6 +1525,200 @@ fn permission_prompts_are_questions_and_steers_reach_the_agent() {
     s.until(&id, "stopped", |a| a["running"] == false);
     let (_, v) = s.get(&format!("/api/questions?agent={id}&state=expired"));
     assert_eq!(v["questions"].as_array().unwrap().len(), 1, "{v}");
+}
+
+// Sixth build: safe answering (SPEC.md). The fake draws Claude Code's
+// prompts as the testers saw them; Workbench reads them off the screen.
+
+/// The open question of an agent once its options are read from its screen.
+fn open_prompt(s: &Server, id: &str) -> Value {
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "a prompt read from the screen", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
+    v["questions"][0].clone()
+}
+
+fn labels_of(q: &Value) -> Vec<String> {
+    q["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn no_chooses_the_prompts_own_no_and_a_steer_reaches_the_interrupted_agent() {
+    // Maya's prompt: four options, the third "switch to auto mode". Her
+    // "No" typed 3; it must choose "No".
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "PERM4 rounding", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let q = open_prompt(&s, &id);
+    let qid = q["id"].as_str().unwrap().to_string();
+    let cwd = a["cwd"].as_str().unwrap();
+    assert_eq!(labels_of(&q), ["Yes".to_string(), format!("Yes, and don't ask again for echo commands in {cwd}"), "Yes, and switch to auto mode".into(), "No".into()]);
+    assert!(q["options"][2]["grants"].as_str().unwrap().contains("auto mode"), "{q}");
+    assert!(q["options"][1]["grants"].as_str().unwrap().contains("asking again"), "{q}");
+    assert_eq!(q["options"][3]["no"], true);
+    assert_eq!(q["options"][0].get("grants"), None);
+    assert_eq!(q["detail"]["command"], "echo hi");
+    assert_eq!(q["detail"]["menu"]["question"], "Do you want to proceed?");
+
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 3 }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["question"]["answer"], "No");
+    let screen = ws_read_until(&s, &id, "CHOSE: No", &[]);
+    assert!(!screen.contains("CHOSE: Yes"), "{screen}");
+    let evs = s.events(&id);
+    assert!(evs.iter().any(|e| e["kind"] == "input" && e["summary"].as_str().unwrap().contains("chose “No”")), "{evs:?}");
+
+    // The turn ended at Claude Code's text prompt with no Stop hook: its
+    // screen says it is idle, and a steer is typed in, not queued.
+    let a = s.wait(&id, "idle");
+    assert_eq!(a["state"], "idle");
+    let (status, v) = s.post(&format!("/api/agents/{id}/steer"), json!({ "text": "keep banker's rounding" }));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["delivered"], "typed", "{v}");
+    assert!(v["message"].as_str().unwrap().contains("Typed into"), "{v}");
+    ws_read_until(&s, &id, "DONE: keep banker's rounding", &[]);
+}
+
+#[test]
+fn a_stale_card_types_nothing_and_closes_saying_why() {
+    // Dev's: Esc in the terminal interrupted the prompt; the card stayed,
+    // and its Yes typed "1" and Enter into the text prompt.
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "PERM3 merge check", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let q = open_prompt(&s, &id);
+    let qid = q["id"].as_str().unwrap().to_string();
+    // Esc, typed in its terminal.
+    let (status, _) = s.post(&format!("/api/agents/{id}/input"), json!({ "text": "\u{1b}", "enter": false }));
+    assert_eq!(status, 200);
+    ws_read_until(&s, &id, "CHOSE: Esc", &[]);
+    // Yes now types nothing: the prompt is gone (or the watcher closed it).
+    let (status, v) = s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0 }));
+    assert_eq!(status, 409, "{v}");
+    let (_, v) = s.get(&format!("/api/questions/{qid}"));
+    assert_eq!((v["question"]["state"].as_str(), v["question"]["answered_by"].as_str()), (Some("expired"), Some("screen")), "{v}");
+    assert!(v["question"]["answer"].as_str().unwrap().contains("screen"), "{v}");
+    std::thread::sleep(Duration::from_millis(500));
+    let screen = ws_read_until(&s, &id, "Interrupted", &[]);
+    assert!(!screen.contains("GOT: 1"), "nothing was typed into its text prompt: {screen}");
+    // It is idle at its prompt, and says why the question closed.
+    s.wait(&id, "idle");
+    assert!(s.events(&id).iter().any(|e| e["kind"] == "screen" && e["summary"].as_str().unwrap().contains("question closed")));
+}
+
+#[test]
+fn the_trust_prompt_is_answered_in_workbenchs_worktrees_and_asked_elsewhere() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // In a worktree Workbench made: answered, and said in its events.
+    let a = s.spawn(json!({ "repo": r, "task": "TRUST me", "name": "wt" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    ws_read_until(&s, &id, "CHOSE: Yes, I trust this folder", &[]);
+    s.wait(&id, "idle");
+    let evs = s.events(&id);
+    assert!(evs.iter().any(|e| e["kind"] == "screen" && e["summary"].as_str().unwrap().contains("Workbench trusted")), "{evs:?}");
+    let (_, v) = s.get(&format!("/api/questions?agent={id}"));
+    assert!(v["questions"].as_array().unwrap().is_empty(), "{v}");
+
+    // In the repository itself: a question in Needs you, its default
+    // ("No, exit") not taken for it.
+    let b = s.spawn(json!({ "repo": r, "task": "TRUST me", "worktree": false }));
+    let bid = b["id"].as_str().unwrap().to_string();
+    let q = open_prompt(&s, &bid);
+    assert_eq!(labels_of(&q), ["No, exit", "Yes, I trust this folder"]);
+    assert_eq!(q["text"], "Trust this folder?");
+    assert_eq!(q["detail"]["menu"]["kind"], "trust");
+    assert_eq!(s.agent(&bid)["state"], "waiting");
+    let (status, v) = s.post(&format!("/api/questions/{}/answer", q["id"].as_str().unwrap()), json!({ "option": 1 }));
+    assert_eq!(status, 200, "{v}");
+    ws_read_until(&s, &bid, "DONE: TRUST me", &[]);
+}
+
+#[test]
+fn a_prompt_with_no_notification_still_needs_you() {
+    // Maya's paybutton: "Do you want to create test_web.py?" while its card
+    // said working.
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "CREATE test_web.py", "worktree": false }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let q = open_prompt(&s, &id);
+    assert_eq!(q["text"], "Do you want to create test_web.py?");
+    assert_eq!(labels_of(&q), ["Yes", "Yes, allow all edits during this session (shift+tab)", "No, and tell Claude what to do differently (esc)"]);
+    assert_eq!(q["options"][2]["no"], true);
+    let a = s.until(&id, "waiting", |a| a["state"] == "waiting");
+    assert_eq!(a["waiting_for"], "Do you want to create test_web.py?");
+    let (_, att) = s.get("/api/attention");
+    assert!(att["agents"].as_array().unwrap().iter().any(|x| x["id"] == json!(id)), "{att}");
+    let (status, v) = s.post(&format!("/api/questions/{}/answer", q["id"].as_str().unwrap()), json!({ "option": 0 }));
+    assert_eq!(status, 200, "{v}");
+    ws_read_until(&s, &id, "DONE: CREATE test_web.py", &[]);
+    s.wait(&id, "idle");
+}
+
+#[test]
+fn a_card_shows_the_whole_command_the_diff_and_the_agent_by_name() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    std::fs::write(r.join("money.py"), "def tax(c):\n    return 82\n").unwrap();
+    let helper = s.spawn(json!({ "repo": r, "task": "hello", "name": "freeship", "worktree": false }));
+    let hid = helper["id"].as_str().unwrap().to_string();
+    s.wait(&hid, "idle");
+    let lead = s.spawn(json!({ "repo": r, "name": "lead", "worktree": false }));
+    let id = lead["id"].as_str().unwrap().to_string();
+    // Its own SessionStart first: a hook between a PreToolUse and its
+    // Notification would stand between them.
+    let end = Instant::now() + Duration::from_secs(30);
+    while !kinds(&s.events(&id)).iter().any(|k| k == "SessionStart") {
+        assert!(Instant::now() < end, "lead's session never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let notify = json!({ "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Claude needs your permission to use mcp__workbench__stop_agent" });
+    let open = |s: &Server| s.get_until(&format!("/api/questions?agent={id}&state=open"), "a question", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1))["questions"][0].clone();
+
+    // Another agent's request names that agent, and its state.
+    hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "mcp__workbench__stop_agent", "tool_input": { "id": hid } }));
+    hook_as(&s, &id, notify.clone());
+    let q = open(&s);
+    assert_eq!(q["context"], "Stop freeship (idle)", "{q}");
+    assert_eq!(q["detail"]["agent"]["name"], "freeship");
+    hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "mcp__workbench__stop_agent", "tool_input": { "id": hid } }));
+
+    // A heredoc: all of it.
+    let cmd = "python3 - <<'E'\ns=open('money.py').read()\nopen('money.py','w').write(s.replace('82','83'))\nE";
+    hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": { "command": cmd } }));
+    hook_as(&s, &id, notify.clone());
+    let q = open(&s);
+    assert_eq!(q["context"], "Bash: python3 - <<'E'");
+    assert_eq!(q["detail"]["command"], cmd);
+    hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": { "command": cmd } }));
+
+    // An edit: its diff, where in the file.
+    let file = r.join("money.py");
+    hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Edit", "cwd": r, "tool_input": { "file_path": file, "old_string": "    return 82", "new_string": "    # half up\n    return 83" } }));
+    hook_as(&s, &id, notify);
+    let q = open(&s);
+    assert_eq!(q["detail"]["rel"], "money.py", "{q}");
+    assert_eq!(q["detail"]["diff"], "@@ line 2\n-    return 82\n+    # half up\n+    return 83", "{q}");
+}
+
+#[test]
+fn agents_in_their_worktrees_edit_test_and_commit_without_asking() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let settings = |id: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(id).join("settings.json")).unwrap()).unwrap() };
+    let a = s.spawn(json!({ "repo": r, "name": "free" }));
+    let allow: Vec<String> = settings(a["id"].as_str().unwrap())["permissions"]["allow"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    let cwd = a["cwd"].as_str().unwrap();
+    for want in [format!("Edit(/{cwd}/**)"), format!("Read(/{cwd}/**)"), "Bash(pytest:*)".into(), "Bash(cargo test:*)".into(), "Bash(git commit:*)".into(), "mcp__workbench".into(), "mcp__chloectx".into()] {
+        assert!(allow.contains(&want), "{want} not in {allow:?}");
+    }
+    assert!(!allow.iter().any(|x| x.contains("git push") || x.contains("git reset") || x == "Edit" || x == "Bash"), "{allow:?}");
+    // Ask before edits: none of it; nor outside a worktree.
+    let b = s.spawn(json!({ "repo": r, "name": "careful", "ask_edits": true }));
+    assert!(settings(b["id"].as_str().unwrap()).get("permissions").is_none());
+    let c = s.spawn(json!({ "repo": r, "name": "here", "worktree": false }));
+    assert!(settings(c["id"].as_str().unwrap()).get("permissions").is_none());
 }
 
 #[test]

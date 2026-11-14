@@ -433,9 +433,10 @@ per agent), cached in the event's data.
   returns the answer text. The agent's state is `waiting` meanwhile, with
   `waiting_for` = the question.
 - A `Notification` that asks permission for a tool also makes a question,
-  `kind: permission`, options Yes / Yes, and don't ask again / No (answering
-  types `1`, `2` or `3` and Enter into its terminal). Answering in the
-  terminal instead marks it `answered_by: terminal`.
+  `kind: permission`. Answering in the terminal instead marks it
+  `answered_by: terminal`. Its options and how an answer is typed are in
+  "Sixth build: Safe answering" (they were a fixed Yes / Yes, and don't
+  ask again / No, typed as `1`, `2` or `3`).
 - On creation the server runs `chloectx ask --json -- <question>` in the
   repo and stores what it found as `precedent` (records with their agents,
   as `/api/ask` answers). When a precedent record is a Workbench rule or a
@@ -2719,3 +2720,220 @@ recorded as before: every prompt the user's, but with the other fixes.
 - Workbench's own views (Ship, Map, Trace, capsule) show the record text,
   which now carries the attribution. They do not yet read the `By:` line
   or `superseded_by` themselves (parts C and D).
+
+## Sixth build: Safe answering
+
+The testers' prompts (Maya's 11-, 12-, 15-, 17-; Dev's 07-, 43-, 46-,
+51-; Sam's 22-; Priya's 13-, 15-) showed that a permission card could
+grant more than its button said. The card had fixed options (Yes /
+Always / No) and typed their numbers, `1`, `2` or `3`. Claude Code's
+prompt has three or four options, and their order varies: with four,
+`3` is "Yes, and switch to auto mode", so the card's "No" put the agent
+in auto mode. A card whose prompt had gone typed its digit into the text
+prompt as a message. Workbench now reads what the terminal shows and
+types only into the prompt it read.
+
+### What the terminal shows (src/screen.rs)
+
+Each agent's terminal output also feeds a small VT emulator (`Screen`,
+the agent's size, in `supervisor::Term`). It handles UTF-8 and wide
+characters, the cursor and erase sequences Claude Code's renderer
+(Ink) uses, scroll regions, the alternate screen, DECCKM (application
+cursor keys), and the lines the terminal itself wraps. `screen::read`
+says what the screen waits on:
+
+- `Menu`: a prompt with its kind (`permission`, `trust`, or `dialog` for
+  any other menu, such as "Do you want to create …?"), header (the
+  command or the file, with the dashed rule skipped), question, options
+  (`{n, label}`, wrapped labels joined, a hint after " · " cut), the
+  selected option and footer. A menu is the last thing on the screen
+  apart from its footer (at most three lines below it). Numbered options
+  run 1..n. An unnumbered one, the trust prompt, needs an "Enter to
+  confirm" or "Esc" footer. A `❯` line above the text prompt is not a
+  menu: it is something the agent printed.
+- `Input { interrupted }`: Claude Code's text prompt, `❯` between two
+  rules, with "Interrupted · What should Claude do instead?" above it or
+  not.
+- `Busy`: a spinner line ("✻ Word… (26s · …)").
+- `Unknown`: anything else.
+
+A menu's signature (kind, header, question and labels, with blanks and
+borders taken out) names "the same prompt". Its unit tests are built
+from the testers' screens: Maya's four options with option 2 wrapped
+over three lines, Dev's three options with auto mode second, the trust
+prompt, the idle and interrupted text prompts, a spinner, and a menu
+printed in the output above the text prompt.
+
+### The items
+
+1. **The prompt's own options.** A permission question's `options` are
+   `[{label, n, no, grants?, matches_precedent}]` as the prompt lists
+   them. They are attached when the Notification arrives if the prompt
+   is already drawn, or by the screen watcher once it is. They are empty
+   until then: the card says "Reading the prompt's options…" and offers
+   its terminal. Answering `{option: i}` chooses that label: Workbench
+   finds it on the screen, moves the cursor with the arrow keys (in the
+   prompt's cursor mode), checks after each key that the selection moved
+   and resends a lost key, and presses Enter only with the cursor on
+   that label. It then waits for the prompt to go. `{cancel: true}`
+   presses Esc. An optional `label` must match the option at `option`,
+   or nothing is typed. "No" is the prompt's own No ("No", "No, and tell
+   Claude what to do differently"), or Esc when the prompt has none.
+   `grants` marks an option that grants more than the one call ("don't
+   ask again", "auto mode", "during this session"). The card shows it
+   dashed and says what it grants. Needs-you shows only the plain first
+   option and the No, plus "N more…", which opens Decide. Digit keys in
+   Decide map to the prompt's own numbers. The answer is recorded as an
+   `input` event, "chose “X” in its prompt".
+2. **The whole command, and the diff.** The question's new `detail`
+   (JSON, a new column; `ALTER TABLE … ADD COLUMN IF NOT EXISTS detail`)
+   comes from the PreToolUse hook that asked:
+   - Bash: the whole command (up to 64 KB) and its description.
+   - Edit, MultiEdit, Write and NotebookEdit: the file, its path relative
+     to the hook's cwd, and a line diff (LCS, three lines of context,
+     "@@ line N" when the old text is found on disk, at most 600 lines).
+   - Any other tool: its input.
+
+   Decide shows it monospaced and scrollable, the diff with added and
+   removed lines coloured. The context line (`Bash: <first line>`,
+   `Edit: <rel path>`) stays for the lists.
+3. **The trust prompt.** It is read from the screen ("Accessing
+   workspace", "No, exit / Yes, I trust this folder"). In a worktree
+   Workbench made (under its data dir's `worktrees/`), Workbench answers
+   "Yes, I trust this folder" by the same safe typing, once per prompt,
+   and says so in the agent's events ("Workbench trusted <cwd> for it: a
+   worktree Workbench made"). Elsewhere it is a Needs-you question,
+   "Trust this folder?", whose options are the prompt's own.
+4. **A stale card.** Before typing, Workbench reads the screen again: if
+   no menu shows, or a menu with another signature, it types nothing,
+   closes the question (`state: expired`, `answered_by: screen`, the
+   answer saying why) and answers 409 `prompt_gone`: "Nothing was typed:
+   the prompt is no longer on X's screen: it was interrupted (Esc) and
+   waits at its text prompt, where a key would be a new message. The
+   question is closed." The screen watcher also closes a question whose
+   prompt has left the screen for 1.5 s (answered or cancelled in the
+   terminal, interrupted, or working again), or that another prompt
+   replaced. It closes the very question it saw, not the agent's newest.
+   The UI shows the reason and reloads.
+5. **Keys.** In a zoomed terminal every key goes to the agent: no
+   single-key shortcut fires there or in a text field. Typing while the
+   focus has left the terminal (on the page, not in a field) goes to the
+   terminal. Esc goes to the agent too (Claude Code interrupts with it).
+   For a working or waiting agent a note says so, at most every 8 s:
+   "Esc went to X: Claude Code stops what it is doing. To leave the
+   terminal, press Ctrl-Esc." Ctrl-Esc leaves the zoom from anywhere
+   (also Ctrl-b z). The hint and the help say Ctrl-Esc.
+6. **A steer to an interrupted agent.** `POST /api/agents/:id/steer`
+   reads the screen:
+   - At a menu: nothing is typed, the steer is queued, and `message` says
+     to answer the prompt first.
+   - At its text prompt, or idle: it is typed in as the next instruction
+     ("Typed into X's prompt as its next instruction. It had been
+     interrupted and was waiting for what to do instead.").
+   - Otherwise it is queued for the next tool call, as before.
+
+   The answer carries `message`. Story shows it (green when typed, amber
+   when queued, red on an error, with a 15 s timeout). The watcher also
+   types queued steers when an agent sits at its text prompt.
+7. **Needs you, from the screen.** A menu the screen shows for 600 ms
+   with no open question becomes one. Claude Code sends no Notification
+   for the trust prompt, "Do you want to create …?" and dialogs, and
+   sends some late. Its event is "waits on a prompt: …", and the agent
+   is `waiting`. An agent whose screen shows its text prompt for 2.5 s
+   while it is `working`, `starting` or `waiting` (with no open
+   ask_human) becomes `idle`: "interrupted: waits at its prompt for what
+   to do instead", or "waits at its prompt".
+8. **Agent-to-agent requests.** For `mcp__workbench__*` tools, `detail`
+   names the other agent and its state, and the card's title says the
+   action: "Stop freeship (idle)", "Type into web (waiting for you):
+   “…”", "Wait for X", "Start an agent named X: …". With an outcome,
+   its state is shown too.
+9. **Permissions in a worktree.** An agent started in its own worktree
+   gets these in `permissions.allow` (`flow::with_worktree_defaults`):
+   - `Edit(//<worktree>/**)`, which in Claude Code also covers Write,
+     MultiEdit and NotebookEdit.
+   - `Read(//<worktree>/**)`, which also covers Grep and Glob.
+   - Thirty test runners (`cargo test`, `pytest`, `npm test`, `go test`,
+     …).
+   - Local git: status, diff, log, show, add, commit, stash, branch,
+     checkout, switch, restore, rebase, merge, rev-parse, blame, grep,
+     ls-files, cherry-pick, mv, rm. Not push, not reset.
+   - `mcp__workbench` and `mcp__chloectx`.
+
+   Guarded commands are still denied by the PreToolUse hook
+   (src/guarded.rs). Anything outside the worktree still asks. New agent
+   has "Ask before edits" (`ask_edits: true` on `POST /api/agents`), off
+   by default. When it is on, or outside a worktree, none of this is
+   added. The help line under it says what is allowed.
+
+### When the prompt cannot be read
+
+A Notification whose prompt never shows as a menu (a layout this reader
+does not know) leaves the options empty. Answering it then types only
+what means the same in every Claude Code prompt: option 0 as `1` and
+Enter (the plain "Yes"), or `cancel` as Esc. It does so only while the
+screen shows neither the text prompt nor a spinner. Anything else is 409
+`not_typed`, with a pointer to the terminal.
+
+### API changes
+
+- Questions have `detail` (see 2). A permission question's `options` are
+  the prompt's own, and `[]` until they are read.
+- `POST /api/questions/:id/answer` for a permission question takes
+  `{option, label?, rule?}` or `{cancel: true}`. 409 `prompt_gone` means
+  the prompt left the screen, nothing was typed, and the question is
+  closed. 409 `not_typed` means nothing was typed and the question stays
+  open.
+- `POST /api/agents/:id/steer` answers `message` too.
+- `POST /api/agents` takes `ask_edits`.
+
+### Tests
+
+The fake claude draws the testers' prompts with a `menu` function:
+numbered or not, a `❯` cursor moved by the arrow keys in either cursor
+mode, Enter, Esc and digits, and the Notification hook after the first
+drawing (`PERM3`, `PERM4`, `CREATE` with no Notification, `TRUST`). After
+No or Esc it shows the interrupted text prompt and runs no Stop hook, as
+Claude Code does. New cases:
+
+- No chooses the prompt's own No, and a steer reaches the interrupted
+  agent (typed into its prompt).
+- A stale card types nothing and closes, saying why.
+- The trust prompt is answered in Workbench's worktrees and asked
+  elsewhere.
+- A prompt with no Notification still needs you.
+- A card shows the whole command (a heredoc), the diff and another agent
+  by name.
+- Agents in their worktrees edit, test and commit without asking, and
+  "Ask before edits" turns that off.
+
+The existing `permission_prompts_are_questions_and_steers_reach_the_agent`
+was changed in two lines: it asserted the fixed labels and the typed `1`,
+which is the bug. It now draws a three-option prompt and expects that
+prompt's labels and the choice of "Yes" on its screen.
+
+### Left out
+
+- **Pre-trusting a folder.** Claude Code has no supported way to trust a
+  folder other than its own prompt: the trust is kept in
+  `~/.claude.json`, which Workbench must not edit. Workbench answers the
+  prompt from the screen instead.
+- **A steer into a text prompt that holds a draft.** It is typed after
+  whatever is there: Workbench does not clear what someone has started
+  typing in the terminal.
+- **`mcp__workbench` is allowed whole in a worktree,** stop_agent
+  included, as the brief lists it. "Ask before edits" leaves it out with
+  the rest.
+- **Only `Edit(…)` and `Read(…)` rules are written.** In Claude Code they
+  cover Write, MultiEdit and NotebookEdit, and Grep and Glob. Rules for
+  those tools by name are not added.
+- **Prompts not tested.** The LSP install popup, the cost and model
+  dialogs, and plan-mode prompts are read as `dialog` menus when they
+  match the menu rules. None of them is in the fake, so they are
+  untested.
+- **Terminal reflow on resize.** The emulator does not reflow. A line
+  the terminal wrapped keeps the width it wrapped at, and a narrower
+  terminal keeps the text past its edge until the program redraws
+  (Claude Code does on a resize), so zooming a terminal does not change
+  the prompt Workbench reads. The signature ignores blanks, so Claude
+  Code's own rewrapping does not change it either.

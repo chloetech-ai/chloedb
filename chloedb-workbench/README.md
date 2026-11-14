@@ -201,6 +201,14 @@ installed, ChloeCtx:
   should run under the base path `/preview/<agent>/` and set its preview
   URL with that path. The previewed page runs in Workbench's origin, so
   preview only apps you trust as you trust the agents' code.
+- An agent in a worktree Workbench made edits and reads files there, runs
+  the tests, uses git locally (not push) and Workbench's and ChloeCtx's
+  tools without asking (`permissions.allow` in its session's settings).
+  Guarded commands and anything outside its worktree still ask. Tick "Ask
+  before edits" in New agent (`ask_edits: true`) to have it ask for each.
+- In a zoomed terminal every key goes to the agent, and typing goes there
+  even when the focus has left it. Ctrl-Esc leaves it (Esc is the agent's:
+  Claude Code interrupts with it).
 - `GET /api/flow?repo=&minutes=60`: where the last hour went, per agent,
   as model, tools, tests, waiting on you, redo (a call that failed with an
   error seen before) and idle. It adds the tokens from the sessions'
@@ -259,8 +267,16 @@ a model.
   `GET /api/goals/:id` adds the goal's agents, open questions, what
   ChloeCtx learned in the last day (`chloectx sql --json`) and its pulse.
 - **Questions and rules**: the MCP tool `ask_human` asks you in Workbench
-  and waits for the answer; a permission prompt becomes a question too
-  (answering it types the option's number). Each question carries what
+  and waits for the answer; a permission prompt becomes a question too.
+  Workbench reads the prompt off the agent's screen: its card shows the
+  prompt's own options (3 or 4 of them, "switch to auto mode" marked as
+  granting more) and the whole command, or the edit's diff. Answering
+  moves the cursor to the option you chose, checks it there, and presses
+  Enter, only while that same prompt is on the screen; "No" always
+  chooses the prompt's No (or Esc). A prompt that left the screen (Esc in
+  the terminal, say) types nothing and closes its card, saying why. A
+  prompt no Notification announced (the trust prompt, "Do you want to
+  create …?", a dialog) is a question too. Each question carries what
   `chloectx ask --json` found about it. An answer can become a rule
   (`chloectx remember decision`), which every agent of the repository is
   told, and which answers the same question when it is asked again.
@@ -271,7 +287,9 @@ a model.
   `SessionStart`, `UserPromptSubmit` and `PostToolUse` as
   `hookSpecificOutput.additionalContext`: rules, steers
   (`POST /api/agents/:id/steer`) and an agent's outcome, each told once.
-  It still never fails a hook.
+  It still never fails a hook. A steer to an agent its screen shows at its
+  text prompt (idle, or interrupted with Esc) is typed in; the answer's
+  `message` says what became of it, and Story shows it.
 - **Story**: `GET /api/agents/:id/story` reads an agent's turns as
   chapters of grouped steps, with its tokens (from the transcript's
   `usage`) and what ChloeCtx put in its context (`chloectx receipts
@@ -298,8 +316,10 @@ settings file it is given, so they call no model.
   back in its session, one at a time; nothing restarts them all.
 - Worktrees and `wb/*` branches are kept when an agent ends. A new agent
   with the same name picks up its worktree again. Nothing removes them.
-- Claude Code's first-run questions (theme, trusting the folder) appear in
-  the terminal. Answer them there.
+- Claude Code's trust prompt is answered for you in a worktree Workbench
+  made (the agent's events say so); elsewhere it is a question in Needs
+  you ("Trust this folder?"). Its other first-run questions (the theme)
+  appear in the terminal: answer them there.
 - The preview proxies GET, HEAD and POST but not WebSockets, so a dev
   server's hot reload does not reach the page through it.
 - Not in this build: the board, capsules on handoff,

@@ -109,7 +109,7 @@
 
     <section class="view" id="zoom-view" hidden aria-label="Agent">
       <div class="zhead">
-        <button class="btn ghost icon" id="z-back" title="Back to the grid (Ctrl-b z)" aria-label="Back to the grid"><svg class="i"><use href="#i-back"/></svg></button>
+        <button class="btn ghost icon" id="z-back" title="Back to the grid (Ctrl-Esc, or Ctrl-b z)" aria-label="Back to the grid"><svg class="i"><use href="#i-back"/></svg></button>
         <span class="nm" id="z-name"></span>
         <span class="chip" id="z-chip"></span>
         <span class="brk"></span>
@@ -121,7 +121,7 @@
           <button role="tab" id="tab-changes" aria-selected="false" title="Changes: what it changed from its base (c)">Changes<span class="tabn" id="tab-changes-n"></span></button>
           <button role="tab" id="tab-events" aria-selected="false" class="narrow-tab">Events</button>
         </div>
-        <span class="hint"><kbd>C-b</kbd><kbd>z</kbd> back</span>
+        <span class="hint"><kbd>Ctrl</kbd><kbd>Esc</kbd> back</span>
         <button class="btn sm" id="z-stop" title="Stop (Ctrl-b x)"><svg class="i sm"><use href="#i-stop"/></svg><span>Stop</span></button>
         <button class="btn sm primary" id="z-restart" title="Start it again: same name, task and worktree, continuing its session" hidden><span>Restart</span></button>
       </div>
@@ -218,6 +218,10 @@
         <input type="checkbox" id="f-ro" name="read_only">
         <span><b>Read-only</b><span>It reads and answers, and changes no file: no Edit or Write, and Bash only for commands that read. Anything else comes to you as a request.</span></span>
       </label>
+      <label class="check" for="f-ask">
+        <input type="checkbox" id="f-ask" name="ask_edits">
+        <span><b>Ask before edits</b><span id="ask-help">Off: in its own worktree it edits and reads files, runs the tests, uses git locally (no push) and Workbench's and ChloeCtx's tools without asking. Guarded commands, and anything outside the worktree, still ask.</span></span>
+      </label>
       <div class="err" id="new-err" hidden></div>
     </div>
     <div class="dfoot">
@@ -244,6 +248,7 @@
       <dt><span class="then">then</span><kbd>d</kbd></dt><dd>Decisions: the repository's decisions, one lane per agent</dd>
       <dt><kbd>n</kbd> <kbd>z</kbd> <kbd>c</kbd> <kbd>t</kbd> <kbd>d</kbd> <kbd>?</kbd></dt><dd>The same without the prefix, outside a terminal</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close the card, or back, outside a terminal</dd>
+      <dt><kbd>Ctrl</kbd><kbd>Esc</kbd></dt><dd>Leave a zoomed terminal, from inside it too</dd>
     </dl>
     <h3 class="keyh">Changes and the decision card</h3>
     <dl class="keys">
@@ -255,7 +260,7 @@
       <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>4</kbd> <kbd>f</kbd></dt><dd>Its speed, and theatre (a wider card)</dd>
       <dt><kbd>/</kbd></dt><dd>On the Decisions screen: Ask why</dd>
     </dl>
-    <p class="keynote">Inside a zoomed terminal every key goes to the agent, Esc included (Claude Code uses it to interrupt). Use <kbd>Ctrl</kbd><kbd>b</kbd> <kbd>z</kbd> to leave.</p>
+    <p class="keynote">In a zoomed terminal every key goes to the agent, Esc included (Claude Code uses it to interrupt), and typing there goes to the agent even when the focus has left the terminal: no single-key shortcut fires there, nor in a text box. Use <kbd>Ctrl</kbd><kbd>Esc</kbd> (or <kbd>Ctrl</kbd><kbd>b</kbd> <kbd>z</kbd>) to leave.</p>
     <p class="keynote">What each screen is for, and a first ten minutes: <a href="#/guide" data-close>the Guide</a> (the <b>?</b> at the bottom of the left rail).</p>
   </div>
   <div class="dfoot"><span class="left" id="help-version"></span><button type="button" class="btn" data-close autofocus>Close</button></div>

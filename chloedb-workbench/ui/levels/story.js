@@ -358,21 +358,28 @@ export function mount(root, ctx) {
     const send = async () => {
       const text = ta.value.trim();
       if (!text || S.sending) return;
-      S.sending = true; render();
+      S.sending = true; S.sent = null; render();
+      // Sixth build: a steer always says what became of it (the server's
+      // message: typed, queued and why), and an answer that never comes
+      // says so too.
       try {
-        const r = await ctx.api(`/api/agents/${enc(S.id)}/steer`, { method: "POST", body: { text: about ? `(About ${about}.) ${text}` : text } });
+        const r = await Promise.race([
+          ctx.api(`/api/agents/${enc(S.id)}/steer`, { method: "POST", body: { text: about ? `(About ${about}.) ${text}` : text } }),
+          new Promise((_, no) => setTimeout(() => no(new Error(`Workbench did not answer in 15 s; ${a.name} may not have it. Check its terminal.`)), 15000)),
+        ]);
         S.talk = "";
-        S.sent = { ok: true, text: r && r.delivered === "typed" || a.state === "idle" ? `Typed into ${a.name}'s prompt.` : `Sent. ${a.name} gets it at its next tool call.` };
-      } catch (e) { S.sent = { ok: false, text: e.message }; }
+        const msg = r && r.message ? r.message : r && r.delivered === "typed" ? `Typed into ${a.name}'s prompt.` : `Sent. ${a.name} gets it at its next tool call.`;
+        S.sent = { ok: true, warn: r && r.delivered === "queued", text: msg };
+      } catch (e) { S.sent = { ok: false, text: `Not sent: ${e.message}` }; }
       S.sending = false; render();
-      setTimeout(() => { S.sent = null; if (alive) render(); }, 5000);
+      setTimeout(() => { S.sent = null; if (alive) render(); }, S.sent && (S.sent.ok === false || S.sent.warn) ? 15000 : 6000);
     };
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === "Escape") ta.blur(); });
     return h("section", { class: "lv-card sy-talk" },
       h("h2", { class: "lv-h" }, "Talk to it at this level"),
       about ? h("div", { class: "sy-about" }, h("span", {}, "about ", h("b", {}, about)), h("button", { class: "sy-x", "data-key": "about-x", "aria-label": "Not about this", title: "Send it without the context", onclick: () => { S.about = false; render(); } }, "×")) : null,
       h("div", { class: "sy-tabox" }, ta, h("button", { class: "btn sm primary", "data-key": "send", disabled: S.sending, onclick: send }, S.sending ? "Sending…" : "Send")),
-      S.sent ? h("div", { class: `sy-sent ${S.sent.ok ? "ok" : "bad"}` }, S.sent.ok ? "✓ " : "", S.sent.text)
+      S.sent ? h("div", { class: `sy-sent ${S.sent.ok ? (S.sent.warn ? "warn" : "ok") : "bad"}`, role: "status" }, S.sent.ok && !S.sent.warn ? "✓ " : "", S.sent.text)
         : h("div", { class: "muted sy-hint" }, "Goes in as a steer, not a keystroke: a working agent gets it at its next tool call, an idle one as its next prompt."));
   }
 
@@ -557,7 +564,7 @@ useStyle("story", `
 .sy-ta{flex:1;border:0;background:none;resize:none;outline:none;color:var(--text);font:inherit;line-height:1.45;min-height:40px;padding:2px 0}
 .sy-hint{font-size:12.5px;margin-top:8px;line-height:1.45}
 .sy-sent{font-size:12.5px;font-weight:600;margin-top:8px;border-radius:7px;padding:6px 10px}
-.sy-sent.ok{background:var(--good-soft);color:var(--good-ink)}.sy-sent.bad{background:var(--crit-soft);color:var(--crit-ink)}
+.sy-sent.ok{background:var(--good-soft);color:var(--good-ink)}.sy-sent.bad{background:var(--crit-soft);color:var(--crit-ink)}.sy-sent.warn{background:var(--warn-soft);color:var(--warn-ink)}
 .sy-err{max-width:560px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .sy-skel{height:30px;width:50%;border-radius:8px;background:var(--surface-3);margin:6px 0 14px;animation:pulse 1.4s ease-in-out infinite}.sy-skel.short{height:16px;width:30%}.sy-skel.tall{height:140px;width:100%}
 @media (max-width:1180px){.sy-wrap{grid-template-columns:minmax(0,1fr)}.sy-side{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start}}

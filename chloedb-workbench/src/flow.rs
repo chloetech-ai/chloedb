@@ -70,6 +70,51 @@ pub fn with_allowed(mut settings: Json, allow: &[String]) -> Json {
     settings
 }
 
+/// The test runners an agent of a worktree runs without asking: Claude
+/// Code's `Bash(<prefix>:*)` rules.
+const TEST_PREFIXES: [&str; 30] = [
+    "cargo test", "cargo nextest", "pytest", "py.test", "python -m pytest", "python3 -m pytest", "npm test", "npm run test", "yarn test", "pnpm test", "bun test", "deno test",
+    "go test", "jest", "vitest", "npx jest", "npx vitest", "mvn test", "./gradlew test", "gradle test", "make test", "make check", "rspec", "bundle exec rspec", "phpunit", "ctest",
+    "tox", "mix test", "dotnet test", "uv run pytest",
+];
+
+/// The git commands that stay in the worktree (no push, fetch or pull, no
+/// reset or clean).
+const LOCAL_GIT: [&str; 20] = [
+    "status", "diff", "log", "show", "add", "commit", "stash", "branch", "checkout", "switch", "restore", "rebase", "merge", "rev-parse", "blame", "grep", "ls-files", "cherry-pick", "mv", "rm",
+];
+
+/// What an agent of a worktree Workbench made may do there without asking
+/// (SPEC.md, "Sixth build: Safe answering"): edit and read files inside its
+/// worktree (Claude Code's `Edit` rule covers Write, MultiEdit and
+/// NotebookEdit, its `Read` rule Grep and Glob), run the tests, use git
+/// locally, and use Workbench's and ChloeCtx's tools. Guarded commands are
+/// still denied by their hook (src/guarded.rs), and anything else, or
+/// outside the worktree, still asks.
+pub fn worktree_allow(worktree: &Path) -> Vec<String> {
+    let inside = format!("/{}/**", worktree.display());
+    let mut out = vec![format!("Edit({inside})"), format!("Read({inside})")];
+    out.extend(TEST_PREFIXES.iter().map(|p| format!("Bash({p}:*)")));
+    out.extend(LOCAL_GIT.iter().map(|g| format!("Bash(git {g}:*)")));
+    out.extend(["mcp__workbench".to_string(), "mcp__chloectx".to_string()]);
+    out
+}
+
+/// `settings` with [`worktree_allow`] added to its `permissions.allow`.
+pub fn with_worktree_defaults(mut settings: Json, worktree: &Path) -> Json {
+    let mut list = settings.pointer("/permissions/allow").and_then(Json::as_array).cloned().unwrap_or_default();
+    for a in worktree_allow(worktree) {
+        if !list.contains(&json!(a)) {
+            list.push(json!(a));
+        }
+    }
+    if !settings["permissions"].is_object() {
+        settings["permissions"] = json!({});
+    }
+    settings["permissions"]["allow"] = Json::Array(list);
+    settings
+}
+
 // Commands.
 
 /// The words of a command's simple commands (split at `&&`, `||`, `;` and

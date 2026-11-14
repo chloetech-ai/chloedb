@@ -1028,6 +1028,7 @@ function openNew() {
   $("f-model").value = store("local", MODEL_KEY) || "";
   $("f-wt").checked = true;
   $("f-ro").checked = false;
+  $("f-ask").checked = false; askHelp(); // Sixth build: Ask before edits, off
   $("new-err").hidden = true;
   $("new-go").disabled = false;
   branchHelp();
@@ -1045,6 +1046,16 @@ $("f-wt").addEventListener("change", branchHelp);
 // Sixth build, E: the servers agents start, the stop choice and the repository box (ui/levels/lifecycle.js).
 let LC = null;
 import("/levels/lifecycle.js").then((m) => { LC = m; m.attachRepoBox($("f-repo"), { api, recent: recentRepos, next: () => $("f-task").focus() }); }).catch(() => {});
+// Sixth build: what an agent may do in its worktree without asking (flow::worktree_allow).
+function askHelp() {
+  const wt = $("f-wt").checked;
+  $("f-ask").disabled = !wt;
+  $("ask-help").textContent = !wt ? "Without its own worktree it asks as Claude Code does."
+    : $("f-ask").checked ? "On: it asks you before each edit, test run and git command, as Claude Code does."
+    : "Off: in its own worktree it edits and reads files, runs the tests, uses git locally (no push) and Workbench's and ChloeCtx's tools without asking. Guarded commands, and anything outside the worktree, still ask.";
+}
+$("f-wt").addEventListener("change", askHelp);
+$("f-ask").addEventListener("change", askHelp);
 // Model routing: which model tasks like this one did best on (ui/levels/route-hint.js).
 import("/levels/route-hint.js").then((m) => m.attach($("new-dialog"), { api })).catch(() => {});
 // Fifth build: autocomplete and intent checks for the task and Ask why (ui/levels/complete.js).
@@ -1076,6 +1087,7 @@ $("new-form").addEventListener("submit", async (e) => {
   $("f-repo").removeAttribute("aria-invalid");
   if (name && !/^[a-z0-9-]{1,32}$/.test(name)) { newError("A name is lowercase letters, digits and hyphens, at most 32."); return; }
   const body = { repo, worktree };
+  if (worktree && $("f-ask").checked) body.ask_edits = true;
   if (task) body.task = task;
   if (name) body.name = name;
   if (model) body.model = model;
@@ -2750,6 +2762,20 @@ function runCommand(e) {
   return false;
 }
 
+/** Whether the zoomed agent's terminal shows and its agent runs. */
+function zoomTermShown() {
+  const tab = $("z-body").dataset.tab;
+  return !!S.zoomed && !$("zoom-view").hidden && (!tab || tab === "term") && !!S.agents.get(S.zoomed)?.running;
+}
+
+/** Esc typed into a busy agent's terminal: say what it did, and how to leave. */
+let escNoted = 0;
+function escapeNote(a) {
+  if (!a || !["working", "waiting"].includes(a.state) || Date.now() - escNoted < 8000) return;
+  escNoted = Date.now();
+  toast(`Esc went to ${nameOf(a)}: Claude Code stops what it is doing. To leave the terminal, press Ctrl-Esc.`);
+}
+
 window.addEventListener("keydown", (e) => {
   if (e.isComposing || !$("gate").hidden) return;
   if (S.prefix) {
@@ -2769,14 +2795,33 @@ window.addEventListener("keydown", (e) => {
     setPrefix(true);
     return;
   }
+  // Sixth build: Ctrl-Esc leaves a zoomed terminal from anywhere, the
+  // terminal included; Esc there is the agent's (Claude Code interrupts
+  // with it), so leaving never sends it.
+  if (e.key === "Escape" && e.ctrlKey && !e.altKey && !e.metaKey && S.zoomed && !openDialog()) { e.preventDefault(); e.stopPropagation(); unzoom(); return; }
   if (e.key === "Escape" && e.target.id === "ask-q" && !openDialog()) { e.preventDefault(); e.target.blur(); if (!$("ask-out").hidden) $("ask-out").hidden = true; return; }
   if (openDialog() || inField(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
   const inTerm = e.target.classList?.contains("xterm-helper-textarea");
-  // Every other key belongs to the agent, Esc included, while it runs.
-  if (inTerm && S.agents.get(S.zoomed)?.running) return;
+  // Every other key belongs to the agent, Esc included, while it runs: no
+  // single-key shortcut fires in a terminal (a zoomed one, or one a screen
+  // shows).
+  if (inTerm && (!S.zoomed || S.agents.get(S.zoomed)?.running)) {
+    if (e.key === "Escape" && S.zoomed) escapeNote(S.agents.get(S.zoomed));
+    return;
+  }
   if (e.key === "Escape" && T.open) { e.preventDefault(); closeSheet(); return; }
   if (e.key === "Escape" && D.open) { e.preventDefault(); closeDecisions(); return; }
   if (e.key === "Escape" && S.zoomed) { e.preventDefault(); unzoom(); return; }
+  // In a zoomed terminal, typing goes to the agent even when the focus has
+  // left the terminal (a sentence once began with "n", New agent): a
+  // printable key focuses the terminal and is typed there. Workbench's own
+  // keys there take Ctrl-b; [ and ] still move between levels.
+  if (zoomTermShown() && !T.open && !D.open && e.key.length === 1 && e.key !== "[" && e.key !== "]") {
+    e.preventDefault(); e.stopPropagation();
+    Z.term?.focus();
+    Z.sock?.send(e.key);
+    return;
+  }
   if (!inTerm && L.screen && !T.open && levelKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (!inTerm && trailKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (!inTerm && !T.open && (e.key === "[" || e.key === "]") && levelKey(e)) { e.preventDefault(); e.stopPropagation(); return; }

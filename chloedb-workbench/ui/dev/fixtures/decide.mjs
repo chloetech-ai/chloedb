@@ -37,6 +37,22 @@ const q = (id, agent, o) => ({
   created: T(30), answered: T(30), ...o,
 });
 const PERM = [{ label: "Yes" }, { label: "Yes, and don't ask again" }, { label: "No" }];
+// An open prompt's options as Workbench reads them off the agent's screen
+// (SPEC.md, "Sixth build: Safe answering"): its own labels and numbers.
+const PROMPT4 = [
+  { label: "Yes", n: 1, no: false },
+  { label: "Yes, and don't ask again for gh pr create commands in /work/shop", n: 2, no: false, grants: "stops it asking again for commands like this one" },
+  { label: "Yes, and switch to auto mode", n: 3, no: false, grants: "switches the agent to auto mode: it stops asking for the rest of the session" },
+  { label: "No", n: 4, no: true },
+];
+const PR_CMD = [
+  "gh pr create --draft --title \"Refunds v2: ledger records and POST /refunds\" --body \"$(cat <<'BODY'",
+  "## Outcomes",
+  "- Ledger records refunds as negative entries",
+  "- POST /refunds, idempotent on Idempotency-Key",
+  "BODY",
+  ")\"",
+].join("\n");
 
 export const questions = [
   q("q1c0ffee1", "web", {
@@ -80,8 +96,12 @@ export const questions = [
   q("q3d9a0b17", "lead", {
     kind: "permission", state: "open", answered: null, created: T(1), outcome: null,
     text: "Claude needs your permission to use Bash",
-    context: "gh pr create --draft --title \"Refunds v2: ledger records and POST /refunds\"",
-    options: PERM,
+    context: PR_CMD.split("\n")[0],
+    options: PROMPT4,
+    detail: {
+      tool: "Bash", summary: "Bash: gh pr create --draft", command: PR_CMD, description: "Open a draft pull request for the two finished outcomes",
+      menu: { kind: "permission", question: "Do you want to proceed?", header: "Bash command", footer: "Esc to cancel · Tab to amend", sig: "mock", labels: PROMPT4.map((o) => o.label) },
+    },
   }),
   // Answered today by rules.
   q("q4e1c55a0", "hooks", { text: "Retry refund.updated 5 times or 8?", answer: "5 times, with exponential backoff", answered_by: "rule:r00000003", created: T(9), answered: T(9) }),
@@ -107,7 +127,8 @@ function answer(qq, b) {
   const opts = Array.isArray(qq.options) ? qq.options : [];
   const n = b.option != null ? Number(b.option) : null;
   if (n != null && !opts[n]) return [400, { error: `no option ${n}`, error_code: "bad_request" }];
-  const text = n != null ? opts[n].label : String(b.text || "").trim();
+  if (n != null && b.label && b.label !== opts[n].label) return [409, { error: `Nothing was typed: option ${n + 1} of this prompt is “${opts[n].label}”, not “${b.label}”`, error_code: "not_typed" }];
+  const text = n != null ? opts[n].label : b.cancel ? "Cancelled (Esc)" : String(b.text || "").trim();
   if (!text) return [400, { error: "an option or a text is needed", error_code: "bad_request" }];
   Object.assign(qq, { state: "answered", answer: text, answered_by: "you", answered: now() });
   let rule = null;

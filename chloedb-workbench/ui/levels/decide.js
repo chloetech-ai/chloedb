@@ -2,8 +2,11 @@
 // questions, each with what ChloeCtx found when it was asked (the option
 // that matches a past decision marked, the decision itself with its Rewind),
 // answered in one click and, if you like, made a rule every agent then gets.
-// Permission prompts are short: Yes, Always, No. Below: what rules answered
-// for you today, and the rules, each one on or off.
+// A permission prompt shows the whole command (or the edit's diff) and the
+// prompt's own options, as its agent's screen lists them (SPEC.md, "Sixth
+// build: Safe answering"); Workbench types one only while that prompt is on
+// the screen. Below: what rules answered for you today, and the rules,
+// each one on or off.
 import {
   h, useStyle, toMs, fmtDur, fmtClock, avatar, pill, repoOf, mergeAgents, inlineCode, parseJSON, fmtDay,
   keyNav, rerender, routeParam, precedentOf,
@@ -13,7 +16,19 @@ const enc = encodeURIComponent;
 const names = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const isToday = (t) => { const d = new Date(toMs(t) || 0); return d.toDateString() === new Date().toDateString(); };
-const PERM_LABELS = ["Yes", "Always", "No"];
+// A permission card's title, from the tool call it asks about.
+export function permTitle(q, name) {
+  const d = q.detail || {};
+  const m = d.menu || {};
+  const file = d.rel || (d.file ? String(d.file).split("/").pop() : "");
+  if (m.kind === "trust") return `${name} asks: trust this folder?`;
+  if (d.action) return `${name} wants to ${d.action.charAt(0).toLowerCase()}${d.action.slice(1)}`;
+  if (d.tool === "Bash") return `${name} wants to run a command`;
+  if (d.tool === "Write") return `${name} wants to write ${file}`;
+  if (d.tool && /Edit$/.test(d.tool)) return `${name} wants to edit ${file}`;
+  if (d.tool) return `${name} wants to use ${d.tool.replace(/^mcp__(\w+?)__/, "$1's ")}`;
+  return m.question || q.text || `${name} waits on a choice`;
+}
 // Change requests (guarded actions): a section of its own (ui/levels/change-requests.js).
 import { changeRequests } from "./change-requests.js";
 // Sixth build: the Rules panel, with add, edit and delete (ui/levels/rules.js).
@@ -77,7 +92,7 @@ export function mount(root, ctx) {
 
   const agents = () => mergeAgents(S.stream);
   const agentOf = (id) => agents().get(id) || null;
-  const opts = (q) => (q.kind === "permission" ? PERM_LABELS.map((label, i) => ({ label, detail: (parseJSON(q.options, []) || [])[i]?.label })) : parseJSON(q.options, []) || []);
+  const opts = (q) => parseJSON(q.options, []) || [];
   const prec = (q) => precedentOf(q);
   const matchIdx = (q) => opts(q).findIndex((o) => o.matches_precedent);
   const defaultChoice = (q) => (q.kind === "permission" ? 0 : matchIdx(q) >= 0 ? matchIdx(q) : q.recommended ?? 0);
@@ -101,7 +116,7 @@ export function mount(root, ctx) {
 
   // ------------------------------------------------------------- actions
   async function answer(q, body, said) {
-    S.sending = q.id; render();
+    S.sending = q.id; S.done = q.kind === "permission" ? { id: q.id, ok: true, text: `Choosing “${said}” in ${agentOf(q.agent)?.name || "its"} prompt…` } : S.done; render();
     try {
       const r = await ctx.api(`/api/questions/${enc(q.id)}/answer`, { method: "POST", body });
       const a = agentOf(q.agent);
@@ -111,7 +126,9 @@ export function mount(root, ctx) {
       S.sel = next ? next.id : q.id;
       await load();
     } catch (e) {
-      S.done = { id: q.id, ok: false, text: `Not answered: ${e.message}` };
+      S.done = { id: q.id, ok: false, text: `Not answered. ${e.message}` };
+      // A prompt that left the screen closed its question: show what is open.
+      if (e.status === 409) await load();
     }
     S.sending = null;
     if (alive) render();
@@ -159,10 +176,10 @@ export function mount(root, ctx) {
     const sub = q.state === "open" ? [a?.name, fmtDur(Date.now() - toMs(q.created))] : [a?.name, auto ? "answered by rule" : q.answered_by === "terminal" ? "answered in its terminal" : "answered by you", fmtClock(q.answered)];
     return h("button", { class: `de-it${S.sel === q.id ? " sel" : ""}`, "data-nav": "", "data-key": `q:${q.id}`, "aria-current": S.sel === q.id ? "true" : null, onclick: () => { S.sel = q.id; S.done = null; render(); } },
       a ? avatar(a, 26) : avatar({ name: "?" }, 26),
-      h("div", { class: "de-it-b" }, h("b", {}, q.kind === "permission" ? `${a ? a.name : "An agent"} wants to run ${firstWords(q.context)}` : q.text), h("div", { class: "muted" }, sub.filter(Boolean).join(" · "))),
+      h("div", { class: "de-it-b" }, h("b", {}, q.kind === "permission" ? permTitle(q, a ? a.name : "An agent") : q.text), q.kind === "permission" && q.context && !q.detail?.action ? h("code", { class: "de-it-c" }, firstLine(q.context)) : null, h("div", { class: "muted" }, sub.filter(Boolean).join(" · "))),
       tag);
   }
-  const firstWords = (c) => (c ? String(c).split(/\s+/).slice(0, 3).join(" ") : "a command");
+  const firstLine = (c) => String(c || "").split("\n")[0];
 
   function openList() {
     return h("section", { class: "de-open" },
@@ -198,7 +215,7 @@ export function mount(root, ctx) {
     return h("div", { class: "de-who" }, a ? avatar(a, 26) : null,
       h("span", { class: "muted" },
         a ? h("button", { class: "de-link", "data-key": `ag:${q.id}`, onclick: () => ctx.go(`#/story/${a.id}`) }, a.name) : "An agent",
-        q.kind === "permission" ? " asks to run a command" : " asks", ` · waiting ${waited}`,
+        q.kind === "permission" ? (q.detail?.menu?.kind === "trust" ? " asks before it starts" : " asks for permission") : " asks", ` · waiting ${waited}`,
         chain.length ? [" · blocks ", h("b", {}, chain[0].title), chain.length > 1 ? [", then ", h("b", {}, chain.slice(1).map((o) => o.title).join(", "))] : null] : null));
   }
 
@@ -247,16 +264,42 @@ export function mount(root, ctx) {
 
   function permission(q) {
     const a = agentOf(q.agent);
+    const name = a ? a.name : "the agent";
     const busy = S.sending === q.id;
-    const raw = parseJSON(q.options, []) || [];
+    const os = opts(q);
+    const d = q.detail || {};
+    const m = d.menu || {};
+    const hasNo = os.some((o) => o.no);
+    const send = (i) => answer(q, { option: i, label: os[i].label }, os[i].label);
     return h("section", { class: "lv-card de-q de-perm", "aria-label": "The selected question" },
       asks(q),
-      h("div", { class: "de-perm-b" },
-        h("div", { class: "de-perm-t" }, h("b", {}, q.text || "Permission to use a tool")),
-        q.context ? h("pre", { class: "de-cmd" }, q.context) : null,
-        h("div", { class: "de-acts" },
-          PERM_LABELS.map((label, i) => h("button", { class: `btn${i === 0 ? " primary" : ""}`, "data-nav": "", "data-key": `pm:${q.id}:${i}`, disabled: busy, title: raw[i]?.label || label, onclick: () => answer(q, { option: i }, raw[i]?.label || label) }, label, h("kbd", {}, i + 1))),
-          h("span", { class: "de-note" }, `answers in ${a ? `${a.name}'s` : "its"} terminal; Always stops it asking again`))));
+      h("h1", { class: "de-qt" }, permTitle(q, name)),
+      d.agent ? h("div", { class: "de-about" }, avatar({ name: d.agent.name }, 20), h("b", {}, d.agent.name),
+        h("span", { class: "muted" }, [d.agent.running === false ? "exited" : d.agent.state === "waiting" ? "waiting for you" : d.agent.state, d.agent.outcome ? `outcome “${d.agent.outcome}”: ${String(d.agent.outcome_state || "").replace("_", " ")}` : null].filter(Boolean).join(" · "))) : null,
+      d.description ? h("div", { class: "muted de-desc" }, d.description) : null,
+      body(q, d),
+      m.question ? h("div", { class: "de-pq" }, h("span", { class: "muted" }, `${name}'s prompt asks: `), h("b", {}, m.question)) : null,
+      os.length ? h("div", { class: "de-popts", role: "group", "aria-label": "The prompt's options" }, os.map((o, i) => h("button", {
+        class: `de-popt${o.no ? " no" : ""}${o.grants ? " more" : ""}${i === 0 && !o.no && !o.grants ? " yes" : ""}`, "data-nav": "", "data-key": `pm:${q.id}:${i}`, disabled: busy,
+        title: `Choose “${o.label}” in ${name}'s prompt`, onclick: () => send(i),
+      }, h("kbd", {}, o.n || i + 1), h("span", { class: "de-pl" }, h("b", {}, o.label), o.grants ? h("span", { class: "de-grants" }, `Grants more: ${o.grants}.`) : null))),
+      hasNo ? null : h("button", { class: "de-popt no", "data-nav": "", "data-key": `pm:${q.id}:esc`, disabled: busy, title: "Esc: cancel the prompt", onclick: () => answer(q, { cancel: true }, "Cancel (Esc)") }, h("kbd", {}, "Esc"), h("span", { class: "de-pl" }, h("b", {}, "Cancel"))))
+        : h("div", { class: "de-reading" }, h("i", { class: "de-spin" }), `Reading the prompt's options from ${name}'s terminal…`,
+          a ? h("button", { class: "btn sm", "data-key": `pt:${q.id}`, onclick: () => ctx.go(`#/zoom/${a.id}`) }, "Open its terminal") : null),
+      h("div", { class: "de-note de-perm-note" }, `Workbench types your choice into ${name}'s terminal only while this prompt is on its screen: it moves the cursor to that option, checks it there, then presses Enter. When the prompt has gone, it types nothing and closes this card.`));
+  }
+
+  // The whole command, or the edit's diff, from the hook that asked.
+  function body(q, d) {
+    if (d.diff) {
+      return h("div", { class: "de-diffw" },
+        h("div", { class: "de-file" }, h("code", {}, d.rel || d.file || ""), d.diff_lines ? h("span", { class: "muted" }, ` · ${d.diff_lines} line${d.diff_lines === 1 ? "" : "s"} changed`) : null),
+        h("pre", { class: "de-diff", tabindex: "0", "aria-label": "The edit" }, String(d.diff).split("\n").map((l) => h("span", { class: l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : l.startsWith("@@") || l === "…" || l.startsWith("(") ? "hunk" : "" }, l + "\n"))));
+    }
+    const cmd = d.command;
+    if (cmd) return h("pre", { class: "de-cmd de-full", tabindex: "0", "aria-label": "The whole command" }, cmd);
+    if (d.input && !d.action) return h("pre", { class: "de-cmd de-full", tabindex: "0" }, d.input);
+    return q.context ? h("pre", { class: "de-cmd" }, q.context) : null;
   }
 
   function precedent(q) {
@@ -291,8 +334,8 @@ export function mount(root, ctx) {
     const r = rid && S.rules.find((x) => x.id === rid);
     return h("section", { class: "lv-card de-q de-done" },
       h("div", { class: "de-who" }, a ? avatar(a, 26) : null, h("span", { class: "muted" }, `${a ? a.name : "An agent"} asked at ${fmtClock(q.created)}`)),
-      h("h1", { class: "de-qt" }, q.kind === "permission" ? q.text : inlineCode(q.text)),
-      q.kind === "permission" && q.context ? h("pre", { class: "de-cmd" }, q.context) : q.context ? h("div", { class: "de-ctx" }, inlineCode(q.context)) : null,
+      h("h1", { class: "de-qt" }, q.kind === "permission" ? permTitle(q, a ? a.name : "An agent") : inlineCode(q.text)),
+      q.kind === "permission" ? body(q, q.detail || {}) : q.context ? h("div", { class: "de-ctx" }, inlineCode(q.context)) : null,
       h("div", { class: "de-ans" }, h("span", { class: "muted" }, "Answer"), h("b", {}, q.answer || "—"),
         h("span", { class: "muted" }, `${rid ? "by a rule" : q.answered_by === "terminal" ? "in its terminal" : "by you"} at ${fmtClock(q.answered)}`)),
       r ? h("div", { class: "de-prec" }, h("h2", { class: "lv-h" }, "The rule it used"),
@@ -317,7 +360,14 @@ export function mount(root, ctx) {
       const q = S.open.find((x) => x.id === S.sel);
       if (!q || !/^[1-9]$/.test(e.key)) return false;
       const i = Number(e.key) - 1;
-      if (q.kind === "permission") { if (i < 3) answer(q, { option: i }, PERM_LABELS[i]); return i < 3; }
+      if (q.kind === "permission") {
+        // The prompt's own numbers: the key chooses the option it numbers.
+        const os = opts(q);
+        const at = os.findIndex((o, j) => (o.n || j + 1) === i + 1);
+        if (at < 0 || S.sending) return false;
+        answer(q, { option: at, label: os[at].label }, os[at].label);
+        return true;
+      }
       if (i >= opts(q).length) return false;
       S.choice.set(q.id, i);
       render();
@@ -429,6 +479,35 @@ useStyle("decide", `
 .de-perm-t b{font-size:15px;font-weight:650}
 .de-cmd{margin:10px 0 0;font:12.5px/1.5 var(--mono);background:var(--sunken);border:1px solid var(--line);border-radius:8px;padding:9px 12px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
 .de-perm .de-acts{margin-top:12px}
+.de-it-c{display:block;font:11.5px/1.4 var(--mono);color:var(--text-2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.de-about{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}
+.de-desc{margin-top:6px}
+.de-full{max-height:min(46vh,420px);overflow:auto;white-space:pre;overflow-wrap:normal;tab-size:4}
+.de-diffw{margin-top:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.de-file{padding:6px 12px;background:var(--surface-2);border-bottom:1px solid var(--line);font-size:12.5px}
+.de-file code{font:600 12px var(--mono)}
+.de-diff{margin:0;max-height:min(46vh,420px);overflow:auto;font:12.5px/1.5 var(--mono);background:var(--sunken);padding:6px 0;tab-size:4}
+.de-diff span{display:block;padding:0 12px;white-space:pre}
+.de-diff .add{background:var(--good-soft);color:var(--good-ink)}
+.de-diff .del{background:var(--crit-soft);color:var(--crit-ink)}
+.de-diff .hunk{color:var(--muted)}
+.de-pq{margin-top:14px;font-size:13px}
+.de-popts{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.de-popt{display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left;font:inherit;color:inherit;padding:9px 12px;border:1px solid var(--line-2);border-radius:9px;background:var(--surface);cursor:pointer;transition:border-color .12s,background .12s}
+.de-popt:hover:not(:disabled){border-color:var(--muted)}
+.de-popt:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--focus)}
+.de-popt:disabled{opacity:.55;cursor:default}
+.de-popt kbd{flex:none;margin-top:1px}
+.de-popt.yes{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));background:var(--accent-soft)}
+.de-popt.no b{color:var(--crit-ink)}
+.de-popt.more{border-style:dashed}
+.de-pl{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}
+.de-pl b{font-weight:620;line-height:1.4}
+.de-grants{font-size:12px;color:var(--warn-ink)}
+.de-reading{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;color:var(--text-2)}
+.de-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--line-2);border-top-color:var(--accent);animation:de-rot .8s linear infinite}
+@keyframes de-rot{to{transform:rotate(360deg)}}
+.de-perm-note{margin:12px 0 0;text-align:left;max-width:none}
 .de-ans{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:14px;padding:10px 12px;border-radius:9px;background:var(--surface-2)}
 .de-ans b{font-size:14px}
 .de-rr{font-weight:620;line-height:1.45}

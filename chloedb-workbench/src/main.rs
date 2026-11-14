@@ -43,6 +43,8 @@ mod hotspots;
 mod complete;
 // Sixth build: repositories read without an agent.
 mod repos;
+// Sixth build: what a terminal shows, read for the prompt it waits on.
+mod screen;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
