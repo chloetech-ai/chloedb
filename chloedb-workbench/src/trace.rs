@@ -140,6 +140,8 @@ pub struct Reading {
     pub paths: Vec<String>,
     /// The other words that matter, for ChloeCtx and Decide.
     pub words: Vec<String>,
+    /// x and y came from "between x and y": the change may go either way.
+    pub between: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -348,6 +350,34 @@ pub fn read(q: &str, main: Option<&Path>) -> Reading {
         r.x = x;
         r.y = Some(y.text.clone());
         break;
+    }
+
+    // "between x and y" (a switch either way): x and y, the topic before.
+    if r.y.is_none() {
+        if let Some(b) = toks.iter().position(|t| !t.lit && t.lower == "between") {
+            if let Some(and) = (b + 2..toks.len().min(b + 10)).find(|&j| !toks[j].lit && toks[j].lower == "and") {
+                let end = (and + 1..toks.len()).find(|&j| !toks[j].lit && matches!(toks[j].lower.as_str(), "and" | "or" | "in" | "when" | "why" | "how" | "?")).unwrap_or(toks.len());
+                let side = |a: usize, z: usize| -> Option<String> {
+                    let w: Vec<&str> = toks[a..z].iter().filter(|t| t.lit || !matches!(t.lower.as_str(), "the" | "a" | "an")).map(|t| t.text.trim_end_matches(['?', ',', '.'])).filter(|w| !w.is_empty()).collect();
+                    (!w.is_empty()).then(|| w.join(" "))
+                };
+                if let (Some(x), Some(y)) = (side(b + 1, and), side(and + 1, end.min(and + 4))) {
+                    let verb = (0..b).rev().find(|&j| !toks[j].lit && CHANGE_VERBS.contains(&toks[j].lower.as_str()));
+                    if let Some(v) = verb {
+                        let words: Vec<&str> = toks[0..v].iter().filter(|t| !t.lit && !is_stop(&t.lower)).map(|t| t.text.as_str()).collect();
+                        if !words.is_empty() && toks[..v].iter().all(|t| !is_ident(&t.text) || is_stop(&t.lower)) {
+                            r.topic = Some(words.join(" "));
+                        }
+                    }
+                    for u in &mut used[b..end.min(and + 4)] {
+                        *u = true;
+                    }
+                    r.x = Some(x);
+                    r.y = Some(y);
+                    r.between = true;
+                }
+            }
+        }
     }
 
     // "in api/", "under web/src".
@@ -740,7 +770,7 @@ fn commits(main: &Path, r: &Reading, ns: &[Needle], missing: &mut Vec<String>) -
         if !any {
             continue;
         }
-        let change = if minus_x && plus_y {
+        let change = if (minus_x && plus_y) || (r.between && minus_y && plus_x) {
             "changed"
         } else if plus_y && !minus_y {
             "added"
@@ -879,7 +909,9 @@ fn edits(agents: &[Agent], evs: &HashMap<String, Vec<Event>>, r: &Reading, ns: &
             let ti = &d["tool_input"];
             let Some(file) = ["file_path", "notebook_path", "path"].iter().find_map(|k| ti.get(*k).and_then(Json_::as_str)) else { continue };
             let rel = rel_of(file, &a.cwd);
-            if !in_scope(&rel, &specs) {
+            // A file outside the agent's checkout (its memory notes, a
+            // scratch file in /tmp) is not a change to the repository.
+            if Path::new(&rel).is_absolute() || rel.starts_with("../") || !in_scope(&rel, &specs) {
                 continue;
             }
             let mut old: Vec<&str> = ["old_string"].iter().filter_map(|k| ti.get(*k).and_then(Json_::as_str)).collect();
@@ -897,7 +929,7 @@ fn edits(agents: &[Agent], evs: &HashMap<String, Vec<Event>>, r: &Reading, ns: &
             }
             let old_x = x.is_some_and(|x| m_old.iter().any(|l| x.finds(l)));
             let new_y = y.is_some_and(|y| m_new.iter().any(|l| y.finds(l)));
-            let change = if old_x && new_y {
+            let change = if (old_x && new_y) || (r.between && y.is_some_and(|y| m_old.iter().any(|l| y.finds(l))) && x.is_some_and(|x| m_new.iter().any(|l| x.finds(l)))) {
                 "changed"
             } else if !m_new.is_empty() {
                 "added"
@@ -1018,13 +1050,14 @@ pub fn trace(sup: &Supervisor, q: &TraceQ) -> Result<Json_, ApiError> {
         };
         // Why? on the line as it is now: in the agent's worktree, else the main checkout.
         let plus = c.lines.iter().find(|l| l.1 == '+' && y.as_deref().is_none_or(|_| ns.iter().any(|n| n.role == 'y' && n.finds(&l.3)))).or_else(|| c.lines.iter().find(|l| l.1 == '+'));
+        // The line as this commit has it, blamed at the commit (so a later
+        // edit of the same line is not its author).
         let why = plus.and_then(|l| {
-            if let Some(a) = a.filter(|a| Path::new(&a.cwd).is_dir() && a.cwd != main_s) {
-                if let Some(n) = locate(Path::new(&a.cwd), &l.0, &l.3) {
-                    return Some(json!({ "agent": a.id, "path": l.0, "line": n }));
-                }
-            }
-            locate(&main, &l.0, &l.3).map(|n| json!({ "repo": main_s, "path": l.0, "line": n }))
+            let n = l.2.or_else(|| locate(&main, &l.0, &l.3).map(|n| n as i64))?;
+            Some(match a.filter(|a| Path::new(&a.cwd).is_dir()) {
+                Some(a) => json!({ "agent": a.id, "path": l.0, "line": n }),
+                None => json!({ "repo": main_s, "path": l.0, "line": n }),
+            })
         });
         items.push(json!({
             "id": format!("c-{short}"), "kind": "commit", "ts": iso(c.at_ms), "ts_ms": c.at_ms,
@@ -1098,28 +1131,31 @@ fn count(items: &[Json_], kind: &str) -> usize {
     items.iter().filter(|i| i["kind"] == kind).count()
 }
 
-/// The one-line answer: the first item where x became y (or, without
-/// them, the newest change of the subject), with the answer, rule or
-/// decision behind it.
+/// The one-line answer: the commit where x became y (or, without them,
+/// the newest commit that changed the subject; an uncommitted edit only
+/// when no commit did), with the answer, rule or decision behind it, and
+/// the whole history in one line when it changed more than once.
 fn answer_of(r: &Reading, ns: &[Needle], items: &[Json_]) -> Option<Json_> {
-    let changes: Vec<&Json_> = items.iter().filter(|i| i["kind"] == "commit" || i["kind"] == "edit").collect();
     let moment = |i: &Json_| i["written"]["ts_ms"].as_i64().or(i["ts_ms"].as_i64()).unwrap_or(0);
-    let key = changes
-        .iter()
-        .filter(|i| i["change"] == "changed")
-        .min_by_key(|i| moment(i))
-        .or_else(|| changes.iter().filter(|i| i["change"] == "added").max_by_key(|i| moment(i)))
-        .or_else(|| changes.iter().max_by_key(|i| moment(i)))
-        .copied()?;
+    let commits: Vec<&Json_> = items.iter().filter(|i| i["kind"] == "commit").collect();
+    let edits: Vec<&Json_> = items.iter().filter(|i| i["kind"] == "edit").collect();
+    let pick = |list: &[&Json_]| -> Option<Json_> {
+        let changed = |i: &&&Json_| i["change"] == "changed";
+        // "From x to y": the change that did that; else the newest change.
+        let k = if r.x.is_some() && r.y.is_some() { list.iter().filter(changed).min_by_key(|i| moment(i)) } else { None };
+        k.or_else(|| list.iter().filter(|i| i["change"] == "changed" || i["change"] == "added").max_by_key(|i| moment(i))).or_else(|| list.iter().max_by_key(|i| moment(i))).map(|i| (*i).clone())
+    };
+    let key = pick(&commits).or_else(|| pick(&edits))?;
+    let key = &key;
     let when = moment(key);
     let who = key["agent"]["name"].as_str().map(str::to_string).unwrap_or_else(|| key["by"].as_str().unwrap_or("someone").to_string());
     let subject = r.topic.as_ref().map(|t| format!("The {t}")).or_else(|| r.subjects.first().map(|s| s.to_string())).or_else(|| r.files.first().cloned());
     let short = key["commit"]["short"].as_str().unwrap_or("");
     let file = key["written"]["file"].as_str().map(str::to_string).or_else(|| key["lines"][0]["path"].as_str().map(str::to_string)).unwrap_or_default();
     let head = match (key["change"].as_str(), &r.x, &r.y) {
-        (Some("changed"), Some(x), Some(y)) => format!("{} went from {x} to {y}", subject.unwrap_or_else(|| "It".into())),
-        (Some("added"), _, Some(y)) => format!("{} became {y}", subject.unwrap_or_else(|| "It".into())),
-        _ => format!("{} last changed", subject.or_else(|| ns.first().map(|n| n.text.clone())).unwrap_or_else(|| "It".into())),
+        (Some("changed"), Some(x), Some(y)) => format!("{} went from {x} to {y}", subject.clone().unwrap_or_else(|| "It".into())),
+        (Some("added"), _, Some(y)) => format!("{} became {y}", subject.clone().unwrap_or_else(|| "It".into())),
+        _ => format!("{} last changed", subject.clone().or_else(|| ns.first().map(|n| n.text.clone())).unwrap_or_else(|| "It".into())),
     };
     let how = if key["kind"] == "edit" {
         format!("in {who}'s edit to {file} (not committed yet)")
@@ -1128,36 +1164,84 @@ fn answer_of(r: &Reading, ns: &[Needle], items: &[Json_]) -> Option<Json_> {
     } else {
         format!("in {who}'s commit {short} \u{201c}{}\u{201d}", one_line(key["commit"]["subject"].as_str().unwrap_or(""), 80))
     };
-    // What came before it: your answer to the agent, a rule, its decision.
+    // What came before it, in the same agent's work and about the same
+    // thing: your answer to its question, a rule, its decision.
     let agent = key["agent"]["id"].as_str();
-    let before = |i: &&Json_| i["ts_ms"].as_i64().is_some_and(|t| t <= when + 60_000 && t >= when - 12 * 3600_000);
+    let before = |i: &&Json_| i["ts_ms"].as_i64().is_some_and(|t| t <= when + 60_000 && t >= when - 2 * 3600_000);
+    let about = |text: &str| ns.iter().any(|n| n.finds(text)) || (!file.is_empty() && text.contains(file.rsplit('/').next().unwrap_or(&file)));
     let after = items
         .iter()
         .filter(before)
-        .filter(|i| i["kind"] == "question" && i["question"]["answer"].is_string() && (agent.is_none() || i["agent"]["id"].as_str() == agent))
+        .filter(|i| i["kind"] == "question" && i["question"]["answer"].is_string() && agent.is_some() && i["agent"]["id"].as_str() == agent)
         .max_by_key(|i| i["ts_ms"].as_i64())
         .map(|q| {
             let by = if q["question"]["answered_by"] == "you" { "you answered" } else { "a rule answered" };
             format!(", after {by} \u{201c}{}\u{201d} to its question \u{201c}{}\u{201d}", one_line(q["question"]["answer"].as_str().unwrap_or(""), 60), one_line(q["question"]["text"].as_str().unwrap_or(""), 90))
         })
-        .or_else(|| items.iter().filter(before).filter(|i| i["kind"] == "rule").max_by_key(|i| i["ts_ms"].as_i64()).map(|r| format!(", under your rule \u{201c}{}\u{201d}", one_line(r["title"].as_str().unwrap_or(""), 90))))
+        .or_else(|| items.iter().filter(before).filter(|i| i["kind"] == "rule" && about(i["title"].as_str().unwrap_or(""))).max_by_key(|i| i["ts_ms"].as_i64()).map(|r| format!(", under your rule \u{201c}{}\u{201d}", one_line(r["title"].as_str().unwrap_or(""), 90))))
         .or_else(|| {
             items
                 .iter()
                 .filter(before)
-                .filter(|i| i["kind"] == "decision" && (agent.is_none() || i["agent"]["id"].as_str() == agent))
+                .filter(|i| i["kind"] == "decision" && agent.is_some() && i["agent"]["id"].as_str() == agent)
+                .filter(|i| about(i["title"].as_str().unwrap_or("")) || i["ctx"]["files"].as_array().is_some_and(|f| f.iter().any(|x| x.as_str().is_some_and(|x| !file.is_empty() && x.ends_with(file.as_str())))))
                 .max_by_key(|i| i["ts_ms"].as_i64())
-                .map(|d| format!(", following the decision \u{201c}{}\u{201d}", one_line(d["title"].as_str().unwrap_or(""), 90)))
+                .map(|d| format!(", recorded with the decision \u{201c}{}\u{201d}", one_line(d["title"].as_str().unwrap_or(""), 90)))
         })
         .unwrap_or_default();
-    let text = format!("{head} {{when}} {how}{after}.");
+    let mut text = format!("{head} {{when}} {how}{after}.");
+    // Not committed since: say so after the committed answer.
+    if key["kind"] == "commit" {
+        if let Some(e) = edits.iter().filter(|e| moment(e) > when).max_by_key(|e| moment(e)) {
+            text.push_str(&format!(" Since then {} has an uncommitted edit to {}.", e["agent"]["name"].as_str().unwrap_or("an agent"), e["lines"][0]["path"].as_str().unwrap_or("it")));
+        }
+    }
+    // The history, in one line: every commit that changed or brought it in.
+    let mut changes: Vec<&&Json_> = commits.iter().filter(|c| matches!(c["change"].as_str(), Some("changed" | "added" | "removed"))).collect();
+    if changes.len() < 2 {
+        changes = commits.iter().collect();
+    }
+    changes.sort_by_key(|c| moment(c));
+    let history: Vec<Json_> = changes
+        .iter()
+        .map(|c| json!({ "id": c["id"], "sha": c["commit"]["short"], "ts_ms": moment(c), "label": history_label(c, r), "by": c["agent"]["name"].as_str().or(c["by"].as_str()) }))
+        .collect();
+    let history_plain = (history.len() >= 2).then(|| {
+        format!(
+            "{} changed {} times: {}.",
+            subject.clone().or_else(|| ns.first().map(|n| n.text.clone())).unwrap_or_else(|| "It".into()),
+            history.len(),
+            history.iter().map(|h| format!("{} ({})", h["label"].as_str().unwrap_or(""), utc(h["ts_ms"].as_i64().unwrap_or(0)).get(..10).unwrap_or(""))).collect::<Vec<_>>().join(" \u{2192} ")
+        )
+    });
     Some(json!({
         "text": text, "when_ms": when, "plain": text.replace("{when}", &format!("on {}", utc(when))), "key": key["id"],
+        "history": if history.len() >= 2 { Json_::Array(history) } else { Json_::Array(Vec::new()) }, "history_plain": history_plain,
         "evidence": {
             "commits": count(items, "commit"), "edits": count(items, "edit"), "decisions": count(items, "decision"),
             "questions": count(items, "question"), "rules": count(items, "rule"), "goals": count(items, "goal"),
         },
     }))
+}
+
+/// A commit in a history line: what it made of the subject (y, when it
+/// brought y in), else its subject, short.
+fn history_label(c: &Json_, r: &Reading) -> String {
+    let subj = c["commit"]["subject"].as_str().unwrap_or("");
+    let short = c["commit"]["short"].as_str().unwrap_or("");
+    // A step is named by the value it brought in (y, or x for the step
+    // that brought x in), else by its subject.
+    let brings = |v: &str| c["lines"].as_array().is_some_and(|l| l.iter().any(|l| l["sign"] == "+" && norm(l["text"].as_str().unwrap_or("")).contains(&norm(v))));
+    let label = match (c["change"].as_str(), &r.y, &r.x) {
+        (Some("changed" | "added"), Some(y), _) if brings(y) => y.clone(),
+        (Some("changed" | "added"), _, Some(x)) if brings(x) => x.clone(),
+        _ => one_line(subj, 48),
+    };
+    if label.is_empty() {
+        short.to_string()
+    } else {
+        format!("{label} {short}")
+    }
 }
 
 // -------------------------------------------------------------------- why
@@ -1818,6 +1902,34 @@ mod tests {
         let ns = needles(&r);
         assert_eq!(ns.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["floor", "half-up"]);
         assert!(ns[1].finds("let off = round_half_up(x);") && ns[1].finds("roundHalfUp(off)") && !ns[1].finds("half of it, up"));
+    }
+
+    #[test]
+    fn reads_between_x_and_y_as_a_change_either_way() {
+        let r = read("when and why did to_cents switch between banker's rounding and half up?", None);
+        assert_eq!((r.x.as_deref(), r.y.as_deref(), r.between), (Some("banker rounding"), Some("half up"), true), "{r:?}");
+        assert_eq!(r.subjects, ["to_cents"]);
+    }
+
+    #[test]
+    fn answers_with_the_commit_and_the_whole_history() {
+        let r = read("when did the rounding change?", None);
+        let ns = needles(&Reading { subjects: vec!["round".into()], ..r.clone() });
+        let commit = |id: &str, ms: i64, subject: &str| json!({ "id": id, "kind": "commit", "ts_ms": ms, "change": "added", "by": "Dana", "agent": null, "commit": { "short": id, "subject": subject }, "lines": [{ "path": "money.py", "sign": "+", "text": "x" }] });
+        let items = vec![
+            commit("4e51a20", 1_000, "rounding down"),
+            commit("9355961", 2_000, "half-up for ticket 41"),
+            commit("b72f105", 3_000, "half-even for the ledger"),
+            // A later uncommitted edit, and a decision of no one in particular.
+            json!({ "id": "w-a-1", "kind": "edit", "ts_ms": 4_000, "change": "added", "agent": { "id": "a", "name": "rounding-doc" }, "lines": [{ "path": "money.py", "sign": "+", "text": "x" }] }),
+            json!({ "id": "d-x", "kind": "decision", "ts_ms": 2_900, "title": "Leave test_promo_window alone", "agent": null }),
+        ];
+        let a = answer_of(&r, &ns, &items).unwrap();
+        assert_eq!(a["key"], "b72f105", "the newest commit, not the edit: {a}");
+        let text = a["text"].as_str().unwrap();
+        assert!(text.contains("commit b72f105") && text.contains("Since then rounding-doc has an uncommitted edit") && !text.contains("following") && !text.contains("promo"), "{text}");
+        assert_eq!(a["history"].as_array().unwrap().len(), 3);
+        assert!(a["history_plain"].as_str().unwrap().contains("changed 3 times: rounding down 4e51a20"), "{a}");
     }
 
     #[test]

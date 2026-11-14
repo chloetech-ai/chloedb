@@ -36,8 +36,13 @@ pub enum Ran {
 
 /// Runs `<bin> <args>` in `cwd` and reads its JSON, waiting at most `timeout`.
 pub fn run_chloectx(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> Ran {
+    run_chloectx_env(bin, cwd, args, &[], timeout)
+}
+
+/// `run_chloectx` with these environment variables set.
+pub fn run_chloectx_env(bin: &str, cwd: &Path, args: &[&str], env: &[(&str, String)], timeout: Duration) -> Ran {
     let what = format!("chloectx {}", args.first().copied().unwrap_or(""));
-    match run_raw(bin, cwd, args, timeout) {
+    match run_raw_env(bin, cwd, args, env, timeout) {
         Ran::Out(Json::String(out)) => match serde_json::from_str::<Json>(&out) {
             Ok(v) if v.get("error").and_then(Json::as_str).is_some() => Ran::Failed(format!("{what} failed: {}", v["error"].as_str().unwrap_or(""))),
             Ok(v) => Ran::Out(v),
@@ -50,7 +55,15 @@ pub fn run_chloectx(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> 
 /// Runs `<bin> <args>` in `cwd` and answers what it printed, as
 /// `Ran::Out(Json::String(text))`, waiting at most `timeout`.
 pub fn run_raw(bin: &str, cwd: &Path, args: &[&str], timeout: Duration) -> Ran {
-    let mut child = match Command::new(bin).args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+    run_raw_env(bin, cwd, args, &[], timeout)
+}
+
+fn run_raw_env(bin: &str, cwd: &Path, args: &[&str], env: &[(&str, String)], timeout: Duration) -> Ran {
+    let mut cmd = Command::new(bin);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = match cmd.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ran::Missing,
         Err(e) => return Ran::Failed(format!("cannot run {bin}: {e}")),
@@ -137,6 +150,14 @@ impl Sessions {
 
     pub fn agent(&self, session: &str) -> Option<&Agent> {
         self.by_session.get(session).map(|&i| &self.agents[i])
+    }
+
+    /// Every Claude Code session an agent ran.
+    pub fn sessions_of(&self, id: &str) -> Vec<String> {
+        let Some(i) = self.agents.iter().position(|a| a.id == id) else { return Vec::new() };
+        let mut v: Vec<String> = self.by_session.iter().filter(|(_, &j)| j == i).map(|(s, _)| s.clone()).collect();
+        v.sort();
+        v
     }
 
     /// The agent of a ChloeCtx record id, `<the session's first 8 letters
@@ -235,7 +256,7 @@ fn prompt_of(evs: &[Event], agent: &Agent, s: &Sessions, seq: Option<i64>, ms: O
         None => "you".into(),
     };
     let text = data_of(ev).and_then(|d| d.get("prompt").and_then(Json::as_str).map(str::to_string)).or_else(|| ev.summary.as_deref().map(|s| s.trim_start_matches("prompt: ").to_string())).unwrap_or_default();
-    Some((json!({ "text": text, "ts": iso(ev.ts), "by": by }), by))
+    Some((json!({ "text": text, "ts": iso(ev.ts), "ts_ms": ev.ts, "by": by }), by))
 }
 
 /// What became of a record ChloeCtx had put in context, from blame's flags.
@@ -295,6 +316,9 @@ pub struct WhyQ {
     pub repo: Option<String>,
     pub path: Option<String>,
     pub line: Option<usize>,
+    /// The commit the line was clicked from: the line is read and blamed
+    /// as that commit has it.
+    pub commit: Option<String>,
 }
 
 /// The folder a request names: an agent's worktree, or a repository's
@@ -348,12 +372,31 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
     let path = q.path.as_deref().filter(|p| !p.is_empty()).ok_or_else(|| ApiError::bad("path is required"))?;
     let n = q.line.ok_or_else(|| ApiError::bad("line is required"))?;
     let (asked, dir, repo) = place(sup, q.agent.as_deref(), q.repo.as_deref())?;
-    let (rel, text) = read_line(&dir, path, n)?;
+    let at_commit = q.commit.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    if let Some(c) = at_commit {
+        if c.len() < 4 || c.len() > 64 || !c.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(ApiError::bad("commit must be a hex sha"));
+        }
+    }
+    let (rel, text) = match at_commit {
+        Some(c) => read_line_at(&dir, c, path, n)?,
+        None => read_line(&dir, path, n)?,
+    };
     let mut missing: Vec<String> = Vec::new();
     let s = Sessions::load(sup);
 
-    // Where.
-    let commit = git::blame_line(&dir, &rel, n);
+    // Where: the commit that brought the line (as of the commit clicked
+    // from, when there is one).
+    let blamed = match at_commit {
+        Some(c) => blame_at(&dir, c, &rel, n),
+        None => git::blame_line(&dir, &rel, n).map(|(sha, t, subj)| {
+            let ct = committer_time(&dir, &sha).unwrap_or(t);
+            (sha, t, subj, ct)
+        }),
+    };
+    let commit = blamed.as_ref().map(|(sha, t, subj, _)| (sha.clone(), *t, subj.clone()));
+    // Nothing done after the line's commit wrote it: no later edit, no later prompt.
+    let until_ms = blamed.as_ref().map(|b| b.3 * 1000 + 999);
     let branch = asked.as_ref().and_then(|a| a.branch.clone()).or_else(|| git::current_branch(&dir));
     let where_ = json!({
         "repo": repo,
@@ -365,9 +408,22 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
         missing.push("The line is not committed yet, so it has no commit.".into());
     }
 
-    // ChloeCtx's blame.
-    let target = format!("{rel}:{n}");
-    let blame = match run_chloectx(&sup.cfg.chloectx_bin, &dir, &["blame", &target, "--json"], Duration::from_secs(120)) {
+    // ChloeCtx's blame, of the line as the working file has it now (when
+    // asked about a commit: only where the line still is, by its text).
+    let now_n = match at_commit {
+        Some(_) => locate_line(&dir, &rel, &text),
+        None => Some(n),
+    };
+    if at_commit.is_some() && now_n.is_none() {
+        missing.push(format!("The line is no longer in {rel} as it is now, so ChloeCtx's blame (which reads the file as it is) was not asked."));
+    }
+    let target = format!("{rel}:{}", now_n.unwrap_or(n));
+    let ran = match now_n {
+        Some(_) => run_chloectx(&sup.cfg.chloectx_bin, &dir, &["blame", &target, "--json"], Duration::from_secs(120)),
+        None => Ran::Failed(String::new()),
+    };
+    let blame = match ran {
+        Ran::Failed(e) if e.is_empty() => None,
         Ran::Out(v) => Some(v),
         Ran::Missing => {
             missing.push(not_installed(&sup.cfg.chloectx_bin) + "; the agent and the prompt come from Workbench's rows.");
@@ -378,12 +434,18 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
             None
         }
     };
-    let edit = blame.as_ref().map(|b| &b["edit"]).filter(|e| e.is_object());
-    if blame.is_some() && edit.is_none() {
+    // ChloeCtx's edit counts only when it holds the line's text and came
+    // before the line's commit; its guess (the newest edit of the file) is
+    // not who wrote the line.
+    let guessed = blame.as_ref().and_then(|b| b["how"].as_str()).filter(|h| h.starts_with("no recorded edit")).map(str::to_string);
+    let late = blame.as_ref().and_then(|b| ctx_ms(&b["edit"]["ts"])).zip(until_ms).is_some_and(|(e, u)| e > u);
+    let edit = blame.as_ref().map(|b| &b["edit"]).filter(|e| e.is_object()).filter(|_| guessed.is_none() && !late);
+    if let Some(how) = &guessed {
+        missing.push(format!("ChloeCtx has no record of an edit that wrote this line's text ({how}), so it is not credited to that edit."));
+    } else if late {
+        missing.push("ChloeCtx's edit of the file came after the line's commit, so it is not the edit that wrote the line.".into());
+    } else if blame.is_some() && edit.is_none() {
         missing.push("ChloeCtx has no record of an edit that wrote this line (it was written outside a recorded session, or by hand).".into());
-    }
-    if let Some(how) = blame.as_ref().and_then(|b| b["how"].as_str()).filter(|h| h.starts_with("no recorded edit")) {
-        missing.push(format!("ChloeCtx found no edit with the line's text: {how}."));
     }
 
     // Who: the agent whose session made the edit, or Workbench's guess.
@@ -400,15 +462,19 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
         None => guess_agent(sup, &s, asked.as_ref(), &dir, &rel, &text, commit.as_ref().map(|c| c.0.as_str()), &mut missing),
     };
 
-    let evs = who.as_ref().map(|a| sup.all_events(&a.id).unwrap_or_default()).unwrap_or_default();
+    // Only what the agent did before the line's commit.
+    let evs: Vec<Event> = who.as_ref().map(|a| sup.all_events(&a.id).unwrap_or_default()).unwrap_or_default().into_iter().filter(|e| until_ms.is_none_or(|u| e.ts <= u)).collect();
     let tool_ev = who.as_ref().and_then(|a| edit_event(&evs, Path::new(&a.cwd), &rel, &text, edit_ms));
     if who.is_some() && tool_ev.is_none() {
-        missing.push(format!("Workbench recorded no tool call of {} that edited {rel}.", who.as_ref().unwrap().name));
+        missing.push(match until_ms {
+            Some(_) => format!("Workbench recorded no tool call of {} that edited {rel} before the line's commit (it may have written it with a shell command).", who.as_ref().unwrap().name),
+            None => format!("Workbench recorded no tool call of {} that edited {rel}.", who.as_ref().unwrap().name),
+        });
     }
 
-    // The prompt.
-    let mut prompt = who.as_ref().and_then(|a| prompt_of(&evs, a, &s, tool_ev.map(|e| e.seq), if tool_ev.is_none() { edit_ms.map(|t| t + 999) } else { None })).map(|p| p.0);
-    if let Some(bp) = blame.as_ref().map(|b| &b["prompt"]).filter(|p| p.is_object()) {
+    // The prompt: the one before the edit, else the last before the commit.
+    let mut prompt = who.as_ref().and_then(|a| prompt_of(&evs, a, &s, tool_ev.map(|e| e.seq), if tool_ev.is_none() { edit_ms.map(|t| t + 999).or(until_ms) } else { None })).map(|p| p.0);
+    if let Some(bp) = blame.as_ref().filter(|_| edit.is_some()).map(|b| &b["prompt"]).filter(|p| p.is_object()) {
         let mut p = prompt.take().unwrap_or_else(|| json!({ "by": "you" }));
         p["text"] = bp["text"].clone();
         if p.get("ts").is_none_or(Json::is_null) {
@@ -465,10 +531,25 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
     } else {
         "git"
     };
-    let (knew, why_notes, worth) = match blame.as_ref().filter(|_| edit.is_some()) {
+    let (knew, mut why_notes, worth) = match blame.as_ref().filter(|_| edit.is_some()) {
         Some(b) => (knew_of(b), why_of(b), b["causes"].as_array().cloned().unwrap_or_default()),
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
+    // No edit record: the notes ChloeCtx distilled from the agent's session
+    // between the prompt and the edit (or the commit), by time.
+    let mut why_from = if edit.is_some() { "blame" } else { "none" };
+    if edit.is_none() {
+        if let Some(a) = &who {
+            let from = prompt.as_ref().and_then(|p| p["ts_ms"].as_i64()).or(a.started_ms).unwrap_or(a.created);
+            let to = tool_ev.map(|e| e.ts + 5 * 60_000).or(until_ms.map(|u| u + 5 * 60_000)).unwrap_or_else(crate::db::now_ms);
+            let sessions: Vec<String> = s.sessions_of(&a.id);
+            let notes = turn_notes(sup, &dir, &sessions, from, to);
+            if !notes.is_empty() {
+                why_notes = notes;
+                why_from = "session";
+            }
+        }
+    }
     Ok(json!({
         "line": { "path": rel, "line": n, "text": text },
         "where": where_,
@@ -479,8 +560,87 @@ pub fn why(sup: &Supervisor, q: WhyQ) -> Result<Json, ApiError> {
         "worth_a_look": worth,
         "rewind": rewind,
         "found": found,
+        "why_from": why_from,
+        "at": at_commit,
         "missing": missing,
     }))
+}
+
+/// The text of line `n` of `rel` as commit `sha` has it.
+fn read_line_at(dir: &Path, sha: &str, rel: &str, n: usize) -> Result<(String, String), ApiError> {
+    let rel = rel.trim_start_matches("./").to_string();
+    if rel.split('/').any(|p| p == "..") || rel.starts_with('/') {
+        return Err(ApiError::bad(format!("{rel} is not a path of the repository")));
+    }
+    let body = crate::blast::git_out(dir, &["show", &format!("{sha}:{rel}")]).map_err(|e| ApiError::not_found(format!("{rel} at {sha}: {e}")))?;
+    let text = body.lines().nth(n.saturating_sub(1)).filter(|_| n > 0).ok_or_else(|| ApiError::bad(format!("{rel} has {} lines at {sha}, not a line {n}", body.lines().count())))?;
+    Ok((rel, text.to_string()))
+}
+
+/// `git blame` of one line as commit `sha` has it: the commit that brought
+/// it, its author time, subject and committer time (seconds).
+fn blame_at(dir: &Path, sha: &str, rel: &str, n: usize) -> Option<(String, i64, String, i64)> {
+    let out = crate::blast::git_out(dir, &["blame", "--porcelain", "-L", &format!("{n},{n}"), sha, "--", rel]).ok()?;
+    porcelain(&out)
+}
+
+fn porcelain(out: &str) -> Option<(String, i64, String, i64)> {
+    let sha = out.split_whitespace().next()?.to_string();
+    if sha.chars().all(|c| c == '0') {
+        return None;
+    }
+    let field = |k: &str| out.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string());
+    let at: i64 = field("author-time ")?.parse().ok()?;
+    let ct: i64 = field("committer-time ").and_then(|v| v.parse().ok()).unwrap_or(at);
+    Some((sha, at, field("summary ").unwrap_or_default(), ct))
+}
+
+fn committer_time(dir: &Path, sha: &str) -> Option<i64> {
+    crate::blast::git_out(dir, &["show", "-s", "--format=%ct", sha]).ok()?.trim().parse().ok()
+}
+
+/// The line of `rel` in `dir` (as the file is now) whose text is `text`.
+fn locate_line(dir: &Path, rel: &str, text: &str) -> Option<usize> {
+    let want = text.trim();
+    if want.is_empty() {
+        return None;
+    }
+    let p = dir.join(rel);
+    let meta = std::fs::metadata(&p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_FILE {
+        return None;
+    }
+    String::from_utf8_lossy(&std::fs::read(&p).ok()?).lines().position(|l| l.trim() == want).map(|i| i + 1)
+}
+
+/// The decisions, preferences and facts ChloeCtx kept from `sessions`
+/// between `from_ms` and `to_ms`.
+fn turn_notes(sup: &Supervisor, dir: &Path, sessions: &[String], from_ms: i64, to_ms: i64) -> Vec<Json> {
+    let ids: Vec<String> = sessions.iter().filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).map(|s| format!("'{s}'")).collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let sql = format!(
+        "SELECT id, kind, text, ts FROM memory WHERE kind IN ('decision', 'preference', 'fact') AND session IN ({}) AND ts >= {} AND ts <= {} ORDER BY ts LIMIT 20",
+        ids.join(", "),
+        from_ms / 1000 - 1,
+        to_ms / 1000 + 1
+    );
+    let Ran::Out(out) = run_chloectx(&sup.cfg.chloectx_bin, dir, &["sql", "--json", &sql], Duration::from_secs(30)) else { return Vec::new() };
+    let cols: Vec<String> = out["columns"].as_array().into_iter().flatten().map(|c| c.as_str().or_else(|| c["name"].as_str()).unwrap_or("").to_string()).collect();
+    let col = |row: &Vec<Json>, name: &str| cols.iter().position(|c| c == name).and_then(|i| row.get(i).cloned()).unwrap_or(Json::Null);
+    out["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_array)
+        .filter(|r| {
+            // A canned answer that ignores the filter must not leak in.
+            let t = ctx_ms(&col(r, "ts")).unwrap_or(0);
+            t >= from_ms - 1000 && t <= to_ms + 1000 && matches!(col(r, "kind").as_str(), Some("decision" | "preference" | "fact"))
+        })
+        .map(|r| json!({ "kind": col(r, "kind"), "text": col(r, "text"), "ts": ctx_time(&col(r, "ts")), "id": col(r, "id") }))
+        .collect()
 }
 
 /// Without ChloeCtx's record: the agent asked about, unless the line's
@@ -622,9 +782,15 @@ pub fn diff(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
         return Err(ApiError::conflict(format!("agent {}'s worktree {} is gone", a.name, a.cwd)));
     }
     // An agent from before bases were kept: its HEAD's changes only.
-    let base = a.base.clone().or_else(|| git::rev_parse(&dir, "HEAD")).ok_or_else(|| ApiError::conflict(format!("{} has no commit to compare with", a.cwd)))?;
-    let files = git::diff(&dir, &base).map_err(|e| ApiError::internal(format!("git diff failed: {e}")))?;
-    Ok(json!({ "base": base, "files": files }))
+    if a.base.is_none() && git::rev_parse(&dir, "HEAD").is_none() {
+        return Err(ApiError::conflict(format!("{} has no commit to compare with", a.cwd)));
+    }
+    // From where its own change starts: the landing branch's fork, or the
+    // top of another agent's branch it is stacked on (Ship's base).
+    let main = git::checkout(&dir).map(|c| c.main).unwrap_or_else(|_| PathBuf::from(&a.repo));
+    let land = crate::blast::landing(sup, &a, &dir, &main);
+    let files = git::diff(&dir, &land.base).map_err(|e| ApiError::internal(format!("git diff failed: {e}")))?;
+    Ok(json!({ "base": land.base, "files": files, "landing": land.json(sup) }))
 }
 
 /// `GET /api/agents/:id/recording`: a window of its terminal recording.

@@ -1114,7 +1114,9 @@ function cached(map, key, load, fresh) {
   return map.get(key);
 }
 const getDiff = (id, fresh) => cached(cache.diff, id, () => api(`/api/agents/${enc(id)}/diff`), fresh);
-const getWhy = (agent, path, line) => cached(cache.why, `${agent}\u0001${path}\u0001${line}`, () => api(`/api/why?agent=${enc(agent)}&path=${enc(path)}&line=${line}`));
+// SPEC.md, "Sixth build: Ship and Trace tell the truth": a line clicked
+// from a commit is read and blamed as that commit has it (commit=).
+const getWhy = (agent, path, line, commit) => cached(cache.why, `${agent}\u0001${path}\u0001${line}\u0001${commit || ""}`, () => api(`/api/why?agent=${enc(agent)}&path=${enc(path)}&line=${line}${commit ? `&commit=${enc(commit)}` : ""}`));
 const getDecisions = (repo, fresh) => cached(cache.dec, repo, () => api(`/api/decisions?repo=${enc(repo)}&limit=200`), fresh);
 
 function forgetAgent(id) {
@@ -1351,8 +1353,7 @@ function fileBlock(f, fi) {
       const el = h("div", { class: `dl ${cls}`, "data-i": String(i), tabindex: "-1" },
         h("span", { class: "gut" }, h("span", { class: "o", text: oldN ?? "" }), h("span", { class: "n", text: newN ?? "" })),
         h("span", { class: "m", "aria-hidden": "true", text: kind === " " ? "" : kind === "-" ? "−" : "+" }),
-        h("span", { class: "t", text: l.text ?? "" }),
-        kind === "+" ? h("button", { class: "why", type: "button", tabindex: "-1", title: "Who decided this line, when, and why (y, or Alt-click the line)" }, "Why?") : null);
+        h("span", { class: "t", text: l.text ?? "" }));
       if (!collapsed) C.rows.push({ el, kind, path, n: newN, old: oldN, text: l.text ?? "", file: fi });
       inner.append(el);
     }
@@ -1361,6 +1362,17 @@ function fileBlock(f, fi) {
   return sec;
 }
 
+// One Why? button for the whole diff (sixth build): it sits on the line
+// under the pointer, else the cursor's line, and only on added lines.
+const whyBtn = h("button", { class: "why", type: "button", tabindex: "-1", title: "Who decided this line, when, and why (y, or Alt-click the line)" }, "Why?");
+function placeWhy(el) {
+  const target = el && el.classList.contains("add") ? el : C.rows[C.cursor]?.el;
+  if (target && target.classList.contains("add")) { if (whyBtn.parentNode !== target) target.append(whyBtn); }
+  else whyBtn.remove();
+}
+$("ch-scroll").addEventListener("mouseover", (e) => { const row = e.target.closest?.(".dl"); if (row) placeWhy(row); });
+$("ch-scroll").addEventListener("mouseleave", () => placeWhy(null));
+
 function setCursor(i, { focus = true, center = false } = {}) {
   if (!C.rows.length) return;
   i = Math.max(0, Math.min(C.rows.length - 1, i));
@@ -1368,6 +1380,7 @@ function setCursor(i, { focus = true, center = false } = {}) {
   C.cursor = i;
   const r = C.rows[i];
   r.el.classList.add("cur");
+  placeWhy(r.el);
   if (focus) r.el.focus({ preventScroll: true });
   r.el.scrollIntoView({ block: center ? "center" : "nearest" });
 }
@@ -1534,10 +1547,10 @@ function beginCard(kind, key, reopen, { push = false, back = false } = {}) {
 
 // --------------------------------------------------------- the line card
 
-async function openLineCard(agentId, path, line, { text, push = false, back = false } = {}) {
-  const key = `line\u0001${agentId}\u0001${path}\u0001${line}`;
+async function openLineCard(agentId, path, line, { text, commit, push = false, back = false } = {}) {
+  const key = `line\u0001${agentId}\u0001${path}\u0001${line}\u0001${commit || ""}`;
   if (T.open && T.key === key && !back) return;
-  const req = beginCard("line", key, (b) => openLineCard(agentId, path, line, { text, back: b }), { push, back });
+  const req = beginCard("line", key, (b) => openLineCard(agentId, path, line, { text, commit, back: b }), { push, back });
   T.line = { agent: agentId, path, line };
   markLine(T.line);
   sheetHead("Decision trail", `${path}:${line}`, "path:line");
@@ -1546,7 +1559,7 @@ async function openLineCard(agentId, path, line, { text, push = false, back = fa
     h("div", { class: "tracing" }, h("span", { class: "spin", "aria-hidden": "true" }), "Tracing this line through ChloeCtx's records and Workbench's sessions…"),
     skel(4));
   try {
-    const card = await getWhy(agentId, path, line);
+    const card = await getWhy(agentId, path, line, commit);
     if (req !== T.req) return;
     T.card = card;
     renderLineCard(card, agentId);
@@ -1555,7 +1568,7 @@ async function openLineCard(agentId, path, line, { text, push = false, back = fa
     $("sh-body").replaceChildren(lineBlock(line, text), h("div", { class: "callout bad" }, icon("warn", "i"), h("div", null,
       h("b", { text: e.status === 404 && /route/i.test(e.message) ? "This server cannot answer Why? yet." : "The trail could not be read." }),
       h("p", { text: e.message }),
-      h("button", { class: "btn sm", type: "button", onclick: () => { cache.why.delete(`${agentId}\u0001${path}\u0001${line}`); openLineCard(agentId, path, line, { text, back: true }); } }, "Try again"))));
+      h("button", { class: "btn sm", type: "button", onclick: () => { cache.why.delete(`${agentId}\u0001${path}\u0001${line}\u0001${commit || ""}`); openLineCard(agentId, path, line, { text, commit, back: true }); } }, "Try again"))));
   }
 }
 
@@ -1574,7 +1587,9 @@ function headline(card) {
   const commit = card.where?.commit;
   const p = card.who?.prompt;
   const out = [];
-  if (a) {
+  // "Wrote this" only on the evidence of an edit (ChloeCtx's or Workbench's
+  // tool call); else what is known: the commit, and whose branch it is on.
+  if (a && card.when) {
     out.push(h("b", { class: "hn", text: nameOf(a) }), " wrote this");
     if (editMs) out.push(` ${whenPhrase(editMs)}`);
     else if (commit?.date) out.push(`, committed ${whenPhrase(toMs(commit.date))}`);
@@ -1584,6 +1599,10 @@ function headline(card) {
       out.push(n ? `, after recalling ${plural(n, "note")}` : ", with nothing recalled from memory");
     }
     out.push(".");
+  } else if (a && commit) {
+    out.push("This line came in with ", h("code", { text: short(commit.sha) }), ` ${whenPhrase(toMs(commit.date))}`, commit.subject ? `, “${commit.subject}”` : "", ", on ", h("b", { class: "hn", text: nameOf(a) }), "'s branch. No recorded edit shows who typed it.");
+  } else if (a) {
+    out.push(h("b", { class: "hn", text: nameOf(a) }), "'s worktree has this line, but no recorded edit shows who wrote it.");
   } else if (commit) {
     out.push("This line came from commit ", h("code", { text: short(commit.sha) }), ` ${whenPhrase(toMs(commit.date))}`, commit.subject ? `, “${commit.subject}”` : "", ". No agent's session is on record for it.");
   } else {
@@ -1677,8 +1696,9 @@ function renderLineCard(card, agentId) {
   // Why: the notes of that turn.
   const notes = card.why || [];
   body.push(section("Why", notes.length
-    ? h("ol", { class: "notes" }, notes.map((n) => noteEl(n, card)))
-    : h("p", { class: "empty-s", text: card.found === "chloectx" ? "No decision, preference or fact was distilled from that turn." : "ChloeCtx's notes of that turn are not available." })));
+    ? [card.why_from === "session" ? h("p", { class: "muted", text: `Notes ChloeCtx kept from ${a ? nameOf(a) : "the agent"}'s session between the prompt and the commit. No edit record ties them to this very line.` }) : null,
+      h("ol", { class: "notes" }, notes.map((n) => noteEl(n, card)))]
+    : h("p", { class: "empty-s", text: card.found === "chloectx" ? "No decision, preference or fact was distilled from that turn." : a ? `ChloeCtx kept no decision, preference or fact from ${nameOf(a)}'s session before this line's commit.` : "No agent's session is on record for this line, so there are no notes of its turn." })));
 
   // What it knew.
   const knew = card.knew || [];
@@ -2741,7 +2761,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 const SCREENS = ["mission", "decide", "map", "story", "preview", "flow", "away", "health", "ship", "library", "trace", "guide"];
 const LEVEL_OF = { mission: 0, away: 0, guide: 0, decide: 1, flow: 1, health: 1, library: 1, trace: 1, story: 2, map: 3, preview: 3, ship: 3, grid: 4, zoom: 4 };
 // Search (fourth build): the top bar's quick search over code, docs and decisions; `/` opens it.
-const quickCtx = () => ({ api, go: (hash) => route(hash, { push: true }), openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }), repo: () => pickRepo() || "", openDecisions: () => openDecisions() });
+const quickCtx = () => ({ api, go: (hash) => route(hash, { push: true }), openWhy: ({ agent, path, line, text, commit }) => openLineCard(agent, path, line, { text, commit }), repo: () => pickRepo() || "", openDecisions: () => openDecisions() });
 function openQuickSearch() { import("/levels/quicksearch.js").then((m) => m.open(quickCtx())).catch((err) => console.error(err)); }
 import("/levels/quicksearch.js").then((m) => m.install(quickCtx())).catch(() => {});
 const L = { screen: null, param: null, view: null, req: 0, recent: [], focus: null };
@@ -2754,7 +2774,7 @@ function levelCtx(param) {
     // stream has brought in by then.
     params: { agent: param || null, get repo() { return pickRepo() || null; } },
     go: (hash) => route(hash, { push: true }),
-    openWhy: ({ agent, path, line, text }) => openLineCard(agent, path, line, { text }),
+    openWhy: ({ agent, path, line, text, commit }) => openLineCard(agent, path, line, { text, commit }),
     openRewind: (o) => openRewindCard(o),
     zoom: (id) => zoom(id),
   };

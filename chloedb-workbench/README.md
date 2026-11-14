@@ -113,8 +113,10 @@ installed, these routes answer for any line an agent wrote:
 - `GET /api/agents/:id/recording?from_ms=&to_ms=`: the window's events
   (`[ms, "o"|"r", data]`), the terminal's size at `from_ms`, and `before`,
   the screen's last 256 KiB before it, so a player can start mid-session
-- `GET /api/agents/:id/diff`: what the agent changed since `base`, committed
-  or not, with untracked files as added
+- `GET /api/agents/:id/diff`: what the agent's branch changed, committed or
+  not, with untracked files as added: counted from where it forked from the
+  branch it lands on, or from the top of another agent's branch it is
+  stacked on or merged in (`landing` says which, as Ship does)
 - `GET /api/why?agent=<id>&path=<rel>&line=<n>` (or `repo=`): the decision
   card. It runs `chloectx blame <path>:<line> --json` in the worktree, maps
   the edit's session to its agent, walks the agent's parents, finds the
@@ -122,11 +124,27 @@ installed, these routes answer for any line an agent wrote:
   `send_to_agent`), and places Rewind 20 s before the edit's tool call. When
   ChloeCtx is missing or has no record, it answers from git blame and
   Workbench's events; `found` says where the answer came from and `missing`
-  what could not be found
+  what could not be found. With `commit=<sha>` (a line clicked on a commit,
+  in Trace) it reads and blames the line as that commit has it, and credits
+  no edit or prompt that came after the line's commit
 - `GET /api/decisions?repo=&limit=`: the repository's decision notes, through
   `chloectx sql --json`
 - `POST /api/ask {repo, question}`: `chloectx ask --json`, plus the agent of
   each record whose session is one of Workbench's
+
+Ship (`#/ship/<agent>`) is where you decide a merge. It counts only the
+branch's own change: when a branch was rebased onto another agent's branch,
+or merged one in, it says "on top of freeship" and leaves those commits out,
+and an agent whose branch is already in this one is not a collision. When
+two branches change the same file and both have committed, it runs
+`git merge-tree` and says whether they merge cleanly. The risk is computed
+once for the same facts, so the Changes tab, Blast radius and Pull request
+say the same thing. The pull request draft takes its title and summary
+from the outcome, the agent's commits and what it said when it finished
+(never Workbench's own brief), lists only this branch's decisions and the
+tests it ran by name with their last result, and packs the capsule from
+this branch's agents' sessions only. When branches stack, "Ship together"
+drafts one pull request for the whole stack, in merge order.
 
 `--chloectx-bin` (`CHLOEDB_WORKBENCH_CHLOECTX`, default `chloectx`) names the
 ChloeCtx program. The tests use a fake one that prints canned JSON.

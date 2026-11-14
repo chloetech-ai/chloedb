@@ -196,12 +196,13 @@ export function mount(root, ctx) {
   // line of the main checkout, a short one here from GET /api/why?repo=.
   async function why(w, key, text) {
     if (!w) return;
-    if (w.agent && ctx.openWhy) { ctx.openWhy({ agent: w.agent, path: w.path, line: w.line, text }); return; }
+    // A line of a commit card is read and blamed as that commit has it.
+    if (w.agent && ctx.openWhy) { ctx.openWhy({ agent: w.agent, path: w.path, line: w.line, text, commit: w.commit || undefined }); return; }
     if (S.whys.has(key)) { S.whys.delete(key); render(); return; }
     S.whys.set(key, { loading: true, w });
     render();
     try {
-      const d = await ctx.api(`/api/why?repo=${enc(w.repo || S.data?.repo || S.repo)}&path=${enc(w.path)}&line=${w.line}`);
+      const d = await ctx.api(`/api/why?repo=${enc(w.repo || S.data?.repo || S.repo)}&path=${enc(w.path)}&line=${w.line}${w.commit ? `&commit=${enc(w.commit)}` : ""}`);
       S.whys.set(key, { d, w });
     } catch (e) { S.whys.set(key, { err: e.message || String(e), w }); }
     if (alive) render();
@@ -325,6 +326,11 @@ export function mount(root, ctx) {
       h("div", { class: "tr-answer-top" },
         h("span", { class: "tr-answer-i" }, svg(a ? I.target : I.info)),
         h("p", { class: "tr-answer-t" }, marked(sentence, d.reading))),
+      (a?.history || []).length >= 2 ? h("p", { class: "tr-history" },
+        h("b", null, `Changed ${a.history.length} times: `),
+        a.history.map((x, i) => [i ? h("span", { class: "tr-arrow", "aria-hidden": "true" }, " → ") : null,
+          h("button", { class: "tr-hist", type: "button", title: `${x.by ? x.by + " · " : ""}${new Date(x.ts_ms).toLocaleString()}`, onclick: () => focusItem(x.id) },
+            marked(x.label, d.reading), h("span", { class: "tr-mut" }, ` (${new Date(x.ts_ms).toLocaleDateString([], { month: "short", day: "numeric" })})`))])) : null,
       h("div", { class: "tr-answer-meta" },
         counts.length ? h("span", null, "from ", counts.join(" · ")) : null,
         key ? h("button", { class: "lv-link", type: "button", onclick: () => focusItem(key.id) }, "go to the change") : null,
@@ -353,7 +359,7 @@ export function mount(root, ctx) {
     if (at < text.length) parts.push(text.slice(at));
     return h("div", { class: "tr-explained" },
       h("div", { class: "tr-explained-h" }, ctxChip("ChloeCtx, with a model"),
-        x.confidence != null ? h("span", { class: "tr-mut" }, `confidence ${Math.round(x.confidence * 100)}%`) : null,
+        Number.isFinite(Number(x.confidence)) && x.confidence !== null && x.confidence !== "" ? h("span", { class: "tr-mut" }, `confidence ${Math.round(Number(x.confidence) * 100)}%`) : null,
         x.cost_usd != null ? h("span", { class: "tr-mut" }, `$${Number(x.cost_usd).toFixed(3)}`) : null,
         x.ms != null ? h("span", { class: "tr-mut" }, `${(x.ms / 1000).toFixed(1)} s`) : null),
       h("p", null, parts),
@@ -402,7 +408,8 @@ export function mount(root, ctx) {
     const L = it.links || {};
     const out = [];
     if (L.diff) out.push(linkBtn(I.diff, S.diffs.has(it.id) ? "Hide diff" : "Diff", () => toggleDiff(it), `git show ${shortSha(L.diff.sha)}`));
-    if (L.why) out.push(linkBtn(I.why, `Why? ${base(L.why.path)}:${L.why.line}`, () => why(L.why, it.id, it.lines?.find((l) => l.sign === "+")?.text), "The decision trail of this line"));
+    // A commit's line is read and blamed as that commit has it (its line number is the commit's).
+    if (L.why) out.push(linkBtn(I.why, `Why? ${base(L.why.path)}:${L.why.line}`, () => why(it.kind === "commit" && it.commit?.sha ? { ...L.why, commit: it.commit.sha } : L.why, it.id, it.lines?.find((l) => l.sign === "+")?.text), "The decision trail of this line"));
     if (L.story) out.push(linkBtn(I.book, `Story at ${fmtClock(L.story.at_ms)}`, () => ctx.go(`#/story/${L.story.agent}`), "The agent's story, at that turn"));
     if (L.rewind) out.push(linkBtn(I.play, "Rewind", () => ctx.openRewind({ agent: L.rewind.agent, from_ms: L.rewind.from_ms, to_ms: L.rewind.to_ms, edit_ms: L.rewind.to_ms - 3000, label: `${it.agent?.name || ""}: ${it.title}` }), "Its terminal, 20 s before to 3 s after"));
     // Snapshots are kept a day (time travel), so older moments get no link.
@@ -468,12 +475,16 @@ export function mount(root, ctx) {
     const d = s.d;
     const a = d.who?.agent;
     const notes = d.why || [];
+    const c = d.where?.commit;
+    // "Wrote it" only on the evidence of an edit; else the commit says it.
     return h("div", { class: "tr-why" },
       h("div", { class: "tr-why-h" }, svg(I.why), h("b", null, `${d.line?.path}:${d.line?.line}`),
-        a ? agentChip(a, ctx) : null,
-        d.when?.edit_ts ? h("span", { class: "tr-mut" }, `wrote it ${when(toMs(d.when.edit_ts))}`) : d.where?.commit ? h("span", { class: "tr-mut" }, `${shortSha(d.where.commit.sha)} ${d.where.commit.subject}`) : null,
-        d.who?.prompt ? h("span", { class: "tr-mut" }, `on ${d.who.prompt.by === "you" ? "your" : d.who.prompt.by + "'s"} prompt`) : null),
-      notes.length ? h("ul", { class: "tr-why-n" }, notes.map((n) => h("li", null, ctxChip(n.kind), " ", n.text))) : null,
+        d.at ? h("span", { class: "tr-mut" }, `as of ${shortSha(d.at)}`) : null,
+        a && d.when ? [agentChip(a, ctx), d.when.edit_ts ? h("span", { class: "tr-mut" }, `wrote it ${when(toMs(d.when.edit_ts))}`) : null,
+          d.who?.prompt ? h("span", { class: "tr-mut" }, `on ${d.who.prompt.by === "you" ? "your" : d.who.prompt.by + "'s"} prompt`) : null] : null,
+        !(a && d.when) && c ? h("span", { class: "tr-mut" }, `came in with ${shortSha(c.sha)} “${c.subject}” ${when(toMs(c.date))}${a ? `, on ${a.name}'s branch` : ""}`) : null),
+      notes.length ? [d.why_from === "session" ? h("p", { class: "tr-mut" }, "Notes from that session around the commit (no edit record ties them to this line):") : null,
+        h("ul", { class: "tr-why-n" }, notes.map((n) => h("li", null, ctxChip(n.kind), " ", n.text)))] : null,
       (d.missing || []).length ? h("p", { class: "tr-mut" }, d.missing[0]) : null,
       d.rewind ? linkBtn(I.play, "Rewind", () => ctx.openRewind(d.rewind)) : null);
   }
@@ -690,6 +701,9 @@ useStyle("trace", `
 .tr-body.stale{opacity:.55;transition:opacity .2s}
 .tr-answer{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:16px 18px 12px;box-shadow:var(--shadow-1);margin-bottom:18px}
 .tr-answer.none{border-left-color:var(--line-2)}
+.tr-history{margin:6px 0 0 34px;font-size:13px;color:var(--text-2);line-height:1.7}
+.tr-hist{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;border-bottom:1px dashed var(--line-2)}
+.tr-hist:hover{color:var(--text);border-bottom-color:var(--accent)}
 .tr-answer-top{display:flex;gap:12px;align-items:flex-start}
 .tr-answer-i{width:30px;height:30px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;flex:none;margin-top:1px}
 .tr-answer-i .tr-i{width:17px;height:17px}

@@ -7,8 +7,10 @@
 import { h, useStyle, avatar, ctxChip } from "./common.js";
 
 const enc = encodeURIComponent;
-/** How long an answer is reused when the diff is read again. */
-const KEEP_MS = 20_000;
+/** How long an answer is reused when the diff is read again. The server
+ *  keeps one answer per set of facts (the diff, the branches, the test
+ *  runs), so Ship and this row say the same risk for the same change. */
+const KEEP_MS = 5_000;
 const TONE = { low: "good", medium: "warn", high: "crit" };
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -51,7 +53,7 @@ export function mount(host, { api, go }) {
         h("span", { class: "bs-ags", title: (b.agents || []).map((g) => g.detail).join("\n") || null }, (b.agents || []).length ? [(b.agents || []).slice(0, 4).map((g) => avatar(g.agent, 16)), ` ${plural(b.agents.length, "agent")}`] : "no other agent")),
       h("span", { class: "bs-sp" }),
       h("button", { class: "bs-open", type: "button", onclick: () => go(`#/ship/${current}`) }, "Ship →")),
-      r.line ? h("div", { class: "bs-line", title: (r.reasons || []).join("\n") }, r.line.replace(/^\w+ risk:\s*/i, "")) : null);
+      r.line ? h("div", { class: "bs-line", title: (r.reasons || []).join("\n") }, r.line.replace(/^\w+ risk:\s*/i, ""), b.landing && b.landing.line ? ` ${b.landing.line}` : "") : null);
   }
 
   async function load(id) {

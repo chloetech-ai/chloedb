@@ -61,6 +61,181 @@ pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+// ---------------------------------------------------------------- landing
+
+/// Another agent's branch this one holds commits of: it was rebased on
+/// top of it (`stacked`) or merged it in (`merged`).
+#[derive(Clone, Debug)]
+pub struct Under {
+    pub agent: crate::db::Agent,
+    pub branch: String,
+    pub tip: String,
+    /// The last commit the two branches share.
+    pub shared: String,
+    /// Whether this branch holds the other's tip (else an older commit of it).
+    pub contained: bool,
+    /// Whether it came in by a merge rather than on the first-parent line.
+    pub merged: bool,
+    /// Its commits this branch holds, past the landing branch.
+    pub commits: usize,
+}
+
+/// Where a branch will land and what its own change is: the branch it
+/// lands on, where it forked from it, the agents' branches it holds
+/// (stacked on or merged in), the agents stacked on top of it, and the
+/// commit its own change is counted from.
+#[derive(Clone, Debug)]
+pub struct Landing {
+    pub head: Option<String>,
+    pub onto: Option<String>,
+    pub fork: Option<String>,
+    pub under: Vec<Under>,
+    pub above: Vec<(crate::db::Agent, String)>,
+    pub base: String,
+    /// `landing` (the fork from the landing branch), `stack` (an agent's
+    /// branch this one holds) or `start` (the commit the agent started from).
+    pub base_kind: &'static str,
+}
+
+fn merge_base(dir: &Path, a: &str, b: &str) -> Option<String> {
+    git_out(dir, &["merge-base", a, b]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn ancestor(dir: &Path, a: &str, b: &str) -> bool {
+    git::is_ancestor(dir, a, b)
+}
+
+fn count_commits(dir: &Path, range: &str) -> usize {
+    git_out(dir, &["rev-list", "--count", range]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+}
+
+/// The branch an agent's work lands on: the main checkout's branch when it
+/// is not the agent's own, else `main` or `master`.
+pub fn landing_branch(main: &Path, a: &crate::db::Agent) -> Option<String> {
+    let mine = a.branch.as_deref();
+    if let Some(b) = git::current_branch(main).filter(|b| Some(b.as_str()) != mine) {
+        return Some(b);
+    }
+    ["main", "master"].into_iter().find(|b| Some(*b) != mine && git::branch_exists(main, b)).map(str::to_string)
+}
+
+/// Where the agent's branch lands and the commit its own change counts from.
+pub fn landing(sup: &Supervisor, a: &crate::db::Agent, dir: &Path, main: &Path) -> Landing {
+    let head = git::rev_parse(dir, "HEAD");
+    let start = a.base.clone();
+    let onto = landing_branch(main, a);
+    let fallback = start.clone().or_else(|| head.clone()).unwrap_or_default();
+    let Some(h) = head.clone() else {
+        return Landing { head, onto, fork: None, under: Vec::new(), above: Vec::new(), base: fallback, base_kind: "start" };
+    };
+    let fork = onto.as_deref().and_then(|b| merge_base(dir, "HEAD", b));
+    // The other agents' branches, the newest agent of each.
+    let mut others: BTreeMap<String, crate::db::Agent> = BTreeMap::new();
+    for o in sup.agent_rows() {
+        let Some(b) = o.branch.clone() else { continue };
+        if o.repo != a.repo || o.id == a.id || Some(&b) == a.branch.as_ref() || Some(&b) == onto.as_ref() {
+            continue;
+        }
+        let keep = others.get(&b).is_none_or(|k| k.created <= o.created);
+        if keep {
+            others.insert(b, o);
+        }
+    }
+    let first_parent: HashSet<String> = match &fork {
+        Some(f) => git_out(dir, &["rev-list", "--first-parent", &format!("{f}..HEAD")]).unwrap_or_default().lines().map(str::to_string).collect(),
+        None => HashSet::new(),
+    };
+    let floor = fork.clone().or_else(|| start.clone());
+    let mut under = Vec::new();
+    let mut above = Vec::new();
+    for (branch, o) in others {
+        let Some(tip) = git::rev_parse(main, &format!("refs/heads/{branch}")) else { continue };
+        if tip == h {
+            continue;
+        }
+        let Some(mb) = merge_base(dir, "HEAD", &tip) else { continue };
+        if mb == h {
+            above.push((o, branch));
+            continue;
+        }
+        // Shares only what the landing branch has: an independent branch.
+        let beyond = match &floor {
+            Some(f) => mb != *f && ancestor(dir, f, &mb),
+            None => false,
+        };
+        if !beyond {
+            continue;
+        }
+        let contained = mb == tip;
+        let merged = contained && !first_parent.contains(&tip);
+        let commits = floor.as_deref().map_or(0, |f| count_commits(dir, &format!("{f}..{mb}")));
+        under.push(Under { agent: o, branch, tip, shared: mb, contained, merged, commits });
+    }
+    // The base: the top of what this branch holds of others, else the fork,
+    // else the start (an agent started on top of a branch no agent has).
+    let mut base = fork.clone().unwrap_or_else(|| fallback.clone());
+    let mut kind = if fork.is_some() { "landing" } else { "start" };
+    if let (Some(s), Some(f)) = (&start, &fork) {
+        if s != f && ancestor(dir, f, s) && ancestor(dir, s, &h) && !under.iter().any(|u| ancestor(dir, s, &u.shared)) {
+            base = s.clone();
+            kind = "start";
+        }
+    }
+    if !under.is_empty() {
+        let top = under.iter().map(|u| u.shared.clone()).max_by_key(|c| under.iter().filter(|u| ancestor(dir, &u.shared, c)).count());
+        if let Some(t) = top {
+            base = t;
+            kind = "stack";
+        }
+    }
+    Landing { head, onto, fork, under, above, base, base_kind: kind }
+}
+
+impl Landing {
+    /// The landing as the API answers it.
+    pub fn json(&self, sup: &Supervisor) -> Json {
+        json!({
+            "onto": self.onto, "fork": self.fork, "base": self.base, "base_kind": self.base_kind,
+            "under": self.under.iter().map(|u| json!({
+                "agent": trail::agent_json(sup, &u.agent), "branch": u.branch, "tip": u.tip, "shared": u.shared,
+                "contained": u.contained, "merged": u.merged, "commits": u.commits,
+            })).collect::<Vec<_>>(),
+            "above": self.above.iter().map(|(o, b)| json!({ "agent": trail::agent_json(sup, o), "branch": b })).collect::<Vec<_>>(),
+            "line": self.line(),
+        })
+    }
+
+    /// One sentence: "on top of freeship (2 commits, not counted here)".
+    pub fn line(&self) -> Option<String> {
+        if self.under.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = self
+            .under
+            .iter()
+            .map(|u| {
+                let how = if u.merged { format!("has {}'s branch {} merged in", u.agent.name, u.branch) } else { format!("is on top of {} ({})", u.agent.name, u.branch) };
+                format!("{how}: {} of its {}, not counted as this change", plural(u.commits, "commit"), if u.contained { "work" } else { "older work" })
+            })
+            .collect();
+        Some(format!("This branch {}.", parts.join("; it ")))
+    }
+}
+
+/// Whether two commits merge without a conflict (`git merge-tree
+/// --write-tree`), and the files that conflict.
+fn merges_clean(dir: &Path, a: &str, b: &str) -> Option<(bool, Vec<String>)> {
+    let out = Command::new("git").arg("-C").arg(dir).args(["merge-tree", "--write-tree", "--name-only", "--no-messages", a, b]).env("GIT_TERMINAL_PROMPT", "0").output().ok()?;
+    match out.status.code() {
+        Some(0) => Some((true, Vec::new())),
+        Some(1) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            Some((false, text.lines().skip(1).map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()))
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------- symbols
 
 /// A language the finder reads, from a path's extension.
@@ -441,6 +616,8 @@ struct Func {
     first_added: Option<usize>,
     callers: Vec<Json>,
     callers_total: usize,
+    /// Uses of it in test files (not in `callers_total`).
+    test_callers: usize,
     caller_files: BTreeSet<String>,
 }
 
@@ -477,12 +654,13 @@ fn old_text(dir: &Path, base: &str, rel: &str) -> Option<String> {
 
 /// The functions a diff changed: each `+` line counts to the definition
 /// that holds it in the new text, each `-` line to the one in the old.
-fn changed_functions(dir: &Path, base: &str, files: &[Json]) -> Vec<Func> {
+/// With `tests`, those of test files (else those of the other files).
+fn changed_functions(dir: &Path, base: &str, files: &[Json], tests: bool) -> Vec<Func> {
     let mut by_id: BTreeMap<String, Func> = BTreeMap::new();
     for f in files {
         let path = f["path"].as_str().unwrap_or("").to_string();
         let old_path = f["old_path"].as_str().unwrap_or(&path).to_string();
-        if f["binary"].as_bool() == Some(true) || is_test_path(&path) {
+        if f["binary"].as_bool() == Some(true) || is_test_path(&path) != tests {
             continue;
         }
         let Some(lang) = Lang::of(&path) else { continue };
@@ -520,6 +698,7 @@ fn changed_functions(dir: &Path, base: &str, files: &[Json]) -> Vec<Func> {
                     first_added: None,
                     callers: Vec::new(),
                     callers_total: 0,
+                    test_callers: 0,
                     caller_files: BTreeSet::new(),
                 });
                 if added {
@@ -543,7 +722,9 @@ fn searchable(name: &str) -> bool {
 }
 
 /// The callers of each function: where its name is used as a word in the
-/// worktree's tracked files, outside test files and its own definition.
+/// worktree's files, outside its own definition; uses in test files are
+/// counted apart. A method counts only where it is called or named as an
+/// attribute (`.add`, `add(`), so `add` is not every word "add".
 fn find_callers(dir: &Path, funcs: &mut [Func]) {
     let mut order: Vec<usize> = (0..funcs.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse(funcs[i].added + funcs[i].removed));
@@ -554,18 +735,27 @@ fn find_callers(dir: &Path, funcs: &mut [Func]) {
         }
         let Ok(out) = git_out(dir, &["grep", "-n", "-w", "-I", "-F", "--untracked", "-e", &f.name, "--", "."]) else { continue };
         let (name, path, lang) = (f.name.clone(), f.path.clone(), f.lang);
+        let method = f.kind == "method";
         let mut shown = Vec::new();
         let mut total = 0;
+        let mut in_tests = 0;
         let mut files = BTreeSet::new();
         for l in out.lines().take(5000) {
             let mut parts = l.splitn(3, ':');
             let (Some(p), Some(n), Some(text)) = (parts.next(), parts.next(), parts.next()) else { continue };
             let Ok(n) = n.parse::<usize>() else { continue };
-            if is_test_path(p) || def_of(Lang::of(p).unwrap_or(lang), text).is_some_and(|(d, _)| d == name) {
+            if def_of(Lang::of(p).unwrap_or(lang), text).is_some_and(|(d, _)| d == name) {
                 continue;
             }
             let t = text.trim();
-            if t.starts_with("//") || t.starts_with('#') && lang != Lang::Rust || t.starts_with("use ") || t.starts_with("import ") || (p == path && t.starts_with("pub use")) {
+            if t.starts_with("//") || t.starts_with('#') && lang != Lang::Rust || t.starts_with("use ") || t.starts_with("import ") || t.starts_with("from ") && t.contains(" import ") || (p == path && t.starts_with("pub use")) {
+                continue;
+            }
+            if method && !called(t, &name) {
+                continue;
+            }
+            if is_test_path(p) {
+                in_tests += 1;
                 continue;
             }
             total += 1;
@@ -577,8 +767,19 @@ fn find_callers(dir: &Path, funcs: &mut [Func]) {
         let f = &mut funcs[i];
         f.callers = shown;
         f.callers_total = total;
+        f.test_callers = in_tests;
         f.caller_files = files;
     }
+}
+
+/// Whether `text` calls `name` or names it as an attribute.
+fn called(text: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text.match_indices(name).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + name.len()..].trim_start().chars().next();
+        !before.is_some_and(is_word) && !text[i + name.len()..].chars().next().is_some_and(is_word) && (before == Some('.') || after == Some('('))
+    })
 }
 
 /// A test file that covers changed functions.
@@ -658,34 +859,49 @@ fn find_tests(dir: &Path, funcs: &[Func], changed_files: &[String]) -> Vec<TestH
 }
 
 /// One row of `test_runs`.
-struct Run {
-    test: String,
-    agent: String,
-    commit: String,
-    passed: bool,
-    ms: Option<i64>,
+pub(crate) struct Run {
+    pub test: String,
+    pub agent: String,
+    pub commit: String,
+    pub passed: bool,
+    pub ms: Option<i64>,
+    pub ts: i64,
 }
 
-/// The rows of Health's `test_runs`, or `None` when there is no such table.
-fn test_runs(sup: &Supervisor) -> Option<Vec<Run>> {
-    let rows = sup.db().query("SELECT test, agent, \"commit\", passed, ms FROM test_runs LIMIT 50000", &chloedb::query::Params::new()).ok()?;
-    Some(
-        rows.iter()
-            .map(|r| Run {
-                test: crate::db::get_str(&r[0]).unwrap_or_default(),
-                agent: crate::db::get_str(&r[1]).unwrap_or_default(),
-                commit: crate::db::get_str(&r[2]).unwrap_or_default(),
-                passed: match &r[3] {
-                    chloedb::Value::Bool(b) => *b,
-                    v => crate::db::get_int(v).is_some_and(|n| n != 0),
-                },
-                ms: crate::db::get_int(&r[4]),
-            })
-            .collect(),
-    )
+/// The rows of Health's `test_runs`, oldest first, or `None` when there is
+/// no such table. Rows from before the sixth build that name a whole
+/// command as one test (`runner = 'other'`, the test is the command) are
+/// left out: they are counts, not tests.
+pub(crate) fn test_runs(sup: &Supervisor) -> Option<Vec<Run>> {
+    let rows = sup.db().query("SELECT test, agent, \"commit\", passed, ms, ts, runner, command FROM test_runs LIMIT 50000", &chloedb::query::Params::new()).ok()?;
+    let mut out: Vec<Run> = rows
+        .iter()
+        .filter(|r| !(crate::db::get_str(&r[6]).as_deref() == Some("other") && crate::db::get_str(&r[0]) == crate::db::get_str(&r[7])))
+        .map(|r| Run {
+            test: crate::db::get_str(&r[0]).unwrap_or_default(),
+            agent: crate::db::get_str(&r[1]).unwrap_or_default(),
+            commit: crate::db::get_str(&r[2]).unwrap_or_default(),
+            passed: match &r[3] {
+                chloedb::Value::Bool(b) => *b,
+                v => crate::db::get_int(v).is_some_and(|n| n != 0),
+            },
+            ms: crate::db::get_int(&r[4]),
+            ts: crate::db::get_ms(&r[5]).unwrap_or(0),
+        })
+        .collect();
+    out.sort_by_key(|r| r.ts);
+    Some(out)
 }
 
-fn runs_json(runs: &[&Run]) -> Json {
+/// Whether a run's commit is `head` (either may be abbreviated).
+fn same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// What runs of a test say: totals, flaky (passed and failed on one
+/// commit), whether each test's last run passed, the runs on `head`, and
+/// failures fixed later (a failure before the fix is not a failing test).
+fn runs_json(runs: &[&Run], head: Option<&str>) -> Json {
     if runs.is_empty() {
         return Json::Null;
     }
@@ -706,10 +922,28 @@ fn runs_json(runs: &[&Run]) -> Json {
     let mut names: Vec<&str> = runs.iter().map(|r| r.test.as_str()).collect();
     names.sort();
     names.dedup();
+    // Per test, its last run decides; a failure followed by a pass on
+    // another commit (not a flaky pair) is "fixed".
+    let mut last: BTreeMap<&str, &Run> = BTreeMap::new();
+    let mut fixed: BTreeSet<&str> = BTreeSet::new();
+    for r in runs {
+        if let Some(prev) = last.get(r.test.as_str()) {
+            let flaky_here = by.get(&(r.test.as_str(), r.commit.as_str())).is_some_and(|(p, f)| *p && *f);
+            if !prev.passed && r.passed && prev.commit != r.commit && !flaky_here {
+                fixed.insert(r.test.as_str());
+            }
+        }
+        last.insert(r.test.as_str(), r);
+    }
+    let failing: Vec<&str> = last.values().filter(|r| !r.passed).map(|r| r.test.as_str()).collect();
+    let on_head: Vec<&&Run> = runs.iter().filter(|r| head.is_some_and(|h| same_commit(&r.commit, h))).collect();
+    let head_passed = on_head.iter().filter(|r| r.passed).count();
     json!({
         "total": runs.len(), "passed": passed, "failed": runs.len() - passed, "flaky": flaky,
-        "p50_ms": ms.get(ms.len() / 2), "last_passed": runs.last().map(|r| r.passed), "last": null, "agents": agents.len(),
+        "p50_ms": ms.get(ms.len() / 2), "last_passed": failing.is_empty(), "last": null, "agents": agents.len(),
         "names": names.into_iter().take(6).collect::<Vec<_>>(),
+        "failing": failing, "fixed": fixed,
+        "on_head": if on_head.is_empty() { Json::Null } else { json!({ "total": on_head.len(), "passed": head_passed, "failed": on_head.len() - head_passed }) },
     })
 }
 
@@ -726,7 +960,25 @@ fn rel_of(f: &str, dir: &Path, main: &Path) -> String {
     crate::map::rel_path(&p, dir, main).unwrap_or(p)
 }
 
-/// `GET /api/agents/:id/blast`.
+/// How long a blast radius is kept for the same facts.
+const KEEP_MS: i64 = 10 * 60_000;
+
+/// The blast radii computed, by data directory and agent: the facts they
+/// were computed from (a hash), when, and the answer.
+fn cache() -> &'static std::sync::Mutex<HashMap<String, (u64, i64, Json)>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (u64, i64, Json)>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The number of rows of a table, or `None` when there is none.
+fn rows_of(sup: &Supervisor, table: &str) -> Option<i64> {
+    let r = sup.db().query(&format!("SELECT COUNT(*) FROM {table}"), &chloedb::query::Params::new()).ok()?;
+    r.first().and_then(|row| row.first()).and_then(crate::db::get_int)
+}
+
+/// `GET /api/agents/:id/blast`: computed once for the same facts (the
+/// diff, the branches, the test runs), so every screen shows the same risk
+/// for the same change.
 pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
     let a = sup.agent_row(id).ok_or_else(|| ApiError::not_found(format!("no agent {id}")))?;
     let dir = PathBuf::from(&a.cwd);
@@ -734,16 +986,49 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
         return Err(ApiError::conflict(format!("agent {}'s worktree {} is gone", a.name, a.cwd)));
     }
     let main = git::checkout(&dir).map(|c| c.main).unwrap_or_else(|_| PathBuf::from(&a.repo));
-    let base = a.base.clone().or_else(|| git::rev_parse(&dir, "HEAD")).ok_or_else(|| ApiError::conflict(format!("{} has no commit to compare with", a.cwd)))?;
-    let head = git::rev_parse(&dir, "HEAD");
+    if a.base.is_none() && git::rev_parse(&dir, "HEAD").is_none() {
+        return Err(ApiError::conflict(format!("{} has no commit to compare with", a.cwd)));
+    }
+    let land = landing(sup, &a, &dir, &main);
+    let base = land.base.clone();
     let files = git::diff(&dir, &base).map_err(|e| ApiError::internal(format!("git diff failed: {e}")))?;
+    let facts = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&files).unwrap_or_default().hash(&mut h);
+        (&land.head, &base).hash(&mut h);
+        for u in &land.under {
+            u.tip.hash(&mut h);
+        }
+        for o in sup.agent_rows().iter().filter(|o| o.repo == a.repo && o.id != a.id) {
+            (&o.branch, o.branch.as_deref().and_then(|b| git::rev_parse(&main, &format!("refs/heads/{b}"))), &o.state).hash(&mut h);
+        }
+        (rows_of(sup, "test_runs"), rows_of(sup, "test_summaries")).hash(&mut h);
+        h.finish()
+    };
+    let key = format!("{}\u{1}{id}", sup.cfg.data_dir.display());
+    if let Some((f, at, v)) = cache().lock().unwrap().get(&key) {
+        if *f == facts && crate::db::now_ms() - at < KEEP_MS {
+            return Ok(v.clone());
+        }
+    }
+    let v = compute(sup, &a, &dir, &main, &land, files)?;
+    cache().lock().unwrap().insert(key, (facts, crate::db::now_ms(), v.clone()));
+    Ok(v)
+}
+
+fn compute(sup: &Supervisor, a: &crate::db::Agent, dir: &Path, main: &Path, land: &Landing, files: Vec<Json>) -> Result<Json, ApiError> {
+    let (dir, main) = (dir.to_path_buf(), main.to_path_buf());
+    let base = land.base.clone();
+    let head = land.head.clone();
     let mut missing: Vec<String> = Vec::new();
 
     // Files and functions.
     let count = |f: &Json, k: &str| f["hunks"].as_array().into_iter().flatten().flat_map(|h| h["lines"].as_array().into_iter().flatten()).filter(|l| l["kind"] == k).count();
     let changed: Vec<String> = files.iter().filter_map(|f| f["path"].as_str().map(str::to_string)).collect();
-    let mut funcs = changed_functions(&dir, &base, &files);
+    let mut funcs = changed_functions(&dir, &base, &files, false);
     find_callers(&dir, &mut funcs);
+    let test_funcs = changed_functions(&dir, &base, &files, true);
     let unread: Vec<&str> = files.iter().filter(|f| f["binary"] != true && !is_test_path(f["path"].as_str().unwrap_or("")) && Lang::of(f["path"].as_str().unwrap_or("")).is_none()).filter_map(|f| f["path"].as_str()).collect();
     if !unread.is_empty() && unread.len() == files.len() {
         missing.push(format!("No changed file is in a language the symbol finder reads ({}), so no function is named.", unread.iter().take(3).copied().collect::<Vec<_>>().join(", ")));
@@ -772,7 +1057,7 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
                 .collect(),
             None => Vec::new(),
         };
-        tests.push(json!({ "path": h.path, "score": h.score, "covers": h.covers, "why": h.why, "runs": runs_json(&mine) }));
+        tests.push(json!({ "path": h.path, "score": h.score, "covers": h.covers, "why": h.why, "runs": runs_json(&mine, head.as_deref()) }));
     }
     // Runs that name a changed function but match no test file found.
     if let Some(rs) = &runs {
@@ -790,7 +1075,7 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
         }
         for (name, (rs, covers)) in by_name.into_iter().take(10) {
             let names: Vec<&str> = covers.iter().map(|c| c.rsplit('#').next().unwrap_or(c)).collect();
-            tests.push(json!({ "path": name, "score": 1, "covers": covers, "why": [format!("test_runs: names {}", names.join(", "))], "runs": runs_json(&rs), "from": "test_runs" }));
+            tests.push(json!({ "path": name, "score": 1, "covers": covers, "why": [format!("test_runs: names {}", names.join(", "))], "runs": runs_json(&rs, head.as_deref()), "from": "test_runs" }));
         }
     }
     let tests_of = |fid: &str| -> Vec<String> { tests.iter().filter(|t| t["covers"].as_array().is_some_and(|c| c.iter().any(|x| x == fid))).filter_map(|t| t["path"].as_str().map(str::to_string)).collect() };
@@ -895,15 +1180,37 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
     // Other agents.
     let mut agents: Vec<Json> = Vec::new();
     let mut agents_of: HashMap<String, Vec<String>> = HashMap::new();
-    for w in crate::map::territory(sup, &main) {
-        if w.agent.id == a.id {
+    let under_branches: HashSet<&str> = land.under.iter().map(|u| u.branch.as_str()).collect();
+    let above_ids: HashSet<&str> = land.above.iter().map(|(o, _)| o.id.as_str()).collect();
+    for mut w in crate::map::territory(sup, &main) {
+        if w.agent.id == a.id || a.cwd == w.agent.cwd && a.cwd != a.repo {
             continue;
+        }
+        // A branch this one holds is not in its way: its work is in here.
+        if w.agent.branch.as_deref().is_some_and(|b| under_branches.contains(b)) {
+            continue;
+        }
+        // A branch on top of this one: only what it adds counts.
+        let stacked = above_ids.contains(w.agent.id.as_str());
+        if stacked {
+            if let Some(h) = head.as_deref() {
+                match git::diff(Path::new(&w.agent.cwd), h) {
+                    Ok(fs) => {
+                        w.files = fs
+                            .iter()
+                            .map(|f| (f["path"].as_str().unwrap_or("").to_string(), count(f, "+") as i64, count(f, "-") as i64, f["status"].as_str().unwrap_or("modified").to_string()))
+                            .collect()
+                    }
+                    Err(_) => w.files.clear(),
+                }
+            }
         }
         let theirs: Vec<&str> = w.files.iter().map(|f| f.0.as_str()).collect();
         let mut kinds = Vec::new();
         let mut on_files = BTreeSet::new();
         let mut on_funcs = BTreeSet::new();
         let mut detail = Vec::new();
+        let mut clean: Option<bool> = None;
         let same: Vec<&str> = theirs.iter().copied().filter(|p| changed_set.contains(p)).collect();
         if !same.is_empty() {
             kinds.push("same_file");
@@ -912,6 +1219,23 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
                 on_funcs.extend(funcs_in(p));
                 let f = w.files.iter().find(|f| f.0 == *p).unwrap();
                 detail.push(format!("{} also changed {p} (+{} −{})", w.agent.name, f.1, f.2));
+            }
+            // Committed on both sides: whether the two branches merge.
+            let tip = w.agent.branch.as_deref().and_then(|b| git::rev_parse(&main, &format!("refs/heads/{b}")));
+            if let (Some(h), Some(t), false) = (head.as_deref(), tip.as_deref(), stacked) {
+                let committed = |from: &str, to: &str| -> HashSet<String> { git_out(&dir, &["diff", "--name-only", from, to]).unwrap_or_default().lines().map(str::to_string).collect() };
+                let fork_t = merge_base(&dir, h, t).unwrap_or_default();
+                let (mine, other) = (committed(&fork_t, h), committed(&fork_t, t));
+                if !fork_t.is_empty() && same.iter().all(|p| mine.contains(*p) && other.contains(*p)) {
+                    if let Some((ok, conflicts)) = merges_clean(&dir, h, t) {
+                        clean = Some(ok);
+                        detail.push(if ok {
+                            format!("the two branches merge without a conflict (git merge-tree of {} and {})", &h[..h.len().min(7)], &t[..t.len().min(7)])
+                        } else {
+                            format!("merging the two branches conflicts in {}", if conflicts.is_empty() { same.join(", ") } else { conflicts.join(", ") })
+                        });
+                    }
+                }
             }
         }
         let calls: Vec<(&str, &Func)> = funcs.iter().flat_map(|f| f.caller_files.iter().filter(|c| theirs.contains(&c.as_str()) && !changed_set.contains(c.as_str())).map(move |c| (c.as_str(), f))).collect();
@@ -940,7 +1264,7 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
         for f in &on_funcs {
             agents_of.entry(f.clone()).or_default().push(w.agent.id.clone());
         }
-        agents.push(json!({ "agent": trail::agent_json(sup, &w.agent), "kinds": kinds, "files": on_files, "functions": on_funcs, "detail": detail.join("; ") }));
+        agents.push(json!({ "agent": trail::agent_json(sup, &w.agent), "kinds": kinds, "files": on_files, "functions": on_funcs, "detail": detail.join("; "), "merges_clean": clean, "stacked_on_this": stacked }));
     }
 
     // The functions as JSON.
@@ -949,7 +1273,7 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
         .map(|f| {
             json!({
                 "id": f.id, "name": f.name, "kind": f.kind, "lang": f.lang.name(), "path": f.path, "line": f.line, "status": f.status,
-                "added": f.added, "removed": f.removed, "callers": f.callers, "callers_total": f.callers_total,
+                "added": f.added, "removed": f.removed, "callers": f.callers, "callers_total": f.callers_total, "test_callers": f.test_callers,
                 "tests": tests_of(&f.id), "decisions": decs_of(&f.id), "agents": agents_of.get(&f.id).cloned().unwrap_or_default(),
             })
         })
@@ -964,11 +1288,19 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
     let added: usize = files.iter().map(|f| count(f, "+")).sum();
     let removed: usize = files.iter().map(|f| count(f, "-")).sum();
     let callers: usize = funcs.iter().map(|f| f.callers_total).sum();
+    let test_callers: usize = funcs.iter().map(|f| f.test_callers).sum();
+    let test_functions: Vec<Json> = test_funcs
+        .iter()
+        .map(|f| json!({ "id": f.id, "name": f.name, "kind": f.kind, "path": f.path, "line": f.line, "status": f.status, "added": f.added, "removed": f.removed }))
+        .collect();
     let totals = json!({
-        "files": files.len(), "added": added, "removed": removed, "functions": funcs.len(), "callers": callers,
-        "tests": tests.len(), "decisions": decs.len(), "agents": agents.len(),
+        "files": files.len(), "added": added, "removed": removed, "functions": funcs.len(), "callers": callers, "test_callers": test_callers,
+        "tests": tests.len(), "decisions": decs.len(), "agents": agents.len(), "test_functions": test_funcs.len(),
     });
-    let risk = risk(&functions, &tests, &decisions, &agents, callers);
+    let mut risk = risk(&functions, &tests, &decisions, &agents, callers);
+    if let Some(l) = land.line() {
+        risk["stack"] = json!(l);
+    }
     let related_files: Vec<Json> = related.into_iter().filter(|(p, _)| !changed_set.contains(p.as_str())).take(12).map(|(p, via)| json!({ "path": p, "via": via })).collect();
     if runs.is_none() {
         missing.push("There is no test_runs table (Health keeps one), so tests are ranked by the test files that name the functions or import their files, with no runs.".into());
@@ -976,8 +1308,9 @@ pub fn blast(sup: &Supervisor, id: &str) -> Result<Json, ApiError> {
     Ok(json!({
         "agent": trail::agent_json(sup, &a), "repo": a.repo, "base": base, "head": head, "branch": a.branch,
         "totals": totals, "risk": risk, "files": files_json, "functions": functions, "tests": tests, "decisions": decisions,
-        "related_files": related_files, "agents": agents,
+        "related_files": related_files, "agents": agents, "test_functions": test_functions, "landing": land.json(sup),
         "sources": { "test_runs": runs.is_some(), "chloectx": ctx_ok, "graph": graph_ok, "blame": blamed },
+        "computed": crate::db::iso(crate::db::now_ms()),
         "missing": missing,
     }))
 }
@@ -1070,6 +1403,8 @@ fn graph_decisions(g: &Json, dir: &Path, main: &Path, changed: &HashSet<&str>, f
 
 /// The risk: a level, a score, a sentence, and its reasons.
 fn risk(functions: &[Json], tests: &[Json], decisions: &[Json], agents: &[Json], callers: usize) -> Json {
+    // Uses in test files are counted apart, on each function.
+    let test_callers: usize = functions.iter().filter_map(|f| f["test_callers"].as_u64()).sum::<u64>() as usize;
     let mut score = 0i64;
     let mut reasons = Vec::new();
     let untested: Vec<&Json> = functions.iter().filter(|f| f["status"] != "deleted" && f["tests"].as_array().is_none_or(|t| t.is_empty())).collect();
@@ -1085,7 +1420,12 @@ fn risk(functions: &[Json], tests: &[Json], decisions: &[Json], agents: &[Json],
     let kind_of = |g: &Json, k: &str| g["kinds"].as_array().is_some_and(|ks| ks.iter().any(|x| x == k));
     for g in agents {
         if kind_of(g, "same_file") {
-            score += 3;
+            // Proven to merge cleanly: a note, not a collision; a conflict weighs more.
+            score += match g["merges_clean"].as_bool() {
+                Some(true) => 1,
+                Some(false) => 4,
+                None => 3,
+            };
         } else if kind_of(g, "calls_changed") {
             score += 2;
         } else {
@@ -1102,7 +1442,8 @@ fn risk(functions: &[Json], tests: &[Json], decisions: &[Json], agents: &[Json],
             reasons.push(format!("{} is flaky: passed and failed on one commit", t["path"].as_str().unwrap_or("")));
         } else if r["last_passed"] == false {
             score += 2;
-            reasons.push(format!("{} failed its last run", t["path"].as_str().unwrap_or("")));
+            let names: Vec<&str> = r["failing"].as_array().into_iter().flatten().filter_map(Json::as_str).take(3).collect();
+            reasons.push(if names.is_empty() { format!("{} failed its last run", t["path"].as_str().unwrap_or("")) } else { format!("{} failed its last run ({})", t["path"].as_str().unwrap_or(""), names.join(", ")) });
         }
     }
     let old: Vec<&str> = decisions.iter().filter(|d| d["superseded"] == true).filter_map(|d| d["id"].as_str()).collect();
@@ -1114,7 +1455,8 @@ fn risk(functions: &[Json], tests: &[Json], decisions: &[Json], agents: &[Json],
         score += 1;
     }
     let level = if score < 3 { "low" } else if score < 13 { "medium" } else { "high" };
-    let mut parts = vec![format!("{} changed with {}", plural(functions.len(), "function"), plural(callers, "caller"))];
+    let callers_said = if callers == 0 && test_callers > 0 { format!("no caller outside tests and {} in tests", test_callers) } else { plural(callers, "caller") };
+    let mut parts = vec![format!("{} changed with {callers_said}", plural(functions.len(), "function"))];
     if functions.is_empty() {
         parts[0] = "no function changed".into();
     }
@@ -1127,7 +1469,12 @@ fn risk(functions: &[Json], tests: &[Json], decisions: &[Json], agents: &[Json],
         let fname = g["functions"].as_array().and_then(|f| f.first()).and_then(Json::as_str).map(|f| f.rsplit('#').next().unwrap_or(f).to_string());
         let who = g["agent"]["name"].as_str().unwrap_or("another agent");
         parts.push(if kind_of(g, "same_file") {
-            format!("{who} changes {} too", g["files"].as_array().and_then(|f| f.first()).and_then(Json::as_str).unwrap_or("the same file"))
+            let file = g["files"].as_array().and_then(|f| f.first()).and_then(Json::as_str).unwrap_or("the same file");
+            match g["merges_clean"].as_bool() {
+                Some(true) => format!("{who} changes {file} too, and the two branches merge without a conflict"),
+                Some(false) => format!("{who} changes {file} too, and merging the two conflicts"),
+                None => format!("{who} changes {file} too"),
+            }
         } else if kind_of(g, "calls_changed") {
             format!("{who} calls {}", fname.unwrap_or_else(|| "a changed function".into()))
         } else {
@@ -1220,5 +1567,15 @@ mod tests {
         let r = risk(&[f("cartTotal", json!(["t"]))], &[], &[], &[], 1);
         assert_eq!(r["level"], "low");
         assert_eq!(r["line"], "Low risk: 1 function changed with 1 caller.");
+    }
+
+    #[test]
+    fn counts_callers_in_tests_and_a_clean_merge_is_a_note() {
+        // Callers only in tests are callers; a branch proven to merge is a note.
+        let f = json!({ "name": "add", "status": "changed", "tests": ["t"], "callers_total": 0, "test_callers": 12 });
+        let g = json!({ "agent": { "name": "freeship" }, "kinds": ["same_file"], "files": ["cart.py"], "functions": [], "detail": "freeship also changed cart.py", "merges_clean": true });
+        let r = risk(&[f], &[], &[], &[g], 0);
+        assert_eq!(r["level"], "low", "{r}");
+        assert_eq!(r["line"], "Low risk: 1 function changed with no caller outside tests and 12 in tests; freeship changes cart.py too, and the two branches merge without a conflict.");
     }
 }

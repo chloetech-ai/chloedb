@@ -2395,6 +2395,192 @@ fn ship_without_chloectx_still_says_the_blast_radius_and_drafts_the_pr() {
     assert!(p["gh"].as_str().unwrap().contains("--head wb/solo"));
 }
 
+// Sixth build: Ship and Trace tell the truth.
+
+/// A fake `chloectx` for the sixth build's Ship tests: every command fails
+/// as with no store, but `pack OUT` writes a manifest that names the
+/// sessions it was asked to keep (`CHLOECTX_PACK_SESSIONS`), as ChloeCtx
+/// does since the sixth build, and keeps that list in `pack.env`.
+fn fake_pack_chloectx(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("fake-chloectx");
+    let script = format!(
+        r#"#!/bin/bash
+D='{}'
+case "$1" in
+  pack)
+    printf '%s' "$CHLOECTX_PACK_SESSIONS" > "$D/pack.env"
+    S=$(python3 -c 'import json,os; v=os.environ.get("CHLOECTX_PACK_SESSIONS",""); print(json.dumps([x for x in v.split(",") if x]))')
+    mkdir -p "$2"
+    echo '{{"format":1,"title":"t","records":3,"by_kind":{{"decision":1}},"bytes":10,"sha256":"ab","created_ts":1,"sessions":'"$S"'}}' > "$2/manifest.json"
+    cat "$2/manifest.json"; exit 0;;
+esac
+echo "chloectx: no store for $PWD" >&2; exit 1
+"#,
+        dir.display()
+    );
+    std::fs::write(&p, script).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn ship_counts_a_stacked_branch_from_the_branch_under_it_and_ships_the_stack_together() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_pack_chloectx(ctx.path());
+    let s = Server::start(&["--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = shop();
+    // freeship commits a change to src/cart.ts.
+    let f = s.spawn(json!({ "repo": r, "name": "freeship", "task": "Free shipping over 50" }));
+    let fid = f["id"].as_str().unwrap().to_string();
+    let f = s.wait(&fid, "idle");
+    let fcwd = PathBuf::from(f["cwd"].as_str().unwrap());
+    charge_tax(&fcwd);
+    git(&fcwd, &["commit", "-q", "-am", "free shipping"]);
+    let ftip = git(&fcwd, &["rev-parse", "HEAD"]);
+    // csv-export is rebased onto wb/freeship, then commits its own file.
+    let c = s.spawn(json!({ "repo": r, "name": "csv-export", "task": "Export the cart as CSV" }));
+    let cid = c["id"].as_str().unwrap().to_string();
+    let c = s.wait(&cid, "idle");
+    let ccwd = PathBuf::from(c["cwd"].as_str().unwrap());
+    git(&ccwd, &["rebase", "-q", "wb/freeship"]);
+    std::fs::write(ccwd.join("src/csv.ts"), "export function toCsv(items) {\n  return items.map((i) => i.price).join(\",\");\n}\n").unwrap();
+    git(&ccwd, &["add", "src/csv.ts"]);
+    git(&ccwd, &["commit", "-q", "-m", "csv export"]);
+
+    // Its own change only, on top of freeship; freeship is not in its way.
+    let (status, b) = s.get(&format!("/api/agents/{cid}/blast"));
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["base"], json!(ftip), "{b}");
+    assert_eq!(b["landing"]["base_kind"], "stack");
+    assert_eq!(b["landing"]["under"][0]["agent"]["id"], json!(fid), "{b}");
+    assert_eq!((b["landing"]["under"][0]["contained"].as_bool(), b["landing"]["under"][0]["merged"].as_bool(), b["landing"]["under"][0]["commits"].as_u64()), (Some(true), Some(false), Some(1)));
+    let files: Vec<&str> = b["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
+    assert_eq!(files, ["src/csv.ts"], "{b}");
+    assert!(b["agents"].as_array().unwrap().iter().all(|g| g["agent"]["id"] != json!(fid)), "{b}");
+    assert!(!b["risk"]["line"].as_str().unwrap().contains("freeship"), "{b}");
+    assert!(b["risk"]["stack"].as_str().unwrap().contains("on top of freeship"), "{b}");
+    // The Changes tab counts from the same place.
+    let (_, d) = s.get(&format!("/api/agents/{cid}/diff"));
+    assert_eq!(d["base"], json!(ftip));
+    assert_eq!(d["files"].as_array().unwrap().len(), 1, "{d}");
+    // Asked twice, the same answer (computed once for the same facts).
+    let (_, b2) = s.get(&format!("/api/agents/{cid}/blast"));
+    assert_eq!(b2["computed"], b["computed"]);
+
+    // From freeship's side: csv-export is on top, and only what it adds counts.
+    let (_, fb) = s.get(&format!("/api/agents/{fid}/blast"));
+    assert_eq!(fb["landing"]["above"][0]["agent"]["id"], json!(cid), "{fb}");
+    assert!(fb["agents"].as_array().unwrap().iter().all(|g| !g["kinds"].as_array().unwrap().contains(&json!("same_file"))), "{fb}");
+
+    // The pull request goes onto wb/freeship; the stack is offered.
+    let (status, p) = s.get(&format!("/api/agents/{cid}/pr"));
+    assert_eq!(status, 200, "{p}");
+    assert_eq!(p["base_branch"], "wb/freeship", "{p}");
+    assert_eq!(p["title"], "csv export", "its one commit: {p}");
+    assert_eq!(p["title_from"], "commit");
+    let stack: Vec<&str> = p["stack"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
+    assert_eq!(stack, ["freeship", "csv-export"]);
+    assert!(p["body"].as_str().unwrap().contains("on top of freeship"), "{p}");
+    let (status, st) = s.get(&format!("/api/agents/{cid}/pr/stack"));
+    assert_eq!(status, 200, "{st}");
+    let parts: Vec<&str> = st["parts"].as_array().unwrap().iter().map(|x| x["agent"]["name"].as_str().unwrap()).collect();
+    assert_eq!(parts, ["freeship", "csv-export"]);
+    let body = st["body"].as_str().unwrap();
+    assert!(body.contains("`wb/freeship` → `wb/csv-export`") && body.contains("## 1. free shipping") && body.contains("## 2. csv export"), "{body}");
+    assert!(st["gh"].as_str().unwrap().starts_with("gh pr create --base main --head wb/csv-export"), "{st}");
+    assert_eq!(s.get(&format!("/api/agents/{fid}/pr/stack")).1["parts"].as_array().unwrap().len(), 2);
+
+    // The capsule packs this branch's agents' sessions only.
+    let (status, cap) = s.post(&format!("/api/agents/{cid}/capsule"), json!({}));
+    assert_eq!(status, 200, "{cap}");
+    let sid = s.agent(&cid)["session_id"].as_str().unwrap().to_string();
+    assert_eq!(std::fs::read_to_string(ctx.path().join("pack.env")).unwrap(), sid);
+    assert!(cap["capsule"]["scope"].as_str().unwrap().starts_with("1 session of this branch's agents (csv-export)"), "{cap}");
+}
+
+#[test]
+fn ship_says_when_two_branches_in_one_file_merge_cleanly() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = shop();
+    let a = s.spawn(json!({ "repo": r, "name": "tax", "task": "Tax" }));
+    let aid = a["id"].as_str().unwrap().to_string();
+    let a = s.wait(&aid, "idle");
+    let acwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    let b = s.spawn(json!({ "repo": r, "name": "badge", "task": "Badge" }));
+    let bid = b["id"].as_str().unwrap().to_string();
+    let b = s.wait(&bid, "idle");
+    let bcwd = PathBuf::from(b["cwd"].as_str().unwrap());
+    // tax appends a function, badge changes the first line: no conflict.
+    charge_tax(&acwd);
+    git(&acwd, &["commit", "-q", "-am", "tax"]);
+    let text = std::fs::read_to_string(bcwd.join("src/cart.ts")).unwrap().replacen("export function cartTotal(items) {", "export function cartTotal(items /* lines */) {", 1);
+    std::fs::write(bcwd.join("src/cart.ts"), text).unwrap();
+    git(&bcwd, &["commit", "-q", "-am", "badge"]);
+    let (status, v) = s.get(&format!("/api/agents/{aid}/blast"));
+    assert_eq!(status, 200, "{v}");
+    let g = v["agents"].as_array().unwrap().iter().find(|g| g["agent"]["id"] == json!(bid)).cloned().unwrap_or_else(|| panic!("no badge: {v}"));
+    assert_eq!(g["merges_clean"], true, "{g}");
+    assert!(v["risk"]["line"].as_str().unwrap().contains("badge changes src/cart.ts too, and the two branches merge without a conflict"), "{v}");
+    // Callers in tests are counted apart.
+    let total = v["functions"].as_array().unwrap().iter().find(|f| f["name"] == "cartTotal").cloned().unwrap();
+    assert_eq!((total["callers_total"].as_u64(), total["test_callers"].as_u64()), (Some(1), Some(1)), "{total}");
+}
+
+#[test]
+fn why_reads_a_line_as_the_commit_it_was_clicked_from_has_it() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    std::fs::write(r.join("money.py"), "def to_cents(x):\n    return int(x * 100)\n").unwrap();
+    git(&r, &["add", "money.py"]);
+    git(&r, &["commit", "-q", "-m", "rounding down", "--date", "2026-11-01T10:00:00"]);
+    let old = git(&r, &["rev-parse", "HEAD"]);
+    std::fs::write(r.join("money.py"), "def to_cents(x):\n    return round(x * 100)\n").unwrap();
+    git(&r, &["commit", "-q", "-am", "half even, for the ledger", "--date", "2026-11-09T10:00:00"]);
+    let new = git(&r, &["rev-parse", "HEAD"]);
+    // An agent then rewrites the line in its worktree, uncommitted.
+    let a = s.spawn(json!({ "repo": r, "name": "rounding-doc", "task": "WRITE money.py # documented" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+
+    // As the first commit has it: that commit, no agent.
+    let (status, w) = s.get(&format!("/api/why?repo={}&path=money.py&line=2&commit={old}", r.display()));
+    assert_eq!(status, 200, "{w}");
+    assert_eq!(w["line"]["text"], "    return int(x * 100)");
+    assert_eq!(w["where"]["commit"]["sha"], json!(old));
+    assert_eq!(w["where"]["commit"]["subject"], "rounding down");
+    assert_eq!(w["who"]["agent"], Value::Null, "{w}");
+    assert_eq!(w["at"], json!(old));
+    // From the agent's side: the line is older than its work, so no agent and no prompt.
+    let (_, w) = s.get(&format!("/api/why?agent={id}&path=money.py&line=2&commit={new}"));
+    assert_eq!(w["where"]["commit"]["sha"], json!(new), "{w}");
+    assert_eq!(w["who"]["agent"], Value::Null, "{w}");
+    assert_eq!(w["who"]["prompt"], Value::Null, "{w}");
+    assert_eq!(s.get(&format!("/api/why?agent={id}&path=money.py&line=2&commit=zz;rm")).0, 400);
+}
+
+#[test]
+fn why_credits_no_prompt_after_the_lines_commit() {
+    let s = Server::start(&["--chloectx-bin", "/nonexistent/chloectx"]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "cents", "task": "WRITE calc.py total = 1" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let cwd = PathBuf::from(a["cwd"].as_str().unwrap());
+    git(&cwd, &["add", "calc.py"]);
+    git(&cwd, &["commit", "-q", "-m", "add the total"]);
+    // Two seconds on, a later prompt edits the same file.
+    std::thread::sleep(Duration::from_millis(2100));
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "WRITE calc.py total = 1" }));
+    s.wait(&id, "idle");
+    let (_, w) = s.get(&format!("/api/why?agent={id}&path=calc.py&line=1"));
+    assert_eq!(w["who"]["agent"]["id"], json!(id), "{w}");
+    let prompt_ms = w["who"]["prompt"]["ts_ms"].as_i64().unwrap();
+    // The prompt credited came before the commit: the first one, not the merge-time one.
+    let commit_s: i64 = git(&cwd, &["show", "-s", "--format=%ct", "HEAD"]).parse().unwrap();
+    assert!(prompt_ms <= commit_s * 1000 + 999, "a prompt after the commit was credited: {w}");
+}
+
 // Fourth build: Time and guard (SPEC.md, rows 8, 9 and 6).
 
 /// A request with another token, as an agent's hooks and MCP server send.

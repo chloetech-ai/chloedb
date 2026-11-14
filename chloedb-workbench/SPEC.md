@@ -2248,3 +2248,159 @@ or read beside `ui/` when `CHLOEDB_WORKBENCH_UI_DIR` is set; no token,
 since it is not under `/api`). `#/guide` (`ui/levels/guide.js`, the "?"
 at the bottom of the left rail, and a link in the keyboard help) renders
 it with a table of contents. Its links to screens stay inside the app.
+
+## Sixth build: Ship and Trace tell the truth
+
+The testers caught Ship and Trace saying things the repository did not
+support. Ship counted another agent's commits as this branch's work. It
+called a branch already merged in a collision and gave one diff two
+risks. Its pull request was titled with Workbench's own brief to a lead.
+Trace and the Why card credited a prompt typed after the commit. Each item
+below names what changed, the test that holds it, and what is left out.
+
+### 1. Ship knows the branch it lands on
+
+- `blast::landing` (src/blast.rs) decides where a branch lands: the main
+  checkout's branch when that is not the agent's own, else `main` or
+  `master`. The fork is the merge base with that branch.
+- Each other agent's branch is compared with this one (deduplicated by
+  branch, the newest agent kept):
+  - Its merge base lies past the fork: it is **under** this branch. It is
+    stacked when its tip is on this branch's first-parent line, else merged
+    in.
+  - Its merge base is this branch's HEAD: it is **above**, stacked on this
+    branch.
+- The change is counted from the top-most commit shared with a branch under
+  it (`base_kind: "stack"`), else from the agent's recorded base when that
+  lies past the fork, else from the fork. `/api/agents/:id/blast`,
+  `/api/agents/:id/diff`, `/pr` and the Changes tab all use that base.
+- Ship says "This branch is on top of freeship (wb/freeship): 1 commit of
+  its work, not counted as this change". It says "has paybutton's branch
+  wb/paybutton merged in" for a merge.
+- An agent whose branch is under this one is not a collision. An agent
+  stacked above has its files counted from this branch's HEAD, so it does
+  not collide with this branch's own commits.
+- When two branches change the same file and both have committed it, Ship
+  runs `git merge-tree --write-tree` on the two tips. The agent then
+  carries `merges_clean`, with "merges cleanly" or "conflicts" and the
+  files. A clean merge scores 1 instead of 4.
+- Tests: `ship_counts_a_stacked_branch_from_the_branch_under_it_and_ships_the_stack_together`
+  and `ship_says_when_two_branches_in_one_file_merge_cleanly`.
+
+### 2. One risk per diff
+
+- The blast radius is computed once per set of facts and cached for 10
+  minutes. The facts are the diff, HEAD and base, the tips under it, every
+  other agent's tip and state, and the counts of `test_runs` and
+  `test_summaries`. Blast radius, Pull request and the Changes tab's
+  summary read the same answer, and `computed` says when it was made.
+  The Changes summary keeps its copy 5 s instead of 20 s.
+- Callers in test files are counted apart, as `test_callers`. A function
+  called only by tests reads "no caller outside tests and 12 in tests",
+  never "0 callers".
+- Python `from … import` lines are not calls, and a method counts only
+  where it is called (`.name` or `name(`).
+- Test functions a change adds or edits are listed too, so "Only tests
+  changed" is said rather than an empty green.
+- Unit test: `blast::tests::counts_callers_in_tests_and_a_clean_merge_is_a_note`.
+- **Deviation:** callers come from `git grep` over the agent's worktree, not
+  from `code_chunks`/`identifiers`. That index is the main checkout's, so
+  it does not hold the branch's new functions or their new callers.
+
+### 3. Ship together
+
+- `GET /api/agents/:id/pr/stack` drafts one pull request for the whole
+  stack: every agent's branch under or above this one, bottom first.
+- The draft names the top branch onto the landing branch. It has one part
+  per branch: title, risk, summary and decisions. It is saved as
+  `pr-stack.md` next to `pr.md`, with the `gh pr create` command for it.
+- On the Pull request tab, a stack of two or more branches shows its chain
+  in merge order and a "Ship together" button.
+- A single branch's draft targets the branch it is stacked on (`base_branch`)
+  and says so in its body.
+
+### 4. The pull request says what was done
+
+- The title is taken from the first of these that exists:
+  1. the outcome the agent worked on;
+  2. the goal it leads;
+  3. its only commit;
+  4. what it said when it finished (the Stop event's last message);
+  5. its last commit;
+  6. its task;
+  7. its name.
+
+  Workbench's own brief to a lead is never used. `title_from` says which
+  one it was, and the tab shows it.
+- The summary is built from the commits' subjects and the agent's last
+  summary.
+- Decisions are only those of the branch's agents' sessions: the agent, a
+  restart in the same worktree, and the children whose work is in the
+  branch. A superseded decision names what replaced it ("superseded by
+  ◆id: text"), or says ChloeCtx names no successor.
+- "Tests it ran" names tests with their last result, fixed and flaky:
+  - Count-only runs (`test_summaries`) are listed as commands with their
+    counts.
+  - Legacy rows that stored a command as a test are skipped.
+  - A test that failed and then passed shows ✓ and "fixed in this work".
+  - The merged-tree run (a merge commit containing this branch's HEAD) has
+    its own row.
+  - When no row exists, the terminal's test commands are shown with the
+    counts their output printed, and the card says so.
+
+### 5. The capsule is this branch's
+
+- `pack` sets `CHLOECTX_PACK_SESSIONS` to the sessions of the branch's
+  agents (the same set as the decisions).
+- When ChloeCtx's manifest names the sessions it packed, the scope reads
+  "2 sessions of this branch's agents (csv-export, freeship), since …".
+- A chloectx that does not filter still packs everything, and the scope
+  says so: "this chloectx cannot pack by session". The filter itself is
+  ChloeCtx's change (part F).
+
+### 6. Trace answers with the commit
+
+- Edits to files outside the checkout (absolute paths, `../`) are not
+  evidence.
+- The headline's key change is a commit when one qualifies:
+  - for "from x to y", the commit that changed x to y;
+  - else the newest commit that changed or added it.
+
+  An edit is the key only when no commit qualifies. An uncommitted edit
+  after it is added: "Since then cents has an uncommitted edit to …".
+- A question, rule or decision is cited only when it is the same agent's
+  and about the subject.
+- "Between x and y" reads as a change either way.
+- The answer carries `history`, every change in order. The card shows it in
+  one line ("Changed 3 times: rounded down (Nov 1) → half-even (Nov 5) →
+  half-up (Nov 9)"), each step opening its card. `history_plain` is the same
+  line for agents.
+- Unit tests: `trace::tests::answers_with_the_commit_and_the_whole_history`
+  and `reads_between_x_and_y_as_a_change_either_way`.
+- **Deviation:** "between" keeps possessives off ("banker's" reads as
+  "banker"), as the tokenizer does everywhere.
+
+### 7. The Why card is read at the commit
+
+- `/api/why` takes `commit=<sha>` (4 to 64 hex characters, else 400). Trace
+  passes it for a line of a commit card, so the line is read with
+  `git show <sha>:path` and blamed with `git blame <sha>`, and `at` says
+  which commit.
+- ChloeCtx's blame is used only when the current file still has the line.
+- An edit counts only when it was made before the line's commit, and only
+  then is its prompt credited. Workbench's events after the commit are
+  dropped. A prompt typed after the commit is never "on your prompt".
+- When no edit is on record, the notes come from the agent's session
+  between its prompt and the commit (`why_from: "session"`). The card
+  says so, rather than "not available".
+- The header says "wrote this" only with an edit on record. Else it says
+  "This line came in with b72f105 Nov 9, “…”, on rounding-doc's branch. No
+  recorded edit shows who typed it." The footnotes say the same.
+- Tests: `why_reads_a_line_as_the_commit_it_was_clicked_from_has_it` and
+  `why_credits_no_prompt_after_the_lines_commit`.
+
+### 8. One Why? button
+
+- The diff has one Why? button. It sits on the added line under the
+  pointer, else on the cursor's line, so a page of 91 added lines shows
+  one. `y` and Alt-click work as before.

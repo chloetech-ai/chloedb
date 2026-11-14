@@ -51,6 +51,7 @@ export function mount(root, ctx) {
     showReasons: false, raw: false, title: null, copied: null,
     packing: false, packErr: null,
     q: "", asking: false, answer: null, askErr: null,
+    stack: null, stackErr: null, stacking: false, noAgent: false,
   };
   const el = h("div", { class: "lv-screen sh" });
   root.append(el);
@@ -63,16 +64,31 @@ export function mount(root, ctx) {
 
   // ------------------------------------------------------------- data
   async function load() {
-    if (!S.id) { S.blastErr = "No agent: open Ship from an agent's Changes, or as #/ship/<agent>."; render(); return; }
+    if (!S.id) { S.noAgent = true; render(); return; }
+    S.noAgent = false;
     S.loading = true;
     render();
     const id = S.id;
-    const b = ctx.api(`/api/agents/${enc(id)}/blast`).then((v) => { if (id === S.id) { S.blast = v; S.blastErr = null; } }, (e) => { if (id === S.id) S.blastErr = e.status === 404 && !/agent/i.test(e.message) ? "This server has no blast radius route yet." : e.message || String(e); });
+    const b = ctx.api(`/api/agents/${enc(id)}/blast`).then((v) => { if (id === S.id) { S.blast = v; S.blastErr = null; } }, (e) => {
+      if (id !== S.id) return;
+      // An id that names no agent (an old link): pick one instead.
+      if (e.status === 404 && /no agent/i.test(e.message || "")) { S.noAgent = true; return; }
+      S.blastErr = e.status === 404 && !/agent/i.test(e.message) ? "This server has no blast radius route yet." : e.message || String(e);
+    });
     const p = ctx.api(`/api/agents/${enc(id)}/pr`).then((v) => { if (id === S.id) { S.pr = v; S.prErr = null; } }, (e) => { if (id === S.id) S.prErr = e.message || String(e); });
     await Promise.allSettled([S.tab === "blast" ? b : p]);
     if (alive) render();
     await Promise.allSettled([b, p]);
     S.loading = false;
+    if (alive) render();
+  }
+
+  // Ship together: one draft for the stack of branches, in merge order.
+  async function together() {
+    S.stacking = true; S.stackErr = null; render();
+    try { S.stack = await ctx.api(`/api/agents/${enc(S.id)}/pr/stack`); }
+    catch (e) { S.stackErr = e.message || String(e); }
+    S.stacking = false;
     if (alive) render();
   }
 
@@ -113,7 +129,17 @@ export function mount(root, ctx) {
   }
 
   // ------------------------------------------------------------- view
+  function pickView() {
+    const list = (S.stream || []).slice().sort((x, y) => (toMs(y.created) || 0) - (toMs(x.created) || 0));
+    return h("div", { class: "sh-wrap" }, h("div", { class: "lv-card sh-err" },
+      h("b", {}, "Which agent's change do you want to ship?"),
+      list.length ? h("div", { class: "sh-picklist" }, list.map((x) => h("button", { class: "sh-pickrow", "data-key": `pick:${x.id}`, onclick: () => ctx.go(`#/ship/${x.id}`) },
+        avatar(x, 22), h("b", {}, x.name), h("code", { class: "muted sm" }, x.branch || ""), h("span", { class: "sh-sp" }), h("span", { class: "muted sm" }, x.running === false ? "exited" : x.state || ""))))
+        : h("div", { class: "muted" }, "No agent yet. Ship shows what an agent's branch changes before it merges: start one with New agent.")));
+  }
+
   function view() {
+    if (S.noAgent) return pickView();
     const a = agentOf();
     if (!S.blast && !S.pr && (S.blastErr || S.prErr)) {
       return h("div", { class: "sh-wrap" }, h("div", { class: "lv-card sh-err" }, h("b", {}, "Ship could not load."), h("div", { class: "muted" }, S.blastErr || S.prErr),
@@ -134,7 +160,7 @@ export function mount(root, ctx) {
         h("div", { class: "sh-tt" },
           h("h1", {}, a.name, h("span", {}, " · Ship")),
           h("div", { class: "sh-sub" }, [
-            h("span", {}, h("code", {}, a.branch || "its checkout"), " → ", h("code", {}, (p && p.base_branch) || short(b && b.base) || "base")),
+            h("span", {}, h("code", {}, a.branch || "its checkout"), " → ", h("code", {}, (p && p.base_branch) || (b && b.landing && b.landing.onto) || short(b && b.base) || "base")),
             t ? h("span", {}, h("b", { class: "n-add" }, `+${t.added}`), " ", h("b", { class: "n-del" }, `−${t.removed}`), ` in ${plural(t.files, "file")}`) : null,
             a.created ? h("span", {}, `started ${fmtClock(a.created)}, ${fmtDur((toMs(a.ended) || Date.now()) - (a.started_ms || toMs(a.created)))}`) : null,
             h("span", {}, a.state === "idle" ? "turn over" : a.state || ""),
@@ -152,10 +178,15 @@ export function mount(root, ctx) {
     const r = S.blast && S.blast.risk;
     if (!r) return S.blastErr ? h("div", { class: "sh-risk mut" }, h("b", {}, "Blast radius unknown"), h("span", {}, S.blastErr)) : h("div", { class: "sh-risk mut sh-loading" }, "Reading the blast radius…");
     const tone = RISK_TONE[r.level] || "mut";
+    const land = S.blast.landing || {};
     return h("div", { class: `sh-risk ${tone}` },
       h("span", { class: "sh-dot" }),
       h("div", { class: "sh-risk-t" },
         h("div", {}, h("b", {}, `${r.level[0].toUpperCase()}${r.level.slice(1)} risk`), " ", h("span", {}, r.line.replace(/^\w+ risk:\s*/i, ""))),
+        (land.under || []).length ? h("div", { class: "sh-stack" }, (land.under || []).map((u) => h("span", { class: "sh-stack-i" },
+          u.merged ? "has " : "on top of ", avatar(u.agent, 14), " ", h("b", {}, u.agent.name), " ", h("code", {}, u.branch),
+          h("span", { class: "muted" }, ` · ${plural(u.commits, "commit")} of it ${u.merged ? "merged in" : "under this one"}, not counted here`)))) : null,
+        (land.above || []).length ? h("div", { class: "sh-stack" }, h("span", { class: "muted" }, "On top of this branch: "), (land.above || []).map((u, i) => [i ? ", " : "", h("b", {}, u.agent.name)])) : null,
         S.showReasons && r.reasons && r.reasons.length ? h("ul", { class: "sh-reasons" }, r.reasons.map((x) => h("li", {}, inlineCode(x)))) : null),
       r.reasons && r.reasons.length ? h("button", { class: "lv-link", "data-key": "reasons", onclick: () => { S.showReasons = !S.showReasons; render(); } }, S.showReasons ? "Less" : `${plural(r.reasons.length, "reason")} ▾`) : null);
   }
@@ -184,9 +215,12 @@ export function mount(root, ctx) {
     return h("aside", { class: "lv-card sh-side" },
       h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "If this merges")),
       h("div", { class: "sh-tiles" },
-        tile(t.functions, "functions changed"), tile(t.callers, "callers"), tile(t.tests, "tests cover them", untested.length ? "warn" : null),
+        tile(t.functions, "functions changed"), tile(t.callers, t.test_callers ? `callers (+${t.test_callers} in tests)` : "callers"), tile(t.tests, "tests cover them", untested.length ? "warn" : null),
         tile(t.decisions, "decisions", "ctx"), tile(t.agents, "other agents", t.agents ? "warn" : null), tile(t.files, "files")),
-      untested.length ? h("div", { class: "sh-note warn" }, h("b", {}, "No test names "), untested.map((f, i) => [i ? ", " : "", h("code", { class: "lv-code" }, f.name)])) : h("div", { class: "sh-note good" }, "Every changed function is named by a test."),
+      untested.length ? h("div", { class: "sh-note warn" }, h("b", {}, "No test names "), untested.map((f, i) => [i ? ", " : "", h("code", { class: "lv-code" }, f.name)]))
+        : (b.functions || []).length ? h("div", { class: "sh-note good" }, `Every changed function is named by a test (${plural(b.functions.length, "function")}).`)
+        : (b.test_functions || []).length ? h("div", { class: "sh-note" }, h("b", {}, "Only tests changed: "), b.test_functions.map((f, i) => [i ? ", " : "", h("code", { class: "lv-code" }, f.name), h("span", { class: "muted" }, ` ${f.status === "added" ? "new" : f.status === "deleted" ? "removed" : "changed"}`)]))
+        : h("div", { class: "sh-note" }, "No function changed, so there is nothing for a test to name."),
       (b.related_files || []).length ? h("div", { class: "sh-rel" }, h("span", { class: "muted" }, "ChloeCtx's graph also links "),
         b.related_files.map((r, i) => [i ? ", " : "", h("code", { class: "lv-code", title: `via ${r.via.join(", ")}` }, r.path)]), h("span", { class: "muted" }, " to these decisions.")) : null,
       h("div", { class: "sh-src" },
@@ -404,7 +438,7 @@ export function mount(root, ctx) {
           h("span", { class: "n-add" }, f.added ? `+${f.added}` : ""), h("span", { class: "n-del" }, f.removed ? `−${f.removed}` : "")),
         h("div", { class: "sh-r2" },
           h("span", { class: "sh-path" }, `${f.path}:${f.line}`),
-          h("span", {}, plural(f.callers_total || 0, "caller")),
+          h("span", {}, plural(f.callers_total || 0, "caller"), f.test_callers ? ` · ${f.test_callers} in tests` : ""),
           (f.tests || []).length ? h("span", { class: "good-t" }, plural(f.tests.length, "test")) : h("span", { class: "crit-t" }, "no test"),
           (f.decisions || []).length ? ctxChip(String(f.decisions.length), "decisions about it") : null)))
         : h("div", { class: "lv-empty" }, "No function changed."));
@@ -417,8 +451,11 @@ export function mount(root, ctx) {
       h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Tests that cover them ", h("span", { class: "n" }, String(ts.length))), h("span", { class: "muted sm" }, "ranked")),
       ts.length ? ts.map((t, i) => h("div", { class: "sh-row-i", tabindex: 0, "data-nav": "", "data-key": `t:${t.path}`, ...hover(`t:${t.path}`) },
         h("div", { class: "sh-r1" }, h("span", { class: "sh-rank" }, String(i + 1)), h("code", { class: "sh-fn" }, t.path), h("span", { class: "sh-sp" }),
-          !t.runs ? pill("not run", "mut") : t.runs.flaky ? pill(`flaky ${t.runs.passed}/${t.runs.total}`, "warn") : t.runs.last_passed === false ? pill(`failing ${t.runs.passed}/${t.runs.total}`, "crit") : pill(`${t.runs.passed}/${t.runs.total} passed`, "good")),
-        h("div", { class: "sh-r2" }, h("span", {}, (t.why || []).join(" · ")), t.runs && t.runs.p50_ms != null ? h("span", {}, `p50 ${fmtSpan(t.runs.p50_ms)}`) : null)))
+          !t.runs ? pill("not run", "mut") : t.runs.flaky ? pill(`flaky ${t.runs.passed}/${t.runs.total}`, "warn") : t.runs.last_passed === false ? pill(`failing: ${(t.runs.failing || []).slice(0, 2).join(", ") || "last run"}`, "crit") : pill("passing on its last run", "good")),
+        h("div", { class: "sh-r2" }, h("span", {}, (t.why || []).join(" · ")),
+          t.runs && (t.runs.fixed || []).length ? h("span", { class: "good-t", title: "Failed first, then passed after a change: a failure before the fix" }, `fixed: ${t.runs.fixed.slice(0, 2).join(", ")}`) : null,
+          t.runs && t.runs.on_head ? h("span", {}, `on this commit ${t.runs.on_head.passed}/${t.runs.on_head.total}`) : null,
+          t.runs && t.runs.p50_ms != null ? h("span", {}, `p50 ${fmtSpan(t.runs.p50_ms)}`) : null)))
         : h("div", { class: "lv-empty" }, "No test file names these functions or imports their files."),
       h("div", { class: "sh-foot" }, src.test_runs ? "Runs from the test_runs table (Health): what agents ran on these tests." : "No test_runs table yet (Health keeps one): ranked by the test files that name the functions or import their files."));
   }
@@ -443,7 +480,9 @@ export function mount(root, ctx) {
     return h("section", { class: "lv-card sh-list" },
       h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Other agents in the way ", h("span", { class: "n" }, String(gs.length)))),
       gs.length ? gs.map((g) => h("div", { class: "sh-row-i", tabindex: 0, "data-nav": "", "data-key": `a:${g.agent.id}`, ...hover(`a:${g.agent.id}`) },
-        h("div", { class: "sh-r1" }, avatar(g.agent, 18), h("b", {}, g.agent.name), h("span", { class: "sh-sp" }), (g.kinds || []).map((k) => pill(KIND_LABEL[k] || k, k === "same_file" ? "crit" : k === "calls_changed" ? "warn" : "mut"))),
+        h("div", { class: "sh-r1" }, avatar(g.agent, 18), h("b", {}, g.agent.name), h("span", { class: "sh-sp" }),
+          g.merges_clean === true ? pill("merges cleanly", "good") : g.merges_clean === false ? pill("conflicts", "crit") : null,
+          (g.kinds || []).map((k) => pill(KIND_LABEL[k] || k, k === "same_file" ? (g.merges_clean === true ? "mut" : "crit") : k === "calls_changed" ? "warn" : "mut"))),
         h("div", { class: "sh-dtext" }, g.detail),
         h("div", { class: "sh-r2" },
           h("button", { class: "lv-link", onclick: () => ctx.go(`#/story/${g.agent.id}`) }, "Story"),
@@ -463,6 +502,8 @@ export function mount(root, ctx) {
         h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Pull request draft"),
           h("span", { class: "sh-bh" }, h("code", {}, p.base_branch || "main"), " ← ", h("code", {}, p.branch || a.branch))),
         h("input", { class: "sh-title-in", "data-key": "title", value: title, "aria-label": "Title", oninput: (e) => { S.title = e.target.value; const c = el.querySelector(".sh-gh code"); if (c) c.textContent = ghCommand(p, S.title); } }),
+        p.title_from ? h("div", { class: "muted sm sh-from" }, `Title from ${{ outcome: "its outcome", goal: "the goal it leads", commit: "its commit", summary: "what it said when it finished", task: "its task (it said nothing else to use)", name: "its name" }[p.title_from] || p.title_from}.`) : null,
+        stackCard(p),
         h("div", { class: "sh-bodybar" },
           h("div", { class: "sh-seg" }, h("button", { class: S.raw ? null : "on", "data-key": "md-off", onclick: () => { S.raw = false; render(); } }, "Preview"), h("button", { class: S.raw ? "on" : null, "data-key": "md-on", onclick: () => { S.raw = true; render(); } }, "Markdown")),
           h("span", { class: "sh-sp" }),
@@ -479,6 +520,27 @@ export function mount(root, ctx) {
           h("code", { class: "sh-cmd" }, gh)),
         (p.missing || []).length ? h("ul", { class: "sh-missing" }, p.missing.map((m) => h("li", {}, m))) : null),
       h("aside", { class: "sh-pside" }, capsuleCard(a, p), askCard(a, p), testsRunCard(p)));
+  }
+
+  function stackCard(p) {
+    const chain = p.stack || [];
+    if (chain.length < 2) return null;
+    const st = S.stack;
+    return h("div", { class: "sh-stackcard" },
+      h("div", { class: "sh-r1" }, h("b", {}, "Stacked branches"), h("span", { class: "muted sm" }, " in merge order: "),
+        chain.map((g, i) => [i ? h("span", { class: "muted" }, " → ") : null, h("span", { class: g.id === S.id ? "sh-me" : null }, g.name)]),
+        h("span", { class: "sh-sp" }),
+        h("button", { class: "btn sm", "data-key": "together", disabled: S.stacking, onclick: () => (st ? (S.stack = null, render()) : together()) }, S.stacking ? "Drafting…" : st ? "Back to this branch" : "Ship together")),
+      S.stackErr ? h("div", { class: "sh-note crit" }, S.stackErr) : null,
+      st ? h("div", { class: "sh-together" },
+        h("div", { class: "muted sm" }, `One pull request of ${st.branch} onto ${st.base_branch}, its body in ${plural((st.parts || []).length, "part")}, saved to ${st.body_file}.`),
+        h("div", { class: "sh-parts" }, (st.parts || []).map((x, i) => h("div", { class: "sh-part" }, h("span", { class: "sh-rank" }, String(i + 1)), avatar(x.agent, 16), h("b", {}, x.title), h("code", { class: "muted sm" }, x.branch || ""),
+          x.risk ? pill(`${x.risk.level} risk`, RISK_TONE[x.risk.level] || "mut") : null))),
+        h("div", { class: "sh-md" }, markdown(st.body)),
+        h("div", { class: "sh-actions" },
+          h("button", { class: "btn primary sm", "data-key": "copy-stack", onclick: () => doCopy("stack", st.body) }, S.copied === "stack" ? "Copied" : "Copy the stack's body"),
+          h("button", { class: "btn sm", "data-key": "copy-stack-gh", onclick: () => doCopy("stackgh", st.gh) }, S.copied === "stackgh" ? "Copied" : "Copy gh command")),
+        h("code", { class: "sh-cmd" }, st.push), h("code", { class: "sh-cmd" }, st.gh)) : null);
   }
 
   function ghCommand(p, title) {
@@ -534,12 +596,24 @@ export function mount(root, ctx) {
   }
 
   function testsRunCard(p) {
-    const ts = (p.sections && p.sections.tests) || [];
-    if (!ts.length) return null;
+    const sec = p.sections || {};
+    const ts = sec.tests || [];
+    const merged = sec.merged || [];
+    if (!ts.length && !merged.length) return null;
+    const named = ts.filter((t) => t.kind === "test");
+    const mark = (ok) => h("span", { class: `sh-ok ${ok === true ? "y" : ok === false ? "n" : "u"}` }, ok === true ? "✓" : ok === false ? "✕" : "?");
     return h("section", { class: "lv-card sh-list" },
-      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Tests it ran ", h("span", { class: "n" }, String(ts.length)))),
-      ts.map((t) => h("div", { class: "sh-trun" }, h("span", { class: `sh-ok ${t.ok === true ? "y" : t.ok === false ? "n" : "u"}` }, t.ok === true ? "✓" : t.ok === false ? "✕" : "?"),
-        h("code", {}, t.command), h("span", { class: "sh-sp" }), h("span", { class: "muted sm" }, `${t.summary || ""}${t.ts ? ` · ${fmtClock(t.ts)}` : ""}`))));
+      h("div", { class: "lv-card-head" }, h("h2", { class: "lv-h2" }, "Tests it ran ", h("span", { class: "n" }, String(ts.length))),
+        named.length ? h("span", { class: "muted sm" }, `${named.filter((t) => t.ok).length} of ${named.length} pass on their last run`) : null),
+      ts.map((t) => h("div", { class: "sh-trun" }, mark(t.ok),
+        h("code", { title: t.name }, t.kind === "command" ? `$ ${t.name}` : t.name), h("span", { class: "sh-sp" }),
+        h("span", { class: "muted sm" }, [
+          t.kind === "test" ? (t.runs > 1 ? `${t.passed}/${t.runs} runs passed` : t.ok ? "passed" : "failed") : t.summary || (t.ok == null ? "result unknown" : ""),
+          t.fixed ? " · fixed in this work" : "", t.flaky ? " · flaky" : "", t.ts ? ` · ${fmtClock(t.ts)}` : ""].join("")))),
+      merged.map((m) => h("div", { class: "sh-trun sh-merged" }, mark(m.failed === 0),
+        h("span", {}, "Merged tree ", h("code", {}, short(m.commit)), (m.branches || []).length ? ` (${m.branches.join(" + ")})` : ""), h("span", { class: "sh-sp" }),
+        h("span", { class: "muted sm" }, `${m.passed}/${m.tests} passed${m.by ? ` · ${m.by}` : ""}`))),
+      sec.tests_from === "events" ? h("div", { class: "sh-foot" }, "No test_runs rows for this branch: these are the test commands from its terminal, with the counts their output printed.") : null);
   }
 
   // ------------------------------------------------------------- life
@@ -554,6 +628,7 @@ export function mount(root, ctx) {
   return {
     update(state) {
       S.stream = state.agents || S.stream;
+      if (S.noAgent) render();
       const a = S.stream.find((x) => x.id === S.id);
       const stamp = a ? `${a.state}:${a.state_since}` : null;
       if (S.since && stamp && stamp !== S.since) reloadSoon();
@@ -757,6 +832,19 @@ useStyle("ship", `
 .sh-trun .muted{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55%}
 .sh-ok{width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;font-size:11px;font-weight:800;flex:none}
 .sh-ok.y{background:var(--good-soft);color:var(--good-ink)}.sh-ok.n{background:var(--crit-soft);color:var(--crit-ink)}.sh-ok.u{background:var(--surface-3);color:var(--muted)}
+.sh-stack{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:5px;font-size:12.5px;color:var(--text-2)}
+.sh-stack-i{display:inline-flex;align-items:center;gap:3px}
+.sh-stack code,.sh-stackcard code{font-family:var(--mono);font-size:11.5px}
+.sh-from{margin-top:4px}
+.sh-stackcard{border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-top:10px;background:var(--surface-2);font-size:13px}
+.sh-me{font-weight:700;color:var(--accent)}
+.sh-together{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.sh-parts{display:flex;flex-direction:column;gap:4px}
+.sh-part{display:flex;align-items:center;gap:7px}
+.sh-merged{background:var(--surface-2)}
+.sh-picklist{display:flex;flex-direction:column;gap:2px}
+.sh-pickrow{display:flex;align-items:center;gap:9px;border:0;background:none;color:inherit;font:inherit;padding:7px 6px;border-radius:7px;cursor:pointer;text-align:left}
+.sh-pickrow:hover{background:var(--surface-2)}
 .sh-skel{height:120px;border-radius:12px;background:var(--surface-2);margin-bottom:14px;animation:sh-pulse 1.4s ease-in-out infinite}
 .sh-skel.tall{height:420px}
 @keyframes sh-pulse{50%{opacity:.5}}
