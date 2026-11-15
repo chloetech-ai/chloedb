@@ -322,12 +322,31 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         let look = Look::of(&j);
         let rate = rates(then.as_ref(), &t, &look, fresh["started_ms"].as_u64().unwrap_or(0), now);
         now_counts.insert(t.clone(), look);
-        // Each shard's size, and its writes and reads a minute.
+        // Each shard's size, and its writes and reads a minute; on a
+        // coordinator also the bytes each of its copies holds, as each copy
+        // said them (a replica's segments need not be its primary's), and
+        // the copies that did not say.
         let shards: Vec<Json> = j["shards"].as_array().into_iter().flatten().map(|s| {
             let (d, b, _) = of(&s["scope"]);
             let r = &rate["shards"][s["shard"].as_u64().unwrap_or(0).to_string()];
-            json!({"shard": s["shard"], "docs": d, "bytes": b, "writes_per_min": r["writes_per_min"], "reads_per_min": r["reads_per_min"]})
+            let (mut copies_bytes, mut measured, mut missing) = (0u64, 0u64, 0u64);
+            for c in s["replicas"].as_array().into_iter().flatten() {
+                match c["scope"]["stats"]["bytes"]["total"].as_u64() {
+                    Some(b) if c["error"].is_null() => {
+                        copies_bytes += b;
+                        measured += 1;
+                    }
+                    _ => missing += 1,
+                }
+            }
+            json!({"shard": s["shard"], "docs": d, "bytes": b, "copies_bytes": copies_bytes, "copies_measured": measured, "copies_missing": missing, "writes_per_min": r["writes_per_min"], "reads_per_min": r["reads_per_min"]})
         }).collect();
+        // The table's bytes on every copy: a coordinator's alone, which asks
+        // each copy (a server answers for itself, one copy).
+        let on_copies = matches!(svc.backend, Backend::Cluster(_)).then(|| {
+            let sum = |k: &str| shards.iter().filter_map(|s| s[k].as_u64()).sum::<u64>();
+            (sum("copies_bytes"), sum("copies_measured"), sum("copies_missing"))
+        });
         // The shard furthest over the mean, by documents.
         let skew = (shards.len() > 1).then(|| {
             let mean = shards.iter().filter_map(|s| s["docs"].as_f64()).sum::<f64>() / shards.len() as f64;
@@ -348,12 +367,19 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
                 }
             }
         }
-        out.push(json!({
+        let mut row = json!({
             "table": t, "docs": docs, "bytes": bytes, "segments": segments, "shards": shards, "skew": skew,
             "writes_per_min": rate["writes_per_min"], "reads_per_min": rate["reads_per_min"], "rate_window_s": rate["window_s"], "rate_from_ms": rate["from_ms"],
             "last_write_ms": fresh["last_write_ms"], "stale": stale,
-        }));
+        });
+        if let Some((b, measured, missing)) = on_copies {
+            row["copies_bytes"] = json!(b);
+            row["copies_measured"] = json!(measured);
+            row["copies_missing"] = json!(missing);
+        }
+        out.push(row);
     }
+    let totals = totals(&out, matches!(svc.backend, Backend::Cluster(_)));
     // Growth: the size an hourly row of the log store had a day and a week
     // ago (this server's rows; a coordinator keeps them of the cluster).
     if let Some(store) = &svc.log_store {
@@ -370,9 +396,26 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
     svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner()).push_back((now, now_counts));
     // The rates' window, when there is none yet: the next look that can
     // measure one (30 s after this one).
-    let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs(), "rate_window_max_s": RATE_WINDOW.as_secs(), "look_every_s": LOOK_EVERY.as_secs()});
+    let j = json!({"tables": out, "totals": totals, "at_ms": now, "cached_s": TABLES_EVERY.as_secs(), "rate_window_max_s": RATE_WINDOW.as_secs(), "look_every_s": LOOK_EVERY.as_secs()});
     *kept = Some((std::time::Instant::now(), j.clone()));
     Ok(j)
+}
+
+/// The sum of [`tables`]' rows: the tables that answered, their rows,
+/// segments and bytes on one copy (each shard's primary), and on a
+/// coordinator (`cluster`) their bytes on every copy that answered, with
+/// how many tables a copy did not answer for (their `copies_bytes` is
+/// short of the copies they have). A table that failed is counted in
+/// `failed`, and in nothing else.
+pub fn totals(rows: &[Json], cluster: bool) -> Json {
+    let ok: Vec<&Json> = rows.iter().filter(|t| t["error"].is_null()).collect();
+    let sum = |k: &str| ok.iter().filter_map(|t| t[k].as_u64()).sum::<u64>();
+    let mut j = json!({"tables": ok.len(), "failed": rows.len() - ok.len(), "docs": sum("docs"), "bytes": sum("bytes"), "segments": sum("segments")});
+    if cluster {
+        j["copies_bytes"] = json!(sum("copies_bytes"));
+        j["incomplete"] = json!(ok.iter().filter(|t| t["copies_missing"].as_u64().unwrap_or(0) > 0).count());
+    }
+    j
 }
 
 /// Looks at every table's counts each [`LOOK_EVERY`] while the service

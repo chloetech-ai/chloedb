@@ -2474,6 +2474,13 @@ textarea.input.ro-why { font-family: inherit; }
 .dt-sc.bad { background: var(--crit-soft); color: var(--crit-ink); }
 .dt-tbl tr.dt-sel td { background: var(--accent-soft); }
 .dt-tbl td { vertical-align: middle; }
+/* Every table added up: the tiles above the answers, the row under the list. */
+.dt-totals { margin-bottom: 14px; }
+.dt-total .val .dt-total-name { display: block; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-total .delta { max-width: 100%; }
+a.dt-total { color: inherit; text-decoration: none; }
+a.dt-total:hover { border-color: var(--line-2); }
+.dt-tbl tfoot td { border-top: 2px solid var(--line-2); font-weight: 600; background: var(--surface-2); font-variant-numeric: tabular-nums; }
 .dt-delta { font-variant-numeric: tabular-nums; }
 .dt-delta.top { background: var(--warn-soft); padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .dt-flag { background: var(--warn-soft); padding: 1px 7px; border-radius: 999px; font-weight: 600; }
@@ -2525,7 +2532,10 @@ textarea.input.ro-why { font-family: inherit; }
   .dt-sortsel { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
   .dt-sortsel select { flex: 1; min-height: 36px; }
   .dt-tbl thead { display: none; }
-  .dt-tbl, .dt-tbl tbody { display: block; }
+  .dt-tbl, .dt-tbl tbody, .dt-tbl tfoot { display: block; }
+  table.t.dt-tbl tr.dt-sum td:empty { display: none; }
+  table.t.dt-tbl tfoot td { border: 0; background: transparent; }
+  .dt-tbl tr.dt-sum { background: var(--surface-2); }
   .dt-tbl tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
   table.t.dt-tbl td { display: block; padding: 0; border: 0; background: transparent; text-align: left; min-width: 0; white-space: normal; }
   table.t.dt-tbl tbody tr:hover td { background: transparent; }

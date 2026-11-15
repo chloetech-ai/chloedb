@@ -51,6 +51,36 @@ export function derive(t) {
     d1, d7, g1: base(d1), g7: base(d7), worst: answering[0] || null, down: stale.length - answering.length, staleList: stale };
 }
 
+/**
+ * A table's bytes on every copy: as each copy said them, where a
+ * coordinator asked them (`copies_bytes`: a replica's segments need not be
+ * its primary's), else one copy's times the copies a shard has
+ * (`measured` false). `missing`: copies that did not say, left out.
+ */
+export function onCopies(t, copies) {
+  if (t.copies_bytes != null) return { bytes: t.copies_bytes, measured: true, copies: t.copies_measured ?? null, missing: t.copies_missing || 0 };
+  return t.bytes == null ? null : { bytes: t.bytes * copies, measured: false, copies: null, missing: 0 };
+}
+
+/**
+ * Every table's figures added up: the tables that answered, their rows,
+ * segments and bytes on one copy, and on all copies ([`onCopies`]), with
+ * the tables a copy did not answer for, and the largest table on all copies.
+ */
+export function storageTotals(rows, copies) {
+  const ok = rows.filter((t) => !t.error && !t.legacy);
+  const sum = (f) => ok.reduce((a, t) => a + (f(t) || 0), 0);
+  const all = ok.map((t) => ({ t, c: onCopies(t, copies) }));
+  const largest = all.reduce((b, x) => (x.c?.bytes || 0) > (b?.c?.bytes || 0) ? x : b, null);
+  return {
+    tables: ok.length, failed: rows.length - ok.length,
+    docs: sum((t) => t.docs), segments: sum((t) => t.segments), bytes: sum((t) => t.bytes),
+    all: sum((t) => onCopies(t, copies)?.bytes), measured: all.length > 0 && all.every((x) => x.c?.measured),
+    incomplete: all.filter((x) => x.c?.missing > 0).length, copies: Math.max(0, ...all.map((x) => x.c?.copies || 0)),
+    largest: largest && largest.c?.bytes ? { table: largest.t.table, bytes: largest.c.bytes } : null,
+  };
+}
+
 /** The window the rates are over, in words: "last 4 min", or null before the server measured one. */
 const windowWords = (s) => s == null ? null : s < 90 ? `last ${Math.round(s)} s` : `last ${Math.round(s / 60)} min`;
 
@@ -64,21 +94,24 @@ function render(page, r) {
   const again = h("button", { class: "btn sm", onclick: () => load() }, icon("refresh"), "Refresh");
   const growthSeg = seg([["d1", "24 h"], ["d7", "7 d"]], growth, (v) => { growth = v; store.set("tables.growth", v); draw(); }, { "aria-label": "Growth over", title: "Growth against the size a day or a week ago" });
   const sub = h("p", {}, "Which table is growing, which shard is skewed or hot, which copy is stale.");
+  const totalsRow = h("div", { class: "grid g4 dt-totals", "aria-label": "All tables" });
   const cards = h("div", { class: "dt-answers" });
   const list = h("div");
   const shardsBox = h("div"), copiesBox = h("div");
   const shardsCard = card({ title: "Shards", sub: "largest first, so the outliers lead", body: shardsBox, cls: "dt-shards" });
   const copiesCard = card({ title: "Copies", sub: "replication lag of every copy, problems listed", body: copiesBox, cls: "dt-copies" });
   const rateChip = h("span", { class: "ix-chip est" });
-  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), rateChip) });
+  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary; on a cluster, each copy says its own bytes" }, "sizes exact"), rateChip) });
   const rateNote = h("span");
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Tables and storage"), sub),
       h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "growth over"), growthSeg, again)),
-    cards, listCard,
+    totalsRow, cards, listCard,
     h("div", { class: "dt-pair" }, shardsCard, copiesCard),
     card({ title: "What the numbers are", body: h("p", { class: "small dim", style: { margin: 0 } },
-      "Rows and bytes: exact, from every segment of each shard's primary; one copy's bytes, and all copies' as that times the copies a shard has. ",
+      "Rows and bytes: exact, from every segment of each shard's primary (one copy), in memory and on disk. ",
+      "All copies: on a cluster, the bytes each copy of each shard holds, as the copy says them (a copy that does not answer is left out, and the page says so); on one server with replicas, one copy's bytes times the copies a shard has (marked ≈). ",
+      "All tables: the sum of the tables listed, the apps' included. ",
       "Growth: against the size the server kept a day or a week ago (it keeps one a table each hour in its log store, so a server without --log-store shows none). ",
       rateNote,
       "Skew: the largest shard against the mean of all shards. ",
@@ -110,11 +143,12 @@ function render(page, r) {
 
   function draw() {
     hideTip();
-    if (err) { clear(cards, failure(err, "The table sizes")); clear(list); listCard.hidden = true; return; }
-    if (!rows) { clear(cards, empty("layers", "Reading the sizes of every table…")); listCard.hidden = true; return; }
+    if (err) { clear(totalsRow); clear(cards, failure(err, "The table sizes")); clear(list); listCard.hidden = true; return; }
+    if (!rows) { clear(totalsRow); clear(cards, empty("layers", "Reading the sizes of every table…")); listCard.hidden = true; return; }
     listCard.hidden = false;
     drawHead();
     if (legacy) {
+      clear(totalsRow);
       stamp.textContent = "";
       clear(cards, h("div", { class: "banner dt-done", style: { gridColumn: "1 / -1" } }, icon("info", "lg"), h("div", { class: "grow" }, ...(can("admin") ? [h("b", {}, "This server does not list the sizes of its tables"), h("div", { class: "small muted" }, "It answers GET /v1/index/tables from a newer version on. Open a table below for its fields, bytes, freshness and reads.")]
           : [h("b", {}, "The sizes of the tables are for an admin key"), h("div", { class: "small muted" }, "This key sees the tables below. Open one for its fields and rows.")]))));
@@ -128,9 +162,9 @@ function render(page, r) {
     rateChip.textContent = ww ? `rates: ${ww}` : "rates: not measured yet";
     rateChip.title = ww ? `Writes and reads per minute over the ${ww}: each table's counts now against the server's look of then (it looks every ${lookEvery} s by itself, and keeps 5 minutes of looks)` : `The server measures rates against an earlier look of its own: it looks every ${lookEvery} s, so the first rates come within a minute or so of it starting`;
     clear(rateNote, `Writes and reads per minute: ${ww ? `over the ${ww}` : "not measured yet"}, each table's counts now against the server's look of then (it looks every ${lookEvery} s by itself and measures over up to 5 minutes; a server that restarted in the window gives none until its next look). Writes are each shard's primary's; reads are documents read, by every copy, added up over the shards. `);
-    if (!rows.length) { clear(cards, empty("table", "No tables yet", "Create one in Schema, or load a file in Import and export.")); clear(list); return; }
+    if (!rows.length) { clear(totalsRow); clear(cards, empty("table", "No tables yet", "Create one in Schema, or load a file in Import and export.")); clear(list); return; }
     if (!pick || !rows.some((t) => t.table === pick)) pick = worstTable();
-    drawCards(); drawList(); drawShards(); drawCopies();
+    drawTotals(); drawCards(); drawList(); drawShards(); drawCopies();
   }
 
   function drawHead() {
@@ -153,6 +187,29 @@ function render(page, r) {
   const gb = (t) => growth === "d7" ? t.d7 : t.d1;
   const worstTable = () => [...rows].sort((a, b) => (b.staleList.length - a.staleList.length) || ((material(b) ? b.skew || 0 : 0) - (material(a) ? a.skew || 0 : 0)))[0]?.table;
   const open = (t, extra = {}) => "#/inspector?" + new URLSearchParams({ table: t, ...extra });
+
+  // ------------------------------------------------------------- all tables
+  /** Whether a shard has more than one copy: then one copy's bytes are not all of them. */
+  const manyCopies = () => reachOf().copies > 1 || rows.some((t) => (t.copies_measured || 0) + (t.copies_missing || 0) > (t.shards?.length || 1));
+  function drawTotals() {
+    const r = reachOf();
+    const tot = storageTotals(rows, r.copies);
+    const many = manyCopies();
+    const tile = (label, ic, val, sub, title, href) => h(href ? "a" : "div", { class: "card kpi dt-total", href, title: title || "" },
+      h("div", { class: "lbl" }, icon(ic), label), h("div", { class: "val" }, val), h("div", { class: "delta" }, sub || " "));
+    const short = tot.incomplete ? `${fmt.plural(tot.incomplete, "table")} short of a copy that does not answer` : null;
+    const allSub = !tot.measured ? `≈ one copy × ${r.copies} copies a shard` : short || `as each of ${fmt.n(tot.copies || r.total)} copies says it`;
+    const failedSub = tot.failed ? ` · ${fmt.n(tot.failed)} did not answer` : "";
+    clear(totalsRow,
+      many ? tile("All tables, all copies", "disk", fmt.bytes(tot.all), allSub,
+        tot.measured ? "The bytes each copy of each shard holds, as the copy says them, added up over every table" : "One copy's bytes times the copies a shard has: this server does not ask its replicas") : null,
+      tile(many ? "All tables, one copy" : "All tables, on disk", "layers", fmt.bytes(tot.bytes), many ? `each shard's primary · ${fmt.n(tot.segments)} segments` : "in memory and on disk",
+        "Every segment of each shard's primary, in memory and on disk, added up over every table"),
+      tile("Rows", "table", fmt.si(tot.docs), `${fmt.plural(tot.tables, "table")}${failedSub}`, "Live rows of every table, the apps' included"),
+      tot.largest ? tile("Largest table", "layers", h("span", { class: "mono dt-total-name" }, tot.largest.table),
+        `${fmt.bytes(tot.largest.bytes)}${many ? " on all copies" : ""} · ${fmt.pct(tot.all ? tot.largest.bytes / (many ? tot.all : tot.bytes) : 0, 0)} of the total`, `Open ${tot.largest.table}'s fields, bytes and reads`, open(tot.largest.table)) : null,
+      !many ? tile("Segments", "layers", fmt.n(tot.segments), "every table's, in memory and on disk") : null);
+  }
 
   // ------------------------------------------------------------- the four answers
   function drawCards() {
@@ -212,15 +269,21 @@ function render(page, r) {
     const downAll = downCopies();
     const saidAbove = (x) => downAll.some((d) => d.copy === x.copy || d.url === x.copy || d.copy === name(x.copy));
     const note = (t) => { const sh = tableOf(t.table)?.short; return [sh?.retain && `keeps ${sh.retain}`, sh?.shard_by && `shard by ${sh.shard_by}`, sh?.expire_by && `expires by ${sh.expire_by}`].filter(Boolean).join(" · "); };
+    const many = manyCopies();
     const cols = [
-      { key: "table", label: "Table", render: (t) => h("div", {}, h("a", { class: "wl-link", href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
-      { key: "docs", label: "Rows", num: true, render: (t) => fmt.si(t.docs) },
-      { key: "bytes", label: "On disk, one copy", short: "On disk", num: true, render: (t) => h("div", {}, fmt.bytes(t.bytes), copies > 1 ? h("div", { class: "tiny muted" }, `${fmt.bytes(t.bytes * copies)} all copies`) : null) },
+      { key: "table", label: "Table", total: (x) => h("b", {}, `All ${fmt.plural(x.tables, "table")}`), render: (t) => h("div", {}, h("a", { class: "wl-link", href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
+      { key: "docs", label: "Rows", num: true, total: (x) => fmt.si(x.docs), render: (t) => fmt.si(t.docs) },
+      { key: "bytes", label: many ? "On disk, one copy" : "On disk", short: many ? "One copy" : "On disk", num: true, title: many ? "Every segment of each shard's primary" : null, total: (x) => fmt.bytes(x.bytes), render: (t) => fmt.bytes(t.bytes) },
+      ...(many ? [{ key: "all", label: "On disk, all copies", short: "All copies", num: true, sort: (t) => onCopies(t, copies)?.bytes ?? -Infinity,
+        title: "The bytes every copy of the table's shards holds, as each copy says them (≈: one copy's times the copies a shard has)",
+        total: (x) => h("span", { title: x.incomplete ? `${fmt.plural(x.incomplete, "table")} short of a copy that does not answer` : "" }, `${x.measured ? "" : "≈ "}${fmt.bytes(x.all)}`, x.incomplete ? h("span", { class: "tiny muted" }, " + ?") : null),
+        render: (t) => { const c = onCopies(t, copies); return c == null ? h("span", { class: "muted" }, "–") : h("div", { title: c.measured ? `${c.copies ?? "every"} copies said their bytes` : `${fmt.bytes(t.bytes)} times ${copies} copies` }, `${c.measured ? "" : "≈ "}${fmt.bytes(c.bytes)}`,
+          c.missing ? h("div", { class: "tiny muted" }, `${fmt.plural(c.missing, "copy", "copies")} not answering, left out`) : null); } }] : []),
       { key: "g", label: growth === "d7" ? "Δ 7 d" : "Δ 24 h", num: true, sort: (t) => g(t) ?? -Infinity, render: (t) => g(t) == null ? h("span", { class: "muted", title: "No size kept that long ago" }, "–") : h("span", { class: "dt-delta" + (g(t) === max && max > 0.01 ? " top" : ""), title: `${gb(t) >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(gb(t)))} on one copy` }, pctText(g(t))) },
       { key: "g7", label: growth === "d7" ? "Δ 24 h" : "Δ 7 d", num: true, sort: (t) => (growth === "d7" ? t.g1 : t.g7) ?? -Infinity, render: (t) => h("span", { class: "dim" }, pctText(growth === "d7" ? t.g1 : t.g7)) },
-      { key: "writes_per_min", label: "Writes/min", title: `Documents written per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.writes_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.writes_per_min) },
-      { key: "reads_per_min", label: "Reads/min", title: `Documents read per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.reads_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.reads_per_min) },
-      { key: "segments", label: "Segments", num: true, render: (t) => fmt.n(t.segments) },
+      { key: "writes_per_min", label: "Writes/min", total: (x) => x.writes == null ? "–" : fmt.si(x.writes), title: `Documents written per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.writes_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.writes_per_min) },
+      { key: "reads_per_min", label: "Reads/min", total: (x) => x.reads == null ? "–" : fmt.si(x.reads), title: `Documents read per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.reads_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.reads_per_min) },
+      { key: "segments", label: "Segments", num: true, total: (x) => fmt.n(x.segments), render: (t) => fmt.n(t.segments) },
       { key: "skew", label: "Largest shard", num: true, title: "The largest shard's rows against the mean of the shards", render: (t) => t.skew == null || (t.shards?.length || 0) < 2 ? h("span", { class: "muted" }, "–") : h("span", { class: t.skew >= 1.25 && material(t) ? "dt-flag" : "", title: `shard ${t.skewShard}${material(t) ? "" : ` · under ${SKEW_ROWS} rows a shard: not counted as skewed`}` }, times(t.skew), h("span", { class: "tiny muted" }, ` s${t.skewShard}`)) },
       { key: "lag", label: "Worst copy lag", num: true, title: "The copy furthest behind its primary, of those that answer; copies that do not answer are counted apart", sort: (t) => t.worst ? t.worst.behind_s ?? 0 : -1, render: (t) => h("span", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } },
         t.worst ? h("span", { class: "dt-sc " + lagLevel(t.worst), title: copyTitle(t.worst.copy) }, `${name(t.worst.copy)} · ${lagText(t.worst)}`) : h("span", { class: "muted" }, "under 1 s"),
@@ -232,15 +295,22 @@ function render(page, r) {
       down.length ? [h("b", {}, `${down.map((d) => d.copy).join(", ")} ${down.length === 1 ? "does" : "do"} not answer`),
         ` · every table's copy on ${down.length === 1 ? "it" : "them"} is out of date until ${down.length === 1 ? "it is" : "they are"} back; the lag below is of the copies that answer.`] : null,
       trouble.map((x) => h("div", {}, h("b", {}, `Shard ${x.shard} ${x.words}`), x.why ? ` · ${x.why}.` : "", ` ${!x.reads && !x.writes ? "Queries and writes" : !x.reads ? "Queries" : "Writes"} of every table that reach it fail until it is back.`)))) : null,
-      tableEl(cols));
+      tableEl(cols, rows.length > 1 ? listTotals(copies) : null));
   }
-  function tableEl(cols) {
+  /** The list's footer: [`storageTotals`] and the writes and reads a minute of every table (none before the server measured any). */
+  function listTotals(copies) {
+    const rate = (k) => rows.some((t) => t[k] != null) ? rows.reduce((a, t) => a + (t[k] || 0), 0) : null;
+    return { ...storageTotals(rows, copies), writes: rate("writes_per_min"), reads: rate("reads_per_min") };
+  }
+  function tableEl(cols, totals) {
     let sortKey = store.get("tables.sort", "g"), desc = true;
     const thead = h("thead"), tbody = h("tbody");
+    // Every table added up, under the rows (the columns that add up).
+    const tfoot = totals ? h("tfoot", {}, h("tr", { class: "dt-sum" }, cols.map((c) => h("td", { class: (c.num ? "num " : "") + "dt-c-" + c.key, "data-label": c.total ? c.short || c.label : null }, c.total ? c.total(totals) : null)))) : null;
     const val = (c, t) => c.sort ? c.sort(t) : t[c.key];
     function head() { clear(thead, h("tr", {}, cols.map((c) => { const th = h("th", { class: (c.num ? "num " : "") + "sort", title: c.title }, c.label, sortKey === c.key ? h("span", { class: "arrow" }, desc ? "▼" : "▲") : null); th.onclick = () => { if (sortKey === c.key) desc = !desc; else { sortKey = c.key; desc = !!c.num; } store.set("tables.sort", sortKey); head(); body(); }; return th; }))); }
     function body() {
-      const c = cols.find((x) => x.key === sortKey) || cols[3];
+      const c = cols.find((x) => x.key === sortKey) || cols.find((x) => x.key === "g");
       const rs = [...rows].sort((a, b) => { const x = val(c, a), y = val(c, b); const r = x == null ? 1 : y == null ? -1 : typeof x === "number" ? x - y : String(x).localeCompare(String(y)); return desc ? -r : r; });
       clear(tbody, rs.map((t) => {
         const tr = h("tr", { class: "click" + (t.table === pick ? " dt-sel" : ""), tabindex: 0, "aria-selected": String(t.table === pick) }, cols.map((c) => h("td", { class: (c.num ? "num " : "") + "dt-c-" + c.key, "data-label": c.short || c.label }, c.render(t))));
@@ -254,7 +324,7 @@ function render(page, r) {
     // On a phone the rows stack and the header goes: sort from a list instead.
     const sortSel = h("select", { class: "select sm", "aria-label": "Sort the tables by", onchange: (e) => { sortKey = e.target.value; desc = !!cols.find((c) => c.key === sortKey)?.num; store.set("tables.sort", sortKey); head(); body(); } },
       cols.map((c) => h("option", { value: c.key, selected: c.key === sortKey }, c.num ? `${c.label}, largest first` : c.label)));
-    return h("div", {}, h("label", { class: "dt-sortsel small muted" }, "sort by", sortSel), h("div", { class: "tbl-wrap" }, h("table", { class: "t dt-tbl" }, thead, tbody)));
+    return h("div", {}, h("label", { class: "dt-sortsel small muted" }, "sort by", sortSel), h("div", { class: "tbl-wrap" }, h("table", { class: "t dt-tbl" }, thead, tbody, tfoot)));
   }
   reselect = (t) => { if (t && rows?.some((x) => x.table === t)) { pick = t; draw(); } };
 

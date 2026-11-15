@@ -47,6 +47,26 @@ assert.deepEqual(flags({ n: 50, nonNull: 0 }), [["bad", "always NULL"]]);
 assert.deepEqual(flags({ n: 100, nonNull: 100, distinct: 1 }), [["warn", "one value"]]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 80 }).map(([, t]) => t), ["10 rows make 80% of the sum"]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 20 }), []);
+// Tables and storage: a table's bytes on every copy are the copies' own
+// where a coordinator asked them, else one copy's times the copies; every
+// table adds up, a table that failed counted apart and a copy that did not
+// answer said.
+{
+  const { onCopies, storageTotals } = await import(new URL("views/tables.js", app));
+  const a = { table: "a", docs: 10, bytes: 1000, segments: 2, copies_bytes: 2900, copies_measured: 3, copies_missing: 0, shards: [{}] };
+  const b = { table: "b", docs: 5, bytes: 4000, segments: 1, copies_bytes: 8000, copies_measured: 2, copies_missing: 1, shards: [{}] };
+  assert.deepEqual(onCopies(a, 3), { bytes: 2900, measured: true, copies: 3, missing: 0 });
+  assert.deepEqual(onCopies({ bytes: 1000 }, 3), { bytes: 3000, measured: false, copies: null, missing: 0 });
+  assert.equal(onCopies({ table: "x" }, 3), null);
+  const t = storageTotals([a, b, { table: "c", error: "shard 1 does not answer" }], 3);
+  assert.deepEqual([t.tables, t.failed, t.docs, t.segments, t.bytes, t.all, t.measured, t.incomplete, t.copies], [2, 1, 15, 3, 5000, 10900, true, 1, 3]);
+  assert.deepEqual(t.largest, { table: "b", bytes: 8000 });
+  // One server: nothing measured beyond its own copy.
+  const one = storageTotals([{ table: "a", docs: 1, bytes: 10, segments: 1 }], 1);
+  assert.deepEqual([one.bytes, one.all, one.measured, one.largest.table], [10, 10, false, "a"]);
+  assert.equal(storageTotals([], 1).largest, null);
+}
+
 // CCB-1: a search over a TEXT made from others (not kept, so it reads
 // NULL) shows the stored fields it is made from, the title first; the
 // saved search's SELECT is the same.
