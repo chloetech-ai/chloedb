@@ -12,6 +12,11 @@
 //! - *Better* needs the interval to exclude 0 in the good direction and the
 //!   difference to exceed the floor; *worse* needs only the interval to
 //!   exclude 0 in the bad direction (so it is harder to win than to lose).
+//!   Neither counts a difference under what can be measured at all
+//!   ([`RESOLUTION`]: a replay's wall time is read every 300 ms).
+//! - A stretch has runs, not cases, and with two a side one version's runs
+//!   all land above the other's one time in six by chance alone: there a
+//!   worse difference must exceed the floor too.
 //! - Success compares the paired pass^k counts (McNemar's exact test on the
 //!   discordant cases). A case that passed under A and fails under B is a
 //!   regression, and any regression rejects B, on train or held out.
@@ -39,6 +44,11 @@ pub const METRICS: [(&str, &str, &str); 6] = [
     ("tokens", "Tokens", "a run"),
     ("cost_usd", "Cost", "$ a run"),
 ];
+
+/// The smallest difference of each metric that is measured at all, by
+/// [`METRICS`]' order: wall time is read every 300 ms, so under a second
+/// it is the clock's, not the agent's.
+pub const RESOLUTION: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 /// The metrics a stretch's change is rejected on when it is worse.
 pub const DECIDES: [&str; 3] = ["interventions", "wall_s", "cost_usd"];
@@ -193,9 +203,9 @@ fn metric_verdict(cases: &[&CaseRuns], i: usize, n: usize, enough: bool) -> Json
     };
     let verdict = if !enough || n < 2 {
         "too_few"
-    } else if lo > 0.0 {
+    } else if lo > 0.0 && d > RESOLUTION[i] {
         "worse"
-    } else if hi < 0.0 && -d > noise.unwrap_or(0.0) {
+    } else if hi < 0.0 && -d > noise.unwrap_or(0.0).max(RESOLUTION[i]) {
         "better"
     } else {
         "noise"
@@ -410,11 +420,12 @@ pub fn stretch(c: &CaseRuns, n: usize, finished: bool, targets: &[Target]) -> Js
                 Some((d, lo, hi)) => {
                     let am = median(&mut a.clone());
                     let noise = spread_of(&c.a, i);
+                    let floor = noise.unwrap_or(0.0).max(RESOLUTION[i]);
                     let verdict = if !enough {
                         "too_few"
-                    } else if lo > 0.0 {
+                    } else if lo > 0.0 && d > floor {
                         "worse"
-                    } else if hi < 0.0 && -d > noise.unwrap_or(0.0) {
+                    } else if hi < 0.0 && -d > floor {
                         "better"
                     } else {
                         "noise"
@@ -647,5 +658,24 @@ mod tests {
         // Slower, though cheaper: a reject.
         let slow = CaseRuns { b: mk(4.0, 90.0, 1000.0, 0.10, &[0.0, 1.0, 2.0]), ..c };
         assert_eq!(stretch(&slow, 3, true, &[])["decision"]["result"], "reject");
+    }
+
+    #[test]
+    fn two_runs_a_side_that_land_apart_by_chance_are_not_worse() {
+        let mk = |walls: &[f64], cost: f64| -> Vec<RunM> { walls.iter().map(|w| RunM { passed: true, diverged: false, m: [0.0, 0.0, 1.0, *w, 30.0, cost] }).collect() };
+        let wall = |s: &Json| s["metrics"].as_array().unwrap().iter().find(|m| m["key"] == "wall_s").unwrap()["verdict"].clone();
+        let t = [Target { metric: "cost_usd".into(), pct: 30.0 }];
+        // 23 ms apart: under what a replay's clock reads.
+        let c = CaseRuns { case: "c1".into(), name: "fix".into(), held_out: false, a: mk(&[0.351, 0.329], 0.0003), b: mk(&[0.358, 0.368], 0.0002) };
+        let s = stretch(&c, 2, true, &t);
+        assert_eq!(wall(&s), "noise", "{s}");
+        assert_eq!((s["decision"]["result"].as_str(), s["targets_met"].as_bool()), (Some("keep"), Some(true)), "{s}");
+        // Both of B's above both of A's, by less than A's own spread.
+        let c = CaseRuns { a: mk(&[150.0, 174.0], 0.4), b: mk(&[180.0, 190.0], 0.2), ..c };
+        assert_eq!(wall(&stretch(&c, 2, true, &t)), "noise");
+        // By more: worse, and a reject.
+        let c = CaseRuns { b: mk(&[230.0, 260.0], 0.2), ..c };
+        let s = stretch(&c, 2, true, &t);
+        assert_eq!((wall(&s), s["decision"]["result"].clone()), (json!("worse"), json!("reject")), "{s}");
     }
 }

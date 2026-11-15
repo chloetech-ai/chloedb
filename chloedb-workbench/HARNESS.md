@@ -350,6 +350,11 @@ Each metric on the results gets:
 - **a verdict**: *better* when the interval excludes 0 in the good
   direction and |Δ| exceeds the noise floor; *worse* when it excludes 0 in
   the bad direction; otherwise *inside the noise*, said in those words.
+  Neither counts a difference under what is measured at all: wall time is
+  read every 300 ms, so under a second is the clock's. A stretch (Optimize
+  this) compares runs, not cases, and with 2 runs a side one version's
+  runs all land above the other's one time in six by chance alone, so
+  there a *worse* difference must exceed the noise floor too.
 
 The **noise floor** comes from the N runs of A on each case: the median of
 the per-case spread of A against A. It is measured on every optimize run,
@@ -1090,9 +1095,13 @@ where it ends.
   there has it; never its local MCP servers). Its memory is a ChloeCtx
   store of its own (`CHLOECTX_HOME` under `rx/`, distiller off, models
   shared), so the user's store is neither read nor written.
-- The user is scripted, never a model: the next prompt when the agent is
-  idle; a permission prompt answered as the stretch answered the same
-  command, else as the user answered it in the last 30 days, else No; a
+- The user is scripted, never a model: the next prompt when the turn
+  before it ended (its Stop, or Claude Code's "Interrupted" after a No,
+  else 20 s with nothing new; an agent at its text prompt between two
+  steps reads as idle, so idle alone is not the end); a permission prompt
+  answered as the stretch answered the same command (a chain as the
+  stretch answered its commands, No if any was No), else as the user
+  answered it in the last 30 days, else No; a
   question answered as the stretch answered the question most like it, else
   by its precedent. Whatever was not in the log is listed and counts as an
   intervention, and the replay is marked diverged.

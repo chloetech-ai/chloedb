@@ -144,6 +144,14 @@ turn() {
       # process group, as a command an agent backgrounds is.
       setsid python3 -m http.server "${1#SERVE }" --bind 127.0.0.1 >/dev/null 2>&1 < /dev/null &
       ;;
+    PAUSE\ *)
+      # PAUSE <file> <text>: a turn that shows Claude Code's text prompt and
+      # no spinner for a while, as it does between two of its steps, then
+      # writes <text> to <file>.
+      local rest="${1#PAUSE }"; local file="${rest%% *}"; local text="${rest#* }"
+      printf '\n%s\n❯ \n%s\n' "────────────────────────────────────────────────────────────" "────────────────────────────────────────────────────────────"
+      sleep 7
+      printf '%s\n' "$text" >> "$file";;
     PERM3\ *|PERM4\ *)
       # PERM3 / PERM4 <text>: Claude Code's permission prompt for the Bash
       # command, in its 3- and 4-option forms, then its Notification; No
@@ -6464,6 +6472,32 @@ fn harness_a_version_runs_its_model_effort_and_instructions_in_replays_and_new_s
     let ax = v["cases"][0]["a"][0].clone();
     assert!(ax["model"].is_null(), "{ax}");
     assert!(!s.data.join("sessions").join(ax["agent"].as_str().unwrap()).join("harness-brief.md").exists());
+}
+
+#[test]
+fn harness_a_replay_ends_when_its_turn_ends_not_when_its_screen_looks_idle() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let repo_s = r.to_string_lossy().to_string();
+    // A turn that sits at the text prompt, no spinner, for 7 s before it
+    // writes: Workbench reads the agent as idle meanwhile.
+    let a = s.spawn(json!({ "repo": r, "task": "PAUSE notes.txt late", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    ws_read_until(&s, &id, "DONE: PAUSE notes.txt late", &[]);
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q late notes.txt" }]);
+    let (status, c) = s.post("/api/harness/cases", json!({ "agent": id, "from": 1, "to": 1, "checks": checks }));
+    assert_eq!(status, 201, "{c}");
+    let cur = s.get(&format!("/api/harness/versions?{}", harness_q(&r))).1["current"]["id"].as_str().unwrap().to_string();
+    let started = start_run(&s, json!({ "repo": repo_s, "b": cur, "n": 2 }));
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    // Each replay waited for the turn's Stop: the line is there, and the
+    // turn's 7 s are in its wall time.
+    for x in v["cases"][0]["a"].as_array().unwrap().iter().chain(v["cases"][0]["b"].as_array().unwrap()) {
+        assert_eq!(x["state"], "passed", "{x}");
+        assert!(x["wall_s"].as_f64().unwrap() >= 7.0, "{x}");
+    }
 }
 
 // Sam's findings: a loop of runs, Run it N times in a chosen checkout with

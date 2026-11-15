@@ -86,6 +86,10 @@ const MAX_LIMIT_MS: i64 = 60 * 60_000;
 const STUCK_MS: i64 = 120_000;
 /// How long a turn has been idle before the next prompt is played.
 const IDLE_MS: i64 = 1_500;
+/// A turn ends with a Stop or, after a No or an Esc (Claude Code runs no
+/// more hooks then), with "Interrupted" on its screen; one that shows
+/// neither is over when nothing happened for this long.
+const QUIET_MS: i64 = 20_000;
 /// A check's time limit.
 const CHECK_LIMIT: Duration = Duration::from_secs(300);
 /// How far back a precedent for a permission prompt is looked for.
@@ -674,6 +678,19 @@ impl Script {
         }
         self.perms.iter().rev().find(|p| p.0 == key).map(|p| p.1.clone())
     }
+
+    /// The answer to a permission prompt for `key` (a Bash command's
+    /// `cmd`): the stretch's to the same key, else, as a chain asks once
+    /// for all its commands, its answers to the chain's commands (`grep -n
+    /// x f; ./check.sh` was asked as ./check.sh), No if any was No.
+    fn perm_of(&mut self, key: &str, cmd: Option<&str>) -> Option<String> {
+        if let Some(k) = self.perm(key) {
+            return Some(k);
+        }
+        let keys: Vec<String> = cmd.map(super::perms::parts).unwrap_or_default().iter().filter_map(|p| super::storm_key(p)).map(|k| format!("Bash: {k}")).filter(|k| k != key).collect();
+        let found: Vec<String> = keys.iter().filter_map(|k| self.perm(k)).collect();
+        found.iter().find(|k| *k == "no").or(found.first()).cloned()
+    }
 }
 
 fn words(s: &str) -> HashSet<String> {
@@ -739,7 +756,7 @@ fn answer_one(sup: &Arc<Supervisor>, lv: &Arc<Levels>, c: &Case, script: &mut Sc
             return;
         }
         let key = evals::perm_key(&d);
-        let (kind, by) = match script.perm(&key) {
+        let (kind, by) = match script.perm_of(&key, d["command"].as_str()) {
             Some(k) => (k, "the log"),
             None => match precedent(sup, &c.repo, &key) {
                 Some(k) => (k, "precedent"),
@@ -974,8 +991,15 @@ fn drive(sup: &Arc<Supervisor>, lv: &Arc<Levels>, run: &Run, c: &Case, mut scrip
                 answer_one(sup, lv, c, &mut script, q, &mut counts);
             }
         }
-        let turns = sup.all_events(agent).map(|e| e.iter().filter(|e| e.kind == "UserPromptSubmit").count()).unwrap_or(0);
-        if a.state == "idle" && now - a.state_since >= IDLE_MS && turns >= sent {
+        // The turn of the last prompt played is over: a Stop after its
+        // prompt arrived (idle alone is not enough: an agent that has just
+        // been given a prompt reads as idle until it starts, and a prompt
+        // played then joins the turn before it), or a long quiet.
+        let evs = sup.all_events(agent).unwrap_or_default();
+        let submits: Vec<i64> = evs.iter().filter(|e| e.kind == "UserPromptSubmit").map(|e| e.ts).collect();
+        let ended = |e: &crate::db::Event| e.kind == "Stop" || (e.kind == "screen" && e.summary.as_deref().is_some_and(|s| s.starts_with("interrupted")));
+        let over = submits.get(sent.saturating_sub(1)).is_some_and(|t| evs.iter().any(|e| e.ts >= *t && ended(e)) || evs.last().is_some_and(|l| now - l.ts >= QUIET_MS));
+        if a.state == "idle" && now - a.state_since >= IDLE_MS && submits.len() >= sent && over {
             if sent < script.prompts.len() {
                 if let Err(e) = sup.input(agent, &script.prompts[sent], true, None) {
                     end = Err(format!("cannot play prompt {}: {}", sent + 1, e.message));
@@ -1999,6 +2023,18 @@ mod tests {
         assert!(alike("Should totals round half up?", "Do totals round half up or down?") >= 0.35);
         assert!(alike("Which database?", "Should totals round half up?") < 0.35);
         assert_eq!(claude_slug(Path::new("/Users/x/.local/share/w b/r1")), "-Users-x--local-share-w-b-r1");
+    }
+
+    #[test]
+    fn a_chain_is_answered_as_the_stretch_answered_its_commands() {
+        let perm = |k: &str, a: &str| (k.to_string(), a.to_string(), false);
+        let mut s = Script { prompts: vec![], perms: vec![perm("Bash: ./scripts/check.sh", "yes"), perm("Bash: rm -rf", "no")], answers: vec![] };
+        assert_eq!(s.perm_of("Bash: ./scripts/check.sh", None).as_deref(), Some("yes"));
+        // Asked as its first command, which the stretch never ran alone.
+        assert_eq!(s.perm_of("Bash: grep -n", Some("grep -n total src/a.py; ./scripts/check.sh")).as_deref(), Some("yes"));
+        assert_eq!(s.perm_of("Bash: ./scripts/check.sh", Some("./scripts/check.sh && rm -rf out")).as_deref(), Some("yes"), "its own key first");
+        assert_eq!(s.perm_of("Bash: ls", Some("ls && rm -rf out && ./scripts/check.sh")).as_deref(), Some("no"), "a No in the chain wins");
+        assert_eq!(s.perm_of("Bash: grep -n", Some("grep -n x a; cat b")), None);
     }
 
     #[test]
