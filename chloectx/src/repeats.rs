@@ -277,6 +277,17 @@ fn quoted_from(quote: &str, request: &str) -> bool {
     qt.iter().filter(|t| rt.contains(*t)).count() * 5 >= qt.len() * 4
 }
 
+/// The id of `said` a mark names: as listed, or in another style, as a
+/// model copies one from the request ("cmsg_B3" for "B3": the one listed id
+/// it ends with, after a separator).
+fn listed_id(id: &str, said: &[(String, String)]) -> Option<String> {
+    if said.iter().any(|(x, _)| x == id) {
+        return Some(id.to_string());
+    }
+    let ends: Vec<&String> = said.iter().map(|(x, _)| x).filter(|x| id.len() > x.len() && id.ends_with(x.as_str()) && !id[..id.len() - x.len()].ends_with(|c: char| c.is_alphanumeric())).collect();
+    (ends.len() == 1).then(|| ends[0].clone())
+}
+
 /// The marks of a [`check`] reply that name ids in `said` and quote the
 /// request, and those dropped for naming none or quoting something else.
 pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec<Again>, Vec<Again>) {
@@ -285,7 +296,7 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
     for m in v["said_again"].as_array().into_iter().flatten() {
         let ids: Vec<String> = crate::distill::strings(m, "ids", 8, 80).into_iter().map(|i| i.trim_matches(|c| c == '[' || c == ']').trim().to_string()).collect();
         let a = Again {
-            ids: ids.iter().filter(|i| said.iter().any(|(id, _)| id == *i)).cloned().collect(),
+            ids: ids.iter().filter_map(|i| listed_id(i, said)).collect(),
             quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
             rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
         };
@@ -620,11 +631,13 @@ mod tests {
             {"ids": ["a:1"], "quote": "why is it still reading the json file", "rule": "Read the app from its SQL, not the JSON file."},
             {"ids": ["a:2"], "quote": "Use tabs", "rule": "Indent with tabs."},
             {"ids": ["zz:9"], "quote": "build it from the SQL", "rule": "Build it from the SQL."},
-            {"ids": ["a:1"], "quote": "reading the file JSON still", "rule": "Read it from SQL."}
+            {"ids": ["a:1"], "quote": "reading the file JSON still", "rule": "Read it from SQL."},
+            {"ids": ["cmsg_a:1", "xa:2"], "quote": "build it from the SQL", "rule": "Build from SQL."}
         ]});
         let (kept, dropped) = parse_check(&format!("Here: {reply}"), request, &said);
-        assert_eq!(kept.iter().map(|a| a.rule.as_str()).collect::<Vec<_>>(), ["Build the app from its SQL.", "Read the app from its SQL, not the JSON file.", "Read it from SQL."], "as written, in other case and spacing, or its words in other order");
+        assert_eq!(kept.iter().map(|a| a.rule.as_str()).collect::<Vec<_>>(), ["Build the app from its SQL.", "Read the app from its SQL, not the JSON file.", "Read it from SQL.", "Build from SQL."], "as written, in other case and spacing, or its words in other order");
         assert_eq!(kept[0].ids, ["a:1"], "an id it was not shown goes");
+        assert_eq!(kept[3].ids, ["a:1"], "an id in another style is the one it ends with, after a separator");
         assert_eq!(dropped.len(), 2, "copied from what it was shown, or naming nothing it was shown: {dropped:?}");
         assert_eq!(parse_check("not json", request, &said), (vec![], vec![]));
     }
