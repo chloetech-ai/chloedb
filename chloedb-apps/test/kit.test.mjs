@@ -122,7 +122,8 @@ test('a front page is never walled for what a visitor may not read, and a part w
 
 test('a screen\'s expressions read the signed-in person as me, and app.me() there carries the person\'s fields (it is a promise)', () => {
   assert.match(screenSrc, /const scope = \(extra\) => \(\{[^\n]*app: appS, me,/, 'me is in every expression\'s scope');
-  assert.match(screenSrc, /k === 'me' \? \(\) => \(meAsked \? Object\.assign\(Promise\.resolve\(me\), me \|\| \{\}\) : meOf\(\)\)/, 'app.me().name reads right once the person is known, and .then still works');
+  assert.match(screenSrc, /const appS = Object\.freeze\(\{ \.\.\.app, me: \(\) => \(meAsked \? Object\.assign\(Promise\.resolve\(me\), me \|\| \{\}\) : meOf\(\)\) \}\)/, 'app.me().name reads right once the person is known, and .then still works (app is frozen: a copy, never a Proxy)');
+  assert.doesNotMatch(screenSrc, /new Proxy\(app\b/, 'a Proxy over the frozen app breaks every read of it');
   assert.match(screenSrc, /me = await mine; meAsked = !preview;/, 'every load asks who is signed in, beside the data');
   const forge = readFileSync(new URL('../engine/forge.mjs', import.meta.url), 'utf8');
   assert.match(forge, /me \(the signed-in person \{id, name, email, role\}, or null/, 'the screen doc names me');

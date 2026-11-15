@@ -160,7 +160,8 @@ window.__sa_numbers = (() => {
     let me = null;
     let meAsked = false;
     const meOf = () => Promise.resolve(app.me ? app.me() : null).catch(() => null);
-    const appS = new Proxy(app, { get: (t, k) => (k === 'me' ? () => (meAsked ? Object.assign(Promise.resolve(me), me || {}) : meOf()) : t[k]) });
+    // (app is frozen, so a Proxy may not answer for it: a frozen copy instead)
+    const appS = Object.freeze({ ...app, me: () => (meAsked ? Object.assign(Promise.resolve(me), me || {}) : meOf()) });
     let drawing = false;
     let refused = false;
     let gated = false;
