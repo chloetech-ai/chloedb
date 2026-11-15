@@ -22,8 +22,10 @@
 //!   searched across a cluster.
 
 // The futures of a query through a coordinator nest deep enough (a
-// shard call in a query in a SQL statement in an OTLP export) that
-// proving them Send passes the default limit of 128.
+// shard call in a query in a SQL statement in an OTLP export), and the
+// request layers around a gRPC call (its scope, deadline, routing, audit
+// note, caller, follow and trace task-locals) deep enough, that proving
+// them Send passes the default limit of 128.
 #![recursion_limit = "256"]
 
 pub mod agent;
