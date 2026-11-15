@@ -1123,7 +1123,14 @@ it is the scorecard above (too few under 6 complete cases); one case is
 scored over its runs (`score::stretch`: a bootstrap over each side's runs,
 Fisher's exact test on the pass counts).
 
-**Optimize this** (`kind: optimize`) on one stretch: it makes the case
+**Optimize this** (`kind: optimize`) on one stretch. *Not offered by the
+pages for now* (`OPTIMIZE_THIS` in `ui/goals/harness/parts.js`): on a real
+session it found little that Fix the harness does not list from the logs
+for free, at several dollars a run, so it is being rebuilt to start from
+the corrections you make (Hotspots' steers, correcting prompts, refused
+edits) and prove a fix for each on a replay of that turn. The engine and
+`POST /api/harness/runs` with `kind: optimize` stay, tested, for that. It
+makes the case
 with the checks and name on its page,
 replays the current version N times, then tries one change at a time on
 the best so far, each a version of its own (`tried`; the one kept is a

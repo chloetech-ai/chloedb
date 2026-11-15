@@ -5,7 +5,7 @@
 // tests, its price shown first and a widening confirmed by name; and the
 // runs so far, each opening its scorecard.
 import { h, useStyle, page, label, btn, icon } from "/levels/common.js";
-import { tabs, fmtWhen, rich, repoQ, repoName, toast, failed, loading, seg, confirmWidening } from "./parts.js";
+import { tabs, fmtWhen, rich, repoQ, repoName, toast, failed, loading, seg, confirmWidening, OPTIMIZE_THIS } from "./parts.js";
 
 const enc = encodeURIComponent;
 const STATE_WORDS = { queued: "queued", running: "playing", needs_you: "needs you", done: "done", stopped: "stopped", failed: "failed" };
@@ -97,7 +97,7 @@ function caseRow(ctx, S, c, reload) {
         : h("span", { class: "hx-mut hxe-small" }, "not replayed yet"),
       h("span", { class: "sp" }),
       seg([["train", "Train"], ["held_out", "Held out"]], c.set, (k) => setOf(ctx, c.id, k, reload), { label: `${c.name}: set` }),
-      c.agent ? btn("Optimize", { sm: true, href: `#/harness/evals/new/${enc(c.agent)}?from=${c.from}&to=${c.to}&optimize=1` }) : null,
+      c.agent && OPTIMIZE_THIS ? btn("Optimize", { sm: true, href: `#/harness/evals/new/${enc(c.agent)}?from=${c.from}&to=${c.to}&optimize=1` }) : null,
       btn(S.sure === c.id ? "Delete, sure?" : "Delete", { sm: true, ghost: S.sure !== c.id, danger: S.sure === c.id, onclick: () => del(ctx, S, c.id, reload) })));
 }
 

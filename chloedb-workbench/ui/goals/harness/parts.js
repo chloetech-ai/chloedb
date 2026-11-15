@@ -2,6 +2,11 @@
 // shared pieces of /levels/common.js and the theme's tokens only.
 import { h, useStyle, icon, toMs } from "/levels/common.js";
 
+/** Whether the pages offer Optimize this (HARNESS.md, "Optimize this"):
+ * off while it is rebuilt around the corrections you make, its engine
+ * and API kept (and tested) for that. */
+export const OPTIMIZE_THIS = false;
+
 /** The goal's tabs; `on` is the one shown. */
 export const TABS = [
   ["overview", "Overview", "#/harness"],

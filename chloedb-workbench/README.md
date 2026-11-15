@@ -111,10 +111,9 @@ Every page answers one question, and the goal comes first:
   new agents, and a wider permission is promoted only once you name it.
   Each agent records the version it ran, and a version is rolled back in
   one step. **Tests** makes a stretch of a session into a test, replays
-  two versions against each other on your tests in sandboxes, and
-  **Optimize this** replays a stretch under one change after another until
-  the targets you tick are met, the budget is spent or you say Enough, the
-  price shown first ([HARNESS.md](HARNESS.md)).
+  two versions against each other on your tests in sandboxes
+  ([HARNESS.md](HARNESS.md); Optimize this is off while it is rebuilt
+  around the corrections you make).
 - **Needs you** (`#/needs`, or `.` for the drawer): every question,
   permission prompt, trust prompt and alert that asks you, across
   projects, in one card each. Filter by project, agent and kind; sort by

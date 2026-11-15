@@ -8,7 +8,7 @@
 // harnesses, one change at a time, until every target you tick is met,
 // the budget is spent or you press Enough. The price is shown first.
 import { h, useStyle, page, label, btn, icon } from "/levels/common.js";
-import { tabs, fmtMs, fmtTok, rich, toast, failed, loading, seg, repoName } from "./parts.js";
+import { tabs, fmtMs, fmtTok, rich, toast, failed, loading, seg, repoName, OPTIMIZE_THIS } from "./parts.js";
 
 /** The targets of Optimize this: key, label, what it counts. */
 export const TARGETS = [
@@ -40,7 +40,7 @@ export function render(host, ctx, path) {
   const S = {
     alive: true, agent, tl: null, from: Number(q.get("from")) || 1, to: Number(q.get("to")) || 0, pick: "from",
     prop: null, propErr: null, on: {}, name: "", set: null, extra: "", busy: false,
-    opt: { open: q.get("optimize") === "1", targets: Object.fromEntries(TARGETS.map(([k]) => [k, { on: k === "interventions", pct: 30 }])), n: 3, rounds: 6, cap: 8, est: null, estErr: null },
+    opt: { open: OPTIMIZE_THIS && q.get("optimize") === "1", targets: Object.fromEntries(TARGETS.map(([k]) => [k, { on: k === "interventions", pct: 30 }])), n: 3, rounds: 6, cap: 8, est: null, estErr: null },
     seq: 0,
   };
   host.replaceChildren(loading("Reading the session's turns…"));
@@ -257,7 +257,7 @@ function draw(host, ctx, S) {
         h("div", {}, h("span", { class: "hxe-fl" }, "Set"), seg([["train", "Train"], ["held_out", "Held out"]], S.set, (k) => { S.set = k; draw(host, ctx, S); }, { label: "Set" })),
         h("p", { class: "hxe-small hx-mut" }, "One case in three is held out, by session, so a change is judged on sessions it was not made from.")),
       h("div", { class: "hx-acts" }, btn(S.busy ? "Keeping…" : "Make this a test", { primary: !S.opt.open, disabled: !ready || S.busy, onclick: () => makeTest(host, ctx, S) }),
-        S.opt.open ? null : btn("Optimize this…", { disabled: !ready, onclick: () => { S.opt.open = true; draw(host, ctx, S); } }))) : null,
+        S.opt.open || !OPTIMIZE_THIS ? null : btn("Optimize this…", { disabled: !ready, onclick: () => { S.opt.open = true; draw(host, ctx, S); } }))) : null,
     p && S.opt.open ? optimizePanel(host, ctx, S) : null,
     h("div", { class: "hxe-sb" }, label("The sandbox"), h("ul", { class: "hxe-small hx-mut" },
       h("li", {}, "A clone at the stretch's start, with no remote: nothing can be pushed."),
