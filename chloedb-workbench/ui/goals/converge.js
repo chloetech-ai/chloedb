@@ -113,16 +113,23 @@ const CSS = `
   .cv-top .cv-pill { height: 28px; }
   .cv-tabs a { padding: 10px 12px; }
   .cv-strip { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 1px; }
-  .cv-strip > div { flex: 0 0 44%; scroll-snap-align: start; padding: 10px 12px; }
+  .cv-strip > div { flex: 0 0 46%; scroll-snap-align: start; padding: 10px 12px; }
   .cv-strip .v { font-size: var(--fs-md); line-height: var(--lh-md); }
   .cv-strip .d { font-size: var(--fs-xs); line-height: var(--lh-xs); }
   .cv-bar.kinds { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; }
   .cv-bar.kinds > * { flex: 0 0 auto; }
-  .cv-chipf { height: 32px; }
+  .cv-chipf { height: 44px; padding: 0 14px; }
+  .cv-strip > div .cv-label { white-space: normal; }
+  .cv-sheet-h .cv-chip, .cv-sheet-h .cv-meta { font-size: var(--fs-sm); }
+  .cv-sheet-h .cv-chip { min-height: 28px; padding: 4px 8px; }
+  .cv-sheet-h select { height: 36px; font-size: var(--fs-sm); }
+  .cv-x { width: 44px; height: 44px; top: 6px; right: 6px; }
+  .cv-tabs a { min-height: 44px; display: inline-flex; align-items: center; }
+  .cv-seg button { min-height: 44px; }
   .cv-bar:not(.kinds) > .cv-label { display: none; }
   .cv-bar:not(.kinds) { flex-wrap: nowrap; }
   .cv-bar:not(.kinds) .cv-seg button { padding: 0 8px; }
-  .cv-seg button { height: 36px; }
+
   .cv-wrap { margin-left: -16px; margin-right: -16px; padding-left: 16px; scroll-snap-type: x mandatory; scroll-padding-left: 16px; }
   .cv-board, .cv-board.theme { grid-auto-columns: 86vw; }
   .cv-col { scroll-snap-align: start; }
