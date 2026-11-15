@@ -43,6 +43,7 @@ pub mod autopilot;
 pub mod board;
 pub mod budget;
 pub mod catalog;
+pub mod cc;
 pub mod changes;
 pub mod coord;
 pub mod copy;

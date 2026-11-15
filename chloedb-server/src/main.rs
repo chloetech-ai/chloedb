@@ -791,6 +791,27 @@ enum Command {
         #[arg(long)]
         ca: Option<PathBuf>,
     },
+    /// The command center in a terminal: the cluster's map, its health,
+    /// alerts, queries, logs, tables, SQL and timeline, read every two
+    /// seconds, and its changes (a handover, an alert acknowledged or
+    /// silenced, a query cancelled, a SQL write) sent to the routes the web
+    /// command center uses, with the same key. The key comes from
+    /// CHLOEDB_KEY or a prompt that does not echo it, never a flag. Through
+    /// a hub, URL is the connection's (https://hub:7700/c/prod) and the key
+    /// the hub's; `:ctx` lists its other connections. `?` lists the keys.
+    Cc {
+        /// The server's HTTP URL: a coordinator, a single server, or a
+        /// cluster through a hub (https://hub:7700/c/<connection>).
+        #[arg(env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// A CA certificate (PEM) to trust for an https URL, beside the
+        /// system's.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        /// Seconds between reads.
+        #[arg(long, default_value_t = 2.0)]
+        every: f64,
+    },
     /// The API from a shell, for scripts and agents without MCP: one
     /// request, its answer's JSON on stdout, and an exit code by what
     /// happened (0 done, 1 failed, 2 refused for the key, 3 stale: look
@@ -1275,6 +1296,17 @@ async fn run() {
                 Err(e) => fail(&format!("--ca: {e}")),
             };
             if let Err(e) = chloedb_server::mcp::stdio(url, key.as_deref(), ca).await {
+                fail(&e);
+            }
+            return;
+        }
+        Some(Command::Cc { url, ca, every }) => {
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            let every = std::time::Duration::from_secs_f64(every.clamp(0.25, 3600.0));
+            if let Err(e) = chloedb_server::cc::run(url, ca, every).await {
                 fail(&e);
             }
             return;
