@@ -1231,7 +1231,10 @@ fn permission_and_pin_changes(sup: &Supervisor, run: &Run, best: &Version, e: &E
 }
 
 /// Commands Claude Code runs without asking, as it reads them as read
-/// only: never what a prompt was for.
+/// only: never what a prompt was for, unless the shell expands something
+/// in them (asked of Claude Code: in `./check.sh; echo "exit=$?"` with
+/// ./check.sh allowed, `echo "exit=$?"` still needs approval, and in
+/// `python -m x | head -10` with python -m x allowed, head does not).
 const READ_ONLY: [&str; 15] = ["echo", "printf", "cat", "head", "tail", "ls", "pwd", "wc", "grep", "rg", "sort", "uniq", "cut", "true", "which"];
 
 /// What a prompt for `cmd` was about: each of its simple commands the
@@ -1243,7 +1246,8 @@ fn asked_keys(rules: &[super::perms::Rule], cmd: &str, cwd: &str) -> Vec<String>
     let parts = super::perms::parts(cmd);
     let asks = |p: &&String| {
         let first = p.split_whitespace().find(|w| !w.contains('=')).unwrap_or("");
-        !p.starts_with("cd ") && p.as_str() != "cd" && !READ_ONLY.contains(&first) && super::perms::decide(rules, &probe(p)) != "allow"
+        let read_only = READ_ONLY.contains(&first) && !p.contains(['$', '`']);
+        !p.starts_with("cd ") && p.as_str() != "cd" && !read_only && super::perms::decide(rules, &probe(p)) != "allow"
     };
     let mut out: Vec<String> = Vec::new();
     for k in parts.iter().filter(asks).filter_map(|p| super::storm_key(p)) {
@@ -2092,9 +2096,11 @@ mod tests {
         assert_eq!(asked_keys(&rules, "git stash -q && ./scripts/check.sh; git stash pop", "/w"), ["./scripts/check.sh"]);
         assert_eq!(asked_keys(&rules, "cd sub && make lint", "/w"), ["make lint"]);
         assert_eq!(asked_keys(&[], "head -5 a.py; ./scripts/check.sh", "/w"), ["./scripts/check.sh"]);
-        // Seen in a real run: the prompt was for both, so a rule for the
-        // check alone left every one of them asking.
-        assert_eq!(asked_keys(&[], "./scripts/check.sh; echo \"exit=$?\"; python -m shipments.cli export | head -3", "/w"), ["./scripts/check.sh", "python -m shipments.cli"]);
+        // Seen in a real run: the prompt was for all three (head reads
+        // only; the echo expands $?), so a rule for the check alone, or
+        // for the check and the CLI, left every one of them asking.
+        assert_eq!(asked_keys(&[], "./scripts/check.sh; echo \"exit=$?\"; python -m shipments.cli export | head -3", "/w"), ["./scripts/check.sh", "echo", "python -m shipments.cli"]);
+        assert_eq!(asked_keys(&[], "./scripts/check.sh; echo done", "/w"), ["./scripts/check.sh"]);
         let check = vec![rule("Bash(./scripts/check.sh:*)")];
         assert_eq!(asked_keys(&check, "./scripts/check.sh && python -m shipments.cli export", "/w"), ["python -m shipments.cli"]);
     }

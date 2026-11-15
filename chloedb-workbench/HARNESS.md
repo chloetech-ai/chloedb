@@ -1135,8 +1135,10 @@ the best so far, each a version of its own (`tried`; the one kept is a
     (on equal counts, those that do not widen). A prompt counts for each
     of its simple commands the rules its own replay ran with do not allow,
     other than those Claude Code runs without asking (`echo`, `cat`,
-    `head`, ...): `git status; ./check.sh` was asked for `./check.sh`,
-    `./check.sh; echo $?; python -m x run` for both; over every version
+    `head`, ..., unless the shell expands something in them: Claude Code
+    asks for `echo "exit=$?"` in a chain): `git status; ./check.sh` was
+    asked for `./check.sh`, `./check.sh; echo $?; python -m x run` for all
+    three; over every version
     tried, so what one rule left is found. A rule asked about less
     than once a replay is not tried: it cannot be better beyond the noise
     of its replays (aims: interventions, wall time). All at once because
