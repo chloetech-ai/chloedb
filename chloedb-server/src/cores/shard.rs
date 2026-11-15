@@ -60,6 +60,12 @@ pub struct Kept {
     /// carries a digest meanwhile, started again too, as it cannot tell
     /// once its log no longer holds that transaction.
     pub differs: Option<SeqNo>,
+    /// The primary that called it first as one of its shard's first
+    /// copies ([`Kept::first_only`]), until a call finds it caught up
+    /// ([`Replica::joined`]): no member meanwhile, it grants that primary
+    /// its vote, and no other copy, so that a shard whose first primary
+    /// stepped down before its first copies caught up elects it again.
+    pub called_first: Option<String>,
 }
 
 impl Kept {
@@ -83,7 +89,8 @@ impl Kept {
     /// (finding N-E2): it grants a vote only to a candidate that, like it,
     /// has heard from no primary ([`decide`]), and stops counting itself a
     /// member at the first call of a primary, until a call finds it caught
-    /// up ([`Replica::take`], [`Replica::joined`]).
+    /// up ([`Replica::take`], [`Replica::joined`]), granting a vote
+    /// meanwhile to that primary alone ([`Kept::called_first`]).
     pub fn first_only(&self) -> bool {
         self.member && self.role == Some(KeptRole::Replica) && self.follows.is_none() && self.replaced_by.is_none() && self.config.is_none()
     }
@@ -132,6 +139,9 @@ impl Kept {
         if let Some(at) = self.differs {
             j["differs"] = json!({"term": at.term, "seq_no": at.seq});
         }
+        if let Some(p) = &self.called_first {
+            j["called_first"] = json!(p);
+        }
         match &self.role {
             None => {}
             Some(KeptRole::Replica) => j["role"] = json!("replica"),
@@ -178,7 +188,8 @@ impl Kept {
             Json::Null => None,
             d => Some(SeqNo { term: d["term"].as_u64().ok_or("no term of the transaction that differs")?, seq: d["seq_no"].as_u64().ok_or("no number of the transaction that differs")? }),
         };
-        Ok(Kept { id, follows, replaced_by, role, voted, member, config, differs })
+        let called_first = j["called_first"].as_str().map(String::from);
+        Ok(Kept { id, follows, replaced_by, role, voted, member, config, differs, called_first })
     }
 }
 
@@ -209,7 +220,12 @@ pub fn decide(kept: &Kept, term: u64, last: SeqNo, r: &pb::VoteRequest) -> pb::V
     if (r.last_term, r.last_seq) < (last.term, last.seq) {
         return no(format!("it holds transactions up to {} of term {}, past the candidate's last ({} of term {})", last.seq, last.term, r.last_seq, r.last_term));
     }
-    if !kept.member {
+    // A first copy that a primary called and that has not caught up yet
+    // grants that primary its vote, which holds whatever this copy may
+    // have acknowledged before it lost its volume (N-E2): without it, a
+    // shard whose first primary stepped down before its first copies
+    // caught up could elect no primary.
+    if !kept.member && kept.called_first.as_deref() != Some(r.candidate.as_str()) {
         return no("it has not caught up with a primary since it joined its shard, so it grants no votes".into());
     }
     // A candidate that heard from no primary and holds nothing, asking a
@@ -455,7 +471,8 @@ impl Replica {
     /// version and copies) when newer than the one it knows. A first copy
     /// that no primary called yet ([`Kept::first_only`]) stops counting
     /// itself a member: it counts again once a call finds it caught up
-    /// ([`Self::joined`]), as a copy that joined does.
+    /// ([`Self::joined`]), as a copy that joined does, and grants a vote
+    /// meanwhile to that primary alone ([`Kept::called_first`]).
     pub fn take(&self, term: u64, primary: &str, config: (u64, u32), n: &Numbering) -> Result<Take, ApiError> {
         let kept = &self.kept;
         // A term it voted in counts: the primary of an older one lost.
@@ -473,7 +490,9 @@ impl Replica {
             _ => Some(Kept { follows: Some((primary.to_string(), term)), replaced_by: None, role: Some(KeptRole::Replica), ..kept.clone() }),
         };
         if kept.first_only() {
-            next.get_or_insert_with(|| kept.clone()).member = false;
+            let k = next.get_or_insert_with(|| kept.clone());
+            k.member = false;
+            k.called_first = Some(primary.to_string());
         }
         if let Some(k) = next.as_ref().unwrap_or(kept).heard_config(config.0, config.1) {
             next = Some(k);
@@ -514,7 +533,7 @@ impl Replica {
     /// by a primary that has not noticed, and its vote could elect a copy
     /// without the writes it had acknowledged (N-E2).
     pub fn joined(&self, member: bool) -> Option<Kept> {
-        (member && !self.kept.member && self.serves_reads).then(|| Kept { member: true, ..self.kept.clone() })
+        (member && !self.kept.member && self.serves_reads).then(|| Kept { member: true, called_first: None, ..self.kept.clone() })
     }
 
     /// Whether call `r`, which it took ([`Self::take`]), at `n`, follows
@@ -1234,7 +1253,7 @@ impl Primary {
         }
         self.fenced = term;
         tracing::error!(term = mine, replaced_by = term, "a primary of a newer term replaced this one, which takes no more writes and serves no reads");
-        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true, config: self.kept.config, differs: None };
+        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true, config: self.kept.config, differs: None, called_first: None };
         self.changed();
         Some(self.kept.clone())
     }
@@ -1881,6 +1900,7 @@ mod tests {
             member: true,
             config: Some((3, 2)),
             differs: Some(SeqNo { term: 3, seq: 7 }),
+            called_first: Some("b".into()),
         };
         assert_eq!(Kept::from_json(&k.to_json()).unwrap(), k);
         assert_eq!(k.newest(2), 5);
@@ -2114,15 +2134,23 @@ mod tests {
         let Ok(Take::Apply { kept }) = r.take(1, "p", (1, 3), &empty) else { panic!() };
         let kept = kept.expect("what it keeps");
         assert!(!kept.member && !kept.first_only() && kept.follows == Some(("p".into(), 1)));
+        assert_eq!(kept.called_first.as_deref(), Some("p"));
+        assert_eq!(Kept::from_json(&kept.to_json()).unwrap(), kept, "kept across a restart");
         r.took(Some(kept), t0);
         assert!(r.joined(true).is_none(), "not caught up");
         let v = r.vote(&ask(2, "r2", (0, 0), false), &empty, later, sticky).0;
         assert!(!v.granted && v.reason.contains("not caught up"), "{}", v.reason);
+        let v = r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (1, 2), false) }, &empty, later, sticky).0;
+        assert!(!v.granted && v.reason.contains("not caught up"), "a copy that is not the primary that called it: {}", v.reason);
+        // That primary stepped down before this copy caught up, and asks
+        // to be elected again: granted, so that the shard elects a primary.
+        let v = r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "p", (1, 2), false) }, &empty, later, sticky).0;
+        assert!(v.granted, "{}", v.reason);
         // The copy installed, a call finds it caught up: a member again.
         let at = n(1, 100, &[(1, 1)]);
         r.applied(1, false, 100, Ok(Applied::At(SeqNo { term: 1, seq: 100 })), 1).unwrap();
         let kept = r.joined(true).expect("caught up");
-        assert!(kept.member && !kept.first_only());
+        assert!(kept.member && !kept.first_only() && kept.called_first.is_none());
         r.took(Some(kept), t0);
         assert!(r.vote(&behind, &at, later, sticky).0.reason.contains("past the candidate's last"));
         assert!(r.vote(&ask(2, "p", (1, 100), false), &at, later, sticky).0.granted);
