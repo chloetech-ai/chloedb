@@ -307,9 +307,13 @@ export async function drawApp(baseUrl, appId, { v = null, wait = 1500, names = [
         const top = el ? (await el.boundingBox())?.y || 0 : 0;
         if (frame) await frame.evaluate(QUALITY_SRC).catch(() => {});
         const m = frame ? await frame.evaluate(measure, { fold: opts.viewport.height - top, names }).catch((e) => ({ error: e.message })) : null;
+        // Both devices draw at once and share `views`: take the picture first,
+        // then read and write the entry with no wait between, so neither
+        // device's entry replaces the other's.
+        const png = device === 'phone' ? (await page.screenshot({ type: 'png' })).toString('base64') : null;
         const entry = views.get(i) || { tab, slug };
         entry[device] = { m: m && !m.error ? m : null, errors: [...new Set(errors)] };
-        if (device === 'phone') entry.phone.png = (await page.screenshot({ type: 'png' })).toString('base64');
+        if (png) entry[device].png = png;
         views.set(i, entry);
         errors = [];
       }

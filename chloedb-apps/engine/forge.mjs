@@ -1799,8 +1799,9 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 // at once, with the example rows and tests by one more, so a first version
 // takes the time of its plan and its biggest piece rather than of all of it
 // in one answer. Measured on 12 first versions (2026-11-08) it was not
-// faster (36.6 s each against 33.7 s, the plan alone taking 14 s) and cost
-// more, so it is off unless STRATA_APPS_PARALLEL=on.
+// faster (36.6 s each against 33.7 s, the plan alone taking 14 s); since the
+// example rows got their own writer and screens grew, it is the default
+// (2026-11-14), and STRATA_APPS_PARALLEL=off turns it off.
 export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL !== 'off';
 
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
