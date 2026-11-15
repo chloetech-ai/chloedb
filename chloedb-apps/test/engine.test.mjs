@@ -545,6 +545,8 @@ test('a screen pattern expands into blocks, state, data and lets that pass the s
   // the template language
   assert.equal(fill('x{{a|pre: WHERE }}y', { a: '' }), 'xy');
   assert.equal(fill('x{{a|pre: WHERE }}y', { a: 'b = 1' }), 'x WHERE b = 1y');
+  assert.equal(fill('SELECT *{{l|wrap:, ~ AS t}} FROM x', { l: 'CASE 1 END' }), 'SELECT *, CASE 1 END AS t FROM x');
+  assert.equal(fill('SELECT *{{l|wrap:, ~ AS t}} FROM x', {}), 'SELECT * FROM x');
   assert.equal(fill('{{a|json}}.map(k => r[k])', { a: ['p', 'q'] }), '["p","q"].map(k => r[k])');
   assert.deepEqual(fill([1, '{{...a}}', { $when: 'b=2', z: 1 }, { $when: 'b!=2', z: 2 }], { a: [7, 8], b: 2 }), [1, 7, 8, { z: 1 }]);
   assert.deepEqual(fill({ k: { $when: 'm', $value: '{{m}}' } }, {}), {});

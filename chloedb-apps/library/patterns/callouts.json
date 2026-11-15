@@ -68,7 +68,7 @@
  },
  "screen": {
   "data": {
-   "{{key}}": "SELECT *, {{tone}} AS sa_tone{{label|pre:, }}{{label|pre: AS sa_label}} FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 100"
+   "{{key}}": "SELECT *, {{tone}} AS sa_tone{{label|wrap:, ~ AS sa_label}} FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 100"
   },
   "let": {
    "{{key}}_items": "={{key}}.map(r => ({tone: r.sa_tone, label: r.sa_label || null, title: r.{{head}}, chips: ({{chips|json}} || []).map(c => r[c]).filter(x => x != null && x !== ''), join: {{join|json}}, text: {{text|json}} ? r[{{text|json}}] : null, tip: {{tip|json}} ? r[{{tip|json}}] : null}))"

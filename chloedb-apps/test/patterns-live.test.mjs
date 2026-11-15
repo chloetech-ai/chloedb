@@ -42,6 +42,12 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       T('accounts', { name: 'text' }), T('members_of', { person: 'keyword', account: 'keyword', role: 'keyword' }),
       T('services', { name: 'text', price: 'float', length: 'text', kind: 'keyword' }),
       T('ledger', { title: 'text', amount: 'float' }, ['ALLOW ALL ON ledger TO members']),
+      T('weekly', { name: 'text', weekday: 'keyword', start_time: 'keyword', minutes: 'int', leader: 'text', hall: 'text', spaces: 'int' }), T('places', { class: 'keyword', date: 'keyword' }),
+      T('appointments', { starts: 'keyword', ends: 'keyword', staff: 'keyword' }), T('staff_members', { name: 'text' }),
+      T('requests', { name: 'text', email: 'keyword', message: 'text', status: 'keyword', topic: 'keyword' }),
+      T('fixtures', { home: 'keyword', away: 'keyword', hg: 'int', ag: 'int' }),
+      T('bills', { number: 'keyword', issued: 'keyword', client_name: 'text', terms: 'text' }), T('bill_lines', { bill: 'keyword', description: 'text', qty: 'float', price: 'float' }),
+      T('pictures', { file: 'text', caption: 'text', album: 'keyword' }),
     ];
     const have = new Set(await store.tableNames());
     const caps = [];
@@ -53,6 +59,12 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       plan: `CREATE SCREEN plan TITLE 'Week'\nPLAN rota\n  ITEMS jobs  ITEM job  DAY day  PARTS job_parts  OF job  PART material  QTY qty  UNIT unit\n  TITLE 'This week'  PICK 'Pick a job'  TOTALS 'Materials to buy'`,
       report: `CREATE SCREEN report TITLE 'Report'\nREPORT 'Month-end report'\n  SUB '=''As of '' + app.fmt.date(today)'\n  SECTION 'Visits by month' (SELECT month, SUM(visits) AS visits FROM traffic GROUP BY month ORDER BY month) COLUMNS (month 'Month', visits 'Visits' NUMBER) TOTAL (visits) NOTE 'Counted in the month made.'\n  SECTION 'Open tickets by days open' (SELECT band_of(days_between(opened, :today)) AS band, MIN(band_rank(days_between(opened, :today))) AS r, COUNT(*) AS n, SUM(hours) AS hours FROM tickets WHERE status = 'open' GROUP BY band_of(days_between(opened, :today)) ORDER BY r) COLUMNS (band 'Days open', n 'Tickets' NUMBER, hours 'Hours' NUMBER) TOTAL (n, hours)`,
       team: `CREATE SCREEN team TITLE 'Team'\nTEAM members_of\n  THINGS accounts  PERSON person  THING account  ROLE role  ROLES ('lead', 'member', 'client')  LABEL 'Account'`,
+      tt: `CREATE SCREEN tt TITLE 'Timetable'\nTIMETABLE weekly\n  DAY weekday  TIME start_time  MINUTES minutes  NAME name  SUB leader  PLACE hall  SPACES spaces\n  BOOKINGS places  OF class  DATE date  ACTION 'Book'`,
+      sl: `CREATE SCREEN sl TITLE 'Book'\nSLOTS appointments\n  START starts  END ends  OPEN '09:00'  CLOSE '12:00'  STEP 30  LENGTH 30  CLOSED (0)\n  RESOURCE staff  RESOURCES staff_members  LABEL name  TITLE 'Book a time'`,
+      ib: `CREATE SCREEN ib TITLE 'Inbox'\nINBOX requests\n  NAME name  CONTACT email  TEXT message  STATUS status  SUB topic  NOUN 'request'`,
+      st: `CREATE SCREEN st TITLE 'Table'\nSTANDINGS fixtures\n  QUERY (SELECT side AS name, SUM(pts) AS value, COUNT(*) AS sub FROM (SELECT home AS side, CASE WHEN hg > ag THEN 3 WHEN hg = ag THEN 1 ELSE 0 END AS pts FROM fixtures UNION ALL SELECT away AS side, CASE WHEN ag > hg THEN 3 WHEN hg = ag THEN 1 ELSE 0 END AS pts FROM fixtures) AS x GROUP BY side ORDER BY value DESC)\n  UNIT 'played'  TITLE 'Table'`,
+      doc: `CREATE SCREEN doc TITLE 'Invoice'\nDOCUMENT bills\n  LABEL 'Invoice'  NUMBER number  DATE issued  TO client_name  BY 'Studio North'  LINES bill_lines  OF bill  ITEM description  QTY qty  PRICE price  TAX 20  NOTE terms`,
+      ga: `CREATE SCREEN ga TITLE 'Work'\nGALLERY pictures\n  FILE file  CAPTION caption  ALBUM album  TITLE 'Our work'`,
       prices: `CREATE SCREEN prices TITLE 'Prices'\nPRICES services\n  NAME name  PRICE price  NOTE length  GROUP kind  TITLE 'Services and prices'\nPRICES services AS rates\n  COLUMNS (name 'Service', price 'Price' MONEY, length 'Takes')`,
     };
     let order = 0;
@@ -90,6 +102,17 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
     const cookie = (su.headers.get('set-cookie') || '').split(';')[0];
     const sj = await su.json(); assert.equal(su.status, 200, JSON.stringify(sj)); const me = sj.user;
     await client.write([{ op: 'insert', table: P('members_of'), doc: { id: 'm1', person: me.id, account: 'accounts1', role: 'lead' } }]);
+    const dow = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    await ins('weekly', [{ name: 'Early circuit', weekday: dow[new Date().getDay()], start_time: '07:00', minutes: 45, leader: 'Mo', hall: 'Hall A', spaces: 2 }, { name: 'Stretch', weekday: 'wed', start_time: '18:30', minutes: 60, leader: 'Lu', hall: 'Hall B', spaces: 10 }]);
+    await ins('places', [{ class: 'weekly1', date: wd((new Date().getDay() + 6) % 7) }, { class: 'weekly1', date: wd((new Date().getDay() + 6) % 7) }]);
+    await ins('staff_members', [{ name: 'Rae' }, { name: 'Sol' }]);
+    await ins('appointments', [{ starts: `${day(1)}T09:30`, ends: `${day(1)}T10:00`, staff: 'staff_members1' }]);
+    await ins('requests', [{ name: 'Kai', email: 'kai@example.com', message: 'Can you call me back?', status: 'new', topic: 'quote' }, { name: 'Lee', email: 'lee@example.com', message: 'Thanks!', status: 'done', topic: 'other' }]);
+    await ins('fixtures', [{ home: 'Reds', away: 'Blues', hg: 2, ag: 1 }, { home: 'Greens', away: 'Reds', hg: 0, ag: 0 }, { home: 'Blues', away: 'Greens', hg: 3, ag: 3 }]);
+    await ins('bills', [{ number: 'B-101', issued: day(-1), client_name: 'Harbour Ltd', terms: 'Due in 14 days.' }]);
+    await ins('bill_lines', [{ bill: 'bills1', description: 'Design', qty: 2, price: 100 }, { bill: 'bills1', description: 'Print run', qty: 1, price: 50 }]);
+    const dot = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="#5a7"/></svg>');
+    await ins('pictures', [{ file: dot, caption: 'Window frame', album: 'Wood' }, { file: dot, caption: 'Garden wall', album: 'Stone' }]);
     await client.write([{ op: 'insert', table: P('ledger'), doc: { id: 'l1', title: 'Real entry', amount: 99 } }]);
     const browser = await pw.chromium.launch();
     {
@@ -132,6 +155,7 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       await ctx.close();
     }
     await browser.close();
+    if (process.env.SA_LIVE_LOG) console.log(log.split('\n').filter((l) => /error|refus|strata/i.test(l)).slice(-30).join('\n'));
   } finally {
     if (eng) eng.kill('SIGTERM');
     strata.kill();
@@ -155,5 +179,16 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
     assert.match(shown(tag, 'prices'), /Tuning[\s\S]*\$30/);
   }
   assert.match(shown('desktop', 'report'), /Total\s+3,900/, 'a total row under the section');
+  for (const tag of ['desktop', 'phone']) {
+    assert.match(shown(tag, 'tt'), /Early circuit[\s\S]*Full/, 'a weekly row with no places left is Full');
+    assert.match(shown(tag, 'tt'), /Stretch/);
+    assert.match(shown(tag, 'sl'), /Book a time[\s\S]*Rae[\s\S]*Sol/);
+    assert.match(shown(tag, 'ib'), /Kai[\s\S]*call me back/);
+    assert.doesNotMatch(shown(tag, 'ib'), /Thanks!/, 'done ones are out of the open list');
+    assert.match(shown(tag, 'st'), /Reds[\s\S]*4[\s\S]*Greens|Reds[\s\S]*Blues/);
+    for (const w of [/Invoice/, /B-101/, /For Harbour Ltd/, /Design/, /Print run/, /Studio North/]) assert.match(shown(tag, 'doc'), w);
+    assert.match(shown(tag, 'doc'), /\$300|300\.00/, 'the total with tax (250 + 20%)');
+    assert.match(shown(tag, 'ga'), /Our work/);
+  }
   assert.match(shown('desktop', 'plan'), /screws[\s\S]*400/i, 'the week adds up what its picks need');
 });

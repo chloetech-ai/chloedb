@@ -15,8 +15,9 @@
 // - "{{name}}" alone is the parameter's value, of any type (missing: the
 //   entry is left out); "{{a.b}}" reads into an object;
 // - inside a longer string a text value goes in as it is and any other value
-//   as JSON; "{{name|json}}" is always JSON, and "{{name|pre:TEXT}}" is TEXT
-//   and the value, or nothing when the value is empty;
+//   as JSON; "{{name|json}}" is always JSON, "{{name|pre:TEXT}}" is TEXT
+//   and the value, or nothing when the value is empty, and
+//   "{{name|wrap:BEFORE~AFTER}}" the value between the two, or nothing;
 // - "{{...name}}" as an item of a list splices the list in;
 // - an object with "$when": "name" (or "name=value", "name!=value", "!name",
 //   several joined by "&") is left out unless the parameter is given (or
@@ -102,9 +103,11 @@ const get = (P, name) => name.split('.').reduce((o, k) => (o == null ? undefined
 function interpolate(s, P) {
   const whole = s.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
   if (whole) return get(P, whole[1]);
-  return s.replace(/\{\{\s*([\w.]+)\s*(?:\|\s*(json|pre:[^}]*))?\}\}/g, (_, name, filter) => {
+  return s.replace(/\{\{\s*([\w.]+)\s*(?:\|\s*(json|pre:[^}]*|wrap:[^}]*))?\}\}/g, (_, name, filter) => {
     const v = get(P, name);
     if (filter && filter.startsWith('pre:')) return empty(v) ? '' : `${filter.slice(4)}${typeof v === 'string' ? v : JSON.stringify(v)}`;
+    // wrap:BEFORE~AFTER: the value between the two, or nothing when it is empty
+    if (filter && filter.startsWith('wrap:')) { const [a, b = ''] = filter.slice(5).split('~'); return empty(v) ? '' : `${a}${typeof v === 'string' ? v : JSON.stringify(v)}${b}`; }
     if (filter === 'json') return JSON.stringify(v ?? null);
     if (v === undefined || v === null) return '';
     return typeof v === 'string' ? v : JSON.stringify(v);

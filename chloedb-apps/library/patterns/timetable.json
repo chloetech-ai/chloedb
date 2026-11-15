@@ -1,0 +1,197 @@
+{
+ "title": "A weekly timetable: what repeats each week, day by day, with its time, places left and a way to book",
+ "about": "Classes, rehearsals, practices, surgeries, opening sessions: rows that come back every week on a weekday at a time. Each day of the week lists its rows in time order with who leads it and where, and, with a bookings table, how many places are left on that date and a Book button (Full when none are). Arrows go to other weeks. Choose it whenever the request lists weekly classes or a schedule people book into.",
+ "params": {
+  "table": {
+   "about": "the table of the weekly rows",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}_week"
+  },
+  "day": {
+   "about": "the column with the weekday (Monday, mon, or 0 for Sunday to 6)",
+   "default": "weekday"
+  },
+  "time": {
+   "about": "the column with the start time ('HH:MM')",
+   "default": "start_time"
+  },
+  "minutes": {
+   "about": "the column with how long it lasts in minutes (optional)"
+  },
+  "name": {
+   "about": "the column with its title",
+   "default": "name"
+  },
+  "sub": {
+   "about": "a column with who leads it"
+  },
+  "place": {
+   "about": "a column with where it is"
+  },
+  "spaces": {
+   "about": "the column with how many places it has"
+  },
+  "bookings": {
+   "about": "the table of bookings (a row per place taken)"
+  },
+  "of": {
+   "about": "the bookings column holding the row's id",
+   "default": "class"
+  },
+  "date": {
+   "about": "the bookings column with the date booked ('YYYY-MM-DD')",
+   "default": "date"
+  },
+  "action": {
+   "about": "the button's words",
+   "default": "Book"
+  },
+  "open": {
+   "about": "the view the button opens with {id, date}"
+  },
+  "call": {
+   "about": "the function the button calls with {id, date}"
+  },
+  "title": {
+   "about": "a heading",
+   "default": "This week"
+  }
+ },
+ "example": {
+  "use": "timetable",
+  "table": "classes",
+  "day": "weekday",
+  "time": "start_time",
+  "minutes": "minutes",
+  "name": "name",
+  "sub": "leader",
+  "place": "hall",
+  "spaces": "spaces",
+  "bookings": "places",
+  "of": "class",
+  "date": "date",
+  "action": "Book",
+  "call": "book-place"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_w": 0
+  },
+  "data": {
+   "{{key}}": "SELECT * FROM {{table}} ORDER BY {{time}} LIMIT 300",
+   "{{key}}_taken": {
+    "$when": "bookings",
+    "$value": {
+     "sql": "SELECT {{of}} AS c, {{date}} AS d, COUNT(*) AS n FROM {{bookings}} WHERE days_between(:start, {{date}}) BETWEEN 0 AND 6 GROUP BY {{of}}, {{date}} LIMIT 2000",
+     "params": {
+      "start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_w || 0))"
+     }
+    }
+   }
+  },
+  "let": {
+   "{{key}}_start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_w || 0))",
+   "{{key}}_idx": "=v => { if (v == null || v === '') return -1; if (/^\\\\d$/.test(String(v))) return Number(v) % 7; return ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(String(v).trim().slice(0, 3).toLowerCase()); }",
+   "{{key}}_left": "=(r, d) => { if (!{{spaces|json}} || r[{{spaces|json}}] == null) return null; const t = (data[{{key|json}} + '_taken'] || []).find(x => String(x.c) === String(r.id) && String(x.d).slice(0, 10) === d); return Math.max(0, Number(r[{{spaces|json}}]) - (t ? Number(t.n) : 0)); }",
+   "{{key}}_days": "=[0, 1, 2, 3, 4, 5, 6].map(i => { const d = lib.dates.addDays({{key}}_start, i); const w = lib.dates.weekday(d); return {day: d, label: lib.dates.weekdayName(d) + ' ' + app.fmt.date(d), today: d === today, past: d < today, rows: ({{key}} || []).filter(r => {{key}}_idx(r[{{day|json}}]) === w).map(r => ({r, left: {{key}}_left(r, d)}))}; })",
+   "{{key}}_go": "=(r, d) => {{open|json}} ? app.open({{open|json}}, {id: r.id, date: d}) : {{call|json}} ? app.call({{call|json}}, {id: r.id, date: d}).then(() => app.toast('Booked')) : null"
+  },
+  "body": [
+   {
+    "row": [
+     {
+      "h": "{{title}}",
+      "level": 2
+     },
+     {
+      "button": "‹",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_w: (state.{{key}}_w || 0) - 1 })"
+     },
+     {
+      "text": "=app.fmt.date({{key}}_start) + ' to ' + app.fmt.date(lib.dates.addDays({{key}}_start, 6))",
+      "muted": true
+     },
+     {
+      "button": "›",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_w: (state.{{key}}_w || 0) + 1 })"
+     }
+    ]
+   },
+   {
+    "each": "={{key}}_days.filter(d => d.rows.length)",
+    "as": "d",
+    "empty": "Nothing on the timetable yet.",
+    "body": [
+     {
+      "section": [
+       {
+        "each": "=d.rows",
+        "as": "x",
+        "class": "list",
+        "body": [
+         {
+          "row": [
+           {
+            "col": [
+             {
+              "text": "=String(x.r[{{time|json}}] || '').slice(0, 5) + ({{minutes|json}} && x.r[{{minutes|json}}] ? ' · ' + x.r[{{minutes|json}}] + ' min' : '')",
+              "small": true,
+              "muted": true
+             },
+             {
+              "h": "=String(x.r[{{name|json}}] ?? '')",
+              "level": 3
+             },
+             {
+              "text": "=[{{sub|json}} ? x.r[{{sub|json}}] : null, {{place|json}} ? x.r[{{place|json}}] : null].filter(Boolean).join(' · ')",
+              "small": true
+             }
+            ]
+           },
+           {
+            "if": "=x.left !== null",
+            "then": [
+             {
+              "text": "=x.left === 0 ? 'Full' : app.fmt.count(x.left, 'place') + ' left'",
+              "small": true
+             }
+            ]
+           },
+           {
+            "if": "=!d.past && ({{open|json}} || {{call|json}})",
+            "then": [
+             {
+              "if": "=x.left === 0",
+              "then": [
+               {
+                "text": "Full",
+                "muted": true
+               }
+              ],
+              "else": [
+               {
+                "button": "{{action}}",
+                "class": "primary small",
+                "do": "=() => {{key}}_go(x.r, d.day)"
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "title": "=d.today ? 'Today · ' + d.label : d.label"
+     }
+    ]
+   }
+  ]
+ }
+}

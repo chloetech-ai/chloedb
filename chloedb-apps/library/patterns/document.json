@@ -1,0 +1,202 @@
+{
+ "title": "One record laid out as a document: an invoice, a receipt, a quote or a certificate, with its lines and totals",
+ "about": "The page a person keeps or sends: who it is from and for, its number and date, its lines (what, how many, the price, the line's total) with the subtotal, tax and total, and a note. Opened from a list with {id}; without one it shows the latest. Choose it whenever the request says invoice, receipt, quote, statement or certificate.",
+ "params": {
+  "table": {
+   "about": "the table of the records",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_doc"
+  },
+  "label": {
+   "about": "what the document is (Invoice, Receipt, Quote, Certificate)",
+   "default": "Invoice"
+  },
+  "number": {
+   "about": "the column with its number"
+  },
+  "date": {
+   "about": "the column with its date",
+   "default": "created"
+  },
+  "to": {
+   "about": "the column with whom it is for"
+  },
+  "from": {
+   "about": "who it is from (words, or =expression)"
+  },
+  "lines": {
+   "about": "the table of its lines"
+  },
+  "of": {
+   "about": "the lines column holding the record's id",
+   "default": "invoice"
+  },
+  "item": {
+   "about": "the lines column with what it is",
+   "default": "description"
+  },
+  "qty": {
+   "about": "the lines column with how many",
+   "default": "qty"
+  },
+  "price": {
+   "about": "the lines column with the unit price",
+   "default": "price"
+  },
+  "tax": {
+   "about": "the tax rate in percent (a number)"
+  },
+  "total": {
+   "about": "the records column with the total, when it has no lines"
+  },
+  "note": {
+   "about": "the column with a note (payment terms, what it certifies)"
+  },
+  "back": {
+   "about": "the view to go back to"
+  }
+ },
+ "example": {
+  "use": "document",
+  "table": "bills",
+  "label": "Invoice",
+  "number": "number",
+  "date": "issued",
+  "to": "client_name",
+  "from": "=app.name || 'Us'",
+  "lines": "bill_lines",
+  "of": "bill",
+  "item": "description",
+  "qty": "qty",
+  "price": "price",
+  "tax": 20,
+  "note": "terms",
+  "back": "bills"
+ },
+ "screen": {
+  "data": {
+   "{{key}}_one": {
+    "sql": "=params.id ? 'SELECT * FROM {{table}} WHERE id = :id LIMIT 1' : 'SELECT * FROM {{table}} ORDER BY created DESC LIMIT 1'",
+    "params": {
+     "id": "=params.id || ''"
+    }
+   },
+   "{{key}}_lines": {
+    "$when": "lines",
+    "$value": "=(async () => { const id = params.id || ((await app.sql('SELECT id FROM {{table}} ORDER BY created DESC LIMIT 1'))[0] || {}).id; return id ? app.sql('SELECT * FROM {{lines}} WHERE {{of}} = :id ORDER BY created LIMIT 200', {id}) : []; })()"
+   }
+  },
+  "let": {
+   "{{key}}_r": "=(({{key}}_one || [])[0]) || null",
+   "{{key}}_ls": "=(data[{{key|json}} + '_lines'] || []).map(l => ({what: String(l[{{item|json}}] ?? ''), qty: Number(l[{{qty|json}}]) || 0, price: Number(l[{{price|json}}]) || 0, total: (Number(l[{{qty|json}}]) || 0) * (Number(l[{{price|json}}]) || 0)}))",
+   "{{key}}_sub": "={{key}}_ls.length ? {{key}}_ls.reduce((n, l) => n + l.total, 0) : ({{total|json}} && {{key}}_r ? Number({{key}}_r[{{total|json}}]) || 0 : 0)",
+   "{{key}}_tax": "={{tax|json}} ? Math.round({{key}}_sub * Number({{tax|json}})) / 100 : 0"
+  },
+  "body": [
+   {
+    "if": "=!{{key}}_r",
+    "then": [
+     {
+      "text": "=('No ' + {{label|json}}.toLowerCase() + ' yet.')",
+      "muted": true
+     }
+    ],
+    "else": [
+     {
+      "card": [
+       {
+        "row": [
+         {
+          "col": [
+           {
+            "$when": "from",
+            "h": "{{from}}",
+            "level": 3
+           },
+           {
+            "$when": "to",
+            "text": "=('For ' + ({{key}}_r[{{to|json}}] ?? ''))"
+           }
+          ]
+         },
+         {
+          "col": [
+           {
+            "h": "{{label}}",
+            "level": 2
+           },
+           {
+            "text": "=[{{number|json}} ? 'No. ' + ({{key}}_r[{{number|json}}] ?? '') : null, app.fmt.date({{key}}_r[{{date|json}}])].filter(Boolean).join(' · ')",
+            "muted": true
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "$when": "lines",
+        "table": "={{key}}_ls",
+        "columns": [
+         {
+          "key": "what",
+          "label": "Item"
+         },
+         {
+          "key": "qty",
+          "label": "Qty",
+          "format": "number"
+         },
+         {
+          "key": "price",
+          "label": "Price",
+          "format": "money"
+         },
+         {
+          "key": "total",
+          "label": "Amount",
+          "format": "money"
+         }
+        ],
+        "total": false,
+        "empty": "No lines yet."
+       },
+       {
+        "kpis": [
+         {
+          "$when": "tax",
+          "label": "Subtotal",
+          "value": "=app.fmt.money({{key}}_sub)"
+         },
+         {
+          "$when": "tax",
+          "label": "=('Tax ' + {{tax|json}} + '%')",
+          "value": "=app.fmt.money({{key}}_tax)"
+         },
+         {
+          "label": "Total",
+          "value": "=app.fmt.money({{key}}_sub + {{key}}_tax)"
+         }
+        ]
+       },
+       {
+        "$when": "note",
+        "text": "=String({{key}}_r[{{note|json}}] ?? '')",
+        "muted": true,
+        "small": true
+       }
+      ]
+     },
+     {
+      "$when": "back",
+      "button": "Back",
+      "class": "ghost",
+      "do": "=() => app.open({{back|json}})"
+     }
+    ]
+   }
+  ]
+ }
+}

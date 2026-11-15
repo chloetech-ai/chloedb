@@ -66,6 +66,18 @@ const MORE = {
     clauses: { THINGS: ['things', 'name'], PERSON: ['person', 'name'], THING: ['thing', 'name'], NAME: ['name', 'name'], ROLE: ['role', 'name'], ROLES: ['roles', 'strs'], TITLE: ['title', 'str'], LABEL: ['label', 'str'] } },
   PRICES: { use: 'prices',
     clauses: { NAME: ['name', 'name'], PRICE: ['price', 'name'], NOTE: ['note', 'name'], GROUP: ['group', 'name'], BADGE: ['badge', 'name'], UNIT: ['unit', 'str'], COLUMNS: ['columns', 'cols'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], TITLE: ['title', 'str'], EYEBROW: ['eyebrow', 'str'], OPEN: ['open', 'slug'], EMPTY: ['empty', 'str'] } },
+  TIMETABLE: { use: 'timetable',
+    clauses: { DAY: ['day', 'name'], TIME: ['time', 'name'], MINUTES: ['minutes', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'name'], PLACE: ['place', 'name'], SPACES: ['spaces', 'name'], BOOKINGS: ['bookings', 'name'], OF: ['of', 'name'], DATE: ['date', 'name'], ACTION: ['action', 'str'], OPEN: ['open', 'slug'], CALL: ['call', 'slug'], TITLE: ['title', 'str'] } },
+  SLOTS: { use: 'slots',
+    clauses: { START: ['start', 'name'], END: ['end', 'name'], OPEN: ['open', 'str'], CLOSE: ['close', 'str'], STEP: ['step', 'num'], LENGTH: ['length', 'num'], CLOSED: ['closed', 'nums'], DAYS: ['days', 'num'], RESOURCE: ['resource', 'name'], RESOURCES: ['resources', 'name'], LABEL: ['label', 'name'], VIEW: ['view', 'slug'], CALL: ['call', 'slug'], TITLE: ['title', 'str'], NOTE: ['note', 'str'] } },
+  INBOX: { use: 'inbox',
+    clauses: { NAME: ['name', 'name'], CONTACT: ['contact', 'names'], TEXT: ['text', 'name'], STATUS: ['status', 'name'], STATES: ['states', 'strs'], SUB: ['sub', 'names'], TITLE: ['title', 'str'], NOUN: ['noun', 'str'] } },
+  STANDINGS: { use: 'standings',
+    clauses: { BY: ['by', 'name'], VALUE: ['value', 'sql'], SUB: ['sub', 'sql'], UNIT: ['subword', 'str'], WHERE: ['where', 'sql'], QUERY: ['query', 'sql'], ME: ['me', 'js'], FORMAT: ['format', 'word'], LIMIT: ['limit', 'num'], TITLE: ['title', 'str'] } },
+  DOCUMENT: { use: 'document',
+    clauses: { LABEL: ['label', 'str'], NUMBER: ['number', 'name'], DATE: ['date', 'name'], TO: ['to', 'name'], BY: ['from', 'text'], LINES: ['lines', 'name'], OF: ['of', 'name'], ITEM: ['item', 'name'], QTY: ['qty', 'name'], PRICE: ['price', 'name'], TAX: ['tax', 'num'], TOTAL: ['total', 'name'], NOTE: ['note', 'name'], BACK: ['back', 'slug'] } },
+  GALLERY: { use: 'photos',
+    clauses: { FILE: ['file', 'name'], CAPTION: ['caption', 'name'], ALBUM: ['album', 'name'], WHERE: ['where', 'sql'], UPLOAD: ['upload', 'flag'], LOOK: ['look', 'word'], TITLE: ['title', 'str'], EYEBROW: ['eyebrow', 'str'], EMPTY: ['empty', 'str'] } },
   TREND: { use: 'trend',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
@@ -277,7 +289,7 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|LANES|DETAIL|FLAGS|HEAD|CHIPS|JOIN|TIP|TONE|PRIMARY|SECONDARYOPEN|SECONDARY|OVER|PROMPT|BUTTON|NOTE|INPUT|WEB|PAY|CHARGE|PAID|QTY|CONTENT|BODY|HOLDER|PERSON|BADGE|MORE|SET|THINGS|THING|ROLES|ROLE|PARTS|PART|OF|UNIT|TOTALS|SECTION|GROUP)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|LANES|DETAIL|FLAGS|HEAD|CHIPS|JOIN|TIP|TONE|PRIMARY|SECONDARYOPEN|SECONDARY|OVER|PROMPT|BUTTON|NOTE|INPUT|WEB|PAY|CHARGE|PAID|QTY|CONTENT|BODY|HOLDER|PERSON|BADGE|MORE|SET|THINGS|THING|ROLES|ROLE|PARTS|PART|OF|UNIT|TOTALS|SECTION|GROUP|SPACES|BOOKINGS|START|END|CLOSED|CLOSE|STEP|LENGTH|RESOURCES|RESOURCE|VIEW|CONTACT|STATUS|STATES|NUMBER|TO|LINES|TAX|CAPTION|ALBUM|UPLOAD|ME)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -559,6 +571,14 @@ function moreClause(part, kw, rest, l, n) {
     case 'sql': case 'js': if (!rest) fail(n, `${kw} needs a value`); u[param] = kind === 'sql' && /^\(\s*SELECT\b[\s\S]*\)$/i.test(rest) ? rest.slice(1, -1).trim() : rest; break;
     case 'fields': u[param] = splitTop(parens(rest, n, kw).inside).map((f) => fieldSpec(f, n)); break;
     case 'cols': u[param] = splitTop(parens(rest, n, kw).inside).map((x) => columnSpec(x, n)); break;
+    // (0, 6): a list of whole numbers
+    case 'nums': {
+      const inside = rest.trim().startsWith('(') ? parens(rest, n, kw).inside : rest;
+      const list = splitTop(inside).map((x) => x.trim()).filter(Boolean);
+      if (list.some((x) => !/^\d+$/.test(x))) fail(n, `${kw} (whole numbers, such as 0, 6)`);
+      u[param] = list.map(Number);
+      break;
+    }
     // ('words', 'words'): a list of words
     case 'strs': {
       const inside = rest.trim().startsWith('(') ? parens(rest, n, kw).inside : rest;
@@ -726,6 +746,18 @@ TEAM <link table> [AS key]     -- who is on what: the app's people put on things
   THINGS <table of the things>  PERSON <link col with the person's id>  THING <link col with the thing's id>  NAME <things col>  ROLE <link col>  ROLES ('lead', 'member')  LABEL 'Account'  TITLE
 PRICES <table> [AS key]        -- prices that read at a glance: each name and its price on one line with a dotted leader, a note under it, grouped under headings (services, fees, plans); with COLUMNS a rate table with labelled columns (one card per row on a phone). Choose it whenever prices are listed
   NAME <col>  PRICE <col: a number or words such as 'from 40'>  NOTE <col>  GROUP <col of the heading>  BADGE <col>  UNIT 'per hour'  COLUMNS (col 'Label' MONEY, ...)  WHERE  ORDER BY  OPEN <view, gets {id}>  TITLE  EYEBROW  EMPTY
+TIMETABLE <table> [AS key]     -- a weekly timetable: rows that repeat each week on a weekday at a time (classes, rehearsals, practices, sessions), each day listing them in time order with who leads and where; with BOOKINGS, places left on that date and a Book button (Full when none are); arrows to other weeks. Choose it whenever the request lists weekly classes or a schedule people book into
+  DAY <weekday col: Monday, mon or 0-6>  TIME <'HH:MM' col>  MINUTES <col>  NAME <col>  SUB <col: who leads>  PLACE <col>  SPACES <capacity col>  BOOKINGS <table of places taken>  OF <its col with the row's id>  DATE <its 'YYYY-MM-DD' col>  ACTION 'Book'  OPEN <view, gets {id, date}> | CALL <function>  TITLE
+SLOTS <bookings table> [AS key] -- book a time: a strip of days, the chosen day's free times between opening and closing, taken ones greyed out, so nothing is booked twice; with RESOURCE the person first picks whom or what (a staff member, a court). A chosen time opens the view that finishes it or calls the rule that takes it (the rule refuses a clash: REQUIRE (SELECT COUNT(*) FROM <bookings> WHERE <resource col> = :resource AND times_overlap(<start col>, <end col>, :start, :end)) = 0 ELSE 'That time was just taken')
+  START <'YYYY-MM-DDTHH:MM' col>  END <col>  OPEN '09:00'  CLOSE '17:00'  STEP 30  LENGTH 45  CLOSED (0, 6)  DAYS 14  RESOURCE <col>  RESOURCES <table>  LABEL <its name col>  VIEW <view, gets {start, end, resource}> | CALL <function>  TITLE  NOTE
+INBOX <table> [AS key]         -- what people send from a public form (enquiries, callback or quote requests, reports, applications), worked through by the owner: new ones counted first, each with who, how to reach them, what they asked and when, and one tap to move it on (Start, Done, Reopen). Give it FOR owner, beside the public form that fills the table (its status column starts empty or as the first state)
+  NAME <col>  CONTACT col, col  TEXT <col>  STATUS <col>  STATES ('new', 'in progress', 'done')  SUB col, col  NOUN 'request'  TITLE
+STANDINGS <table> [AS key]     -- standings worked out from rows: each one's score (points, wins, a total) ranked, ties sharing a place, medals for the first three, a second figure under each name, the viewer highlighted; a league table, a challenge, a contest. QUERY when a row scores for two at once (a match's two sides: a subquery of SELECT ... UNION ALL SELECT ... grouped)
+  BY <col of who scores>  VALUE SUM(points)  SUB COUNT(*)  UNIT 'game'  WHERE  QUERY (SELECT name, value[, sub] ...)  ME <expression: the viewer's name>  FORMAT number | money  LIMIT 10  TITLE
+DOCUMENT <table> [AS key]      -- one record as the document a person keeps or sends (invoice, receipt, quote, statement, certificate): from and for whom, its number and date, its lines with the subtotal, tax and total, a note; opened with {id} from a list, else the latest. Choose it whenever the request says invoice, receipt, quote or certificate
+  LABEL 'Invoice'  NUMBER <col>  DATE <col>  TO <col: whom it is for>  BY 'who it is from, or =expression'  LINES <table of its lines>  OF <their col with the record's id>  ITEM <col>  QTY <col>  PRICE <col>  TAX 20  TOTAL <col, when it has no lines>  NOTE <col>  BACK <view>
+GALLERY <table> [AS key]       -- the owner's own photos (a table of stored files with a caption and an album) as a gallery that opens large, albums as chips; with UPLOAD (on the owner's screen) photos dropped in become rows. Use it whenever the request says the owner's photos, gallery or portfolio: never stock photos in their place
+  FILE <col with the stored file's id>  CAPTION <col>  ALBUM <col>  WHERE  UPLOAD  LOOK mosaic | masonry | grid  TITLE  EYEBROW  EMPTY
 VARIANCE <table> [AS key]      -- a value compared period by period (a total month over month, quarter over quarter): a row per period in time order with the value, its change and its change in percent (signed, coloured, with bars), the biggest increase and decrease as big numbers, and a CSV download; any request to compare periods (variance, month over month, growth) is this part. It brings its own big numbers (the total, the biggest increase and decrease) and a note on how change is worked out: give no KPI of your own beside it
   PERIOD <col or SQL>  VALUE <col> | SUM(col) GROUP BY <same as PERIOD>  COMPARE <a second value per period, drawn beside it>  AGAINST '<what it is>'  CHART bars | none  ORDER BY <oldest first: a date sorts as it is, a month name needs CASE month WHEN 'Jan' THEN 1 ... END>  LABEL '<what the value is>'  NAME 'Month'  FORMAT number | money  LAST 24  WHERE  FILE '<name>.csv'  TITLE
 OFFERS <table> [AS key]        -- what people order or book while some are left (products with stock, workshops with seats, tours with places): a card per row with its photo, date and price, 'Only 2 left' when few remain, the OUT word (its card in the "out" state) and no action when none; the action opens the view that finishes the order or booking, or calls a rule that checks and lowers the count in one step (its REQUIRE refuses the last one twice). A shelf of products, a list with prices, the upcoming sessions or classes are this part, never a LIST with a form a visitor could edit, and on a front page it comes right after the hero, where visitors see it first
