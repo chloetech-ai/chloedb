@@ -2490,9 +2490,13 @@ fn firsts(a: &ArrayRef, cap: usize) -> Option<Vec<usize>> {
     Some(out)
 }
 
-/// The values of the arguments, row by row.
+/// The values of the arguments, row by row: a Scalar argument (a literal, or
+/// a `CASE` whose rows of a batch all took one branch of literals) holds for
+/// each of the `rows`. Not `ColumnarValue::values_to_arrays`, which makes
+/// arrays of one row when every argument is a Scalar, so that rows 2.. of
+/// the batch read NULL.
 fn arg_values(args: &[ColumnarValue], rows: usize) -> datafusion::error::Result<Vec<Vec<Value>>> {
-    let arrays = ColumnarValue::values_to_arrays(args)?;
+    let arrays = args.iter().map(|a| a.to_array(rows)).collect::<datafusion::error::Result<Vec<_>>>()?;
     let cols: Vec<Vec<Value>> = arrays.iter().map(|a| values_of(a).map_err(|_| DataFusionError::Execution(format!("chloedb: no values of {}", a.data_type())))).collect::<datafusion::error::Result<_>>()?;
     Ok((0..rows).map(|i| cols.iter().map(|c| c.get(i).cloned().unwrap_or(Value::Null)).collect()).collect())
 }
