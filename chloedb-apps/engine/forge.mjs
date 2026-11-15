@@ -1884,6 +1884,18 @@ export const tablesWatcher = (fn) => {
   };
 };
 
+// The answer of the example rows' and tests' writer, laid into the plan. When
+// the example rows have a writer of their own (seeded), this writer wrote the
+// tests alone: the rows stay as their writer left them, whichever was done first.
+export function takeExamplesInto(plan, text, { seeded = false } = {}) {
+  let out = null;
+  try { out = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '')); } catch { /* none */ }
+  if (!out || typeof out !== 'object') return plan;
+  if (!seeded) { if (out.seed && typeof out.seed === 'object') plan.seed = out.seed; else delete plan.seed; }
+  if (Array.isArray(out.tests)) plan.tests = out.tests; else delete plan.tests;
+  return plan;
+}
+
 // The pieces a plan says to write, each with the slug of its code block.
 function planPieces(plan, parallel = false, seeded = false) {
   const out = [];
@@ -2090,12 +2102,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     if (typeof code.examples !== 'string') return;
     examples = code.examples;
     delete code.examples;
-    let out = null;
-    try { out = JSON.parse(examples.trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '')); } catch { /* none */ }
-    if (out && typeof out === 'object') {
-      if (out.seed && typeof out.seed === 'object') plan.seed = out.seed; else delete plan.seed;
-      if (Array.isArray(out.tests)) plan.tests = out.tests; else delete plan.tests;
-    }
+    takeExamplesInto(plan, examples, { seeded: !!seeding });
   };
   // What a piece was written as, for its writer to fix: a screen's or a
   // rule's statement once compiled.

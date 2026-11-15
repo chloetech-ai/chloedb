@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM, planWatcher, tablesWatcher, kpiParts, signInFirst } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, tablesWatcher, kpiParts, signInFirst, takeExamplesInto } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -199,6 +199,27 @@ test('the plan up to its tables is handed on once that list has streamed in, for
   assert.equal(none.length, 0);
 });
 
+
+test('the tests writer\'s answer never takes away the example rows their own writer wrote, whichever was done first', () => {
+  const rows = { pieces: [{ title: 'Bowl' }] };
+  // the rows' writer was done first: the tests come after and the rows stay
+  const plan = { seed: rows };
+  takeExamplesInto(plan, '{"tests": [{"name": "a piece keeps its title"}]}', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+  assert.equal(plan.tests.length, 1);
+  // a seed the tests writer gave anyway does not replace the rows' writer's
+  takeExamplesInto(plan, '{"seed": {"pieces": []}, "tests": []}', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+  // one writer for both: its answer is the rows and the tests
+  const one = { seed: rows };
+  takeExamplesInto(one, '```json\n{"seed": {"pieces": [{"title": "Cup"}]}, "tests": []}\n```');
+  assert.equal(one.seed.pieces[0].title, 'Cup');
+  takeExamplesInto(one, '{"tests": []}');
+  assert.equal(one.seed, undefined);
+  // not JSON: nothing changes
+  takeExamplesInto(plan, 'no JSON here', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+});
 
 test('big numbers where one is the other with more conditions are found, for the figure check to ask about', () => {
   const screen = { data: { a: "SELECT SUM(x) AS v FROM t WHERE kind != 'z' AND d > 0", b: "SELECT SUM(x) AS v FROM t WHERE kind != 'z'", c: 'SELECT COUNT(*) AS v FROM u' },
