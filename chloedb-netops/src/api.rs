@@ -145,6 +145,7 @@ pub fn router(svc: Shared) -> Router {
         .merge(crate::hub::routes())
         .merge(crate::debug::routes())
         .merge(crate::estate::routes())
+        .merge(crate::discover::routes())
         .merge(crate::ask::routes())
         .merge(crate::assist::routes())
         .route("/v1/sim/inject", post(inject))
@@ -229,6 +230,7 @@ async fn status(State(svc): State<Shared>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"), "ready": st.ready, "phase": st.phase, "progress": round(st.progress, 3), "error": st.error, "last_minute": iso(st.last_minute), "now": iso(now()),
         "semantic": st.semantic, "graph": match st.graph_sql { Some(true) => "sql", Some(false) => "app", None => "" }, "model": schema::MODEL,
         "eval_ms": round(st.eval_ms, 1), "tick_ms": round(st.tick_ms, 1), "open_incidents": st.open.len(), "firing": st.alerts.len(), "waiting": st.badges.map(|b| b.0), "notices": st.badges.map(|b| b.1), "estate": e.estate.as_ref().map(|x| json!({"objects": x.objects(), "broken": x.live.lock().unwrap_or_else(|p| p.into_inner()).len()})), "sim": sim, "local": svc.local,
+        "topology": if e.opts.discovered { "discovered" } else { "inventory" },
         "network": {"name": "Meridian", "sites": e.w.sites.len(), "devices": e.w.devices.len(), "links": e.w.links.iter().filter(|l| l.documented).count(), "services": e.w.services.len(), "customers": e.w.customers.len()},
     }))
 }

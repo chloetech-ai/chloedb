@@ -47,6 +47,8 @@ On a coordinator over shards the graph steps (`REACHABLE`, `ppr`, `PATH`), which
 
 `--no-simulate` turns the simulator off: the app reads its network from the inventory tables and writes no telemetry of its own ([your own network](#your-own-network)).
 
+`--topology discovered` (or `CHLOEDB_NETOPS_TOPOLOGY=discovered`) builds the network from what it reports instead of from an inventory: the simulated network writes its BGP-LS, LLDP, SNMP, BMP and ONT tables, and the app reads its sites, devices, links, roles and estate back from those rows alone ([a network that reports itself](#a-network-that-reports-itself)).
+
 ### On Kubernetes
 
 A cluster the [operator](server.md#on-kubernetes) runs gets the app from its `StrataCluster`, with nothing to start by hand:
@@ -77,6 +79,7 @@ Removing `spec.netops` deletes its Deployment and Service and restarts the coord
 | **Changes** | the change calendar by day, the collisions (two changes whose devices overlap in a window, `&&` over `INT[]`), the change-risk agent's score, and carrying a change out: start it (its devices are silenced for the window), verify it against the network as it was before, complete it or roll it back |
 | **Customers** | every customer with where they attach and whether anything is wrong on their path; a customer's page answers "is it the network?" with what was checked along the path from their port to the backbone, and a reply ready to send |
 | **Carriers** | carriers' maintenance notices, each matched to the circuit it names and checked for what it collides with: the other plane's maintenance in the same window, a change on the router that carries the other plane, and whether the surviving plane has the capacity; a notice can be pasted as it arrived |
+| **Discovery** | with `--topology discovered` only: the seven feeds the network was read from with their rows, the rules that turn them into an inventory, and every site, device, link, BGP session and estate hub with the feeds that found it and how ([below](#a-network-that-reports-itself)) |
 | **Topology** | the network as the inventory has it, as the logs say it is, and the difference; the path between two devices; the lines of syslog a link was read from |
 | **Services** | each service's success rate and latency against its objective, the devices it rides on and the customers on it |
 | **Explore** | logs by words or by substring, flows (who talks to whom), and one search box over runbooks, incidents, configurations and tickets |
@@ -84,7 +87,7 @@ Removing `spec.netops` deletes its Deployment and Service and restarts the coord
 | **Agents** | the six agents, their runs and what each cost in queries, rows and tokens; capacity, advisories and configuration drift; autopilot |
 | **Map** | the whole network on one plane, from regions down to one customer's router: zoom in and detail appears, what is broken colours the place that holds it at every zoom, a click on an object says what is wrong and what it has to do with everything around it, and a search box takes a sentence ([below](#the-map)) |
 | **Dashboards** | the backbone's busiest links (utilisation, loss, received optical power), the busiest devices and the slowest services over three hours, what is not ok by metro and by kind, faults a day by cause over two weeks, and incidents by cause; the estate's panels follow the place in view on the map |
-| **Data** | the 39 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings |
+| **Data** | the 47 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings |
 | **Leadership** | the switch at the top: services against what was sold, incidents with their cost in customer-minutes and revenue exposed, time to detect and resolve, what caused them and which followed a change, the risk register (spans that cannot fail over at their measured peak, software with open advisories, contracts ending), carriers by cost and downtime, and the week written as a report |
 
 The box above every page searches, and completes as it is typed ([below](#the-box-above-every-page-and-the-assistant)). An id, a site or a circuit opens on the map; a sentence becomes the map's query; anything else is looked up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number, with what the thing is and whether it is healthy.
@@ -245,6 +248,32 @@ What usually feeds each table:
 
 A metrics row carries the link's or device's `id` as the inventory has it and a `ts`; the Data page shows each table's columns. The simulator's data is marked as synthetic on every page, and the mark is gone with the simulator off.
 
+## A network that reports itself
+
+Nobody has to list a network for the app to know it. A carrier's routers and switches already say what they are and what they are cabled to; `--topology discovered` builds the app's network from that alone. With the simulator on, its network first reports itself into seven tables, as collectors on a real network would fill them, and the app then reads its sites, devices, links, BGP sessions and the estate behind the backbone back from those rows and writes them into `netops_sites`, `netops_devices`, `netops_links` and `netops_bgp`, where every page reads them as before:
+
+| table | what it holds | on a real network |
+|---|---|---|
+| `netops_snmp_system` | each agent's system group (sysName, sysDescr, sysObjectID, sysLocation) and ENTITY-MIB's model, serial and software | an SNMP poller (Telegraf's `snmp` input) |
+| `netops_snmp_ifaces` | interfaces (IF-MIB's names, speeds and ifAlias) and their addresses (IP-MIB) | the same poller |
+| `netops_lldp` | LLDP neighbours, a row a port (lldpRemTable) | the same poller, or gNMI's openconfig-lldp |
+| `netops_bgpls_nodes`, `netops_bgpls_links` | the IS-IS database: routers, and adjacencies with their bandwidth, delay ([RFC 8571](https://www.rfc-editor.org/rfc/rfc8571)) and administrative group | a BGP-LS session ([RFC 9552](https://www.rfc-editor.org/rfc/rfc9552)) from a route reflector to a collector (GoBGP, pmacct) |
+| `netops_bmp_peers` | each router's BGP sessions and the routes it takes from each | BMP ([RFC 7854](https://www.rfc-editor.org/rfc/rfc7854)) to a collector (OpenBMP, pmacct) |
+| `netops_gpon_onts` | each OLT's ONTs on its PON ports | the OLT's element manager, or its SNMP ONT table |
+
+The rules, in the order they run:
+
+- **Devices.** An SNMP agent whose sysLocation names a point of presence (`CODE | City, CC | Region | lat,lon`) is a device there. sysObjectID's enterprise number gives the vendor, sysDescr the operating system, ENTITY-MIB the model, serial and software. Devices are numbered in the order of their management addresses.
+- **Links.** An LLDP neighbour, or an IS-IS adjacency in BGP-LS, is a link; the two are one link when the adjacency's addresses are on the ports LLDP names. Capacity and delay come from BGP-LS's TE attributes (else the port's speed), the plane from the administrative group, the carrier and circuit from the ports' descriptions.
+- **Roles.** In the IS-IS database with eBGP sessions in BMP: a border router. Adjacent to another site: a core router. Any other IS-IS router: an aggregation router. Outside the IGP, a switch next to a firewall (its sysDescr says so) is a spine, and the rest are leaves. A fabric makes a site a data centre, two border routers a hub, and anything else a point of presence.
+- **The estate.** Hub routers are what LLDP shows hanging from the backbone, access nodes what hangs from hub routers. An OLT's ONTs come from its ONT table; a business park's customer routers and a cell site's radios from LLDP (the customer by the port's description). sysLocation names the hub and the site each belongs to.
+
+What the network does not report is written beside the feeds: the services sold and the customers who bought them. The simulator's own numbers for how loaded each link is and how fast each service answers are matched to what was found by name; they add nothing to it.
+
+Read back, the network is the simulator's, device for device and port for port (`discover.rs` tests it, the estate object for object at 200,000), with one difference that is the point: the two cables the made-up inventory forgot are there, and the two links it kept after they were removed are not. On the simulated network the feeds are about 230,000 rows, read in about 3 seconds as scrolls. Each site, device, link, session and hub says which feeds found it and by which rule in `netops_discovered`, and the **Discovery** page shows them, with the feeds' rows and the queries that read them; the **Network** map places each site where its devices' sysLocation puts it. A restart reads the feeds again and keeps the inventory (and what is down in it) when it finds the same network. A database made one way is refused by the other: start the other way with another `--local` directory, or with `--reset`. With `--no-simulate --topology discovered`, the app reads feeds written by something else, and stops if they name no device.
+
+![Discovery: the network drawn from its feeds, the feeds, the rules, and how each device was found](../assets/img/netops-discovery.png)
+
 ## The tables
 
 | table | what it holds |
@@ -257,6 +286,8 @@ A metrics row carries the link's or device's `id` as the inventory has it and a 
 | `netops_bgp` | BGP sessions with transit providers and peers |
 | `netops_services` | services sold, their objectives and the devices they ride on |
 | `netops_customers` | customers, where they attach and what they are known by (prefix, port, circuit) |
+| `netops_snmp_system`, `netops_snmp_ifaces`, `netops_lldp`, `netops_bgpls_nodes`, `netops_bgpls_links`, `netops_bmp_peers`, `netops_gpon_onts` | what the network reports, from which `--topology discovered` builds it ([above](#a-network-that-reports-itself)) |
+| `netops_discovered` | how each site, device, link, session and estate hub was found: the feeds and the rule |
 | `netops_link_metrics` | a point a minute per link: the rollup an incident needs, not a metrics store |
 | `netops_device_metrics` | a point a minute per device |
 | `netops_service_metrics` | a point a minute per service: requests, errors, latency |
@@ -299,7 +330,7 @@ WHERE ts >= '2026-11-13T03:00:00Z' GROUP BY link ORDER BY worst DESC LIMIT 5;
 
 ## What it is not
 
-Out of the box it is a demonstration on synthetic data, and it has been run on real feeds only in its own test (readings written to the server from outside, with the simulator off). The telemetry is a point a minute per link, device and service, which is what an incident needs; ChloeDB is not a metrics store, and a real deployment keeps its high-resolution metrics where they are and writes rollups here. Approving an action changes the simulated network, or is only recorded with the simulator off: nothing is ever sent to a device. The reader behind "add a panel" knows a fixed set of readings and tables; it is not a language model. The inventory is read once at start, and at most 10,000 rows a table.
+Out of the box it is a demonstration on synthetic data, and it has been run on real feeds only in its own test (readings written to the server from outside, with the simulator off). The telemetry is a point a minute per link, device and service, which is what an incident needs; ChloeDB is not a metrics store, and a real deployment keeps its high-resolution metrics where they are and writes rollups here. Approving an action changes the simulated network, or is only recorded with the simulator off: nothing is ever sent to a device. The reader behind "add a panel" knows a fixed set of readings and tables; it is not a language model. The inventory is read once at start, and at most 10,000 rows a table. The feeds `--topology discovered` reads are the simulator's own, written the way collectors would write them; its rules expect sysLocation to carry a site code, city, region and coordinates, as an operator's convention would, and have not met a real network's gaps (a port with LLDP off, a hostname that differs from sysName).
 
 ## Test it
 
@@ -307,4 +338,4 @@ Out of the box it is a demonstration on synthetic data, and it has been run on r
 cd chloedb-netops && cargo test --release
 ```
 
-`tests/cluster.rs` starts the app on a real chloedb-server (built in `../chloedb-server/target`, or `CHLOEDB_SERVER_BIN`) and checks the tables, the topology found from logs, each of the six faults against its answer key, an approval, the webhook, where it is broken during a fibre cut (the stack by place, an investigation, a trace), the shift's pages (handover, lookup, a customer's check, acknowledging and silencing, a change carried out and verified, carriers' notices and their collisions), an incident's board, the leadership numbers, a restart on the same folder, and then the simulator off: readings written to the server from outside open an incident that the agent diagnoses.
+`tests/cluster.rs` starts the app on a real chloedb-server (built in `../chloedb-server/target`, or `CHLOEDB_SERVER_BIN`) and checks the tables, the topology found from logs, each of the six faults against its answer key, an approval, the webhook, where it is broken during a fibre cut (the stack by place, an investigation, a trace), the shift's pages (handover, lookup, a customer's check, acknowledging and silencing, a change carried out and verified, carriers' notices and their collisions), an incident's board, the leadership numbers, a restart on the same folder, and then the simulator off: readings written to the server from outside open an incident that the agent diagnoses. Another starts it with `--topology discovered` and checks the network read back from its feeds, the Discovery page, a fault diagnosed on it, a restart, and that the made-up inventory is refused on its tables.
