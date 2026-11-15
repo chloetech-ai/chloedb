@@ -38,6 +38,21 @@ changes collect under "Unreleased".
   left out. A `filters` aggregation's other bucket is empty when one of its
   filters matches every document.
 
+### The command center in a terminal
+
+- **`chloedb-server cc [URL]`** draws the command center in a terminal, for
+  an SSH session or a machine without a browser: Home, a live map of the
+  cluster with its lenses, alerts, queries, logs, tables, a SQL screen and
+  the timeline, read every 2 seconds from the routes the browser reads. Its
+  changes (a handover, an alert acknowledged or silenced, a query
+  cancelled, a SQL write) go to the same routes with the same key, ask
+  first, and on production take a reason; production's SQL is read-only
+  until writes are allowed for 15 minutes, as in the SQL workbench. The key
+  comes from `CHLOEDB_KEY` or a prompt, never a flag; through a hub the URL
+  is the connection's (`https://hub:7700/c/prod`), and `:ctx` opens the
+  hub's other clusters. Nothing changes on the server
+  ([docs](docs/chloedb/server.md#in-a-terminal)).
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries

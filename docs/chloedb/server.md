@@ -1826,6 +1826,35 @@ Reads are counted in memory, since the server started or since `POST /v1/index/r
 
 ![The SQL editor with a plan](../assets/img/strata-server-sql.png)
 
+### In a terminal
+
+`chloedb-server cc [URL]` is the command center in a terminal, for an SSH session or a machine without a browser. <!-- since 0.3.5 --> It reads the routes the command center reads (`/v1/cluster`, `/v1/health/fleet`, `/v1/alerts`, `/v1/queries/stats`, `/v1/queries`, `/v1/logs`, `/v1/index/tables`, `/v1/events`), every 2 seconds (`--every`), and sends its changes to the same routes with the same key, so a key may do there what it may do in the browser, and the audit log keeps each change with its reason and `x-chloedb-app: chloedb-cc`. Nothing new runs on the server.
+
+```bash
+CHLOEDB_KEY=sk_… chloedb-server cc https://db.example.com:7700
+chloedb-server cc                                 # http://127.0.0.1:7700; it asks for the key
+chloedb-server cc https://hub.local:7700/c/prod   # a cluster in a hub's book, with the hub's key
+```
+
+The key comes from `CHLOEDB_KEY` (or `CHLOEDB_TOKEN`), else from a prompt that does not show it; there is no flag for it, so it is never in the shell's history or the list of processes. `--ca FILE` trusts a CA for an https URL. The screens need 80 columns by 24 rows, and `NO_COLOR` draws them without colour. Without a terminal it exits, naming `chloedb-server admin` for scripts.
+
+| key | screen | what it shows |
+|---|---|---|
+| `1`, `g h` | Home | the fleet's health: its headline, the copies that answer, p99 against the SLO, errors, replication lag, the fullest disk, the alerts firing, and each problem with what to do next |
+| `2`, `g c` | Cluster | a map of the shards, or of the nodes (`G`), each tile coloured by the lens `L` picks (health, p99, CPU, disk, errors, lag, version); beside it the shard picked, each copy's role, node, lag, p99 and CPU, and why the shard is in its state |
+| `3`, `g a` | Alerts | every rule, firing first; `a` acknowledges one, `s` silences it for the minutes typed with a reason, `u` lifts the silence |
+| `4`, `g q` | Queries | the queries running now (`x` cancels one) and the statements of the last 15 minutes, by their share of the time, p99, calls or errors (`o`) |
+| `5`, `g l` | Logs | the newest lines, followed as they come; `f` sets the level and `/` the text they hold |
+| `6`, `g o` | Tables | each table's rows, size, segments, reads and writes a minute, skew and last write, and the one picked shard by shard |
+| `7`, `g w` | SQL | a statement run as the key, its rows as a grid, `↑` `↓` its history |
+| `8`, `g t` | Timeline | the events, newest first: changes, alerts, primaries and failures |
+
+The `g` letters are the browser's. Space pauses the reading, `r` reads at once, `:` takes a command (a screen's name, `lens p99`, `ctx`, `writes`, `sql SELECT …`, `q`), and `?` lists the keys.
+
+**Changes** ask first, in a dialog that says what the change does, and on production (an environment that names no test or sandbox, or none on a server that is not this machine's or is reached through a hub, as the browser decides) for a reason the audit log keeps; Enter does nothing until it is given. On **Cluster**, `p` makes the copy picked its shard's primary, by its copies' votes (`POST /v1/admin/shards/{i}/promote`), refused for what the browser refuses it: it is the primary, does not answer, is being copied or is behind, or the shard has one copy, or the key is not admin. While a plan runs on the coordinator, a band names its step and `S` stops it after that step; it goes on when the terminal closes. On **SQL**, as in the SQL workbench, production is read-only until `W` allows writes for 15 minutes with a reason, which goes with each write; each write asks first, and an `UPDATE` or `DELETE` without `WHERE`, a `DROP` or a `TRUNCATE` needs its table's name typed. Draft and its plans (copies and shards added, moved and removed), the schema, the query builder, keys and the audit log, the profiler, rollouts, the cloud views and the apps stay in the browser.
+
+**Through a hub**, the URL is the connection's, `https://hub:7700/c/<name>`, and the key is the hub's (an admin key of the hub): each call goes through the hub, which adds that cluster's key, so the terminal never holds it ([many clusters from one command center](#many-clusters-from-one-command-center)). `:ctx` lists the hub's book and opens another of its clusters, and `:ctx -` the hub itself. A hub on another machine that listens on its loopback is reached through a tunnel: `ssh -L 7700:127.0.0.1:7700 host`, then `chloedb-server cc http://127.0.0.1:7700/c/<name>`.
+
 ### Apps
 
 An app is a program of its own that the command center shows as a view: the [crawler](crawler.md), the [spreadsheets](sheets.md), [network operations](netops.md), [ChloeCtx](../chloectx/app.md) and the [app engine](apps.md) are four. `--app name=url` (repeatable, or `CHLOEDB_APPS=a=url,b=url`) names each, and the server reaches it there; browsers never do, so the app needs no address of theirs and no keys (the app engine's studio is the exception: it runs code a model wrote, so it keeps an address of its own and signs browsers in with a link its view hands out). On Kubernetes, `spec.crawler`, `spec.sheets`, `spec.chloectx` and `spec.apps` of a `StrataCluster` have the operator run them beside the cluster and set this on its coordinators, and give each app a key [limited to its tables](#security) and a token of its own (below) ([the crawler on Kubernetes](crawler.md#on-kubernetes), [the spreadsheets on Kubernetes](sheets.md#on-kubernetes), [ChloeCtx on Kubernetes](../chloectx/app.md#on-kubernetes), [the app engine on a cluster](apps.md#on-a-cluster)):
