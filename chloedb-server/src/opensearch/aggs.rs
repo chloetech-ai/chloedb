@@ -11,7 +11,7 @@
 use futures::future::BoxFuture;
 use serde_json::{json, Map, Value as Json};
 
-use super::dsl::{add_units, compile, date_math, num, Ctx, Target};
+use super::dsl::{add_units, compile, date_math, negated, num, Ctx, Target};
 use super::mapping::{ident, lit, Index, Kind};
 use super::{Os, OsError};
 
@@ -206,24 +206,24 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
             "range" | "date_range" => return ranges(os, ix, &cx, pred.clone(), &body, subs.as_ref(), kind == "date_range").await,
             "filters" => {
                 let fs = body.get("filters").ok_or_else(|| OsError::parsing("[filters] requires filters"))?;
-                let mut named: Vec<(Option<String>, Option<String>)> = Vec::new();
+                let mut named: Vec<(Option<String>, &Json, Option<String>)> = Vec::new();
                 let mut cx2 = Ctx::new(ix);
                 match fs {
                     Json::Object(m) => {
                         for (k, q) in m {
-                            named.push((Some(k.clone()), compile(q, &mut cx2)?.pred));
+                            named.push((Some(k.clone()), q, compile(q, &mut cx2)?.pred));
                         }
                     }
                     Json::Array(a) => {
                         for q in a {
-                            named.push((None, compile(q, &mut cx2)?.pred));
+                            named.push((None, q, compile(q, &mut cx2)?.pred));
                         }
                     }
                     _ => return Err(OsError::parsing("[filters] is an object or an array of queries")),
                 }
                 let mut buckets_obj = Map::new();
                 let mut buckets_arr = Vec::new();
-                for (name, p) in &named {
+                for (name, _, p) in &named {
                     let p2 = match p {
                         Some(p) => with(&pred, p.clone()),
                         None => pred.clone(),
@@ -237,8 +237,17 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
                     }
                 }
                 if body.get("other_bucket").and_then(Json::as_bool) == Some(true) || body.get("other_bucket_key").is_some() {
-                    let others: Vec<String> = named.iter().filter_map(|(_, p)| p.clone()).map(|p| format!("NOT ({p})")).collect();
-                    let p2 = if others.is_empty() { Some(super::dsl::NONE.to_string()) } else { with(&pred, others.join(" AND ")) };
+                    // The documents none of the filters matches, a document
+                    // without a filter's field among them ([`Ctx::known`]);
+                    // none when a filter matches every document.
+                    let mut others = Vec::new();
+                    for (_, q, _) in &named {
+                        match negated(&mut cx2, |cx| compile(q, cx))?.pred {
+                            Some(p) => others.push(format!("NOT ({p})")),
+                            None => others.push(super::dsl::NONE.to_string()),
+                        }
+                    }
+                    let p2 = if others.is_empty() { pred.clone() } else { with(&pred, others.join(" AND ")) };
                     let b = bucket(os, ix, p2, Map::new(), subs.as_ref()).await?;
                     let key = body.get("other_bucket_key").and_then(Json::as_str).unwrap_or("_other_").to_string();
                     if matches!(fs, Json::Object(_)) {

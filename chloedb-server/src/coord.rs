@@ -27,8 +27,9 @@
 //! [`HEDGE_SHARE`] of calls. A replica that refuses a query because too
 //! many are running is not relieved by asking its sibling, which would
 //! only be loaded more: the query fails (or leaves the shard out of a
-//! partial answer). A replica that failed, or was outrun, is asked last
-//! for [`CoordOptions::cool_off`]. With
+//! partial answer). A replica that failed, or was outrun after it had
+//! [`CoordOptions::hedge`] to answer, is asked last for
+//! [`CoordOptions::cool_off`]. With
 //! [`CoordOptions::partial`], a query whose shard has no replica answering
 //! is answered from the other shards and says which are missing, and the
 //! queries of the next second leave that shard out without asking it.
@@ -126,7 +127,8 @@ pub use moves::{plan_even, MOVE_SLOTS};
 pub struct CoordOptions {
     /// Ask another replica of a shard when one has not answered after this.
     pub hedge: Duration,
-    /// Ask a replica that failed or was outrun last, for this long.
+    /// Ask a replica that failed, or was outrun after it had
+    /// [`Self::hedge`] to answer, last, for this long.
     pub cool_off: Duration,
     /// Give up on a shard after this long (`None`: at the query's deadline).
     pub shard_timeout: Option<Duration>,
@@ -171,7 +173,7 @@ pub struct CoordOptions {
     pub hedge_adaptive: bool,
     /// With [`Route::LeastCost`]: cost a replica for a read that must see a
     /// write (`min_seq_nos`) by its round trips of such reads, unless it is
-    /// known to hold the write (`--prefer-caught-up`).
+    /// known to hold the write (`--prefer-caught-up`). On by default.
     pub prefer_caught_up: bool,
     /// With [`Route::LeastCost`]: count the load each replica reported in
     /// the coordinator's survey. On by default; off only to measure what
@@ -186,11 +188,15 @@ pub struct CoordOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Route {
     /// Each in turn, those in their cool-off (failed or outrun) last.
-    #[default]
     RoundRobin,
     /// In turn too, unless another costs clearly less, by what this
     /// coordinator observed of each (round trip, calls in flight, errors,
-    /// refusals) and the load each reported ([`crate::cores::route`]).
+    /// refusals) and the load each reported ([`crate::cores::route`]);
+    /// those in their cool-off last, unless every one is. The default: on
+    /// copies alike it cut p99 by about a third against
+    /// [`Route::RoundRobin`] at 16 and 64 clients, and it asks a slow or
+    /// busy copy less.
+    #[default]
     LeastCost,
 }
 
@@ -225,9 +231,9 @@ impl Default for CoordOptions {
             stats_cache_terms: STATS_CACHE_TERMS,
             local: None,
             write_every_copy: false,
-            route: Route::RoundRobin,
+            route: Route::LeastCost,
             hedge_adaptive: false,
-            prefer_caught_up: false,
+            prefer_caught_up: true,
             route_load: true,
         }
     }
@@ -1069,6 +1075,18 @@ tokio::task_local! {
     /// What a write did on each shard when it failed on some after others
     /// took it ([`with_partial`]).
     static PARTIAL: std::cell::RefCell<Option<Json>>;
+}
+
+tokio::task_local! {
+    /// Set for a plan's run, in the background, when whoever applied or
+    /// resumed it holds the cluster's token ([`Coordinator::may_admit`]).
+    pub static ADMITTING: bool;
+}
+
+/// Why a server is not added for the request being served: adding one
+/// sends it the cluster's token (audit CLU-3).
+pub fn admit_refused(what: &str) -> ApiError {
+    ApiError::coded(403, "cluster_token_required", format!("{what} takes the cluster's token: the coordinator sends it to the server it adds, so a key or the admin token may not name one (on Kubernetes the operator adds them with the clusterTokenSecret)"))
 }
 
 /// Runs `f`, and answers with it what a write through a coordinator did
@@ -1916,9 +1934,9 @@ impl Coordinator {
             true => t.replicas[i][r].stats.hedge_ms().map_or(self.opts.hedge, |ms| Duration::from_secs_f64(ms / 1e3).clamp(HEDGE_FLOOR, self.opts.hedge.max(HEDGE_FLOOR))),
             false => self.opts.hedge,
         };
-        // When each asked replica was asked: one outrun before --hedge-ms
-        // by an adaptive hedge was slower than usual, not failing, and is
-        // not put in its cool-off.
+        // When each asked replica was asked: one outrun less than
+        // --hedge-ms after it was asked was not given its time, or was
+        // slower than usual, not failing, and is not put in its cool-off.
         let mut asked_at = Vec::new();
         pending.push(launch(order[0], false));
         asked.push(order[0]);
@@ -1935,11 +1953,13 @@ impl Coordinator {
                         // Replicas still working were outrun (and those that
                         // failed are avoided already).
                         for (k, &other) in asked.iter().enumerate().filter(|&(_, &o)| o != r && !passed.contains(&o)) {
-                            // Outrun before --hedge-ms by an adaptive hedge, or
-                            // while waiting for a write it is not known to hold
-                            // (--prefer-caught-up): slower than usual, or
-                            // behind, not failing.
-                            let early = self.opts.hedge_adaptive && asked_at[k].elapsed() < self.opts.hedge;
+                            // Outrun less than --hedge-ms after it was asked
+                            // (a hedge the copy asked before it outran, or an
+                            // adaptive hedge), or while waiting for a write it
+                            // is not known to hold (--prefer-caught-up): not
+                            // given its time, slower than usual, or behind,
+                            // not failing.
+                            let early = asked_at[k].elapsed() < self.opts.hedge;
                             let behind = self.opts.prefer_caught_up && self.opts.route == Route::LeastCost && min > 0 && t.replicas[i][other].stats.held() < min;
                             if !early && !behind {
                                 self.avoid(t, i, other);
@@ -4156,6 +4176,7 @@ impl Coordinator {
             "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
+            "route": self.opts.route.name(), "hedge_adaptive": self.opts.hedge_adaptive, "prefer_caught_up": self.opts.prefer_caught_up,
             "changes": self.can_change(t),
             "shards_by_state": by_state, "copies": {"total": copies, "down": copies_down},
         })
@@ -4518,7 +4539,29 @@ impl Coordinator {
     /// no rows (unless `force`) and no slot map, and serve the cluster's
     /// first table: of a cluster that began with no tables, the
     /// placeholder, which a server made with no tables serves.
+    /// Whether the request being served may add a server to the cluster:
+    /// the coordinator dials it with the cluster's token, before it knows
+    /// what answers there (audit CLU-3), so only the holder of that token
+    /// names one (the token of a coordinator with no cluster token; anyone
+    /// on an open cluster, which has no token to give away). A plan's run
+    /// may when whoever applied or resumed it did ([`ADMITTING`]); the
+    /// process's own work, outside any request, may.
+    pub fn may_admit(&self) -> bool {
+        if self.opts.token.is_none() {
+            return true;
+        }
+        match ADMITTING.try_with(|a| *a) {
+            Ok(a) => a,
+            // Every request over HTTP or gRPC says whether it is the
+            // cluster's own ([`crate::service::OWN`]).
+            Err(_) => crate::service::OWN.try_with(|o| *o).unwrap_or(true),
+        }
+    }
+
     async fn admit(&self, url: &str, force: bool) -> Result<(Client, Said), ApiError> {
+        if !self.may_admit() {
+            return Err(admit_refused(&format!("adding {url} to the cluster")));
+        }
         let t = self.topo();
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
             return Err(ApiError::bad(format!("{url} serves shard {i} already")));

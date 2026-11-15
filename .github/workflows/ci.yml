@@ -833,14 +833,15 @@ jobs:
       # ChloeCtx as an app of a cluster of this build's servers (two shards
       # and a coordinator): spaces, notes, contexts within a budget, an
       # exchange distilled by a stub model, incidents matched to an alert
-      # that fires, and a restart.
+      # that fires, and a restart. And `chloectx sync` with a server of this
+      # build: a table and a key per project, and a forget that reaches it.
       - name: ChloeCtx in a cluster
         if: fromJSON(needs.changes.outputs.run).smoke_ctx
         working-directory: chloectx
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOECTX_NEED_SERVER: "1"
-        run: cargo test --locked --profile ci --test app_cluster
+        run: cargo test --locked --profile ci --test app_cluster --test sync_server
       # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
       # searched; no model is called.

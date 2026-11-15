@@ -2935,7 +2935,16 @@ printed in the output above the text prompt.
    `bypassPermissions`; without it, what the settings say. A read-only
    agent starts in plan or default. An agent that another agent starts
    gets that agent's mode and may not ask for one that allows more. A
-   restart keeps both. Start a change has the choice (remembered in the
+   restart keeps both. An agent's key starts agents as that agent only
+   (audit APP-1): `POST /api/agents` with it takes that agent as the
+   parent whatever the body says (a body naming another agent is 403), so
+   that its read-only mode, its mode and its depth bound the new one
+   whether or not the body names a parent. An agent started by another
+   is allowed (`permissions.allow`) only rules its parent's session is
+   allowed (any, from a parent in `bypassPermissions`), and gets the
+   user's own permissions only where its parent got them. Restarting an
+   agent and starting a goal (`POST /api/goals`), which start agents with
+   no parent to bound them, are the user's: 403 for an agent's key. Start a change has the choice (remembered in the
    browser) and the tick for the user's own permissions, on by default;
    the agent's page says the mode and how many of the user's rules it got.
    Guarded commands are denied by the hook in every mode.

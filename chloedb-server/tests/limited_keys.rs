@@ -399,9 +399,25 @@ async fn an_app_token_narrowed_to_a_callers_tables() {
     let reader = key(&base, json!({"name": "reader", "scope": "read"})).await;
     assert_eq!(status(as_(&reader, "*=admin", "CREATE TABLE ana_z (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
     assert_eq!(status(as_(&reader, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
-    // A key limited to tables cannot narrow itself into other grants.
+    // A key limited to tables cannot narrow itself into other grants: it
+    // keeps, on each table, the lower of its scope and the caller's.
     let limited = key(&base, json!({"name": "lim", "tables": {"ana_*": "read"}})).await;
     assert_eq!(status(as_(&limited, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 403);
+    assert_eq!(status(as_(&limited, "*=admin", "SELECT id FROM ana_x LIMIT 1").await.unwrap()), 200);
+    assert_eq!(status(as_(&limited, "*=admin", "INSERT INTO ana_x (id, n) VALUES ('b', 1)").await.unwrap()), 403);
+    // A key like the one a server gives Sheets (DAT-5): the root's call
+    // through it makes Sheets' tables and reads the rest; a writer's
+    // writes them and makes none; a caller of other tables reads only
+    // those.
+    let sheets = key(&base, json!({"name": "sheets-like", "tables": {"ana_*": "admin", "*": "read"}})).await;
+    assert_eq!(status(as_(&sheets, "*=admin", "CREATE TABLE ana_w (id KEYWORD PRIMARY KEY)").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=admin", "CREATE TABLE other_w (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "*=write", "INSERT INTO ana_x (id, n) VALUES ('c', 1)").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=write", "CREATE TABLE ana_v (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "*=write", "INSERT INTO products (id) VALUES ('p-new')").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "ana_x=write", "SELECT id FROM products LIMIT 1").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "ana_x=write", "SELECT id FROM ana_x LIMIT 1").await.unwrap()), 200);
     // A bad grant is refused, not ignored.
     assert_eq!(status(as_("root-token", "ana_x=sometimes", "SELECT 1").await.unwrap()), 400);
 }

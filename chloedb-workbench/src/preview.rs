@@ -63,7 +63,10 @@ struct RestartB {
 /// resumed}`: the same name, task, worktree, model and read-only mode,
 /// continuing its session when it has a transcript (SPEC.md, "Sixth
 /// build: E").
-async fn restart(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> ApiResult {
+async fn restart(State(app): State<App>, Path(id): Path<String>, headers: axum::http::HeaderMap, body: Bytes) -> ApiResult {
+    // A restart keeps the agent's own mode and takes a new prompt: not an
+    // agent's to ask (audit APP-1).
+    crate::guarded::not_an_agent(&headers, "restarting an agent")?;
     let b: RestartB = if body.is_empty() { RestartB::default() } else { parse_body(&body)? };
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || {

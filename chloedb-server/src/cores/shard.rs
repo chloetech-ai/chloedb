@@ -626,6 +626,24 @@ impl Replica {
         Campaign { id: self.kept.id.clone(), term: self.kept.newest(n.term).max(self.heard) + 1, handover, config: self.kept.config_version(), copies: self.kept.config_copies() }
     }
 
+    /// Whether it may ask to be elected: only as a copy a primary counted
+    /// among those a majority is counted of, or as one of its shard's
+    /// first copies ([`Kept::member`]), as Raft's learners do not. A copy
+    /// that joined, or lost its volume and started again empty, and that
+    /// no primary has found caught up since, may lack writes a majority
+    /// acknowledged, and a member lacking them too, behind, would grant it
+    /// its vote: TLC found that lose an acknowledged write in nine steps,
+    /// the candidate having learned the shard's membership from a call it
+    /// could not apply (spec/replication, `MembersCampaign`).
+    pub fn counted(&self) -> Result<(), ApiError> {
+        match self.kept.member {
+            true => Ok(()),
+            false => Err(conflict(
+                "this replica is not counted among its shard's copies (it joined, or started again on an empty volume, and no primary has found it caught up since), so it asks for no votes: it may lack writes its shard acknowledged".to_string(),
+            )),
+        }
+    }
+
     /// The copies answered a round of its campaign `t`: the newest term
     /// one said it knows counts for its next campaign. A term in which a
     /// minority voted for a candidate that lost is never begun, and the
@@ -2110,8 +2128,8 @@ mod tests {
     /// N-E2: a replica whose volume was lost starts again with the same
     /// `--replica`, empty, as a first copy. It votes for no candidate that
     /// heard from a primary or holds what it does not, and, once a primary
-    /// that still counts it a member calls it, it counts itself none until
-    /// a call finds it caught up.
+    /// that still counts it a member calls it, it counts itself none, and
+    /// asks for no votes, until a call finds it caught up.
     #[test]
     fn a_first_copy_that_may_have_lost_its_volume_votes_for_no_copy_with_a_past() {
         let t0 = Instant::now();
@@ -2120,6 +2138,7 @@ mod tests {
         let empty = n(0, 0, &[]);
         let (mut r, save) = Replica::open(Kept::new("r1".into()), t0, true);
         assert!(save.is_some_and(|k| k.first_only()) && r.kept.first_only());
+        assert!(r.counted().is_ok(), "a first copy may ask to be elected (Bug::WaitsForAFirstCall)");
         // The copy behind at 90, which followed the shard's primary.
         let behind = pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (1, 90), false) };
         let v = r.vote(&behind, &empty, later, sticky).0;
@@ -2138,6 +2157,11 @@ mod tests {
         assert_eq!(Kept::from_json(&kept.to_json()).unwrap(), kept, "kept across a restart");
         r.took(Some(kept), t0);
         assert!(r.joined(true).is_none(), "not caught up");
+        // Nor does it ask to be elected (Bug::CampaignsUncounted): its
+        // vote is the primary's alone, and a member behind it would elect
+        // it without what the primary acknowledged.
+        let e = r.counted().unwrap_err();
+        assert!(e.status == 409 && e.message.contains("asks for no votes"), "{}", e.message);
         let v = r.vote(&ask(2, "r2", (0, 0), false), &empty, later, sticky).0;
         assert!(!v.granted && v.reason.contains("not caught up"), "{}", v.reason);
         let v = r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (1, 2), false) }, &empty, later, sticky).0;
@@ -2152,6 +2176,7 @@ mod tests {
         let kept = r.joined(true).expect("caught up");
         assert!(kept.member && !kept.first_only() && kept.called_first.is_none());
         r.took(Some(kept), t0);
+        assert!(r.counted().is_ok());
         assert!(r.vote(&behind, &at, later, sticky).0.reason.contains("past the candidate's last"));
         assert!(r.vote(&ask(2, "p", (1, 100), false), &at, later, sticky).0.granted);
         // As the copy asked: a candidate that heard from no primary and

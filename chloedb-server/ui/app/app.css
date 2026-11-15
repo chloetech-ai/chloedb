@@ -3299,6 +3299,9 @@ html.via-hub::before { content: ""; position: fixed; left: 0; right: 0; top: 0; 
 .sim-delta { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sim-delta.good { background: var(--good-soft); color: var(--good-ink); }
 .sim-delta.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.sim-best { font-weight: 700; color: var(--good-ink); }
+.sim-turns td.num { white-space: nowrap; }
+.sim-rcell { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
 .sim-wi-controls { gap: 16px; align-items: flex-end; }
 .sim-step { display: flex; flex-direction: column; gap: 3px; }
 .sim-cmps { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 10px; }

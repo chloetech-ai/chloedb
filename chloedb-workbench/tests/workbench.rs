@@ -1887,6 +1887,49 @@ fn sessions_get_the_permissions_a_regular_claude_code_session_has() {
     assert_eq!(s.agent(v["agent"]["id"].as_str().unwrap())["permission_mode"], "auto");
 }
 
+/// Audit APP-1: the ceiling on an agent another starts held only when the
+/// body named the parent, so a read-only agent's key called the API with
+/// none and started a top-level agent in bypassPermissions. An agent's key
+/// now starts agents as that agent, whatever the body says.
+#[test]
+fn an_agents_key_starts_agents_only_as_its_own_child() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "reader", "task": "say hi", "read_only": true, "permission_mode": "plan" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let key = agent_token(&s, &id);
+    let free = s.spawn(json!({ "repo": r, "name": "free", "task": "say hi", "permission_mode": "bypassPermissions" }));
+    let fid = free["id"].as_str().unwrap().to_string();
+
+    // No parent in the body: bounded by the caller all the same.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "permission_mode": "bypassPermissions" })));
+    assert_eq!(status, 400, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "read_only": false, "permissions": { "allow": ["Bash"] } })));
+    assert_eq!(status, 400, "{v}");
+    assert!(v["error"].as_str().unwrap_or_default().contains("Bash"), "{v}");
+    // Another agent named as the parent (one that may do more): refused.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "parent": fid })));
+    assert_eq!(status, 403, "{v}");
+    let all = s.get("/api/agents?all=1").1;
+    assert!(!all["agents"].as_array().unwrap().iter().any(|a| a["name"] == "escaped"), "nothing was started: {all}");
+
+    // What it may start: its own child, read-only and in plan like it, one deeper.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "kid", "read_only": false })));
+    assert_eq!(status, 201, "{v}");
+    let kid = s.agent(v["agent"]["id"].as_str().unwrap());
+    assert_eq!((kid["parent"].as_str(), kid["read_only"].as_bool(), kid["permission_mode"].as_str(), kid["depth"].as_i64()), (Some(id.as_str()), Some(true), Some("plan"), Some(1)), "{kid}");
+
+    // A restart and a goal start agents no parent bounds: the user's.
+    let (status, v) = call_as(&s, "POST", &format!("/api/agents/{fid}/restart"), &key, None, Some(json!({})));
+    assert_eq!(status, 403, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/goals", &key, None, Some(json!({ "repo": r, "text": "ship it", "plan": true })));
+    assert_eq!(status, 403, "{v}");
+    // The user's key still starts what it asks.
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "mine", "permission_mode": "bypassPermissions", "worktree": false }));
+    assert_eq!(status, 201, "{v}");
+}
+
 #[test]
 fn the_digest_tells_what_happened_since_you_last_looked() {
     let ctx = tempfile::tempdir().unwrap();

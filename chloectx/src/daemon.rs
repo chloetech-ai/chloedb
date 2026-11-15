@@ -188,6 +188,10 @@ struct State {
     active: String,
 }
 
+/// One sync with the server at a time: a push, a pull, or a forget's
+/// deletes there (audit CTX-33).
+static SYNC_ONE: Mutex<()> = Mutex::new(());
+
 pub struct Daemon {
     pub paths: StorePaths,
     pub project: String,
@@ -500,23 +504,25 @@ impl Daemon {
     /// project's records the server holds and the store lacks): the
     /// sync's state after, or `None` with no server set up. One at a time.
     pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
-        static ONE: Mutex<()> = Mutex::new(());
         // No server set up: done, without asking git what the project is.
         crate::sync::remote(&crate::paths::home())?;
         let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         // Read each time: `chloectx sync setup` may have given the project a key since.
         let remote = crate::sync::remote_for(&crate::paths::home(), &key)?;
-        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        // The rows of records forgotten here go first (audit CTX-33): a
+        // server that did not answer a forget's delete is asked again.
+        let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
         let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
         // replaced by themselves. Taking them as pushed (pushed_seq set to
         // the store's last) also took as pushed whatever the hooks recorded
         // while the pull ran, which then never reached the server.
-        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
-        st.last_error = match (&pushed, &pulled) {
-            (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st, &self.paths.dir)) } else { None };
+        st.last_error = match (&forgets, &pushed, &pulled) {
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Some(Err(e))) => e.to_string(),
             _ => String::new(),
         };
         let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
@@ -525,6 +531,28 @@ impl Daemon {
         }
         crate::sync::save_state(&self.paths.dir, &st);
         Some(st)
+    }
+
+    /// Deletes the sync server's rows of the records just forgotten (audit
+    /// CTX-33), between pushes: one that read a record before its delete
+    /// has sent it by then. What the forget says of them; nothing with no
+    /// server set up.
+    fn forget_on_server(&self) -> String {
+        // No server set up: nothing to delete, without asking git what the project is.
+        if crate::sync::remote(&crate::paths::home()).is_none() {
+            return String::new();
+        }
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // The project's own key where it has one (`chloectx sync setup`), as a push uses.
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::sync::send_forgets(&remote, &key, &self.paths.dir) {
+            Ok(_) => "its row on the sync server deleted too (a machine that pulled it before keeps its copy)".into(),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
+                format!("the sync server's row is not deleted yet ({e}): each push asks again, and a pull never brings it back here")
+            }
+        }
     }
 
     /// `{"op": "sync", "what": "status" | "push" | "pull"}`.
@@ -1237,7 +1265,9 @@ impl Daemon {
             let s = st.sessions.get(sid).cloned().unwrap_or_default();
             (s.window_start, s.injected)
         };
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
+        // What it puts into the prompt by itself quotes no third party
+        // (audit CTX-32): memory_search and memory_ask still find those.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
         let tree = self.tree(sid);
         let project = Path::new(&tree);
         let res = crate::deep::run(&self.store, &self.deep_cfg(), &self.distill_cfg(), prompt, recent, &filter, Some(project), now());
@@ -1475,7 +1505,9 @@ impl Daemon {
             (s.window_start, s.injected, s.turn)
         };
         let query: String = prompt.chars().take(2000).collect();
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
+        // A page, an issue or a mail read once is not recalled into later
+        // prompts as earlier work (audit CTX-32): memory_search finds it.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
         let t0 = Instant::now();
         // Knowledge that matches the prompt on its own text is shown even
         // when the gate holds back the rest: a request that does not sound
@@ -1588,7 +1620,7 @@ impl Daemon {
             return Ok(String::new());
         }
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note, Kind::Episode];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut where_ = filter.conds();
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
@@ -1627,7 +1659,7 @@ impl Daemon {
         }
         let w = self.with_session(sid, |s| s.window_start);
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut s = format!("In earlier work, edits of {rel} were usually followed by edits of: {}.\n", next.join(", "));
         let mut shown = shown.to_string();
         let mut ck = self.checker_in(&tree);
@@ -1998,6 +2030,11 @@ impl Daemon {
         // No snapshot from here until the segments are rewritten.
         self.snapshots.hold();
         let held = Held(&self.snapshots);
+        // Noted as forgotten for the sync before they are deleted (audit
+        // CTX-33): a pull that runs meanwhile then either stores none of
+        // them again or stores them before the deletes, which remove them.
+        let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
+        let mut noted = crate::sync::forget(&self.paths.dir, &present);
         let (mut deleted, mut missing, mut forgotten) = (Vec::new(), Vec::new(), Vec::new());
         for id in &ids {
             let rec = self.store.get(&[id.clone()])?.pop();
@@ -2029,6 +2066,16 @@ impl Daemon {
             }
             scrubbed.push(self.scrub_history(Some(last)));
         }
+        // One a pull stored after the look above, and the sync server's
+        // rows go too.
+        let late: Vec<String> = deleted.iter().filter(|d| !present.contains(d)).cloned().collect();
+        if noted.is_ok() {
+            noted = crate::sync::forget(&self.paths.dir, &late);
+        }
+        if let Err(e) = noted {
+            scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
+        }
+        let synced = !deleted.is_empty() && crate::sync::remote(&crate::paths::home()).is_some();
         let mut later = None;
         if !deleted.is_empty() {
             // The hold passes to the compaction, which releases it.
@@ -2037,11 +2084,20 @@ impl Daemon {
             if wait {
                 let failed = self.compact_forgotten(&before);
                 scrubbed.push(if failed.is_empty() { format!("{what} rewritten without it") } else { failed });
+                if synced {
+                    scrubbed.push(self.forget_on_server());
+                }
             } else {
                 later = Some(self.after(move |me| {
                     me.compact_forgotten(&before);
+                    if synced {
+                        me.forget_on_server();
+                    }
                 }));
                 scrubbed.push(format!("{what} being rewritten"));
+                if synced {
+                    scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
+                }
             }
         }
         let scrubbed: Vec<String> = scrubbed.into_iter().filter(|s| !s.is_empty()).collect();

@@ -131,7 +131,10 @@ async fn goals_list(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult
     json_ok(blocking(move || goals::list(&sup, &lv, q.repo.as_deref())).await?)
 }
 
-async fn goals_create(State(app): State<App>, body: Bytes) -> ApiResult {
+async fn goals_create(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    // A goal starts its lead and outcomes as top-level agents: the user's
+    // to start, not an agent's (audit APP-1).
+    crate::guarded::not_an_agent(&headers, "starting a goal")?;
     let b: goals::GoalBody = parse_body(&body)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || goals::create(&sup, &lv, b)).await?;

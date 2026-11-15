@@ -64,7 +64,8 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, list, create, delete, patch]
-  # A cluster's tokenSecret, to call its coordinators. Making, changing
+  # A cluster's tokenSecret, to call its coordinators, and its
+  # clusterTokenSecret, to add servers to it. Making, changing
   # and deleting Secrets (each app's credentials) is strata-operator-secrets',
   # granted in the namespaces that hold clusters only (below).
   - apiGroups: [""]

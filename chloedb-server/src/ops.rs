@@ -34,6 +34,7 @@ pub const READ_POSTS: &[&str] = &[
     "/v1/admin/plan",
     "/v1/admin/kube/plan",
     "/v1/admin/simulator/predict",
+    "/v1/admin/simulator/routing",
     "/v1/logs/query",
     "/v1/admin/autoscale/replay",
     "/v1/admin/aws/validate",

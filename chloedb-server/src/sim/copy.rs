@@ -549,8 +549,12 @@ impl Sim {
         let n = self.copies[i].db.numbering.clone();
         let Role::Replica(rep) = &self.copies[i].role else { return };
         let c = rep.campaign(&n, by_hand);
+        let uncounted = rep.counted().err().filter(|_| !self.cfg.bugs.contains(&Bug::CampaignsUncounted));
         let phase = if by_hand { Phase::Hello } else { Phase::Pre };
         self.copies[i].election = Some(Election { c, asked: None, phase, round: 0, answers: Vec::new(), left: 0, reply });
+        if let Some(err) = uncounted {
+            return self.end_election(i, Err(err));
+        }
         self.ask_round(i, phase);
     }
 
