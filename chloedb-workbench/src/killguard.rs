@@ -265,7 +265,7 @@ pub fn check(sup: &Supervisor, id: &str, own_pid: Option<i64>, cmd: &str) -> Opt
     }
     // Name the agents the processes belong to.
     let parent: HashMap<i32, i32> = procs.iter().map(|p| (p.pid, p.ppid)).collect();
-    let agents: Vec<(i32, String)> = sup.agent_rows().into_iter().filter(|a| a.id != id && sup.is_running(&a.id)).filter_map(|a| Some((a.pid? as i32, a.name))).collect();
+    let agents: Vec<(i32, String)> = sup.all_agent_rows().into_iter().filter(|a| a.id != id && sup.is_running(&a.id)).filter_map(|a| Some((a.pid? as i32, a.name))).collect();
     let owner = |mut pid: i32| -> Option<String> {
         for _ in 0..64 {
             if let Some((_, n)) = agents.iter().find(|(p, _)| *p == pid) {

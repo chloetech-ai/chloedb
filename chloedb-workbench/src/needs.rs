@@ -35,7 +35,8 @@ pub fn needs(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: Option<&str>) -> Jso
     let qs = crate::questions::list(sup, lv, None, Some("open"), None).ok().map(|v| v["questions"].as_array().cloned().unwrap_or_default()).unwrap_or_default();
     for q in qs {
         let Some(id) = q["agent"].as_str().map(str::to_string) else { continue };
-        if !sup.is_running(&id) {
+        // A replay's prompts are answered by its run (src/harness/replay.rs).
+        if !sup.is_running(&id) || sup.is_replay(&id) {
             continue;
         }
         let Some(a) = sup.agent_json_of(&id) else { continue };

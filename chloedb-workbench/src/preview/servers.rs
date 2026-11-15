@@ -59,7 +59,8 @@ pub fn policy(sup: &Supervisor) -> Option<String> {
 
 /// Every agent's servers now (the agents Workbench knows).
 pub fn scan(sup: &Supervisor) -> Vec<Server> {
-    let agents = sup.agent_rows();
+    // The replays' too, so that a replay's servers stop with it.
+    let agents = sup.all_agent_rows();
     let known: HashMap<String, Option<i32>> = agents.iter().map(|a| (a.id.clone(), a.pid.map(|p| p as i32).filter(|_| sup.is_running(&a.id)))).collect();
     let mut out = listeners()
         .into_iter()
@@ -322,11 +323,11 @@ async fn stop_one(State(app): State<App>, Path(pid): Path<i32>) -> ApiResult {
     Ok(AxJson(v).into_response())
 }
 
-#[cfg(test)]
+// Its one test reads /proc.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn finds_a_listening_child_by_its_environment() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

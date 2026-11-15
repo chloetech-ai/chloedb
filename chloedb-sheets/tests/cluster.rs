@@ -271,3 +271,81 @@ async fn workbooks_live_in_a_cluster() {
     assert_eq!(list["books"].as_array().unwrap().len(), 4);
     sheets.stop();
 }
+
+/// DAT-5: the Sheets a chloedb-server starts itself (`--start-apps
+/// sheets`, as an install with the apps beside the server does) holds a
+/// key the server limits to its tables, and runs each caller's statements
+/// with it narrowed to the caller's tables: the root, a writer and a key
+/// of some tables each open a table into a workbook; a reader cannot make
+/// one, and a key without the table cannot read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sheets_a_server_starts_serves_its_callers() {
+    let Some(bin) = server_bin().filter(|b| b.exists()) else {
+        assert!(std::env::var_os("CHLOEDB_SHEETS_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (port, grpc) = (free_port(), free_port());
+    let here = PathBuf::from(env!("CARGO_BIN_EXE_chloedb-sheets")).parent().unwrap().to_path_buf();
+    let path = std::env::join_paths(std::iter::once(here).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let mut server = Command::new(&bin)
+        .arg("--db")
+        .arg(dir.path().join("srv.chloedb"))
+        .args(["--listen", &format!("127.0.0.1:{port}"), "--grpc", &format!("127.0.0.1:{grpc}"), "--token", TOKEN, "--start-apps", "sheets"])
+        .env("PATH", path)
+        .env_remove("CHLOEDB_APPS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("chloedb-server");
+    struct Kill<'a>(&'a mut Child);
+    impl Drop for Kill<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _kill = Kill(&mut server);
+    let url = format!("http://127.0.0.1:{port}");
+    let http = reqwest::Client::new();
+    let call = |auth: &str, path: &str, body: Value| http.post(format!("{url}{path}")).bearer_auth(auth.to_string()).json(&body).send();
+    // Up, with its Sheets answering through it.
+    let t0 = Instant::now();
+    loop {
+        if let Ok(r) = http.get(format!("{url}/v1/apps/sheets/v1/books")).bearer_auth(TOKEN).send().await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(t0.elapsed() < Duration::from_secs(90), "the Sheets chloedb-server started did not answer through it");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let r = call(TOKEN, "/v1/sql", json!({"sql": "CREATE TABLE docs (id KEYWORD PRIMARY KEY, title TEXT, n INT)"})).await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let ops: Vec<Value> = (0..3).map(|i| json!({"op": "insert", "table": "docs", "doc": {"id": format!("d{i}"), "title": format!("doc {i}"), "n": i}})).collect();
+    let r = call(TOKEN, "/v1/write", json!({"ops": ops})).await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let key = |body: Value| {
+        let r = call(TOKEN, "/v1/admin/keys", body);
+        async move {
+            let j: Value = r.await.unwrap().json().await.unwrap();
+            j["secret"].as_str().unwrap_or_else(|| panic!("no key: {j}")).to_string()
+        }
+    };
+    let writer = key(json!({"name": "writer", "scope": "write"})).await;
+    let some = key(json!({"name": "some", "tables": {"sheets_*": "write", "docs": "read"}})).await;
+    let reader = key(json!({"name": "reader", "scope": "read"})).await;
+    let other = key(json!({"name": "other", "tables": {"sheets_*": "write", "notes": "read"}})).await;
+    for (who, auth) in [("the root", TOKEN), ("a writer", writer.as_str()), ("a key of sheets_* and docs", some.as_str())] {
+        let r = call(auth, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+        let status = r.status();
+        let j: Value = r.json().await.unwrap();
+        assert!(status.is_success(), "{who}: {status} {j}");
+        assert_eq!(j["copied"]["rows"], 3, "{who}: {j}");
+    }
+    let r = call(&reader, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+    assert_eq!(r.status(), 403, "a reader makes no workbook: {}", r.text().await.unwrap());
+    let r = call(&other, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+    assert_eq!(r.status(), 403, "a key without docs reads none of it: {}", r.text().await.unwrap());
+}

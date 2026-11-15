@@ -802,18 +802,33 @@ pub enum Check {
 pub struct Admin {
     pub base: String,
     pub token: Option<String>,
+    /// The cluster's token, for the calls that add a server ([`Self::join`]).
+    join_token: Option<String>,
     http: reqwest::Client,
 }
 
 impl Admin {
     pub fn new(base: &str, token: Option<String>) -> Admin {
         let http = crate::http_client().timeout(Duration::from_secs(60)).build().expect("an HTTP client");
-        Admin { base: base.trim_end_matches('/').to_string(), token, http }
+        Admin { base: base.trim_end_matches('/').to_string(), token, join_token: None, http }
+    }
+
+    /// The same API, adding servers with the cluster's token `t` (its
+    /// `clusterTokenSecret`): the coordinator sends that token to a server
+    /// it adds, so it takes it, not the admin token, for that (audit
+    /// CLU-3). `None`: the admin token, which is the cluster's then.
+    pub fn joining_with(mut self, t: Option<String>) -> Admin {
+        self.join_token = t;
+        self
     }
 
     pub async fn call(&self, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+        self.call_as(self.token.as_deref(), method, path, body).await
+    }
+
+    async fn call_as(&self, token: Option<&str>, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
         let mut r = self.http.request(method.clone(), format!("{}{path}", self.base));
-        if let Some(t) = &self.token {
+        if let Some(t) = token {
             r = r.bearer_auth(t);
         }
         if let Some(b) = body {
@@ -831,6 +846,12 @@ impl Admin {
 
     async fn post(&self, path: &str, body: Json) -> Result<Json, String> {
         self.call(reqwest::Method::POST, path, Some(body)).await
+    }
+
+    /// POSTs a call that adds a server to the cluster (a shard, a copy),
+    /// with the cluster's token ([`Self::joining_with`]).
+    async fn join(&self, path: &str, body: Json) -> Result<Json, String> {
+        self.call_as(self.join_token.as_deref().or(self.token.as_deref()), reqwest::Method::POST, path, Some(body)).await
     }
 
     async fn delete(&self, path: &str) -> Result<Json, String> {
@@ -1326,7 +1347,7 @@ async fn act<P: Platform>(
         for &k in set.ready.iter().filter(|&&k| kept(set.id, k)) {
             let url = p.url(set.id, k);
             if !view.shards[i].servers.iter().any(|r| r.url == url) {
-                admin.post(&format!("/v1/admin/shards/{i}/replicas"), json!({"url": url, "force": true})).await?;
+                admin.join(&format!("/v1/admin/shards/{i}/replicas"), json!({"url": url, "force": true})).await?;
                 return scaling(format!("{url} joins shard {i}"));
             }
         }
@@ -1380,7 +1401,7 @@ async fn act<P: Platform>(
         let mut ready: Vec<usize> = set.ready.iter().copied().filter(|&k| k < set.replicas).collect();
         ready.sort();
         let servers: Vec<String> = ready.iter().map(|&k| p.url(set.id, k)).collect();
-        admin.post("/v1/admin/shards", json!({"servers": servers, "write_acks": spec.write_acks})).await?;
+        admin.join("/v1/admin/shards", json!({"servers": servers, "write_acks": spec.write_acks})).await?;
         return scaling(format!("shard {n} joins the cluster, served by {}", servers.join(", ")));
     }
     if spec.shards < n {

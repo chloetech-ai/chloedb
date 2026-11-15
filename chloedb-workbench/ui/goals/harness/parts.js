@@ -2,6 +2,11 @@
 // shared pieces of /levels/common.js and the theme's tokens only.
 import { h, useStyle, icon, toMs } from "/levels/common.js";
 
+/** Whether the pages offer Optimize this (HARNESS.md, "Optimize this"):
+ * off while it is rebuilt around the corrections you make, its engine
+ * and API kept (and tested) for that. */
+export const OPTIMIZE_THIS = false;
+
 /** The goal's tabs; `on` is the one shown. */
 export const TABS = [
   ["overview", "Overview", "#/harness"],
@@ -10,6 +15,7 @@ export const TABS = [
   ["memory", "Memory", "#/harness/edit/memory"],
   ["sees", "What the model sees", "#/harness/sees"],
   ["versions", "Versions", "#/harness/versions"],
+  ["evals", "Tests", "#/harness/evals"],
 ];
 
 export function tabs(on) {
@@ -157,6 +163,25 @@ useStyle("harness-parts", `
 .hx-grid2{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:var(--s-4);align-items:start}
 @media (max-width:1024px){.hx-grid2{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:640px){.hx-tabs{gap:var(--s-4);margin-bottom:var(--s-4)}.hx-tabs a{min-height:var(--touch);font-size:var(--fs-body)}.hx-seg button{min-height:var(--touch)}}
+`);
+
+useStyle("harness-replay-parts", `
+/* Tests, Make this a test, runs (evals.js, timeline.js, run.js). */
+.hxe-kv{grid-template-columns:72px minmax(0,1fr)}
+.hxe-form{display:flex;flex-direction:column;gap:var(--s-3);margin-bottom:var(--s-3)}
+.hxe-form label{display:flex;flex-direction:column;gap:var(--s-1)}
+.hxe-form label span,.hxe-fl{font-size:var(--fs-xs);color:var(--text-2);display:block;margin-bottom:var(--s-1)}
+.hxe-small{font-size:var(--fs-xs);line-height:var(--lh-xs);margin:var(--s-1) 0 0}
+ul.hxe-small{padding-left:18px}
+.hxe-pct,.hxe-n{width:64px}
+.hxe-ns{display:flex;gap:var(--s-3);flex-wrap:wrap}
+.hxe-ns label{display:flex;flex-direction:column;gap:var(--s-1);font-size:var(--fs-xs);color:var(--text-2)}
+.hxe-est{padding:var(--s-3);border-radius:var(--r-sm);background:var(--surface-3)}
+.hxe-price b{font-size:var(--fs-lg)}
+.hxe-price span{font-size:var(--fs-sm)}
+.hxe-warn{display:flex;gap:4px;align-items:flex-start;font-size:var(--fs-sm);color:var(--warn-ink);margin:var(--s-2) 0 0}
+.hxr-st{font:var(--w-mid) var(--fs-xs)/16px var(--mono);text-transform:uppercase;letter-spacing:.04em}
+.hxr-st.running,.hxr-st.queued{color:var(--accent-text)}.hxr-st.needs_you{color:var(--warn-ink)}.hxr-st.done{color:var(--good-ink)}.hxr-st.failed{color:var(--crit-ink)}
 `);
 
 /** Saves a draft from `parent` (a config version's id) with `parts`

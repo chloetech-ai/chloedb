@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=3871c230ea">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
@@ -84,7 +84,7 @@
       <span class="eyebrow">Apps</span>
       <h1>chloedb-netops: network operations on ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/netops.md">docs/chloedb/netops.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.4, unreleased). The latest release is 0.3.3 (<a href="v0.3.3/index.html">its docs</a>); what is newer is marked "since 0.3.4".</p>
+      <p class="doc-version">These docs describe release 0.3.4.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-pages">The pages</a></li><li><a href="#the-map">The map</a></li><li><a href="#where-is-it-broken">Where is it broken</a></li><li><a href="#an-incidents-board">An incident's board</a></li><li><a href="#the-agents">The agents</a></li><li><a href="#the-six-faults">The six faults</a></li><li><a href="#your-own-network">Your own network</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#what-it-is-not">What it is not</a></li><li><a href="#test-it">Test it</a></li></ol></details>
     <div class="doc-body">
@@ -245,7 +245,7 @@ chloedb-server ... --app netops=http://netops-host:7840   # with CHLOEDB_APP_TOK
 <p><img loading="lazy" decoding="async" alt="One object: where its trouble starts, what it hangs from, what depends on it, and the trouble around it" src="../../assets/img/netops-map-object.png" /></p>
 <p>A click on an object also lights what it hangs from and what depends on it, and fades the rest; the panel beside the map has tabs for the object: <strong>Overview</strong> (the walk above), <strong>Metrics</strong> (a minute's series for the backbone's devices and their links; for the estate, its latest reading and its faults and changes a day over sixty days), <strong>Events</strong>, <strong>Logs</strong> (syslog for the backbone; the estate's events as lines), <strong>Related</strong> (the chain it hangs from, what depends on it by kind, the customers behind it, the trouble around it), <strong>Incidents</strong> and <strong>Config</strong> (its properties, and for the backbone the latest configuration). They are read by <code>/v1/map/detail</code>.</p>
 <h3 id="the-box-above-every-page-and-the-assistant">The box above every page, and the assistant<a class="anchor" href="#the-box-above-every-page-and-the-assistant" aria-label="Link to this section">#</a></h3>
-<p>The box has two modes, <strong>Search</strong> and <strong>Ask</strong> (Tab switches them when the box is empty), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, <code>/v1/suggest</code> completes it from the tables, from what was typed before the word, and from where the person is:</p>
+<p>The box has two modes, <strong>Search</strong> and <strong>Ask</strong> (the buttons before the box switch them; Tab completes the suggestion chosen with the arrows, or moves on to the page), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, <code>/v1/suggest</code> completes it from the tables, from what was typed before the word, and from where the person is:</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -680,7 +680,7 @@ WHERE ts &gt;= &#x27;2026-11-13T03:00:00Z&#x27; GROUP BY link ORDER BY worst DES
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="../assets/site.js?v=142c29c3e0"></script>
+<script src="../assets/site.js?v=699f360f4f"></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

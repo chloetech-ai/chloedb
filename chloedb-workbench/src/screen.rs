@@ -468,11 +468,13 @@ pub struct MenuOption {
 }
 
 /// What kind of menu: Claude Code's permission prompt, its trust prompt,
-/// or another dialog that waits on a choice.
+/// an offer of its own (install a plugin), or another dialog that waits on
+/// a choice.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MenuKind {
     Permission,
     Trust,
+    Offer,
     Dialog,
 }
 
@@ -481,6 +483,7 @@ impl MenuKind {
         match self {
             MenuKind::Permission => "permission",
             MenuKind::Trust => "trust",
+            MenuKind::Offer => "offer",
             MenuKind::Dialog => "dialog",
         }
     }
@@ -766,6 +769,9 @@ pub fn menu(lines: &[String]) -> Option<Menu> {
     let all = format!("{} {}", header.join(" "), options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" ")).to_lowercase();
     let kind = if all.contains("trust this folder") || all.contains("trust the files") {
         MenuKind::Trust
+    } else if all.contains("plugin") && (all.contains("install") || all.contains("marketplace")) {
+        // "Would you like to install this LSP plugin?": not a tool call.
+        MenuKind::Offer
     } else if options[0].label.starts_with("Yes") && options.iter().any(|o| o.label.starts_with("No")) {
         MenuKind::Permission
     } else {
@@ -898,6 +904,30 @@ Enter to confirm · Esc to cancel";
         let other = THREE.replace("diff test_cart.py", "diff cart.py");
         let Waits::Menu(o) = read(&screen_of(&other)) else { panic!() };
         assert_ne!(m.signature(), o.signature());
+    }
+
+    /// Claude Code's offer of a language server, as a real session showed it.
+    const LSP_OFFER: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+ Plugin: pyright-lsp
+ Marketplace: claude-plugins-official
+ Triggered by: .py files
+ Description: Python language server (Pyright) for type checking and code intelligence
+
+ Plugins can run code on your computer, with access to your files and shell.
+
+ Would you like to install this LSP plugin?
+ ❯ 1. Yes, install
+   2. No, not now
+   3. Never for this plugin
+   4. Disable all LSP recommendations";
+
+    #[test]
+    fn an_offer_to_install_a_plugin_is_not_a_permission_prompt() {
+        let Waits::Menu(m) = read(&screen_of(LSP_OFFER)) else { panic!() };
+        assert_eq!(m.kind, MenuKind::Offer);
+        assert_eq!(m.question, "Would you like to install this LSP plugin?");
+        assert_eq!(m.labels(), ["Yes, install", "No, not now", "Never for this plugin", "Disable all LSP recommendations"]);
     }
 
     #[test]

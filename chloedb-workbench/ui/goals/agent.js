@@ -32,7 +32,8 @@ export function head(a, o = {}) {
         h("b", {}, "Stop"), h("span", {}, "Ends the session (asks first). Its worktree and branch stay.")) : null,
       !a.running ? h("button", { type: "button", role: "menuitem", onclick: (e) => { e.target.closest("details").open = false; o.onRestart && o.onRestart(); } },
         h("b", {}, "Restart with the same task"), h("span", {}, "Same name, worktree and task, continuing its session when Claude Code still has it.")) : null,
-      h("a", { role: "menuitem", href: `#/a/${a.id}/events` }, h("b", {}, "Events"), h("span", {}, "Every hook event, as it came."))));
+      h("a", { role: "menuitem", href: `#/a/${a.id}/events` }, h("b", {}, "Events"), h("span", {}, "Every hook event, as it came.")),
+      h("a", { role: "menuitem", href: `#/harness/evals/new/${encodeURIComponent(a.id)}` }, h("b", {}, "Make this a test"), h("span", {}, "Pick turns of this session to replay and judge, or to optimize."))));
   return h("div", { class: "ag-head" },
     avatar(a, 28),
     h("div", { class: "ag-t" },

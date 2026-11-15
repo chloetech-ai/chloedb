@@ -93,6 +93,17 @@ pub struct Config {
     pub keep: bool,
     pub seed: u64,
     pub label: Option<String>,
+    /// With shape "routing": the coordinator settings compared, each
+    /// through a coordinator of its own made for the test on the same
+    /// shards (empty: this coordinator's and the others of
+    /// [`super::routing::standard`]); the clients at each level, each
+    /// sending its next request when it has an answer; rounds of turns,
+    /// each setting `step_s` at each level a round; and the share of
+    /// requests that write a row and read it back at once.
+    pub variants: Vec<super::routing::Variant>,
+    pub clients: Vec<usize>,
+    pub rounds: usize,
+    pub after_write: f64,
 }
 
 impl Default for Config {
@@ -119,6 +130,10 @@ impl Default for Config {
             keep: false,
             seed: 1,
             label: None,
+            variants: Vec::new(),
+            clients: vec![1, 16, 64],
+            rounds: 3,
+            after_write: 0.0,
         }
     }
 }
@@ -187,7 +202,24 @@ impl Config {
                     return Err(ApiError::bad("steady needs a rate above 0 (requests a second) and seconds 5 to 3,600"));
                 }
             }
-            s => return Err(ApiError::bad(format!("shape is ramp or steady, not {s:?}"))),
+            "routing" => {
+                if c.variants.len() > 6 {
+                    return Err(ApiError::bad("a routing run compares at most 6 settings"));
+                }
+                for v in &c.variants {
+                    v.check()?;
+                }
+                if c.clients.is_empty() || c.clients.len() > 4 || c.clients.iter().any(|&n| !(1..=512).contains(&n)) {
+                    return Err(ApiError::bad("a routing run takes 1 to 4 levels of clients, each 1 to 512"));
+                }
+                if !(1..=10).contains(&c.rounds) || !(2.0..=120.0).contains(&c.step_s) {
+                    return Err(ApiError::bad("a routing run needs rounds 1 to 10 and step_s 2 to 120"));
+                }
+                if !(0.0..=0.9).contains(&c.after_write) {
+                    return Err(ApiError::bad("after_write is a share, 0 to 0.9"));
+                }
+            }
+            s => return Err(ApiError::bad(format!("shape is ramp, steady or routing, not {s:?}"))),
         }
         if !(0.5..=60.0).contains(&c.alone_s) {
             return Err(ApiError::bad("alone_s is between 0.5 and 60 seconds"));
@@ -259,6 +291,14 @@ struct PhaseState {
     state: &'static str,
     note: Option<String>,
 }
+
+/// A run of shape "routing".
+const ROUTING_PHASES: &[(&str, &str)] = &[
+    ("load", "Load the test documents"),
+    ("alone", "Each kind alone, and writes, for the model"),
+    ("routing", "Each setting in turn, through a coordinator of its own"),
+    ("analyse", "The model of the same settings, beside what was measured"),
+];
 
 const PHASES: &[(&str, &str)] = &[
     ("load", "Load a quarter of the test documents"),
@@ -346,6 +386,27 @@ fn summary(r: &Json) -> Json {
         "id": r["id"], "label": r["label"], "state": r["state"], "started_ms": r["started_ms"], "finished_ms": r["finished_ms"],
         "profile": r["config"]["profile"], "shape": r["config"]["shape"], "grade": r["grade"]["label"], "score": r["grade"]["score"],
         "capacity_qps": r["measured"]["capacity_qps"], "bound": r["measured"]["bound"], "cluster": r["cluster"]["text"], "error": r["error"],
+        "settings": r["routing"]["variants"].as_array().map(Vec::len),
+    })
+}
+
+/// What a page can compare of the ways to choose a shard's copy: this
+/// coordinator's setting, the standard set, the model's faults.
+fn routing_choices(svc: &Service) -> Json {
+    use super::routing::{self, Variant};
+    let now = match &svc.backend {
+        Backend::Cluster(c) => Variant::of(&c.opts),
+        _ => Variant::default(),
+    };
+    let named = |v: &Variant| {
+        let mut j = serde_json::to_value(v).unwrap_or(Json::Null);
+        j["name"] = json!(v.name());
+        j
+    };
+    json!({
+        "coordinator": named(&now),
+        "variants": routing::standard(&now).iter().map(named).collect::<Vec<_>>(),
+        "faults": routing::FAULTS.iter().map(|(f, v, u)| json!({"fault": f, "value": v, "unit": u})).collect::<Vec<_>>(),
     })
 }
 
@@ -370,6 +431,7 @@ pub fn view(svc: &Arc<Service>) -> Json {
         "table": TABLE,
         "defaults": Config::default(),
         "coordinator": matches!(svc.backend, Backend::Cluster(_)),
+        "routing": routing_choices(svc),
     })
 }
 
@@ -390,9 +452,64 @@ pub fn predict(svc: &Arc<Service>, body: &Json) -> Result<Json, ApiError> {
     let st = lock(&sim.state);
     let r = match body["run"].as_str() {
         Some(id) => st.reports.iter().find(|r| r["id"] == id).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no report {id} is kept here") })?,
-        None => st.reports.iter().find(|r| r["fit"].is_object()).ok_or_else(|| ApiError { code: None, status: 404, message: "no test run has a model yet: run one first".into() })?,
+        None => st.reports.iter().find(|r| r["fit"].is_object() && r["model"]["base"].is_object()).ok_or_else(|| ApiError { code: None, status: 404, message: "no test run has a model yet: run one first".into() })?,
     };
     super::report::predict(r, body)
+}
+
+/// `POST /v1/admin/simulator/routing {variants?, clients?, fault?, value?,
+/// after_write?, seconds?, seeds?, run?, setup?}`: how each way of
+/// choosing a shard's copy would do on this cluster, by the model of
+/// [`super::routing`]: calibrated by a test run's measurements (`run`, or
+/// the newest report with a model), else by ChloeDB's numbers on
+/// DigitalOcean's c-2 copies. Nothing is sent to the servers.
+pub async fn routing_preview(svc: &Arc<Service>, body: Json) -> Result<Json, ApiError> {
+    use super::routing::{self, Preview, Setup, Variant};
+    let p: Preview = serde_json::from_value(body).map_err(|e| ApiError::bad(format!("a routing preview: {e}")))?;
+    p.check()?;
+    let now = match &svc.backend {
+        Backend::Cluster(c) => Variant::of(&c.opts),
+        _ => Variant::default(),
+    };
+    let cluster = svc.cluster().await;
+    let shards: Vec<&Json> = cluster["shards"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let copies = shards.iter().map(|s| s["replicas"].as_array().map_or(1, Vec::len)).max().unwrap_or(1);
+    let slots = shards.iter().flat_map(|s| s["replicas"].as_array().cloned().unwrap_or_default()).filter_map(|r| r["detail"]["limits"]["max_concurrent"].as_u64()).min().unwrap_or(64) as u32;
+    let mut setup = match p.setup.clone() {
+        Some(s) => s,
+        None => {
+            let sim = &svc.simulator;
+            sim.load(svc);
+            let kept = {
+                let st = lock(&sim.state);
+                match &p.run {
+                    Some(id) => Some(st.reports.iter().find(|r| r["id"] == id.as_str()).cloned().ok_or_else(|| ApiError { code: None, status: 404, message: format!("no report {id} is kept here") })?),
+                    None => st.reports.iter().find(|r| r["fit"].is_object()).cloned(),
+                }
+            };
+            match kept {
+                Some(r) => {
+                    let fit: model::Fit = serde_json::from_value(r["fit"].clone()).map_err(|e| ApiError::bad(format!("the report has no model: {e}")))?;
+                    Setup::from_fit(&fit, slots, r["id"].as_str().unwrap_or("?"))
+                }
+                None => Setup::reference(shards.len().max(1), copies.max(2), 2, slots),
+            }
+        }
+    };
+    if p.setup.is_none() && !shards.is_empty() {
+        setup.shards = shards.len();
+        setup.copies = copies;
+    }
+    if setup.copies < 2 {
+        setup.copies = 3;
+        setup.source = format!("{}; three copies a shard, as one copy leaves no choice", setup.source);
+    }
+    setup.check()?;
+    let variants = if p.variants.is_empty() { routing::standard(&now) } else { p.variants.clone() };
+    let threads = (svc.cores() / 2).clamp(1, 4);
+    let mut j = tokio::task::spawn_blocking(move || routing::answer(&setup, &variants, &p, threads)).await.map_err(ApiError::internal)?;
+    j["coordinator"] = json!(now);
+    Ok(j)
 }
 
 /// `POST /v1/admin/simulator/stop`: the run stops after the request under way.
@@ -408,6 +525,9 @@ pub fn stop(svc: &Arc<Service>) -> Json {
 /// `POST /v1/admin/simulator`: starts a run.
 pub fn start(svc: &Arc<Service>, who: &str, config: Config) -> Result<Json, ApiError> {
     let set = config.settle()?;
+    if set.config.shape == "routing" && !matches!(svc.backend, Backend::Cluster(_)) {
+        return Err(ApiError::bad("a routing run compares how a coordinator chooses a shard's copy: run it on a coordinator (the preview models one)"));
+    }
     let sim = &svc.simulator;
     sim.load(svc);
     let id = {
@@ -425,7 +545,7 @@ pub fn start(svc: &Arc<Service>, who: &str, config: Config) -> Result<Json, ApiE
             label: set.config.label.clone(),
             phase: "load".into(),
             text: "Starting".into(),
-            phases: PHASES
+            phases: if set.config.shape == "routing" { ROUTING_PHASES } else { PHASES }
                 .iter()
                 .map(|(id, title)| PhaseState { id, title: if *id == "traffic" && set.config.shape == "steady" { "The mix at a steady rate" } else { title }, state: "waiting", note: None })
                 .collect(),
@@ -1127,6 +1247,9 @@ pub fn measured_capacity(steps: &[Json], slo_ms: f64) -> (f64, bool, Option<f64>
 // ===================================================================== the run
 
 async fn run(svc: &Arc<Service>, set: &Settings, id: &str) -> Result<Json, ApiError> {
+    if set.config.shape == "routing" {
+        return routing_run(svc, set, id).await;
+    }
     let sim = &svc.simulator;
     let c = &set.config;
     let local = matches!(svc.backend, Backend::Local(_));
@@ -1300,6 +1423,300 @@ async fn run(svc: &Arc<Service>, set: &Settings, id: &str) -> Result<Json, ApiEr
         }),
     });
     Ok(report)
+}
+
+// ===================================================================== routing
+
+/// A run of shape "routing": the test documents loaded, each kind and
+/// writes measured alone (the model's calibration), then the mix's reads
+/// through a coordinator of each setting's own on the same shards, the
+/// settings taking turns at each level of clients, and the model of the
+/// same settings beside what was measured.
+async fn routing_run(svc: &Arc<Service>, set: &Settings, id: &str) -> Result<Json, ApiError> {
+    use super::routing;
+    let sim = &svc.simulator;
+    let c = &set.config;
+    let Backend::Cluster(coord) = &svc.backend else {
+        return Err(ApiError::bad("a routing run compares how a coordinator chooses a shard's copy: run it on a coordinator"));
+    };
+    let servers = servers(svc).await;
+    let shards = servers.iter().map(|s| s.shard).max().map_or(0, |m| m + 1);
+    let mut groups: Vec<Vec<String>> = vec![Vec::new(); shards];
+    for (shard, url, _) in coord.replica_clients() {
+        if let Some(g) = groups.get_mut(shard) {
+            g.push(url);
+        }
+    }
+    if shards == 0 || groups.iter().all(|g| g.len() < 2) {
+        return Err(ApiError::bad("every shard has one copy: there is no choice of copy to compare"));
+    }
+    let now = routing::Variant::of(&coord.opts);
+    let variants = if c.variants.is_empty() { routing::standard(&now) } else { c.variants.clone() };
+    let cluster_before = svc.cluster().await;
+    let corpus = Arc::new(Corpus::new(c.seed, c.dim));
+    let docs = c.docs;
+
+    // 1. The table.
+    sim.phase("load", "Making the test table");
+    if svc.catalog().iter().any(|s| s.table == TABLE) {
+        ddl(svc, &format!("DROP TABLE {TABLE}")).await?;
+    }
+    ddl(svc, &data::create_sql(c.dim)).await?;
+    let load_s = load(svc, &corpus, 0, docs, "load").await?;
+    sim.say("Waiting for merges to settle");
+    let settled = settle(svc, &servers, 45.0).await;
+    check_stop(svc)?;
+
+    // 2. Each kind alone, and writes: the model's calibration.
+    sim.phase("alone", "Measuring how quiet the servers are");
+    let ctx = Arc::new(Ctx { corpus: corpus.clone(), servers: servers.clone(), docs, head: 20_000, set: set.clone() });
+    let idle1 = idle(svc, &servers, 1.5).await;
+    let mut kinds: Vec<String> = set.mix.iter().map(|(k, _)| k.clone()).collect();
+    if !kinds.iter().any(|k| k == "key lookup") {
+        kinds.push("key lookup".into());
+    }
+    let mut stats = Vec::new();
+    for k in &kinds {
+        sim.say(format!("{k}, alone"));
+        stats.push(alone(svc, set, &ctx, k, c.alone_s, &idle1).await);
+        check_stop(svc)?;
+    }
+    let writer = Arc::new(Writer::new(docs));
+    let wstats = if set.write_share > 0.0 || c.after_write > 0.0 {
+        sim.say("Writes, alone");
+        let w = writes_alone(svc, set, &ctx, &writer, c.alone_s, &idle1).await;
+        writer.reset(svc).await;
+        w
+    } else {
+        WriteStats::default()
+    };
+    let tested = tested_shape(svc, &servers, &cluster_before, docs, docs, false).await;
+    let fit = model::fit(&tested, &stats, &wstats, set.write_share);
+    sim.note("alone", format!("{} kinds{}", stats.len(), if set.write_share > 0.0 || c.after_write > 0.0 { " and writes" } else { "" }));
+    check_stop(svc)?;
+
+    // 3. Each setting in turn.
+    sim.phase("routing", "Starting the coordinators");
+    let urls: Vec<String> = groups.iter().map(|g| g.join("|")).collect();
+    let mut turns: Vec<Json> = Vec::new();
+    'levels: for &clients in &c.clients {
+        for round in 0..c.rounds {
+            for k in 0..variants.len() {
+                // Each round starts at another setting, so none is always first.
+                let vi = (k + round) % variants.len();
+                let v = &variants[vi];
+                sim.say(format!("{}: {} {}, round {} of {}", v.name(), clients, if clients == 1 { "client" } else { "clients" }, round + 1, c.rounds));
+                let t = match routing_turn(svc, coord, &urls, v, &ctx, &writer, clients, c.step_s, round as u64 * 31 + vi as u64).await {
+                    Ok(mut t) => {
+                        t["variant"] = json!(vi);
+                        t["name"] = json!(v.name());
+                        t["clients"] = json!(clients);
+                        t["round"] = json!(round);
+                        t
+                    }
+                    Err(e) => json!({"variant": vi, "name": v.name(), "clients": clients, "round": round, "error": e.message}),
+                };
+                sim.update(|p| p.steps.push(t.clone()));
+                turns.push(t);
+                if sim.stopping() {
+                    break 'levels;
+                }
+            }
+        }
+    }
+    writer.reset(svc).await;
+    sim.note("routing", format!("{} turns", turns.len()));
+
+    // 4. The model of the same settings, calibrated by this run.
+    sim.phase("analyse", "Running the model of the same settings");
+    let slots = cluster_before["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().cloned().unwrap_or_default()).filter_map(|r| r["detail"]["limits"]["max_concurrent"].as_u64()).min().unwrap_or(64) as u32;
+    let mut setup = routing::Setup::from_fit(&fit, slots, id);
+    setup.shards = shards;
+    setup.copies = groups.iter().map(Vec::len).max().unwrap_or(1);
+    let p = routing::Preview { clients: c.clients.clone(), after_write: Some(c.after_write), seconds: c.step_s.clamp(3.0, 10.0), seeds: 2, ..routing::Preview::default() };
+    let threads = (svc.cores() / 2).max(1);
+    let (setup2, variants2, p2) = (setup.clone(), variants.clone(), p.clone());
+    let model = tokio::task::spawn_blocking(move || routing::answer(&setup2, &variants2, &p2, threads)).await.unwrap_or(Json::Null);
+    let measured = routing_medians(&turns, &variants, &c.clients);
+    let compare: Vec<Json> = measured
+        .iter()
+        .filter_map(|m| {
+            let mm = model["rows"].as_array()?.iter().find(|r| r["variant"] == m["variant"] && r["clients"] == m["clients"])?;
+            let err = |k: &str| Some((mm[k].as_f64()? / m[k].as_f64().filter(|x| *x > 0.0)? - 1.0) * 100.0);
+            Some(json!({"variant": m["variant"], "clients": m["clients"], "qps_error_pct": err("qps"), "p99_error_pct": err("p99_ms"), "p999_error_pct": err("p999_ms")}))
+        })
+        .collect();
+    let best: Vec<Json> = c
+        .clients
+        .iter()
+        .map(|&n| {
+            let mine: Vec<&Json> = measured.iter().filter(|m| m["clients"] == n && m["qps"].as_f64().is_some()).collect();
+            let low = |k: &str| mine.iter().min_by(|a, b| a[k].as_f64().unwrap_or(f64::MAX).total_cmp(&b[k].as_f64().unwrap_or(f64::MAX))).map(|r| r["variant"].clone());
+            // The first of equals: this coordinator's setting, when it ties.
+            let qps = mine.iter().min_by(|a, b| b["qps"].as_f64().unwrap_or(0.0).total_cmp(&a["qps"].as_f64().unwrap_or(0.0))).map(|r| r["variant"].clone());
+            json!({"clients": n, "p99": low("p99_ms"), "p999": low("p999_ms"), "qps": qps})
+        })
+        .collect();
+    Ok(json!({
+        "config": c,
+        "cluster": {
+            "text": format!("{} {}, {} copies a shard", shards, if shards == 1 { "shard" } else { "shards" }, setup.copies),
+            "shards": shards, "copies": groups.iter().map(Vec::len).collect::<Vec<_>>(), "slots": slots,
+            // Copies on one machine take cores from each other, where the model gives each its own.
+            "shared_host": servers.iter().any(|a| servers.iter().filter(|b| b.host == a.host).count() > 1),
+        },
+        "coordinator": now,
+        "routing": {
+            "variants": variants.iter().map(|v| { let mut j = serde_json::to_value(v).unwrap_or(Json::Null); j["name"] = json!(v.name()); j }).collect::<Vec<_>>(),
+            "clients": c.clients, "rounds": c.rounds, "step_s": c.step_s, "after_write": c.after_write,
+            "measured": measured, "turns": turns, "best": best,
+            "model": model, "compare": compare,
+        },
+        "fit": fit,
+        "data": {"docs": docs, "dim": c.dim, "load_s": load_s, "settle_s": settled, "rows_s": docs as f64 / load_s.max(1e-3)},
+    }))
+}
+
+/// The median of each setting's turns at each level, with their least and most.
+fn routing_medians(turns: &[Json], variants: &[super::routing::Variant], clients: &[usize]) -> Vec<Json> {
+    let mut out = Vec::new();
+    for (vi, v) in variants.iter().enumerate() {
+        for &n in clients {
+            let mine: Vec<&Json> = turns.iter().filter(|t| t["variant"] == vi && t["clients"] == n && t["error"].is_null()).collect();
+            let mut row = json!({"variant": vi, "name": v.name(), "clients": n, "turns": mine.len()});
+            for k in ["qps", "p50_ms", "p90_ms", "p99_ms", "p999_ms", "after_write_p99_ms", "hedges_per_s", "cooling", "errors"] {
+                let mut xs: Vec<f64> = mine.iter().filter_map(|t| t[k].as_f64()).collect();
+                if xs.is_empty() {
+                    continue;
+                }
+                xs.sort_by(f64::total_cmp);
+                let m = if xs.len() % 2 == 1 { xs[xs.len() / 2] } else { (xs[xs.len() / 2 - 1] + xs[xs.len() / 2]) / 2.0 };
+                row[k] = json!(m);
+                row[format!("{k}_range")] = json!([xs[0], xs[xs.len() - 1]]);
+            }
+            let k = mine.iter().filter_map(|t| t["by_copy"].as_array().map(Vec::len)).max().unwrap_or(0);
+            row["by_copy"] = json!((0..k).map(|i| { let v: Vec<f64> = mine.iter().filter_map(|t| t["by_copy"][i].as_f64()).collect(); v.iter().sum::<f64>() / v.len().max(1) as f64 }).collect::<Vec<_>>());
+            out.push(row);
+        }
+    }
+    out
+}
+
+/// A coordinator's metric, summed over the series whose labels hold `label`.
+fn coord_metric(c: &crate::coord::Coordinator, name: &str, label: &str) -> f64 {
+    c.metrics().into_iter().filter(|f| f.name == name).flat_map(|f| f.values).filter(|(l, _)| l.contains(label)).map(|(_, v)| v).sum()
+}
+
+/// Shard 0's answers by copy, as coordinator `c` counted them.
+async fn shard0_answers(c: &crate::coord::Coordinator) -> Vec<u64> {
+    let snap = c.snapshot_within(Duration::ZERO).await;
+    snap["shards"][0]["replicas"].as_array().into_iter().flatten().map(|r| r["observed"]["calls"]["ok"].as_u64().unwrap_or(0)).collect()
+}
+
+/// One turn: a coordinator of setting `v`'s own on the cluster's shards,
+/// `clients` clients sending the mix through it for two seconds untimed
+/// and `secs` timed; what its reads saw.
+#[allow(clippy::too_many_arguments)]
+async fn routing_turn(svc: &Arc<Service>, live: &Arc<crate::coord::Coordinator>, urls: &[String], v: &super::routing::Variant, ctx: &Arc<Ctx>, writer: &Arc<Writer>, clients: usize, secs: f64, salt: u64) -> Result<Json, ApiError> {
+    let coord = Arc::new(crate::coord::Coordinator::connect_with(urls.to_vec(), v.options(&live.opts)).await?);
+    let test = Arc::new(Service::new(Backend::Cluster(coord.clone()), coord.schema.clone(), svc.agent.clone(), 4096, Duration::from_secs(30)));
+    crate::server::spawn_watch(&test);
+    let set = &ctx.set;
+    let timeout = timeout_ms(set);
+    let stop = Arc::new(AtomicBool::new(false));
+    let timing = Arc::new(AtomicBool::new(false));
+    let cum: Vec<(String, f64)> = set.mix.iter().scan(0.0, |acc, (k, w)| {
+        *acc += w;
+        Some((k.clone(), *acc))
+    }).collect();
+    let mut tasks = Vec::new();
+    for k in 0..clients {
+        let (test, ctx, writer, stop, timing, cum) = (test.clone(), ctx.clone(), writer.clone(), stop.clone(), timing.clone(), cum.clone());
+        let seed = ctx.set.config.seed.wrapping_add(salt * 1_000_003 + k as u64);
+        tasks.push(tokio::spawn(async move {
+            let mut rng = stream(seed, "routing");
+            let mut picks = ctx.picks();
+            let (mut reads, mut after, mut errors) = (hist(), hist(), 0u64);
+            let set = &ctx.set;
+            while !stop.load(Ordering::Relaxed) && !test.simulator.stopping() {
+                let x = rng.gen::<f64>();
+                let t0 = Instant::now();
+                if x < set.config.after_write {
+                    // A row written, then read back as the write answered.
+                    let n = picks.doc(&mut rng);
+                    let rating = (rng.gen_range(0..=500) as f64) / 100.0;
+                    let ops = vec![json!({"op": "set", "table": TABLE, "key": data::key(n), "field": "rating", "value": rating})];
+                    let Ok(w) = test.write_request(ops, None).await else {
+                        errors += timing.load(Ordering::Relaxed) as u64;
+                        continue;
+                    };
+                    let t = Instant::now();
+                    let ok = test.get_rows(Some(TABLE), vec![chloedb::Value::Str(data::key(n))], None, &After::Shards(w.seq_nos, w.seq_terms), timeout, false).await.is_ok();
+                    if timing.load(Ordering::Relaxed) {
+                        if ok {
+                            let _ = after.record((t.elapsed().as_micros() as u64).max(1));
+                        } else {
+                            errors += 1;
+                        }
+                    }
+                    continue;
+                }
+                if set.write_share > 0.0 && x < set.config.after_write + set.write_share {
+                    let ops = writer.ops(&ctx.corpus, &picks, set, &mut rng);
+                    let _ = write(&test, ops).await;
+                    continue;
+                }
+                let y = rng.gen::<f64>();
+                let kind = cum.iter().find(|(_, c)| y < *c).or(cum.last()).map(|c| c.0.clone()).unwrap_or_default();
+                let Some(ask) = data::ask(&kind, &ctx.corpus, &mut picks, &mut rng) else { continue };
+                let d = read(&test, ask, timeout).await;
+                if timing.load(Ordering::Relaxed) {
+                    if d.ok {
+                        let _ = reads.record((t0.elapsed().as_micros() as u64).max(1));
+                    } else {
+                        errors += 1;
+                    }
+                }
+            }
+            (reads, after, errors)
+        }));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (h0, a0) = (coord_metric(&coord, "chloedb_shard_hedges_total", ""), shard0_answers(&coord).await);
+    timing.store(true, Ordering::Relaxed);
+    let t0 = Instant::now();
+    let (mut cooling, mut ticks) = (0.0, 0u32);
+    while t0.elapsed().as_secs_f64() < secs && !svc.simulator.stopping() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        cooling += coord_metric(&coord, "chloedb_replicas_avoided", "");
+        ticks += 1;
+    }
+    timing.store(false, Ordering::Relaxed);
+    let ran = t0.elapsed().as_secs_f64().max(1e-3);
+    let (h1, a1) = (coord_metric(&coord, "chloedb_shard_hedges_total", ""), shard0_answers(&coord).await);
+    stop.store(true, Ordering::Relaxed);
+    let (mut reads, mut after, mut errors) = (hist(), hist(), 0u64);
+    for t in tasks {
+        if let Ok((r, a, e)) = t.await {
+            let _ = reads.add(&r);
+            let _ = after.add(&a);
+            errors += e;
+        }
+    }
+    let q = quant(&reads);
+    let p999 = reads.value_at_quantile(0.999) as f64 / 1e3;
+    let answers: Vec<u64> = a1.iter().zip(a0.iter().chain(std::iter::repeat(&0))).map(|(b, a)| b.saturating_sub(*a)).collect();
+    let total = answers.iter().sum::<u64>().max(1) as f64;
+    let copies = urls.iter().map(|u| u.split('|').count()).sum::<usize>().max(1) as f64;
+    drop(test);
+    Ok(json!({
+        "qps": reads.len() as f64 / ran, "p50_ms": q.p50, "p90_ms": q.p90, "p99_ms": q.p99, "p999_ms": p999,
+        "after_write_p99_ms": (!after.is_empty()).then(|| quant(&after).p99), "after_writes": after.len(),
+        "hedges_per_s": (h1 - h0).max(0.0) / ran, "errors": errors,
+        "cooling": if ticks > 0 { cooling / ticks as f64 / copies } else { 0.0 },
+        "by_copy": answers.iter().map(|&a| a as f64 / total).collect::<Vec<_>>(),
+        "seconds": ran,
+    }))
 }
 
 fn check_stop(svc: &Arc<Service>) -> Result<(), ApiError> {

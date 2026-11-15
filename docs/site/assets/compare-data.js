@@ -1,29 +1,40 @@
-/* The capability comparison on compare.html.
+/* The capability comparison on compare.html (and a section of it on
+ * command-center.html).
  *
  * A cell is a code, optionally "?" (not yet checked against that project's
  * current documentation), optionally ":" and a note shown on hover:
  *   y  yes, built in         p  partial, by extension, or by hand
  *   n  no                    $  only in a paid tier
+ *   e  yes, experimental (ChloeDB's docs/compatibility.md lists it)
  *   t  text (the licence row)
  * Systems missing from a row read as "n".
  *
- * DRAFT, 1 November 2026: every "?" cell, and every claim about another
- * system, is to be checked against its current documentation before this
- * page is published.
+ * ChloeDB's cells say what its docs say, of the prebuilt release, image and
+ * wheel: a feature that needs a build with --features, that a cluster
+ * refuses (docs/chloedb/cluster-limits.md) or that is experimental says so.
+ *
+ * `checked` is the day each system's cells, its "?" cells excepted, were last
+ * checked against its documentation: the audit of 15 November 2026
+ * (findings CMP-1 and CMP-2) re-checked the cells it names; Solr and SQLite
+ * were not re-checked then. While any cell is "?", the page shows `draft`
+ * above the matrix, {n} the number of such cells, and
+ * docs/site/scripts/check_compare.py (CI's documentation job) fails without
+ * it.
  */
 window.STRATA_COMPARE = {
+  draft: "{n} cells about other systems, in dashed boxes, are not yet checked against each project's current documentation, and may be wrong. The others were checked in November 2026; hover a mark for the day.",
   systems: [
     { id: "strata", name: "ChloeDB", sub: "embedded or server", group: "self" },
-    { id: "sqlite", name: "SQLite", sub: "FTS5, sqlite-vec", group: "embedded" },
-    { id: "postgres", name: "PostgreSQL", sub: "pgvector", group: "embedded" },
-    { id: "lancedb", name: "LanceDB", sub: "embedded", group: "embedded" },
-    { id: "elastic", name: "Elasticsearch", sub: "9, Basic licence", group: "search" },
-    { id: "opensearch", name: "OpenSearch", sub: "3", group: "search" },
-    { id: "solr", name: "Solr", sub: "10", group: "search" },
-    { id: "vespa", name: "Vespa", sub: "8", group: "search" },
-    { id: "qdrant", name: "Qdrant", sub: "", group: "vector" },
-    { id: "weaviate", name: "Weaviate", sub: "", group: "vector" },
-    { id: "milvus", name: "Milvus", sub: "", group: "vector" }
+    { id: "sqlite", name: "SQLite", sub: "FTS5, sqlite-vec", group: "embedded", checked: "1 November 2026" },
+    { id: "postgres", name: "PostgreSQL", sub: "pgvector", group: "embedded", checked: "15 November 2026" },
+    { id: "lancedb", name: "LanceDB", sub: "embedded", group: "embedded", checked: "15 November 2026" },
+    { id: "elastic", name: "Elasticsearch", sub: "9, Basic licence", group: "search", checked: "15 November 2026" },
+    { id: "opensearch", name: "OpenSearch", sub: "3", group: "search", checked: "15 November 2026" },
+    { id: "solr", name: "Solr", sub: "10", group: "search", checked: "1 November 2026" },
+    { id: "vespa", name: "Vespa", sub: "8", group: "search", checked: "15 November 2026" },
+    { id: "qdrant", name: "Qdrant", sub: "", group: "vector", checked: "15 November 2026" },
+    { id: "weaviate", name: "Weaviate", sub: "", group: "vector", checked: "15 November 2026" },
+    { id: "milvus", name: "Milvus", sub: "", group: "vector", checked: "15 November 2026" }
   ],
   groups: [
     { id: "all", label: "All" },
@@ -38,25 +49,25 @@ window.STRATA_COMPARE = {
         ["Runs inside your program, as a library", {
           strata: "y:A Rust crate, or Python in-process like sqlite3", sqlite: "y", postgres: "n", lancedb: "y",
           elastic: "n", opensearch: "n", solr: "n", vespa: "n",
-          qdrant: "p?:Local mode of the Python client, meant for tests", weaviate: "p?:Embedded Weaviate, experimental", milvus: "p:Milvus Lite, a separate build with the same API" }],
+          qdrant: "p:Qdrant Edge, an in-process build for Python and Rust (beta); the Python client's local mode is meant for tests", weaviate: "p:Embedded Weaviate, experimental, for development on Linux and macOS", milvus: "p:Milvus Lite, a separate build with the same API" }],
         ["The whole database in one file", {
           strata: "y:One file and its write-ahead log, or a directory of segments", sqlite: "y", postgres: "n", lancedb: "n:A directory of Lance files",
-          milvus: "p?:Milvus Lite keeps one local file" }],
+          milvus: "p:Milvus Lite keeps one local file" }],
         ["A network server (HTTP or gRPC)", {
-          strata: "y:HTTP JSON and gRPC, API keys with scopes, TLS", sqlite: "n", postgres: "y:Its own wire protocol", lancedb: "p?:LanceDB Cloud and Enterprise",
+          strata: "y:HTTP JSON and gRPC, API keys with scopes, TLS", sqlite: "n", postgres: "y:Its own wire protocol", lancedb: "$:LanceDB Enterprise; the open-source library has no server",
           elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "y", weaviate: "y", milvus: "y" }],
         ["Shards and replicas", {
-          strata: "y:A coordinator over shards; slots move while it serves; a primary ships writes to replicas", postgres: "p:Streaming replicas; sharding through Citus", lancedb: "p?:LanceDB Enterprise",
+          strata: "y:A coordinator over shards; slots move while it serves; a primary ships writes to replicas", postgres: "p:Streaming replicas; sharding through Citus", lancedb: "$:LanceDB Enterprise",
           elastic: "y", opensearch: "y", solr: "y:SolrCloud", vespa: "y", qdrant: "y", weaviate: "y", milvus: "y" }],
         ["Automatic failover", {
-          strata: "y:A shard's copies elect a new primary; writes acknowledged by all, a majority or the primary", postgres: "p:Through Patroni or an operator",
-          elastic: "y", opensearch: "y", solr: "y:Through ZooKeeper", vespa: "y", qdrant: "y:Raft", weaviate: "y?", milvus: "y" }],
+          strata: "y:A shard's copies elect a new primary; writes acknowledged by all, a majority or the primary. The cluster map has no consensus yet: change it through one coordinator at a time", postgres: "p:Through Patroni or an operator",
+          elastic: "y", opensearch: "y", solr: "y:Through ZooKeeper", vespa: "y", qdrant: "y:Raft", weaviate: "y:Raft for the schema, and replicated data", milvus: "y" }],
         ["A Kubernetes operator", {
           strata: "y:StrataCluster: scale shards and copies, roll out settings with gates, roll back", postgres: "y:CloudNativePG and others",
-          elastic: "y:ECK", opensearch: "y:OpenSearch Kubernetes Operator", solr: "y:Solr Operator", vespa: "p?:Helm charts and sample manifests; Vespa Cloud is managed",
-          qdrant: "p?:A Helm chart; an operator in the commercial offering", weaviate: "p:A Helm chart", milvus: "y:Milvus Operator" }],
+          elastic: "y:ECK", opensearch: "y:OpenSearch Kubernetes Operator", solr: "y:Solr Operator", vespa: "$:The Vespa Kubernetes Operator (VespaSet) is commercial; otherwise Helm charts and sample manifests",
+          qdrant: "p:A Helm chart; an operator in the paid Hybrid Cloud", weaviate: "p:A Helm chart", milvus: "y:Milvus Operator" }],
         ["The same API from a laptop file to a cluster", {
-          strata: "y:The same SQL, schema and file format at every size", sqlite: "n:One machine", postgres: "p:The same SQL; no embedded mode", lancedb: "p?:The open-source library, then LanceDB Cloud",
+          strata: "p:The same SQL, schema and file format at every size; a cluster refuses graph queries, recommenders, DROP COLUMN, the relevance autopilot and a SQLite export of the database (What a cluster does differently)", sqlite: "n:One machine", postgres: "p:The same SQL; no embedded mode", lancedb: "p?:The open-source library, then LanceDB Cloud",
           qdrant: "p:Local mode, then the server, with one client", weaviate: "p?", milvus: "p:Milvus Lite, then Milvus" }],
         ["Older data kept on object storage (S3) and queried there", {
           strata: "y:Cold segments on S3 or a compatible store, read through a local cache", lancedb: "y:Tables on S3 and other object stores",
@@ -72,8 +83,8 @@ window.STRATA_COMPARE = {
       title: "Text search",
       rows: [
         ["BM25 with boolean queries and phrases", {
-          strata: "y:MATCH with AND, OR, NOT, phrases; MaxScore and Block-Max WAND", sqlite: "y:FTS5", postgres: "p:ts_rank is not BM25; BM25 through extensions such as ParadeDB", lancedb: "y?",
-          elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "p?:Full-text filters; BM25 as sparse vectors with IDF", weaviate: "y", milvus: "y?:A BM25 function, from 2.5" }],
+          strata: "y:MATCH with AND, OR, NOT, phrases; MaxScore and Block-Max WAND", sqlite: "y:FTS5", postgres: "p:ts_rank is not BM25; BM25 through extensions such as ParadeDB", lancedb: "y:Full-text search with BM25",
+          elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "y:BM25 on full-text indexes, from 1.20", weaviate: "y", milvus: "y:A BM25 function over text fields, from 2.5" }],
         ["Typos and synonyms", {
           strata: "y:word~ for edits, synonym sets", sqlite: "p:The spellfix1 extension, by hand", postgres: "p:pg_trgm and thesaurus dictionaries", lancedb: "p?",
           elastic: "y", opensearch: "y", solr: "y", vespa: "y", weaviate: "p?", milvus: "p?" }],
@@ -81,8 +92,8 @@ window.STRATA_COMPARE = {
           strata: "y:PREFIX(..., fuzzy => 'auto'), a trie walk of the dictionary", sqlite: "p:Prefix queries in FTS5, no typos", postgres: "p:pg_trgm",
           elastic: "y:Completion suggester", opensearch: "y", solr: "y:Suggester", vespa: "p?" }],
         ["Facets and aggregations over a search", {
-          strata: "y:GROUP BY over any result", sqlite: "y:GROUP BY", postgres: "y", lancedb: "p?",
-          elastic: "y", opensearch: "y", solr: "y", vespa: "y:Grouping", qdrant: "p?:Facet counts", weaviate: "p:Aggregate", milvus: "p?" }]
+          strata: "y:GROUP BY over any result", sqlite: "y:GROUP BY", postgres: "y", lancedb: "p",
+          elastic: "y", opensearch: "y", solr: "y", vespa: "y:Grouping", qdrant: "p:Facet counts", weaviate: "p:Aggregate", milvus: "y:Faceted search, from 3.0" }]
       ]
     },
     {
@@ -92,7 +103,7 @@ window.STRATA_COMPARE = {
           strata: "y:HNSW, IVF or exact; float32 with 8-bit, binary or RaBitQ codes of 1, 2 or 4 bits", sqlite: "p?:sqlite-vec scans; no ANN index", postgres: "y:HNSW and IVFFlat", lancedb: "y",
           elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "y", weaviate: "y", milvus: "y" }],
         ["Filtered vector search", {
-          strata: "y:Planned per segment from exact counts: an exact scan, the filter inside HNSW, or a post-filter", sqlite: "p", postgres: "p?:Iterative index scans", lancedb: "p:Pre- or post-filter, chosen by the caller",
+          strata: "y:Planned per segment from exact counts: an exact scan, the filter inside HNSW, or a post-filter", sqlite: "p", postgres: "p:Iterative index scans, from pgvector 0.8", lancedb: "p:Pre- or post-filter, chosen by the caller",
           elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "y", weaviate: "y", milvus: "y" }],
         ["Hybrid fusion: RRF and normalised weighted sums", {
           strata: "y:rrf(), and minmax(), tmm() or zscore() in any weighted sum", sqlite: "p:Written by hand in SQL", postgres: "p:Written by hand in SQL", lancedb: "y",
@@ -100,41 +111,41 @@ window.STRATA_COMPARE = {
           opensearch: "y:Normalisation and RRF processors in search pipelines", solr: "p?:RRF in Solr 10; no normalised sum", vespa: "y:Any ranking expression",
           qdrant: "y:RRF and DBSF", weaviate: "y:Ranked and relative-score fusion", milvus: "y:RRF and weighted rankers" }],
         ["Multi-vector late interaction (ColBERT, ColPali)", {
-          strata: "y:maxsim() over VECTOR(d)[] fields with token pooling; ColBERT token vectors embedded on write", postgres: "p?:Through extensions such as VectorChord", lancedb: "y?",
-          elastic: "p?:The rank_vectors field", opensearch: "n?", vespa: "y", qdrant: "y", weaviate: "y?", milvus: "p?" }],
+          strata: "y:maxsim() over VECTOR(d)[] fields with token pooling; ColBERT token vectors embedded on write in a build with --features bert, not in the release, image or wheel", postgres: "p?:Through extensions such as VectorChord", lancedb: "y:Multivector columns, cosine distance only",
+          elastic: "$:The rank_vectors field, Enterprise licence", opensearch: "p:Reranking with a late-interaction model", vespa: "y", qdrant: "y", weaviate: "y:Multi-vector embeddings, with MUVERA", milvus: "y:EmbList and StructArray fields, from 3.0" }],
         ["Learned sparse vectors (SPLADE, ELSER)", {
           strata: "y:SPARSE fields", postgres: "y:pgvector's sparsevec", lancedb: "n?",
           elastic: "y", opensearch: "y", solr: "n?", vespa: "y", qdrant: "y", weaviate: "n?", milvus: "y" }],
         ["Embeddings computed on write", {
-          strata: "y:Local text, image and sound models, or OpenAI, Cohere, Voyage, Gemini, Mistral, Jina, Ollama; missing vectors backfilled", postgres: "p?:Extensions such as pgai", lancedb: "y:Embedding functions",
-          elastic: "y:semantic_text and the inference API", opensearch: "y:Ingest pipelines with ML Commons", solr: "p?", vespa: "y:Embedders",
-          qdrant: "p?:Client-side FastEmbed, or cloud inference", weaviate: "y:Vectorizer modules", milvus: "y?:Embedding functions" }]
+          strata: "y:Model2Vec models locally, or OpenAI, Cohere, Voyage, Gemini, Mistral, Jina, Ollama; BERT, image and sound models in a build with --features bert, vision or audio, not in the release, image or wheel; missing vectors backfilled", postgres: "p:Extensions such as pgai", lancedb: "y:Embedding functions",
+          elastic: "$:semantic_text through the inference API, Enterprise licence; ELSER and E5 on ML nodes, Platinum or Enterprise", opensearch: "y:Ingest pipelines with ML Commons", solr: "p?", vespa: "y:Embedders",
+          qdrant: "p:Client-side FastEmbed, or cloud inference", weaviate: "y:Vectorizer modules", milvus: "y:Embedding functions" }]
       ]
     },
     {
       title: "Ranking",
       rows: [
         ["Ranking expressions over scores and columns", {
-          strata: "y:Any arithmetic of scores and columns, decay(), rank-safe boosts, rerank phases", sqlite: "p:ORDER BY expressions over bm25()", postgres: "p", lancedb: "p?",
-          elastic: "y:function_score, script_score", opensearch: "y", solr: "y:Function queries", vespa: "y", qdrant: "p?:Formula queries", weaviate: "n?", milvus: "p?" }],
+          strata: "y:Any arithmetic of scores and columns, decay(), rank-safe boosts, rerank phases", sqlite: "p:ORDER BY expressions over bm25()", postgres: "p", lancedb: "p",
+          elastic: "y:function_score, script_score", opensearch: "y", solr: "y:Function queries", vespa: "y", qdrant: "p:Formula queries", weaviate: "p:The Boost API, generally available from 1.39", milvus: "p:Decay, boost and function chains, from 3.0" }],
         ["Gradient-boosted ranking models (LightGBM, XGBoost)", {
           strata: "y:gbdt() in a rerank phase, bit-exact with LightGBM and XGBoost",
-          elastic: "$?:Learning to rank", opensearch: "y:The LTR plugin", solr: "y:The LTR module", vespa: "y" }],
+          elastic: "$:Learning to rank, Enterprise licence", opensearch: "y:The LTR plugin", solr: "y:The LTR module", vespa: "y", milvus: "p:XGBoost scoring at the first stage (L0), from 3.0" }],
         ["Cross-encoder reranking inside the query", {
-          strata: "y:ONNX Runtime (int8) or candle locally, or Cohere, Voyage, Jina, TEI", lancedb: "y:Rerankers",
-          elastic: "$?:text_similarity_reranker with the inference API", opensearch: "y", solr: "p?", vespa: "y", weaviate: "y:Reranker modules", milvus: "y?" }],
+          strata: "y:Cohere, Voyage, Jina or a TEI server of your own; local models (ONNX Runtime int8, or candle) in a build with --features onnx or bert, not in the release, image or wheel", lancedb: "y:Rerankers",
+          elastic: "$:text_similarity_reranker and Elastic Rerank, Enterprise licence", opensearch: "y", solr: "p?", vespa: "y", weaviate: "y:Reranker modules", milvus: "y:Rerank functions" }],
         ["Rank log, interleaving and LLM relevance judgments", {
           strata: "y:Logged features for training, team-draft interleaving, UMBRELA judgments by Claude",
-          opensearch: "p?:Search Relevance Workbench" }]
+          opensearch: "p:The Search Relevance Workbench" }]
       ]
     },
     {
       title: "Recommendations",
       rows: [
         ["Sequence models in the query (the next item from a history)", {
-          strata: "y:encode() runs a SASRec-style model trained with chloedb.train", vespa: "p?:ONNX models in ranking" }],
+          strata: "y:encode() runs a SASRec-style model trained with chloedb.train", vespa: "p:ONNX models in ranking" }],
         ["Items like a user's recent history", {
-          strata: "y:maxsim() over the history's vectors, or ppr() over co-occurrence edges", postgres: "p:Hand-written SQL", lancedb: "p",
+          strata: "y:maxsim() over the history's vectors, or ppr() over co-occurrence edges on one server (a cluster refuses ppr())", postgres: "p:Hand-written SQL", lancedb: "p",
           elastic: "p", opensearch: "p", vespa: "y", qdrant: "y:The recommend API", weaviate: "p?", milvus: "p?" }],
         ["Semantic IDs", {
           strata: "y:Residual-quantised IDs per row, and the next codes of a prefix" }],
@@ -146,17 +157,17 @@ window.STRATA_COMPARE = {
       title: "SQL and data",
       rows: [
         ["SQL with joins, subqueries, WITH, window functions and UNION", {
-          strata: "y:DataFusion runs the large plans, spilling to disk past their memory budget", sqlite: "y", postgres: "y", lancedb: "p?:SQL through DataFusion or DuckDB",
+          strata: "y:DataFusion runs the large plans, spilling to disk past their memory budget", sqlite: "y", postgres: "y", lancedb: "p:SQL filters; full SQL through DuckDB or DataFusion",
           elastic: "p:ES|QL and SQL, with lookup joins", opensearch: "p:The SQL and PPL plugin", solr: "p:Parallel SQL", vespa: "p:YQL, without joins",
           weaviate: "n:GraphQL" }],
         ["ACID transactions with snapshot isolation", {
-          strata: "y:Shadow-paged commits; readers never wait for the writer", sqlite: "y", postgres: "y", lancedb: "p?:Versioned commits per table",
+          strata: "y:Shadow-paged commits; readers never wait for the writer. On a cluster a write across shards is one transaction a shard", sqlite: "y", postgres: "y", lancedb: "p:Versioned commits per table",
           elastic: "n:Near real time, versions per document" }],
         ["Graph traversal and personalized PageRank", {
-          strata: "y:REACHABLE, PATH and ppr() over edge fields or edge tables, seeded by any query", sqlite: "p:Recursive CTEs", postgres: "p:Recursive CTEs, or Apache AGE",
+          strata: "p:REACHABLE, PATH and ppr() over edge fields or edge tables, seeded by any query, on one server; a cluster refuses them", sqlite: "p:Recursive CTEs", postgres: "p:Recursive CTEs, or Apache AGE",
           solr: "p:The graph query parser and streaming expressions" }],
         ["Schemaless JSON attributes, indexed", {
-          strata: "y:JSON fields, filtered, grouped and sorted by path, their strings searched as text, listed by json_paths()", sqlite: "p:JSON functions and indexes on expressions", postgres: "y:jsonb with GIN", lancedb: "p?",
+          strata: "y:JSON fields, filtered, grouped and sorted by path, their strings searched as text, listed by json_paths()", sqlite: "p:JSON functions and indexes on expressions", postgres: "y:jsonb with GIN", lancedb: "p",
           elastic: "y:Dynamic mapping", opensearch: "y", solr: "y:Dynamic fields", vespa: "n?", qdrant: "y:Payload", weaviate: "p:Auto-schema", milvus: "y:JSON and dynamic fields" }],
         ["Reads and writes by key, with a time to live per row", {
           strata: "y:GET, PUT and DELETE on /v1/kv, 10,000 keys a call, expire_by per row; a coordinator asks only the key's shard",
@@ -165,10 +176,10 @@ window.STRATA_COMPARE = {
           solr: "y?:Real-time get, and documents that expire by a field", vespa: "y?:The document API, and garbage collection by a selection",
           qdrant: "p?:Points by id; no time to live", weaviate: "p?:Objects by id; no time to live", milvus: "p?:Get by primary key; a time to live per collection" }],
         ["Change columns while serving", {
-          strata: "y:ALTER TABLE ADD, DROP and RENAME COLUMN, across a cluster", sqlite: "y", postgres: "y", lancedb: "y?",
-          elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "p?" }],
+          strata: "p:ALTER TABLE ADD, DROP and RENAME COLUMN on one server; a cluster adds and renames, and refuses DROP COLUMN", sqlite: "y", postgres: "y", lancedb: "y?",
+          elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "y:Online add and drop of a column, from 3.0" }],
         ["Import from and export to SQLite", {
-          strata: "y:chloedb-server import and export, or one call from Python", sqlite: "y", postgres: "p:pgloader" }],
+          strata: "y:chloedb-server import and export, or one call from Python; a cluster imports, and exports tables as Parquet, JSON lines, CSV or Arrow rather than SQLite", sqlite: "y", postgres: "p:pgloader" }],
         ["User-defined functions (UDFs) kept in the database (CREATE FUNCTION)", {
           strata: "y:SQL bodies that return a value or rows, called from any query, on one server or a cluster", postgres: "y",
           sqlite: "p:Functions are registered by the program that opens the file, not kept in it",
@@ -186,8 +197,8 @@ window.STRATA_COMPARE = {
           strata: "p:Indexes, documents, _bulk and _search: bool, match, phrases, multi_match, query_string, aggregations, scrolls and a part of Painless",
           elastic: "y:The API OpenSearch began from", opensearch: "y" }],
         ["Images and sound by reference, embedded on write", {
-          strata: "y:MEDIA fields; SigLIP and CLAP models; captions made into text", lancedb: "y:Multimodal tables",
-          elastic: "p?", opensearch: "p?:A multimodal ingest processor", vespa: "p?:Embedders over images", qdrant: "p?", weaviate: "y:multi2vec modules", milvus: "p?" }]
+          strata: "p:MEDIA fields by reference in every build; SigLIP and CLAP vectors, captions and transcripts in a build with --features vision or audio, not in the release, image or wheel", lancedb: "y:Multimodal tables",
+          elastic: "p?:A multimodal semantic field, a technical preview in 9.5", opensearch: "p:A multimodal ingest processor", vespa: "p:Embedders over images", qdrant: "p?", weaviate: "y:multi2vec modules", milvus: "p?" }]
       ]
     },
     {
@@ -224,22 +235,22 @@ window.STRATA_COMPARE = {
         ["Rollouts with health gates, pause and rollback", {
           strata: "y:Gates as live charts with limits to drag; every spec version with its diff and a rollback", elastic: "p?:Upgrades in Elastic Cloud and ECK" }],
         ["Autoscaling, rehearsed on past load", {
-          strata: "y:Rules in the operator that act, wait for a person, or stay off; the last week's load replays on them first",
-          postgres: "n?", elastic: "$?:Autoscaling in Elastic Cloud, and in ECK with an Enterprise licence", opensearch: "n?", solr: "n?", vespa: "p?:In Vespa Cloud",
-          qdrant: "n?", weaviate: "n?", milvus: "n?" }],
+          strata: "e:Rules in the operator that act, wait for a person, or stay off; the last week's load replays on them first",
+          postgres: "n?:None in PostgreSQL; managed services scale it", elastic: "$:ECK autoscales with an Enterprise licence; Elastic Cloud and Serverless scale themselves", opensearch: "n?:None when you run it; Amazon OpenSearch Serverless scales itself", solr: "n:The autoscaling framework was removed in Solr 9", vespa: "$:Within resource ranges in Vespa Cloud, and with the commercial Kubernetes operator; none in the open-source deployment",
+          qdrant: "n?:None when you run it", weaviate: "n?:None when you run it", milvus: "n?:None when you run it; Zilliz Cloud Serverless scales itself" }],
         ["Plans, makes and deletes a cloud cluster, with its cost", {
-          strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
+          strata: "e:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
         ["The database's own logs, searched with SQL", {
           strata: "y:Every server's lines and queries kept in ChloeDB, across the cluster", elastic: "p:Its logs once shipped into it", opensearch: "p:Its logs once shipped into it",
           solr: "p:The latest lines in the admin UI" }],
         ["An agent that investigates alerts and proposes fixes to approve", {
-          strata: "y:The on-call agent: read-only tools, and proposals an admin approves within the hour", elastic: "$?:AI Assistant for Observability, in paid tiers" }],
+          strata: "e:The on-call agent: read-only tools, and proposals an admin approves within the hour", elastic: "$:The AI Assistant for Observability, now deprecated for the Elastic AI Agent, with a paid subscription" }],
         ["A rehearsal of the cluster under load, and other shapes predicted", {
           strata: "y:The Simulator: a test mix at a rising rate, graded against the SLO, with what more copies, shards or other machines would hold and cost" }],
         ["Licence", {
           strata: "t:Apache-2.0, console included", sqlite: "t:Public domain", postgres: "t:PostgreSQL", lancedb: "t:Apache-2.0",
           elastic: "t:AGPLv3, SSPL or ELv2; Kibana likewise", opensearch: "t:Apache-2.0", solr: "t:Apache-2.0", vespa: "t:Apache-2.0",
-          qdrant: "t:Apache-2.0", weaviate: "t:BSD-3-Clause", milvus: "t:Apache-2.0" }]
+          qdrant: "t:Apache-2.0", weaviate: "t:BSD-3-Clause core; some features under the Weaviate License", milvus: "t:Apache-2.0" }]
       ]
     }
   ]

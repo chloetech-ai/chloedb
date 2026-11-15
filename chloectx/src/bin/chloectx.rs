@@ -457,9 +457,16 @@ enum SyncCmd {
         #[arg(long)]
         url: String,
         /// Read the server's key (an API key or token) from stdin, kept
-        /// owner-only in ChloeCtx's home, never on the command line.
+        /// owner-only in ChloeCtx's home as this project's own (a key may
+        /// be limited to one project's table), never on the command line.
         #[arg(long, conflicts_with = "token_env")]
         token_stdin: bool,
+        /// Keep the key from stdin as the machine's too (sync.token), for
+        /// every project without a key of its own: an admin's key, or one
+        /// that may write several projects' tables. Without it, only the
+        /// first key set up on the machine becomes the machine's.
+        #[arg(long, requires = "token_stdin")]
+        every_project: bool,
         /// Read the key from this environment variable whenever the daemon
         /// syncs (one a cloud environment sets, say); no file holds it.
         #[arg(long, default_value = "")]
@@ -659,20 +666,23 @@ fn main() {
                 }
             }
         }
-        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, renames, no_create } } => {
+        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, every_project, token_env, renames, no_create } } => {
             let token = token_stdin.then(|| {
                 let mut t = String::new();
                 let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
                 t
             });
             let home = paths::home();
-            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env, &renames) {
+            let kept = chloectx::sync::setup(&home, &project.to_string_lossy(), &url, token.as_deref(), &token_env, &renames, every_project).unwrap_or_else(|e| {
                 eprintln!("chloectx sync: {e}");
                 std::process::exit(1);
+            });
+            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
+            let remote = chloectx::sync::remote_for(&home, &key).expect("just set up");
+            if !kept.is_empty() {
+                println!("the key is kept in {}", kept.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and "));
             }
-            let remote = chloectx::sync::remote(&home).expect("just set up");
             if !no_create {
-                let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
                 if let Err(e) = remote.create_table(&key) {
                     eprintln!("chloectx sync: could not create the table {} on {}: {e}", chloectx::sync::table_for(&key), remote.url);
                     std::process::exit(1);
@@ -680,10 +690,12 @@ fn main() {
             }
             // Not fatal: the key may only be in the environment of the
             // sessions to come (a cloud setup script runs before it is).
-            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
             match remote.count(&key) {
-                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there)", remote.url),
-                Err(e) => println!("sync set up with {}; this project syncs as {key}; the server does not answer yet ({e}): the daemon tries again when it starts", remote.url),
+                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there), with {}", remote.url, remote.key_from),
+                Err(e) => {
+                    let e = e.to_string();
+                    println!("sync set up with {}; this project syncs as {key}, with {}; the server does not answer yet ({e}){}: the daemon tries again when it starts", remote.url, remote.key_from, chloectx::sync::key_hint(&key, &e));
+                }
             }
             // A running daemon syncs once it starts again (on the next hook or tool).
             let dir = paths::store_dir(&project);

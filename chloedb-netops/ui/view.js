@@ -3027,7 +3027,7 @@ function cmdBar(app, opts = {}) {
     placeholder();
   };
   const drawMode = () => modeSeg.replaceChildren(...[["search", "Search", "search"], ["ask", "Ask", "sparkle"]].map(([m, label, ic]) =>
-    h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), title: m === "ask" ? "Ask the assistant (Tab switches)" : "Search and filter (Tab switches)", onclick: () => setMode(m) }, C.icon(ic), h("span", {}, label))));
+    h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), title: m === "ask" ? "Ask the assistant" : "Search and filter", onclick: () => setMode(m) }, C.icon(ic), h("span", {}, label))));
   const setMode = (m) => { mode = m; drawMode(); placeholder(); lastQ = null; fetchSoon(0); input.focus(); };
   scopeEl.onclick = () => { if (app.where.off) app.where.off = false; else app.where.off = true; drawScope(); lastQ = null; if (open) fetchSoon(0); };
 
@@ -3097,8 +3097,11 @@ function cmdBar(app, opts = {}) {
       return;
     }
     if (e.key === "Tab" && !e.shiftKey) {
-      if (open && at >= 0 && items[at]) { e.preventDefault(); pick(at, false); return; }
-      if (!opts.compact && !input.value.trim()) { e.preventDefault(); setMode(mode === "ask" ? "search" : "ask"); }
+      // Tab completes the suggestion chosen with the arrows, and otherwise
+      // leaves the box (UIA-1, WCAG 2.1.2: it used to switch Search and Ask
+      // in an empty box, so focus never left it); the Search | Ask buttons
+      // before the box switch the mode.
+      if (open && at >= 0 && items[at]) { e.preventDefault(); pick(at, false); }
       return;
     }
     if (e.key === "Enter") {

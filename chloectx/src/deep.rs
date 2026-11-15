@@ -502,7 +502,12 @@ fn describe(r: &Record, terms: &HashSet<String>, now: i64, label: &str, max: usi
         }
     }
     let t = recall::snippet(&r.text, terms, max);
-    s += &format!("\n  {}", crate::envelope::defuse(&t.split_whitespace().collect::<Vec<_>>().join(" ")));
+    let t = crate::envelope::defuse(&t.split_whitespace().collect::<Vec<_>>().join(" ")).into_owned();
+    match r.third_party() {
+        // Fenced as data (audit CTX-32).
+        Some(tool) => s += &format!("\n  {}", recall::fence_third_party(tool, &t)),
+        None => s += &format!("\n  {t}"),
+    }
     s
 }
 
@@ -716,8 +721,9 @@ pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, check: Option
     }
     let mut ck = check;
     let mut s = format!(
-        "ChloeCtx searched the memory of earlier sessions for this request ({} searches) and judged these records relevant, most important first. They may be outdated; the current files take precedence.\n",
-        res.plan.queries.len() + 2
+        "ChloeCtx searched the memory of earlier sessions for this request ({} searches) and judged these records relevant, most important first. They may be outdated; the current files take precedence. {}\n",
+        res.plan.queries.len() + 2,
+        recall::NOT_INSTRUCTIONS
     );
     let terms: HashSet<String> = HashSet::new();
     for (r, why) in &new {
