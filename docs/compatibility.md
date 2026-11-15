@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.0). The
+(November 2026, every crate and package at version 0.3.4). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -105,7 +105,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.0), and keeps it between releases: name a
+version of the last release (0.3.4), and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -115,7 +115,7 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
 `MIN_PROTOCOL` 1, `PROTOCOL` 21; [the list of what each adds](chloedb/server.md)).
 
 - When a coordinator or a peer connects it calls `Hello` with the range it
-  speaks (1 to 20) and the server answers its own range, the plan version
+  speaks (1 to 21) and the server answers its own range, the plan version
   it reads (plan IR version 1) and the plan features it has. The two use
   the highest protocol both speak; if the ranges do not meet the connection
   is refused, naming both ranges. A coordinator asks again every minute and
@@ -141,6 +141,12 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   (`FULL JOIN`): a coordinator counts and writes strictly only
   through shards of 21, and a 0.3.1 shard refuses a full join by name, so
   upgrade the shards before the coordinator.
+  0.3.4 keeps the shard protocol at 21 and adds no plan feature: the terms
+  a read after a write passes back (`min_seq_term`, `min_seq_terms`) are
+  new fields that a 0.3.3 server leaves out, reading by the number alone,
+  so 0.3.3 and 0.3.4 mix in either order. A key's statement budget is
+  kept by 0.3.4 only: a 0.3.3 server admits the key without it, so give
+  keys budgets once every server runs 0.3.4.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer

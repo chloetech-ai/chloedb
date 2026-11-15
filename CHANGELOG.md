@@ -11,6 +11,113 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.4
+
+The second wave of the fourth audit and two more series of fixes, queries
+over HTTP that no longer read their statement twice before their plan
+(0.3.2 and 0.3.3 had made them up to a third slower), a table and a key for
+each project ChloeCtx syncs, and Workbench, an early app that runs many
+Claude Code agents side by side: `chloedb-server-v0.3.4`,
+`chloedb-py-v0.3.4` and `chloedb-js-v0.3.4` (the Java package is built from
+source; `chloedb-crawl`, `chloedb-sheets` and `chloectx` are attached
+prebuilt to the server's release). The file format stays 3 and the shard
+protocol stays 21: the terms a read passes back are new gRPC fields that a
+0.3.3 server leaves out, and no plan feature is new, so servers of 0.3.3 and
+0.3.4 mix in a cluster in either order. Two things wait for the last server:
+give keys statement budgets once every server runs 0.3.4 (0.3.3 admits a key
+without its budget), and refresh a rollup that counts a field's values with
+0.3.4 (0.3.3 refuses it by name). Auth changes: a statement's size is capped,
+a coordinator's `GET /v1/health` without a credential answers its status
+only, ChloeCtx syncs with a key per project and its app refuses role keys,
+the relevance tables take writes from admin keys only, and the app engine
+closes the tables an app did not declare (below). **A ChloeCtx sync key
+limited to `chloectx_memory` can no longer push: make a project's key with
+"Make a sync key" in the Inspector.**
+
+### What changes by default
+
+- **A statement longer than 1 MiB or 250,000 elements answers 400
+  `query_invalid` before it is parsed** (`--max-statement-bytes`,
+  `--max-statement-elements`; 0 lifts either). A list passed as a parameter
+  (`id IN (:ids)`) does not count.
+- **A coordinator's `GET /v1/health` without a valid credential answers
+  `{status}` only** (LIV-19): its whole answer names the copies' internal
+  addresses, roles and counts. With the token or any key it answers as
+  before, and the operator and the command center send one. A client that
+  read more than `status` without a credential gets less.
+- **ChloeCtx syncs each project into a table of its own,
+  `chloectx_mem_<project>`, with a key limited to it** (X-F1). A 0.3.4
+  machine pushes nothing into the shared `chloectx_memory` (it still pulls
+  from it where its key reads it), and makes the project's table with an
+  admin's key or one from the Inspector. A key limited to
+  `chloectx_memory=write`, the one the Inspector made before, can no longer
+  push: `chloectx sync status` shows the error and says how to get a
+  project's key. Machines on 0.3.3 keep pushing into `chloectx_memory`.
+- **Records pulled from another machine keep their rules and decisions out
+  of recall** (the briefing, a prompt's context and searches) until
+  `chloectx sync accept --origin ID` (or `--all`); facts, notes and the
+  conversation are not held back.
+- **ChloeCtx's app refuses `propose` and `ops` keys on `/v1/memory/*` and
+  `/v1/local/*`**, lists only the projects whose tables the caller reads,
+  and reads each from a table the caller may read. chloedb-server tells an
+  app a key's role in `x-chloedb-role`, and the app's default key also reads
+  `chloectx_mem_*` (on Kubernetes the operator makes it again at its next
+  reconcile).
+- **`relevance_proposals` and `relevance_judgments` take writes from admin
+  keys only**: a write or a statement below admin scope answers 403
+  `scope_refused`. A client that wrote judgments with a write key needs an
+  admin key.
+- **App engine: once an app declares access on any of its tables, a table
+  it did not declare is read by everyone and written by its owner only**
+  (X-G2): a visitor's write there answers 403 until the table is declared.
+  An app that declares no access works as before.
+- **App engine: a trigger set off by a person's write on the public path
+  runs as that person** (X-G4), so their access holds for what it reads and
+  writes. A trigger that keeps a total over everyone's rows needs
+  `"as": "app"` on the plan's function or `RUNS AS APP` in its CREATE RULE.
+- **App engine: an admin adding someone to a company from the app's page
+  sends an invitation**, which the person accepts
+  (`POST /api/apps/<id>/companies/join`); the studio still adds people at
+  once (X-G3).
+- App engine: a visitor or member who is not an admin can email only the
+  app's own members, and `STRATA_APPS_ASK_CAP_USD` is a daily share for all
+  apps together, $20 a day when the studio has no cap (0: no daily stop)
+  (X-G5).
+- A replica that lost its volume and starts again with `--replica` votes
+  only once a primary has caught it up, and is a member only from then
+  (N-E2). The cost: if a shard's first primary stops after calling its
+  replicas but before they caught up, they cannot elect a new primary,
+  where before they could and might lose writes.
+- A server started as its shard's primary on an empty database asks its
+  replicas first, and starts as a replica (with `--failover-after-ms`) or
+  refuses to start when one holds the shard's transactions (N-E2).
+- The Kubernetes operator revokes only the keys whose owner is `operator`
+  (N-E7).
+- `LIKE` with a NULL pattern matches no row on every field, and `ILIKE`
+  folds case a character at a time, so `Σ` and `İ` match.
+- `SHOW TABLES` runs and lists the tables a key reads. A `SELECT *` with no
+  `FROM` is refused with a hint.
+- chloedb-server takes its ports before it opens or makes its database, so
+  a start that fails leaves no files.
+- PACK stops reading once 16 rows in a row were turned away for its budget,
+  so a pack over rows larger than the budget's last 32 to 40 tokens may
+  leave out one short row from deep in the ranking (15 of 400 sample
+  answers did; p95 on 20,000 rows went from 19 ms to 2 to 3 ms).
+- The connectors' tables gain `warning` and `last_warning` (added by
+  `ALTER TABLE` at a connector's first run). An HTTP JSON pull whose records
+  path matches nothing has health `warning`, and a push whose path matches
+  nothing answers 422.
+- `memory_forget` answers once the record is deleted, scrubbed from the
+  receipts and the automatic snapshots are dropped, and rewrites the
+  segments that held it after it answers; automatic snapshots keep to a
+  byte budget (the store's size, at least 32 MB) and after 3 days to one a
+  day.
+- The ChloeCtx app's `ask` answers 400 for a budget outside 200 to 50,000
+  tokens instead of raising it to 200, and a deleted note is tagged
+  `retired`, not `superseded`.
+- Releases stay drafts until everything the docs name for the version
+  exists.
+
 ### Queries over HTTP are no longer read twice before their plan
 
 - A query with parameters no longer parses its whole statement for the
@@ -60,6 +167,8 @@ changes collect under "Unreleased".
   directory store (tenants' `HEAD`, logs and bases) is durable once the write
   returns: the directory is synced after the rename, and each directory made
   for it after it is made.
+
+### Experimental marks, demos and one-way doors (audit 4, wave 2)
 
 - **Experimental marks.** The cloud provisioners, the hub, the autoscaler
   and the on-call agent are marked experimental: no compatibility promise
@@ -181,6 +290,184 @@ refresh may change in a later release.
   whole table again); a coordinator refuses `dict:` derived fields, whose
   shards would tag rows from their own share of the dictionary. Tables that
   have one keep it.
+
+### SQL and the engine (audit series 2 and 3)
+
+- Long lists in `@>` and `<@` bind and run in linear time: a list of
+  100,000 values took 77 s and takes about 1 s (N-B4).
+- A SELECT with no FROM plans as one row of no table, and its plan says so
+  (PRF-12).
+- `Database::merge_only` merges only the segments it is given, and
+  `Database::zero_free_pages` writes zeros over the free pages a forget
+  left (pages a live snapshot reads are counted, not written). With
+  `Database::set_zero_page_tails(true)` every extent a single-file database
+  writes zeroes the rest of its last page; it is off by default, so a plain
+  database is written byte for byte as before (X-F2).
+
+### Server and cluster
+
+- `spec.requireCopiesApart` (off by default) makes the operator keep a
+  shard's copies on different nodes as a rule, not a preference. Turned
+  on, it needs as many nodes as copies, and one more for a rollout's extra
+  copy; turned off, the StatefulSets are as before.
+- A coordinator's `GET /v1/health` sums each table's rows over its shards
+  into `rows` and `tables` (LIV-13), and does not sum them while a shard
+  does not answer.
+- A LIKE over logs through a coordinator is refused for what it is, with
+  advice that works (LIV-8).
+- The app proxy passes `If-None-Match` and `If-Modified-Since` to an app and
+  its `ETag`, `Last-Modified` and 304 back (NET-19).
+- A server's disk is measured as `df` measures it, over the space a user
+  may use (CCW-14). A "p99 jumped" alert needs the p99 to be at least half
+  its objective (`--slo-p99-ms`) (CCW-19).
+
+### Command center
+
+- A view's code loads when the view opens: Home now loads 207 KB in 11
+  modules before it shows instead of 920 KB in 66, and on fast 4G shows in
+  832 ms instead of 1,883 ms. An idle Home asks 20 requests a minute
+  instead of 93 (CCW-10, LIV-14, CCW-18).
+- A firing alert is never a checked line beside "No problems" (LIV-9); rows
+  count every table, on a coordinator too (LIV-13); netops's, the feature
+  store's and ChloeCtx's tables are listed as the app's (LIV-12); advice on
+  an operator-managed cluster names the `StrataCluster`'s fields, not
+  server flags (LIV-10, LIV-11); a refusal of an operations key names the
+  least key that would do (CCW-11); the quickstart's first open lands on
+  Start here (ONB-11).
+- Smaller fixes from the audit: import, saved searches, a table's Data and
+  Storage tabs, Start here's sandbox text, the Tables tiles, unknown
+  addresses, the top bar's key name, toasts, Performance's copied link and
+  the crawler's and spreadsheet app's tables on a phone (CCB-16 to CCB-24,
+  CCW-15 to CCW-17, LIV-18, LIV-22). A lost request of an app's page no
+  longer marks the whole server as not answering (APC-27).
+
+### Connectors and data apps
+
+- An HTTP JSON pull whose records path matches nothing warns, naming the
+  path and the answer's top-level keys, in the run, the health, the drawer
+  and the runs table (DAP-13); an empty push answers 422 (DAP-19); a run by
+  hand, one not run yet and the rows written are said as such (DAP-18).
+- The feature store's serving KPI counts the rows a ranking read (DAP-20),
+  the crawler's Filled follows the crawl (DAP-22), and the spreadsheet
+  app's summarize refuses a column outside its area (DAP-24).
+
+### App engine (audit 4: X-G2 to X-G5, and series 3)
+
+- Access as listed above. A visitor can no longer set `created` on their
+  rows, and under "add" a row's owner is its first insert's (`ORDER BY
+  ts`). `app.companies()` lists invitations with `invited` set, and
+  `app.joinCompany` accepts one. Exported statements keep `RUNS AS APP`.
+  Schedules and triggers set off by the studio's writes still run as the
+  app. `/api/status` shows `spend.asksToday`; the $2 per app per day limit
+  is unchanged. The README says a company is a soft boundary, kept by its
+  own admins.
+- Usage leaves out the owner's own tries of an app (`src: owner`, which a
+  visitor cannot claim) (APC-15), and smaller fixes from the audit
+  (APC-17, APC-18, APC-22 to APC-25).
+
+### ChloeCtx
+
+- **Sync** (X-F1), as listed above. A project's table is named by its key
+  in lowercase letters, digits and `_` and 8 hex digits of its hash; each
+  row names the machine that pushed it in `origin` (`CHLOECTX_SYNC_ORIGIN`,
+  or a random id in `<home>/sync-origin`). Accepted machines go into
+  `trusted` in `sync.json`. "Make a sync key" asks for the project and the
+  machine, makes the table and a key limited to it, and shows the setup
+  line with `--no-create`; `GET /v1/memory/table?project=` answers the
+  table's name and CREATE TABLE.
+- **Forget** (X-F2, N-F2): the daemon rewrites only the segments whose live
+  rows fell with the delete and those written since that hold deleted
+  rows, no longer every segment or the whole file. No snapshot is taken
+  until the rewrite is done. `chloectx forget` and `forget --everywhere`
+  (new: a fact forgotten in every store) wait for it. A forget also waits
+  until no background merge is running, so the next snapshot no longer
+  copies the forgotten record (6 of 192 parallel runs did).
+- **Snapshots** (X-F3, N-F9): a byte budget (`budget_store_ratio` 1.0, at
+  least 32 MB, or `max_bytes`) that named snapshots count toward and are
+  never dropped from, the oldest automatic one first and never the newest;
+  thinned to one a day after `daily_after_days` (3). `doctor` gains a
+  `disk` line (store, receipts, snapshots and budget, and a warning when
+  hard links fail) and a `sync` line, and says what query understanding
+  and the distiller cost. `receipts.md` gives the cost measured in the
+  audit's simulation: about 3 times the store after a week without a
+  budget.
+- **A Claude Code plugin** (`claude plugin marketplace add
+  chloetech-ai/chloedb && claude plugin install chloectx@chloedb`), whose
+  launcher downloads the release's prebuilt chloectx (SHA-256 checked) and
+  the model on its first session. Its hooks are `chloectx install`'s,
+  `Notification` and `SubagentStop` included (eleven hooks).
+- `install.sh` takes the release's prebuilt chloectx and builds only when
+  it must (`--prebuilt`, `--source`).
+- Recall scores passing test runs and empty tool records lower, and a weak
+  match leaves out a prompt whose turn a newer note supersedes (CTX-17);
+  the MCP tools refuse input their schemas do not allow (CTX-14); a
+  capsule's manifest names files outside the project by their name alone
+  (CTX-18).
+- For Workbench: records carry who said them (a prompt the user wrote or
+  Workbench's), the task's scope and the branch ("not merged here");
+  `chloectx sql --json`, `receipts --json` and `report`; and
+  `install::wiring`, which wires a session through `--settings` and
+  `--mcp-config` without editing the user's settings files.
+
+### Workbench (early)
+
+- `chloedb-workbench` runs many Claude Code agents side by side, each in a
+  real terminal and most often its own git worktree, with ChloeCtx wired
+  into each session and the state kept as rows of an embedded ChloeDB.
+  `./install.sh --workbench` builds and installs it and leaves Claude
+  Code's settings alone (`--user-too` wires them as well); without
+  `--workbench` the installer does what it did.
+- Organised by what you came to do (Start, New project, Continue a project,
+  Needs you, More, Optimize the harness), on a desktop and a phone.
+  Permission prompts become question cards, and an answer that widens
+  permissions opens a grant sheet first; test runs, flaky tests, hotspots
+  and blast radius are counted from runs and git; Trace, Ask and Search
+  answer from git and memory; a preview proxy and persona tests; findings
+  about the harness with their evidence, permissions and memory editors,
+  and "Fix the harness", which applies its changes to a draft only. A kill
+  guard refuses `pkill` patterns that match another agent's processes.
+  [SPEC.md](chloedb-workbench/SPEC.md) is the contract.
+- A session started in its own worktree gets the permissions a regular
+  Claude Code session in the main checkout has: the project's
+  `.claude/settings.local.json` rules (deny rules too, and paths made
+  absolute for both folders), its default mode, additional directories,
+  approved `.mcp.json` servers and the local-scope MCP servers in
+  `~/.claude.json`, carried in the session's own `--settings` and
+  `--mcp-config`; the user's files are only read. "Your Claude Code
+  permissions for this project" turns it off per session. Start a change
+  takes a permission mode (as your settings say, accept edits, auto, plan
+  or bypass); a read-only agent takes only plan or default, an agent an
+  agent starts never more than its parent's, and a restart keeps it.
+
+### Network operations (demo)
+
+- On a coordinator, netops sends no graph statements: walks are read by
+  key (400 keys a statement, four at once) or by place and stop at 50,000
+  rows with a note. On 2 shards with 60,000 objects, "everything behind
+  ag1-ams" went from a 133,000-character statement and a refusal in 135 ms
+  to at most 7,400 characters in 60 ms (LIV-16, NET-7, NET-22). Badges, the
+  Data page's counts and suggestions (p95 35 to 15 ms) too (NET-20, NET-21,
+  NET-23, NET-24).
+- The incident room keeps what you opened, Diagnose is calm on a calm
+  network and follows a fault that ended, the assistant answers the
+  shift's questions, the tabs fit, the phone's header folds and the map
+  pinches, Leadership names each number's window, and the first open makes
+  one round trip fewer (NET-11 to NET-14, NET-16 to NET-19). Release
+  archives of chloedb-netops, and `install.sh --with netops`.
+
+### Releases, site and operations
+
+- A release stays a draft until `release-publish.yml` finds everything the
+  docs and installers name for it, and `docs/site/versions.json` moves
+  only after (ONB-1). `scripts/check-doc-urls.py` checks a given release,
+  its drafts, npm and crates.io. The npm and crates.io packages are
+  published by a run started by hand (ONB-6).
+- On a phone the site's header takes 83 px instead of 170 px and the
+  quickstart's first paragraph 446 px instead of 745 px (ONB-17); the root
+  redirect, the 404 page and the installer name chloetech.ai (ONB-22,
+  LIV-20).
+- CI: each on-demand runner has its own rustup and cargo homes, and macOS
+  jobs on the owner's Mac get twice the time.
 
 ## 0.3.3
 
