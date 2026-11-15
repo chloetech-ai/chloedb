@@ -1,0 +1,92 @@
+diff --git a/chloedb-server/src/bin/chloedb-route-bench.rs b/chloedb-server/src/bin/chloedb-route-bench.rs
+index 8daec9b..1680732 100644
+--- a/chloedb-server/src/bin/chloedb-route-bench.rs
++++ b/chloedb-server/src/bin/chloedb-route-bench.rs
+@@ -133,6 +133,14 @@ struct Args {
+     /// `--lag-ms` late), which the primary ships replica 1 through.
+     #[arg(long)]
+     late_link: Option<String>,
++    /// Configurations to run instead of each scenario's own, by label,
++    /// comma-separated: `round-robin`, `round-robin adaptive`,
++    /// `least-cost`, `least-cost adaptive`, `least-cost no-load`,
++    /// `least-cost prefer`. For copies slowed outside the bench (with
++    /// `--external`, under `equal`), which then names no configurations
++    /// of its own.
++    #[arg(long, value_delimiter = ',')]
++    configs: Vec<String>,
+ }
+ 
+ const WORDS: usize = 5_000;
+@@ -666,8 +674,25 @@ async fn main() {
+     let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), ..Default::default() };
+     let rr = CoordOptions { route: Route::RoundRobin, ..base.clone() };
+     let lc = CoordOptions { route: Route::LeastCost, ..base.clone() };
++    let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
++    let every: Vec<(&'static str, CoordOptions)> = vec![
++        ("round-robin", rr.clone()),
++        ("round-robin adaptive", adaptive(&rr)),
++        ("least-cost", lc.clone()),
++        ("least-cost adaptive", adaptive(&lc)),
++        ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() }),
++        ("least-cost prefer", CoordOptions { prefer_caught_up: true, ..lc.clone() }),
++        ("least-cost fixed", CoordOptions { cool_off_fix: true, ..lc.clone() }),
++    ];
++    let chosen: Vec<(&'static str, CoordOptions)> = a
++        .configs
++        .iter()
++        .map(|l| every.iter().find(|(k, _)| *k == l.trim()).cloned().unwrap_or_else(|| panic!("no configuration {l:?}: {:?}", every.iter().map(|(k, _)| *k).collect::<Vec<_>>())))
++        .collect();
+     let configs = |scenario: &str| -> Vec<(&'static str, CoordOptions)> {
+-        let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
++        if !chosen.is_empty() {
++            return chosen.clone();
++        }
+         match scenario {
+             "equal" | "stall" => vec![("round-robin", rr.clone()), ("round-robin adaptive", adaptive(&rr)), ("least-cost", lc.clone()), ("least-cost adaptive", adaptive(&lc))],
+             "busy" => vec![("round-robin", rr.clone()), ("least-cost", lc.clone()), ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() })],
+diff --git a/chloedb-server/src/coord.rs b/chloedb-server/src/coord.rs
+index b530217..7ea02fc 100644
+--- a/chloedb-server/src/coord.rs
++++ b/chloedb-server/src/coord.rs
+@@ -128,6 +128,10 @@ pub struct CoordOptions {
+     pub hedge: Duration,
+     /// Ask a replica that failed or was outrun last, for this long.
+     pub cool_off: Duration,
++    /// EXPERIMENT (route bench only): spare a replica outrun before
++    /// --hedge-ms whatever the hedge, and choose by cost when every
++    /// replica is in its cool-off.
++    pub cool_off_fix: bool,
+     /// Give up on a shard after this long (`None`: at the query's deadline).
+     pub shard_timeout: Option<Duration>,
+     /// Answer without shards that have no replica answering, and say so,
+@@ -216,6 +220,7 @@ impl Default for CoordOptions {
+         CoordOptions {
+             hedge: Duration::from_millis(100),
+             cool_off: Duration::from_secs(5),
++            cool_off_fix: false,
+             shard_timeout: None,
+             partial: false,
+             token: None,
+@@ -1834,7 +1839,12 @@ impl Coordinator {
+         if self.opts.route == Route::LeastCost {
+             let at = Instant::now();
+             let (split, load) = (self.opts.prefer_caught_up, self.opts.route_load);
+-            let copies: Vec<_> = t.replicas[i].iter().map(|r| r.stats.route_view(at, r.avoid_until.load(Ordering::Relaxed) > now, min, split, load)).collect();
++            let mut copies: Vec<_> = t.replicas[i].iter().map(|r| r.stats.route_view(at, r.avoid_until.load(Ordering::Relaxed) > now, min, split, load)).collect();
++            if self.opts.cool_off_fix && copies.iter().all(|c| c.avoided) {
++                for c in &mut copies {
++                    c.avoided = false;
++                }
++            }
+             // The same turn and shard draw the same other choice.
+             let seed = crate::cores::route::mix((start as u64) << 16 ^ i as u64);
+             return crate::cores::route::order(&copies, start, first, seed);
+@@ -1939,7 +1949,7 @@ impl Coordinator {
+                             // while waiting for a write it is not known to hold
+                             // (--prefer-caught-up): slower than usual, or
+                             // behind, not failing.
+-                            let early = self.opts.hedge_adaptive && asked_at[k].elapsed() < self.opts.hedge;
++                            let early = (self.opts.hedge_adaptive || self.opts.cool_off_fix) && asked_at[k].elapsed() < self.opts.hedge;
+                             let behind = self.opts.prefer_caught_up && self.opts.route == Route::LeastCost && min > 0 && t.replicas[i][other].stats.held() < min;
+                             if !early && !behind {
+                                 self.avoid(t, i, other);
