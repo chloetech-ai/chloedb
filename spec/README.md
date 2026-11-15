@@ -37,6 +37,7 @@ cloud container these were written in, one TLC worker a model, 2026-11-15.
 | [storage/SnapshotPublish.tla](storage/SnapshotPublish.tla) | `chloedb/src/storage/db.rs`: `Database::snapshot`, `republish` (`publish_snapshots`) | a reader's snapshots never go back, and each holds every write that returned before it was asked for |
 | [slots/SlotMove.tla](slots/SlotMove.tla) | `chloedb-server/src/coord/moves.rs`, `src/cores/slots.rs` (`flip_ok`, `Hold`, `Change::give`), `src/service/moving.rs`, `Service::set_slots` | once any server holds a move's flip, the shard the slots go to holds every write to them that was acknowledged, and none comes after |
 | [clustermap/MapChange.tla](clustermap/MapChange.tla) | `chloedb-server/src/coord.rs` (`Coordinator::change`, `sync_heard`, the map Lease, `connect_with`'s survey), `src/cores/slots.rs` (`Change::synced`, `give`, `answered`, `in_doubt`, `flip_ok`), `Service::set_slots` | no two maps of one epoch, a coordinator routes only by a map a server held, and no server is left refusing every later map |
+| [idempotency/IdempotencyKeys.tla](idempotency/IdempotencyKeys.tla) | `chloedb-server/src/idem.rs` (`Keys::begin`, `finish`, `record`, `recorded`), `src/service.rs` (`begin_key`, `apply_keyed_in`, `replicated`), `Primary::holding`, `term_opened` | a write retried with its key is applied once, and answered as acknowledged only while a majority holds it |
 
 ### Shard elections (`replication/`)
 
@@ -201,6 +202,67 @@ What TLC found:
    (the sync takes up a map one server holds, the change drops it from
    doubt, its give fails, and the next coordinator's majority misses it);
    without the Lease, two changes at once still fork (`QuorumRacing`).
+
+### Idempotency keys across failover (`idempotency/`)
+
+One shard of three copies (`idem.rs`, `Service::begin_key`,
+`apply_keyed_in`, `replicated`, `Primary::holding`, `term_opened`); a
+client's keyed write, retried through the coordinator to any primary; the
+key in the write's own log entry; memory lost on restart and kept on
+stepping down. Elections are abstract: a copy at least as up to date as a
+majority wins. `ForgetOnStepDown` and `WriterChecks` are fixes;
+`AcksAnOlderTerm` puts DS-5 back.
+
+| model | fixes | bounds (terms, sends, other writes, crashes, evictions) | result | states |
+|---|---|---|---|---|
+| KeysNow | none | 3, 2, 0, 0, 0 | **lost write** in 10 states (below) | 3,489 |
+| KeysDS5 | memory, DS-5 back | 4, 2, 1, 1, 0 | **lost write** in 12 states | 160,437 |
+| KeysFix (CIKeysFix) | memory | 4, 2, 1, 1, 0 (3, 2, 1, 1, 0) | no error | 1,129,195, 4 min (127,595) |
+| KeysEvict | memory | 1, 2, 0, 0, 1 | **applied twice** in 6 states (below) | 24 |
+| EvictFix (CIEvictFix) | both | 4, 3, 0, 1, 1 (3, 3, 0, 1, 1) | no error | 1,102,814, 3 min (129,499) |
+| KeysRowSeq | memory | 2, 2, 0, 1, 0 | `SameSeq` broken in 8 states | 613 |
+
+What TLC found:
+
+1. **The keys in memory outlive the log (`KeysNow`, open).**
+   `Service.idempotency` is made once (`Service::new`) and nothing clears
+   it, while the role changes inside the process (`step_down`,
+   `fail_over`, `promote`, `configure`), `install_copy` replaces `_sources`
+   but not the keys in memory, and `begin_key` asks memory before the
+   database:
+   1. c0 applies w with key k as transaction 1 of term 1, and
+      `Keys::finish` keeps its seq_no 1; its replicas miss it, so the
+      client's answer is a 504 or in doubt.
+   2. c1 is elected in term 2 with c2's vote, fences c0, and
+      `Service::step_down` makes c0 a replica in its process, with its
+      memory.
+   3. c1 ships to c0, whose differing log is replaced by a copy: w and
+      its `_sources` row are gone.
+   4. c0 is elected in term 3 (by a handover, or after c1 fails).
+   5. The retry reaches c0, and `Keys::begin` answers Done with seq 1.
+      c1's transaction 2 is acknowledged, so `acked(1)` holds and the
+      retry is answered 200, though no copy holds w.
+
+   The fix TLC passes: forget the keys whenever the role changes (or tag
+   each with its term). The simulator answers retries only from the
+   database (`sim/copy.rs`), so it cannot find this.
+2. **DS-5 (`KeysDS5`).** Put back, a retry answered from the key's row
+   with the database's last number is acknowledged by an older term's
+   transaction, and the write is then lost; the same bounds without it
+   find nothing (`KeysFix`).
+3. **A key evicted while its write runs (`KeysEvict`, open).**
+   `Keys::begin` forgets the oldest keys past the TTL or 100,000 whatever
+   their state, `Busy` ones too. A retry while the write is in flight is
+   then New, no row is there yet (`idem::record` writes it in the write's
+   own transaction, with `set_source`, which replaces), and both attempts
+   commit. It needs 100,000 other keys claimed on the shard during one
+   write, which a busy coordinator (every write it sends has a key) can
+   reach while a write waits for an embedding core. The fix TLC passes:
+   the writer looks the key's row up in the write's own transaction.
+4. **The documentation (`KeysRowSeq`).** server.md says a retry is
+   answered the first attempt's seq_no; one answered from the key's row
+   gets the database's last number, as its section on keys says
+   elsewhere. `RetrySeesWrite` (the number covers the write) holds.
 
 ## What is next, by risk
 
