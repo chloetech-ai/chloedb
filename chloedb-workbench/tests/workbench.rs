@@ -6479,3 +6479,268 @@ fn a_replaced_decision_that_was_yours_says_yours() {
     assert_eq!(d["replaces"]["who"], "yours", "{d}");
     assert_eq!(d["replaces"]["text"], "Shipping is free over 100 euros.", "{d}");
 }
+
+// Seventh build: Converge (SPEC.md). Personas play the product through a
+// runner, what they hit becomes findings, and each finding walks eight
+// gated stages. The runner and gh are fakes here: no model, no GitHub.
+
+/// The persona runner: `play` reports one problem on its first explore run
+/// (its repro: `test -f src/FIXED`) and, replaying it, says it is fixed
+/// when src/FIXED is in its checkout; `scope` scopes it to src/ and tests/.
+const CONVERGE_RUNNER: &str = r#"#!/bin/sh
+D="__DIR__"
+role="$1"
+job=$(cat)
+printf '%s\n' "$job" >> "$D/jobs-$role"
+case "$role" in
+  play)
+    if printf '%s' "$job" | grep -q '"purpose":"verify"'; then
+      if [ -f src/FIXED ]; then
+        echo '{"outcome":"done","ease":4,"answer":"Export works now.","fixed":true,"findings":[],"cost_usd":0.01}'
+      else
+        echo '{"outcome":"gave_up","ease":2,"answer":"Still broken.","fixed":false,"findings":[],"cost_usd":0.01}'
+      fi
+    else
+      n=$(cat "$D/plays" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$D/plays"
+      echo "thinking out loud, then the answer"
+      if [ "$n" = 1 ]; then
+        echo '{"outcome":"done","ease":2,"answer":"Exported, the hard way.","findings":[{"title":"The export button does nothing on the orders page","detail":"Clicked Export, expected a CSV, nothing happened.","kind":"bug","theme":"usability","severity":"major","step":"export the orders","repro":"test -f src/FIXED"}],"cost_usd":0.02}'
+      else
+        echo '{"outcome":"done","ease":4,"answer":"Fine.","findings":[],"cost_usd":0.01}'
+      fi
+    fi;;
+  scope) echo '{"area":"src","files":["src/","tests/"],"root_cause":"The handler is not wired.","acceptance":"The repro exits 0","size":"S","cost_usd":0.01}';;
+  generate) echo '{"name":"Omar, data engineer","role":"Loads data nightly","traits":["impatient"],"journey":"Load a CSV and query it.","surfaces":["load"],"why":"Nobody played loading","cost_usd":0.01}';;
+esac
+"#;
+
+/// gh, through its REST API (`gh api`): opening the pull request answers
+/// its address, reading it a green `CI result` (merged once the merge
+/// call ran), and each call is logged.
+const CONVERGE_GH: &str = r#"#!/bin/sh
+D="__DIR__"
+printf '%s\n' "$*" >> "$D/gh.log"
+case "$*" in
+  "api -X POST repos/acme/proj/pulls "*) echo '{"html_url":"https://github.com/acme/proj/pull/7","number":7}';;
+  "api repos/acme/proj/pulls/7")
+    if [ -f "$D/merged" ]; then echo '{"merged":true,"state":"closed","merged_by":{"login":"roberto"},"head":{"sha":"abc123"}}'
+    else echo '{"merged":false,"state":"open","head":{"sha":"abc123"}}'; fi;;
+  "api repos/acme/proj/commits/abc123/check-runs"*) echo '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"CI result","status":"completed","conclusion":"success"}]}';;
+  "api -X PUT repos/acme/proj/pulls/7/merge "*) touch "$D/merged"; echo '{"merged":true,"sha":"def456"}';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#;
+
+fn converge_fakes(dir: &Path) -> (String, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = Vec::new();
+    for (name, text) in [("converge-runner", CONVERGE_RUNNER), ("fake-gh", CONVERGE_GH)] {
+        let p = dir.join(name);
+        std::fs::write(&p, text.replace("__DIR__", &dir.display().to_string())).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        out.push(p.display().to_string());
+    }
+    (out[0].clone(), out[1].clone())
+}
+
+fn cv_tick(s: &Server, r: &Path) -> Value {
+    let (st, v) = s.post("/api/converge/tick", json!({ "repo": r, "wait": true }));
+    assert_eq!(st, 200, "{v}");
+    v
+}
+
+fn cv_finding(s: &Server, id: &str) -> Value {
+    let (st, v) = s.get(&format!("/api/converge/findings/{id}"));
+    assert_eq!(st, 200, "{v}");
+    v
+}
+
+#[test]
+fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    std::fs::create_dir(r.join("src")).unwrap();
+    std::fs::write(r.join("src/app.sh"), "echo export\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "app"]);
+    // Its origin, on "GitHub" (a bare repository whose path ends in acme/proj).
+    let origin = fd.join("acme").join("proj.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q", "--bare"]);
+    git(&r, &["remote", "add", "origin", &origin.display().to_string()]);
+
+    // The settings: one repro run is enough here, and the develop gate runs a test command.
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "repro_runs": 2, "test_cmd": "test -f src/FIXED" } }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["settings"]["enabled"], false, "the autopilot starts off: {v}");
+
+    // A persona of yours, active at once.
+    let (st, p) = s.post("/api/converge/personas", json!({ "repo": r, "name": "Maya, shop owner", "role": "Runs a small shop", "journey": "Export last month's orders to a spreadsheet." }));
+    assert_eq!(st, 201, "{p}");
+    let pid = p["persona"]["id"].as_str().unwrap().to_string();
+    assert_eq!(p["persona"]["state"], "active");
+
+    // Tick 1: the persona plays (it was never played) and reports one problem.
+    let t = cv_tick(&s, &r);
+    assert!(t["started"].to_string().contains("plays"), "{t}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    let fs = o["findings"].as_array().unwrap();
+    assert_eq!(fs.len(), 1, "{o}");
+    let fid = fs[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(fs[0]["stage"], "found");
+    assert_eq!(fs[0]["theme"], "usability");
+    assert_eq!(fs[0]["severity"], 3);
+    assert_eq!(fs[0]["ease_before"], 2.0);
+    let job = std::fs::read_to_string(fd.join("jobs-play")).unwrap();
+    assert!(job.contains("Export last month") && job.contains("\"purpose\":\"explore\""), "{job}");
+
+    // The same problem, reported by you, and one whose repro passes already.
+    let (st, dup) = s.post("/api/converge/findings", json!({ "repo": r, "title": "Export button does nothing on the orders page", "detail": "No CSV.", "severity": "minor" }));
+    assert_eq!(st, 201, "{dup}");
+    let dup_id = dup["finding"]["id"].as_str().unwrap().to_string();
+    let (_, nr) = s.post("/api/converge/findings", json!({ "repo": r, "title": "Totals are rounded oddly in the footer", "repro": "exit 0", "theme": "correctness" }));
+    let nr_id = nr["finding"]["id"].as_str().unwrap().to_string();
+
+    // An agent's key reports a finding but cannot approve, start or tick.
+    let a = s.spawn(json!({ "repo": r, "task": "look around" }));
+    let aid0 = a["id"].as_str().unwrap().to_string();
+    let key = agent_token(&s, &aid0);
+    let (st, _) = call_as(&s, "POST", "/api/converge/findings", &key, Some(&aid0), Some(json!({ "repo": r, "title": "A flaky test in the footer suite", "repro": "exit 0" })));
+    assert_eq!(st, 201);
+    assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/approve"), &key, Some(&aid0), None).0, 403);
+    assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/start"), &key, Some(&aid0), None).0, 403);
+    assert_eq!(call_as(&s, "POST", "/api/converge/tick", &key, Some(&aid0), Some(json!({ "repo": r }))).0, 403);
+
+    // Tick 2: dedup (yours is merged into the persona's), then the repro fails 2 of 2 at main.
+    cv_tick(&s, &r);
+    let d = cv_finding(&s, &dup_id);
+    assert_eq!(d["finding"]["state"], "duplicate", "{d}");
+    assert_eq!(d["finding"]["dup_of"], json!(fid));
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "scope", "{f}");
+    assert_eq!(f["finding"]["occurrences"], 2, "{f}");
+    assert!(f["finding"]["repro_hash"].is_string(), "{f}");
+    let gates: Vec<&str> = f["events"].as_array().unwrap().iter().map(|e| e["gate"].as_str().unwrap()).collect();
+    assert!(gates.contains(&"dedup") && gates.contains(&"repro_fails"), "{gates:?}");
+
+    // Tick 3: scoped by the runner, then on to prioritize.
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+    assert_eq!(f["finding"]["scope"]["size"], "S");
+    assert!(f["finding"]["score"].as_f64().unwrap() > 0.0, "{f}");
+    // The one that passes at main is out of the loop after its second attempt.
+    let n = cv_finding(&s, &nr_id);
+    assert_eq!(n["finding"]["state"], "cant_reproduce", "{n}");
+
+    // Tick 4: a WIP slot, so an agent starts on its own branch.
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    let aid = f["finding"]["agent"].as_str().unwrap().to_string();
+    let wt = PathBuf::from(f["finding"]["worktree"].as_str().unwrap());
+    assert!(f["finding"]["branch"].as_str().unwrap().starts_with("wb/cv-"), "{f}");
+    let task = s.agent(&aid)["task"].as_str().unwrap_or("").to_string();
+    assert!(task.contains("test -f src/FIXED") && task.contains("regression test"), "{task}");
+    s.wait(&aid, "idle");
+
+    // Round 1: the fix without a test does not pass, and the agent is told why.
+    std::fs::write(wt.join("src/FIXED"), "yes\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-q", "-m", "fix export"]);
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    assert_eq!(f["finding"]["rounds"], 1, "{f}");
+    let last = f["events"].as_array().unwrap().last().unwrap().clone();
+    assert!(last["summary"].as_str().unwrap().contains("no test file changed"), "{last}");
+    assert!(s.events(&aid).iter().any(|e| e["summary"].as_str().unwrap_or("").contains("did not pass")) || s.agent(&aid)["state"] != "idle");
+
+    // Round 2: with a test, the gate passes and the persona replays it.
+    std::fs::create_dir_all(wt.join("tests")).unwrap();
+    std::fs::write(wt.join("tests/export_test.sh"), "test -f src/FIXED\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-q", "-m", "test export"]);
+    // The gate is checked once the agent's steered turn is over.
+    let end = Instant::now() + Duration::from_secs(30);
+    let f = loop {
+        cv_tick(&s, &r);
+        let f = cv_finding(&s, &fid);
+        if f["finding"]["stage"] != "develop" || Instant::now() > end {
+            break f;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(f["finding"]["stage"], "verify", "{f}");
+
+    // Tick: the same persona replays its journey on the branch, and it is fixed.
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+    assert_eq!(f["finding"]["ease_after"], 4.0, "{f}");
+    let jobs = std::fs::read_to_string(fd.join("jobs-play")).unwrap();
+    assert!(jobs.contains("\"purpose\":\"verify\"") && jobs.contains(&pid), "{jobs}");
+
+    // Approving before CI passed is refused.
+    let (st, e) = s.post(&format!("/api/converge/findings/{fid}/approve"), json!({}));
+    assert_eq!(st, 409, "{e}");
+
+    // Tick: the pull request is opened; tick: CI is read, green.
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["pr_url"], "https://github.com/acme/proj/pull/7", "{f}");
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["ci"], "pass", "{f}");
+    let ghlog = std::fs::read_to_string(fd.join("gh.log")).unwrap();
+    assert!(ghlog.contains("-X POST repos/acme/proj/pulls -f head=wb/cv-") && ghlog.contains("-f base=main"), "{ghlog}");
+    // The branch was pushed to origin.
+    assert!(git(&origin, &["branch", "--list", "wb/cv-*"]).contains("wb/cv-"), "the branch was not pushed");
+
+    // You approve: merged with gh.
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/approve"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["stage"], "merged", "{v}");
+    assert!(std::fs::read_to_string(fd.join("gh.log")).unwrap().contains("-X PUT repos/acme/proj/pulls/7/merge -f merge_method=merge"));
+
+    // The guard: the repro passes on main once the branch is in it.
+    let branch = f["finding"]["branch"].as_str().unwrap().to_string();
+    git(&r, &["merge", "-q", "--no-ff", "-m", "merge", &branch]);
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["guard_ok"], true, "{f}");
+
+    // Metrics: the funnel and the kinds of problem.
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
+    assert_eq!(m["funnel"]["merged"], 1, "{m}");
+    assert_eq!(m["by_theme"]["usability"]["merged"], 1, "{m}");
+    assert!(m["spent_today"].as_f64().unwrap() > 0.0, "{m}");
+
+    // The page is served.
+    let mut res = http().get(format!("{}/goals/converge.js", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    assert!(res.body_mut().read_to_string().unwrap().contains("Kind of problem"));
+}
+
+#[test]
+fn converge_seed_loads_the_personas_and_their_findings_once() {
+    let s = start_lab(&[]);
+    let (_d, r) = repo();
+    let (st, v) = s.post("/api/converge/seed", json!({ "repo": r }));
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["personas"], 16, "{v}");
+    assert_eq!(v["findings"], 30, "{v}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    assert_eq!(o["personas"].as_array().unwrap().len(), 16);
+    assert_eq!(o["themes"].as_array().unwrap().len(), 10);
+    let themes: std::collections::HashSet<&str> = o["findings"].as_array().unwrap().iter().map(|f| f["theme"].as_str().unwrap()).collect();
+    assert!(themes.contains("security") && themes.contains("trust") && themes.contains("onboarding"), "{themes:?}");
+    // Twice is still once.
+    let (st, v) = s.post("/api/converge/seed", json!({ "repo": r }));
+    assert!(st == 201 || st == 409, "{st} {v}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    assert_eq!(o["findings"].as_array().unwrap().len(), 30);
+}

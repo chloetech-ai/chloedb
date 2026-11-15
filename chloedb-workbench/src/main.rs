@@ -40,6 +40,8 @@ mod runtime;
 mod swarm;
 // Fifth build: Hotspots (SPEC.md).
 mod hotspots;
+// Seventh build: Converge, personas that find problems and a gated loop to a merged fix.
+mod converge;
 // Fifth build: autocomplete and intent checks.
 mod complete;
 // Sixth build: repositories read without an agent.
@@ -93,9 +95,15 @@ enum Cmd {
 
 #[derive(Parser)]
 struct Serve {
-    /// Where to listen: a loopback address only.
+    /// Where to listen: a loopback address, unless --lan.
     #[arg(long, env = "CHLOEDB_WORKBENCH_ADDR", default_value = "127.0.0.1:7740")]
     addr: SocketAddr,
+    /// Listen on every interface (0.0.0.0, on --addr's port) and answer to
+    /// private LAN addresses and `.local` names too, for a phone on the
+    /// same network. Plain HTTP: the token travels in the clear on that
+    /// network, and it opens terminals, so use it only on a network you trust.
+    #[arg(long, env = "CHLOEDB_WORKBENCH_LAN")]
+    lan: bool,
     /// The state database, the sessions' settings and the worktrees
     /// (default ~/.local/share/chloedb-workbench).
     #[arg(long, env = "CHLOEDB_WORKBENCH_HOME")]
@@ -251,6 +259,22 @@ fn exit_on(r: Result<(), String>) {
     }
 }
 
+/// This machine's private IPv4 addresses, as the LAN sees them: the source
+/// address of a route out (no packet is sent), and `hostname -I` where it exists.
+fn lan_ips() -> Vec<std::net::IpAddr> {
+    let mut ips = Vec::new();
+    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("192.168.255.255:9").is_ok() || sock.connect("10.255.255.255:9").is_ok() {
+            if let Ok(a) = sock.local_addr() {
+                ips.push(a.ip());
+            }
+        }
+    }
+    ips.retain(|ip| !ip.is_loopback() && !ip.is_unspecified());
+    ips.dedup();
+    ips
+}
+
 fn write_server_file(data_dir: &std::path::Path, url: &str, token: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -262,9 +286,13 @@ fn write_server_file(data_dir: &std::path::Path, url: &str, token: &str) {
     }
 }
 
-fn serve(s: Serve) -> Result<(), String> {
-    if !s.addr.ip().is_loopback() {
-        return Err(format!("--addr {} is not a loopback address: Workbench listens on 127.0.0.1 or [::1] only", s.addr));
+fn serve(mut s: Serve) -> Result<(), String> {
+    if s.lan {
+        if s.addr.ip().is_loopback() {
+            s.addr = SocketAddr::from(([0, 0, 0, 0], s.addr.port()));
+        }
+    } else if !s.addr.ip().is_loopback() {
+        return Err(format!("--addr {} is not a loopback address: Workbench listens on 127.0.0.1 or [::1] only (--lan opens it to your network)", s.addr));
     }
     let data_dir = default_data_dir(s.data_dir)?;
     let open_path = match &s.path {
@@ -280,11 +308,17 @@ fn serve(s: Serve) -> Result<(), String> {
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(s.addr).await.map_err(|e| format!("cannot listen on {}: {e}", s.addr))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
-        let url = format!("http://{addr}");
-        let cfg = supervisor::Config { data_dir: data_dir.clone(), claude_bin: s.claude_bin, max_agents: s.max_agents, max_depth: s.max_depth, token: token.clone(), url: url.clone(), exe, chloectx_bin: ctxwire::resolve(&s.chloectx_bin), chloectx_required: !s.no_chloectx, record_max: s.record_max_bytes };
+        // Sessions' hooks call it on loopback, whatever it listens on.
+        let url = if addr.ip().is_unspecified() { format!("http://127.0.0.1:{}", addr.port()) } else { format!("http://{addr}") };
+        let cfg = supervisor::Config { data_dir: data_dir.clone(), claude_bin: s.claude_bin, max_agents: s.max_agents, max_depth: s.max_depth, token: token.clone(), url: url.clone(), exe, chloectx_bin: ctxwire::resolve(&s.chloectx_bin), chloectx_required: !s.no_chloectx, record_max: s.record_max_bytes, lan: s.lan };
         let sup = supervisor::Supervisor::open(cfg)?;
         let ui_dir = std::env::var_os("CHLOEDB_WORKBENCH_UI_DIR").map(PathBuf::from);
         println!("Workbench: {url}/?token={token}");
+        if s.lan {
+            for ip in lan_ips() {
+                println!("on your network: http://{ip}:{}/?token={token}", addr.port());
+            }
+        }
         println!("state: {}", data_dir.join("workbench.chloedb").display());
         // Where `open` and `new` find this server: readable by this user only.
         write_server_file(&data_dir, &url, &token);

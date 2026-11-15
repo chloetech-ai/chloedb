@@ -215,6 +215,7 @@ export const MORE = [
   ["library", "book", "Library", "Docs, notes and code search"],
   ["tests", "warn", "Tests and alerts", "Flaky and failing tests, Run it N times, alert rules, incidents, hotspots"],
   ["rules", "check", "Rules and grants", "What agents are told, and what they may do without asking; Revoke"],
+  ["converge", "spark", "Converge", "Personas play the product; what they hit is reproduced, fixed, verified and sent to you as a pull request"],
   ["harness", "spark", "Optimize the harness", "What cost time this week; permissions, memory and versions"],
   ["settings", "gear", "Settings", "Open on the inbox, compact rows"],
   ["guide", "why", "Guide", "What each page is for"],

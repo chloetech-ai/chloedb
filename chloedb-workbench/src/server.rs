@@ -58,6 +58,17 @@ fn host_name(host: &str) -> &str {
     }
 }
 
+/// With `--lan`: a private address (10/8, 172.16/12, 192.168/16, link-local)
+/// or a `.local` name. A public name is still refused, so a page of another
+/// site cannot reach it by rebinding its own name to this machine.
+fn lan_host(name: &str) -> bool {
+    if let Ok(ip) = name.parse::<std::net::Ipv4Addr>() {
+        return ip.is_private() || ip.is_link_local();
+    }
+    let n = name.trim_end_matches('.').to_ascii_lowercase();
+    n.ends_with(".local") && n.len() > ".local".len() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+}
+
 pub(crate) fn same_bytes(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -75,7 +86,7 @@ fn takes_query_token(path: &str) -> bool {
 async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     let headers = req.headers();
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    if !matches!(host_name(host), "127.0.0.1" | "localhost" | "[::1]") {
+    if !matches!(host_name(host), "127.0.0.1" | "localhost" | "[::1]") && !(app.sup.cfg.lan && lan_host(host_name(host))) {
         return ApiError::new(403, "forbidden", format!("this server answers to 127.0.0.1, localhost and [::1], not {host:?}")).into_response();
     }
     let path = req.uri().path().to_string();
@@ -171,6 +182,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::notify::routes())
         // Optimize the harness (src/harness.rs).
         .merge(crate::harness::routes())
+        // Converge (src/converge.rs): personas, findings and their gated loop.
+        .merge(crate::converge::routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -264,6 +277,8 @@ const GOALS: &[(&str, &str)] = &[
     ("harness/sees.js", include_str!("../ui/goals/harness/sees.js")),
     ("harness/fixes.js", include_str!("../ui/goals/harness/fixes.js")),
     ("harness/versions.js", include_str!("../ui/goals/harness/versions.js")),
+    // Converge (src/converge.rs), at #/converge.
+    ("converge.js", include_str!("../ui/goals/converge.js")),
 ];
 
 async fn ui_goal(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -620,6 +635,8 @@ pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Resu
     crate::timetravel::start(&sup);
     crate::routing::start(&sup);
     crate::hotspots::start(&sup);
+    // Converge's autopilot: it ticks only the repositories you turned it on for.
+    crate::converge::start(&sup, &app.lv);
     let router = router(app);
     let server = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
     tokio::select! {
@@ -638,5 +655,20 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
         _ = hup.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lan_host;
+
+    #[test]
+    fn lan_mode_answers_private_addresses_and_local_names_only() {
+        for ok in ["192.168.1.20", "10.0.0.7", "172.16.4.2", "169.254.1.1", "robertos-macbook-air.local"] {
+            assert!(lan_host(ok), "{ok}");
+        }
+        for no in ["8.8.8.8", "evil.example", "local", ".local", "evil.example.com", "x.local.evil.com"] {
+            assert!(!lan_host(no), "{no}");
+        }
     }
 }

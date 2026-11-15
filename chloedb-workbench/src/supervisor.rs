@@ -43,6 +43,9 @@ pub struct Config {
     pub chloectx_required: bool,
     /// The most a session's terminal recording grows to.
     pub record_max: u64,
+    /// `--lan`: also answers to the machine's LAN addresses and `.local`
+    /// names, for a phone on the same network (the token still guards it).
+    pub lan: bool,
 }
 
 /// An error the API answers with.
