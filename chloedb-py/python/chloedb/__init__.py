@@ -99,7 +99,7 @@ from .ngrams import next_items
 from .result import ArrowResult, Result
 
 # The package's version: pyproject.toml's (a test checks they agree).
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 __all__ = [
     "__version__",
