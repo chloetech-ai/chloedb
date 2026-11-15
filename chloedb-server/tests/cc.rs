@@ -147,6 +147,10 @@ async fn the_terminal_reads_a_cluster_and_hands_its_primary_over() {
     let coord = Arc::new(Coordinator::connect(vec![a.url()]).await.unwrap());
     coord.add_replica(0, &b.url(), false, false).await.unwrap();
     until("the replica is in sync and votes", || async { a.replication().await.is_some_and(|r| r["replicas"][0]["in_sync"] == true && r["replicas"][0]["member"] == true) }).await;
+    // The handover below needs the replica to count itself a member too (a
+    // copy no primary has counted asks for no votes, so it refuses to be
+    // promoted): the primary's next call tells it, at most a heartbeat later.
+    until("the replica counts itself among its shard's copies", || async { b.replication().await.is_some_and(|r| r["member"] == true) }).await;
     let agent = AgentConfig { api_key: None, model: chloedb_server::agent::DEFAULT_MODEL.into(), base_url: "http://unused".into() };
     let mut svc = Service::new(Backend::Cluster(coord.clone()), coord.schema.clone(), agent, 16, Duration::from_secs(10));
     let audit = dir.path().join("audit.jsonl");
