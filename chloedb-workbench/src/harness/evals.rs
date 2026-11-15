@@ -157,9 +157,15 @@ pub(super) fn answer_kind(label: &str) -> &'static str {
 /// The most of one answer counted as your time: past it you were away.
 pub const MAX_WAIT_MS: i64 = 5 * 60_000;
 
-/// Whether an answer was yours (not a rule's).
-fn by_you(by: &Json) -> bool {
-    matches!(by.as_str(), Some("you" | "terminal" | "screen"))
+/// Whether an answer was yours: through Workbench, or in the terminal
+/// after a second or more (a prompt gone sooner went by itself). Not a
+/// rule's, nor one that left the screen unanswered.
+fn by_you(by: &Json, wait_ms: i64) -> bool {
+    match by.as_str() {
+        Some("you") => true,
+        Some("terminal") => wait_ms >= 1000,
+        _ => false,
+    }
 }
 
 fn script_of(sup: &Supervisor, a: &Agent, turns: &[Turn]) -> Json {
@@ -174,7 +180,9 @@ fn script_of(sup: &Supervisor, a: &Agent, turns: &[Turn]) -> Json {
         let wait = q.answered.map(|t| (t - q.created).max(0));
         if q.kind == "permission" {
             let d = q.detail.clone().unwrap_or(Json::Null);
-            if d["menu"]["kind"] == "trust" {
+            // The trust prompt and Claude Code's own offers are not the
+            // stretch's tool calls.
+            if d["menu"]["kind"] == "trust" || d["menu"]["kind"] == "offer" {
                 continue;
             }
             out.push(json!({ "kind": "permission", "turn": turn_at(q.created), "key": perm_key(&d), "what": d["summary"].as_str().unwrap_or(&q.text), "label": answer, "answer": answer_kind(&answer), "by": q.answered_by, "wait_ms": wait }));
@@ -510,7 +518,7 @@ impl Case {
     /// [`MAX_WAIT_MS`] (time away is not time answering). `None` when you
     /// answered nothing in it.
     pub fn your_wait_ms(&self) -> Option<i64> {
-        let mut w: Vec<i64> = self.script.as_array().into_iter().flatten().filter(|x| x["kind"] != "prompt" && by_you(&x["by"])).filter_map(|x| x["wait_ms"].as_i64()).filter(|w| *w >= 0).collect();
+        let mut w: Vec<i64> = self.script.as_array().into_iter().flatten().filter(|x| x["kind"] != "prompt").filter_map(|x| x["wait_ms"].as_i64().filter(|w| by_you(&x["by"], *w))).collect();
         if w.is_empty() {
             return None;
         }
@@ -944,7 +952,10 @@ mod tests {
             { "kind": "permission", "by": "you", "wait_ms": 4000 },
             { "kind": "permission", "by": "rule:r1", "wait_ms": 0 },
             { "kind": "answer", "by": "terminal", "wait_ms": 12000 },
-            { "kind": "permission", "by": "screen", "wait_ms": 20000 },
+            { "kind": "permission", "by": "terminal", "wait_ms": 20000 },
+            // Gone in 25 ms: nobody answered it; left the screen: neither.
+            { "kind": "permission", "by": "terminal", "wait_ms": 25 },
+            { "kind": "permission", "by": "screen", "wait_ms": 9000 },
         ]);
         assert_eq!(c(mine).your_wait_ms(), Some(12000));
         // Time away is not time answering.

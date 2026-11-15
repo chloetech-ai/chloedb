@@ -730,6 +730,14 @@ fn answer_one(sup: &Arc<Supervisor>, lv: &Arc<Levels>, c: &Case, script: &mut Sc
             // Workbench answers the trust prompt of its own sandboxes.
             return;
         }
+        if d["menu"]["kind"] == "offer" {
+            // Claude Code's own offer (install a plugin): not now, and not
+            // the user's intervention.
+            let i = labels.iter().position(|l| l.to_lowercase().starts_with("no"));
+            let body = AnswerBody { option: i, label: i.map(|i| labels[i].clone()), cancel: i.is_none().then_some(true), ..AnswerBody::default() };
+            let _ = crate::questions::answer(sup, lv, &q.id, body);
+            return;
+        }
         let key = evals::perm_key(&d);
         let (kind, by) = match script.perm(&key) {
             Some(k) => (k, "the log"),
