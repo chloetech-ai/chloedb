@@ -111,6 +111,9 @@ struct Slot {
     /// What the row does not hold (the mark `agent:<id>`): `read_only`,
     /// `restarted_from`, `resumed` (the session it continued).
     extra: Json,
+    /// The sub-agents its session started with Claude Code's Agent tool,
+    /// from the hooks since this server started (`crate::helpers`).
+    helpers: crate::helpers::Helpers,
 }
 
 struct Inner {
@@ -352,6 +355,10 @@ pub fn summarize(kind: &str, hook: &Json) -> String {
         },
         "Notification" => one_line(s("message"), 200),
         "Stop" => "turn finished".into(),
+        "SubagentStart" => match s("agent_type") {
+            "" => "subagent started".into(),
+            t => format!("subagent started ({t})"),
+        },
         "SubagentStop" => "subagent finished".into(),
         "SessionEnd" => crate::endings::session_end_words(s("reason")),
         other => other.to_string(),
@@ -396,7 +403,7 @@ impl Supervisor {
                 db.put_agent(&a)?;
             }
             let extra = db.mark(&extra_key(&a.id)).ok().flatten().and_then(|(v, _)| serde_json::from_str(&v).ok()).unwrap_or_else(|| json!({}));
-            slots.insert(a.id.clone(), Slot { agent: a, term: None, extra });
+            slots.insert(a.id.clone(), Slot { agent: a, term: None, extra, helpers: Default::default() });
         }
         let (changes, _) = broadcast::channel(4096);
         Ok(Arc::new(Supervisor { cfg, db, inner: Mutex::new(Inner { slots, seq }), spawning: Mutex::new(()), changes }))
@@ -415,6 +422,9 @@ impl Supervisor {
             for (k, v) in x {
                 o.insert(k.clone(), v.clone());
             }
+        }
+        if !slot.helpers.is_empty() {
+            j["helpers"] = slot.helpers.brief(Self::running(slot));
         }
         Some(j)
     }
@@ -824,7 +834,7 @@ impl Supervisor {
         }
         let json = {
             let mut inner = self.inner.lock().unwrap();
-            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()), extra });
+            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()), extra, helpers: Default::default() });
             let how = match (&restart, &resume) {
                 (Some(r), Some(_)) => format!(" (restart of {}, continuing its session)", r.of.id),
                 (Some(r), None) => format!(" (restart of {})", r.of.id),
@@ -903,11 +913,13 @@ impl Supervisor {
     }
 
     /// A hook's report: an event, and the state it implies.
-    pub fn hook(&self, id: &str, hook: Json) -> Result<(), ApiError> {
+    pub fn hook(&self, id: &str, mut hook: Json) -> Result<(), ApiError> {
         let kind = hook.get("hook_event_name").and_then(Json::as_str).ok_or_else(|| ApiError::bad("the hook's JSON has no hook_event_name"))?.to_string();
         if kind.is_empty() || kind.len() > 64 {
             return Err(ApiError::bad("hook_event_name is empty or too long"));
         }
+        // A sub-agent's answer stays whole (and so readable) as an event.
+        crate::helpers::shrink(&mut hook);
         let tool = hook.get("tool_name").and_then(Json::as_str).map(str::to_string);
         let summary = summarize(&kind, &hook);
         let data = serde_json::to_string(&hook).ok();
@@ -916,6 +928,7 @@ impl Supervisor {
         if let Some(sid) = hook.get("session_id").and_then(Json::as_str).filter(|s| !s.is_empty()) {
             slot.agent.session_id = Some(sid.to_string());
         }
+        slot.helpers.apply(&kind, &hook, now_ms());
         let a = &mut slot.agent;
         match kind.as_str() {
             "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => Self::set_state(a, "working"),
@@ -1096,6 +1109,17 @@ impl Supervisor {
     /// An agent as the API answers it, or `None`.
     pub fn agent_json_of(&self, id: &str) -> Option<Json> {
         Self::agent_json(&self.inner.lock().unwrap(), id)
+    }
+
+    /// `GET /api/agents/:id/helpers`: the sub-agents its session started
+    /// with Claude Code's Agent tool, read from its events, oldest first.
+    pub fn helpers_json(&self, id: &str) -> Result<Json, ApiError> {
+        if self.agent_row(id).is_none() {
+            return Err(ApiError::not_found(format!("no agent {id}")));
+        }
+        let alive = self.is_running(id);
+        let hs = crate::helpers::of_events(&self.all_events(id)?);
+        Ok(json!({ "agent": id, "running": hs.running_of(alive), "helpers": hs.to_json(alive) }))
     }
 
     /// Every event of an agent, oldest first, with its data.
@@ -1353,7 +1377,7 @@ pub fn settings_json(exe: &str) -> Json {
     let command = format!("{} hook", shell_quote(exe));
     let hook = json!([{ "type": "command", "command": command, "timeout": 5 }]);
     let mut hooks = serde_json::Map::new();
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"] {
         let entry = if matches!(ev, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") { json!({ "matcher": "*", "hooks": hook }) } else { json!({ "hooks": hook }) };
         hooks.insert(ev.to_string(), json!([entry]));
     }

@@ -77,7 +77,11 @@ and `--data-dir`); they start nothing themselves.
 
 ### The pages
 
-Every page answers one question, and the goal comes first:
+Every page answers one question, and the goal comes first. A switch in
+the top bar picks the view: **Advanced** is these pages; **Simple**
+(`#/s`) is one board of requests by stage (Planning, Building, Review,
+Done) with a box that starts one agent per line and each request's
+conversation beside it ([JOURNEYS.md](JOURNEYS.md), "Built (S)").
 
 - **Start** (`#/`): start a new project, continue one, review and ship,
   or find out why something went wrong, with your projects below and
@@ -428,6 +432,11 @@ a model.
   chapters of grouped steps, with its tokens (from the transcript's
   `usage`) and what ChloeCtx put in its context (`chloectx receipts
   --json`), déjà vus marked.
+- **Helpers**: `GET /api/agents/:id/helpers` lists the sub-agents an
+  agent's session started with Claude Code's own Agent tool, followed from
+  their hooks (`SubagentStart`, `SubagentStop`, and the `agent_id` every
+  hook inside one carries): what each was asked, what it does now, its
+  report. The agent's JSON carries a brief of them (`helpers`).
 - **Away**: `POST /api/seen` and `GET /api/digest` tell what happened since
   you last looked: outcomes done, questions decided and open, what was
   learned, a line per agent, how long each agent waited on you, and the

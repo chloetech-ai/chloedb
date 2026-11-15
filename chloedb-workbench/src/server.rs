@@ -264,6 +264,12 @@ const GOALS: &[(&str, &str)] = &[
     ("harness/sees.js", include_str!("../ui/goals/harness/sees.js")),
     ("harness/fixes.js", include_str!("../ui/goals/harness/fixes.js")),
     ("harness/versions.js", include_str!("../ui/goals/harness/versions.js")),
+    // The Simple view: the board of requests by stage, at #/s.
+    ("simple/index.js", include_str!("../ui/goals/simple/index.js")),
+    ("simple/stage.js", include_str!("../ui/goals/simple/stage.js")),
+    ("simple/compose.js", include_str!("../ui/goals/simple/compose.js")),
+    ("simple/request.js", include_str!("../ui/goals/simple/request.js")),
+    ("simple/switch.js", include_str!("../ui/goals/simple/switch.js")),
 ];
 
 async fn ui_goal(State(app): State<App>, Path(file): Path<String>) -> Response {
