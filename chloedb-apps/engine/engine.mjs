@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Store, physical, newId } from './store.mjs';
 import { rewriteSql, checkReads, tokenize } from './sql.mjs';
-import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM, mayCall } from './access.mjs';
+import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM, mayCall, linksOf, viaKey } from './access.mjs';
 import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
 import { rowLabel, tablesOf } from './activity.mjs';
@@ -252,10 +252,29 @@ export class Engine extends EventEmitter {
   // (a visitor or a member, through the public path): the tables' declared
   // access (access.mjs) holds them to what they may see. Without it (the
   // studio, the engine's own checks, triggers) every row is read.
+  // The person with what they belong to: the values of the link tables an
+  // access scope reads (the projects in their own rows of memberships),
+  // read with the app's rights, once per call.
+  async withLinks(appId, who, view = null) {
+    if (!who || !(who.user || who.company)) return who;
+    view = view || await this.view(appId);
+    const links = linksOf(view.tables.map((t) => t.spec));
+    if (!links.length) return who;
+    const db = await this.dbOf(appId);
+    const out = {};
+    for (const v of links) {
+      const id = v.by === 'company' ? who.company : who.user?.id;
+      if (!id || !view.tables.some((t) => t.spec.name === v.table)) { out[viaKey(v)] = []; continue; }
+      const rows = await db.query(`SELECT ${v.pick} FROM ${physical(appId, v.table)} WHERE ${v.match} = :id LIMIT 5000`, { id: String(id) }).catch(() => []);
+      out[viaKey(v)] = [...new Set(rows.flatMap((r) => (Array.isArray(r[v.pick]) ? r[v.pick] : [r[v.pick]])).filter((x) => x != null).map(String))];
+    }
+    return { ...who, links: out };
+  }
+
   async sql(appId, sql, params, ctx = {}) {
     const view = await this.view(appId);
     const names = view.tables.map((t) => t.spec.name);
-    const who = ctx.as || null;
+    const who = ctx.as ? await this.withLinks(appId, ctx.as, view) : null;
     const specs = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
     const scope = who ? (name) => {
       const d = decide(specs.get(name), 'read', who);
@@ -289,6 +308,7 @@ export class Engine extends EventEmitter {
 
   async insert(appId, table, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     fields = this.mayWrite(spec, 'add', fields, ctx);
     if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
     const doc = this.makeDoc(spec, fields);
@@ -305,6 +325,7 @@ export class Engine extends EventEmitter {
 
   async update(appId, table, id, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
     if (!old) throw new Error(`no row ${id} in ${table}`);
@@ -323,6 +344,7 @@ export class Engine extends EventEmitter {
 
   async remove(appId, table, id, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
     this.mayChange(spec, 'remove', old, ctx);
