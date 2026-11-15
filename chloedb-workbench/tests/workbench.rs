@@ -6643,6 +6643,13 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let aid = f["finding"]["agent"].as_str().unwrap().to_string();
     let wt = PathBuf::from(f["finding"]["worktree"].as_str().unwrap());
     assert!(f["finding"]["branch"].as_str().unwrap().starts_with("wb/cv-"), "{f}");
+    // It starts with the allow-list and mode of the settings, so it does not stop at each command.
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(&aid).join("settings.json")).unwrap()).unwrap();
+    let allow = settings["permissions"]["allow"].to_string();
+    assert!(allow.contains("Bash(cargo:*)") && allow.contains("Edit"), "{settings}");
+    assert!(settings["permissions"]["deny"].to_string().contains("Bash(git push:*)"), "{settings}");
+    let rec = http().get(format!("{}/api/agents/{aid}/recording", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap().body_mut().read_to_string().unwrap();
+    assert!(rec.contains("MODE: auto"), "the agent was not started in auto mode");
     let task = s.agent(&aid)["task"].as_str().unwrap_or("").to_string();
     assert!(task.contains("test -f src/FIXED") && task.contains("regression test"), "{task}");
     s.wait(&aid, "idle");

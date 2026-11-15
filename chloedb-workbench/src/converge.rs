@@ -136,6 +136,30 @@ pub struct Settings {
     pub max_rounds: i64,
     /// Open a pull request at review (else you record its URL).
     pub open_pr: bool,
+    /// What a fix agent may do without asking, set once here so a run does
+    /// not stop at every new command: Claude Code rules (`Bash(cargo:*)`).
+    pub dev_allow: Vec<String>,
+    /// What it may never do: pushing and pull requests are Converge's own.
+    pub dev_deny: Vec<String>,
+    /// Claude Code's permission mode for fix agents (`auto`: its classifier
+    /// answers what the list does not; `default`: those wait for you).
+    pub dev_permission_mode: Option<String>,
+}
+
+/// A fix agent's default allow-list: reading, editing, building and testing
+/// in its own worktree, and git there.
+pub fn dev_allow_default() -> Vec<String> {
+    let mut v: Vec<String> = ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "NotebookEdit", "TodoWrite"].iter().map(|x| x.to_string()).collect();
+    for c in [
+        "git status", "git diff", "git log", "git show", "git add", "git commit", "git checkout", "git restore", "git stash", "git rev-parse", "git branch", "git grep", "git ls-files", "cargo", "rustc", "python3", "python", "pytest", "pip install", "node", "npm test", "npm run", "npm ci", "npx", "mvn", "sh", "bash", "make", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "sed", "awk", "sort", "uniq", "diff", "test", "echo", "printf", "mkdir", "touch", "cp", "mv", "pwd", "which", "env", "true",
+    ] {
+        v.push(format!("Bash({c}:*)"));
+    }
+    v
+}
+
+pub fn dev_deny_default() -> Vec<String> {
+    ["git push", "gh", "sudo", "curl", "wget", "ssh", "scp", "docker", "kubectl", "rm -rf /"].iter().map(|c| format!("Bash({c}:*)")).collect()
 }
 
 impl Default for Settings {
@@ -158,6 +182,9 @@ impl Default for Settings {
             run_timeout_s: 3600,
             max_rounds: 3,
             open_pr: true,
+            dev_allow: dev_allow_default(),
+            dev_deny: dev_deny_default(),
+            dev_permission_mode: Some("auto".into()),
         }
     }
 }
@@ -944,6 +971,8 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
         base: Some(base_of(&repo, &st)),
         worktree: Some(true),
         model: st.dev_model.clone(),
+        permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
+        permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
         ..Default::default()
     };
     let a = crate::goals::spawn(sup, lv, req)?;
@@ -1877,6 +1906,12 @@ async fn settings_put(State(app): State<App>, headers: HeaderMap, body: Bytes) -
             }
         }
         let st: Settings = serde_json::from_value(cur).map_err(|e| ApiError::bad(format!("settings: {e}")))?;
+        if let Some(m) = st.dev_permission_mode.as_deref().filter(|m| !m.is_empty()) {
+            if !crate::ownperms::MODES.contains(&m) {
+                return Err(ApiError::bad(format!("dev_permission_mode is one of {}, not {m:?}", crate::ownperms::MODES.join(", "))));
+            }
+        }
+        crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }.check().map_err(ApiError::bad)?;
         if st.budget_usd_day < 0.0 || st.wip > 20 || st.runs_at_once > 20 || st.repro_runs > 20 {
             return Err(ApiError::bad("settings out of range: budget ≥ 0, wip and runs_at_once ≤ 20, repro_runs ≤ 20"));
         }

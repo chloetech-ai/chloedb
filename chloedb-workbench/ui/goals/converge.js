@@ -406,6 +406,12 @@ export function mount(root, ctx) {
       inp.addEventListener("change", () => { st[k] = type === "number" ? Number(inp.value) : (inp.value || null); });
       return h("div", { class: "cv-f" }, h("label", { for: `cv-s-${k}` }, l), inp, h("span", { class: "hint" }, hint));
     };
+    const list = (k, l, hint) => {
+      const ta = h("textarea", { class: "cv-ta", id: `cv-s-${k}`, spellcheck: "false", style: { minHeight: "140px" } });
+      ta.value = (st[k] || []).join("\n");
+      ta.addEventListener("change", () => { st[k] = ta.value.split("\n").map((x) => x.trim()).filter(Boolean); });
+      return h("div", { class: "cv-f" }, h("label", { for: `cv-s-${k}` }, l), ta, h("span", { class: "hint" }, hint));
+    };
     const tog = (k, l, hint) => {
       const inp = h("input", { type: "checkbox", id: `cv-s-${k}`, checked: st[k] ? true : null });
       inp.addEventListener("change", () => { st[k] = inp.checked; });
@@ -424,6 +430,10 @@ export function mount(root, ctx) {
         field("test_cmd", "Test command", "Run in the agent's worktree by the develop gate, e.g. cd chloedb-workbench && cargo test --profile ci", "text"),
         field("base", "Base branch", "Where findings are reproduced and fixes merge (empty: the checkout's branch).", "text"),
         field("model", "Persona model", "For persona runs, scoping and the generator.", "text")),
+      h("div", { class: "cv-panel" }, h("h3", {}, "What fix agents may do"), h("div", { class: "sub" }, "Set once, so a run does not stop at every new command. Each agent works in its own worktree; pushing and pull requests stay Converge's own."),
+        field("dev_permission_mode", "Permission mode", "auto: Claude Code's classifier answers what the lists do not. default: those wait for you in Needs you.", "text"),
+        list("dev_allow", "Allowed without asking", "One Claude Code rule a line, e.g. Bash(cargo:*)"),
+        list("dev_deny", "Never", "One rule a line")),
       h("div", { class: "cv-panel" }, h("h3", {}, "What runs on its own"), h("div", { class: "sub" }, "Merges and one-way doors always wait for you"),
         tog("enabled", "Autopilot", "Ticks on its own, every tick."),
         tog("generate", "Generate new personas", "When new serious findings dry up, one aimed at the least-played part."),
