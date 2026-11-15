@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.3"
+WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.4"
 
 
 class _Missing:
