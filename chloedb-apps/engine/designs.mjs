@@ -113,8 +113,25 @@ export function shapeDesigns(designs, direction = null, app = null) {
   return out;
 }
 
-// The designs an answer holds: a JSON array of them (fenced or not), or an
-// object holding one ({"designs": [...]}); each design object is kept.
+// The JSON objects written one after another at the top of a text (each
+// design on its own, not in an array), strings and nesting respected.
+function topObjects(t) {
+  const out = [];
+  let depth = 0, start = -1, str = false, esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (str) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') str = false; continue; }
+    if (c === '"') { if (depth > 0) str = true; continue; }
+    if (c === '{') { if (depth++ === 0) start = i; } else if (c === '}' && depth > 0 && --depth === 0) {
+      try { out.push(JSON.parse(t.slice(start, i + 1))); } catch { /* not JSON */ }
+    }
+  }
+  return out;
+}
+
+// The designs an answer holds: a JSON array of them (fenced or not), an
+// object holding one ({"designs": [...]}), or the designs written one after
+// another without an array; each design object is kept.
 export function designsIn(text) {
   const t = String(text || '').replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
   let v = null;
@@ -123,7 +140,9 @@ export function designsIn(text) {
     if (a >= 0 && b > a) { try { v = JSON.parse(t.slice(a, b + 1)); } catch { /* none */ } }
     if (v === null) { const c = t.indexOf('{'), d = t.lastIndexOf('}'); if (c >= 0 && d > c) { try { v = JSON.parse(t.slice(c, d + 1)); } catch { /* none */ } } }
   }
-  const list = Array.isArray(v) ? v : v && typeof v === 'object' ? (Array.isArray(v.designs) ? v.designs : Object.values(v).find(Array.isArray) || []) : [];
+  const isDesign = (d) => d && typeof d === 'object' && !Array.isArray(d) && (d.light || d.dark);
+  let list = Array.isArray(v) ? v : v && typeof v === 'object' ? (Array.isArray(v.designs) ? v.designs : Object.values(v).find(Array.isArray) || (isDesign(v) ? [v] : [])) : [];
+  if (list.filter(isDesign).length < 3) { const each = topObjects(t).filter(isDesign); if (each.length > list.filter(isDesign).length) list = each; }
   return list.filter((d) => d && typeof d === 'object' && (d.light || d.dark || d.name)).slice(0, 3).map((d) => checkDesign(d));
 }
 const parse = (text) => {

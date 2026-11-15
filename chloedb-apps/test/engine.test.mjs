@@ -3410,6 +3410,10 @@ test('designs: an answer wrapped or short is read as far as it goes, and what la
   const { makeDesigns, designsIn } = await import('../engine/designs.mjs');
   const one = { name: 'Linen', light: { bg: '#faf6f5', card: '#ffffff', fg: '#221a1c', accent: '#a8485f' } };
   assert.equal(designsIn('```json\n{"designs": [' + JSON.stringify(one) + ']}\n```').length, 1);
+  // three designs written one after another, with no array around them, are all read
+  const each = ['Linen', 'Slate', 'Moss'].map((name, i) => JSON.stringify({ ...one, name, about: `a "${name}" {look}`, gradient: ['#a8485f', '#335577'][i % 2] }, null, 1)).join('\n\n');
+  assert.deepEqual(designsIn(each).map((d) => d.name), ['Linen', 'Slate', 'Moss']);
+  assert.deepEqual(designsIn(JSON.stringify(one)).map((d) => d.name), ['Linen'], 'one design on its own');
   const app = { id: 'a2', name: 'Shop', head: 0 };
   let asks = 0;
   const out = await makeDesigns(app, null, { direction: { art: { accent: 'deep indigo' } }, ask: async () => { asks++; return { text: JSON.stringify([one]) }; } });
