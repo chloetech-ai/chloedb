@@ -282,7 +282,7 @@
 
   /* ---------------------------------------------------------- matrix */
   var CMP = window.STRATA_COMPARE || null;
-  var MARK_LABEL = { y: "Yes", p: "Partly, by extension or by hand", n: "No", $: "Paid tier only" };
+  var MARK_LABEL = { y: "Yes", e: "Yes, experimental: no compatibility promise yet", p: "Partly, by extension or by hand", n: "No", $: "Paid tier only" };
   function parseMark(s) {
     if (!s) return { code: "n", verify: false, note: "" };
     var code = s.charAt(0), rest = s.slice(1), verify = false;
@@ -306,6 +306,9 @@
       var h = picked ? "" : '<div class="filters"><span class="label">Compare with</span>' + CMP.groups.map(function (g) {
         return '<button type="button" class="chipbtn" data-group="' + g.id + '" aria-pressed="' + (state.group === g.id) + '">' + esc(g.label) + "</button>";
       }).join("") + "</div>";
+      // While any cell is unchecked the matrix is a draft, and says so
+      // above it (docs/site/scripts/check_compare.py fails CI without it).
+      if (unverified && CMP.draft) h += '<div class="note warn matrix-draft"><p><b>Draft.</b> ' + esc(CMP.draft.replace("{n}", unverified)) + "</p></div>";
       h += '<div class="matrix-wrap"><table class="matrix"><thead><tr><th class="cap" scope="col">Capability</th>';
       systems.forEach(function (s) { h += '<th scope="col"' + (s.id === "strata" ? ' class="self"' : "") + ">" + esc(s.name) + (s.sub ? "<small>" + esc(s.sub) + "</small>" : "") + "</th>"; });
       h += "</tr></thead><tbody>";
@@ -319,14 +322,15 @@
             if (m.code === "t") { h += "<td" + cls + '><span class="small">' + esc(m.note) + "</span></td>"; return; }
             var code = m.code === "$" ? "paid" : m.code;
             var label = MARK_LABEL[m.code] || m.code;
-            var tipText = "<b>" + esc(s.name) + "</b> · " + esc(r[0]) + "<br>" + esc(label) + (m.note ? ": " + esc(m.note) : "") + (m.verify ? "<br><i>Not yet checked against its current documentation</i>" : "");
+            var checked = s.checked && s.id !== "strata" ? "<br><i>Checked against its documentation by " + esc(s.checked) + "</i>" : "";
+            var tipText = "<b>" + esc(s.name) + "</b> · " + esc(r[0]) + "<br>" + esc(label) + (m.note ? ": " + esc(m.note) : "") + (m.verify ? "<br><i>Not yet checked against its current documentation</i>" : checked);
             h += "<td" + cls + '><span class="mk ' + code + (m.verify ? " v" : "") + '" tabindex="0" role="img" aria-label="' + esc(label + (m.note ? ": " + m.note : "") + (m.verify ? " (to verify)" : "")) + '" data-tip="' + esc(tipText) + '"></span></td>';
           });
           h += "</tr>";
         });
       });
       h += "</tbody></table></div>";
-      h += '<div class="legend"><span><span class="mk y"></span>built in</span><span><span class="mk p"></span>partly, by extension or by hand</span><span><span class="mk paid"></span>paid tier only</span><span><span class="mk n"></span>no</span><span><span class="mk y v"></span>' + unverified + " cells not yet checked against each project's documentation</span><span>Hover or focus a mark for the detail.</span></div>";
+      h += '<div class="legend"><span><span class="mk y"></span>built in</span><span><span class="mk e"></span>built in, experimental</span><span><span class="mk p"></span>partly, by extension or by hand</span><span><span class="mk paid"></span>paid tier only</span><span><span class="mk n"></span>no</span>' + (unverified ? '<span><span class="mk y v"></span>' + unverified + " cells not yet checked against each project's documentation</span>" : "") + "<span>Hover or focus a mark for the detail.</span></div>";
       el.innerHTML = h;
       $$(".chipbtn", el).forEach(function (b) {
         b.addEventListener("click", function () {

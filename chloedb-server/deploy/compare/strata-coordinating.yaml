@@ -41,17 +41,20 @@ spec:
       # shards (it asks again every 2 s), so the two pods may start in
       # either order; exec leaves the shard as the container's own process,
       # which the pod's deletion stops. The deadlines are strata.yaml's and
-      # strata-coordinator.yaml's.
+      # strata-coordinator.yaml's. The answer cache is off, as strata.yaml
+      # says why.
       command: [sh, -c]
       args:
         - |
           shards=http://strata-0.strata:7701,http://strata-1.strata:7701
+          nocache=""
+          if chloedb-server --help 2>/dev/null | grep -q -- --answer-cache-mb; then nocache="--answer-cache-mb 0"; fi
           if [ "$IN_PROCESS" = 1 ]; then
-            exec chloedb-server --db /local/__COLL__.shard__I__of2.strata --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --timeout-ms 30000 \
+            exec chloedb-server --db /local/__COLL__.shard__I__of2.strata --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --timeout-ms 30000 $nocache \
               --shards $shards --coordinator-listen 0.0.0.0:7710 --local-shard http://strata-__I__.strata:7701
           fi
-          chloedb-server --listen=0.0.0.0:7710 --grpc=off --shards=$shards --timeout-ms=30000 &
-          exec chloedb-server --db /local/__COLL__.shard__I__of2.strata --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --timeout-ms 30000
+          chloedb-server --listen=0.0.0.0:7710 --grpc=off --shards=$shards --timeout-ms=30000 $nocache &
+          exec chloedb-server --db /local/__COLL__.shard__I__of2.strata --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --timeout-ms 30000 $nocache
       env:
         - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token}}}
         - {name: IN_PROCESS, value: "__IN_PROCESS__"}

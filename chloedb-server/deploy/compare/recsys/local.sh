@@ -34,8 +34,12 @@ wait_for() { # URL [grep pattern]
 }
 
 serve_strata() {
-    # The containers' CPU cap, as the cores Strata may run on.
-    taskset -c "0-$(( ${CPUS%.*} - 1 ))" "$BIN/chloedb-server" --db "$OUT/strata.db" --schema "$HERE/strata-items.json" --models "$DATA" --listen 127.0.0.1:7700 --grpc off >>"$OUT/chloedb-server.log" 2>&1 &
+    # The containers' CPU cap, as the cores Strata may run on. The answer
+    # cache off, as in ../strata.yaml (a build from before 13 November 2026
+    # has none, and no such flag).
+    local nocache=()
+    if "$BIN/chloedb-server" --help 2>/dev/null | grep -q -- --answer-cache-mb; then nocache=(--answer-cache-mb 0); fi
+    taskset -c "0-$(( ${CPUS%.*} - 1 ))" "$BIN/chloedb-server" --db "$OUT/strata.db" --schema "$HERE/strata-items.json" --models "$DATA" --listen 127.0.0.1:7700 --grpc off "${nocache[@]}" >>"$OUT/chloedb-server.log" 2>&1 &
     echo $! >"$OUT/strata.pid"
     wait_for http://127.0.0.1:7700/v1/health
 }

@@ -41,7 +41,8 @@ run-name: ${{ inputs.since && format('CI since {0}', inputs.since) || ' ' }}
 # one group that never cancels the run in progress, so main's runs keep
 # finishing, but a group holds one waiting run and a newer push replaces
 # it: after a burst of merges only the newest waits, and it tests every
-# merge before it. (A group per commit queued every merge's whole run,
+# merge before it, since a push's change is taken from the newest commit
+# of main whose run passed (job `changes`). (A group per commit queued every merge's whole run,
 # 5 macOS jobs each against a limit of 5 at once, and the queue grew by
 # hours.) The merge queue, the nightly run and a run by hand keep a group
 # per event and commit (and `since`), so none of them is dropped.
@@ -114,10 +115,24 @@ jobs:
   # commit needs, on Linux and macOS (the release gate's second way);
   # otherwise the
   # nightly run and a run by hand always run everything.
+  #
+  # A push to main is the change from the newest commit of main whose CI
+  # run passed, not from the commit before it: a commit whose run failed,
+  # was cancelled or was replaced while it waited is tested again by the
+  # next push, whatever that push touches. From the commit before, a
+  # documentation change after a failed run skipped every job, passed, and
+  # image.yml published the failed code as `latest` (the audit of
+  # 15 November 2026, PLT-3: cafcbdcd failed, b47dfd6f, docs only, passed
+  # in 20 s and was published). By induction each passed run tested every
+  # change since the passed run before it, so `latest` is tested code.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Reads CI's runs on main (the newest that passed) and compares commits.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run: ${{ steps.diff.outputs.run }}
     steps:
@@ -129,7 +144,7 @@ jobs:
           SINCE: ${{ inputs.since }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
-          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 .github/scripts/ci_changes.py --self-test
           # `since` names a commit by its full sha, as the release gate
@@ -142,7 +157,19 @@ jobs:
             workflow_dispatch) base="$SINCE" ;;
             pull_request) base="$PR_BASE" ;;
             merge_group) base="$QUEUE_BASE" ;;
-            push) base="$BEFORE" ;;
+            push)
+              # The newest commit of main, this one or before it, whose CI
+              # run (a push's, the nightly's or one by hand, of this
+              # repository) passed. None among the last 50 runs that
+              # passed, or the API not answering: test everything.
+              base=""
+              for sha in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&status=success&exclude_pull_requests=true&per_page=50" \
+                  --jq ".workflow_runs[] | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\" and (.event == \"push\" or .event == \"schedule\" or .event == \"workflow_dispatch\")) | .head_sha" || true); do
+                st=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...$GITHUB_SHA" --jq .status 2>/dev/null || true)
+                case "$st" in ahead | identical) base=$sha && break ;; esac
+              done
+              echo "the newest commit of main whose run passed: ${base:-none found}"
+              ;;
             *) base="" ;;
           esac
           # A diff needs only the two commits' trees, not the history
@@ -1135,6 +1162,11 @@ jobs:
         run: |
           pip install -r docs/site/scripts/requirements.txt
           python docs/site/scripts/build_docs.py --check
+      # The comparison's cells are marks the site draws, ChloeDB's are all
+      # checked, and while any other system's cell is unchecked ("?") the
+      # page says it is a draft (the audit of 15 November 2026, CMP-2).
+      - name: python3 docs/site/scripts/check_compare.py
+        run: python docs/site/scripts/check_compare.py
       # The pages a newcomer follows use the new names (Strata and Engram are
       # the old ones), and the Python modules and extras the docs name exist,
       # marked "since" where the latest release lacks them (its tag, fetched).
