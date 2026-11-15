@@ -22,6 +22,17 @@ changes collect under "Unreleased".
   were lost (the follow-up to N-E2 that TLC found in `spec/replication`;
   `chloedb-sim --uncounted-candidate` places it, and `--bug
   campaigns-uncounted` puts it back).
+- A slot move from a replicated shard no longer loses a write when the
+  shard's primary fails over during the flip. The primary now writes a
+  mark of the flip through its log (`_strata/move flip`) and waits until
+  its copies hold it before it takes the flip; a replica takes the flip
+  only once it applied the mark, and a primary elected while its log holds
+  it refuses writes to the moving slots until it takes the flip. A hold of
+  the writes and an export count only in the term they were made in.
+  Before, a primary that started again as a replica took the flip given
+  first, while the new primary took writes to the slots that no copy
+  reached, and the new primary then refused the flip for good (TLC,
+  `spec/slots` `MoveNow`, `MoveStuck`).
 
 ### Formal specifications
 
