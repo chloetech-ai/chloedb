@@ -180,7 +180,8 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
   }
   assert.match(shown('desktop', 'report'), /Total\s+3,900/, 'a total row under the section');
   for (const tag of ['desktop', 'phone']) {
-    assert.match(shown(tag, 'tt'), /Early circuit[\s\S]*Full/, 'a weekly row with no places left is Full');
+    assert.match(shown(tag, 'tt'), /Early circuit/); assert.match(shown(tag, 'tt'), /\bFull\b/i, 'a weekly row with no places left is Full');
+    assert.match(shown(tag, 'tt'), /Previous week[\s\S]*Next week/);
     assert.match(shown(tag, 'tt'), /Stretch/);
     assert.match(shown(tag, 'sl'), /Book a time[\s\S]*Rae[\s\S]*Sol/);
     assert.match(shown(tag, 'ib'), /Kai[\s\S]*call me back/);

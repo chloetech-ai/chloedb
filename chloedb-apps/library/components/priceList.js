@@ -6,7 +6,7 @@
 //   empty: text when there are no items (default 'No prices yet')
 function component(props) {
   css('sa-prices', `
-.sa-prices{display:flex;flex-direction:column;gap:18px;margin:0}
+.sa-prices{display:flex;flex-direction:column;gap:18px;margin:0 auto;width:100%;max-width:760px;text-align:left;box-sizing:border-box}
 .sa-prices h4{margin:0 0 4px;font-size:.78em;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
 .sa-prices ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .sa-prices li{margin:0;padding:0;border-bottom:1px solid var(--line)}
@@ -20,7 +20,9 @@ function component(props) {
 .sa-prices .dots{flex:1 1 24px;min-width:16px;border-bottom:1px dotted color-mix(in srgb,var(--fg) 35%,transparent);transform:translateY(-4px)}
 .sa-prices .pr{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sa-prices .un{font-weight:400;color:var(--muted);font-size:.86em;margin-left:4px}
-.sa-prices .nt{color:var(--muted);font-size:.9em;line-height:1.4}
+.sa-prices .nt{color:var(--muted);font-size:.9em;line-height:1.4;overflow-wrap:anywhere;max-width:62ch}
+.sa-prices .ln .nm{flex:0 1 auto}
+@media (max-width:420px){.sa-prices .dots{min-width:12px}.sa-prices .pr{white-space:normal;text-align:right}}
 .sa-prices .bd{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;font-size:.72em;font-weight:600;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--fg);vertical-align:2px}
 .sa-prices table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .sa-prices th{text-align:left;font-size:.78em;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}

@@ -1,6 +1,6 @@
 {
  "title": "A weekly timetable: what repeats each week, day by day, with its time, places left and a way to book",
- "about": "Classes, rehearsals, practices, surgeries, opening sessions: rows that come back every week on a weekday at a time. Each day of the week lists its rows in time order with who leads it and where, and, with a bookings table, how many places are left on that date and a Book button (Full when none are). Arrows go to other weeks. Choose it whenever the request lists weekly classes or a schedule people book into.",
+ "about": "Classes, rehearsals, practices, surgeries, opening sessions: rows that come back every week on a weekday at a time. Each day of the week is a table of its rows in time order: the time and length, the name, who leads it and where, and, with a bookings table, a badge with the places left on that date (Only 2 left, Full) and a Book button on each row with places left (it adds a booking, or opens the view or calls the rule that takes it). Previous and Next week buttons move through the weeks. Choose it whenever the request lists weekly classes or a schedule people book into.",
  "params": {
   "table": {
    "about": "the table of the weekly rows",
@@ -96,8 +96,8 @@
    "{{key}}_start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_w || 0))",
    "{{key}}_idx": "=v => { if (v == null || v === '') return -1; if (/^\\\\d$/.test(String(v))) return Number(v) % 7; return ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(String(v).trim().slice(0, 3).toLowerCase()); }",
    "{{key}}_left": "=(r, d) => { if (!{{spaces|json}} || r[{{spaces|json}}] == null) return null; const t = (data[{{key|json}} + '_taken'] || []).find(x => String(x.c) === String(r.id) && String(x.d).slice(0, 10) === d); return Math.max(0, Number(r[{{spaces|json}}]) - (t ? Number(t.n) : 0)); }",
-   "{{key}}_days": "=[0, 1, 2, 3, 4, 5, 6].map(i => { const d = lib.dates.addDays({{key}}_start, i); const w = lib.dates.weekday(d); return {day: d, label: lib.dates.weekdayName(d) + ' ' + app.fmt.date(d), today: d === today, past: d < today, rows: ({{key}} || []).filter(r => {{key}}_idx(r[{{day|json}}]) === w).map(r => ({r, left: {{key}}_left(r, d)}))}; })",
-   "{{key}}_go": "=(r, d) => {{open|json}} ? app.open({{open|json}}, {id: r.id, date: d}) : {{call|json}} ? app.call({{call|json}}, {id: r.id, date: d}).then(() => app.toast('Booked')) : null"
+   "{{key}}_days": "=[0, 1, 2, 3, 4, 5, 6].map(i => { const d = lib.dates.addDays({{key}}_start, i); const w = lib.dates.weekday(d); return {day: d, label: lib.dates.weekdayName(d) + ' ' + app.fmt.date(d), today: d === today, past: d < today, rows: ({{key}} || []).filter(r => {{key}}_idx(r[{{day|json}}]) === w).map(r => { const left = {{key}}_left(r, d); return {id: r.id, r, day: d, past: d < today, time: String(r[{{time|json}}] || '').slice(0, 5) + ({{minutes|json}} && r[{{minutes|json}}] ? ' · ' + r[{{minutes|json}}] + ' min' : ''), name: String(r[{{name|json}}] ?? ''), who: [{{sub|json}} ? r[{{sub|json}}] : null, {{place|json}} ? r[{{place|json}}] : null].filter(Boolean).join(' · '), left, places: left === null ? '' : left === 0 ? 'Full' : left <= 3 ? 'Only ' + left + ' left' : left + ' left'}; })}; })",
+   "{{key}}_go": "=x => {{open|json}} ? app.open({{open|json}}, {id: x.id, date: x.day}) : {{call|json}} ? app.call({{call|json}}, {id: x.id, date: x.day}).then(() => app.toast('Booked')) : {{bookings|json}} ? app.insert({{bookings|json}}, { {{of}}: x.id, {{date}}: x.day }).then(() => app.toast('Booked')) : null"
   },
   "body": [
    {
@@ -107,17 +107,21 @@
       "level": 2
      },
      {
-      "button": "‹",
-      "class": "ghost small",
+      "text": "=app.fmt.date({{key}}_start) + ' to ' + app.fmt.date(lib.dates.addDays({{key}}_start, 6)) + (state.{{key}}_w ? '' : ' · this week')",
+      "muted": true
+     }
+    ]
+   },
+   {
+    "row": [
+     {
+      "button": "Previous week",
+      "class": "ghost",
       "do": "=() => set({ {{key}}_w: (state.{{key}}_w || 0) - 1 })"
      },
      {
-      "text": "=app.fmt.date({{key}}_start) + ' to ' + app.fmt.date(lib.dates.addDays({{key}}_start, 6))",
-      "muted": true
-     },
-     {
-      "button": "›",
-      "class": "ghost small",
+      "button": "Next week",
+      "class": "ghost",
       "do": "=() => set({ {{key}}_w: (state.{{key}}_w || 0) + 1 })"
      }
     ]
@@ -130,62 +134,36 @@
      {
       "section": [
        {
-        "each": "=d.rows",
-        "as": "x",
-        "class": "list",
-        "body": [
+        "table": "=d.rows",
+        "columns": [
          {
-          "row": [
-           {
-            "col": [
-             {
-              "text": "=String(x.r[{{time|json}}] || '').slice(0, 5) + ({{minutes|json}} && x.r[{{minutes|json}}] ? ' · ' + x.r[{{minutes|json}}] + ' min' : '')",
-              "small": true,
-              "muted": true
-             },
-             {
-              "h": "=String(x.r[{{name|json}}] ?? '')",
-              "level": 3
-             },
-             {
-              "text": "=[{{sub|json}} ? x.r[{{sub|json}}] : null, {{place|json}} ? x.r[{{place|json}}] : null].filter(Boolean).join(' · ')",
-              "small": true
-             }
-            ]
-           },
-           {
-            "if": "=x.left !== null",
-            "then": [
-             {
-              "text": "=x.left === 0 ? 'Full' : app.fmt.count(x.left, 'place') + ' left'",
-              "small": true
-             }
-            ]
-           },
-           {
-            "if": "=!d.past && ({{open|json}} || {{call|json}})",
-            "then": [
-             {
-              "if": "=x.left === 0",
-              "then": [
-               {
-                "text": "Full",
-                "muted": true
-               }
-              ],
-              "else": [
-               {
-                "button": "{{action}}",
-                "class": "primary small",
-                "do": "=() => {{key}}_go(x.r, d.day)"
-               }
-              ]
-             }
-            ]
-           }
-          ]
+          "key": "time",
+          "label": "Time"
+         },
+         {
+          "key": "name",
+          "label": "Session"
+         },
+         {
+          "key": "who",
+          "label": "With"
+         },
+         {
+          "$when": "spaces",
+          "key": "places",
+          "label": "Places",
+          "badge": true
          }
-        ]
+        ],
+        "actions": [
+         {
+          "label": "{{action}}",
+          "when": "=x => !x.past && x.left !== 0 && !!({{open|json}} || {{call|json}} || {{bookings|json}})",
+          "class": "primary",
+          "do": "={{key}}_go"
+         }
+        ],
+        "empty": "Nothing on this day."
        }
       ],
       "title": "=d.today ? 'Today · ' + d.label : d.label"
