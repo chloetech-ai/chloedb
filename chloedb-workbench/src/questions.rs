@@ -119,7 +119,7 @@ impl Question {
         })
     }
 
-    fn labels(&self) -> Vec<String> {
+    pub(crate) fn labels(&self) -> Vec<String> {
         self.options.as_array().into_iter().flatten().map(|o| o["label"].as_str().unwrap_or("").to_string()).collect()
     }
 }
@@ -180,7 +180,7 @@ pub fn all(sup: &Supervisor) -> Vec<Question> {
     rows.iter().map(|r| Question::of(r)).collect()
 }
 
-fn open_of(sup: &Supervisor, agent: &str) -> Vec<Question> {
+pub(crate) fn open_of(sup: &Supervisor, agent: &str) -> Vec<Question> {
     let p = Params::new().set("agent", Value::Str(agent.to_string()));
     let rows = sup.db().query(&format!("SELECT {Q_COLS} FROM questions WHERE agent = :agent AND state = 'open' LIMIT 1000"), &p).unwrap_or_default();
     rows.iter().map(|r| Question::of(r)).collect()
@@ -235,6 +235,8 @@ pub fn list(sup: &Supervisor, lv: &Levels, repo: Option<&str>, state: Option<&st
         .filter(|q| repo.as_ref().is_none_or(|r| q.repo.as_ref() == Some(r)))
         .filter(|q| state.filter(|s| !s.is_empty()).is_none_or(|s| q.state == s))
         .filter(|q| agent.filter(|s| !s.is_empty()).is_none_or(|a| q.agent.as_deref() == Some(a)))
+        // A replay's questions are its run's, unless asked for by its agent.
+        .filter(|q| agent.is_some_and(|a| !a.is_empty()) || q.agent.as_deref().is_none_or(|a| !sup.is_replay(a)))
         .map(|q| q.to_json(sup))
         .collect();
     Ok(json!({ "questions": qs }))
@@ -752,7 +754,8 @@ pub fn watch_screens(sup: Arc<Supervisor>, lv: Arc<Levels>) {
         let mut seen: HashMap<String, Watched> = HashMap::new();
         loop {
             std::thread::sleep(Duration::from_millis(250));
-            let ids: Vec<String> = sup.agent_rows().into_iter().map(|a| a.id).filter(|id| sup.is_running(id)).collect();
+            // The replays' screens too: the harness answers their prompts.
+            let ids: Vec<String> = sup.all_agent_rows().into_iter().map(|a| a.id).filter(|id| sup.is_running(id)).collect();
             seen.retain(|id, _| ids.contains(id));
             for id in ids {
                 if lv.typing.lock().unwrap().contains(&id) {
@@ -868,9 +871,13 @@ fn asking_ask(sup: &Supervisor, agent: &str) -> bool {
 
 /// Whether a folder is a worktree Workbench made (under its data dir).
 fn workbench_worktree(sup: &Supervisor, cwd: &str) -> bool {
-    let root = sup.cfg.data_dir.join("worktrees");
-    let root = root.canonicalize().unwrap_or(root);
-    std::path::Path::new(cwd).starts_with(&root)
+    // Its worktrees, and the harness's replays' sandboxes (clones of a
+    // repository the user works in, src/harness/replay.rs).
+    ["worktrees", "replays"].iter().any(|d| {
+        let root = sup.cfg.data_dir.join(d);
+        let root = root.canonicalize().unwrap_or(root);
+        std::path::Path::new(cwd).starts_with(&root)
+    })
 }
 
 /// Answers Claude Code's trust prompt for a worktree Workbench made, off

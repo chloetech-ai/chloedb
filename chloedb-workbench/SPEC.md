@@ -2925,7 +2925,10 @@ printed in the output above the text prompt.
    Workbench wires ChloeCtx itself. The user's files are only read.
    `own_permissions: false` on `POST /api/agents` leaves it out; the
    agent's JSON says what came (`carried`: rules, default mode,
-   directories, servers).
+   directories, servers). A replay of the harness (HARNESS.md, step 3)
+   gets the replayed repository's local settings, so that it is asked
+   what a session there is asked, and never its local MCP servers: a
+   server can reach what its sandbox's missing remote keeps away.
 
    `permission_mode` on `POST /api/agents` is Claude Code's
    `--permission-mode`: `plan`, `default`, `acceptEdits`, `auto` or

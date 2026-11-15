@@ -171,6 +171,11 @@ pub struct SpawnRequest {
     /// has and a worktree does not (its `.claude/settings.local.json`, its
     /// local MCP servers): carried by default, `false` leaves them out.
     pub own_permissions: Option<bool>,
+    /// Set by the harness's replays (src/harness/replay.rs): this agent
+    /// plays a case in a sandbox, under a version of another repository's
+    /// harness.
+    #[serde(skip)]
+    pub replay: Option<crate::harness::ReplayTag>,
 }
 
 /// A session's permission profile: Claude Code's `permissions.allow`,
@@ -281,7 +286,7 @@ pub fn hex(n: usize) -> String {
 }
 
 /// A random version 4 UUID.
-fn uuid4() -> String {
+pub(crate) fn uuid4() -> String {
     use rand::RngCore;
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
@@ -471,7 +476,7 @@ impl Supervisor {
     /// exited ones only with `all`.
     pub fn list(&self, all: bool) -> Vec<Json> {
         let inner = self.inner.lock().unwrap();
-        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| all || Self::running(s)).collect();
+        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| (all || Self::running(s)) && !Self::replays(s)).collect();
         slots.sort_by_key(|s| (!Self::running(s), s.agent.created, s.agent.id.clone()));
         slots.iter().filter_map(|s| Self::agent_json(&inner, &s.agent.id)).collect()
     }
@@ -479,7 +484,7 @@ impl Supervisor {
     /// The agents waiting or idle, longest in that state first.
     pub fn attention(&self) -> Vec<Json> {
         let inner = self.inner.lock().unwrap();
-        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| Self::running(s) && matches!(s.agent.state.as_str(), "waiting" | "idle")).collect();
+        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| Self::running(s) && !Self::replays(s) && matches!(s.agent.state.as_str(), "waiting" | "idle")).collect();
         slots.sort_by_key(|s| (s.agent.state_since, s.agent.created));
         slots.iter().filter_map(|s| Self::agent_json(&inner, &s.agent.id)).collect()
     }
@@ -668,11 +673,14 @@ impl Supervisor {
             self.cfg.chloectx_required,
             &cwd,
             {
-                let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy()));
+                // A replay gets the rules of the repository it replays, and
+                // its sandbox is its worktree.
+                let of = req.replay.as_ref().map(|r| r.of_repo.clone()).unwrap_or_else(|| co.main.to_string_lossy().to_string());
+                let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&of));
                 let s = if read_only {
                     // Read-only wins: no worktree defaults that allow edits.
                     crate::guarded::read_only_settings(s)
-                } else if worktree && !req.ask_edits.unwrap_or(false) {
+                } else if (worktree || req.replay.is_some()) && !req.ask_edits.unwrap_or(false) {
                     crate::flow::with_worktree_defaults(s, &cwd)
                 } else {
                     s
@@ -686,22 +694,32 @@ impl Supervisor {
             &who,
         )?;
         // What a regular Claude Code session in the main checkout has and
-        // its worktree does not: its local settings and MCP servers.
-        let (settings_v, mcp_v, carried) = if cwd.as_path() != co.main.as_path() && req.own_permissions != Some(false) {
-            let (s, mut c) = match crate::ownperms::local_settings(&co.main) {
-                Some(local) => crate::ownperms::with_local(settings_v, &local, &co.main, &cwd, !read_only),
+        // its worktree does not: its local settings and MCP servers. A
+        // replay gets the settings of the repository it replays (so that it
+        // is asked what a session there is asked), never its MCP servers:
+        // a server can reach what the sandbox's missing remote keeps away.
+        let main_of = req.replay.as_ref().map(|r| PathBuf::from(&r.of_repo)).unwrap_or_else(|| co.main.clone());
+        let (settings_v, mcp_v, carried) = if cwd.as_path() != main_of.as_path() && req.own_permissions != Some(false) {
+            let (s, mut c) = match crate::ownperms::local_settings(&main_of) {
+                Some(local) => crate::ownperms::with_local(settings_v, &local, &main_of, &cwd, !read_only),
                 None => (settings_v, crate::ownperms::Carried::default()),
             };
-            let (m, n) = crate::ownperms::with_servers(mcp_v, &crate::ownperms::local_servers(&co.main));
+            let (m, n) = if req.replay.is_some() { (mcp_v, 0) } else { crate::ownperms::with_servers(mcp_v, &crate::ownperms::local_servers(&main_of)) };
             c.servers = n;
             (s, m, c)
         } else {
             (settings_v, mcp_v, crate::ownperms::Carried::default())
         };
-        // The repository's current harness version, applied and recorded (src/harness.rs).
-        let applied = crate::harness::at_spawn(self, &co.main.to_string_lossy(), &cwd, &session_dir, &id, &name, settings_v, mcp_v);
+        // The repository's current harness version (or, for a replay, the
+        // version it plays), applied and recorded (src/harness.rs).
+        let harness_repo = req.replay.as_ref().map(|r| r.of_repo.clone()).unwrap_or_else(|| co.main.to_string_lossy().to_string());
+        let applied = crate::harness::at_spawn(self, &harness_repo, &cwd, &session_dir, &id, &name, settings_v, mcp_v, req.replay.as_ref().map(|r| r.config.as_str()));
         write_private(&settings, &applied.settings)?;
         write_private(&mcp, &applied.mcp)?;
+        // The version's model and effort, when the request names none (a
+        // replay names the version's: src/harness/replay.rs).
+        let model = model.or(applied.model.clone());
+        let effort = req.effort.clone().filter(|e| !e.trim().is_empty()).or(applied.effort.clone());
 
         // The process.
         let session_id = uuid4();
@@ -710,7 +728,7 @@ impl Supervisor {
         cmd.arg(&session_id);
         // A restart continues its agent's conversation in a session of its
         // own (Claude Code wants --fork-session with --session-id).
-        let resume = restart.as_ref().and_then(|r| r.resume.clone());
+        let resume = restart.as_ref().and_then(|r| r.resume.clone()).or_else(|| req.replay.as_ref().and_then(|r| r.resume.clone()));
         if let Some(r) = &resume {
             cmd.arg("--resume");
             cmd.arg(r);
@@ -724,7 +742,7 @@ impl Supervisor {
             cmd.arg("--model");
             cmd.arg(m);
         }
-        if let Some(e) = req.effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
             cmd.arg("--effort");
             cmd.arg(e);
         }
@@ -750,6 +768,13 @@ impl Supervisor {
         cmd.env("CHLOEDB_WORKBENCH_AGENT", &id);
         // Sixth build: pytest writes a junit report Health reads test by test (src/testruns.rs).
         for (k, v) in crate::testruns::session_env(Path::new(&cwd), &session_dir) {
+            cmd.env(k, v);
+        }
+        // A replay's own environment (src/harness/replay.rs): its memory in
+        // a store of its own, the distiller off. In the process's
+        // environment, not its settings, so its run version is the
+        // version's own.
+        for (k, v) in req.replay.iter().flat_map(|r| r.env.iter()) {
             cmd.env(k, v);
         }
         // A server started from inside a Claude Code session must not make
@@ -822,11 +847,17 @@ impl Supervisor {
         if let Some(m) = &permission_mode {
             extra.insert("permission_mode".into(), json!(m));
         }
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+            extra.insert("effort".into(), json!(e));
+        }
         if req.own_permissions == Some(false) {
             extra.insert("own_permissions".into(), json!(false));
         }
         if !carried.is_empty() {
             extra.insert("carried".into(), carried.to_json());
+        }
+        if let Some(r) = &req.replay {
+            extra.insert("replay".into(), r.tag.clone());
         }
         let extra = Json::Object(extra);
         if extra.as_object().is_some_and(|o| !o.is_empty()) {
@@ -1086,7 +1117,7 @@ impl Supervisor {
 
     /// The transcript of an agent's session, when it has one with lines:
     /// the last `transcript_path` its hooks reported.
-    fn transcript_of(&self, id: &str) -> Option<PathBuf> {
+    pub(crate) fn transcript_of(&self, id: &str) -> Option<PathBuf> {
         let evs = self.db.all_events(id).ok()?;
         evs.iter().rev().filter_map(|e| e.data.as_deref()).filter_map(|d| serde_json::from_str::<Json>(d).ok()).find_map(|d| {
             let p = PathBuf::from(d["transcript_path"].as_str()?);
@@ -1101,9 +1132,24 @@ impl Supervisor {
         evs.iter().rev().find(|e| HOOKS.contains(&e.kind.as_str())).is_some_and(|e| e.kind != "Stop")
     }
 
-    /// Every agent's row.
+    /// Every agent's row, but the harness's replays (src/harness/replay.rs):
+    /// they play a case in a sandbox and are shown on their run's page.
     pub fn agent_rows(&self) -> Vec<Agent> {
+        self.inner.lock().unwrap().slots.values().filter(|s| !Self::replays(s)).map(|s| s.agent.clone()).collect()
+    }
+
+    /// Every agent's row, the replays too.
+    pub fn all_agent_rows(&self) -> Vec<Agent> {
         self.inner.lock().unwrap().slots.values().map(|s| s.agent.clone()).collect()
+    }
+
+    fn replays(s: &Slot) -> bool {
+        s.extra.get("replay").is_some()
+    }
+
+    /// Whether an agent is a replay of the harness's.
+    pub fn is_replay(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().slots.get(id).is_some_and(Self::replays)
     }
 
     /// An agent as the API answers it, or `None`.
