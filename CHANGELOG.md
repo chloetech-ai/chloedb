@@ -11,6 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.5
+
+The audit of 15 November's first lanes (security, wrong answers, apps that
+did not open, the comparison page's claims), a replica that no primary
+counts asking for no votes (found by the TLA+ specifications now in
+`spec/`), reads routed by least cost by default, and `chloedb-server cc`,
+the command center in a terminal: `chloedb-server-v0.3.5`,
+`chloedb-py-v0.3.5` and `chloedb-js-v0.3.5` (the Java package is built from
+source; `chloedb-crawl`, `chloedb-sheets` and `chloectx` are attached
+prebuilt to the server's release). The file format stays 3 and the shard
+protocol stays 21, with no new field or plan feature, so servers of 0.3.4
+and 0.3.5 mix in a cluster in either order. Auth changes: adding a server
+to a cluster takes the cluster's token, a Workbench agent's key starts
+agents only as its own children, and the crawler and Sheets that a server
+starts work again for keys limited to tables (below). **Scripts that add
+shards or copies with an admin key or the admin token need the cluster's
+token, and on Kubernetes the operator is upgraded before the
+coordinators.**
+
 ### What changes by default
 
 - **Adding a server to a cluster takes the cluster's token** (audit
