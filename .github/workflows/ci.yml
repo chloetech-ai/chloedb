@@ -107,10 +107,12 @@ jobs:
   # one, and not ChloeDB's own); one only under a demo (chloedb-netops,
   # chloedb-swarm, examples/feature-store, examples/parley), to another
   # workflow or to the installers runs nothing here, since each is tested
-  # by a workflow of its own; a change to ChloeDB, to this file, to
-  # ci_changes.py or to a path the rules do not know runs everything. A run
-  # by hand given `since` runs what the change from that commit needs, on
-  # Linux and macOS (the release gate's second way); otherwise the
+  # by a workflow of its own; a change to this file runs the jobs it
+  # changes (read job by job, against the base's file); a change to
+  # ChloeDB, to ci_changes.py or to a path the rules do not know runs
+  # everything. A run by hand given `since` runs what the change from that
+  # commit needs, on Linux and macOS (the release gate's second way);
+  # otherwise the
   # nightly run and a run by hand always run everything.
   changes:
     name: changes
