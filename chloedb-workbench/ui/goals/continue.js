@@ -2,7 +2,7 @@
 // Understand (`#/p/<p>/understand`) and Start a change (`#/p/<p>/change`),
 // three places under one row of steps, with Review and ship beside them.
 // `#/p` opens a folder.
-import { h, useStyle, page, btn, label, kc, pane, stateDot, since, ago, fmtClock, avatar, churnBar, toMs, GROUP_WORDS, icon, token } from "/levels/common.js";
+import { h, useStyle, page, btn, label, kc, pane, stateDot, since, ago, fmtClock, avatar, churnBar, toMs, GROUP_WORDS, icon, token, permissionChoice } from "/levels/common.js";
 import { repoPicker } from "/levels/repos.js";
 import { groupOf, fleet, fleetWords, ORDER, sheet } from "/goals/shell.js";
 import { planFrom } from "/goals/newproject.js";
@@ -335,6 +335,8 @@ export function mount(root, ctx) {
       F.edits = h("input", { type: "checkbox", checked: true });
       F.deny = h("input", { type: "checkbox", checked: true });
       F.ro = h("input", { type: "checkbox" });
+      F.perm = permissionChoice();
+      F.ro.addEventListener("change", () => F.perm.limit(F.ro.checked));
       F.extra = h("input", { class: "field", placeholder: "Bash(python3 serve.py:*)", "aria-label": "Also allowed without asking", spellcheck: "false" });
       F.split = h("input", { type: "checkbox" });
       F.err = h("div", { class: "g-err", role: "alert", hidden: true });
@@ -346,7 +348,7 @@ export function mount(root, ctx) {
       F.guardHost = h("div", { class: "g-guard" }, h("p", { class: "g-dim" }, "Reading the guarded paths…"));
       F.go = btn("Start agent", { primary: true, type: "submit" });
       const d = readDraft();
-      if (d) { F.what.value = d.what || ""; F.done.value = d.done || ""; F.name.value = d.name || ""; F.model.value = d.model || ""; F.split.checked = !!d.split; F.ro.checked = !!d.ro; }
+      if (d) { F.what.value = d.what || ""; F.done.value = d.done || ""; F.name.value = d.name || ""; F.model.value = d.model || ""; F.split.checked = !!d.split; F.ro.checked = !!d.ro; F.perm.limit(F.ro.checked); }
       F.check = () => {
         const t = `${F.what.value} ${F.done.value}`;
         const hasDone = /`[^`]+`/.test(F.done.value) || /\bpasses?\b|\bshows?\b/.test(F.done.value);
@@ -415,7 +417,8 @@ export function mount(root, ctx) {
           h("label", { class: "g-tick" }, F.edits, h("span", {}, h("b", {}, "Edit files on its branch and run the tests"), " Reading commands too (ls, grep, git log); it asks for anything else, and for anything on the network.")),
           h("label", { class: "g-tick" }, F.deny, h("span", {}, h("b", {}, "Never"), " ", h("code", {}, "git push"), ", ", h("code", {}, "rm -rf"), ", ", h("code", {}, "pip install"))),
           F.guardHost,
-          h("label", { class: "g-l" }, "Also allowed (Claude Code rules, comma separated)"), F.extra),
+          h("label", { class: "g-l" }, "Also allowed (Claude Code rules, comma separated)"), F.extra,
+          F.perm.el),
         F.intent, F.err),
       h("div", { class: "g-foot" }, h("span", { class: "g-dim" }, kc("⌘↵"), " from any field"), h("span", { class: "sp" }), F.go));
     return page({ kicker: p.project, title: "Start a change", sub: "Say what should change and how you will know it is done.", inspector: changeInsp(), wide: true },
@@ -478,6 +481,7 @@ export function mount(root, ctx) {
       const body = { repo: p.path, task, worktree: true, permissions: { allow, deny } };
       if (F.ro.checked) body.read_only = true;
       else if (!F.edits.checked) body.ask_edits = true;
+      Object.assign(body, F.perm.body());
       if (F.name.value.trim()) body.name = F.name.value.trim();
       if (F.model.value) body.model = F.model.value;
       const { agent } = await ctx.api("/api/agents", { method: "POST", body });
