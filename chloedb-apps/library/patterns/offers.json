@@ -1,6 +1,6 @@
 {
  "title": "Things people order or book while some are left: products with stock, workshops and classes with seats, races with places",
- "about": "A shop's shelf, a studio's workshops, a club's races: each row a card with its photo, date, price and how many are left. A few left says 'Only 2 left'; none says the out word ('Sold out', 'Full') and offers no action; the rest offer the action, which opens the view that finishes the order or booking with {id} (open), or calls a rule with {id} that checks and lowers the count in one step (call: give the rule a REQUIRE, so two people never get the last one). For dated rows, where 'day >= :today' and order 'day' keep the coming ones, soonest first. Use it on a front page or a booking screen: a visitor sees what is on offer, never a form that edits rows.",
+ "about": "A shop's shelf, a studio's workshops, a club's races: each row a card with its photo, date, price and how many are left. A few left says 'Only 2 left'; none says the out word ('Sold out', 'Full') and offers no action; the rest offer the action, which opens the view that finishes the order or booking with {id} (open), or calls a rule with {id} that checks and lowers the count in one step (call: give the rule a REQUIRE, so two people never get the last one). For dated rows, where 'days_between(:today, day) >= 0' and order 'day' keep the coming ones, soonest first. Use it on a front page or a booking screen: a visitor sees what is on offer, never a form that edits rows.",
  "params": {
   "table": {
    "about": "the table of things to order or book",
@@ -96,7 +96,7 @@
   "image": "photo",
   "left": "seats_left",
   "date": "day",
-  "where": "day >= :today",
+  "where": "days_between(:today, day) >= 0",
   "order": "day",
   "out": "Full",
   "action": "Book a seat",

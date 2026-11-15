@@ -310,3 +310,24 @@ test('access opened to members while every screen stays the owner\'s is a proble
   assert.deepEqual(audienceProblems({ access: ['ALLOW ALL ON invoices TO owner'] }, view), []);
   assert.deepEqual(audienceProblems({}, view), []);
 });
+
+test('every part takes ID, the target of an #anchor link, on its first block', async () => {
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const src = "CREATE SCREEN home TITLE 'Home'\nPRICES items\n  NAME name  PRICE price\n  ID menu\nNEXT races\n  DATE day  NAME name\n  ID '#races'\nLIST guests\n  FORM (name 'Name')\n  ID guests";
+  const out = compileStatement(src);
+  assert.deepEqual(out.screen.body.map((b) => b.id), ['menu', 'races', 'guests']);
+  const r = expandScreen(out.screen);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.screen.body.filter((b) => b.id).map((b) => b.id), ['menu', 'races', 'guests']);
+  assert.throws(() => compileStatement("CREATE SCREEN home TITLE 'Home'\nPRICES items\n  NAME name  PRICE price\n  ID 'two words'"), /ID <anchor>/);
+});
+
+test(':today is the day in any SQL that names it, unless given', async () => {
+  const { withToday } = await import('../engine/engine.mjs');
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  assert.deepEqual(withToday('SELECT * FROM t WHERE days_between(:today, day) >= 0', { q: 1 }), { q: 1, today: day });
+  assert.deepEqual(withToday('SELECT * FROM t WHERE day = :today', { today: '2026-01-02' }), { today: '2026-01-02' });
+  assert.deepEqual(withToday('SELECT * FROM t WHERE day = :todays', {}), {});
+  assert.doesNotMatch(STATEMENT_DOC, /day >= :today/);
+});

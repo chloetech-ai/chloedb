@@ -386,7 +386,8 @@
     ask: (prompt, opts) => rpc('ask', [prompt, opts || {}]),
     fetch: (url, opts) => rpc('fetch', [String(url || ''), opts || {}]),
     tiles: `${origin}/api/tiles/{z}/{x}/{y}.png`,
-    sql: (sql, params) => rpc('sql', [sql, params || {}]),
+    // :today is this browser's day unless given (the engine fills it in too)
+    sql: (sql, params) => rpc('sql', [sql, /:today\b/.test(String(sql || '')) && (!params || params.today === undefined) ? { ...(params || {}), today: app.today() } : params || {}]),
     insert: (table, row) => rpc('insert', [table, row || {}]),
     update: (table, id, fields) => rpc('update', [table, id, fields || {}]),
     // remove(table, id, {undo: false}) for a remove the person undoes by

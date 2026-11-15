@@ -11,6 +11,16 @@ import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
 import { rowLabel, tablesOf } from './activity.mjs';
 
+// :today in any SQL of an app is the day it runs ('YYYY-MM-DD', the
+// engine's local day) unless the caller gives one: a screen's DATA, a KPI, a
+// rule or app.sql need not pass it.
+export function withToday(sql, params) {
+  if (!/:today\b/.test(String(sql || '')) || (params && params.today !== undefined)) return params || {};
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return { ...(params || {}), today: `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}` };
+}
+
 const MAX_ROWS = 1000;
 // What a person is called where an app shows them: their name, else their
 // email, else "you" (never "undefined").
@@ -281,7 +291,7 @@ export class Engine extends EventEmitter {
       return d.all ? null : { sql: (alias, o) => scopeSql(d.scope, alias, o) };
     } : null;
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t), { scope });
-    params = { ...bindPeople(sql, params, ctx), ...(who ? scopeParams(who) : {}) };
+    params = { ...withToday(sql, bindPeople(sql, params, ctx)), ...(who ? scopeParams(who) : {}) };
     const db = await this.dbOf(appId);
     // With the app's own key the server refuses any other table itself;
     // with the engine's, its plan is checked first.

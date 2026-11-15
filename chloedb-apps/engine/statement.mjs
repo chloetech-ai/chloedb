@@ -420,6 +420,7 @@ export function compileStatement(text) {
     const key = u.key || (part.kind === 'SUMMARY' ? `${u.table}_by` : u.table);
     switch (kw) {
       case 'TITLE': u.title = literal(rest); break;
+      case 'ID': u.id = anchorOf(rest, n); break;
       case 'NOUN': u.noun = literal(rest); break;
       case 'EMPTY': u.empty = literal(rest); break;
       case 'WHERE': u.where = rest; break;
@@ -535,9 +536,19 @@ export function compileStatement(text) {
   return { slug: head[1], title, screen, ...(photos?.length ? { photos } : {}), ...(audience ? { for: audience } : {}) };
 }
 
+// The anchor a part takes with ID: letters, digits, - and _ (quotes allowed).
+function anchorOf(rest, n) {
+  const a = String(rest || '').trim().replace(/^'(.*)'$/, '$1').replace(/^#/, '');
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(a)) fail(n, 'ID <anchor>: letters, digits, - and _, the target of an "#anchor" link');
+  return a;
+}
+const u0 = (part) => part.use;
+
 // A clause of one of the newer parts: sets one parameter of its pattern.
 function moreClause(part, kw, rest, l, n) {
   const c = part.more.clauses[kw];
+  // ID on any part: the target of an "#id" link (a nav link, a hero's button)
+  if (!c && kw === 'ID') { u0(part).id = anchorOf(rest, n); return; }
   // MONEY alone in a part that takes FORMAT is FORMAT money, as a KPI or a column says it
   if (!c && kw === 'MONEY' && !String(rest || '').trim() && part.more.clauses.FORMAT) { part.use[part.more.clauses.FORMAT[0]] = 'money'; return; }
   if (!c) fail(n, `${part.kind} takes ${Object.keys(part.more.clauses).join(', ')}, not ${JSON.stringify(l.slice(0, 30))}`);
@@ -695,6 +706,8 @@ export const STATEMENT_DOC = `# CREATE SCREEN: screens as statements
 
 Write each screen view as one CREATE SCREEN statement in its code block (<code slug="the-slug">CREATE SCREEN ...</code>), and give no "screen" in its plan entry. A statement is SQL-shaped and far shorter than a screen's JSON; it compiles into the screen patterns and blocks described above. One clause per line (a clause whose parentheses are open goes on). Parts, each starting a line, in the order they show:
 
+Every part below also takes ID <anchor>: the target of an "#anchor" link (a nav link, a hero's button), e.g. PRICES menu ... ID menu.
+
 CREATE SCREEN <slug> TITLE 'Title'
 LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search, filter, toggle, delete
   TITLE 'Heading'  NOUN 'guest'  EMPTY 'No guests yet'
@@ -761,7 +774,7 @@ GALLERY <table> [AS key]       -- the owner's own photos (a table of stored file
 VARIANCE <table> [AS key]      -- a value compared period by period (a total month over month, quarter over quarter): a row per period in time order with the value, its change and its change in percent (signed, coloured, with bars), the biggest increase and decrease as big numbers, and a CSV download; any request to compare periods (variance, month over month, growth) is this part. It brings its own big numbers (the total, the biggest increase and decrease) and a note on how change is worked out: give no KPI of your own beside it
   PERIOD <col or SQL>  VALUE <col> | SUM(col) GROUP BY <same as PERIOD>  COMPARE <a second value per period, drawn beside it>  AGAINST '<what it is>'  CHART bars | none  ORDER BY <oldest first: a date sorts as it is, a month name needs CASE month WHEN 'Jan' THEN 1 ... END>  LABEL '<what the value is>'  NAME 'Month'  FORMAT number | money  LAST 24  WHERE  FILE '<name>.csv'  TITLE
 OFFERS <table> [AS key]        -- what people order or book while some are left (products with stock, workshops with seats, tours with places): a card per row with its photo, date and price, 'Only 2 left' when few remain, the OUT word (its card in the "out" state) and no action when none; the action opens the view that finishes the order or booking, or calls a rule that checks and lowers the count in one step (its REQUIRE refuses the last one twice). A shelf of products, a list with prices, the upcoming sessions or classes are this part, never a LIST with a form a visitor could edit, and on a front page it comes right after the hero, where visitors see it first
-  LEFT <count col>  NAME <col>  TEXT <col>  PRICE <col>  IMAGE <col>  DATE <col>  WHERE day >= :today  ORDER BY day  SOON 3  OUT 'Full'  ACTION 'Book a seat'  OPEN <view slug, gets {id}> | CALL <function slug, gets {id}, returns the new row's id>  PAY <table of that row>  CHARGE <its amount column>  PAID <its status column>  QTY (a person takes several: a quantity beside the action, 1 up to what is left; the call gets {id, qty}, its rule REQUIREs the count >= :qty, lowers it by :qty and charges :qty times the price)  COUNT (every card says how many are left, not only when few)  DONE 'Booked'  LOOK cards | slides  TITLE  EYEBROW  ID <anchor for a nav link>
+  LEFT <count col>  NAME <col>  TEXT <col>  PRICE <col>  IMAGE <col>  DATE <col>  WHERE days_between(:today, day) >= 0  ORDER BY day  SOON 3  OUT 'Full'  ACTION 'Book a seat'  OPEN <view slug, gets {id}> | CALL <function slug, gets {id}, returns the new row's id>  PAY <table of that row>  CHARGE <its amount column>  PAID <its status column>  QTY (a person takes several: a quantity beside the action, 1 up to what is left; the call gets {id, qty}, its rule REQUIREs the count >= :qty, lowers it by :qty and charges :qty times the price)  COUNT (every card says how many are left, not only when few)  DONE 'Booked'  LOOK cards | slides  TITLE  EYEBROW  ID <anchor for a nav link>
   An app asked to sell or take bookings always takes them: never tell visitors that checkout is off or that they can only browse. A visitor orders or books without an account unless the request asks for one: the rule that takes it reads no :user_id (the form asks a name and an email when the owner needs them) and says ALLOW CALL ON <rule> TO everyone. Where one person may take more than one (products, places on a workshop), the one-tap order gives QTY and its rule works with :qty. The order is a row of <table> (its rule REQUIREs the count and lowers it; its refusal is said under the button that asked); when the request asks for card payment, OFFERS takes it in one tap (CALL a rule that adds the row and RETURNs its id, then PAY <its table> CHARGE <its amount column> PAID <its status column>), or a confirmation screen calls app.pay({table: '<table>', id: <the new row's id>, amount: '<its amount column>', status: '<its status column>'}) and offers "Pay by card" opening the url it returns (a hosted page: never card fields in the app); otherwise it says how payment happens
 HEADER 'Your day'              -- a screen's header: its title, one plain line of what matters now, and its actions on the right (the main one filled). A person's own small app says its few figures in this line ('12 planned this week, 3 to act on') rather than in big number cards
   SUB '=expression of the screen's data (counts with app.fmt.count), or words'  PRIMARY 'Add a session'  OPEN <view> | CALL <function>  SECONDARY '=\'Archived (\' + n + \')\''  SECONDARYOPEN <view>

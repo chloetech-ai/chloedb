@@ -110,6 +110,7 @@ When the request names kinds of people who reach different things (crews and hom
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
 - ORDER BY any column or alias, ASC or DESC, several keys; always end a query that returns rows with LIMIT (at most 500).
 - JOIN ... ON, LEFT JOIN, subqueries, WITH, UNION, CASE, coalesce, round, abs, length, strftime('%Y-%m-%d', t), EXTRACT(dow FROM t), date_trunc, now(), CAST(x AS INT).
+- :today is today's date ('YYYY-MM-DD') in any SQL of the app (DATA, KPIs, rules, app.sql), filled in on its own; pass it only to mean another day.
 - Dates in computed values (SELECT, CASE, the SQL functions): 'YYYY-MM-DD' keywords and timestamps compare as they are (CASE WHEN due < :today THEN 'late' END), and date_trunc and date_part read either; a day later is date_trunc('day', d) + n * 86400000000 (microseconds). CAST(... AS TIMESTAMP) takes a value only (a parameter or a literal), never a column or an expression of one.
 - No INSERT, UPDATE or DELETE in app.sql: write with app.insert, app.update, app.remove.
 - Counts come back as numbers; timestamps as ISO text; bools as true or false; keyword[] as arrays.
