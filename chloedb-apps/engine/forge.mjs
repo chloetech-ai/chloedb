@@ -1494,6 +1494,43 @@ export function readerProblems(plan, view, code = {}) {
   return out;
 }
 
+// A screen people use that adds to, changes or removes from a table only
+// its owner (or admins) may: they are refused when they send it (a shop's
+// checkout form writing straight into orders). A rule they may call does it
+// with the app's rights, or they are let write.
+export function writerProblems(plan, view, code = {}) {
+  const rules = new Map();
+  for (const t of view.tables || []) if (Array.isArray(t.spec?.access) && t.spec.access.length) rules.set(t.spec.name, [...parseAccessList(t.spec.access).values()].flat());
+  for (const [t, rs] of parseAccessList(plan.access || [])) rules.set(t, rs);
+  const least = (t, action) => {
+    if (!rules.has(t)) return 0;
+    const rs = rules.get(t).filter((r) => !r.call && r.actions.includes(action));
+    return rs.length ? Math.min(...rs.map((r) => WHO.indexOf(r.who))) : WHO.length;
+  };
+  const VERB = { add: 'adds to', change: 'changes', remove: 'removes from' };
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v || !v.slug || v.for === 'owner' || v.for === 'admins') continue;
+    const writes = [];
+    const walk = (x) => {
+      if (Array.isArray(x)) return x.forEach(walk);
+      if (!x || typeof x !== 'object') return;
+      if (typeof x.form === 'string' && /^[a-z_][a-z0-9_]*$/.test(x.form) && x.do === undefined) writes.push([x.form, 'add']);
+      Object.values(x).forEach(walk);
+    };
+    let text;
+    if (v.screen && typeof v.screen === 'object') { walk(v.screen.body || []); text = JSON.stringify(v.screen); } else text = String((code && code[v.slug]) || '');
+    for (const m of text.matchAll(/\bapp\.(insert|update|remove)\(\s*\\?['"`]([a-z_][a-z0-9_]*)\\?['"`]/g)) writes.push([m[2], { insert: 'add', update: 'change', remove: 'remove' }[m[1]]]);
+    const shut = new Map();
+    for (const [t, a] of writes) if (rules.has(t) && least(t, a) >= WHO.indexOf('admins') && !shut.has(t)) shut.set(t, a);
+    if (!shut.size) continue;
+    const who = v.for === 'members' ? 'its signed-in members' : 'its visitors and members';
+    const [t0, a0] = [...shut][0];
+    out.push(`view ${v.slug} is for ${who}, but ${[...shut].map(([t, a]) => `${VERB[a]} ${t}`).join(' and ')}, which only the owner may do: they would be refused when they send it. Let a rule they may call do it with the app's rights (a form only adds the rows they may add, so a button whose "do" is app.call('<rule>', {...}) sends it; ALLOW CALL ON <rule> TO everyone or members), let them do it (ALLOW ${a0.toUpperCase()} ON ${t0} TO members, or WHERE a column keeps each to their own rows), or say "for": "owner" on the view`);
+  }
+  return out;
+}
+
 // Access that opens the data to signed-in members while every screen is
 // still the owner's: a member who signs in finds nothing to open (a change
 // that let "only signed-in users" in, and left each screen "for": "owner").
@@ -1511,7 +1548,7 @@ export function audienceProblems(plan, view) {
 export async function validate(plan, code, view, library, shared = new Map(), requestText = '') {
   const problems = checkBrief(plan, view);
   problems.push(...accessProblems(plan, view, requestText));
-  if (!problems.some((p) => p.startsWith('access:'))) problems.push(...readerProblems(plan, view, code), ...audienceProblems(plan, view));
+  if (!problems.some((p) => p.startsWith('access:'))) problems.push(...readerProblems(plan, view, code), ...writerProblems(plan, view, code), ...audienceProblems(plan, view));
   const tables = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   for (const t of plan.tables || []) {
     if (!NAME_RE.test(t.name || '')) { problems.push(`table name ${JSON.stringify(t.name)}: lowercase letters, digits and _`); continue; }

@@ -256,6 +256,22 @@ test('a screen its readers use that reads a table only the owner may read is a p
   assert.deepEqual(readerProblems(plan, { tables: [] }), []);
 });
 
+test('a screen its users use that writes a table only the owner may write is a problem; a rule they call, or the owner\'s screen, is not', async () => {
+  const { writerProblems } = await import('../engine/forge.mjs');
+  const plan = { access: ['ALLOW READ ON items TO everyone', 'ALLOW ALL ON requests TO owner', 'ALLOW CALL ON send-request TO everyone'], views: [
+    { slug: 'front', screen: { data: { p: 'SELECT * FROM items LIMIT 20' }, body: [{ form: 'requests', fields: ['name'] }] } },
+    { slug: 'ask', screen: { body: [{ button: 'Send', do: "=() => app.call('send-request', {id: 1})" }] } },
+    { slug: 'quick', for: 'members', screen: { body: [{ button: 'Add', do: "=() => app.insert('requests', {a: 1})" }] } },
+    { slug: 'manage', for: 'owner', screen: { body: [{ form: 'requests', fields: ['name'] }] } }] };
+  const p = writerProblems(plan, { tables: [] });
+  assert.deepEqual(p.map((x) => x.split(' ')[1]), ['front', 'quick']);
+  assert.match(p[0], /^view front is for its visitors and members, but adds to requests, which only the owner may do/);
+  assert.match(p[1], /^view quick is for its signed-in members/);
+  // members may add their own: nothing to say about the members' screen
+  plan.access.push('ALLOW ADD ON requests TO members WHERE owner_id = :user_id');
+  assert.deepEqual(writerProblems(plan, { tables: [] }).map((x) => x.split(' ')[1]), []);
+});
+
 test('access opened to members while every screen stays the owner\'s is a problem; a screen of theirs, or access kept to the owner, is not', async () => {
   const { audienceProblems } = await import('../engine/forge.mjs');
   const view = { views: [{ slug: 'dashboard', spec: { for: 'owner' } }, { slug: 'invoices', spec: { for: 'owner' } }] };
