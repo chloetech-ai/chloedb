@@ -506,16 +506,121 @@ const INLINE_BYTES: usize = INLINE_DEPTH - 1;
 /// text is read ([`crate::query::function::expand`]), and may nest as
 /// deep as a statement may ([`MAX_EXPR_DEPTH`]) however short its text.
 /// A statement with a parenthesis or longer than [`INLINE_BYTES`] is
-/// tokenized once more to tell. One that does not tokenize is not deep
-/// (its parse fails on the thread that asks).
+/// read once more to tell: by a scan of its bytes ([`shallow_by_scan`]),
+/// which tells most statements apart, and else tokenized. One that does
+/// not tokenize is not deep (its parse fails on the thread that asks).
+/// Every query is asked this, several times on its way, outside the
+/// cache of plans: a statement tokenized each time cost a query over
+/// HTTP about 20 µs.
 pub fn nests_deep(sql: &str) -> bool {
     if sql.len() <= INLINE_BYTES && !sql.contains('(') {
         return false;
     }
+    !shallow_by_scan(sql) && nests_deep_by_tokens(sql)
+}
+
+/// [`nests_deep`] of a statement with a parenthesis or longer than
+/// [`INLINE_BYTES`], by its tokens.
+fn nests_deep_by_tokens(sql: &str) -> bool {
     match Tokenizer::new(&GenericDialect {}, sql).tokenize() {
         Ok(tokens) => may_call_stored(&tokens) || (sql.len() > INLINE_BYTES && depth(&tokens, INLINE_DEPTH).is_err()),
         Err(_) => false,
     }
+}
+
+/// Whether a scan of `sql`'s bytes, without tokenizing it, shows that it
+/// is not deep ([`nests_deep_by_tokens`] is false): no word is followed
+/// by a parenthesis but a built-in function's name or one of
+/// [`NOT_CALLS`] (as [`may_call_stored`] reads the tokens), and either
+/// the statement is at most [`INLINE_BYTES`] long or it has too few
+/// parentheses, operators and set operators to nest past
+/// [`INLINE_DEPTH`]: [`depth`] counts no other tokens, and each symbol is
+/// counted here as one at least. False when it cannot tell: for text it
+/// does not read as the tokenizer would (quoted names, comments,
+/// backslashes, `$`, `#`, `@`, `[`, a letter right after a digit,
+/// anything but ASCII outside a string), and for a call that may be a
+/// stored function's.
+fn shallow_by_scan(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let space = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r');
+    // How deep it may nest at most: the statement's level, and one for
+    // each symbol, operator word and (as [`depth`] counts them) set operator.
+    let mut levels = 1usize;
+    // The token before, when a word: its keyword.
+    let mut prev: Option<Keyword> = None;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            c if space(c) => i += 1,
+            b'\'' => {
+                // A string; '' within it is a quote.
+                i += 1;
+                loop {
+                    match b.get(i) {
+                        None | Some(b'\\') => return false,
+                        Some(b'\'') if b.get(i + 1) == Some(&b'\'') => i += 2,
+                        Some(b'\'') => break,
+                        Some(_) => i += 1,
+                    }
+                }
+                i += 1;
+                prev = None;
+            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let word = &sql[start..i];
+                let keyword = keyword_of(word);
+                let mut next = i;
+                while next < b.len() && space(b[next]) {
+                    next += 1;
+                }
+                let call = b.get(next) == Some(&b'(') && !NOT_CALLS.contains(&keyword) && !prev.is_some_and(|p| NAMES_TABLE.contains(&p));
+                if call && !word.starts_with("__") && !crate::query::function::RESERVED.iter().any(|r| r.eq_ignore_ascii_case(word)) {
+                    return false;
+                }
+                levels += match keyword {
+                    Keyword::UNION | Keyword::INTERSECT | Keyword::EXCEPT | Keyword::MINUS => SET_OP_LEVELS,
+                    k if chains_keyword(k) => 1,
+                    _ => 0,
+                };
+                prev = Some(keyword);
+            }
+            b'0'..=b'9' => {
+                while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
+                    i += 1;
+                }
+                if i < b.len() && (b[i].is_ascii_alphabetic() || b[i] == b'_') {
+                    return false;
+                }
+                prev = None;
+            }
+            b'"' | b'`' | b'[' | b'$' | b'#' | b'@' | b'\\' => return false,
+            b'-' if b.get(i + 1) == Some(&b'-') => return false,
+            b'/' if b.get(i + 1) == Some(&b'*') => return false,
+            0x21..=0x7e => {
+                levels += 1;
+                i += 1;
+                prev = None;
+            }
+            _ => return false,
+        }
+    }
+    sql.len() <= INLINE_BYTES || levels <= INLINE_DEPTH
+}
+
+/// The keyword word `w` is, as the tokenizer tells it
+/// (`Token::make_word`): [`Keyword::NoKeyword`] for a name.
+fn keyword_of(w: &str) -> Keyword {
+    use sqlparser::keywords::{ALL_KEYWORDS, ALL_KEYWORDS_INDEX};
+    let mut buf = [0u8; 32];
+    let Some(upper) = buf.get_mut(..w.len()) else { return Keyword::NoKeyword };
+    upper.copy_from_slice(w.as_bytes());
+    upper.make_ascii_uppercase();
+    let upper = std::str::from_utf8(upper).unwrap_or_default();
+    ALL_KEYWORDS.binary_search(&upper).map_or(Keyword::NoKeyword, |x| ALL_KEYWORDS_INDEX[x])
 }
 
 /// Words a parenthesis follows that name no function: a stored
@@ -600,28 +705,7 @@ pub fn deep_stack<T: Send>(deep: bool, f: impl FnOnce() -> T + Send) -> T {
 /// keywords cannot.
 fn chains(t: &Token) -> bool {
     match t {
-        Token::Word(w) => matches!(
-            w.keyword,
-            Keyword::AND
-                | Keyword::OR
-                | Keyword::XOR
-                | Keyword::NOT
-                | Keyword::IS
-                | Keyword::IN
-                | Keyword::BETWEEN
-                | Keyword::LIKE
-                | Keyword::ILIKE
-                | Keyword::SIMILAR
-                | Keyword::RLIKE
-                | Keyword::REGEXP
-                | Keyword::DIV
-                | Keyword::MOD
-                | Keyword::COLLATE
-                | Keyword::AT
-                | Keyword::OVERLAPS
-                | Keyword::MEMBER
-                | Keyword::ESCAPE
-        ),
+        Token::Word(w) => chains_keyword(w.keyword),
         Token::Whitespace(_)
         | Token::EOF
         | Token::Number(..)
@@ -646,6 +730,33 @@ fn chains(t: &Token) -> bool {
         | Token::Placeholder(_) => false,
         _ => true,
     }
+}
+
+/// Whether keyword `k` is an operator, which can join two expressions
+/// into a deeper one ([`chains`]).
+fn chains_keyword(k: Keyword) -> bool {
+    matches!(
+        k,
+        Keyword::AND
+            | Keyword::OR
+            | Keyword::XOR
+            | Keyword::NOT
+            | Keyword::IS
+            | Keyword::IN
+            | Keyword::BETWEEN
+            | Keyword::LIKE
+            | Keyword::ILIKE
+            | Keyword::SIMILAR
+            | Keyword::RLIKE
+            | Keyword::REGEXP
+            | Keyword::DIV
+            | Keyword::MOD
+            | Keyword::COLLATE
+            | Keyword::AT
+            | Keyword::OVERLAPS
+            | Keyword::MEMBER
+            | Keyword::ESCAPE
+    )
 }
 
 #[cfg(test)]
@@ -741,5 +852,74 @@ mod tests {
         }
         // Statements apart count apart.
         assert!(parse(&format!("{0}; {0}", vec!["SELECT 1"; most].join(" UNION ALL "))).is_ok());
+    }
+
+    /// The queries of `chloedb-server-bench` and of the speed gate, and
+    /// others of their shapes, are told apart by the scan alone.
+    #[test]
+    fn common_queries_are_shallow_by_their_scan() {
+        let long = format!("SELECT id FROM docs WHERE {} ORDER BY id LIMIT 10", (0..30).map(|i| format!("n = {i}")).collect::<Vec<_>>().join(" OR "));
+        for sql in [
+            "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10",
+            "SELECT id, score() FROM docs WHERE year >= 2000 ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10",
+            "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10",
+            "SELECT id, score() FROM docs ORDER BY minmax(bm25(body, :t)) * 0.3 + minmax(similarity(emb, :v)) * 0.7 DESC LIMIT 10",
+            "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') * decay(year, 2024, 5) DESC LIMIT 10",
+            "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, :w) GROUP BY category ORDER BY COUNT(*) DESC LIMIT 10",
+            "SELECT id FROM t1 WHERE CAST(n AS TEXT) = 'it''s' AND EXISTS (SELECT 1) AND id IN (1, 2.5)",
+            "INSERT INTO t1 (id, n, a) VALUES (1, 2, 'x'), (2, 3, 'y')",
+            long.as_str(),
+        ] {
+            assert!(shallow_by_scan(sql), "{sql}");
+            assert!(!nests_deep(sql), "{sql}");
+        }
+    }
+
+    /// Where the scan says a statement is not deep, its tokens say so too:
+    /// statements of fragments put together at random, and chains of
+    /// parentheses, operators and set operators about as deep as
+    /// [`INLINE_DEPTH`].
+    #[test]
+    fn the_scan_never_calls_a_deep_statement_shallow() {
+        let fragments = [
+            "SELECT", "FROM", "WHERE", "t", "id", "bm25", "count", "f1", "my_fn", "CAST", "AS", "INT", "INTO", "TABLE", "INSERT", "VALUES", "ON", "INDEX", "FUNCTION", "REFERENCES", "EXISTS", "ROW", "AND",
+            "OR", "NOT", "IN", "IS", "LIKE", "UNION", "ALL", "EXCEPT", "MINUS", "(", ")", "(", ")", ",", "+", "-", "*", "/", "||", "=", "=>", "<", ">", ":p", "::", ".", ";", "'s'", "'it''s'", "'a\\b'",
+            "'(f(x))'", "\"Q\"", "`b`", "1", "2.5", "1e5", "0x1f", "-- c\n", "/* c */", "[1]", "$1", "@x", "#y", "é", "__x", "\t", "\n", "\x0c", "N'x'", "E'x\\'y'", "x(", "'", "''",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let (mut shallow, mut deep) = (0, 0);
+        for round in 0..40_000 {
+            let sql = if round % 4 == 0 {
+                // About INLINE_DEPTH levels of one kind, some of them closed.
+                let piece = ["(", "1 + ", "a OR ", "SELECT 1 UNION ", "f(", "x IN (", "- "][next(7)];
+                let n = INLINE_DEPTH - 20 + next(40);
+                let mut s = format!("SELECT {}", piece.repeat(n / if piece.contains("UNION") { SET_OP_LEVELS } else { 1 }));
+                s.push_str(&")".repeat(next(n + 1)));
+                s
+            } else {
+                let mut s = String::new();
+                for _ in 0..1 + next(60) {
+                    s.push_str(fragments[next(fragments.len())]);
+                    if next(3) > 0 {
+                        s.push(' ');
+                    }
+                }
+                s
+            };
+            if shallow_by_scan(&sql) {
+                shallow += 1;
+                assert!(!nests_deep_by_tokens(&sql), "the scan calls {sql:?} shallow");
+            } else if nests_deep_by_tokens(&sql) {
+                deep += 1;
+            }
+        }
+        // Both answers were given often enough to have been tried.
+        assert!(shallow > 2_000 && deep > 2_000, "{shallow} shallow, {deep} deep");
     }
 }

@@ -11,6 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Queries over HTTP are no longer read twice before their plan
+
+- A query with parameters no longer parses its whole statement for the
+  tables it names unless a parameter needs them (`vector_of` without a
+  `table`, or `embed`). Since 0.3.2 every such query did, outside the cache
+  of plans.
+- The check that a statement nests too deep for the thread that asks it
+  (0.3.3) no longer tokenizes the statement each of the three times a query
+  asks it: a scan of its bytes tells most statements apart, and only one it
+  cannot tell, or one that may call a stored function, is tokenized.
+- Together they made a query over HTTP up to a third slower on the
+  nightly speed gate of 2026-11-14 (BM25 on SciFact at one client, p50
+  154 µs before them and 204 µs after, on GitHub's 4-CPU AMD EPYC runner).
+  With this change every HTTP measure of the speed gate is within 10% of
+  2026-11-13's again (3 rounds on a 4-vCPU Intel Xeon cloud VM: BM25 456 µs
+  then, 492 µs now). Typo-tolerant BM25 stays about 15% slower in process:
+  since #513 it also looks for the neighbours of a misspelt word as it was
+  written, which is how `fuzzy => 'auto'` finds `wireless` for `wireles`.
+
 ### Cluster reads and operator upgrades (audit 4, wave 2)
 
 - **A read after a write checks the write's term (X-E1).** A write answers
