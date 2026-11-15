@@ -152,7 +152,9 @@ jobs:
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
-          python3 .github/scripts/ci_changes.py < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
+          # --base: a change to this file is read job by job against the
+          # base's (the jobs it changes run, rather than all of them).
+          python3 .github/scripts/ci_changes.py --base "$base" < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
 
   # Where the longest jobs run (chloedb-server's binary, ChloeDB's and the
   # server's tests): on the on-demand runner, a DigitalOcean droplet made
@@ -392,7 +394,7 @@ jobs:
   macos:
     name: ${{ matrix.crate }} on ${{ matrix.os }}
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full && github.event_name == 'push'
+    if: fromJSON(needs.changes.outputs.run).macos && github.event_name == 'push'
     strategy:
       matrix:
         os: [macos-latest]
@@ -409,7 +411,7 @@ jobs:
   kernels:
     name: chloedb kernels on a generic build
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).kernels
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -499,7 +501,7 @@ jobs:
             chloedb-server
           key: audio
       - name: ChloeDB
-        if: fromJSON(needs.changes.outputs.run).full
+        if: fromJSON(needs.changes.outputs.run).audio_chloedb
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -525,7 +527,7 @@ jobs:
   datafusion:
     name: DataFusion engine (feature datafusion, ${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).datafusion
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -566,7 +568,7 @@ jobs:
   faults:
     name: fault injection on ${{ matrix.os }}
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).faults
     strategy:
       fail-fast: false
       matrix:
@@ -600,7 +602,7 @@ jobs:
   relevance-gate:
     name: relevance gate (BEIR)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).relevance
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -638,7 +640,7 @@ jobs:
   relevance-gate-cross-encoder:
     name: relevance gate (cross-encoder)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).cross_encoder
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -680,7 +682,7 @@ jobs:
   miri:
     name: miri (${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).miri
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

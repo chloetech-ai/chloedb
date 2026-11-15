@@ -3,15 +3,20 @@
 
 Reads the changed paths, one per line, on stdin (or none, with --all, for a
 run that tests everything) and prints one line `run=<json>` for
-$GITHUB_OUTPUT. The JSON names each group of jobs and whether it runs:
+$GITHUB_OUTPUT. With --base <commit>, a change to ci.yml is read job by
+job against that commit's ci.yml (below). The JSON names each group of jobs
+and whether it runs:
 
   any        some job besides the documentation site's check runs
-  full       the whole matrix: a change to ChloeDB, to CI itself (ci.yml,
-             this file) or to any path this file does not know, since
-             everything depends on them. The jobs that test ChloeDB alone
-             run only then: kernels, datafusion, faults, both relevance
-             gates, miri, the ChloeDB parts of vision and audio, and the
-             macOS tests of a push to main
+  full       the whole matrix: a change to ChloeDB, to this file, to
+             ci.yml outside its jobs or to any path this file does not know,
+             since everything depends on them
+  kernels, datafusion, faults, relevance, cross_encoder, miri, macos,
+  audio_chloedb
+             the jobs that test ChloeDB alone (relevance is the BEIR gate,
+             cross_encoder its cross-encoder's, macos ChloeDB's macOS tests
+             of a push to main, audio_chloedb the ChloeDB step of job
+             audio): with full, or when ci.yml changes that job
   crates     the crates `test` tests (a list, for its matrix), and test
              whether there is any
   runner     job `runner` places the longest jobs (ChloeDB's or
@@ -45,8 +50,15 @@ which use no server code and skip their server tests without a binary (the
 smoke test runs those against this build); not the Python package's
 recommender gate and clippy, nor the Java package, which use no server.
 
-A change to CI's own workflow or to this file runs everything; one to the
-on-demand runner (.github/ci-runner) runs the jobs that run on it. The
+A change to this file runs everything. A change to ci.yml runs the jobs
+whose definitions it changes (read from the file parsed, so YAML anchors
+count in each job that uses them, and a change to comments alone runs
+nothing) and the jobs that use theirs (a change to server-bin runs every
+job that starts a server); a change outside `jobs` (the triggers, `env`,
+`concurrency`), to `changes` or `CI result`, or a job added or removed, runs
+everything, as does a change to ci.yml without --base or PyYAML. A change
+to the on-demand runner (.github/ci-runner) runs the jobs that run on it.
+The
 other workflows and their scripts, the install scripts and packaging, the
 review rules (CODEOWNERS, the template) and the scripts that no CI job runs
 reach no job here: each is tested by its own workflow, or by none (the
@@ -62,13 +74,14 @@ nothing here. The workflow Demos (demos.yml) tests them, on a pull request
 that touches one and every night, and a failure there does not hold a
 ChloeDB release (docs/compatibility.md, "Demos").
 
-`python3 .github/scripts/ci_changes.py --self-test` checks the rules, and
-that every file a crate compiles in and every script ci.yml runs reaches
-the jobs that use it.
+`python3 .github/scripts/ci_changes.py --self-test` checks the rules, that
+every job of ci.yml has its entry in CI_JOBS, and that every file a crate
+compiles in and every script ci.yml runs reaches the jobs that use it.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -77,6 +90,7 @@ CRATES = ["chloedb", "chloectx", "chloedb-server", "chloedb-crawl", "chloedb-she
 SMOKE = ["smoke_crawl", "smoke_sheets", "smoke_ctx", "smoke_apps"]
 JOBS = ["python", "python_gate", "javascript", "java", "docs"]
 VISION = ["chloedb", "chloedb-server"]
+ENGINE = ["kernels", "datafusion", "faults", "relevance", "cross_encoder", "miri", "macos", "audio_chloedb"]
 
 # Every job that starts a chloedb-server of this build (server-bin's).
 STARTS_A_SERVER = {*SMOKE, "python", "javascript", "docs"}
@@ -113,7 +127,40 @@ COMPILED_IN = {
 }
 
 # CI's own rules: everything.
-EVERYTHING = {".github/workflows/ci.yml", ".github/scripts/ci_changes.py"}
+EVERYTHING = {".github/scripts/ci_changes.py"}
+CI_YML = ".github/workflows/ci.yml"
+
+# What a change to each of ci.yml's jobs runs: (crates `test` tests,
+# groups), the job itself and the jobs that use what it makes. None:
+# everything (the job that decides, and the one that sums up).
+CI_JOBS = {
+    "changes": None,
+    "ci-result": None,
+    "runner": ({"chloedb", "chloedb-server"}, {"server"}),
+    "server-bin": (set(), STARTS_A_SERVER),
+    "test": (set(CRATES), set()),
+    "macos": ({"chloedb"}, {"macos"}),
+    "kernels": (set(), {"kernels"}),
+    "vision": (set(), {f"vision:{v}" for v in VISION}),
+    "audio": (set(), {"audio", "audio_chloedb"}),
+    "datafusion": (set(), {"datafusion"}),
+    "faults": (set(), {"faults"}),
+    "relevance-gate": (set(), {"relevance"}),
+    "relevance-gate-cross-encoder": (set(), {"cross_encoder"}),
+    "miri": (set(), {"miri"}),
+    "server-smoke": (set(), set(SMOKE)),
+    "python": (set(), {"python"}),
+    "python-gate": (set(), {"python_gate"}),
+    "javascript": (set(), {"javascript"}),
+    "java": (set(), {"java"}),
+    # It runs on every change.
+    "docs-site": (set(), set()),
+    "docs-bins": (set(), {"docs"}),
+    "docs": (set(), {"docs"}),
+    # A push to main's: they run after server-bin, which builds then.
+    "main-builds": (set(), {"server"}),
+    "main-builds-publish": (set(), {"server"}),
+}
 
 # Paths no job here builds, runs or reads. Each is tested by a workflow of
 # its own on a pull request that changes it, or runs only on main, on a
@@ -153,10 +200,58 @@ RESULTS = re.compile(r"^(chloedb|chloedb-server|chloectx)/results/")
 RESULTS_CODE = re.compile(r"^(chloedb|chloedb-server|chloectx)/results/.*\.py$|^chloedb/results/workloads/")
 
 
-def reach(p):
+def ci_jobs_changed(old_text, new_text):
+    """The names of ci.yml's jobs whose definitions differ between two
+    versions of the file, or None when anything else differs: a key outside
+    `jobs`, or a job added or removed."""
+    import yaml
+
+    old, new = yaml.safe_load(old_text), yaml.safe_load(new_text)
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    if {k: v for k, v in old.items() if k != "jobs"} != {k: v for k, v in new.items() if k != "jobs"}:
+        return None
+    oj, nj = old.get("jobs") or {}, new.get("jobs") or {}
+    if set(oj) != set(nj):
+        return None
+    return {j for j in nj if oj[j] != nj[j]}
+
+
+def ci_yml_reach(base):
+    """(everything, crates, groups) the change to ci.yml since commit base
+    needs, job by job; everything when it cannot be read that way."""
+    if not base:
+        return True, set(), set()
+    try:
+        old = subprocess.run(["git", "show", f"{base}:{CI_YML}"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        with open(os.path.join(ROOT, CI_YML), encoding="utf-8") as fh:
+            changed = ci_jobs_changed(old, fh.read())
+    except Exception as e:  # no PyYAML, no such commit, a file that does not parse
+        print(f"ci.yml read as a whole ({type(e).__name__}: {e})", file=sys.stderr)
+        return True, set(), set()
+    return jobs_reach(changed)
+
+
+def jobs_reach(changed):
+    """(everything, crates, groups) for a set of ci.yml's jobs changed."""
+    if changed is None:
+        return True, set(), set()
+    crates, groups = set(), set()
+    for job in changed:
+        r = CI_JOBS.get(job)
+        if r is None:
+            return True, set(), set()
+        crates |= r[0]
+        groups |= r[1]
+    return False, crates, groups
+
+
+def reach(p, base=None):
     """(everything, crates, groups) a change to path p needs."""
     if p in EVERYTHING:
         return True, set(), set()
+    if p == CI_YML:
+        return ci_yml_reach(base)
     if p in COMPILED_IN:
         return (False, *COMPILED_IN[p])
     if GUIDE.match(p):
@@ -173,21 +268,28 @@ def reach(p):
     return True, set(), set()
 
 
-def plan(paths, everything=False):
+def plan(paths, everything=False, base=None):
     full = everything
     crates, groups = set(), set()
     for p in paths:
         p = p.strip()
         if not p:
             continue
-        f, cs, gs = reach(p)
+        f, cs, gs = reach(p, base)
         full |= f
         crates |= cs
         groups |= gs
+    return output(full, crates, groups)
+
+
+def output(full, crates, groups):
+    """The JSON for what reaches (full, crates, groups)."""
     if full:
         crates = set(CRATES)
-        groups = {*SMOKE, *JOBS, "audio", *(f"vision:{v}" for v in VISION)}
+        groups = {*SMOKE, *JOBS, *ENGINE, "audio", *(f"vision:{v}" for v in VISION)}
     out = {"full": full, "crates": [c for c in CRATES if c in crates]}
+    for g in ENGINE:
+        out[g] = g in groups
     out["vision"] = [v for v in VISION if f"vision:{v}" in groups]
     out["audio"] = "audio" in groups
     for g in SMOKE + JOBS:
@@ -196,7 +298,7 @@ def plan(paths, everything=False):
     out["server"] = "server" in groups or out["smoke"] or out["python"] or out["javascript"] or out["docs"]
     out["test"] = bool(out["crates"])
     out["runner"] = "chloedb" in crates or "chloedb-server" in crates
-    out["any"] = full or bool(out["crates"]) or bool(out["vision"]) or out["audio"] or out["server"] or any(out[g] for g in SMOKE + JOBS)
+    out["any"] = full or bool(out["crates"]) or bool(out["vision"]) or out["audio"] or out["server"] or any(out[g] for g in SMOKE + JOBS + ENGINE)
     return out
 
 
@@ -240,14 +342,14 @@ def self_test():
         keys = {k for k, v in r.items() if v is True} - {"test"}
         return keys | {f"test:{c}" for c in r["crates"]} | {f"vision:{v}" for v in r["vision"]}
 
-    every = {"any", "full", "runner", "server", "smoke", "audio", *SMOKE, *JOBS, *(f"test:{c}" for c in CRATES), *(f"vision:{v}" for v in VISION)}
+    every = {"any", "full", "runner", "server", "smoke", "audio", *ENGINE, *SMOKE, *JOBS, *(f"test:{c}" for c in CRATES), *(f"vision:{v}" for v in VISION)}
     starts = {"server", "smoke", *SMOKE, "python", "javascript", "docs"}
     server = {"any", "runner", "test:chloedb-server", "vision:chloedb-server", "audio"} | starts
     assert on([], everything=True) == every
     assert on(["chloedb/src/lib.rs"]) == every
     assert on(["chloedb/fuzz/src/lib.rs"]) == every
     assert on(["chloedb/Cargo.lock"]) == every
-    assert on([".github/workflows/ci.yml"]) == every
+    assert on([".github/workflows/ci.yml"]) == every  # without a base
     assert on([".github/scripts/ci_changes.py"]) == every
     assert on(["LICENSE"]) == every
     assert on(["something/new.txt"]) == every
@@ -297,6 +399,54 @@ def self_test():
     assert on(["chloedb-server/src/main.rs", "chloedb-py/src/lib.rs"]) == server | {"python_gate"}
     assert plan(["chloectx/src/a.rs", "chloedb-crawl/src/b.rs"])["crates"] == ["chloectx", "chloedb-crawl"]
     assert plan(["chloectx/src/a.rs"])["runner"] is False
+    assert not any(plan(["chloedb-server/src/main.rs"])[g] for g in ENGINE)
+
+    # ci.yml, job by job: its jobs and the jobs that use theirs.
+    def jobs(changed):
+        r = output(*jobs_reach(changed))
+        return ({k for k, v in r.items() if v is True} - {"test"}) | {f"test:{c}" for c in r["crates"]} | {f"vision:{v}" for v in r["vision"]}
+
+    assert jobs(set()) == set()
+    assert jobs(None) == every
+    assert jobs({"changes"}) == every
+    assert jobs({"ci-result"}) == every
+    assert jobs({"a-new-job"}) == every
+    assert jobs({"miri"}) == {"any", "miri"}
+    assert jobs({"kernels", "faults"}) == {"any", "kernels", "faults"}
+    assert jobs({"audio"}) == {"any", "audio", "audio_chloedb"}
+    assert jobs({"vision"}) == {"any", "vision:chloedb", "vision:chloedb-server"}
+    assert jobs({"server-bin"}) == {"any"} | starts
+    assert jobs({"test", "macos"}) == {"any", "runner", "macos", *(f"test:{c}" for c in CRATES)}
+    assert jobs({"docs-site"}) == set()
+    assert jobs({"python-gate"}) == {"any", "python_gate"}
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("PyYAML missing: ci.yml's jobs not compared (a change to ci.yml runs everything)")
+    else:
+        base = """
+on: {push: {branches: [main]}}
+env: {RUST_TOOLCHAIN: "1.100.0"}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps: &steps
+      - run: cargo test
+  macos: {runs-on: macos-latest, steps: *steps}
+  miri: {runs-on: ubuntu-latest, steps: [{run: cargo miri test}]}
+"""
+        assert ci_jobs_changed(base, base + "# a comment\n") == set()
+        assert ci_jobs_changed(base, base.replace("cargo miri test", "cargo miri test --lib")) == {"miri"}
+        assert ci_jobs_changed(base, base.replace("run: cargo test", "run: cargo test --locked")) == {"test", "macos"}
+        assert ci_jobs_changed(base, base.replace('"1.100.0"', '"1.101.0"')) is None
+        assert ci_jobs_changed(base, base + "  kernels: {runs-on: ubuntu-latest}\n") is None
+        # Every key ci.yml's jobs read is one plan() writes.
+        with open(os.path.join(ROOT, CI_YML), encoding="utf-8") as fh:
+            read = set(re.findall(r"outputs\.run\)\.([a-z_]+)", fh.read()))
+        assert read <= set(plan([], everything=True)), read - set(plan([], everything=True))
+        # Every job of this ci.yml has its entry, and nothing else does.
+        with open(os.path.join(ROOT, CI_YML), encoding="utf-8") as fh:
+            assert set(yaml.safe_load(fh)["jobs"]) == set(CI_JOBS), set(yaml.safe_load(open(os.path.join(ROOT, CI_YML)))["jobs"]) ^ set(CI_JOBS)
 
     # Every file a crate compiles in from outside its folder, or that is
     # Markdown, reaches that crate's tests (or its package's jobs).
@@ -321,4 +471,5 @@ if __name__ == "__main__":
         self_test()
     else:
         everything = "--all" in sys.argv
-        print("run=" + json.dumps(plan([] if everything else sys.stdin, everything), separators=(",", ":")))
+        base = sys.argv[sys.argv.index("--base") + 1] if "--base" in sys.argv else None
+        print("run=" + json.dumps(plan([] if everything else sys.stdin, everything, base), separators=(",", ":")))
