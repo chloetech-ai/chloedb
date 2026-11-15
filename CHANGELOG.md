@@ -84,6 +84,18 @@ changes collect under "Unreleased".
   `chloedb-sim --uncounted-candidate` places it, and `--bug
   campaigns-uncounted` puts it back).
 
+### Cluster map
+
+- On Kubernetes, a change of the cluster map keeps in the map's Lease the
+  newest map a server may hold when it ends, the map it made among them,
+  not only a map left in doubt, and the next change gives it again first
+  unless the servers it reaches hold it. Before, a change made while one
+  server did not answer left nothing in the Lease, and the next, on a
+  coordinator that reached only that server, made a second map of the
+  same epoch (TLC, `spec/clustermap` `LeaseRacing`; `tests/map_lease.rs`
+  makes the race with real servers). A coordinator started again under
+  the Lease finds that map there too.
+
 ### Wrong answers fixed (November audit: ENG-Q1, ENG-Q2)
 
 - **A function of a `CASE` on DataFusion is no longer NULL on every row of a

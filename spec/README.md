@@ -154,7 +154,9 @@ call may still arrive later. Coordinators also follow the servers' maps
 (watch) and give theirs to servers behind (speak). Constants: `Racing`,
 `Forgetful`, `Lease`, `Survey` (what a restarted coordinator routes by:
 `kept`, `all`, `any`), `Move` (the flip, source first, `flip_ok`), `Bugs`
-(the simulator's four map bugs put back) and `Quorum` (a proposal).
+(the simulator's four map bugs put back), `LeaseKeeps` (the Lease keeps
+the newest map a server may hold, which `Coordinator::change` does since
+TLC found `LeaseRacing`) and `Quorum` (a proposal).
 Invariants: `NoFork` (no two maps of one epoch ever taken), `RoutesHeld`
 (a coordinator routes only by a map some server holds or held) and
 `NoStuck` (no server left refusing every later map).
@@ -169,6 +171,8 @@ Invariants: `NoFork` (no two maps of one epoch ever taken), `RoutesHeld`
 | Racing | racing | 2, 0 | **fork** in 7 | 107 | 2 |
 | LeaseRacing | racing under the Lease | 2, 0 | **fork** in 9 (below) | 319 | 2 |
 | SurveyAny | one coordinator keeping its doubt, `any` | 2, 1 | **fork** in 10 (below) | 559 | 2 |
+| KeepsRacing | as LeaseRacing, LeaseKeeps | 2, 0 | no error | 4,552 | 2 |
+| Keeps (CIKeeps) | racing, Lease, forgetful, `any`, Move, LeaseKeeps | 4, 2 (2, 1) | no error | 10,581,320 (42,650) | 1,552 (7) |
 | QuorumRacing | Quorum, no Lease | 2, 0 | **fork** in 15 | 2,593 | 4 |
 | OneKeeps (CIOneKeeps) | one coordinator keeping its doubt | 5, 2 (3, 1) | no error | 198,101 (9,103) | 51 (4) |
 | OneMove (CIOneMove) | as OneKeeps, Move | 4, 2 (3, 1) | no error | 297,659 (43,206) | 55 (8) |
@@ -182,7 +186,7 @@ What TLC found:
    forgetful coordinators; it finds no fork and no stuck source with one
    coordinator that keeps its doubt (as the simulator's do, in memory, or
    in the Lease with shards of one server).
-2. **The Lease does not close the fork (`LeaseRacing`, open).**
+2. **The Lease did not close the fork (`LeaseRacing`, fixed).**
    [server.md](../docs/chloedb/server.md) says the Lease narrows the fork
    to a coordinator paused for longer than 90 s. But c1's change takes the
    Lease, gives map `<<11>>` (epoch 2), and lands on s1 and s2 while s3's
@@ -191,12 +195,27 @@ What TLC found:
    s2 (its watch never heard of `<<11>>`), takes the Lease, syncs from s3
    alone (`sync_heard` needs no answer from any particular server), makes
    `<<21>>` of epoch 2, and s3 takes it: two maps of epoch 2.
-3. **A restart forks with replicated shards (`SurveyAny`, open).** The same
+
+   Fixed (`LeaseKeeps`): a change that ends keeps in the Lease the newest
+   map a server may hold, the map it made among them, not only the one in
+   doubt, and the next change gives it again first unless the servers it
+   reaches hold it. c2 then gives `<<11>>` to s3 and makes its change from
+   it. The Lease is an agreement (the API server's compare-and-swap), so
+   this closes the fork for coordinators the operator runs without
+   waiting for a majority of servers, which `Quorum` would: a cluster of
+   two servers with one down could not change its map. `KeepsRacing` and
+   `Keeps`, with restarts surveying any copy and a move, find no fork;
+   `tests/map_lease.rs` makes the same race with real servers.
+3. **A restart forks with replicated shards (`SurveyAny`, open without the
+   Lease).** The same
    first steps without the Lease: c1 starts again, and `connect_with`'s
    `survey` fails only when every copy of a shard fails, so with s3 alone
    answering c1 routes by epoch 1, and its next change gives `<<12>>` of
    epoch 2 to s3. The cluster simulator cannot find this: its shards have
    one server each and its coordinators keep their map when they crash.
+   Under the Lease the fix above closes it too (c1 finds `<<11>>` in the
+   Lease, `Keeps`); without it, it is the fork server.md names for a
+   coordinator that starts again.
 4. **A direction TLC passes (`Quorum`).** Under the Lease, a change lands
    once a majority took its map, a sync takes up the newest map of a
    majority, and a change first gives the map it synced to again until a
@@ -397,8 +416,9 @@ with the fix its specification checks:
    flip** (`slots/`, `MoveNow`): the mark committed through the source's
    log.
 2. **The cluster map forks under the Lease, and on a restart with
-   replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): changes
-   that land on, and sync from, a majority (`Quorum`).
+   replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): fixed
+   under the Lease, which keeps the newest map made (`Keeps`); without the
+   Lease, changes that land on, and sync from, a majority (`Quorum`).
 3. **A retry is answered 200 for a write no copy holds, or applied twice**
    (`idempotency/`, `KeysNow`, `KeysEvict`): forget the keys at a change of
    role, and look the key's row up in the write's own transaction.

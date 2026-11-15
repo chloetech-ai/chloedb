@@ -71,6 +71,8 @@ MODELS = [
     ("clustermap", "MCMapChange", "LeaseRacing", "NoFork", 9, True),
     ("clustermap", "MCMapChange", "SurveyAny", "NoFork", 10, True),
     ("clustermap", "MCMapChange", "QuorumRacing", "NoFork", 15, True),
+    ("clustermap", "MCMapChange", "KeepsRacing", "ok", None, True),
+    ("clustermap", "MCMapChange", "CIKeeps", "ok", None, True),
     ("clustermap", "MCMapChange", "CIOneKeeps", "ok", None, True),
     ("clustermap", "MCMapChange", "CIOneMove", "ok", None, True),
     ("clustermap", "MCMapChange", "CILeaseOne", "ok", None, True),
@@ -79,6 +81,7 @@ MODELS = [
     ("clustermap", "MCMapChange", "OneMove", "ok", None, False),
     ("clustermap", "MCMapChange", "LeaseOne", "ok", None, False),
     ("clustermap", "MCMapChange", "Quorum", "ok", None, False),
+    ("clustermap", "MCMapChange", "Keeps", "ok", None, False),
     # Idempotency keys across failover (idempotency/IdempotencyKeys.tla).
     ("idempotency", "MCIdempotencyKeys", "KeysNow", "NoLostWrite", 10, True),
     ("idempotency", "MCIdempotencyKeys", "KeysDS5", "NoLostWrite", 12, True),
