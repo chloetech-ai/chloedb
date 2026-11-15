@@ -122,6 +122,9 @@ pub struct Options {
     /// and [`chloedb::query::parse::STATEMENT_ELEMENTS`]; 0: no bound).
     pub max_statement_bytes: Option<usize>,
     pub max_statement_elements: Option<usize>,
+    /// What one statement may cost ([`chloedb::query::budget`];
+    /// `--statement-budget`): a key's budget and a request's may lower it.
+    pub statement_budget: chloedb::query::budget::Budget,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -320,6 +323,35 @@ pub fn db_options(directory: bool) -> DbOptions {
 }
 
 /// Opens or creates the database, or connects to the shards.
+/// N-E2, a primary's half ([`replication::copies_holding`]): a server
+/// started as a primary by its flags (`--replicas`, without `--replica`
+/// or `--promote`) with nothing kept beside its database and nothing in
+/// it asks its replicas what they hold. When one holds a transaction,
+/// the shard served before and this server lost its volume:
+/// with automatic failover it starts as a replica (`Ok(Some)`), and the
+/// copies elect the one holding the data; without, it does not start, as
+/// a primary would otherwise ship its empty database over theirs.
+async fn lost_volume(o: &Options, db: &Arc<chloedb::db::Db>, file: &std::path::Path, ships: &PrimaryOptions) -> Result<Option<replication::Holding>, String> {
+    if o.replicas.is_empty() || o.replica || o.promote || file.exists() {
+        return Ok(None);
+    }
+    if db.storage().numbering().is_some_and(|n| n.last().seq > 0) {
+        return Ok(None);
+    }
+    let held = replication::copies_holding(&o.replicas, ships.token.as_ref(), ships.ca.as_deref(), ships.call_timeout.min(Duration::from_secs(3))).await;
+    let Some(h) = held.into_iter().max_by_key(|h| (h.term, h.seq)) else { return Ok(None) };
+    if o.failover_after_ms == 0 {
+        return Err(format!(
+            "{} is empty and keeps no part in replication, but copy {} of its shard holds transactions up to {} (term {}): this server lost its volume, or is new to the shard. Started as the primary it would ship its empty database over the copies' data. Start it with --replica and promote the copy holding the data (POST /v1/admin/promote on that copy), or start the shard with --failover-after-ms so that its copies elect it",
+            db.storage().path().display(),
+            h.url,
+            h.seq,
+            h.term
+        ));
+    }
+    Ok(Some(h))
+}
+
 pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     let agent = AgentConfig { api_key: o.api_key.clone(), model: o.model.clone(), base_url: o.api_base.clone() };
     let timeout = Duration::from_millis(o.timeout_ms.max(1));
@@ -390,8 +422,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         };
         let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
-            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
-                .map_err(|e| format!("open {}: {e}", path.display()))?;
+            let db = open_existing(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })?;
             if let Some(what) = db.storage().damaged() {
                 // Also in /v1/health ("degraded") and /v1/admin/check (an
                 // error) until the database is opened clean again.
@@ -400,17 +431,20 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             db
         } else if let Some(n) = o.demo {
             fill = Some(Fill::Demo(n));
-            Db::create_in(&path, demo::schema(n), DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
+            folder_of(&path)?;
+            Db::create_in(&path, demo::schema(n), DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| format!("create {}: {e}", path.display()))?
         } else if let Some(s) = &o.schema {
             let (s, text) = schema_arg(s)?;
             let schema = Schema::from_json(&text).map_err(|e| format!("{s}: {e}"))?;
             fill = o.copy_from.clone().map(Fill::Copy);
-            Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
+            folder_of(&path)?;
+            Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| format!("create {}: {e}", path.display()))?
         } else {
             // No schema: a database with no tables yet, which CREATE TABLE
             // and the imports that create tables fill.
+            folder_of(&path)?;
             tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
-            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| format!("create {}: {e}", path.display()))?
         };
         // Copies a transfer left when this server was stopped during it.
         if replicating || o.seq_no {
@@ -520,6 +554,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(n) = o.max_statement_elements {
         svc.max_statement_elements = n;
     }
+    svc.statement_budget = o.statement_budget;
     svc.max_queued_writes = if o.max_queued_writes > 0 { o.max_queued_writes } else { usize::MAX };
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
@@ -644,6 +679,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
                 (false, true) => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
                 (false, false) => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
             }
+        } else if let Some(h) = lost_volume(o, db, file, &ships).await? {
+            // N-E2: a primary by its flags on an empty volume, beside copies
+            // that hold the shard. It follows instead (not one of the
+            // shard's first copies: it counts once a primary caught it up),
+            // so that the copy holding the data is elected and copies it.
+            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
+            svc.promote_options = Some(PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, ..ships });
+            tracing::warn!(copy = %h.url, term = h.term, seq_no = h.seq, "started as a primary by its flags on an empty database, while a copy of its shard holds transactions: its volume was lost (or it is new to the shard), so it starts as a replica and its shard's copies elect the one holding the data");
         } else if (!o.replicas.is_empty() && !o.replica) || o.promote {
             let opts = PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, promote: o.promote, ..ships };
             let p = Primary::start(db.clone(), Some(file), opts)?;
@@ -954,6 +997,36 @@ pub fn schema_arg(s: &Path) -> Result<(String, String), String> {
     }
     let text = std::fs::read_to_string(s).map_err(|e| format!("--schema {}: {e}", s.display()))?;
     Ok((s.display().to_string(), text))
+}
+
+/// Opens the database that is at `path`, and says plainly why not
+/// (ONB-13): a folder that holds no database in the directory layout is
+/// refused before anything is written in it, and an open that fails
+/// leaves nothing beside the file (the readers' folder it made).
+pub fn open_existing(path: &Path, opts: DbOptions) -> Result<Db, String> {
+    if path.is_dir() && !path.join(chloedb::storage::dir::CURRENT).exists() {
+        return Err(format!(
+            "open {}: a folder that holds no ChloeDB database: --db names a database file, a folder the directory layout (--directory) made, or a new path to create one",
+            path.display()
+        ));
+    }
+    let readers = chloedb::storage::share::share_dir(path, false);
+    let made = path.is_file() && !readers.exists();
+    Db::open(path, opts).map_err(|e| {
+        if made {
+            let _ = std::fs::remove_dir_all(&readers);
+        }
+        format!("open {}: {e}", path.display())
+    })
+}
+
+/// Whether the folder a new database at `path` goes in is there: a
+/// missing one is named, with what makes it (ONB-13).
+fn folder_of(path: &Path) -> Result<(), String> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(p) if !p.is_dir() => Err(format!("create {}: its folder {} does not exist: make it first (mkdir -p {}), or give --db another path", path.display(), p.display(), p.display())),
+        _ => Ok(()),
+    }
 }
 
 /// `chloedb-server import`: loads `files` into the database at `path`, rows

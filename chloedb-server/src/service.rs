@@ -255,6 +255,9 @@ pub struct QueryReq {
     pub timeout_ms: u64,
     /// Return results a coordinator can merge ([`ExecOptions::shard`]).
     pub shard: bool,
+    /// What the request asks its statement may cost, within its key's
+    /// budget and the server's ([`Service::budget_for`]).
+    pub budget: chloedb::query::budget::Budget,
     /// Statistics summed over shards, for global BM25 scores.
     pub stats: Option<TermStats>,
     /// A snapshot lease; 0 for the latest version.
@@ -329,32 +332,54 @@ pub struct QueryReq {
 /// until it has applied that write, up to [`crate::replication::READ_WAIT`],
 /// and refuses the read otherwise (503), so that a coordinator asks the
 /// shard's primary.
+///
+/// Each number may come with the term of its write (`min_seq_term`,
+/// `min_seq_terms`, as the write answered `seq_term`, `seq_terms`; 0: not
+/// given). Numbers are reused across a failover: a copy that holds a
+/// deposed primary's transactions under the number of the write holds
+/// more than the write's number and not the write. With the term, a copy
+/// serves only when its own transaction of that number is of that term
+/// (X-E1).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum After {
     #[default]
     Any,
-    Seq(u64),
-    Shards(Vec<u64>),
+    /// A server's number, and its term (0: not given).
+    Seq(u64, u64),
+    /// A coordinator's numbers, one per shard, and their terms (fewer or
+    /// none: 0 for the rest).
+    Shards(Vec<u64>, Vec<u64>),
 }
 
 impl After {
     /// From a request's `min_seq_no` and `min_seq_nos` (0 and empty: not
     /// given), which are not both given.
     pub fn of(min_seq_no: u64, min_seq_nos: Vec<u64>) -> Result<After, ApiError> {
+        After::termed(min_seq_no, min_seq_nos, 0, Vec::new())
+    }
+
+    /// As [`Self::of`], with the terms of the writes: `term` of
+    /// `min_seq_no`, `terms` of each of `min_seq_nos`.
+    pub fn termed(min_seq_no: u64, min_seq_nos: Vec<u64>, term: u64, terms: Vec<u64>) -> Result<After, ApiError> {
         match (min_seq_no, min_seq_nos.is_empty()) {
-            (0, true) => Ok(After::Any),
-            (n, true) => Ok(After::Seq(n)),
-            (0, false) => Ok(After::Shards(min_seq_nos)),
+            (0, true) if term == 0 && terms.iter().all(|&t| t == 0) => Ok(After::Any),
+            (0, true) => Err(ApiError::bad("min_seq_term(s) is the term of the write min_seq_no(s) names: give the number too")),
+            (n, true) if terms.is_empty() => Ok(After::Seq(n, term)),
+            (_, true) => Err(ApiError::bad("min_seq_terms goes with min_seq_nos (a coordinator's); a server takes min_seq_term")),
+            (0, false) if term != 0 => Err(ApiError::bad("min_seq_term goes with min_seq_no (a server's); a coordinator takes min_seq_terms, one per shard")),
+            (0, false) if terms.len() > min_seq_nos.len() => Err(ApiError::bad(format!("min_seq_terms has {} terms for {} numbers", terms.len(), min_seq_nos.len()))),
+            (0, false) => Ok(After::Shards(min_seq_nos, terms)),
             _ => Err(ApiError::bad("a read takes min_seq_no (a server's sequence number) or min_seq_nos (a coordinator's, one per shard), not both")),
         }
     }
 
-    /// The number a read on a server must see (0: none).
-    fn seq(&self) -> Result<u64, ApiError> {
+    /// The number a read on a server must see (0: none), and its write's
+    /// term (0: not given).
+    fn seq(&self) -> Result<(u64, u64), ApiError> {
         match self {
-            After::Any => Ok(0),
-            After::Seq(n) => Ok(*n),
-            After::Shards(_) => Err(ApiError::bad("min_seq_nos is a coordinator's, one number per shard; a server takes min_seq_no, the number its write answered")),
+            After::Any => Ok((0, 0)),
+            After::Seq(n, t) => Ok((*n, *t)),
+            After::Shards(..) => Err(ApiError::bad("min_seq_nos is a coordinator's, one number per shard; a server takes min_seq_no, the number its write answered")),
         }
     }
 }
@@ -655,6 +680,10 @@ pub struct Service {
     /// `--max-statement-elements`; 0: no bound).
     pub max_statement_bytes: usize,
     pub max_statement_elements: usize,
+    /// What one statement may cost ([`chloedb::query::budget`];
+    /// `--statement-budget`), before its key's budget and its request's
+    /// lower it ([`Service::budget_for`]).
+    pub statement_budget: chloedb::query::budget::Budget,
     /// The most write requests in the write path at once (embedding,
     /// waiting for the writer or being applied); more are refused with 429.
     pub max_queued_writes: usize,
@@ -852,6 +881,7 @@ impl Service {
             engine: Engine::from_env(),
             max_statement_bytes: chloedb::query::parse::STATEMENT_BYTES,
             max_statement_elements: chloedb::query::parse::STATEMENT_ELEMENTS,
+            statement_budget: chloedb::query::budget::Budget::default(),
             max_queued_writes: usize::MAX,
             max_body: 256 << 20,
             otlp_retain: None,
@@ -2235,7 +2265,7 @@ impl Service {
     /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
-    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration) -> Result<Plan, ApiError> {
+    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
         let mut embedded = self.embed_texts(sql, params).await?;
         // A rank profile whose body takes text where a vector goes
@@ -2256,8 +2286,8 @@ impl Service {
             None => (sql, params),
         };
         let deadline = Instant::now() + timeout;
-        let plan = match self.plan_read(sql, params, deadline).await {
-            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.message.contains(m))) && self.learn_tables(false).await => self.plan_read(sql, params, deadline).await?,
+        let plan = match self.plan_read(sql, params, deadline, budget).await {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.message.contains(m))) && self.learn_tables(false).await => self.plan_read(sql, params, deadline, budget).await?,
             r => r?,
         };
         Ok(match profiled {
@@ -2272,20 +2302,22 @@ impl Service {
     /// longer one, whose planning may take long (thousands of `WITH`
     /// results, a long chain of `UNION`s), on a blocking thread, so that
     /// it holds none of the threads that serve the other requests, and a
-    /// deep one with the stack for it.
-    async fn plan_read(self: &Arc<Self>, sql: &str, params: &Params, deadline: Instant) -> Result<Plan, ApiError> {
+    /// deep one with the stack for it. A statement is short by its text
+    /// and its parameters both: `tags @> :tags` with 100,000 tags is 15
+    /// bytes of text (finding X-B3). It is held to `budget`
+    /// ([`chloedb::query::budget`]) once written out.
+    async fn plan_read(self: &Arc<Self>, sql: &str, params: &Params, deadline: Instant, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
         let cancel = Cancel::default();
-        let opts = ExecOptions { deadline: Some(deadline), cancel: Some(cancel.0.clone()), ..ExecOptions::default() };
-        let deep = chloedb::query::parse::nests_deep(sql);
+        let opts = ExecOptions { deadline: Some(deadline), cancel: Some(cancel.0.clone()), budget, ..ExecOptions::default() };
         let plan = move |me: &Service, sql: &str, params: &Params| {
-            chloedb::query::parse::deep_stack(deep, || {
+            chloedb::query::budget::guarded(sql, &opts, |_| {
                 let functions = me.functions();
                 let c = me.readable();
                 let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
-                compound::planning_under(&opts, || compound::plan_read_calling(sql, &refs, params, &|t, n| me.rank_profile(t, n), &functions))
+                compound::plan_read_calling(sql, &refs, params, &|t, n| me.rank_profile(t, n), &functions)
             })
         };
-        if sql.len() <= PLAN_INLINE_BYTES {
+        if plans_inline(sql, params) {
             return Ok(plan(self, sql, params)?);
         }
         let (me, sql, params) = (self.clone(), sql.to_string(), params.clone());
@@ -2294,6 +2326,36 @@ impl Service {
         let r = tokio::task::spawn_blocking(move || plan(&me, &sql, &params)).await.map_err(ApiError::internal)?;
         drop(cancel);
         Ok(r?)
+    }
+
+    /// `POST /v1/sql/check` of `sql` ([`crate::sql_check`]), bound and
+    /// planned as a statement that runs is: on a blocking thread, with the
+    /// stack a deep one needs, stopped at the request's deadline
+    /// (`timeout_ms`, 0: the server's) or once the caller goes, within
+    /// `budget` (X-B12).
+    pub async fn sql_check(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<Json, ApiError> {
+        self.statement_fits(sql)?;
+        let cancel = Cancel::default();
+        let opts = ExecOptions { deadline: Some(Instant::now() + self.timeout_of(timeout_ms)), cancel: Some(cancel.0.clone()), budget, ..ExecOptions::default() };
+        let (me, sql, params) = (self.clone(), sql.to_string(), params.clone());
+        let r = tokio::task::spawn_blocking(move || {
+            chloedb::query::budget::guarded(&sql, &opts, |_| {
+                chloedb::query::budget::check_text(&opts.budget, &sql, &params)?;
+                Ok(crate::sql_check::check(&me, &sql, &params))
+            })
+        })
+        .await
+        .map_err(ApiError::internal)?;
+        drop(cancel);
+        Ok(r?)
+    }
+
+    /// The plan of read `sql` for `POST /v1/explain`, made as a query's
+    /// is ([`Self::plan_read`]): on a blocking thread when it may take
+    /// long, stopped at the request's deadline (`timeout_ms`, 0: the
+    /// server's) or once the caller goes, within `budget`.
+    pub async fn plan_for_explain(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
+        self.plan_read(sql, params, Instant::now() + self.timeout_of(timeout_ms), budget).await
     }
 
     /// Query `sql` written out with the rank profile it ranks by
@@ -2544,7 +2606,7 @@ impl Service {
     /// a lease keeps its version, so one from before the write is refused
     /// too (409).
     async fn read_snapshot(&self, db: &Db, lease: u64, after: &After, deadline: Instant) -> Result<Snapshot, ApiError> {
-        let min = after.seq()?;
+        let (min, term) = after.seq()?;
         if min > 0 && db.storage().numbering().is_none() {
             return Err(ApiError::bad("min_seq_no needs a database that numbers its writes: start the server with --seq-no"));
         }
@@ -2554,13 +2616,55 @@ impl Service {
         };
         let at = snap.seq_no().unwrap_or(0);
         if at >= min {
+            self.holds_term(db, min, term)?;
             return Ok(snap);
         }
         match (&self.replication(), lease) {
-            (Replication::Replica(f), 0) => f.holding(min, deadline.min(Instant::now() + READ_WAIT)).await,
+            (Replication::Replica(f), 0) => {
+                let snap = f.holding(min, deadline.min(Instant::now() + READ_WAIT)).await?;
+                self.holds_term(db, min, term)?;
+                Ok(snap)
+            }
             (_, 0) => Err(conflict(format!("this server's last transaction is {at}: transaction {min} was not committed here"))),
             (_, l) => Err(conflict(format!("snapshot lease {l} keeps a version holding transactions up to {at}, before {min}"))),
         }
+    }
+
+    /// X-E1: whether this copy's transaction `seq` is of `term` (0: not
+    /// given, so any). Under one number two terms' transactions differ, and
+    /// with them every transaction before (a copy's history is its
+    /// primaries' up to the last number and term they share), so a copy
+    /// whose `seq` is of another term does not hold the write that number
+    /// and term name: a replica that holds a deposed primary's transactions
+    /// refuses (503, so a coordinator asks the shard's primary), and so
+    /// does a primary that stepped down unaware (409, as a number past its
+    /// last).
+    fn holds_term(&self, db: &Db, seq: u64, term: u64) -> Result<(), ApiError> {
+        if term == 0 || seq == 0 {
+            return Ok(());
+        }
+        let held = db.storage().numbering().map_or(0, |n| n.term_at(seq));
+        if held == term {
+            return Ok(());
+        }
+        let said = format!("this server's transaction {seq} is of term {held}, and the read must see transaction {seq} of term {term}");
+        match self.replication() {
+            Replication::Replica(f) => {
+                f.refused_a_read();
+                Err(ApiError { code: None, status: 503, message: format!("{said}: it holds another primary's history there, so read from the shard's primary") })
+            }
+            _ => Err(conflict(format!("{said}: that write is not in this server's history"))),
+        }
+    }
+
+    /// X-E1: `w` with the term of the transaction its `seq_no` names, from
+    /// a server that numbers its writes (a coordinator's carries each
+    /// shard's in `seq_terms` already).
+    pub fn termed(&self, mut w: Written) -> Written {
+        if let (Some(seq), None, Some(db)) = (w.seq_no, w.seq_term, self.local()) {
+            w.seq_term = db.storage().numbering().map(|n| n.term_at(seq)).filter(|&t| t > 0);
+        }
+        w
     }
 
 
@@ -2898,6 +3002,15 @@ impl Service {
             out.push(chloedb::query::understand::counts_of(&Box::pin(self.query(r)).await?.rs));
         }
         Ok(out)
+    }
+
+    /// The budget of a statement `who` sends asking for `asked`: the
+    /// tightest of the server's `--statement-budget`, the key's
+    /// ([`crate::keys::Key::budget`]) and `asked`, so that a request lowers
+    /// its key's budget and never raises it.
+    pub fn budget_for(&self, who: Option<&Principal>, asked: chloedb::query::budget::Budget) -> chloedb::query::budget::Budget {
+        let key = who.and_then(|w| w.key.as_deref()).map(|id| self.keys.budget_of(id)).unwrap_or_default();
+        self.statement_budget.within(key).within(asked)
     }
 
     /// A query error (400, `query_invalid`) when the statement `sql` a
@@ -3259,12 +3372,15 @@ impl Service {
             }
         }
         let timeout = self.timeout_of(req.timeout_ms);
+        // What the statement may cost: the server's budget, its key's and
+        // the request's ([`Self::budget_for`]).
+        let budget = self.budget_for(req.who.as_ref(), req.budget);
         // Bound against every table: a query of one table is the
         // executor's, any other a compound plan.
         let tp = Instant::now();
         let plan = match &req.plan {
             Some(p) => Ok(p.clone()),
-            None => self.bound_read(&req.sql, &req.params, timeout).await.map(Arc::new),
+            None => self.bound_read(&req.sql, &req.params, timeout, budget).await.map(Arc::new),
         };
         // A plan made with a rank profile runs only on a database whose
         // profile of that name is the same.
@@ -3418,6 +3534,7 @@ impl Service {
     /// Runs a bound query of table `schema`, on the database or over the
     /// shards.
     async fn select(self: &Arc<Self>, mut req: QueryReq, schema: Arc<Schema>, select: Select, t0: Instant, timeout: Duration) -> Result<Answer, ApiError> {
+        let budget = self.budget_for(req.who.as_ref(), req.budget);
         let kind = metrics::kind(&select);
         // A client's answer counts its rows' documents as retrieved; a
         // shard's to a coordinator, which counts them, does not.
@@ -3500,6 +3617,8 @@ impl Service {
                         memory: if req.own_read { chloedb::query::memory::own_read_budget(self.query_memory.as_ref()) } else { self.query_memory.clone() },
                         profile: req.profile,
                         boost_inputs: db.exec.boost_inputs && !req.boosts_alone,
+                        budget,
+                        reads: budget.rows_read.map(chloedb::query::budget::Reads::new),
                         ..db.exec.clone()
                     };
                     let db = db.clone();
@@ -3735,6 +3854,7 @@ impl Service {
                 let (running, n) = Running::start(&self.running);
                 // Leaves hold up to compound::MAX_ROWS rows; the answer is
                 // held to the window below.
+                let budget = self.budget_for(req.who.as_ref(), req.budget);
                 let opts = ExecOptions {
                     threads: (self.cores / n).max(1),
                     deadline: Some(deadline),
@@ -3744,6 +3864,8 @@ impl Service {
                     memory: self.query_memory.clone(),
                     profile: req.profile,
                     engine: self.engine,
+                    budget,
+                    reads: budget.rows_read.map(chloedb::query::budget::Reads::new),
                     ..db.exec.clone()
                 };
                 let db = db.clone();
@@ -3896,7 +4018,7 @@ impl Service {
     pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms), self.statement_budget).await?,
         };
         // Statistics are a shard's: its coordinator scores with the
         // cross-encoders.
@@ -3937,7 +4059,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms), self.statement_budget).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: a guard's levels are counted over one table's rows: a query without subqueries"));
@@ -3972,7 +4094,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound_read(sql, params, self.timeout_of(timeout_ms)).await?,
+            None => self.bound_read(sql, params, self.timeout_of(timeout_ms), self.statement_budget).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: the next codes count one table's rows: a condition without subqueries"));
@@ -4161,7 +4283,19 @@ impl Service {
     /// is kept under the key ([`Coordinator::sql`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
+        // Boxed: one more layer of future would take the types of the
+        // calls that await it past the compiler's recursion limit.
+        Box::pin(self.sql_budgeted(who, sql, params, after, timeout_ms, slots, key, chloedb::query::budget::Budget::default())).await
+    }
+
+    /// [`Self::sql_in`] of a request that asks its statement may cost no
+    /// more than `budget`, within its key's and the server's
+    /// ([`Self::budget_for`]): a write is held to it as written, a query
+    /// once written out.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sql_budgeted(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
         self.statement_fits(sql)?;
+        chloedb::query::budget::check_text(&self.budget_for(Some(who), budget), sql, params)?;
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
         }
@@ -4201,7 +4335,7 @@ impl Service {
         // INSERTs.
         if chloedb::query::chunks::of_sql(sql, params)?.is_some() {
             who.may(Scope::Read, "a query")?;
-            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), ..Default::default() }).await?;
+            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), budget, ..Default::default() }).await?;
             return Ok(SqlAnswer::Rows(a));
         }
         if let Some(ins) = chloedb::query::chunks::insert_of_sql(sql, params)? {
@@ -4222,8 +4356,11 @@ impl Service {
                 if let SqlAnswer::Written { w, .. } = Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await? {
                     total.rows += w.rows;
                     total.skipped += w.skipped;
-                    total.seq_no = w.seq_no.or(total.seq_no);
+                    if w.seq_no.is_some() {
+                        (total.seq_no, total.seq_term) = (w.seq_no, w.seq_term);
+                    }
                     total.seq_nos.extend(w.seq_nos);
+                    total.seq_terms.extend(w.seq_terms);
                 }
             }
             return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
@@ -4266,10 +4403,18 @@ impl Service {
         }
         let ddl = match command {
             Command::Query => {
-                let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), ..Default::default() }).await?;
+                let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), budget, ..Default::default() }).await?;
                 return Ok(SqlAnswer::Rows(a));
             }
             Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
+            // ONB-16: the tables' names, as GET /v1/tables lists them for
+            // this key (a coordinator's from what its shards hold).
+            Command::ShowTables => {
+                let t0 = Instant::now();
+                let names: Vec<String> = self.tables_listed().await.iter().filter(|s| who.table_scope(&s.table).is_some_and(|x| x >= Scope::Read)).map(|s| s.table.clone()).collect();
+                let rs = chloedb::query::sql::table_list(&names);
+                return Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "tables", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }));
+            }
             Command::CreateTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => true,
             Command::AlterTable { alters, .. } => {
                 // A coordinator's plans name a table's columns by their
@@ -5439,11 +5584,11 @@ impl Service {
             ] {
                 g.insert(k, v);
             }
-            if let Some((total, _, avail)) = telemetry::disk(db.storage().path()) {
+            if let Some((total, free, avail)) = telemetry::disk(db.storage().path()) {
                 g.insert("disk_total_bytes", total as f64);
                 g.insert("disk_free_bytes", avail as f64);
-                if total > 0 {
-                    g.insert("disk_used_ratio", 1.0 - avail as f64 / total as f64);
+                if let Some(r) = telemetry::disk_used_ratio(total, free, avail) {
+                    g.insert("disk_used_ratio", r);
                 }
             }
             match &self.replication() {
@@ -5898,6 +6043,10 @@ pub struct Written {
     pub rows: u64,
     pub seq_no: Option<u64>,
     pub seq_nos: Vec<u64>,
+    /// The term of the transaction `seq_no` names ([`Service::termed`]),
+    /// and through a coordinator of each of `seq_nos` (X-E1).
+    pub seq_term: Option<u64>,
+    pub seq_terms: Vec<u64>,
     /// Operations not applied because their source offset was written
     /// already ([`op_source`]): a replay's.
     pub skipped: u64,
@@ -5987,9 +6136,11 @@ impl Written {
         self.shards.sort_by_key(|p| p.shard);
         if w.seq_no.is_some() {
             self.seq_no = w.seq_no;
+            self.seq_term = w.seq_term;
         }
         if !w.seq_nos.is_empty() {
             self.seq_nos = w.seq_nos;
+            self.seq_terms = w.seq_terms;
         }
     }
 }
@@ -6363,6 +6514,27 @@ impl Drop for Cancel {
 /// blocking thread ([`Service::plan_read`]).
 const PLAN_INLINE_BYTES: usize = 2048;
 
+/// Whether statement `sql` with `params` is short enough to plan on the
+/// thread that serves it ([`PLAN_INLINE_BYTES`]): its text and its
+/// parameters' values both, a list's values a few bytes each, so that a
+/// short text binding a long list (`tags @> :tags`) plans on a blocking
+/// thread, where it holds no worker and stops at its deadline (X-B3). A
+/// vector is one value, embedded already.
+pub(crate) fn plans_inline(sql: &str, params: &Params) -> bool {
+    let mut size = sql.len();
+    for v in params.0.values() {
+        size += match v {
+            Value::Str(s) => s.len(),
+            Value::List(l) => l.iter().map(|x| if let Value::Str(s) = x { s.len() + 2 } else { 8 }).sum(),
+            _ => 8,
+        };
+        if size > PLAN_INLINE_BYTES {
+            return false;
+        }
+    }
+    size <= PLAN_INLINE_BYTES
+}
+
 /// Operations one shared transaction takes at most (an SQL write counts
 /// its rows or keys, [`PreparedWrite::weight`]).
 const GROUP_OPS: usize = chloedb::db::GROUP_OPS;
@@ -6733,7 +6905,7 @@ pub fn has_source(op: &Json) -> bool {
 /// kind is named, so that a new one must say what it needs.
 pub fn command_scope(c: &Command) -> Scope {
     match c {
-        Command::Query | Command::Explain { .. } => Scope::Read,
+        Command::Query | Command::Explain { .. } | Command::ShowTables => Scope::Read,
         Command::Write { .. } => Scope::Write,
         Command::CreateTable { .. } | Command::AlterTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => Scope::Admin,
     }

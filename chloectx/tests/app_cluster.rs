@@ -318,8 +318,11 @@ fn app_in_a_cluster() {
     assert_eq!(new["supersedes"], json!([old["id"]]));
     let gone = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "The old mailer sends the dunning emails every day."}));
     assert_eq!(app.try_post("/v1/spaces/billing/notes", json!({"kind": "mood", "text": "happy"})).0, 400);
-    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    let (s, retired) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
     assert_eq!(s, 200);
+    // APC-22: nothing replaced it, so it is retired, not superseded.
+    assert_eq!(retired["tag"], "retired", "{retired}");
+    assert_eq!(app.get(&format!("/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()))["later"], json!([]));
     let live = texts(&app.get("/v1/spaces/billing/notes"));
     assert_eq!(live.len(), 2, "{live:?}");
     assert!(live.iter().any(|t| t.contains("1000 EUR")) && !live.iter().any(|t| t.contains("500 EUR need") || t.contains("old mailer")), "{live:?}");
@@ -358,7 +361,11 @@ fn app_in_a_cluster() {
     let refused = call("ctx_billing=read", "remember", json!({"kind": "fact", "text": "x"}));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
     assert_eq!(mcp("payroll", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})).0, 403);
-    assert_eq!(http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=admin")]).0, 403);
+    // The synced projects it lists are those whose tables it reads: none.
+    let (s, mem) = http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=admin")]);
+    assert_eq!((s, mem["projects"].as_array().map(|a| a.len())), (200, Some(0)), "{mem}");
+    // A key for operations reads no Claude Code sessions (X-F1).
+    assert_eq!(http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-scope", "read"), ("x-chloedb-role", "ops")]).0, 403);
     assert_eq!(http.call("POST", &format!("{app_url}/v1/spaces"), Some(&json!({"name": "other"})), &[("authorization", &auth), ("x-chloedb-tables", "ctx_*=admin")]).0, 403);
     let (_, mine) = http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=read")]);
     assert_eq!(mine["spaces"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), ["billing"], "{mine}");
@@ -382,6 +389,13 @@ fn app_in_a_cluster() {
     // GET asks the same.
     let g = app.get("/v1/spaces/billing/ask?q=refund+approver&budget=500");
     assert!(g["items"].as_array().unwrap().iter().any(|i| i["id"] == new["id"]), "{g}");
+    // APC-23: a budget out of range is refused, not changed in silence.
+    for q in ["budget=50", "budget=60000", "budget=lots"] {
+        let (s, j) = http.call("GET", &format!("{app_url}/v1/spaces/billing/ask?q=refund&{q}"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+        assert_eq!(s, 400, "{q}: {j}");
+        assert!(j["error"].as_str().unwrap_or("").contains("200 to 50000"), "{j}");
+    }
+    assert_eq!(app.try_post("/v1/spaces/billing/ask", json!({"question": "Who approves refunds?", "budget": 50})).0, 400);
 
     // An exchange, distilled by the model into a note.
     let x = app.post("/v1/spaces/billing/exchanges", json!({"user": "Stop sending dunning emails every day; day 1, 4 and 10 is enough.", "assistant": "Changed the schedule to day 1, 4 and 10."}));

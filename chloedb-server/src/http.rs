@@ -14,7 +14,7 @@
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`chloedb::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`chloedb::rank_log::Credit`]) |
-//! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_nos?}` |
+//! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_term?, seq_nos?, seq_terms?}`: a read that passes them back as `min_seq_no(s)` and `min_seq_term(s)` sees the write from any copy |
 //! | `GET /v1/kv/:table/:key?min_seq_no=n` | | `{table, key, found, row?, seq_no?}`: the row with that primary key, read without SQL, as `SELECT *` answers it ([`Service::get_rows`]); 404 when no live row has it (or it has expired) |
 //! | `POST /v1/kv/get` | `{keys, table?, columns?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number, of `columns` alone when given; a coordinator asks each key's shard |
 //! | `PUT /v1/kv/:table/:key?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row written in place of any with the key (an upsert; with `if_seq_no`, only while the row's number is that) |
@@ -96,7 +96,7 @@
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
 //! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
 //! | `GET /v1/admin/model-budget` | | the model calls each API key made today with the server's credentials, by key id, and how many it may (`per_day`, [`crate::budget`]) |
-//! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
+//! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate`, `POST /v1/admin/keys/:id/budget` | `{name, scope, expires_days?, owner?, note?, budget?}`, rotate `{grace_minutes?}`, budget `{nodes?, depth?, list?, plan_ms?, rows_read?}` (lowers it) | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/keys/clients?hours=24` | | which clients sent each key over the last `hours` (1 to 168): by key id, each client's app, client, address, calls, failed calls, first and last; every query counts, not a sample; on a coordinator every coordinator's summed, each client naming the `coordinators` it went through (`coordinators` says which answered; `local=1` for this one's); `since_ms`: from when every coordinator counted |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit`; on a coordinator every coordinator's, each entry naming its `coordinator` (`coordinators` says which answered; `local=1` for this one's) |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]); `brief=1`: each rule's state, and of those not ok what the bell shows; on a coordinator the PUT answers how many copies took them (`pushed`) |
@@ -111,7 +111,8 @@
 //!
 //! With a token or a cluster token set, or an API key made, every route but
 //! `/`, `/livez`, `/readyz` and `/v1/health` needs `Authorization: Bearer
-//! <token or key>`, and a key the scope of its route ([`route_scope`]). Every route checks the `Host` header
+//! <token or key>`, and a key the scope of its route ([`route_scope`]); a
+//! coordinator answers `/v1/health` without one with `{status}` alone. Every route checks the `Host` header
 //! and, on a request that can change something, the `Origin` header
 //! ([`crate::auth`]).
 
@@ -495,6 +496,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/events", get(events_list))
         .route("/v1/events/notes", post(events_note))
         .route("/v1/admin/keys/:id/rotate", post(rotate_key))
+        .route("/v1/admin/keys/:id/budget", post(lower_key_budget))
         .route("/v1/load", get(copies_load))
         .route("/v1/admin/kube/versions", get(kube_versions))
         .route("/v1/admin/plan", post(admin_plan))
@@ -1125,6 +1127,13 @@ struct ClientError(Arc<str>);
 struct Audited(String);
 
 /// The answer `j`, with what the audit log says of it.
+/// The statement budget a request's body asks for (`"budget": {"nodes":
+/// 1000, ...}` or `"budget": "nodes=1000"`, [`chloedb::query::budget`]),
+/// within its key's and the server's; none when it asks for none.
+fn body_budget(b: &Json) -> Result<chloedb::query::budget::Budget, ApiError> {
+    Ok(b.get("budget").map(chloedb::query::budget::Budget::from_json).transpose()?.unwrap_or_default())
+}
+
 fn audited(j: Json, detail: String) -> Response {
     let mut r = AxJson(j).into_response();
     r.extensions_mut().insert(Audited(detail));
@@ -1390,7 +1399,7 @@ fn body_u64(b: &Json, k: &str) -> Result<u64, ApiError> {
 }
 
 /// The fields of a query's body (`POST /v1/query`).
-const QUERY_FIELDS: &[&str] = &["sql", "params", "timeout_ms", "shard", "stats", "snapshot", "partial", "min_seq_no", "min_seq_nos", "profile", "trace", "steps", "page_size", "keep_alive_ms", "cursor", "format", "log", "objects", "reason"];
+const QUERY_FIELDS: &[&str] = &["sql", "params", "timeout_ms", "shard", "stats", "snapshot", "partial", "min_seq_no", "min_seq_nos", "min_seq_term", "min_seq_terms", "profile", "trace", "steps", "page_size", "keep_alive_ms", "cursor", "format", "log", "objects", "reason"];
 
 /// A sentence for each field of body `b` that is not one of `known` (a
 /// misspelt `timeout_ms` would otherwise go unnoticed), for an answer's
@@ -1421,12 +1430,31 @@ fn after(b: &Json) -> Result<After, ApiError> {
         Some(Json::Array(a)) => a.iter().map(|v| seq(v, "each of min_seq_nos")).collect::<Result<_, _>>()?,
         Some(_) => return Err(ApiError::bad("min_seq_nos is a list of sequence numbers, one per shard, as a coordinator's write answers seq_nos")),
     };
-    After::of(min, mins)
+    // X-E1: the terms of those writes, as their answers gave them.
+    let term = match b.get("min_seq_term") {
+        None | Some(Json::Null) => 0,
+        Some(v) => v.as_u64().ok_or_else(|| ApiError::bad("min_seq_term is a term: a whole number from 0, as a server's write answers seq_term"))?,
+    };
+    let terms = match b.get("min_seq_terms") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::Array(a)) => a.iter().map(|v| v.as_u64().ok_or_else(|| ApiError::bad("each of min_seq_terms is a term: a whole number from 0"))).collect::<Result<_, _>>()?,
+        Some(_) => return Err(ApiError::bad("min_seq_terms is a list of terms, one per shard, as a coordinator's write answers seq_terms")),
+    };
+    After::termed(min, mins, term, terms)
 }
 
-async fn health(State(app): State<App>) -> Response {
+async fn health(State(app): State<App>, headers: axum::http::HeaderMap) -> Response {
     let h = app.svc.health().await;
     let code = if matches!(h["status"].as_str(), Some("down" | "failing")) { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
+    // A coordinator's health names its copies' internal addresses, roles
+    // and counts (LIV-19): a request without a credential it takes reads
+    // whether it is up, and no more. The route still takes no credential.
+    if app.svc.coordinator().is_ok() {
+        let token = header_str(&headers, header::AUTHORIZATION).or_else(|| header_str(&headers, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
+        if app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token).is_none() {
+            return (code, AxJson(json!({"status": h["status"]}))).into_response();
+        }
+    }
     (code, AxJson(h)).into_response()
 }
 
@@ -1639,7 +1667,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     };
     if given("cursor") {
         let cursor = b["cursor"].as_str().ok_or_else(|| ApiError::bad("cursor is the string a scroll's last page answered"))?;
-        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "profile", "partial"].into_iter().find(|k| given(k)) {
+        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "min_seq_term", "min_seq_terms", "profile", "partial"].into_iter().find(|k| given(k)) {
             return Err(ApiError::bad(format!("a scroll's next page takes its cursor alone (with format, keep_alive_ms or timeout_ms), not {k}: the query and its version are those it started with")));
         }
         let a = app.svc.scroll_next(cursor, &crate::service::scroll_owner(&who), keep_alive, body_u64(&b, "timeout_ms")?, None).await?;
@@ -1685,6 +1713,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         who: Some(who.clone()),
+        budget: body_budget(&b)?,
         ..Default::default()
     };
     // The answer cache knows the query by its SQL and the statistics it
@@ -1798,12 +1827,7 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
         j["teams"] = json!(served.teams);
     }
     let mut l = json!({"rows": w.rows});
-    if let Some(s) = w.seq_no {
-        l["seq_no"] = json!(s);
-    }
-    if !w.seq_nos.is_empty() {
-        l["seq_nos"] = json!(w.seq_nos);
-    }
+    seq_json(&mut l, &app.svc.termed(w));
     j["logged"] = l;
     Ok(AxJson(j))
 }
@@ -2128,7 +2152,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         audit_ui_write(statement, None, None);
     }
     let key = body_key(&b, &headers)?;
-    let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms")?, None, key)).await;
+    let (r, partial) = crate::coord::with_partial(app.svc.sql_budgeted(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms")?, None, key, body_budget(&b)?)).await;
     match r {
         Ok(SqlAnswer::Rows(mut a)) => {
             hide_hosts(&w, &mut a.rs.stats.steps);
@@ -2136,7 +2160,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         }
         Ok(SqlAnswer::Written { w, took_ms }) => {
             audit_ui_write(statement, Some(w.rows as u64), None);
-            Ok(AxJson(written(w, took_ms)).into_response())
+            Ok(AxJson(written(app.svc.termed(w), took_ms)).into_response())
         }
         Err(e) => {
             if writes {
@@ -2251,13 +2275,26 @@ fn written(w: Written, took_ms: f64) -> Json {
     if w.skipped > 0 {
         j["skipped"] = json!(w.skipped);
     }
+    seq_json(&mut j, &w);
+    j
+}
+
+/// A write's numbers in its answer: `seq_no` and `seq_term` from a server,
+/// `seq_nos` and `seq_terms` from a coordinator. A read passes them back
+/// as `min_seq_no(s)` and `min_seq_term(s)` (X-E1).
+fn seq_json(j: &mut Json, w: &Written) {
     if let Some(s) = w.seq_no {
         j["seq_no"] = json!(s);
+    }
+    if let Some(t) = w.seq_term {
+        j["seq_term"] = json!(t);
     }
     if !w.seq_nos.is_empty() {
         j["seq_nos"] = json!(w.seq_nos);
     }
-    j
+    if !w.seq_terms.is_empty() {
+        j["seq_terms"] = json!(w.seq_terms);
+    }
 }
 
 /// What a write's operations found ([`crate::service::Receipt`]):
@@ -2310,7 +2347,7 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
             hide_hosts(&who, &mut a.rs.stats.steps);
             Ok(AxJson(answer_of(&b, &a)?))
         }
-        SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(w, took_ms))),
+        SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(app.svc.termed(w), took_ms))),
     }
 }
 
@@ -2366,7 +2403,7 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
-            Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
+            Ok(AxJson(written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3)).into_response())
         }
         Err(e) => {
             note(None, partial.as_ref().map(|p| &p["shards"]));
@@ -2385,6 +2422,13 @@ fn after_of_query(q: &std::collections::HashMap<String, String>) -> Result<After
     if let Some(v) = q.get("min_seq_nos") {
         let ns: Vec<u64> = v.split(',').map(|x| x.trim().parse::<u64>()).collect::<Result<_, _>>().map_err(|_| ApiError::bad("min_seq_nos is sequence numbers joined by commas, one per shard"))?;
         b["min_seq_nos"] = json!(ns);
+    }
+    if let Some(v) = q.get("min_seq_term") {
+        b["min_seq_term"] = json!(v.parse::<u64>().map_err(|_| ApiError::bad("min_seq_term is a term: a whole number from 0"))?);
+    }
+    if let Some(v) = q.get("min_seq_terms") {
+        let ts: Vec<u64> = v.split(',').map(|x| x.trim().parse::<u64>()).collect::<Result<_, _>>().map_err(|_| ApiError::bad("min_seq_terms is terms joined by commas, one per shard"))?;
+        b["min_seq_terms"] = json!(ts);
     }
     after(&b)
 }
@@ -2537,7 +2581,7 @@ async fn kv_put(
     let mut op = json!({"op": "upsert", "table": schema.table, "doc": doc});
     if_seq_no(&mut op, &q)?;
     let w = app.svc.write_ops(vec![op], idempotency(&headers)?).await?;
-    Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)))
+    Ok(AxJson(written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3)))
 }
 
 /// `DELETE /v1/kv/:table/:key`: deletes the row with that key.
@@ -2557,7 +2601,7 @@ async fn kv_delete(
         op["routing"] = json!(r);
     }
     let w = app.svc.write_ops(vec![op], idempotency(&headers)?).await?;
-    let mut j = written(w, t0.elapsed().as_secs_f64() * 1e3);
+    let mut j = written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3);
     j["deleted"] = json!(j["written"].as_u64().unwrap_or(0) > 0);
     Ok(AxJson(j))
 }
@@ -3006,12 +3050,7 @@ async fn flush(svc: &Arc<Service>, s: &mut Stream, batch: &mut Vec<Json>, read: 
         Ok(w) => {
             *done = read;
             let mut j = json!({"batch": s.batches, "ops": n, "written": w.rows, "skipped": w.skipped, "lines": read});
-            if let Some(q) = w.seq_no {
-                j["seq_no"] = json!(q);
-            }
-            if !w.seq_nos.is_empty() {
-                j["seq_nos"] = json!(w.seq_nos);
-            }
+            seq_json(&mut j, &svc.termed(w));
             let offsets = s.offsets();
             if !offsets.is_empty() {
                 j["offsets"] = Json::Object(offsets.into_iter().map(|(n, o)| (n, json!(o))).collect());
@@ -3201,10 +3240,11 @@ fn source_json(s: chloedb::db::Source) -> Json {
 
 /// Whether a statement would run on this deployment, without running it
 /// ([`crate::sql_check`]): `{runs, deployment, kind, error?, notes}`.
-async fn sql_check(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn sql_check(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
     let params = app.svc.params(None, b.get("params")).await?;
-    Ok(AxJson(crate::sql_check::check(&app.svc, sql, &params)))
+    let budget = app.svc.budget_for(Some(&who(w)), body_budget(&b)?);
+    Ok(AxJson(app.svc.sql_check(sql, &params, body_u64(&b, "timeout_ms")?, budget).await?))
 }
 
 /// A schema validated, in both JSON forms and as the `CREATE TABLE`
@@ -3354,8 +3394,12 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     // A compound query is operators over single-table queries; what each
     // of those ran is in "plan".
     let profiles = |t: &str, n: &str| app.svc.rank_profile(t, n);
-    // The plan names the files of its ranking models.
-    let plan = app.svc.open_ranking_models(std::sync::Arc::new(chloedb::query::compound::plan_read_calling(sql, &tables, &params, &profiles, &app.svc.functions())?), false)?;
+    // The plan names the files of its ranking models. It is made as the
+    // query's would be: off the request's thread when it may take long,
+    // stopped at the deadline, within the statement's budget (X-B12).
+    let budget = body_budget(&b)?;
+    let timeout_ms = body_u64(&b, "timeout_ms")?;
+    let plan = app.svc.open_ranking_models(std::sync::Arc::new(app.svc.plan_for_explain(sql, &params, timeout_ms, app.svc.budget_for(Some(&who), budget)).await?), false)?;
     let logical = match plan.root.uses_operators() {
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {
@@ -3375,7 +3419,7 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
         _ if !chloedb::query::sql::ranks(sql) => None,
         n => {
             let asked = match chloedb::query::sql::with_features(sql) {
-                Ok(sql) => app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms")?, ..Default::default() }).await,
+                Ok(sql) => app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms, who: Some(who.clone()), budget, ..Default::default() }).await,
                 Err(e) => Err(ApiError::from(e)),
             };
             match asked {
@@ -3392,7 +3436,7 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
             }
         }
     };
-    let mut a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms: body_u64(&b, "timeout_ms")?, profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),         ..Default::default() }).await?;
+    let mut a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms, profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true), who: Some(who.clone()), budget, ..Default::default() }).await?;
     hide_hosts(&who, &mut a.rs.stats.steps);
     let mut out = json!({
         "kind": a.kind,
@@ -6357,13 +6401,25 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(json!({"key": key.json(), "secret": secret, "old": old.json()}), detail))
 }
 
+/// `POST /v1/admin/keys/:id/budget {"rows_read": 1000000, ...}`: lowers
+/// the statement budget of key `:id` (its id or name) and of the keys it
+/// made ([`keys::Keys::lower_budget`]); answers the budget it has now.
+async fn lower_key_budget(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let asked = chloedb::query::budget::Budget::from_json(&b)?;
+    let Some(now) = app.svc.keys.lower_budget(&id, asked)? else { return Err(ApiError { code: None, status: 404, message: format!("no key {id}") }) };
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("key {id}")), after: Some(json!({"budget": now})), ..Default::default() });
+    tracing::info!(key = %id, by = %by, budget = %now.spec(), "API key budget lowered");
+    Ok(audited(json!({"key": id, "budget": now}), format!("lowered the statement budget of key {id} to {}", if now.is_none() { "none".to_string() } else { now.spec() })))
+}
+
 /// `{"name": ..., "scope": "feed" | "read" | "write" | "admin",
 /// "expires_days": n}`: a new key; its secret is in this answer only.
 async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     // A misspelt field would otherwise be left out without a word, and a
     // key without its limits reads every table: refuse what is not a
     // field of a key.
-    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason"];
+    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason", "budget"];
     let Json::Object(fields) = &b else { return Err(ApiError::bad("a key is a JSON object: {\"name\": ..., \"scope\": ...}")) };
     if let Some(k) = fields.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(ApiError::bad(format!("{k:?} is not a field of a key: {}", FIELDS.join(", "))));
@@ -6417,13 +6473,15 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     // A shard, or a copy in replication, whose callers send no credential.
     let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
-    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow) };
+    // What one statement it sends may cost ([`chloedb::query::budget`]).
+    let budget = b.get("budget").map(chloedb::query::budget::Budget::from_json).transpose()?.filter(|b| !b.is_none());
+    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow), budget };
     let (key, secret) = app.svc.keys.create_full(name, scope, tables, expires, text("owner"), text("note"), more, app.guarded(), in_cluster)?;
     let scope = key.scope_name();
     let limits = key.tables.as_deref().map(keys::grants_json);
     keys::note_change(keys::Change {
         object: Some(format!("key {}", key.name)),
-        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of})),
+        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of, "budget": key.budget})),
         ..Default::default()
     });
     tracing::info!(key = %key.id, name = %key.name, scope, limited = key.tables.is_some(), agent = key.agent, "API key created");

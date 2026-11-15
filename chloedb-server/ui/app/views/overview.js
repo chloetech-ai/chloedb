@@ -708,6 +708,15 @@ function render(page, r0) {
       single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
         : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : (() => { const n = shards.filter((sh) => (sh.replicas || []).length < 2).length; return `${fmt.plural(n, "shard")} ${n === 1 ? "has" : "have"} one copy`; })(), fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
     ];
+    // X-E7: a StatefulSet of one coordinator stops it before it starts the
+    // next, so each rollout leaves the cluster's API with none.
+    // Run by the operator, its spec (data.js keeps state.kube) says whether
+    // the coordinators keep a volume each and how many there are.
+    const kubeSpec = state.kube?.managed === false ? null : state.kube?.spec;
+    if (kubeSpec?.coordinatorStorage) {
+      const n = kubeSpec.coordinators ?? 1;
+      items.push({ ok: n >= 2, title: n >= 2 ? `${n} coordinators, each with a volume: a rollout restarts one at a time` : "One coordinator with a volume (coordinatorStorage): every rollout leaves the API down while it restarts", fix: "Set spec.coordinators to 2 or more: a StatefulSet stops its one pod before it starts the new one.", href: "#/cluster" });
+    }
     // LIV-6: copies of a shard on one node, while the cluster has others.
     if (!single) {
       const nodeOf = (rp) => rp.detail?.place?.node || null;

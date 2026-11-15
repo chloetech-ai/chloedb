@@ -11,6 +11,37 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Cluster reads and operator upgrades (audit 4, wave 2)
+
+- **A read after a write checks the write's term (X-E1).** A write answers
+  `seq_term` (a coordinator `seq_terms`), and a read that passes it back as
+  `min_seq_term(s)` is served only by a copy whose transaction of that number
+  is of that term: a replica holding a deposed primary's transactions under
+  the number answers 503 and the coordinator asks the primary. A replica
+  asked to vote in a newer term serves no reads until that term's primary
+  calls. New gRPC fields only (`QueryRequest` 23-24, `GetRequest` 8-9,
+  `WriteResponse` 13-14); the shard protocol stays 21, and a server before
+  them reads by the number alone. The Python and JavaScript clients do not
+  send the terms yet.
+- **A primary started on a lost volume (N-E2, a primary's half).** A server
+  started as its shard's primary by `--replicas` on an empty database with
+  nothing kept beside it asks its replicas first. When one holds the shard's
+  transactions it starts as a replica (with `--failover-after-ms`), so that
+  the copies elect the one holding the data, or refuses to start (without),
+  saying which copy holds what.
+- **The app engine goes back to the image that served (X-E6).** With
+  `spec.upgrade.mode: on`, a new image of the engine's tag that is not ready
+  after `rollout.verifySeconds` (at least five minutes) is rejected
+  (`status.upgrade.appsRejected`) and the engine runs the last digest that
+  came up ready (`appsServing`).
+- **One coordinator with `coordinatorStorage` is warned of (X-E7)** in a
+  plan, in the cluster's status message and on Home's readiness card: a
+  StatefulSet of one leaves the API down for each rollout. Not refused.
+- **DirStore syncs its directories (X-A7).** An object written to a
+  directory store (tenants' `HEAD`, logs and bases) is durable once the write
+  returns: the directory is synced after the rename, and each directory made
+  for it after it is made.
+
 - **Experimental marks.** The cloud provisioners, the hub, the autoscaler
   and the on-call agent are marked experimental: no compatibility promise
   yet. Their answers carry `x-chloedb-experimental: <feature>`,
@@ -30,6 +61,36 @@ changes collect under "Unreleased".
   new check `One-way doors` fails a pull request whose template box says
   "No one-way door" (or nothing) while its diff touches one, and writes a
   receipt of the doors touched into the run's summary.
+
+### Statement budgets (audit 4: X-B3, X-B12, proposal 1)
+
+- **Statement budgets**, checked on what a statement becomes rather than
+  what it says: `nodes` (expressions with its stored functions and rank
+  profiles written out), `depth`, `list` (values in one list or list
+  parameter), `plan_ms` (time to plan) and `rows_read` (rows its scans,
+  filters, groups and parts read, checked every 1,024 rows). On a server
+  the budget is the tightest of `--statement-budget` (none by default), the
+  key's (`POST /v1/admin/keys {..., "budget": {...}}`, lowered with
+  `POST /v1/admin/keys/ID/budget`) and the request's `"budget"` on
+  `/v1/query`, `/v1/sql`, `/v1/explain` and `/v1/sql/check`; a request
+  lowers its key's budget, never raises it. Embedded, `ExecOptions::budget`.
+  A coordinator holds `nodes`, `depth`, `list` and `plan_ms`; `rows_read` is
+  counted on a single server only. Nothing changes without a budget.
+- Every entry point plans a statement the same way, with the stack a deep
+  one needs, stopped at its deadline and within its budget: `Db::query_leaf`
+  (Python's `query_arrow`), `Db::pack` (new `Db::pack_with`), `Db::explain`
+  (new `Db::explain_with`), `Db::prepare_write` (new
+  `Db::prepare_write_with`), `POST /v1/explain`, `POST /v1/sql/check` and a
+  coordinator's check of a table function's body (X-B12).
+- Planning checks its deadline as it writes out each call of a stored
+  function, as it binds each single-table query and every thousand values
+  of a list, and a server plans a statement on a blocking thread when its
+  text and its parameters together are long, not its text alone: `tags @>
+  :tags` with 100,000 tags no longer holds a worker past the deadline
+  (X-B3).
+- Auth: a key carries a budget in the keys file, merged across a cluster to
+  the tighter of two copies. A server from before budgets admits the key
+  without its budget.
 
 ### Rollups (experimental): correctness fixes (audit 4, X-A1 to X-A3, X-B4 to X-B8)
 
