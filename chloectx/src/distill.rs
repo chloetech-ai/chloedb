@@ -80,7 +80,7 @@ const PROMPT: &str = r#"Here is one exchange from a software project.{when}{who}
 
 <already_noted>
 {known}
-</already_noted>{said_before}
+</already_noted>
 
 Write down what someone working on this project in a later session would need to know and could not easily see in the code:
 - decisions, with the reason given;
@@ -103,8 +103,8 @@ Leave out:
 
 With each item say who stated it in this exchange: "said_by": "requester" when the request stated it, "assistant" when the assistant found, concluded or assumed it. What the assistant concluded is its claim, not an established fact: keep its wording cautious ("the assistant found ...", "it assumed ...") when it guessed.
 
-{repeats}Output one JSON object per line and nothing else:
-{"kind": "decision" | "rule" | "requirement" | "fact", "text": "<sentence>", "entities": ["<entity>", ...], "when": ["<situation>", ...], "said_by": "requester" | "assistant", "scope": "standing" | "task"{repeats_field}}
+Output one JSON object per line and nothing else:
+{"kind": "decision" | "rule" | "requirement" | "fact", "text": "<sentence>", "entities": ["<entity>", ...], "when": ["<situation>", ...], "said_by": "requester" | "assistant", "scope": "standing" | "task"}
 {"kind": "decision" | "rule" | "requirement" | "fact", "text": "<new sentence>", "entities": ["<entity>", ...], "when": ["<situation>", ...], "said_by": "requester" | "assistant", "replaces": "<id of the noted item it updates>"}
 {"kind": "done", "id": "<id of a noted requirement that this exchange completed>"}
 If there is nothing worth keeping, output nothing."#;
@@ -139,10 +139,6 @@ pub struct Exchange {
     pub by: Option<Source>,
     pub agent: String,
     pub prev_answer: String,
-    /// Instructions the user gave before, in this session or others, as
-    /// (id, text): the model says which of them an item says again
-    /// (`repeats`, [`crate::repeats::promote`]).
-    pub said_before: Vec<(String, String)>,
 }
 
 impl Exchange {
@@ -185,20 +181,7 @@ pub fn prompt_for_exchange(request: &str, answer: &str, commands: &[String], kno
     } else {
         String::new()
     };
-    let (said_before, repeats, repeats_field) = if ex.said_before.is_empty() {
-        (String::new(), String::new(), String::new())
-    } else {
-        let list = ex.said_before.iter().map(|(id, t)| format!("[{id}] {}", clip(t, 300))).collect::<Vec<_>>().join("\n");
-        (
-            format!("\n\n<said_before>\n{list}\n</said_before>"),
-            "The user gave the instructions in said_before earlier, in this session or another. When an instruction of the requester's that you write says again what one of them says (the same instruction, in any words, shorter, longer or more specific, even when it adds a detail), add \"repeats\" with their ids, and write it even though it was said before: that the user had to say it again is what a later session needs to know. One about the same subject that asks for something else, or the opposite, is not a repeat.\n\n".to_string(),
-            ", \"repeats\": [\"<id of an instruction in said_before it says again>\", ...]".to_string(),
-        )
-    };
     PROMPT
-        .replace("{said_before}", &said_before)
-        .replace("{repeats}", &repeats)
-        .replace("{repeats_field}", &repeats_field)
         .replace("{when}", &when)
         .replace("{who}", &who)
         .replace("{prev}", &prev)
@@ -245,14 +228,6 @@ pub fn parse(text: &str) -> Distilled {
         let mut d = Draft::new(k, clip(&redact(text), 600)).tag(tag).files(crate::capture::paths_in(text)).entities(entities).when(when);
         if let Some(r) = &replaces {
             d = d.link("supersedes", r.clone());
-        }
-        // The instructions said before that it says again: read by
-        // [`crate::repeats::promote`].
-        for r in strings(&v, "repeats", 8, 80) {
-            let r = r.trim_matches(|c| c == '[' || c == ']').to_string();
-            if !r.is_empty() && !d.links.iter().any(|l| l.label == "repeats" && l.to == r) {
-                d = d.link("repeats", r);
-            }
         }
         // Who stated it and the scope a rule was given: read by [`attribute`].
         let said = v.get("said_by").and_then(|x| x.as_str()).unwrap_or("");
@@ -358,7 +333,7 @@ mod tests {
                      {\"kind\": \"fact\", \"text\": \"test_promo_window is a known pre-existing flaky test that can be ignored.\", \"said_by\": \"assistant\"}\n\
                      {\"kind\": \"decision\", \"text\": \"Customers win: totals round half up to match receipts.\", \"said_by\": \"requester\"}";
         // The user's one-off: a note for this task, replacing nothing.
-        let ex = Exchange { by: None, agent: "cents".into(), prev_answer: String::new(), ..Default::default() };
+        let ex = Exchange { by: None, agent: "cents".into(), prev_answer: String::new() };
         let d = attribute(parse(model).drafts, maya, &ex);
         assert_eq!(d[0].kind, Kind::Note);
         assert_eq!(d[0].tag, TASK_TAG);
@@ -377,7 +352,7 @@ mod tests {
         let d = attribute(parse(rule).drafts, "From now on, always keep money as integer cents.", &ex);
         assert_eq!(d[0].kind, Kind::Preference);
         // The lead's brief: its rules are for the task, its claims the lead's.
-        let lead = Exchange { by: Some(Source::Agent("lead".into())), agent: "freeship".into(), prev_answer: String::new(), ..Default::default() };
+        let lead = Exchange { by: Some(Source::Agent("lead".into())), agent: "freeship".into(), prev_answer: String::new() };
         let brief = "{\"kind\": \"rule\", \"text\": \"Shipping is always 499 cents by default.\", \"said_by\": \"requester\"}\n\
                      {\"kind\": \"fact\", \"text\": \"test_promo_window is a known flaky test; ignore it.\", \"said_by\": \"requester\"}";
         let d = attribute(parse(brief).drafts, "Always: shipping is 499 cents by default. test_promo_window is a known flaky test; ignore it.", &lead);

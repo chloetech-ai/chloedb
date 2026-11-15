@@ -17,15 +17,20 @@
 //! session had been shown it (`Sessions:`, `Said:`, `Said again:`, `Said
 //! again after it was shown:`).
 //!
-//! Which instructions say the same is the distiller's to judge: it is shown
-//! the user's earlier instructions most like the request ([`said_before`])
-//! and marks an item that says one of them again (`repeats`). The user
-//! rewords a correction more than words or vectors can follow (in a week
-//! of real sessions, an instruction and its saying again scored a cosine
-//! of 0.05 to 0.57 with potion-retrieval-32M, and different instructions up
-//! to 0.73). Only the
-//! user's own words count: an instruction another agent or Workbench gave
-//! is that one's brief, not the user's correction.
+//! Which earlier sayings a request says again is a model's to judge
+//! ([`check`]), in a call of its own after the turn's distillation: it is
+//! shown the user's earlier requests and instructions most like this one
+//! ([`said_before`]), from this session and others, and the agent's reply
+//! before it. The user rewords a correction more than words or vectors can
+//! follow (in a week of real sessions, an instruction and its saying again
+//! scored a cosine of 0.05 to 0.57 with potion-retrieval-32M, and different
+//! instructions up to 0.73), and often says it again as a complaint ("why
+//! does it still say Strata?") that the distiller writes no instruction
+//! for. The model quotes the words of the request that say it again, and a
+//! mark whose quote is not in the request is dropped: given little to go
+//! on, a model copies what it was shown. Only the user's own words count:
+//! an instruction another agent or Workbench gave is that one's brief, not
+//! the user's correction.
 //!
 //! [`scan`] lists, without writing anything or calling a model
 //! (`chloectx repeats`), the rules kept this way and the instructions said
@@ -47,9 +52,11 @@ pub const REPEATED_TAG: &str = "repeated";
 /// Two instructions are nearly the same words when this share of their
 /// words (stemmed, stop words out) is common to both ([`scan`] only).
 const JACCARD: f64 = 0.5;
-/// Earlier instructions shown to the distiller, by each of BM25 and the
-/// vectors.
+/// Earlier instructions (notes for one task, rules) shown to [`check`], by
+/// each of BM25 and the vectors.
 const CANDIDATES: usize = 8;
+/// Earlier prompts of the user's shown to [`check`], by each.
+const PROMPTS: usize = 6;
 
 /// The instruction a task note keeps, without the words that say whose it
 /// is and for which task ("For lead's task only (the user said, not a
@@ -135,26 +142,41 @@ fn users_draft(d: &Draft) -> bool {
     matches!(d.by.as_deref().map(Source::parse), None | Some(Source::User)) && ((d.kind == Kind::Note && d.tag == TASK_TAG) || d.kind == Kind::Preference)
 }
 
-/// The user's earlier instructions most like `request`, in this session or
-/// any other, for the distiller to judge which an item says again: notes
-/// for one task and rules, by each of the vectors and BM25.
-pub fn said_before(store: &Store, request: &str) -> Result<Vec<Record>> {
+/// The user's earlier requests and instructions most like `request`, in
+/// this session or any other, for [`check`] to judge which it says again:
+/// the user's prompts (but this turn's, `session` and `turn`), notes for
+/// one task and rules, by each of the vectors and BM25.
+pub fn said_before(store: &Store, request: &str, session: &str, turn: i64) -> Result<Vec<Record>> {
     let q: String = request.chars().take(1500).collect();
     if terms(&q).is_empty() {
         return Ok(Vec::new());
     }
     let v = store.embedder.embed(&[q.as_str()])?.pop().unwrap_or_default();
-    let cond = format!("((kind = 'note' AND tag = '{TASK_TAG}') OR (kind = 'preference' AND tag != 'superseded'))");
+    let words = !chloedb::text::analyze_query(&q).is_empty();
     let mut found: BTreeMap<String, Record> = BTreeMap::new();
-    // More than kept: some are another's words.
-    let by_vec = format!("SELECT {COLUMNS}, score() FROM memory WHERE {cond} ORDER BY similarity(emb, :v) DESC LIMIT {}", CANDIDATES * 2);
-    for r in store.query_with(&by_vec, &Params::new().set("v", Value::Vector(v.into())))?.rows.iter().filter_map(|r| row_record(r)).filter(users_instruction).take(CANDIDATES) {
-        found.insert(r.id.clone(), r);
-    }
-    if !chloedb::text::analyze_query(&q).is_empty() {
-        let by_words = format!("SELECT {COLUMNS}, score() FROM memory WHERE {cond} ORDER BY bm25(body, :q, syntax => 'plain') DESC LIMIT {}", CANDIDATES * 2);
-        for r in store.query_with(&by_words, &Params::new().set("q", Value::Str(q.clone())))?.rows.iter().filter_map(|r| row_record(r)).filter(users_instruction).take(CANDIDATES) {
-            found.insert(r.id.clone(), r);
+    let mut turns: BTreeSet<(String, i64)> = BTreeSet::new();
+    let instructions = format!("((kind = 'note' AND tag = '{TASK_TAG}') OR (kind = 'preference' AND tag != 'superseded'))");
+    for (cond, n, keep) in [(instructions.as_str(), CANDIDATES, users_instruction as fn(&Record) -> bool), ("kind = 'prompt'", PROMPTS, users_request as fn(&Record) -> bool)] {
+        // More than kept: some are another's words.
+        let by_vec = format!("SELECT {COLUMNS}, score() FROM memory WHERE {cond} ORDER BY similarity(emb, :v) DESC LIMIT {}", n * 3);
+        let by_words = format!("SELECT {COLUMNS}, score() FROM memory WHERE {cond} ORDER BY bm25(body, :q, syntax => 'plain') DESC LIMIT {}", n * 3);
+        let mut lists = vec![store.query_with(&by_vec, &Params::new().set("v", Value::Vector(v.clone().into())))?];
+        if words {
+            lists.push(store.query_with(&by_words, &Params::new().set("q", Value::Str(q.clone())))?);
+        }
+        for rs in lists {
+            let mut taken = 0;
+            for r in rs.rows.iter().filter_map(|r| row_record(r)).filter(|r| keep(r)) {
+                if taken == n {
+                    break;
+                }
+                // Not this turn's own prompt, and one chunk of a prompt.
+                if r.kind == Kind::Prompt && ((r.session == session && r.turn == turn) || !turns.insert((r.session.clone(), r.turn))) {
+                    continue;
+                }
+                taken += 1;
+                found.insert(r.id.clone(), r);
+            }
         }
     }
     let mut out: Vec<Record> = found.into_values().collect();
@@ -162,9 +184,138 @@ pub fn said_before(store: &Store, request: &str) -> Result<Vec<Record>> {
     Ok(out)
 }
 
-/// [`said_before`] as the distiller is shown it: (id, instruction).
-pub fn listed(before: &[Record]) -> Vec<(String, String)> {
-    before.iter().map(|r| (r.id.clone(), instruction(&r.text).to_string())).collect()
+/// Whether a prompt is one the user wrote and says something: no other
+/// agent's brief, no envelope, more than a word or two.
+fn users_request(r: &Record) -> bool {
+    users(r) && r.kind == Kind::Prompt && terms(&r.text).len() >= 2 && !crate::envelope::is_envelope(&r.text)
+}
+
+/// [`said_before`] as [`check`] is shown it: (id, "when, where: what"),
+/// `session` being the one of the request.
+pub fn listed(before: &[Record], session: &str) -> Vec<(String, String)> {
+    before
+        .iter()
+        .map(|r| {
+            let what = match r.kind {
+                Kind::Prompt => "the user asked",
+                Kind::Preference => "a rule of the user's",
+                _ => "the user's instruction for one task",
+            };
+            let place = if r.session == session { "this session" } else { "another session" };
+            (r.id.clone(), format!("{}, {place}, {what}: {}", day(r.ts), crate::llm::clip(instruction(&r.text), 400)))
+        })
+        .collect()
+}
+
+/// One thing a request says again: the ids of the earlier sayings
+/// ([`said_before`]) it repeats, the request's words that say it again,
+/// and the rule to keep from now on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Again {
+    pub ids: Vec<String>,
+    pub quote: String,
+    pub rule: String,
+}
+
+const CHECK_SYSTEM: &str = "You read what a user told AI coding agents before and the user's newest message, and say which of the earlier things the newest one says again. You output only JSON.";
+
+const CHECK: &str = r#"A user works with AI coding agents. Below are things the user said to them before (said_before: each with its id, oldest first, from this session or others), the agent's last reply before the user's newest message (previous_reply, which may be cut), and that newest message (request).
+
+<said_before>
+{said}
+</said_before>{prev}
+
+<request>
+{request}
+</request>
+
+Say which of said_before the request says again. The request says one again when the user has to ask again for what they asked before: the same thing in any words, shorter, longer or more specific, or a complaint or question that the agent still has not done it or did the opposite ("why does it still say Strata?", "these still look bad", "I told you to build it from the SQL"). An earlier saying can be a complaint or a question too: it counts when the request asks for the same thing.
+
+The request does not say one again when it only shares a subject or words with it, asks for something else about the same thing, asks for the opposite or changes its mind, or answers the agent's question. Judge the request's own words only: something in said_before or in previous_reply that the request does not ask for again is not said again.
+
+For each thing the request says again, give:
+- "ids": the ids of the earlier sayings it says again (each one that asks for the same thing);
+- "quote": the words of the request that say it again, copied exactly from the request;
+- "rule": what the agent should do from now on, as one imperative sentence in the user's terms and specific enough to act on (for example "Build each app's screens from CREATE SCREEN statements in SQL."), with no session, date or mention of this request.
+
+Output one JSON object and nothing else: {"said_again": [{"ids": ["<id>"], "quote": "<words of the request>", "rule": "<sentence>"}]}. Most requests say nothing again; then output {"said_again": []}."#;
+
+/// The prompt [`check`] sends.
+pub fn check_prompt(request: &str, prev_reply: &str, said: &[(String, String)]) -> String {
+    let list = said.iter().map(|(id, t)| format!("[{id}] {}", crate::llm::clip(t, 450))).collect::<Vec<_>>().join("\n");
+    let prev = if prev_reply.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n<previous_reply>\n{}\n</previous_reply>", crate::llm::clip(&crate::redact::redact(prev_reply.trim()), 1500))
+    };
+    CHECK.replace("{said}", &list).replace("{prev}", &prev).replace("{request}", &crate::llm::clip(&crate::redact::redact(request), 4000))
+}
+
+/// Lowercase, straight quotes, single spaces.
+fn plain(t: &str) -> String {
+    let t: String = t.chars().map(|c| match c {
+        '\u{2018}' | '\u{2019}' => '\'',
+        '\u{201c}' | '\u{201d}' => '"',
+        c => c.to_ascii_lowercase(),
+    }).collect();
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether `quote` is the request's own words: in it as written, or with
+/// nearly all of its words in it.
+fn quoted_from(quote: &str, request: &str) -> bool {
+    let q = plain(quote);
+    let q = q.trim_matches(|c: char| !c.is_alphanumeric());
+    let qt = terms(q);
+    if qt.is_empty() {
+        return false;
+    }
+    if plain(request).contains(q) {
+        return true;
+    }
+    let rt = terms(request);
+    qt.iter().filter(|t| rt.contains(*t)).count() * 5 >= qt.len() * 4
+}
+
+/// The marks of a [`check`] reply that name ids in `said` and quote the
+/// request, and those dropped for naming none or quoting something else.
+pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec<Again>, Vec<Again>) {
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    let Some(v) = crate::llm::json_object(text) else { return (kept, dropped) };
+    for m in v["said_again"].as_array().into_iter().flatten() {
+        let ids: Vec<String> = crate::distill::strings(m, "ids", 8, 80).into_iter().map(|i| i.trim_matches(|c| c == '[' || c == ']').trim().to_string()).collect();
+        let a = Again {
+            ids: ids.iter().filter(|i| said.iter().any(|(id, _)| id == *i)).cloned().collect(),
+            quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
+            rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
+        };
+        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) {
+            dropped.push(Again { ids, ..a });
+        } else {
+            kept.push(a);
+        }
+    }
+    (kept, dropped)
+}
+
+/// What a check found, kept and dropped, and what it cost.
+#[derive(Debug, Default)]
+pub struct Checked {
+    pub again: Vec<Again>,
+    pub dropped: Vec<Again>,
+    pub cost_usd: f64,
+}
+
+/// Asks the distiller's model which of `said` ([`listed`]) the user's
+/// `request` says again, `prev_reply` being the agent's reply before it.
+pub fn check(cfg: &crate::distill::DistillConfig, request: &str, prev_reply: &str, said: &[(String, String)]) -> Result<Checked> {
+    if said.is_empty() {
+        return Ok(Checked::default());
+    }
+    let model = cfg.model();
+    let r = crate::llm::complete(&cfg.cli(&model, cfg.timeout_secs), CHECK_SYSTEM, &check_prompt(request, prev_reply, said))?;
+    let (again, dropped) = parse_check(&r.text, request, said);
+    Ok(Checked { again, dropped, cost_usd: r.cost_usd })
 }
 
 /// What [`promote`] changed: the drafts to store, and for each rule it made,
@@ -173,87 +324,102 @@ pub fn listed(before: &[Record]) -> Vec<(String, String)> {
 pub struct Promoted {
     pub drafts: Vec<Draft>,
     /// The ids each promoted rule repeats (its `repeats` links): superseded
-    /// by it when it is stored.
+    /// by it when it is stored, if notes or rules.
     pub repeats: Vec<String>,
 }
 
-/// The drafts of a turn, with each of the user's instructions that the
-/// distiller said repeats one in `before` ([`said_before`]) made a rule of
-/// every session, or written as the rule it repeats anew. `shown` is what
+/// The drafts of a turn, with a rule for each thing [`check`] found the
+/// user said again (`again`, of records in `before`): a rule of every
+/// session, or the rule it repeats written anew. A draft of the user's
+/// instruction that says the same (the distiller's note of it for this
+/// task) gives the rule its situations and files and goes. `shown` is what
 /// the session's context window held when the turn's prompt came.
-pub fn promote(drafts: Vec<Draft>, session: &str, shown: &HashSet<String>, before: &[Record]) -> Promoted {
+pub fn promote(drafts: Vec<Draft>, again: &[Again], session: &str, shown: &HashSet<String>, before: &[Record]) -> Promoted {
     let mut out = Promoted::default();
-    for mut d in drafts {
-        let said: Vec<&Record> = d.links.iter().filter(|l| l.label == "repeats").filter_map(|l| before.iter().find(|r| r.id == l.to)).collect();
-        if !users_draft(&d) || said.is_empty() {
-            d.links.retain(|l| l.label != "repeats");
-            out.drafts.push(d);
+    let mut drafts: Vec<Option<Draft>> = drafts.into_iter().map(Some).collect();
+    let mut used: HashSet<&str> = HashSet::new();
+    for a in again {
+        let said: Vec<&Record> = a.ids.iter().filter(|id| used.insert(id.as_str())).filter_map(|id| before.iter().find(|r| &r.id == id)).collect();
+        if said.is_empty() || a.rule.trim().is_empty() {
             continue;
         }
         let rules: Vec<&Record> = said.iter().copied().filter(|r| r.kind == Kind::Preference).collect();
-        let notes: Vec<&Record> = said.iter().copied().filter(|r| r.kind == Kind::Note).collect();
-        // This session and the sessions of the notes it repeats, or those a
-        // rule it repeats counted already and this one if it is another.
-        let mut sessions: BTreeSet<&str> = notes.iter().map(|r| r.session.as_str()).collect();
+        // A rule counted the sayings before it: only those since are new.
+        let newest = rules.iter().map(|r| r.seq).max().unwrap_or(i64::MIN);
+        let others: Vec<&Record> = said.iter().copied().filter(|r| r.kind != Kind::Preference && r.seq > newest).collect();
+        // This session and the sessions of the sayings it repeats, added to
+        // those a rule it repeats counted already.
+        let mut sessions: BTreeSet<&str> = others.iter().map(|r| r.session.as_str()).collect();
         sessions.insert(session);
-        let counted = rules.iter().map(|r| sessions_of(r) + usize::from(r.session != session)).max().unwrap_or(0);
+        let counted = rules.iter().map(|r| sessions_of(r) + sessions.iter().filter(|s| **s != r.session).count()).max().unwrap_or(0);
         let n = sessions.len().max(counted);
-        let times = rules.iter().map(|r| said_of(r)).max().unwrap_or(0) + notes.len() + 1;
+        // A prompt and the note written from it are one saying.
+        let turns: BTreeSet<(&str, i64)> = others.iter().map(|r| (r.session.as_str(), r.turn)).collect();
+        let times = rules.iter().map(|r| said_of(r)).max().unwrap_or(0) + turns.len() + 1;
         let mut ctx = format!("Sessions: {n}\nSaid: {times}");
-        let mut when = d.when.clone();
-        let mut files = d.files.clone();
-        let mut entities = d.entities.clone();
         if !rules.is_empty() {
             // Shown in this window, or said in this session already, the
             // rule (or one it was written anew from) was the agent's to keep.
             let was_shown = rules.iter().any(|r| r.session == session || shown.contains(&r.id) || r.linked("repeats").any(|id| shown.contains(id)));
-            let (again, after) = rules.iter().map(|r| said_again_of(r)).fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
-            ctx += &format!("\nSaid again: {}\nSaid again after it was shown: {}", again + 1, after + usize::from(was_shown));
+            let (n, after) = rules.iter().map(|r| said_again_of(r)).fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+            ctx += &format!("\nSaid again: {}\nSaid again after it was shown: {}", n + 1, after + usize::from(was_shown));
+        }
+        let (mut when, mut files, mut entities) = (Vec::<String>::new(), Vec::<String>::new(), Vec::<String>::new());
+        let add = |list: &mut Vec<String>, x: &str| {
+            if !x.is_empty() && !list.iter().any(|y| y == x) {
+                list.push(x.to_string());
+            }
+        };
+        // The user's instruction this turn that says it: the rule now.
+        let rt = terms(&a.rule);
+        for slot in drafts.iter_mut() {
+            let covered = slot.as_ref().is_some_and(|d| users_draft(d) && {
+                let dt = terms(instruction(&d.text));
+                let inter = dt.intersection(&rt).count();
+                inter >= 2 && inter * 10 >= (dt.len() + rt.len() - inter) * 3
+            });
+            if covered {
+                let d = slot.take().unwrap();
+                d.when.iter().for_each(|w| add(&mut when, w));
+                d.files.iter().for_each(|f| add(&mut files, f));
+                d.entities.iter().for_each(|e| add(&mut entities, e));
+            }
         }
         for r in &said {
-            for w in r.when().map(|w| w.split("; ").map(str::to_string).collect::<Vec<_>>()).unwrap_or_default() {
-                if !when.contains(&w) {
-                    when.push(w);
-                }
-            }
-            for f in r.files.split_whitespace() {
-                if !files.iter().any(|x| x == f) {
-                    files.push(f.to_string());
-                }
-            }
-            for e in r.linked("about").filter_map(|e| e.strip_prefix("e:")) {
-                if !entities.iter().any(|x| x == e) {
-                    entities.push(e.to_string());
-                }
-            }
+            r.when().into_iter().flat_map(|w| w.split("; ").map(str::to_string).collect::<Vec<_>>()).for_each(|w| add(&mut when, &w));
+            r.files.split_whitespace().for_each(|f| add(&mut files, f));
+            r.linked("about").filter_map(|e| e.strip_prefix("e:")).for_each(|e| add(&mut entities, e));
         }
         when.truncate(8);
-        let mut rule = Draft::new(Kind::Preference, rule_text(instruction(&d.text), n, times)).tag(REPEATED_TAG).by(&Source::User).files(files).when(when).ctx(ctx);
+        let mut rule = Draft::new(Kind::Preference, rule_text(&a.rule, n, times)).tag(REPEATED_TAG).by(&Source::User).files(files).when(when).ctx(ctx);
         rule.entities = entities;
         for r in &said {
             rule = rule.link("repeats", r.id.clone());
-            out.repeats.push(r.id.clone());
+            if r.kind != Kind::Prompt {
+                out.repeats.push(r.id.clone());
+            }
         }
         out.drafts.push(rule);
     }
+    out.drafts.extend(drafts.into_iter().flatten());
     out
 }
 
-/// Asks the distiller about each case, as a turn's distillation does, and
-/// counts which instructions said before it marked as said again against
-/// the ones `expect` names: how well it tells a repeat from the rest on
-/// real sayings, with nothing stored. A case is
-/// `{"id", "request", "answer"?, "before": [{"id", "text"}], "expect": [id]}`.
+/// Asks [`check`] about each case and counts which earlier sayings it
+/// marked as said again against the ones `expect` names: how well it tells
+/// a repeat from the rest on real sayings, with nothing stored. A case is
+/// `{"id", "request", "prev_reply"?, "before": [{"id", "text"}], "expect": [id]}`.
 pub fn judge(cfg: &crate::distill::DistillConfig, cases: &[Json], parallel: usize) -> Json {
     let one = |c: &Json| -> Json {
         let before: Vec<(String, String)> = c["before"].as_array().into_iter().flatten().filter_map(|b| Some((b["id"].as_str()?.to_string(), b["text"].as_str()?.to_string()))).collect();
         let expect: BTreeSet<String> = c["expect"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
-        let ex = crate::distill::Exchange { said_before: before, ..Default::default() };
-        match crate::distill::distill_exchange(cfg, c["request"].as_str().unwrap_or(""), c["answer"].as_str().unwrap_or(""), &[], &[], 0, &ex) {
-            Ok(d) => {
-                let marked: BTreeSet<String> = d.drafts.iter().filter(|x| users_draft(x)).flat_map(|x| x.links.iter().filter(|l| l.label == "repeats").map(|l| l.to.clone())).collect();
-                let items: Vec<String> = d.drafts.iter().filter(|x| users_draft(x)).map(|x| instruction(&x.text).to_string()).collect();
-                json!({ "id": c["id"], "expect": expect, "marked": marked, "found": expect.intersection(&marked).count(), "false": marked.difference(&expect).count(), "items": items, "cost_usd": d.cost_usd })
+        let request = c["request"].as_str().unwrap_or("");
+        match check(cfg, request, c["prev_reply"].as_str().unwrap_or(""), &before) {
+            Ok(k) => {
+                let marked: BTreeSet<String> = k.again.iter().flat_map(|a| a.ids.iter().cloned()).collect();
+                let show = |v: &[Again]| v.iter().map(|a| json!({ "ids": a.ids, "quote": a.quote, "rule": a.rule })).collect::<Vec<_>>();
+                json!({ "id": c["id"], "expect": expect, "marked": marked, "found": expect.intersection(&marked).count(), "false": marked.difference(&expect).count(),
+                        "said_again": show(&k.again), "dropped": show(&k.dropped), "cost_usd": k.cost_usd })
             }
             Err(e) => json!({ "id": c["id"], "expect": expect, "error": e.to_string() }),
         }
@@ -269,25 +435,30 @@ pub fn judge(cfg: &crate::distill::DistillConfig, cases: &[Json], parallel: usiz
     let sum = |k: &str| results.iter().map(|r| r[k].as_u64().unwrap_or(0)).sum::<u64>();
     let expected: usize = results.iter().map(|r| r["expect"].as_array().map_or(0, |a| a.len())).sum();
     let errors = results.iter().filter(|r| r.get("error").is_some()).count();
+    let positives = results.iter().filter(|r| r["expect"].as_array().is_some_and(|a| !a.is_empty()) && r.get("error").is_none()).count();
+    let caught = results.iter().filter(|r| r["found"].as_u64().unwrap_or(0) > 0).count();
     let negatives = results.iter().filter(|r| r["expect"].as_array().is_some_and(|a| a.is_empty()) && r.get("error").is_none()).count();
     let marked_neg = results.iter().filter(|r| r["expect"].as_array().is_some_and(|a| a.is_empty()) && r["marked"].as_array().is_some_and(|a| !a.is_empty())).count();
+    let dropped: usize = results.iter().map(|r| r["dropped"].as_array().map_or(0, |a| a.len())).sum();
     let cost: f64 = results.iter().map(|r| r["cost_usd"].as_f64().unwrap_or(0.0)).sum();
     let text = format!(
-        "{} cases: {} of {expected} repeats found, {} instructions marked that are not; {marked_neg} of {negatives} cases with no repeat marked one; {errors} failed; ${cost:.4}.\n",
+        "{} cases: {caught} of {positives} repeats caught, {} of {expected} earlier sayings found, {} marked that are not; {marked_neg} of {negatives} cases with no repeat marked one; {dropped} marks dropped for not quoting the request; {errors} failed; ${cost:.4}.\n",
         results.len(),
         sum("found"),
         sum("false")
     );
-    json!({ "text": text, "cases": results.len(), "expected": expected, "found": sum("found"), "false": sum("false"), "negatives": negatives, "marked_negatives": marked_neg, "errors": errors, "cost_usd": cost, "results": results })
+    json!({ "text": text, "cases": results.len(), "positives": positives, "caught": caught, "expected": expected, "found": sum("found"), "false": sum("false"), "negatives": negatives, "marked_negatives": marked_neg, "dropped": dropped, "errors": errors, "cost_usd": cost, "results": results })
 }
 
-/// After the drafts [`promote`] made are stored: each record a stored rule
-/// repeats is superseded by it. The number superseded.
+/// After the drafts [`promote`] made are stored: each note or rule a stored
+/// rule repeats is superseded by it (a prompt stays what was asked). The
+/// number superseded.
 pub fn supersede_repeated(store: &Store, stored: &[Record]) -> usize {
     let mut n = 0;
     for rule in stored.iter().filter(|r| r.kind == Kind::Preference && r.tag == REPEATED_TAG) {
-        for l in rule.links.iter().filter(|l| l.label == "repeats") {
-            if store.supersede(&l.to, &rule.id).unwrap_or(false) {
+        let ids: Vec<String> = rule.linked("repeats").map(str::to_string).collect();
+        for r in store.get(&ids).unwrap_or_default().into_iter().filter(|r| matches!(r.kind, Kind::Note | Kind::Preference)) {
+            if store.supersede(&r.id, &rule.id).unwrap_or(false) {
                 n += 1;
             }
         }
@@ -385,9 +556,9 @@ mod tests {
         Draft::new(Kind::Note, format!("For this task only (the user said, not a standing rule): {text}")).tag(TASK_TAG).by(&Source::User)
     }
 
-    /// A draft the distiller said repeats `ids`.
-    fn again(d: Draft, ids: &[&str]) -> Draft {
-        ids.iter().fold(d, |d, id| d.link("repeats", id.to_string()))
+    /// What the check found said again of `ids`, as `rule`.
+    fn again(rule: &str, ids: &[&str]) -> Again {
+        Again { ids: ids.iter().map(|i| i.to_string()).collect(), quote: String::new(), rule: rule.into() }
     }
 
     fn live_rules(s: &Store) -> Vec<Record> {
@@ -414,17 +585,48 @@ mod tests {
     }
 
     #[test]
-    fn the_distiller_is_shown_the_users_own_earlier_instructions() {
+    fn the_check_is_shown_the_users_own_earlier_requests_and_instructions() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         s.append("s1", 1, 100, vec![task("Build the shop from the SQL CREATE statements.")]).unwrap();
         s.append("s1", 2, 110, vec![Draft::new(Kind::Note, "For lead's task only (the agent lead said, not a standing rule): Build the shop from the CREATE statements.").tag(TASK_TAG).by(&Source::Agent("lead".into()))]).unwrap();
         s.append("s2", 1, 120, vec![Draft::new(Kind::Preference, "Always keep the shop's money as integer cents.").by(&Source::User)]).unwrap();
         s.append("s2", 2, 130, vec![Draft::new(Kind::Fact, "The shop's CREATE statements are in schema.sql.")]).unwrap();
-        let before = said_before(&s, "Build the shop from the CREATE statements, please").unwrap();
+        s.append("s2", 3, 140, vec![Draft::new(Kind::Prompt, "why is the shop still not built from the CREATE statements?")]).unwrap();
+        s.append("s2", 4, 150, vec![Draft::new(Kind::Prompt, "Lead here: build the shop from the CREATE statements.").by(&Source::Agent("lead".into()))]).unwrap();
+        s.append("s2", 5, 160, vec![Draft::new(Kind::Prompt, "ok")]).unwrap();
+        // This turn's own prompt is stored before it is distilled.
+        s.append("s3", 1, 200, vec![Draft::new(Kind::Prompt, "Build the shop from the CREATE statements, please")]).unwrap();
+        let before = said_before(&s, "Build the shop from the CREATE statements, please", "s3", 1).unwrap();
         let texts: Vec<&str> = before.iter().map(|r| instruction(&r.text)).collect();
-        assert_eq!(texts, ["Build the shop from the SQL CREATE statements.", "Always keep the shop's money as integer cents."], "the user's notes for a task and rules, not an agent's, nor facts");
-        assert_eq!(listed(&before)[0], (before[0].id.clone(), "Build the shop from the SQL CREATE statements.".to_string()));
+        assert_eq!(
+            texts,
+            ["Build the shop from the SQL CREATE statements.", "Always keep the shop's money as integer cents.", "why is the shop still not built from the CREATE statements?"],
+            "the user's notes for a task, rules and requests: not an agent's, nor facts, nor this turn's own"
+        );
+        let l = listed(&before, "s1");
+        assert_eq!(l[0], (before[0].id.clone(), "1970-01-01, this session, the user's instruction for one task: Build the shop from the SQL CREATE statements.".to_string()));
+        assert!(l[1].1.contains("another session, a rule of the user's: Always") && l[2].1.contains("another session, the user asked: why"), "{l:?}");
+        let p = check_prompt("Build it from the CREATE statements!", "I built it from a JSON file.", &l);
+        assert!(p.contains(&format!("[{}] 1970-01-01, this session", before[0].id)) && p.contains("<previous_reply>\nI built it from a JSON file.") && p.contains("<request>\nBuild it from the CREATE statements!"), "{p}");
+    }
+
+    #[test]
+    fn a_mark_counts_only_when_it_quotes_the_request_and_names_what_was_shown() {
+        let said = vec![("a:1".to_string(), "Build it from the SQL.".to_string()), ("a:2".to_string(), "Use tabs.".to_string())];
+        let request = "Why is it STILL reading the JSON file?  I said: build it from the SQL.";
+        let reply = json!({"said_again": [
+            {"ids": ["[a:1]", "zz:9"], "quote": "I said: build it from the SQL", "rule": "Build the app from its SQL."},
+            {"ids": ["a:1"], "quote": "why is it still reading the json file", "rule": "Read the app from its SQL, not the JSON file."},
+            {"ids": ["a:2"], "quote": "Use tabs", "rule": "Indent with tabs."},
+            {"ids": ["zz:9"], "quote": "build it from the SQL", "rule": "Build it from the SQL."},
+            {"ids": ["a:1"], "quote": "reading the file JSON still", "rule": "Read it from SQL."}
+        ]});
+        let (kept, dropped) = parse_check(&format!("Here: {reply}"), request, &said);
+        assert_eq!(kept.iter().map(|a| a.rule.as_str()).collect::<Vec<_>>(), ["Build the app from its SQL.", "Read the app from its SQL, not the JSON file.", "Read it from SQL."], "as written, in other case and spacing, or its words in other order");
+        assert_eq!(kept[0].ids, ["a:1"], "an id it was not shown goes");
+        assert_eq!(dropped.len(), 2, "copied from what it was shown, or naming nothing it was shown: {dropped:?}");
+        assert_eq!(parse_check("not json", request, &said), (vec![], vec![]));
     }
 
     #[test]
@@ -435,33 +637,38 @@ mod tests {
         let lead = s.append("s1", 2, 105, vec![Draft::new(Kind::Note, "For lead's task only (the agent lead said, not a standing rule): Use the red theme.").tag(TASK_TAG).by(&Source::Agent("lead".into()))]).unwrap().remove(0);
         let before = vec![n1.clone()];
 
-        // The distiller said nothing repeats, or named a record it was not
-        // shown: nothing changes, and the link goes.
-        let p = promote(vec![task("Rename the cart module."), again(task("Use the red theme."), &[&lead.id])], "s1", &HashSet::new(), &before);
-        assert!(p.repeats.is_empty() && p.drafts.iter().all(|d| d.kind == Kind::Note && d.links.is_empty()), "{p:?}");
-        // Another agent's words that say it again: that agent's brief.
-        let brief = again(Draft::new(Kind::Note, "For lead's task only (the agent lead said, not a standing rule): Build it from CREATE statements.").tag(TASK_TAG).by(&Source::Agent("lead".into())), &[&n1.id]);
-        let p = promote(vec![brief], "s1", &HashSet::new(), &before);
-        assert!(p.repeats.is_empty() && p.drafts[0].kind == Kind::Note);
+        // Nothing said again, or a mark of a record that was not shown:
+        // nothing changes.
+        let p = promote(vec![task("Rename the cart module.")], &[again("Use the red theme.", &[&lead.id])], "s1", &HashSet::new(), &before);
+        assert!(p.repeats.is_empty() && p.drafts.len() == 1 && p.drafts[0].kind == Kind::Note, "{p:?}");
 
-        // The user says it again later in s1, in other words: a rule, said twice.
-        let p = promote(vec![again(task("No: the schema is the CREATE statements in schema.sql, build from those."), &[&n1.id]), Draft::new(Kind::Fact, "The cart is in cart.py")], "s1", &HashSet::new(), &before);
-        assert_eq!(p.drafts.len(), 2);
+        // The user says it again later in s1, in other words: a rule, said
+        // twice, and the distiller's note of it for this task is the rule.
+        let note = task("Build the app from the CREATE statements in schema.sql.").when(vec!["building the app".into()]).files(vec!["schema.sql".into()]);
+        let p = promote(vec![note, Draft::new(Kind::Fact, "The cart is in cart.py")], &[again("Build the app from the CREATE statements in schema.sql.", &[&n1.id])], "s1", &HashSet::new(), &before);
+        assert_eq!(p.drafts.len(), 2, "{p:?}");
         let rule = &p.drafts[0];
         assert_eq!((rule.kind, rule.tag.as_str()), (Kind::Preference, REPEATED_TAG));
-        assert_eq!(rule.text, "No: the schema is the CREATE statements in schema.sql, build from those (the user has said this 2 times)");
+        assert_eq!(rule.text, "Build the app from the CREATE statements in schema.sql (the user has said this 2 times)");
+        assert_eq!((rule.when.clone(), rule.files.clone()), (vec!["building the app".to_string()], vec!["schema.sql".to_string()]));
+        assert_eq!(p.drafts[1].kind, Kind::Fact);
         assert_eq!(p.repeats, vec![n1.id.clone()]);
         let r2 = s.append("s1", 3, 130, p.drafts).unwrap().remove(0);
         assert_eq!(supersede_repeated(&s, std::slice::from_ref(&r2)), 1);
         assert_eq!(s.get(std::slice::from_ref(&n1.id)).unwrap()[0].tag, "superseded");
         assert_eq!((sessions_of(&r2), said_of(&r2), said_again_of(&r2)), (1, 2, (0, 0)), "{}", r2.ctx);
 
-        // In another session: 2 sessions, 3 times, said again once kept.
-        let p = promote(vec![again(task("Build apps from SQL and CREATE statements."), &[&r2.id])], "s2", &HashSet::new(), &[r2.clone()]);
+        // In another session, where it was said as a complaint once already
+        // (a prompt, which stays as it was): 2 sessions, 4 times, said again
+        // once kept.
+        let asked = s.append("s2", 1, 135, vec![Draft::new(Kind::Prompt, "why is the app not built from the SQL?")]).unwrap().remove(0);
+        let p = promote(vec![], &[again("Build apps from SQL and CREATE statements.", &[&r2.id, &asked.id])], "s2", &HashSet::new(), &[r2.clone(), asked.clone()]);
         assert_eq!(p.drafts[0].text, "Build apps from SQL and CREATE statements (the user has said this in 2 sessions)");
-        let r3 = s.append("s2", 1, 140, p.drafts).unwrap().remove(0);
-        supersede_repeated(&s, std::slice::from_ref(&r3));
-        assert_eq!((sessions_of(&r3), said_of(&r3), said_again_of(&r3)), (2, 3, (1, 0)), "{}", r3.ctx);
+        assert_eq!(p.repeats, vec![r2.id.clone()]);
+        let r3 = s.append("s2", 2, 140, p.drafts).unwrap().remove(0);
+        assert_eq!(supersede_repeated(&s, std::slice::from_ref(&r3)), 1);
+        assert_eq!(s.get(std::slice::from_ref(&asked.id)).unwrap()[0].tag, asked.tag, "a prompt is not superseded");
+        assert_eq!((sessions_of(&r3), said_of(&r3), said_again_of(&r3)), (2, 4, (1, 0)), "{}", r3.ctx);
         assert_eq!(live_rules(&s).len(), 1, "one rule, written anew each time");
     }
 
@@ -477,8 +684,9 @@ mod tests {
         // s2 was shown it and the user had to say it again: the agent broke
         // a rule it had.
         let shown: HashSet<String> = [r1.id.clone()].into();
-        let said = again(task("Keep money as integer cents, not floats.").when(vec!["computing a cart total".into()]).files(vec!["cart.py".into()]), &[&r1.id]);
-        let p = promote(vec![said], "s2", &shown, std::slice::from_ref(&r1));
+        let said = task("Keep money as integer cents, not floats.").when(vec!["computing a cart total".into()]).files(vec!["cart.py".into()]);
+        let p = promote(vec![said], &[again("Keep money as integer cents, not floats.", &[&r1.id])], "s2", &shown, std::slice::from_ref(&r1));
+        assert_eq!(p.drafts.len(), 1);
         let rule = &p.drafts[0];
         assert_eq!((rule.kind, rule.tag.as_str()), (Kind::Preference, REPEATED_TAG));
         assert_eq!(rule.text, "Keep money as integer cents, not floats (the user has said this in 2 sessions)");
@@ -491,14 +699,14 @@ mod tests {
         assert_eq!((sessions_of(&r2), said_of(&r2), said_again_of(&r2)), (2, 2, (1, 1)), "{}", r2.ctx);
 
         // s3 was not shown it: said again, not after it was shown.
-        let p = promote(vec![again(task("Keep money in integer cents."), &[&r2.id])], "s3", &HashSet::new(), std::slice::from_ref(&r2));
+        let p = promote(vec![], &[again("Keep money in integer cents.", &[&r2.id])], "s3", &HashSet::new(), std::slice::from_ref(&r2));
         let r3 = s.append("s3", 2, 300, p.drafts).unwrap().remove(0);
         supersede_repeated(&s, std::slice::from_ref(&r3));
         assert_eq!((sessions_of(&r3), said_again_of(&r3)), (3, (2, 1)), "{}", r3.ctx);
 
         // Said again later in s3, which wrote it: the agent had it, and no
         // session more is counted.
-        let p = promote(vec![again(task("Keep money as integer cents!"), &[&r3.id])], "s3", &HashSet::new(), std::slice::from_ref(&r3));
+        let p = promote(vec![], &[again("Keep money as integer cents!", &[&r3.id])], "s3", &HashSet::new(), std::slice::from_ref(&r3));
         let r4 = s.append("s3", 5, 310, p.drafts).unwrap().remove(0);
         supersede_repeated(&s, std::slice::from_ref(&r4));
         assert_eq!((sessions_of(&r4), said_of(&r4), said_again_of(&r4)), (3, 4, (3, 2)), "{}", r4.ctx);
@@ -510,25 +718,29 @@ mod tests {
     }
 
     #[test]
-    fn the_judge_counts_the_repeats_the_distiller_marks_against_the_expected_ones() {
+    fn the_judge_counts_the_repeats_the_check_marks_against_the_expected_ones() {
         let dir = tempfile::tempdir().unwrap();
-        // A model that marks the first instruction it was shown, if any.
+        // A model that marks the first saying it was shown, quoting
+        // "from the CREATE statements".
         let out = dir.path().join("out.json");
-        let line = json!({"kind": "rule", "text": "Build the shop from the CREATE statements.", "said_by": "requester", "scope": "task", "repeats": ["__ID__"]}).to_string();
-        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": line}).to_string()).unwrap();
+        let reply = json!({"said_again": [{"ids": ["__ID__"], "quote": "from the CREATE statements", "rule": "Build it from the CREATE statements."}]}).to_string();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": reply}).to_string()).unwrap();
         let script = dir.path().join("model.sh");
         std::fs::write(&script, format!("#!/bin/sh\np=$(cat)\nid=$(printf '%s\\n' \"$p\" | sed -n '/<said_before>/,/<\\/said_before>/p' | sed -n 's/^\\[\\([^]]*\\)\\].*/\\1/p' | head -1)\nsed \"s/__ID__/$id/\" '{}'\n", out.display())).unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let cfg = crate::distill::DistillConfig { command: script.to_string_lossy().into(), model: "m".into(), ..Default::default() };
         let cases = vec![
             json!({"id": "B9", "request": "No, from the CREATE statements.", "before": [{"id": "A1", "text": "Build it from the SQL schema."}], "expect": ["A1"]}),
+            // Quotes what the request does not say: dropped.
             json!({"id": "X", "request": "Rename the cart.", "before": [{"id": "A2", "text": "Use tabs."}], "expect": []}),
+            json!({"id": "Z", "request": "Build the cart from the CREATE statements.", "before": [{"id": "A3", "text": "Use tabs."}], "expect": []}),
             json!({"id": "Y", "request": "Build the shop.", "before": [], "expect": []}),
         ];
         let r = judge(&cfg, &cases, 2);
-        assert_eq!((r["found"].as_u64(), r["expected"].as_u64(), r["false"].as_u64()), (Some(1), Some(1), Some(1)), "{r}");
-        assert_eq!((r["marked_negatives"].as_u64(), r["negatives"].as_u64(), r["errors"].as_u64()), (Some(1), Some(2), Some(0)), "{r}");
+        assert_eq!((r["caught"].as_u64(), r["positives"].as_u64(), r["found"].as_u64(), r["expected"].as_u64(), r["false"].as_u64()), (Some(1), Some(1), Some(1), Some(1), Some(1)), "{r}");
+        assert_eq!((r["marked_negatives"].as_u64(), r["negatives"].as_u64(), r["dropped"].as_u64(), r["errors"].as_u64()), (Some(1), Some(3), Some(1), Some(0)), "{r}");
         assert_eq!(r["results"][0]["marked"], json!(["A1"]));
+        assert_eq!(r["results"][0]["said_again"][0]["rule"], "Build it from the CREATE statements.");
     }
 
     #[test]

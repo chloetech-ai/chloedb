@@ -230,17 +230,28 @@ fn distilled_knowledge_reaches_later_sessions() {
 fn an_instruction_said_in_two_sessions_becomes_a_rule() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
+    let check = dir.path().join("rule.txt");
     let script = dir.path().join("fake-model.sh");
-    // The fake model says its item repeats the first instruction it was
-    // shown as said before, if any.
-    std::fs::write(&script, format!("#!/bin/sh\np=$(cat)\nid=$(printf '%s\\n' \"$p\" | sed -n '/<said_before>/,/<\\/said_before>/p' | sed -n 's/^\\[\\([^]]*\\)\\].*/\\1/p' | head -1)\nsed \"s/__ID__/$id/\" '{}'\n", out.display())).unwrap();
+    // The fake model writes its item, and asked what the request says
+    // again, says it says again everything it was shown.
+    let fake = r#"#!/bin/sh
+p=$(cat)
+case "$p" in
+*'<said_before>'*)
+  ids=$(printf '%s\n' "$p" | sed -n '/<said_before>/,/<\/said_before>/p' | sed -n 's/^\[\([^]]*\)\].*/\1/p' | sed 's/.*/\\"&\\"/' | paste -s -d, -)
+  printf '{"is_error":false,"total_cost_usd":0.001,"result":"{\\"said_again\\":[{\\"ids\\":[%s],\\"quote\\":\\"the CREATE statements in schema.sql\\",\\"rule\\":\\"%s\\"}]}"}' "$ids" "$(cat 'RULE')";;
+*) cat 'OUT';;
+esac
+"#;
+    std::fs::write(&script, fake.replace("RULE", &check.to_string_lossy()).replace("OUT", &out.to_string_lossy())).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
     std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
     let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
     let model_says = |text: &str| {
-        let line = json!({"kind": "rule", "text": text, "said_by": "requester", "scope": "task", "repeats": ["__ID__"]}).to_string();
+        let line = json!({"kind": "rule", "text": text, "said_by": "requester", "scope": "task"}).to_string();
         std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": line}).to_string()).unwrap();
+        std::fs::write(&check, text).unwrap();
     };
     let turn = |sid: &str, prompt: &str| {
         hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"}));
