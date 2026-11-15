@@ -476,10 +476,13 @@ impl Daemon {
     /// sync's state after, or `None` with no server set up. One at a time.
     pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
         static ONE: Mutex<()> = Mutex::new(());
-        let remote = crate::sync::remote(&crate::paths::home())?;
+        // No server set up: done, without asking git what the project is.
+        crate::sync::remote(&crate::paths::home())?;
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // Read each time: `chloectx sync setup` may have given the project a key since.
+        let remote = crate::sync::remote_for(&crate::paths::home(), &key)?;
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
@@ -522,7 +525,8 @@ impl Daemon {
             let me = crate::sync::origin(&crate::paths::home());
             return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
         }
-        let Some(remote) = crate::sync::remote(&crate::paths::home()) else {
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
             return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
         };
         let st = match what {
@@ -532,10 +536,9 @@ impl Daemon {
             w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
         }
         .unwrap_or_default();
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
         Ok(json!({
-            "server": remote.url, "token": remote.has_token(), "project": self.project, "synced_as": key,
+            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
@@ -2186,9 +2189,9 @@ impl Daemon {
         }
 
         // The server's copies.
-        let sync = match crate::sync::remote(&crate::paths::home()) {
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let sync = match crate::sync::remote_for(&crate::paths::home(), &key) {
             Some(remote) if !dry && !fixed.is_empty() => {
-                let key = crate::sync::project_key(&crate::paths::home(), &self.project);
                 match crate::sync::push_records(&remote, &key, &fixed) {
                     Ok(n) => json!({"server": remote.url, "replaced": n}),
                     Err(e) => json!({"server": remote.url, "error": e.to_string()}),

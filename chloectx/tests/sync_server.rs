@@ -117,7 +117,7 @@ fn machines_that_number_alike_sync_every_record() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let home = dir.path().join("home");
-    sync::setup(&home, &url, None, "", &[]).unwrap();
+    sync::setup(&home, &dir.path().to_string_lossy(), &url, None, "", &[], false).unwrap();
     let remote = sync::remote(&home).unwrap();
     let project = "acme/shop";
 
@@ -171,7 +171,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     let (_server, url) = serve(&bin, dir.path(), Some(admin));
     let machine = |name: &str, key: &str| {
         let home = dir.path().join(name);
-        sync::setup(&home, &url, Some(key), "", &[]).unwrap();
+        sync::setup(&home, &dir.path().to_string_lossy(), &url, Some(key), "", &[], false).unwrap();
         (sync::remote(&home).unwrap(), home)
     };
     let (ra, home_a) = machine("home-a", admin);
