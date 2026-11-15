@@ -593,6 +593,18 @@ engine.onDirection = (appId, direction) => {
   return w.made;
 };
 
+// A members' screen carries the example rows the first build kept for it
+// (gate.sample, forge.mjs gateSamples), so a visitor sees it drawn with
+// them (web/screen.js). Answers the code a page gets for a capability.
+async function samplesFor(appId) {
+  let samples = {};
+  try { samples = JSON.parse((await engine.store.setting(appId, 'samples').catch(() => null)) || '{}') || {}; } catch { samples = {}; }
+  return (c) => {
+    if (c.kind !== 'view' || !c.spec?.screen || !samples[c.slug] || typeof c.code !== 'string' || !c.code.includes('"gate"')) return c.code;
+    try { const sc = JSON.parse(c.code); if (!sc.gate) return c.code; sc.gate = { ...sc.gate, sample: samples[c.slug] }; return JSON.stringify(sc, null, 1); } catch { return c.code; }
+  };
+}
+
 async function appState(appId) {
   const { store } = engine;
   const view = await engine.view(appId);
@@ -605,7 +617,8 @@ async function appState(appId) {
   for (const t of view.tables) {
     tables.push({ id: t.id, name: t.spec.name, description: t.spec.description, columns: t.spec.columns, rows: await store.countRows(`app_${appId}_${t.spec.name}`) });
   }
-  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
+  const withSample = await samplesFor(appId);
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: withSample(c), sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
     app: { ...view.app, currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await store.setting(appId, 'locale').catch(() => null)) || null },
@@ -671,7 +684,8 @@ function mayRead(view, table, role) {
 async function publicState(appId, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
-  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
+  const withSample = await samplesFor(appId);
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: withSample(c), spec: c.spec });
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,

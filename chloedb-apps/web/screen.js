@@ -142,9 +142,16 @@ window.__sa_numbers = (() => {
   window.__sa_gateView = gateView;
 
   window.__sa_screen = async (root, app, spec) => {
+    // A members' screen a visitor opens: its sign-in entry, or, when the
+    // build kept example rows for it (gate.sample), the screen itself drawn
+    // with those rows, marked as examples, with the sign-in a tap away.
+    let sample = null;
     if (spec && spec.gate && !spec.preview) {
       const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
-      if (!me) { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
+      if (!me) {
+        if (spec.gate.sample && typeof spec.gate.sample === 'object' && !Array.isArray(spec.gate.sample)) sample = spec.gate.sample;
+        else { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
+      }
     }
     const E = window.__SA_EXPR || [];
     const SRC = window.__SA_EXPR_SRC || [];
@@ -329,6 +336,8 @@ window.__sa_numbers = (() => {
       const entries = Object.entries(spec.data || {});
       // A preview has no app to ask yet: its data is empty.
       if (preview) { data = Object.fromEntries(entries.map(([name]) => [name, []])); return; }
+      // Example rows for a visitor: nothing is asked of the app.
+      if (sample) { data = Object.fromEntries(entries.map(([name]) => [name, Array.isArray(sample[name]) ? sample[name] : []])); me = null; meAsked = true; return; }
       const out = await Promise.all(entries.map(async ([name, q]) => {
         const where = `data.${name}`;
         try {
@@ -1297,7 +1306,8 @@ window.__sa_numbers = (() => {
             const first = Array.isArray(spec.body) ? spec.body.find((b) => b && typeof b === 'object') : null;
             const titled = first && (first.h !== undefined || first.hero !== undefined || first.nav !== undefined);
             const title = lone && !isFront && layout !== 'tool' && !titled ? h('h1', null, String(lone)) : null;
-            root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange([title, blocks(spec.body, scope(), 'body')])));
+            const shown = arrange([title, blocks(spec.body, scope(), 'body')]);
+            root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, sample ? [sampleBar(), h('div', { class: 'sa-sampled', inert: '' }, shown)] : shown));
           }
           if (front) front.after(root);
           window.__sa_gated?.(gated);
@@ -1341,6 +1351,19 @@ window.__sa_numbers = (() => {
       setTimeout(pass, 0);
     }
     window.__sa_relook = () => draw();
+    // What a visitor sees above a members' screen drawn with example rows.
+    function sampleBar() {
+      const open = () => {
+        const sheet = h('div', { class: 'sa-gate-sheet', role: 'dialog', 'aria-modal': 'true', onclick: (e) => { if (e.target === sheet) sheet.remove(); } },
+          h('div', { class: 'box' }, h('button', { type: 'button', class: 'ghost small close', 'aria-label': 'Close', onclick: () => sheet.remove() }, '×'), gateView(app, spec.gate)));
+        document.body.append(sheet);
+        setTimeout(() => sheet.querySelector('input')?.focus(), 0);
+      };
+      return h('div', { class: 'sa-sample-bar', role: 'note' },
+        h('div', { class: 't' }, h('b', null, spec.gate.title || 'Sign in'),
+          h('span', null, spec.gate.sampleNote || 'This is what it shows, with example rows. Sign in to see your own.')),
+        h('button', { type: 'button', class: 'primary', onclick: open }, 'Sign in'));
+    }
     // A screen whose rows need someone signed in: what the app is, and the
     // sign-in beside it (ui.signIn when the app has it, else a form here).
     function signInPage(app, gate) {

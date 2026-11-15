@@ -2234,6 +2234,40 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   return { plan, code, cost, problems, decidedAt };
 }
 
+// What each members' screen (one with a gate) shows over the app's rows,
+// for the rows of a new app are its example rows: its SQL data, run with the
+// app's rights, at most 12 rows each (:today is the day; an entry whose
+// parameters depend on the screen's state is left out). Kept as the app's
+// setting "samples", which the server lays into each screen's gate.
+export async function gateSamples(engine, appId, { today = new Date().toISOString().slice(0, 10) } = {}) {
+  const view = await engine.view(appId);
+  const out = {};
+  for (const v of view.views || []) {
+    if (!v.spec?.screen || typeof v.code !== 'string') continue;
+    let screen;
+    try { screen = JSON.parse(v.code); } catch { continue; }
+    if (!screen || !screen.gate) continue;
+    const data = {};
+    for (const [name, q] of Object.entries(screen.data || {})) {
+      const def = typeof q === 'string' ? { sql: q } : q && typeof q === 'object' ? q : null;
+      if (!def || typeof def.sql !== 'string' || def.sql.trim().startsWith('=')) continue;
+      const params = {};
+      let ok = true;
+      for (const [k, x] of Object.entries(def.params || {})) {
+        if (typeof x !== 'string' || !x.startsWith('=')) params[k] = x;
+        else if (/^=\s*today\s*$/.test(x)) params[k] = today;
+        else { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (/:today\b/.test(def.sql) && params.today === undefined) params.today = today;
+      try { data[name] = (await engine.sql(appId, def.sql, params)).slice(0, 12); } catch { /* left out: the screen draws it empty */ }
+    }
+    if (Object.keys(data).length) out[v.slug] = data;
+  }
+  if (Object.keys(out).length) await engine.store.putSetting(appId, 'samples', JSON.stringify(out));
+  return out;
+}
+
 // Runs a request through the model and applies its answer as the next version.
 // Where found photos go: the app's files (when the engine has them), the
 // shared cache beside them, and the art direction's accent for a drawing.
@@ -2607,6 +2641,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     }
     if (added) progress(`Added ${added} rows (${rowsToAdd.map((r) => `${r.rows.length} ${r.imported ? 'imported into' : 'examples in'} ${r.table}`).join(', ')})`);
     tr.end(seeding, { rows: added });
+    // A new app's members' screens keep what they show over its example
+    // rows, for a visitor to see them drawn with those (never over rows the
+    // owner brought: then a visitor gets the sign-in entry alone).
+    if (added && !view.comp.n && !candidate && rowsToAdd.every((r) => !r.imported)) {
+      const kept = await gateSamples(engine, appId).catch((e) => { progress(`The example rows for the sign-in pages were not kept: ${e.message}`); return {}; });
+      if (Object.keys(kept).length) progress(`Kept example rows for ${Object.keys(kept).join(', ')}, shown to visitors before they sign in`);
+    }
   }
   // Every view is opened in a headless browser, when one is installed; an
   // error there reaches the engine as a person's would, and is repaired.

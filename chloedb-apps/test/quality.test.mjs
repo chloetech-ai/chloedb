@@ -221,6 +221,27 @@ test('the tests writer\'s answer never takes away the example rows their own wri
   assert.deepEqual(plan.seed, rows);
 });
 
+test('a new app\'s members\' screens keep what they show over its example rows; a screen with no gate, or data that depends on the screen, is left out', async () => {
+  const { gateSamples } = await import('../engine/forge.mjs');
+  const screen = (gate, data) => JSON.stringify({ data, body: [], ...(gate ? { gate: { title: 'Sign in' } } : {}) });
+  const ran = [];
+  let kept = null;
+  const engine = {
+    view: async () => ({ views: [
+      { slug: 'books', spec: { screen: true }, code: screen(true, { books: 'SELECT * FROM books', due: { sql: 'SELECT * FROM books WHERE days_between(:today, due) < 7', params: { today: '=today' } }, mine: { sql: 'SELECT * FROM books WHERE shelf = :s', params: { s: '=state.shelf' } }, who: '=app.people()' }) },
+      { slug: 'open', spec: { screen: true }, code: screen(false, { books: 'SELECT * FROM books' }) },
+      { slug: 'code', spec: {}, code: 'function render() {}' }] }),
+    sql: async (id, sql, params) => { ran.push([sql, params]); return Array.from({ length: 20 }, (_, i) => ({ id: `b${i}`, title: `Book ${i}` })); },
+    store: { putSetting: async (app, key, value) => { kept = [key, JSON.parse(value)]; } },
+  };
+  const out = await gateSamples(engine, 'a1', { today: '2026-11-20' });
+  assert.deepEqual(Object.keys(out), ['books']);
+  assert.deepEqual(Object.keys(out.books), ['books', 'due'], 'state-dependent data and expressions are left out');
+  assert.equal(out.books.books.length, 12, 'at most 12 rows each');
+  assert.deepEqual(ran.map((r) => r[1]), [{}, { today: '2026-11-20' }]);
+  assert.equal(kept[0], 'samples');
+});
+
 test('big numbers where one is the other with more conditions are found, for the figure check to ask about', () => {
   const screen = { data: { a: "SELECT SUM(x) AS v FROM t WHERE kind != 'z' AND d > 0", b: "SELECT SUM(x) AS v FROM t WHERE kind != 'z'", c: 'SELECT COUNT(*) AS v FROM u' },
     body: [{ kpis: [{ label: 'Narrow', of: 'a' }, { label: 'Wide', of: 'b' }, { label: 'Other', of: 'c' }] }] };

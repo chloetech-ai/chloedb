@@ -23,7 +23,7 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
   try {
     const TOKEN = 'smoke-token';
     eng = spawn(process.execPath, [join(A, 'engine', 'server.mjs'), '--port', '7992', '--strata', 'http://127.0.0.1:7991', '--data', join(dir, 'engine')],
-      { env: { ...process.env, STRATA_APP_TOKEN: TOKEN, STRATA_APPS_SCHEDULES: 'off', STRATA_APPS_AUTOREPAIR: '0', STRATA_APPS_TILES: 'off', STRATA_APPS_GEOCODER: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      { env: { ...process.env, STRATA_APPS_PUBLIC_RATE: '5000', STRATA_APP_TOKEN: TOKEN, STRATA_APPS_SCHEDULES: 'off', STRATA_APPS_AUTOREPAIR: '0', STRATA_APPS_TILES: 'off', STRATA_APPS_GEOCODER: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let log = ''; eng.stdout.on('data', (d) => { log += d; }); eng.stderr.on('data', (d) => { log += d; });
     const base = 'http://127.0.0.1:7992';
     for (let i = 0; ; i++) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch {} if (i > 600) throw new Error('engine did not start\n' + log.slice(-1500)); await new Promise((r) => setTimeout(r, 100)); }
@@ -41,6 +41,7 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       T('traffic', { month: 'keyword', visits: 'float' }), T('tickets', { opened: 'keyword', hours: 'float', status: 'keyword' }),
       T('accounts', { name: 'text' }), T('members_of', { person: 'keyword', account: 'keyword', role: 'keyword' }),
       T('services', { name: 'text', price: 'float', length: 'text', kind: 'keyword' }),
+      T('ledger', { title: 'text', amount: 'float' }, ['ALLOW ALL ON ledger TO members']),
     ];
     const have = new Set(await store.tableNames());
     const caps = [];
@@ -62,6 +63,11 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       caps.push(await store.putCapability({ app, slug, kind: 'view', title: c.title, spec: { order: order++, screen: true, statement: text }, code: JSON.stringify(r.screen, null, 1) }));
     }
     for (const c of (await store.shared()).values()) caps.push(c.id);
+    // a members' screen: a visitor sees it with the example rows kept for it
+    caps.push(await store.putCapability({ app, slug: 'ledger', kind: 'view', title: 'Ledger', spec: { order: 99, screen: true },
+      code: JSON.stringify({ data: { ledger: 'SELECT * FROM ledger ORDER BY title LIMIT 50' }, body: [{ h: 'Ledger' }, { table: '=ledger', columns: [{ key: 'title', label: 'Entry' }, { key: 'amount', label: 'Amount', format: 'money' }] }],
+        gate: { title: 'Smoke ledger', text: 'Sign in to see the ledger.', ui: 'signIn' } }) }));
+    await store.putSetting(app, 'samples', JSON.stringify({ ledger: { ledger: [{ id: 'x1', title: 'Example entry', amount: 12 }] } }));
     await store.writeComposition(app, caps, 'smoke', 'patterns smoke test');
     const P = (t) => `app_${app}_${t}`;
     const ins = (t, rows) => client.write(rows.map((doc, i) => ({ op: 'insert', table: P(t), doc: { id: `${t}${i + 1}`, ...doc } })));
@@ -84,14 +90,28 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
     const cookie = (su.headers.get('set-cookie') || '').split(';')[0];
     const sj = await su.json(); assert.equal(su.status, 200, JSON.stringify(sj)); const me = sj.user;
     await client.write([{ op: 'insert', table: P('members_of'), doc: { id: 'm1', person: me.id, account: 'accounts1', role: 'lead' } }]);
+    await client.write([{ op: 'insert', table: P('ledger'), doc: { id: 'l1', title: 'Real entry', amount: 99 } }]);
     const browser = await pw.chromium.launch();
+    {
+      // a visitor: the members' screen with its example rows and a sign-in bar, never the real rows
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const page = await ctx.newPage();
+      await page.goto(`${base}/a/${app}#ledger`, { waitUntil: 'load' });
+      await page.waitForTimeout(1200);
+      const tab = page.locator('#tabs button.tab[data-slug="ledger"]');
+      if (await tab.count()) { await tab.first().evaluate((b) => b.click()); }
+      let text = '';
+      for (let k = 0; k < 40 && !/Example entry/.test(text); k++) { await page.waitForTimeout(250); const f = page.frames().filter((x) => x !== page.mainFrame()).pop(); text = f ? await f.evaluate(() => document.body.innerText).catch(() => '') : ''; }
+      seen.push({ tag: 'visitor', slug: 'ledger', bad: /hit an error/.test(text), text });
+      await ctx.close();
+    }
     for (const [vw, vh, tag] of [[1280, 900, 'desktop'], [390, 844, 'phone']]) {
       const ctx = await browser.newContext({ viewport: { width: vw, height: vh } });
       const [n, v] = cookie.split('=');
       await ctx.addCookies([{ name: n, value: v, url: base }]);
       const page = await ctx.newPage();
       const errs = []; page.on('pageerror', (e) => errs.push(e.message)); page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
-      for (const slug of Object.keys(S)) {
+      for (const slug of [...Object.keys(S), 'ledger']) {
         await page.goto(`${base}/a/${app}#${slug}`, { waitUntil: 'load' });
         await page.waitForTimeout(1200);
         const tabs = page.locator(`#tabs button.tab[data-slug="${slug}"]`);
@@ -118,6 +138,9 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
   }
 
   const shown = (tag, slug) => seen.find((x) => x.tag === tag && x.slug === slug)?.text || '';
+  assert.match(shown('visitor', 'ledger'), /Smoke ledger[\s\S]*example rows[\s\S]*Example entry/, 'a visitor sees the screen with its example rows, marked');
+  assert.doesNotMatch(shown('visitor', 'ledger'), /Real entry/, 'and never the real rows');
+  for (const tag of ['desktop', 'phone']) if (shown(tag, 'ledger')) assert.match(shown(tag, 'ledger'), /Real entry/, 'a member sees the real rows');
   for (const x of seen) if (x.slug) assert.equal(x.bad, false, `${x.tag} ${x.slug}: ${x.text.slice(0, 300)}`);
   for (const x of seen) if (x.errors) assert.deepEqual(x.errors, [], x.tag);
   for (const tag of ['desktop', 'phone']) {
