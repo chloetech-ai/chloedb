@@ -1509,6 +1509,8 @@ export function writerProblems(plan, view, code = {}) {
     return rs.length ? Math.min(...rs.map((r) => WHO.indexOf(r.who))) : WHO.length;
   };
   const VERB = { add: 'adds to', change: 'changes', remove: 'removes from' };
+  const callers = new Set([...[...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n]) => n), ...(view.functions || []).filter((f) => f.spec?.callers).map((f) => f.slug)]);
+  const warned = new Set();
   const out = [];
   for (const v of plan.views || []) {
     if (!v || !v.slug || v.for === 'owner' || v.for === 'admins') continue;
@@ -1524,8 +1526,24 @@ export function writerProblems(plan, view, code = {}) {
     for (const m of text.matchAll(/\bapp\.(insert|update|remove)\(\s*\\?['"`]([a-z_][a-z0-9_]*)\\?['"`]/g)) writes.push([m[2], { insert: 'add', update: 'change', remove: 'remove' }[m[1]]]);
     const shut = new Map();
     for (const [t, a] of writes) if (rules.has(t) && least(t, a) >= WHO.indexOf('admins') && !shut.has(t)) shut.set(t, a);
-    if (!shut.size) continue;
     const who = v.for === 'members' ? 'its signed-in members' : 'its visitors and members';
+    // A function it calls that says no ALLOW CALL runs as the person who
+    // calls it: what it writes where they may not is refused too.
+    for (const m of text.matchAll(/\bapp\.call\(\s*\\?['"`]([a-z][a-z0-9-]*)\\?['"`]/g)) {
+      const slug = m[1];
+      if (callers.has(slug) || warned.has(`${v.slug}/${slug}`)) continue;
+      const f = (plan.functions || []).find((x) => x && x.slug === slug);
+      const body = f ? `${JSON.stringify(f)}\n${String((code && code[slug]) || '')}` : String((code && code[slug]) || '');
+      if (!body.trim()) continue;
+      const wrote = new Map();
+      for (const w of body.matchAll(/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi)) wrote.set(w[2].toLowerCase(), /^INSERT/i.test(w[1]) ? 'add' : /^UPDATE/i.test(w[1]) ? 'change' : 'remove');
+      for (const w of body.matchAll(/"(insert|update|remove|upsert)"\s*:\s*"([a-z_][a-z0-9_]*)"/g)) wrote.set(w[2], w[1] === 'update' ? 'change' : w[1] === 'remove' ? 'remove' : 'add');
+      const barred = [...wrote].filter(([t, a]) => rules.has(t) && least(t, a) >= WHO.indexOf('admins'));
+      if (!barred.length) continue;
+      warned.add(`${v.slug}/${slug}`);
+      out.push(`view ${v.slug} is for ${who}, but calls ${slug}, which ${barred.map(([t, a]) => `${VERB[a]} ${t}`).join(' and ')} (only the owner may), and says no ALLOW CALL: it runs as the person who calls it and is refused. Give it ALLOW CALL ON ${slug} TO ${v.for === 'members' ? 'members' : 'everyone'} (it then runs with the app's rights; keep what it does to what they should be able to cause)`);
+    }
+    if (!shut.size) continue;
     const [t0, a0] = [...shut][0];
     out.push(`view ${v.slug} is for ${who}, but ${[...shut].map(([t, a]) => `${VERB[a]} ${t}`).join(' and ')}, which only the owner may do: they would be refused when they send it. Let a rule they may call do it with the app's rights (a form only adds the rows they may add, so a button whose "do" is app.call('<rule>', {...}) sends it; ALLOW CALL ON <rule> TO everyone or members), let them do it (ALLOW ${a0.toUpperCase()} ON ${t0} TO members, or WHERE a column keeps each to their own rows), or say "for": "owner" on the view`);
   }

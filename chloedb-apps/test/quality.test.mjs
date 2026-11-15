@@ -288,6 +288,13 @@ test('a screen its users use that writes a table only the owner may write is a p
   assert.deepEqual(p.map((x) => x.split(' ')[1]), ['front', 'quick']);
   assert.match(p[0], /^view front is for its visitors and members, but adds to requests, which only the owner may do/);
   assert.match(p[1], /^view quick is for its signed-in members/);
+  // a screen that calls a rule writing where its people may not: refused unless the rule says ALLOW CALL
+  const called = { access: ['ALLOW READ ON items TO everyone', 'ALLOW ALL ON requests TO owner'], functions: [{ slug: 'send-request' }], views: [
+    { slug: 'ask', screen: { body: [{ button: 'Send', do: "=() => app.call('send-request', {id: 1})" }] } }] };
+  const ruleCode = { 'send-request': 'CREATE RULE send_request AS\n  INSERT INTO requests (name) VALUES (:name);\n  RETURN 1;' };
+  assert.match(writerProblems(called, { tables: [] }, ruleCode)[0], /^view ask is for its visitors and members, but calls send-request, which adds to requests .* ALLOW CALL ON send-request TO everyone/);
+  called.access.push('ALLOW CALL ON send-request TO everyone');
+  assert.deepEqual(writerProblems(called, { tables: [] }, ruleCode), []);
   // members may add their own: nothing to say about the members' screen
   plan.access.push('ALLOW ADD ON requests TO members WHERE owner_id = :user_id');
   assert.deepEqual(writerProblems(plan, { tables: [] }).map((x) => x.split(' ')[1]), []);
