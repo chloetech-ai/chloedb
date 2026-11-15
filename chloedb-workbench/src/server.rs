@@ -339,8 +339,10 @@ pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Ap
     tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::internal(e.to_string()))?
 }
 
-async fn spawn(State(app): State<App>, body: Bytes) -> ApiResult {
-    let req: SpawnRequest = parse_body(&body)?;
+async fn spawn(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    let mut req: SpawnRequest = parse_body(&body)?;
+    // An agent's key: the new agent is that agent's child (audit APP-1).
+    crate::guarded::spawn_as_caller(&headers, &mut req)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     // With its goal and outcome (SPEC.md, "Goals and outcomes").
     let agent = blocking(move || crate::goals::spawn(&sup, &lv, req)).await?;

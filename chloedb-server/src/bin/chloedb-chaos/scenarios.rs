@@ -310,7 +310,7 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
             let url = grpc(w, &target);
             let r = w.admin(reqwest::Method::DELETE, &format!("/v1/admin/shards/{shard}/replicas?url={}", urlencode(&url)), None).await;
             step(w, &format!("fix: remove it from shard {shard}: {}", short(&r)));
-            let r = w.admin(reqwest::Method::POST, &format!("/v1/admin/shards/{shard}/replicas"), Some(json!({"url": url}))).await;
+            let r = w.join(&format!("/v1/admin/shards/{shard}/replicas"), json!({"url": url})).await;
             step(w, &format!("fix: add it again: {}", short(&r)));
             sleep(20.0).await;
         }
@@ -344,7 +344,7 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
             let in_map: BTreeSet<String> = look(w).shards.iter().flatten().cloned().collect();
             let spare = w.cluster.procs.lock().unwrap().iter().find(|p| p.kind == crate::cluster::Kind::Spare && !in_map.contains(&p.name) && p.running()).map(|p| p.name.clone()).ok_or("no spare left: an earlier scenario put each in a shard")?;
             let url = grpc(w, &spare);
-            let r = w.admin(reqwest::Method::POST, "/v1/admin/shards", Some(json!({"servers": [url]}))).await?;
+            let r = w.join("/v1/admin/shards", json!({"servers": [url]})).await?;
             step(w, &format!("add {spare} as a shard: {}", r.to_string().chars().take(200).collect::<String>()));
             let shards = look(w).shards.len();
             let _ = until(w, 15.0, |l| l.shards.len() > shards).await;
@@ -391,7 +391,7 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
 async fn replace_copy(w: &World, step: &mut impl FnMut(&World, &str), shard: usize, broken: &str) -> Result<(), String> {
     let in_map: BTreeSet<String> = look(w).shards.iter().flatten().cloned().collect();
     let spare = w.cluster.procs.lock().unwrap().iter().find(|p| p.kind == crate::cluster::Kind::Spare && !in_map.contains(&p.name) && p.running()).map(|p| p.name.clone()).ok_or("no spare left")?;
-    let r = w.admin(reqwest::Method::POST, &format!("/v1/admin/shards/{shard}/replicas"), Some(json!({"url": grpc(w, &spare)}))).await;
+    let r = w.join(&format!("/v1/admin/shards/{shard}/replicas"), json!({"url": grpc(w, &spare)})).await;
     step(w, &format!("fix: add {spare} to shard {shard}: {}", short(&r)));
     let r = w.admin(reqwest::Method::DELETE, &format!("/v1/admin/shards/{shard}/replicas?url={}", urlencode(&grpc(w, broken))), None).await;
     step(w, &format!("fix: remove {broken}: {}", short(&r)));

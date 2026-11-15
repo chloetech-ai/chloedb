@@ -553,6 +553,22 @@ impl Supervisor {
                 }
             }
         }
+        // Nor one that runs without asking what it would have to ask
+        // (audit APP-1): each rule it is allowed, its parent is too (a
+        // parent that asks nothing, in bypassPermissions, gives any), and
+        // the user's own rules only where its parent has them.
+        let mut req = req;
+        if let Some(p) = req.parent.clone() {
+            if let Some(prof) = req.permissions.as_ref().filter(|_| parent_mode.as_deref() != Some("bypassPermissions")) {
+                let has = self.allowed_of(&p);
+                if let Some(rule) = prof.allow.iter().map(|r| r.trim()).find(|r| !has.iter().any(|h| h == r)) {
+                    return Err(ApiError::bad(format!("an agent may not start one that runs {rule} without asking: its own session does not allow it")));
+                }
+            }
+            if self.extra_of(&p)["own_permissions"] == json!(false) {
+                req.own_permissions = Some(false);
+            }
+        }
 
         // Limits, the parent and the name, checked together.
         let (depth, name) = {
@@ -1026,6 +1042,15 @@ impl Supervisor {
     /// Whether an agent was started read-only.
     pub fn is_read_only(&self, id: &str) -> bool {
         self.extra_of(id)["read_only"] == json!(true)
+    }
+
+    /// The rules agent `id`'s session runs without asking (its
+    /// settings' `permissions.allow`, as it was started with them); none
+    /// when they cannot be read.
+    pub fn allowed_of(&self, id: &str) -> Vec<String> {
+        let path = self.cfg.data_dir.join("sessions").join(id).join("settings.json");
+        let s: Json = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Json::Null);
+        s["permissions"]["allow"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(|r| r.trim().to_string())).collect()
     }
 
     /// What starts an exited agent again (`POST /api/agents/:id/restart`):
