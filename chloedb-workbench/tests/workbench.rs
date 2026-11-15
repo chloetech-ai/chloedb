@@ -6310,7 +6310,7 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     let s = Server::start(&[]);
     let (_d, r) = repo();
     // The session: a permission prompt the user said Yes to.
-    let a = s.spawn(json!({ "repo": r, "task": "PERM3 tidy up", "name": "orig" }));
+    let a = s.spawn(json!({ "repo": r, "task": "PERM3 tidy up", "name": "orig", "permission_mode": "acceptEdits" }));
     let id = a["id"].as_str().unwrap().to_string();
     s.wait(&id, "waiting");
     let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "the prompt", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
@@ -6321,6 +6321,8 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     let perms: Vec<&Value> = p["script"].as_array().unwrap().iter().filter(|x| x["kind"] == "permission").collect();
     assert_eq!(perms.len(), 1, "{p}");
     assert_eq!((perms[0]["key"].as_str(), perms[0]["answer"].as_str()), (Some("Bash: echo hi"), Some("yes")), "{p}");
+    // Its permission mode is the case's, so that its replays ask what it asked.
+    assert_eq!(p["permission_mode"], "acceptEdits", "{p}");
 
     // Optimize this: a target is needed, and the price is confirmed.
     let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }] });
@@ -6339,6 +6341,8 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     assert_eq!(v["run"]["state"], "needs_you", "{v}");
     for x in v["cases"][0]["a"].as_array().unwrap() {
         assert_eq!((x["state"].as_str(), x["interventions"].as_i64(), x["diverged"].as_bool()), (Some("passed"), Some(1), Some(false)), "{x}");
+        let (_, ag) = s.get(&format!("/api/agents/{}", x["agent"].as_str().unwrap()));
+        assert_eq!(ag["agent"]["permission_mode"], "acceptEdits", "a replay runs in the session's mode: {ag}");
     }
     let ch = v["run"]["waiting"].clone();
     assert_eq!(ch["part"], "permissions", "{ch}");

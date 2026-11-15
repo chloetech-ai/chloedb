@@ -862,6 +862,9 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, run: &Run, c: &Case, version: &
             name: Some(name),
             worktree: Some(false),
             model: c.model.clone(),
+            // The session's own mode: without it Claude Code's default
+            // decides what is asked, and the replay measures another thing.
+            permission_mode: c.permission_mode.clone(),
             replay: Some(ReplayTag { of_repo: c.repo.clone(), config: version.to_string(), env, resume, tag: json!({ "run": run.id, "case": c.id, "side": side, "k": k, "version": version, "result": id }) }),
             ..SpawnRequest::default()
         };

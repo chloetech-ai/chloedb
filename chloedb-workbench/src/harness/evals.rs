@@ -44,7 +44,7 @@ use crate::supervisor::{one_line, ApiError, Supervisor};
 pub const TABLES: [&str; 3] = [
     "CREATE TABLE IF NOT EXISTS turn_trees (id KEYWORD PRIMARY KEY, agent KEYWORD, turn INT, \"commit\" KEYWORD, head KEYWORD, ts TIMESTAMP)",
     "CREATE TABLE IF NOT EXISTS eval_suites (id KEYWORD PRIMARY KEY, repo KEYWORD, name KEYWORD, note TEXT, created TIMESTAMP)",
-    "CREATE TABLE IF NOT EXISTS eval_cases (id KEYWORD PRIMARY KEY, suite KEYWORD, repo KEYWORD, name KEYWORD, agent KEYWORD, \"commit\" KEYWORD, tree KEYWORD, wall_ms INT, start_from KEYWORD, turns_from INT, turns_to INT, turns_all INT, script TEXT OPTIONS(indexed = false), checks TEXT OPTIONS(indexed = false), \"set\" KEYWORD, context KEYWORD, setup TEXT, model KEYWORD, cost_usd FLOAT, made_by KEYWORD, created TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS eval_cases (id KEYWORD PRIMARY KEY, suite KEYWORD, repo KEYWORD, name KEYWORD, agent KEYWORD, \"commit\" KEYWORD, tree KEYWORD, wall_ms INT, start_from KEYWORD, turns_from INT, turns_to INT, turns_all INT, script TEXT OPTIONS(indexed = false), checks TEXT OPTIONS(indexed = false), \"set\" KEYWORD, context KEYWORD, setup TEXT, model KEYWORD, permission_mode KEYWORD, cost_usd FLOAT, made_by KEYWORD, created TIMESTAMP)",
 ];
 
 /// The most checks a case keeps of each test kind.
@@ -398,6 +398,7 @@ pub fn propose(sup: &Supervisor, q: &ProposeQ) -> Result<Json, ApiError> {
         "script": script, "prompts": pq, "permissions": prompts,
         "checks": checks, "set": set_of(&a.id),
         "tokens": tokens, "cost_usd": (cost * 10_000.0).round() / 10_000.0, "model": a.model,
+        "permission_mode": sup.extra_of(&a.id)["permission_mode"],
         "warnings": warnings, "replayable": commit.is_some(),
     }))
 }
@@ -425,12 +426,14 @@ pub struct Case {
     pub context: String,
     pub setup: Option<String>,
     pub model: Option<String>,
+    /// The session's permission mode, so that a replay asks what it asked.
+    pub permission_mode: Option<String>,
     pub cost_usd: f64,
     pub made_by: String,
     pub created: i64,
 }
 
-const C_COLS: &str = "id, suite, repo, name, agent, \"commit\", tree, wall_ms, start_from, turns_from, turns_to, turns_all, script, checks, \"set\", context, setup, model, cost_usd, made_by, created";
+const C_COLS: &str = "id, suite, repo, name, agent, \"commit\", tree, wall_ms, start_from, turns_from, turns_to, turns_all, script, checks, \"set\", context, setup, model, permission_mode, cost_usd, made_by, created";
 
 impl Case {
     fn of(r: &[Value]) -> Case {
@@ -454,13 +457,14 @@ impl Case {
             context: get_str(&r[15]).unwrap_or_else(|| "fresh".into()),
             setup: get_str(&r[16]),
             model: get_str(&r[17]),
-            cost_usd: match &r[18] {
+            permission_mode: get_str(&r[18]),
+            cost_usd: match &r[19] {
                 Value::Float(f) => *f,
                 Value::Int(i) => *i as f64,
                 _ => 0.0,
             },
-            made_by: get_str(&r[19]).unwrap_or_default(),
-            created: get_ms(&r[20]).unwrap_or(0),
+            made_by: get_str(&r[20]).unwrap_or_default(),
+            created: get_ms(&r[21]).unwrap_or(0),
         }
     }
 
@@ -487,6 +491,7 @@ impl Case {
                 ("context", sv(&self.context)),
                 ("setup", ov(&self.setup)),
                 ("model", ov(&self.model)),
+                ("permission_mode", ov(&self.permission_mode)),
                 ("cost_usd", Value::Float(self.cost_usd)),
                 ("made_by", sv(&self.made_by)),
                 ("created", ts(self.created)),
@@ -505,7 +510,7 @@ impl Case {
             "id": self.id, "suite": self.suite, "repo": self.repo, "name": self.name, "agent": self.agent, "commit": self.commit, "tree": self.tree, "wall_ms": self.wall_ms,
             "start_from": self.start_from, "from": self.from, "to": self.to, "turns_all": self.turns_all,
             "script": self.script, "checks": self.checks, "set": self.set, "context": self.context, "setup": self.setup,
-            "model": self.model, "cost_usd": self.cost_usd, "made_by": self.made_by, "created": iso(self.created),
+            "model": self.model, "permission_mode": self.permission_mode, "cost_usd": self.cost_usd, "made_by": self.made_by, "created": iso(self.created),
             "prompts": n("prompt"), "permissions": n("permission"), "answers": n("answer"),
         })
     }
@@ -705,6 +710,7 @@ pub fn create(sup: &Supervisor, b: CreateB) -> Result<Json, ApiError> {
         context,
         setup,
         model: p["model"].as_str().map(str::to_string),
+        permission_mode: p["permission_mode"].as_str().map(str::to_string),
         cost_usd: p["cost_usd"].as_f64().unwrap_or(0.0),
         made_by: "you".into(),
         created: now_ms(),
