@@ -57,7 +57,7 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
       due: `CREATE SCREEN due TITLE 'Expiring'\nDUE permits\n  DUE expires  NAME title  SUB holder, kind  SOON 30\n  WHERE status != 'retired'\n  ACTION 'Renewed'\n  SET {expires: lib.dates.addDays(today, 365)}\n  NOUN 'permit'`,
       lend: `CREATE SCREEN lend TITLE 'Tools'\nLEND loans\n  ITEMS tools  ITEM tool  NAME name  SUB serial  HOLDER holder  DUE due_day  NOUN 'tool'  LABEL 'Tool'`,
       plan: `CREATE SCREEN plan TITLE 'Week'\nPLAN rota\n  ITEMS jobs  ITEM job  DAY day  PARTS job_parts  OF job  PART material  QTY qty  UNIT unit\n  TITLE 'This week'  PICK 'Pick a job'  TOTALS 'Materials to buy'`,
-      report: `CREATE SCREEN report TITLE 'Report'\nREPORT 'Month-end report'\n  SUB '=''As of '' + app.fmt.date(today)'\n  SECTION 'Visits by month' (SELECT month, SUM(visits) AS visits FROM traffic GROUP BY month ORDER BY month) COLUMNS (month 'Month', visits 'Visits' NUMBER) TOTAL (visits) NOTE 'Counted in the month made.'\n  SECTION 'Open tickets by days open' (SELECT band_of(days_between(opened, :today)) AS band, MIN(band_rank(days_between(opened, :today))) AS r, COUNT(*) AS n, SUM(hours) AS hours FROM tickets WHERE status = 'open' GROUP BY band_of(days_between(opened, :today)) ORDER BY r) COLUMNS (band 'Days open', n 'Tickets' NUMBER, hours 'Hours' NUMBER) TOTAL (n, hours)`,
+      report: `CREATE SCREEN report TITLE 'Report'\nREPORT 'Month-end report'\n  SUB '=''As of '' + app.fmt.date(today)'\n  SECTION 'Visits by month' (SELECT month, SUM(visits) AS visits FROM traffic GROUP BY month ORDER BY month) COLUMNS (month 'Month', visits 'Visits' NUMBER) TOTAL (visits) NOTE 'Counted in the month made.'\n  SECTION 'Open tickets by days open' (SELECT b.band AS band, COUNT(x.hours) AS n, COALESCE(SUM(x.hours), 0) AS hours FROM bands() AS b LEFT JOIN (SELECT band_of(days_between(opened, :today)) AS band, hours FROM tickets WHERE status = 'open') AS x ON x.band = b.band GROUP BY b.band, b.r ORDER BY b.r) COLUMNS (band 'Days open', n 'Tickets' NUMBER, hours 'Hours' NUMBER) TOTAL (n, hours)`,
       team: `CREATE SCREEN team TITLE 'Team'\nTEAM members_of\n  THINGS accounts  PERSON person  THING account  ROLE role  ROLES ('lead', 'member', 'client')  LABEL 'Account'`,
       tt: `CREATE SCREEN tt TITLE 'Timetable'\nTIMETABLE weekly\n  DAY weekday  TIME start_time  MINUTES minutes  NAME name  SUB leader  PLACE hall  SPACES spaces\n  BOOKINGS places  OF class  DATE date  ACTION 'Book'`,
       sl: `CREATE SCREEN sl TITLE 'Book'\nSLOTS appointments\n  START starts  END ends  OPEN '09:00'  CLOSE '12:00'  STEP 30  LENGTH 30  CLOSED (0)\n  RESOURCE staff  RESOURCES staff_members  LABEL name  TITLE 'Book a time'`,
@@ -174,7 +174,7 @@ test('the patterns of what comes next, what falls due, lending, a week plan, a n
     assert.doesNotMatch(shown(tag, 'due'), /Old badge/, 'a retired one is not watched');
     for (const w of [/Drill/, /overdue/i, /Ana/, /Check out/]) assert.match(shown(tag, 'lend'), w);
     assert.match(shown(tag, 'plan'), /Monday[\s\S]*Sunday/);
-    assert.match(shown(tag, 'report'), /1\. Visits by month[\s\S]*2\. Open tickets by days open[\s\S]*31-60/);
+    assert.match(shown(tag, 'report'), /1\. Visits by month[\s\S]*2\. Open tickets by days open[\s\S]*current[\s\S]*31-60[\s\S]*61-90/i, 'every band shows, the empty ones too');
     assert.match(shown(tag, 'team'), /Northside[\s\S]*Olive Owner/);
     assert.match(shown(tag, 'prices'), /Tuning[\s\S]*\$30/);
   }
