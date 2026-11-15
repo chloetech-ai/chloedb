@@ -912,6 +912,7 @@ In short:
 | route | page |
 |---|---|
 | `#/` | Start (the first run when no project is known) |
+| `#/s`, `#/s/r/<agent>[?tell=1]`, `#/s/new` | the Simple view: the board of requests, one request beside it (its own page on a phone), the box on a phone; `#/` redirects to `#/s` while Simple is your view |
 | `#/new`, `#/new/what`, `#/new/plan` | A. Start a new project |
 | `#/p` | open a folder |
 | `#/p/<project>` | B1 Since you left |
@@ -924,7 +925,6 @@ In short:
 | `#/debug/code[?q=]`, `#/debug/failing`, `#/debug/records` | D's other ways in |
 | `#/more/terminals`, `/time`, `/decisions`, `/library`, `/rules`, `/guide`, `/keys`, `/setup` | More |
 | `#/harness`, `/edit/permissions`, `/edit/memory`, `/sees/<agent>[?turn=]`, `/versions` | Optimize the harness ([HARNESS.md](HARNESS.md)); `#/more/harness` redirects there |
-| `#/s`, `#/s/r/<agent>[?tell=1]`, `#/s/new` | the Simple view: the board of requests, one request beside it (its own page on a phone), the box on a phone; `#/` redirects to `#/s` while Simple is your view |
 
 `<project>` is a short name the server gives each repository: its
 folder's name, made unique (`shop`, `shop-2`). A route never carries an
