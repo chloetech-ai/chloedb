@@ -21,9 +21,14 @@ changes collect under "Unreleased".
   (0.3.3) no longer tokenizes the statement each of the three times a query
   asks it: a scan of its bytes tells most statements apart, and only one it
   cannot tell, or one that may call a stored function, is tokenized.
-- Together they cost a query over HTTP about 30% on the nightly speed gate
-  of 2026-11-14 (BM25 on SciFact at one client, p50 433 µs before them,
-  645 µs after, on a 4-vCPU cloud VM; 521 µs with this change).
+- Together they made a query over HTTP up to a third slower on the
+  nightly speed gate of 2026-11-14 (BM25 on SciFact at one client, p50
+  154 µs before them and 204 µs after, on GitHub's 4-CPU AMD EPYC runner).
+  With this change every HTTP measure of the speed gate is within 10% of
+  2026-11-13's again (3 rounds on a 4-vCPU Intel Xeon cloud VM: BM25 456 µs
+  then, 492 µs now). Typo-tolerant BM25 stays about 15% slower in process:
+  since #513 it also looks for the neighbours of a misspelt word as it was
+  written, which is how `fuzzy => 'auto'` finds `wireless` for `wireles`.
 
 ### Cluster reads and operator upgrades (audit 4, wave 2)
 
