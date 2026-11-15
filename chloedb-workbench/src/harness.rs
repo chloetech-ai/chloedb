@@ -19,9 +19,12 @@
 //! receipts (missed memory, `recomputed` when a replay on the snapshot
 //! ChloeCtx kept gives the same decision). No model is called.
 
+mod evals;
 mod fixes;
 mod memory;
 mod perms;
+mod replay;
+mod score;
 mod stats;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -44,8 +47,10 @@ use crate::db::{get_int, get_ms, get_str, iso, now_ms, ts, Agent, Event};
 use crate::server::{blocking, parse_body, ApiResult, App};
 use crate::supervisor::{one_line, ApiError, Supervisor};
 
+pub use evals::after_hook;
 pub use memory::{MemEdits, Pin};
 pub use perms::{PermEdits, Rule};
+pub use replay::ReplayTag;
 
 /// The tables (src/db.rs makes them with the others). `kind` is `config`
 /// (a version the user edits) or `run` (what a session ran); a run
@@ -57,6 +62,9 @@ pub const TABLES: [&str; 5] = [
     "CREATE TABLE IF NOT EXISTS harness_findings (id KEYWORD PRIMARY KEY, repo KEYWORD, kind KEYWORD, title TEXT, detail TEXT, sessions TEXT, agents TEXT, cost_s FLOAT, cost_tokens INT, cost_checks INT, level KEYWORD, row_ids TEXT OPTIONS(indexed = false), version KEYWORD, state KEYWORD, first_ts TIMESTAMP, last_ts TIMESTAMP)",
     "CREATE TABLE IF NOT EXISTS hook_runs (id KEYWORD PRIMARY KEY, agent KEYWORD, version KEYWORD, event KEYWORD, source KEYWORD, command TEXT, ms INT, exit_code INT, tokens_added INT, ts TIMESTAMP)",
 ];
+
+/// The tables of cases and replays (src/harness/evals.rs, replay.rs).
+pub const EVAL_TABLES: [&str; 5] = [evals::TABLES[0], evals::TABLES[1], evals::TABLES[2], replay::TABLES[0], replay::TABLES[1]];
 
 /// The default window, in days.
 const WINDOW_DAYS: i64 = 7;
@@ -380,11 +388,13 @@ fn normalize(text: &str, cwd: &str, session_dir: &str, agent: &str, name: &str) 
     t
 }
 
-/// Applies the repository's current version to a session's files, writes
-/// what it needs beside them, and records the run version it makes.
-/// Never fails: a harness that cannot be read leaves the files as they were.
-pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, agent: &str, name: &str, mut settings: Json, mut mcp: Json) -> Applied {
-    let cfg = current(sup, repo);
+/// Applies the repository's current version (or `config`, the version a
+/// replay plays) to a session's files, writes what it needs beside them,
+/// and records the run version it makes. Never fails: a harness that
+/// cannot be read leaves the files as they were.
+#[allow(clippy::too_many_arguments)]
+pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, agent: &str, name: &str, mut settings: Json, mut mcp: Json, config: Option<&str>) -> Applied {
+    let cfg = config.and_then(|c| version(sup, c)).filter(|v| v.kind == "config" && v.repo == repo).unwrap_or_else(|| current(sup, repo));
     let e = edits_of(sup, &cfg.id);
     let cwd_s = cwd.to_string_lossy().to_string();
     // Permissions: Workbench's rules the version takes away, and its own.
@@ -1934,6 +1944,8 @@ pub fn routes() -> Router<App> {
         .route("/api/harness/sees", get(sees_route))
         .route("/dev/harness-live.html", get(dev_page))
         .route("/dev/harness/fonts/:file", get(dev_font))
+        .merge(evals::routes())
+        .merge(replay::routes())
 }
 
 #[cfg(test)]

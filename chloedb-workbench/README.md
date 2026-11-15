@@ -110,7 +110,11 @@ Every page answers one question, and the goal comes first:
   an editor that shows a change's impact on the week. A draft is promoted to
   new agents, and a wider permission is promoted only once you name it.
   Each agent records the version it ran, and a version is rolled back in
-  one step ([HARNESS.md](HARNESS.md)).
+  one step. **Tests** makes a stretch of a session into a test, replays
+  two versions against each other on your tests in sandboxes, and
+  **Optimize this** replays a stretch under one change after another until
+  the targets you tick are met, the budget is spent or you say Enough, the
+  price shown first ([HARNESS.md](HARNESS.md)).
 - **Needs you** (`#/needs`, or `.` for the drawer): every question,
   permission prompt, trust prompt and alert that asks you, across
   projects, in one card each. Filter by project, agent and kind; sort by

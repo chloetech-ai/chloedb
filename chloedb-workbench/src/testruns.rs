@@ -2220,6 +2220,12 @@ fn reruns() -> &'static std::sync::Mutex<HashMap<String, Rerun>> {
 /// that ends "its" processes (or the time limit) never reaches anything
 /// else, and the time limit ends what the test started too.
 fn run_once(words: &[String], env: &[(String, String)], dir: &Path) -> Result<(String, i64), String> {
+    run_limited(words, env, dir, RERUN_TIMEOUT)
+}
+
+/// [`run_once`] with a time limit of its own (the harness's checks,
+/// src/harness/replay.rs).
+pub(crate) fn run_limited(words: &[String], env: &[(String, String)], dir: &Path, limit: std::time::Duration) -> Result<(String, i64), String> {
     let mut cmd = Command::new(&words[0]);
     cmd.args(&words[1..])
         .current_dir(dir)
@@ -2257,7 +2263,7 @@ fn run_once(words: &[String], env: &[(String, String)], dir: &Path) -> Result<(S
         if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
             break Some(s);
         }
-        if t0.elapsed() > RERUN_TIMEOUT {
+        if t0.elapsed() > limit {
             #[cfg(unix)]
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
@@ -2271,7 +2277,7 @@ fn run_once(words: &[String], env: &[(String, String)], dir: &Path) -> Result<(S
     let text = format!("{}\n{}", String::from_utf8_lossy(&o.join().unwrap_or_default()), String::from_utf8_lossy(&e.join().unwrap_or_default()));
     match status {
         Some(s) => Ok((text, s.code().unwrap_or(1) as i64)),
-        None => Err(format!("it ran over {} s and was stopped", RERUN_TIMEOUT.as_secs())),
+        None => Err(format!("it ran over {} s and was stopped", limit.as_secs())),
     }
 }
 

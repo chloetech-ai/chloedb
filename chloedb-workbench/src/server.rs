@@ -258,6 +258,9 @@ const GOALS: &[(&str, &str)] = &[
     // Optimize the harness (src/harness.rs), at /goals/harness/<file>.
     ("harness/index.js", include_str!("../ui/goals/harness/index.js")),
     ("harness/parts.js", include_str!("../ui/goals/harness/parts.js")),
+    ("harness/evals.js", include_str!("../ui/goals/harness/evals.js")),
+    ("harness/timeline.js", include_str!("../ui/goals/harness/timeline.js")),
+    ("harness/run.js", include_str!("../ui/goals/harness/run.js")),
     ("harness/overview.js", include_str!("../ui/goals/harness/overview.js")),
     ("harness/permissions.js", include_str!("../ui/goals/harness/permissions.js")),
     ("harness/memory.js", include_str!("../ui/goals/harness/memory.js")),
@@ -471,6 +474,8 @@ async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiRes
     let output = blocking(move || {
         sup.hook(&id, v.clone())?;
         crate::testruns::after_hook(&sup, &id, &v);
+        // The code at each turn's start, for a case that starts there (src/harness/evals.rs).
+        crate::harness::after_hook(&sup, &id, &v);
         let out = crate::levels::after_hook(&sup, &lv, &id, &v);
         // Guarded actions (src/guarded.rs): a guarded Bash command is denied.
         // Hotspots (src/hotspots.rs): a first edit of one gets its history.

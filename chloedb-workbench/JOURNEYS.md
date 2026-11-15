@@ -923,7 +923,7 @@ In short:
 | `#/debug`, `#/debug/<agent>/<turn>`, `…/wrong` | D, steps 1 to 4 |
 | `#/debug/code[?q=]`, `#/debug/failing`, `#/debug/records` | D's other ways in |
 | `#/more/terminals`, `/time`, `/decisions`, `/library`, `/rules`, `/guide`, `/keys`, `/setup` | More |
-| `#/harness`, `/edit/permissions`, `/edit/memory`, `/sees/<agent>[?turn=]`, `/versions` | Optimize the harness ([HARNESS.md](HARNESS.md)); `#/more/harness` redirects there |
+| `#/harness`, `/edit/permissions`, `/edit/memory`, `/sees/<agent>[?turn=]`, `/versions`, `/evals`, `/evals/new/<agent>[?from=&to=]`, `/runs/<id>` | Optimize the harness ([HARNESS.md](HARNESS.md)); `#/more/harness` redirects there |
 
 `<project>` is a short name the server gives each repository: its
 folder's name, made unique (`shop`, `shop-2`). A route never carries an

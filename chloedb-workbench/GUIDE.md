@@ -114,6 +114,25 @@ On a line of a diff, **Why?** says who wrote it and why: the agent's edit
 (an edit made with a shell command counts too), its decision, or
 `git blame` and the commit when no agent touched it.
 
+### Make this a test, and Optimize this
+
+From an agent's More menu, **Make this a test** shows its session as a
+strip of turns. Tap where a stretch starts, then where it ends: the page
+says where its code starts (Workbench records the code as each prompt
+arrives), what it plays back (your prompts, and your answers to its
+permission prompts and questions) and the checks that judge a replay, and
+what it cannot reproduce. Keep it as a test, or press **Optimize this**:
+tick what should improve (interventions, wall time, cost per run, pass
+rate; each 30% better than now and beyond the noise, editable), see the
+price, and start. It replays the stretch under your current harness, then
+under one change at a time, each in a sandbox with no remote and its own
+empty memory, and keeps a change only when it is better and loses nothing.
+**Enough** stops it and keeps the best so far, as a candidate version you
+promote yourself. A change that would let agents do more waits for you.
+
+Optimize the harness › **Tests** lists your tests, and replays two
+versions against each other on them.
+
 ### More
 
 **Terminals** (every agent's live terminal), **Where the time went**,
