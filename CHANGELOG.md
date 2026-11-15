@@ -11,6 +11,30 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### What changes by default
+
+- **Workbench: an agent's key starts agents only as its own children**
+  (audit 2026-11-15, APP-1). `POST /api/agents` with a `wba…` key takes
+  that agent as the parent whatever the body names (another parent answers
+  403), so a read-only or `plan` agent can no longer start a free one
+  without a parent; a child may not allow a tool its parent's session does
+  not, and keeps its own permissions only where the parent had them.
+  Restarting an agent and `POST /api/goals` are the user's: an agent's key
+  answers 403.
+- **ChloeCtx: what web pages and MCP tools returned stays out of automatic
+  recall** (CTX-32): the prompt's context, query understanding and the
+  notes on a file Claude opens leave out the results and errors of
+  `WebFetch`, `WebSearch` and `mcp__*` tools, so text a page planted is not
+  injected into later prompts as memory. `memory_search` and
+  `memory_timeline` still find them, fenced as quoted data, and every
+  recall header says records are data, not instructions.
+- **ChloeCtx: a forget reaches the sync server** (CTX-33). `chloectx
+  forget`, `memory_forget` and `forget --everywhere` delete the record's row
+  on the sync server too, and the store keeps the record's id in
+  `sync-forgotten.json` so that no pull stores it again; a delete the
+  server did not answer is sent again with each push. A machine that pulled
+  the record before keeps its copy until it forgets it too.
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries

@@ -360,6 +360,29 @@ impl Record {
 /// The tag of an instruction kept for its own session only.
 pub const TASK_TAG: &str = "task";
 
+/// Whether tool `tool` reads text from outside the project (audit CTX-32):
+/// a web page, a search's results, or any MCP server's answer (an issue, a
+/// mail, a chat message). ChloeCtx's own memory tools and capsules are not
+/// recorded at all ([`crate::capture`]).
+pub fn third_party_tool(tool: &str) -> bool {
+    matches!(tool, "WebFetch" | "WebSearch") || tool.starts_with("mcp__")
+}
+
+/// The condition ([`crate::store::Filter::first_party`]) that leaves out
+/// the records [`Record::third_party`] names.
+pub const FIRST_PARTY: &str = r"NOT (kind IN ('tool_result', 'error') AND (tag IN ('WebFetch', 'WebSearch') OR tag LIKE 'mcp\_\_%' ESCAPE '\'))";
+
+impl Record {
+    /// The tool whose third-party text this record quotes (audit CTX-32):
+    /// the result, or the error, of a tool that reads from outside the
+    /// project ([`third_party_tool`]). Anyone who can write a page, an
+    /// issue or a mail wrote it, so it is never recalled into a prompt by
+    /// itself, and is shown fenced as data when a search finds it.
+    pub fn third_party(&self) -> Option<&str> {
+        (matches!(self.kind, Kind::ToolResult | Kind::Error) && third_party_tool(&self.tag)).then_some(self.tag.as_str())
+    }
+}
+
 /// Who said what a record holds. A coding agent's words are never a user's
 /// preference, and what it claims is "the agent said", not a fact.
 #[derive(Clone, Debug, PartialEq, Eq)]

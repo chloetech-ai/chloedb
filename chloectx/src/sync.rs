@@ -31,9 +31,11 @@
 //! should take it over HTTPS and need a key (an API key with the `write`
 //! scope is enough once the table exists; creating it needs `admin`).
 //!
-//! Records retagged or forgotten after they were pushed are not sent
-//! again: the server keeps the version it was sent first. Records that
-//! `chloectx redact` rewrites are ([`push_records`]).
+//! Records retagged after they were pushed are not sent again: the server
+//! keeps the version it was sent first. Records that `chloectx redact`
+//! rewrites are ([`push_records`]). A record forgotten here has its row
+//! deleted on the server, and a pull never stores it again
+//! ([`Forgotten`], audit CTX-33).
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -369,6 +371,86 @@ pub fn save_state(store_dir: &Path, s: &SyncState) {
     }
 }
 
+/// The records forgotten in a store (audit CTX-33): `sync-forgotten.json`
+/// beside it. A pull never stores one of them again, whichever server or
+/// machine still holds it, and each push deletes the server's rows of
+/// those whose delete the server has not answered yet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Forgotten {
+    /// Every record forgotten here, by id.
+    #[serde(default)]
+    pub ids: std::collections::BTreeSet<String>,
+    /// Those whose row the sync server may still hold.
+    #[serde(default)]
+    pub unsent: std::collections::BTreeSet<String>,
+}
+
+/// Held while `sync-forgotten.json` is read and written again: a forget
+/// adds to it while a push takes from it.
+static FORGOTTEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn forgotten_path(store_dir: &Path) -> PathBuf {
+    store_dir.join("sync-forgotten.json")
+}
+
+pub fn load_forgotten(store_dir: &Path) -> Forgotten {
+    std::fs::read_to_string(forgotten_path(store_dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_forgotten(store_dir: &Path, f: &Forgotten) -> Result<()> {
+    let tmp = forgotten_path(store_dir).with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string(f).unwrap_or_default())?;
+    std::fs::rename(tmp, forgotten_path(store_dir))?;
+    Ok(())
+}
+
+/// Notes `ids` as forgotten in the store at `store_dir`: never pulled again,
+/// and their server rows to delete ([`send_forgets`]).
+pub fn forget(store_dir: &Path, ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut f = load_forgotten(store_dir);
+    for id in ids {
+        f.ids.insert(id.clone());
+        f.unsent.insert(id.clone());
+    }
+    save_forgotten(store_dir, &f)
+}
+
+/// Deletes the server's rows of the records forgotten in the store at
+/// `store_dir` that it may still hold: in the project's table, and in the
+/// table projects shared before 0.3.4 where the key may write it (a key of
+/// the project's table alone may not, and the store's list keeps those
+/// from coming back here all the same). How many were sent.
+pub fn send_forgets(remote: &Remote, project: &str, store_dir: &Path) -> Result<usize> {
+    let unsent: Vec<String> = {
+        let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+        load_forgotten(store_dir).unsent.into_iter().collect()
+    };
+    if unsent.is_empty() {
+        return Ok(0);
+    }
+    let table = table_for(project);
+    for batch in unsent.chunks(BATCH) {
+        let ops = |t: &str| -> Vec<Json> { batch.iter().map(|id| json!({"op": "delete", "table": t, "key": format!("{project}:{id}")})).collect() };
+        match remote.post("/v1/write", &json!({ "ops": ops(&table) })) {
+            // A server with no table of the project holds none of its rows.
+            Err(e) if no_table(&e, &table) => {}
+            r => drop(r?),
+        }
+        let _ = remote.post("/v1/write", &json!({ "ops": ops(TABLE) }));
+    }
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut f = load_forgotten(store_dir);
+    for id in &unsent {
+        f.unsent.remove(id);
+    }
+    save_forgotten(store_dir, &f)?;
+    Ok(unsent.len())
+}
+
 /// A record as the server's row, redacted, pushed by machine `origin`.
 /// A record this store pulled keeps the machine it came from.
 fn remote_doc(project: &str, origin: &str, r: &Record) -> Json {
@@ -481,18 +563,20 @@ pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<u
 /// Stores the records of `project` the server holds and `store` lacks:
 /// from the project's table, then from the table projects shared before
 /// 0.3.4 ([`TABLE`]) where the key may read it. A server without a table
-/// holds nothing to pull from it.
-pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
+/// holds nothing to pull from it. The records forgotten in the store
+/// (its [`Forgotten`], in `store_dir`) are never stored again (audit
+/// CTX-33).
+pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, store_dir: &Path) -> Result<usize> {
     let cfg = load_config(&remote.header_dir);
     let me = origin(&remote.header_dir);
     let table = table_for(project);
-    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg.trusted) {
+    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg.trusted, store_dir) {
         Err(e) if no_table(&e, &table) => 0,
         r => r?,
     };
     // The shared table may be gone, or not for this key (a project's key
     // is refused it): neither is an error of this project's sync.
-    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg.trusted).unwrap_or(0);
+    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg.trusted, store_dir).unwrap_or(0);
     st.pulled += got as u64;
     st.last_pull = crate::now();
     Ok(got)
@@ -503,7 +587,8 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -
 /// records, so the server holds several of one number, and a full page
 /// may end inside them, so its last number's records are read whole
 /// before the next page starts after it.
-fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, trusted: &[String]) -> Result<usize> {
+#[allow(clippy::too_many_arguments)]
+fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
     let mut got = 0;
     let mut after = i64::MIN;
     loop {
@@ -514,7 +599,7 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
             rows.retain(|r| r.get(5).and_then(|v| v.as_i64()) != Some(top));
             rows.extend(remote.rows(&format!("SELECT {cols} FROM {table} WHERE project = :p AND seq = :s LIMIT 10000"), json!({ "p": project, "s": top }))?);
         }
-        got += store_new(store, &rows, me, trusted)?;
+        got += store_new(store, &rows, me, trusted, store_dir)?;
         after = top;
         if !full {
             break;
@@ -527,11 +612,20 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
 /// here; how many. A row another machine pushed (its `origin`, the
 /// thirteenth column, is not `me`; a row of the shared table names none)
 /// is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`] when it is in
-/// `trusted`.
-fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String]) -> Result<usize> {
+/// `trusted`. A record forgotten here ([`Forgotten`], in `store_dir`) is
+/// passed over: the server, or another machine that pushes it again, may
+/// still hold it. The list is read, and the records stored, while a forget
+/// cannot add to it, so that one that deletes a record as it is pulled
+/// either finds it stored, and deletes it, or keeps it out.
+fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let forgotten = load_forgotten(store_dir).ids;
     let mut recs: Vec<Record> = Vec::new();
     for row in rows {
         let Some(mut r) = remote_record(row) else { continue };
+        if forgotten.contains(&r.id) {
+            continue;
+        }
         crate::redact::redact_record(&mut r);
         let from = row.get(12).and_then(|v| v.as_str()).filter(|o| !o.is_empty()).unwrap_or("unknown");
         if from != me {
