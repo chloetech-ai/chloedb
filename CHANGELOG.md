@@ -248,6 +248,10 @@ coordinators.**
 - The benchmark harness (`chloedb-server/deploy/compare`, `graph-compare`, `compare/recsys/local.sh`) starts ChloeDB with `--answer-cache-mb 0`: since 0.3.1 its answer cache answered 99.5% of a timed run's repeated queries. `engine-compare run` reads each server's `chloedb_answer_cache_total` and fails a run in which any answer came from the cache. Every published ChloeDB run was measured on a build from before the cache. (PRF-1)
 - CI tests a push to main from the newest commit of main whose run passed, rather than from the commit before it, so a documentation change after a failed or cancelled run no longer passes without testing the code before it, and `latest` is published only from tested code. (PLT-3)
 
+### Tenants (experimental)
+
+- The tenants page says to wait a random while before trying a write refused with `NotWriter` again, longer after each refusal in a row. Nodes that try again at once can take a tenant from each other with none committing while the store's puts are slow: in the crash test of tenants, three writers whose disk took 2 ms more for each fsync committed none of 700 writes in 6 s, and four blackboard workers did none of 40 tasks in a minute. The test's workers back off now, and the test passed with each fsync up to 8 ms slower.
+
 ### Formal specifications
 
 - `spec/` holds TLA+ specifications of ChloeDB's protocols, checked with
