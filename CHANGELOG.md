@@ -11,6 +11,20 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Queries over HTTP are no longer read twice before their plan
+
+- A query with parameters no longer parses its whole statement for the
+  tables it names unless a parameter needs them (`vector_of` without a
+  `table`, or `embed`). Since 0.3.2 every such query did, outside the cache
+  of plans.
+- The check that a statement nests too deep for the thread that asks it
+  (0.3.3) no longer tokenizes the statement each of the three times a query
+  asks it: a scan of its bytes tells most statements apart, and only one it
+  cannot tell, or one that may call a stored function, is tokenized.
+- Together they cost a query over HTTP about 30% on the nightly speed gate
+  of 2026-11-14 (BM25 on SciFact at one client, p50 433 µs before them,
+  645 µs after, on a 4-vCPU cloud VM; 521 µs with this change).
+
 ### Cluster reads and operator upgrades (audit 4, wave 2)
 
 - **A read after a write checks the write's term (X-E1).** A write answers

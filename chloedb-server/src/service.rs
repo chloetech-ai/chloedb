@@ -2671,7 +2671,11 @@ impl Service {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
         let m = j.as_object().ok_or_else(|| ApiError::bad("params must be an object"))?;
-        let named: Vec<String> = sql.map(crate::scoped::named_tables).unwrap_or_default();
+        // The tables the statement names, read (a parse of the whole
+        // statement) only for a parameter that resolves its table by them:
+        // a value, as most parameters are, needs none of it.
+        let mut read: Option<Vec<String>> = None;
+        let mut named_of = || -> Vec<String> { read.get_or_insert_with(|| sql.map(crate::scoped::named_tables).unwrap_or_default()).clone() };
         for (k, v) in m {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
@@ -2687,6 +2691,10 @@ impl Service {
                     if let Some(t) = o.get("table").and_then(|f| f.as_str()) {
                         who.may_table(Scope::Read, t, &format!("parameter :{k} ({{\"vector_of\"}} reads a row)"))?;
                     }
+                    let named = match o.get("table").and_then(|f| f.as_str()) {
+                        Some(_) => Vec::new(),
+                        None => named_of(),
+                    };
                     let table = param_table(o.get("table").and_then(|f| f.as_str()), &named, &order, who, &has, "vector_of").map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
                     if table.is_none() && who.limited() {
                         return Err(ApiError::bad(format!("parameter :{k}: no table the key {:?} may read has {}", who.name, field.map_or("a VECTOR field".to_string(), |f| format!("a field {f}")))));
@@ -2696,7 +2704,7 @@ impl Service {
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named, who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
                     let (table, field, e) = self.model(Some(&table), o.get("field").and_then(|f| f.as_str()))?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
