@@ -24,10 +24,10 @@ test('ALLOW statements: what, on which table, to whom, which rows', () => {
   assert.throws(() => parseAllow('ALLOW READ ON t TO strangers'), /say everyone, members, admins or owner/);
   assert.throws(() => parseAllow('ALLOW PEEK ON t TO members'), /PEEK is not READ/);
   assert.throws(() => parseAllow("ALLOW READ ON t TO members WHERE status = 'open'"), /WHERE takes <column> = :user_id/);
-  const via = parseAllow('ALLOW READ ON tasks TO members WHERE project IN (SELECT project FROM members_of WHERE person = :user_id) OR owner_id = :user_id');
-  assert.deepEqual(via.scope, [{ col: 'project', by: 'user', via: { table: 'members_of', pick: 'project', match: 'person', by: 'user' } }, { col: 'owner_id', by: 'user' }]);
-  assert.equal(allowText(via), 'ALLOW READ ON tasks TO members WHERE project IN (SELECT project FROM members_of WHERE person = :user_id) OR owner_id = :user_id');
-  assert.deepEqual(checkAccess([allowText(via)], new Map([['tasks', new Set(['project', 'owner_id'])], ['members_of', new Set(['project'])]])), [`access: ${allowText(via)}: members_of has no column person`]);
+  const via = parseAllow('ALLOW READ ON tickets TO members WHERE account IN (SELECT account FROM members_of WHERE person = :user_id) OR owner_id = :user_id');
+  assert.deepEqual(via.scope, [{ col: 'account', by: 'user', via: { table: 'members_of', pick: 'account', match: 'person', by: 'user' } }, { col: 'owner_id', by: 'user' }]);
+  assert.equal(allowText(via), 'ALLOW READ ON tickets TO members WHERE account IN (SELECT account FROM members_of WHERE person = :user_id) OR owner_id = :user_id');
+  assert.deepEqual(checkAccess([allowText(via)], new Map([['tickets', new Set(['account', 'owner_id'])], ['members_of', new Set(['account'])]])), [`access: ${allowText(via)}: members_of has no column person`]);
   assert.deepEqual(checkAccess(['ALLOW READ ON nope TO members', 'ALLOW ALL ON t TO members WHERE owner_id = :user_id'], new Map([['t', new Set(['id', 'title'])]])),
     ['access: ALLOW READ ON nope TO members names the table nope, which the app does not have', 'access: ALLOW ALL ON t WHERE owner_id = :user_id: t has no column owner_id (add it to the table, a keyword column)'.replace('ALLOW ALL ON t WHERE', 'ALLOW ALL ON t TO members WHERE')]);
 });
@@ -137,9 +137,9 @@ test('a published app: visitors, members, row scopes by person and by company, e
       { name: 'invoices', columns: [{ name: 'title', type: 'text' }, { name: 'company_id', type: 'keyword' }], access: ['ALLOW ALL ON invoices TO members WHERE company_id = :company_id'] },
       { name: 'products', columns: [{ name: 'name', type: 'text' }, { name: 'owner_id', type: 'keyword' }] },
       // rows of what a person belongs to, through a link table the owner fills
-      { name: 'members_of', columns: [{ name: 'person', type: 'keyword' }, { name: 'project', type: 'keyword' }], access: ['ALLOW READ ON members_of TO members WHERE person = :user_id', 'ALLOW ALL ON members_of TO owner'] },
-      { name: 'jobs', columns: [{ name: 'title', type: 'text' }, { name: 'project', type: 'keyword' }],
-        access: ['ALLOW READ, ADD, CHANGE ON jobs TO members WHERE project IN (SELECT project FROM members_of WHERE person = :user_id)', 'ALLOW ALL ON jobs TO owner'] },
+      { name: 'members_of', columns: [{ name: 'person', type: 'keyword' }, { name: 'account', type: 'keyword' }], access: ['ALLOW READ ON members_of TO members WHERE person = :user_id', 'ALLOW ALL ON members_of TO owner'] },
+      { name: 'cases', columns: [{ name: 'title', type: 'text' }, { name: 'account', type: 'keyword' }],
+        access: ['ALLOW READ, ADD, CHANGE ON cases TO members WHERE account IN (SELECT account FROM members_of WHERE person = :user_id)', 'ALLOW ALL ON cases TO owner'] },
     ];
     const caps = [];
     const have = new Set(await store.tableNames());
@@ -237,22 +237,22 @@ test('a published app: visitors, members, row scopes by person and by company, e
     const listed = (await call('/companies', undefined, B)).body;
     assert.deepEqual(listed.companies.map((c) => c.name).sort(), ['Acme', 'Beta']);
 
-    // Rows of what each person belongs to: Alice is on p1, Bob on p2 and p3.
-    for (const [id, person, project] of [['m1', aliceId, 'p1'], ['m2', bobId, 'p2'], ['m3', bobId, 'p3']]) await call('/insert', { table: 'members_of', row: { id, person, project } }, { studio: true });
-    for (const [id, title, project] of [['j1', 'Draft', 'p1'], ['j2', 'Review', 'p2'], ['j3', 'Ship', 'p3'], ['j4', 'Other', 'p9']]) await call('/insert', { table: 'jobs', row: { id, title, project } }, { studio: true });
-    assert.deepEqual((await sql('SELECT title FROM jobs ORDER BY title', A)).body.rows, [{ title: 'Draft' }], 'Alice sees the jobs of her project');
-    assert.deepEqual((await sql('SELECT title FROM jobs ORDER BY title', B)).body.rows, [{ title: 'Review' }, { title: 'Ship' }]);
-    assert.deepEqual((await sql('SELECT j.title AS title FROM jobs j JOIN members_of m ON m.project = j.project ORDER BY title', B)).body.rows.map((r) => r.title), ['Review', 'Ship'], 'joins keep the scope');
-    assert.equal((await sql('SELECT title FROM jobs', {})).status, 401);
-    assert.equal((await call('/insert', { table: 'jobs', row: { title: 'Mine', project: 'p1' } }, A)).status, 200, 'an add to her own project');
-    assert.equal((await call('/insert', { table: 'jobs', row: { title: 'Sneak', project: 'p2' } }, A)).status, 403, 'not to another project');
-    assert.equal((await call('/insert', { table: 'jobs', row: { title: 'Nowhere' } }, A)).status, 403, 'an add names one of her projects: nothing is filled in');
-    assert.equal((await call('/update', { table: 'jobs', id: 'j2', fields: { title: 'Hijacked' } }, A)).status, 403);
-    assert.equal((await call('/update', { table: 'jobs', id: 'j1', fields: { project: 'p2' } }, A)).status, 403, 'a job is not moved to a project she is not on');
-    assert.equal((await call('/update', { table: 'jobs', id: 'j1', fields: { title: 'Draft 2' } }, A)).status, 200);
-    // put on a project by the owner: she sees it at once
-    await call('/insert', { table: 'members_of', row: { id: 'm4', person: aliceId, project: 'p3' } }, { studio: true });
-    assert.deepEqual((await sql('SELECT title FROM jobs ORDER BY title', A)).body.rows.map((r) => r.title), ['Draft 2', 'Mine', 'Ship']);
+    // Rows of what each person belongs to: Alice is on a1, Bob on a2 and a3.
+    for (const [id, person, account] of [['m1', aliceId, 'a1'], ['m2', bobId, 'a2'], ['m3', bobId, 'a3']]) await call('/insert', { table: 'members_of', row: { id, person, account } }, { studio: true });
+    for (const [id, title, account] of [['j1', 'Draft', 'a1'], ['j2', 'Review', 'a2'], ['j3', 'Ship', 'a3'], ['j4', 'Other', 'a9']]) await call('/insert', { table: 'cases', row: { id, title, account } }, { studio: true });
+    assert.deepEqual((await sql('SELECT title FROM cases ORDER BY title', A)).body.rows, [{ title: 'Draft' }], 'Alice sees the cases of her account');
+    assert.deepEqual((await sql('SELECT title FROM cases ORDER BY title', B)).body.rows, [{ title: 'Review' }, { title: 'Ship' }]);
+    assert.deepEqual((await sql('SELECT j.title AS title FROM cases j JOIN members_of m ON m.account = j.account ORDER BY title', B)).body.rows.map((r) => r.title), ['Review', 'Ship'], 'joins keep the scope');
+    assert.equal((await sql('SELECT title FROM cases', {})).status, 401);
+    assert.equal((await call('/insert', { table: 'cases', row: { title: 'Mine', account: 'a1' } }, A)).status, 200, 'an add to her own account');
+    assert.equal((await call('/insert', { table: 'cases', row: { title: 'Sneak', account: 'a2' } }, A)).status, 403, 'not to another account');
+    assert.equal((await call('/insert', { table: 'cases', row: { title: 'Nowhere' } }, A)).status, 403, 'an add names one of her accounts: nothing is filled in');
+    assert.equal((await call('/update', { table: 'cases', id: 'j2', fields: { title: 'Hijacked' } }, A)).status, 403);
+    assert.equal((await call('/update', { table: 'cases', id: 'j1', fields: { account: 'a2' } }, A)).status, 403, 'a case is not moved to an account she is not on');
+    assert.equal((await call('/update', { table: 'cases', id: 'j1', fields: { title: 'Draft 2' } }, A)).status, 200);
+    // put on an account by the owner: she sees it at once
+    await call('/insert', { table: 'members_of', row: { id: 'm4', person: aliceId, account: 'a3' } }, { studio: true });
+    assert.deepEqual((await sql('SELECT title FROM cases ORDER BY title', A)).body.rows.map((r) => r.title), ['Draft 2', 'Mine', 'Ship']);
   } finally {
     if (engineProc) { engineProc.kill('SIGTERM'); await new Promise((r) => { if (engineProc.exitCode !== null) r(); else engineProc.on('exit', r); }); }
     strata.kill();

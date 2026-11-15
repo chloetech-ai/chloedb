@@ -1,0 +1,159 @@
+{
+ "title": "What falls due, grouped: overdue, due soon and later, with how many of each",
+ "about": "Expiry dates, renewals, licences, inspections, deadlines, check-ups: rows with a day something must happen by. They are grouped as overdue, due within the next days and later, each with how far off it is, and the counts lead the screen, so what needs doing now is seen first. Choose it over a table whenever the request asks what is expiring, ending, overdue or due soon.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_due"
+  },
+  "due": {
+   "about": "the column with the day it falls due ('YYYY-MM-DD')",
+   "need": true
+  },
+  "name": {
+   "about": "the column with each row's title",
+   "default": "name"
+  },
+  "sub": {
+   "about": "columns shown under the title, joined by ' · ' (a list)"
+  },
+  "soon": {
+   "about": "how many days ahead count as due soon",
+   "default": 30
+  },
+  "where": {
+   "about": "an SQL condition: the rows still to watch (not done, not retired)"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "noun": {
+   "about": "what a row is, for the counts (licence, permit)",
+   "default": "item"
+  },
+  "open": {
+   "about": "the view a row opens with {id}"
+  },
+  "action": {
+   "about": "a button on each row (Renewed, Done)"
+  },
+  "set": {
+   "about": "what the action sets, as an SQL-free object expression of the row r: {due: lib.dates.addDays(today, 365)}"
+  },
+  "call": {
+   "about": "the function the action calls with {id}"
+  },
+  "empty": {
+   "about": "words when nothing falls due",
+   "default": "Nothing falls due."
+  }
+ },
+ "example": {
+  "use": "due",
+  "table": "permits",
+  "due": "expires",
+  "name": "title",
+  "sub": [
+   "holder",
+   "kind"
+  ],
+  "soon": 30,
+  "where": "status != 'retired'",
+  "title": "Expiring",
+  "noun": "permit",
+  "action": "Renewed",
+  "set": "{expires: lib.dates.addDays(today, 365)}"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT *, days_left({{due}}, :today) AS sa_left FROM {{table}} WHERE {{due}} IS NOT NULL{{where|pre: AND }} ORDER BY {{due}} LIMIT 500",
+    "params": {
+     "today": "=today"
+    }
+   }
+  },
+  "let": {
+   "{{key}}_soon": "=Number({{soon|json}}) || 30",
+   "{{key}}_group": "=r => r.sa_left < 0 ? 'Overdue' : r.sa_left <= {{key}}_soon ? 'Due in the next ' + {{key}}_soon + ' days' : 'Later'",
+   "{{key}}_when": "=r => r.sa_left < 0 ? app.fmt.count(-r.sa_left, 'day') + ' overdue' : r.sa_left === 0 ? 'Due today' : 'In ' + app.fmt.count(r.sa_left, 'day')",
+   "{{key}}_items": "=({{key}} || []).map(r => ({id: r.id, title: String(r[{{name|json}}] ?? ''), subtitle: ({{sub|json}} || []).map(c => r[c]).filter(x => x != null && x !== '').join(' · ') || null, meta: {{key}}_when(r) + ' · ' + app.fmt.date(r[{{due|json}}]), group: {{key}}_group(r), row: r}))",
+   "{{key}}_over": "=({{key}} || []).filter(r => r.sa_left < 0).length",
+   "{{key}}_near": "=({{key}} || []).filter(r => r.sa_left >= 0 && r.sa_left <= {{key}}_soon).length"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "Overdue",
+      "value": "={{key}}_over"
+     },
+     {
+      "label": "=('Due in ' + {{key}}_soon + ' days')",
+      "value": "={{key}}_near"
+     },
+     {
+      "label": "=('Every ' + {{noun|json}})",
+      "value": "=({{key}} || []).length"
+     }
+    ]
+   },
+   {
+    "if": "=({{key}} || []).length === 0",
+    "then": [
+     {
+      "text": "{{empty}}",
+      "muted": true
+     }
+    ],
+    "else": [
+     {
+      "ui": "groupedList",
+      "props": {
+       "items": "={{key}}_items",
+       "groupOrder": "=['Overdue', 'Due in the next ' + {{key}}_soon + ' days', 'Later']",
+       "collapsed": "=['Later']",
+       "onSelect": {
+        "$when": "open",
+        "$value": "=id => app.open({{open|json}}, {id})"
+       }
+      }
+     },
+     {
+      "$when": "action",
+      "card": [
+       {
+        "each": "=({{key}} || []).filter(r => r.sa_left <= {{key}}_soon)",
+        "as": "r",
+        "class": "list",
+        "body": [
+         {
+          "row": [
+           {
+            "text": "=String(r[{{name|json}}] ?? '') + ': ' + {{key}}_when(r)"
+           },
+           {
+            "button": "{{action}}",
+            "class": "small",
+            "do": "=() => {{call|json}} ? app.call({{call|json}}, {id: r.id}) : app.update({{table|json}}, r.id, {{set}})"
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "title": "To do now"
+     }
+    ]
+   }
+  ]
+ }
+}

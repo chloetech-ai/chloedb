@@ -52,6 +52,20 @@ const MORE = {
     clauses: { NEEDS: ['needs', 'sql'], LOCKED: ['locked', 'str'], UNLOCK: ['unlock', 'slug'], UNLOCKLABEL: ['unlockLabel', 'str'], PROGRESS: ['progress', 'name'], LESSON: ['lesson', 'name'], NAME: ['name', 'name'], TEXT: ['text', 'name'], MINUTES: ['minutes', 'name'], 'ORDER BY': ['order', 'sql'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], OPEN: ['open', 'slug'], CERTIFICATE: ['certificate', 'slug'], NOUN: ['noun', 'str'], TITLE: ['title', 'str'], ID: ['id', 'slug'] } },
   VARIANCE: { use: 'variance', need: { period: 'PERIOD <column or SQL naming each period>', value: 'VALUE <column, or an aggregate with GROUP BY>' },
     clauses: { PERIOD: ['period', 'sql'], VALUE: ['value', 'sql'], COMPARE: ['compare', 'sql'], AGAINST: ['compareLabel', 'str'], CHART: ['chart', 'word'], 'GROUP BY': ['group', 'sql'], 'ORDER BY': ['order', 'sql'], LABEL: ['label', 'str'], NAME: ['periodLabel', 'str'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LAST: ['last', 'num'], FILE: ['file', 'str'], TITLE: ['title', 'str'] } },
+  NEXT: { use: 'next', need: { date: 'DATE <column with the day>' },
+    clauses: { DATE: ['date', 'name'], NAME: ['name', 'name'], TIME: ['time', 'name'], PLACE: ['place', 'name'], TEXT: ['text', 'name'], BADGE: ['badge', 'name'], WHERE: ['where', 'sql'], EYEBROW: ['eyebrow', 'str'], ACTION: ['action', 'str'], OPEN: ['open', 'slug'], CALL: ['call', 'slug'], TITLE: ['title', 'str'], MORE: ['more', 'num'], EMPTY: ['empty', 'str'] } },
+  DUE: { use: 'due', need: { due: 'DUE <column with the day it falls due>' },
+    clauses: { DUE: ['due', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'names'], SOON: ['soon', 'num'], WHERE: ['where', 'sql'], TITLE: ['title', 'str'], NOUN: ['noun', 'str'], OPEN: ['open', 'slug'], ACTION: ['action', 'str'], SET: ['set', 'js'], CALL: ['call', 'slug'], EMPTY: ['empty', 'str'] } },
+  LEND: { use: 'lending', need: { items: 'ITEMS <table of the things lent>' },
+    clauses: { ITEMS: ['items', 'name'], ITEM: ['item', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'name'], HOLDER: ['holder', 'name'], PERSON: ['person', 'flag'], OUT: ['out', 'name'], DUE: ['due', 'name'], BACK: ['back', 'name'], DAYS: ['days', 'num'], TITLE: ['title', 'str'], NOUN: ['noun', 'str'], LABEL: ['label', 'str'] } },
+  PLAN: { use: 'planner', need: { items: 'ITEMS <table of the things to pick from>' },
+    clauses: { ITEMS: ['items', 'name'], DAY: ['day', 'name'], ITEM: ['item', 'name'], NAME: ['name', 'name'], PARTS: ['parts', 'name'], OF: ['of', 'name'], PART: ['part', 'name'], QTY: ['qty', 'name'], UNIT: ['unit', 'name'], TITLE: ['title', 'str'], PICK: ['pick', 'str'], TOTALS: ['totals', 'str'] } },
+  REPORT: { use: 'report', bare: 'title', need: { sections: "SECTION 'Title' (SELECT ...)" },
+    clauses: { SECTION: ['sections', 'section'], SUB: ['sub', 'text'] } },
+  TEAM: { use: 'team', need: { things: 'THINGS <table of what people are put on>' },
+    clauses: { THINGS: ['things', 'name'], PERSON: ['person', 'name'], THING: ['thing', 'name'], NAME: ['name', 'name'], ROLE: ['role', 'name'], ROLES: ['roles', 'strs'], TITLE: ['title', 'str'], LABEL: ['label', 'str'] } },
+  PRICES: { use: 'prices',
+    clauses: { NAME: ['name', 'name'], PRICE: ['price', 'name'], NOTE: ['note', 'name'], GROUP: ['group', 'name'], BADGE: ['badge', 'name'], UNIT: ['unit', 'str'], COLUMNS: ['columns', 'cols'], WHERE: ['where', 'sql'], 'ORDER BY': ['order', 'sql'], TITLE: ['title', 'str'], EYEBROW: ['eyebrow', 'str'], OPEN: ['open', 'slug'], EMPTY: ['empty', 'str'] } },
   TREND: { use: 'trend',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
@@ -263,11 +277,11 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|LANES|DETAIL|FLAGS|HEAD|CHIPS|JOIN|TIP|TONE|PRIMARY|SECONDARYOPEN|SECONDARY|OVER|PROMPT|BUTTON|NOTE|INPUT|WEB|PAY|CHARGE|PAID|QTY|CONTENT|BODY)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP|PRICE|IMAGE|LEFT|SOON|OUT|OPEN|CALL|DONE|LOOK|EYEBROW|PROGRESS|LESSON|MINUTES|CERTIFICATE|ID|PERIOD|FILE|COMPARE|AGAINST|CHART|NEEDS|LOCKED|UNLOCKLABEL|UNLOCK|LANES|DETAIL|FLAGS|HEAD|CHIPS|JOIN|TIP|TONE|PRIMARY|SECONDARYOPEN|SECONDARY|OVER|PROMPT|BUTTON|NOTE|INPUT|WEB|PAY|CHARGE|PAID|QTY|CONTENT|BODY|HOLDER|PERSON|BADGE|MORE|SET|THINGS|THING|ROLES|ROLE|PARTS|PART|OF|UNIT|TOTALS|SECTION|GROUP)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
-  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|PHOTOS|QUERY|PARAM|EXTRA)\b/i;
+  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|PHOTOS|QUERY|PARAM|EXTRA|SECTION|SET)\b/i;
   const split = [];
   // (in a part whose ACTION is a label alone, such as OFFERS, an ACTION line
   // is split like any other: ACTION 'Buy'  CALL buy  PAY orders)
@@ -545,6 +559,29 @@ function moreClause(part, kw, rest, l, n) {
     case 'sql': case 'js': if (!rest) fail(n, `${kw} needs a value`); u[param] = kind === 'sql' && /^\(\s*SELECT\b[\s\S]*\)$/i.test(rest) ? rest.slice(1, -1).trim() : rest; break;
     case 'fields': u[param] = splitTop(parens(rest, n, kw).inside).map((f) => fieldSpec(f, n)); break;
     case 'cols': u[param] = splitTop(parens(rest, n, kw).inside).map((x) => columnSpec(x, n)); break;
+    // ('words', 'words'): a list of words
+    case 'strs': {
+      const inside = rest.trim().startsWith('(') ? parens(rest, n, kw).inside : rest;
+      u[param] = splitTop(inside).map((x) => (/^'/.test(x.trim()) ? literal(x.trim()) : x.trim())).filter(Boolean);
+      break;
+    }
+    // SECTION 'Title' (SELECT ...) [COLUMNS (...)] [TOTAL (col, ...)] [NOTE 'words']: a section of a report, one per line
+    case 'section': {
+      const tm = rest.match(/^('(?:[^']|'')*')\s*/);
+      if (!tm) fail(n, `SECTION 'Title' (SELECT ...) [COLUMNS (...)] [TOTAL (col, ...)] [NOTE 'words']`);
+      const q = parens(rest.slice(tm[0].length), n, 'SECTION');
+      const sec = { title: literal(tm[1]), query: q.inside.trim() };
+      let more = q.rest;
+      while (more) {
+        let mm;
+        if ((mm = more.match(/^COLUMNS\s*/i))) { const p = parens(more.slice(mm[0].length), n, 'COLUMNS'); sec.columns = splitTop(p.inside).map((x) => columnSpec(x, n)); more = p.rest; continue; }
+        if ((mm = more.match(/^TOTAL\s*/i))) { const p = parens(more.slice(mm[0].length), n, 'TOTAL'); sec.total = names(p.inside, n, 'TOTAL'); more = p.rest; continue; }
+        if ((mm = more.match(/^NOTE\s+('(?:[^']|'')*')\s*/i))) { sec.note = literal(mm[1]); more = more.slice(mm[0].length); continue; }
+        fail(n, `SECTION: cannot read ${JSON.stringify(more.slice(0, 40))}; after the query come COLUMNS (...), TOTAL (col, ...) and NOTE 'words'`);
+      }
+      u[param] = [...(u[param] || []), sec];
+      break;
+    }
     case 'param': {
       const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/);
       if (!m) fail(n, 'PARAM <name> = <JavaScript expression> (its value for :name in WHERE)');
@@ -675,6 +712,20 @@ DASHBOARD <table> [AS key]     -- a value over the last N days against the N bef
   DATE <timestamp col> | DAY <'YYYY-MM-DD' col>  VALUE SUM(col)  LABEL 'Hours'  FORMAT number | money | hours  DAYS 30  BY <group col>  RECENT (columns)  WHERE  TITLE
 TREND <table> [AS key]         -- a value per day, week or month over the last periods, as bars (LINE for a line), with the total and the average
   DATE <timestamp or 'YYYY-MM-DD' col>  VALUE SUM(col)  PER day | week | month  LAST 12  LABEL 'Distance (km)'  FORMAT number | money | hours  WHERE  LINE  TITLE
+NEXT <table> [AS key]          -- the next thing to come as the headline (a date block, its title, when and where, how long until it, its main action), the ones after it as dated cards: classes, matches, shows, meetings, open days. Put it first on a page whose visitors come for what is next (above any slogan), on a front page too
+  DATE <day col>  NAME <col>  TIME <col>  PLACE <col>  TEXT <col>  BADGE <col>  WHERE <SQL>  EYEBROW 'Next match'  ACTION 'Get tickets'  OPEN <view, gets {id}> | CALL <function>  MORE 6  TITLE 'Coming up'  EMPTY
+DUE <table> [AS key]           -- what falls due, grouped as overdue, due in the next SOON days and later, with how far off each is and the counts first: expiry dates, renewals, licences, inspections, deadlines. Choose it whenever the request asks what is expiring, ending, overdue or due soon
+  DUE <day col>  NAME <col>  SUB col, col  SOON 30  WHERE <the rows still to watch>  NOUN 'permit'  OPEN <view>  ACTION 'Renewed'  SET {col: expression of r and today} | CALL <function>  TITLE  EMPTY
+LEND <loans table> [AS key]    -- things lent out and back (tools, keys, cameras, kit, vehicles): each thing In, Out with whom until when, or Overdue; check out with a short form, check in with a tap, the latest loans. A loan is a row: the thing, who has it, the day out, the day due, the day back (empty while out)
+  ITEMS <table of the things>  ITEM <loans col with the thing's id>  NAME <things col>  SUB <things col>  HOLDER <loans col>  PERSON (holder is a person who signed up)  OUT <day out col>  DUE <due col>  BACK <day back col>  DAYS 14  NOUN 'tool'  LABEL 'Tool'  TITLE
+PLAN <plan table> [AS key]     -- a week to plan: each named day (Monday 16 Nov) with what is picked for it from ITEMS, Change and Clear, a Pick menu, arrows to other weeks; with PARTS, what the week adds up to beside it (summed over the picked things' parts: materials to buy, hours, parts). Choose it over a table of dated rows whenever the request plans a week
+  ITEMS <table of the things to pick>  DAY <plan day col>  ITEM <plan col with the thing's id>  NAME <things col>  PARTS <table of what each thing needs>  OF <parts col with the thing's id>  PART <its name col>  QTY <col>  UNIT <col>  TITLE 'This week'  PICK 'Pick a job'  TOTALS 'Materials to buy'
+REPORT 'Month-end report'      -- a report in numbered sections, each its own query drawn as a table with a total row and a note under it: a board or month-end report, any request that names a report's parts or asks it to read like a report (1 Visits by month, 2 Open tickets by age). One SECTION per line, in order, up to 8
+  SUB 'the period it covers, or =expression'  SECTION 'Title' (SELECT ... :today is the day) COLUMNS (col 'Label' MONEY, ...) TOTAL (col, col) NOTE 'what it shows, why a value is missing'
+TEAM <link table> [AS key]     -- who is on what: the app's people put on things (accounts, sites, classes) with a role, each thing with its people, things nobody is on, put someone on (picked by name) or take them off. The page an access rule WHERE <col> IN (SELECT <thing col> FROM <link table> WHERE <person col> = :user_id) reads; give it FOR owner
+  THINGS <table of the things>  PERSON <link col with the person's id>  THING <link col with the thing's id>  NAME <things col>  ROLE <link col>  ROLES ('lead', 'member')  LABEL 'Account'  TITLE
+PRICES <table> [AS key]        -- prices that read at a glance: each name and its price on one line with a dotted leader, a note under it, grouped under headings (services, fees, plans); with COLUMNS a rate table with labelled columns (one card per row on a phone). Choose it whenever prices are listed
+  NAME <col>  PRICE <col: a number or words such as 'from 40'>  NOTE <col>  GROUP <col of the heading>  BADGE <col>  UNIT 'per hour'  COLUMNS (col 'Label' MONEY, ...)  WHERE  ORDER BY  OPEN <view, gets {id}>  TITLE  EYEBROW  EMPTY
 VARIANCE <table> [AS key]      -- a value compared period by period (a total month over month, quarter over quarter): a row per period in time order with the value, its change and its change in percent (signed, coloured, with bars), the biggest increase and decrease as big numbers, and a CSV download; any request to compare periods (variance, month over month, growth) is this part. It brings its own big numbers (the total, the biggest increase and decrease) and a note on how change is worked out: give no KPI of your own beside it
   PERIOD <col or SQL>  VALUE <col> | SUM(col) GROUP BY <same as PERIOD>  COMPARE <a second value per period, drawn beside it>  AGAINST '<what it is>'  CHART bars | none  ORDER BY <oldest first: a date sorts as it is, a month name needs CASE month WHEN 'Jan' THEN 1 ... END>  LABEL '<what the value is>'  NAME 'Month'  FORMAT number | money  LAST 24  WHERE  FILE '<name>.csv'  TITLE
 OFFERS <table> [AS key]        -- what people order or book while some are left (products with stock, workshops with seats, tours with places): a card per row with its photo, date and price, 'Only 2 left' when few remain, the OUT word (its card in the "out" state) and no action when none; the action opens the view that finishes the order or booking, or calls a rule that checks and lowers the count in one step (its REQUIRE refuses the last one twice). A shelf of products, a list with prices, the upcoming sessions or classes are this part, never a LIST with a form a visitor could edit, and on a front page it comes right after the hero, where visitors see it first

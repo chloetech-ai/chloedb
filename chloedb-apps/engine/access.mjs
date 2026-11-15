@@ -60,7 +60,7 @@ export const SCOPE_PARAM = { user: 'sa_user_id', company: 'sa_company_id' };
 const fail = (msg) => { throw Object.assign(new Error(`ALLOW: ${msg}`), { status: 400 }); };
 const HOW = 'ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL ON <table> TO everyone | members | admins | owner [WHERE <column> = :user_id | <column> = :company_id | <column> IN (SELECT <column> FROM <table> WHERE <column> = :user_id)]';
 // A scope through a link table: the rows whose column is one of the values
-// the person's own rows of another table hold (the projects they belong to).
+// the person's own rows of another table hold (the accounts they are on).
 const VIA = /^([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(\s*SELECT\s+([A-Za-z_][A-Za-z0-9_]*)\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)\s+WHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*:([A-Za-z_.]+)\s*\)$/i;
 export const viaKey = (v) => `${v.table}.${v.pick}.${v.match}.${v.by}`;
 
@@ -94,7 +94,7 @@ export function parseAllow(text) {
         const by = BY[via[5].toLowerCase()];
         if (!by) fail(`WHERE ... IN (SELECT ... WHERE <column> = :user_id or :company_id), not :${via[5]}`);
         const col = via[1].toLowerCase();
-        if (col === 'created') fail(`WHERE ${col}: scope rows by a column that holds what the person belongs to (a project's id)`);
+        if (col === 'created') fail(`WHERE ${col}: scope rows by a column that holds what the person belongs to (an account's id)`);
         scope.push({ col, by, via: { table: via[3].toLowerCase(), pick: via[2].toLowerCase(), match: via[4].toLowerCase(), by } });
         continue;
       }

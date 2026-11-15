@@ -129,6 +129,11 @@ test('a screen\'s expressions read the signed-in person as me, and app.me() ther
   assert.match(forge, /me \(the signed-in person \{id, name, email, role\}, or null/, 'the screen doc names me');
 });
 
+test('a table\'s total row may be asked for by an expression (the keys to add up, or false), as a report section gives it', () => {
+  assert.match(screenSrc, /const asked = b\.total !== undefined \? val\(b\.total, s, `\$\{path\}\.total`\)/);
+  assert.match(screenSrc, /NUM\.totals\(cols, ks, values, asked === null \? undefined : asked\)/);
+});
+
 test('small grey words read at 5.5:1 on every ground they sit on, and the grounds are plain colors a page measure can read', () => {
   for (const p of PRESETS) {
     for (const which of ['light', 'dark']) {

@@ -1,0 +1,12 @@
+[
+ {
+  "props": {
+   "item": {"title": "Spring open day", "date": "2026-12-05", "time": "10:00", "place": "Main hall", "text": "Tours every half hour and a short talk at noon."},
+   "eyebrow": "Next event",
+   "action": {"label": "Save a place", "do": "$fn"},
+   "secondary": {"label": "All events", "do": "$fn"},
+   "then": {"title": "Winter fair", "date": "2026-12-19"}
+  }
+ },
+ {"props": {"item": null, "empty": "No sessions planned yet"}}
+]

@@ -781,7 +781,9 @@ window.__sa_numbers = (() => {
       const values = cols.map((c, i) => rows.map((r) => { try { return rawOf(c, i, r); } catch { return null; } }));
       const ks = NUM.kinds(cols.map((c, i) => ({ ...c, label: heads[i] })), values);
       const barAt = b.bars === false ? -1 : NUM.barColumn(ks, rows.length);
-      const sums = b.total === undefined && b.totals === undefined ? NUM.totals(cols, ks, values, undefined) : NUM.totals(cols, ks, values, b.total ?? b.totals);
+      // (total: true, false or the keys to add up; an expression may say which)
+      const asked = b.total !== undefined ? val(b.total, s, `${path}.total`) : b.totals !== undefined ? val(b.totals, s, `${path}.totals`) : undefined;
+      const sums = NUM.totals(cols, ks, values, asked === null ? undefined : asked);
       const whole = cols.map((c, i) => c.format === 'money' && values[i].every((v) => v == null || v === '' || Number.isInteger(Number(v))));
       const shown = (c, i, r) => (whole[i] && (typeof fns[i] !== 'function') && r[c.key] != null && r[c.key] !== '' ? moneyOf(r[c.key], true) : cell(c, fns[i], r));
       const figure = (i, v, raw) => {
