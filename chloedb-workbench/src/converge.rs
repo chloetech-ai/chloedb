@@ -144,6 +144,12 @@ pub struct Settings {
     /// Claude Code's permission mode for fix agents (`auto`: its classifier
     /// answers what the list does not; `default`: those wait for you).
     pub dev_permission_mode: Option<String>,
+    /// The autopilot asks an agent for a missing repro before asking you,
+    /// this many at once (0: a missing repro waits for you).
+    pub repro_agents: usize,
+    /// Findings leave Found on their own once they are not duplicates
+    /// (else they wait for you to choose Reproduce or Dismiss).
+    pub found_auto: bool,
 }
 
 /// A fix agent's default allow-list: reading, editing, building and testing
@@ -185,6 +191,8 @@ impl Default for Settings {
             dev_allow: dev_allow_default(),
             dev_deny: dev_deny_default(),
             dev_permission_mode: Some("auto".into()),
+            repro_agents: 3,
+            found_auto: false,
         }
     }
 }
@@ -296,6 +304,10 @@ pub struct Run {
     pub cost_usd: f64,
     pub created: i64,
     pub ended: Option<i64>,
+    /// What the persona did, step by step (a persona run's stream): `{ts, kind, text}`.
+    pub steps: Vec<Json>,
+    /// The journey step it said it was on: `{n, of, name}`.
+    pub at: Option<Json>,
 }
 
 fn s(v: &str) -> Value {
@@ -499,6 +511,92 @@ impl Finding {
 
 // ------------------------------------------------------------ work in flight
 
+/// The steps of runs in flight, by run id, and each playing persona's run.
+static LIVE: Mutex<Option<HashMap<String, (Vec<Json>, Option<Json>)>>> = Mutex::new(None);
+static PLAYING: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+const MAX_STEPS: usize = 400;
+
+fn live_push(run: &str, step: Json, at: Option<Json>) {
+    let mut g = LIVE.lock().unwrap();
+    let e = g.get_or_insert_with(HashMap::new).entry(run.to_string()).or_default();
+    if !step.is_null() {
+        e.0.push(step);
+        if e.0.len() > MAX_STEPS {
+            e.0.remove(0);
+        }
+    }
+    if at.is_some() {
+        e.1 = at;
+    }
+}
+
+fn live_of(run: &str) -> Option<(Vec<Json>, Option<Json>)> {
+    LIVE.lock().unwrap().as_ref().and_then(|m| m.get(run).cloned())
+}
+
+fn live_end(run: &str) -> Option<(Vec<Json>, Option<Json>)> {
+    LIVE.lock().unwrap().as_mut().and_then(|m| m.remove(run))
+}
+
+/// A persona's run in flight.
+fn playing_run(persona: &str) -> Option<String> {
+    PLAYING.lock().unwrap().as_ref().and_then(|m| m.get(persona).cloned())
+}
+
+/// What one line of `claude -p --output-format stream-json` says the
+/// persona did: what it said, and each tool it used, in a few words.
+pub fn steps_of_line(line: &str) -> Vec<(Json, Option<Json>)> {
+    let Ok(v) = serde_json::from_str::<Json>(line.trim()) else { return Vec::new() };
+    if v["type"] != "assistant" {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for c in v["message"]["content"].as_array().into_iter().flatten() {
+        match c["type"].as_str() {
+            Some("text") => {
+                let text = c["text"].as_str().unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let at = journey_step(text);
+                // The final answer's JSON is the result, not a step.
+                let shown = match text.find("{\"outcome\"") {
+                    Some(i) => text[..i].trim(),
+                    None => text,
+                };
+                if !shown.is_empty() {
+                    out.push((json!({ "ts": now_ms(), "kind": "say", "text": one_line(shown, 600) }), at));
+                } else if at.is_some() {
+                    out.push((Json::Null, at));
+                }
+            }
+            Some("tool_use") => {
+                let name = c["name"].as_str().unwrap_or("tool");
+                let i = &c["input"];
+                let what = ["command", "file_path", "path", "pattern", "url", "query", "description"].iter().find_map(|k| i[*k].as_str()).unwrap_or("");
+                out.push((json!({ "ts": now_ms(), "kind": "tool", "tool": name, "text": one_line(what, 300) }), None));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// "Step 3 of 6: Accept a teammate's rules" in what the persona says.
+fn journey_step(text: &str) -> Option<Json> {
+    for line in text.lines() {
+        let l = line.trim().trim_start_matches(['*', '#', '-', ' ']);
+        let Some(rest) = l.strip_prefix("Step ").or_else(|| l.strip_prefix("STEP ")) else { continue };
+        let (n, rest) = rest.split_once(' ')?;
+        let rest = rest.strip_prefix("of ")?;
+        let (of, name) = rest.split_once(':').map(|(a, b)| (a, b.trim())).unwrap_or((rest, ""));
+        let (Ok(n), Ok(of)) = (n.parse::<u32>(), of.trim().trim_end_matches(['*', '.']).parse::<u32>()) else { continue };
+        return Some(json!({ "n": n, "of": of, "name": one_line(name.trim_end_matches('*'), 120) }));
+    }
+    None
+}
+
 /// What is running now for a finding or a persona: one thing at a time.
 static BUSY: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
@@ -582,6 +680,68 @@ fn run_cmd(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs
         }
     };
     Ok((code, ro.join().unwrap_or_default(), re.join().unwrap_or_default()))
+}
+
+/// `run_cmd` that hands each line of stdout to `on_line` as it comes.
+fn run_cmd_lines(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs: &[(&str, String)], timeout: Duration, mut on_line: impl FnMut(&str)) -> Result<(i32, String, String), String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).env("GIT_TERMINAL_PROMPT", "0");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
+    if let (Some(text), Some(mut w)) = (stdin, child.stdin.take()) {
+        let text = text.to_string();
+        std::thread::spawn(move || {
+            let _ = w.write_all(text.as_bytes());
+        });
+    }
+    let out = child.stdout.take().unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for l in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    let re = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = err.read_to_end(&mut b);
+        String::from_utf8_lossy(&b).to_string()
+    });
+    let end = Instant::now() + timeout;
+    let mut all = String::new();
+    let mut take_line = |l: String, all: &mut String| {
+        on_line(&l);
+        all.push_str(&l);
+        all.push('\n');
+    };
+    let code = loop {
+        while let Ok(l) = rx.try_recv() {
+            take_line(l, &mut all);
+        }
+        match child.try_wait() {
+            Ok(Some(st)) => break st.code().unwrap_or(-1),
+            Ok(None) if Instant::now() < end => {
+                if let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
+                    take_line(l, &mut all);
+                }
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} did not finish in {} s", timeout.as_secs()));
+            }
+        }
+    };
+    // What it printed before it exited.
+    while let Ok(l) = rx.recv_timeout(Duration::from_millis(500)) {
+        take_line(l, &mut all);
+    }
+    Ok((code, all, re.join().unwrap_or_default()))
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -674,8 +834,20 @@ fn run_repro(sup: &Supervisor, f: &Finding, cwd: &Path, n: u32, timeout: u64) ->
 
 /// Asks the runner for `role` (play, scope, generate): its answer and cost.
 fn runner(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, timeout: u64) -> Result<Json, String> {
+    runner_live(sup, role, job, cwd, model, timeout, None)
+}
+
+/// `runner`, keeping each step of a persona's run under `run` as it plays.
+fn runner_live(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, timeout: u64, run: Option<&str>) -> Result<Json, String> {
+    let on_line = |l: &str| {
+        if let Some(r) = run {
+            for (step, at) in steps_of_line(l) {
+                live_push(r, step, at);
+            }
+        }
+    };
     if let Some(cmd) = std::env::var_os("CHLOEDB_WORKBENCH_CONVERGE_CMD").filter(|c| !c.is_empty()) {
-        let (code, out, err) = run_cmd(&cmd.to_string_lossy(), &[role.to_string()], cwd, Some(&job.to_string()), &[], Duration::from_secs(timeout))?;
+        let (code, out, err) = run_cmd_lines(&cmd.to_string_lossy(), &[role.to_string()], cwd, Some(&job.to_string()), &[], Duration::from_secs(timeout), on_line)?;
         let last = out.lines().rev().find_map(|l| serde_json::from_str::<Json>(l.trim()).ok().filter(Json::is_object));
         return match last {
             Some(v) => Ok(v),
@@ -683,14 +855,21 @@ fn runner(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, tim
         };
     }
     let prompt = prompt_for(role, job);
-    let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), "json".into(), "--model".into(), model.to_string()];
+    // A persona's run streams its steps; the other roles answer once.
+    let stream = run.is_some();
+    let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), if stream { "stream-json" } else { "json" }.into(), "--model".into(), model.to_string()];
+    if stream {
+        args.push("--verbose".into());
+    }
     match role {
         "play" => args.extend(["--allowedTools".into(), "Bash Read Write Edit Glob Grep WebFetch".into()]),
         _ => args.extend(["--allowedTools".into(), "Read Glob Grep".into()]),
     }
     // The prompt on stdin: --allowedTools takes every word after it.
-    let (code, out, err) = run_cmd(&sup.cfg.claude_bin, &args, cwd, Some(&prompt), &[("CHLOECTX_DISABLE", "1".to_string())], Duration::from_secs(timeout))?;
-    let outer: Json = serde_json::from_str(out.trim()).map_err(|_| format!("claude -p (exit {code}) answered no JSON: {}", one_line(&tail(&format!("{out}{err}"), 400), 400)))?;
+    let (code, out, err) = run_cmd_lines(&sup.cfg.claude_bin, &args, cwd, Some(&prompt), &[("CHLOECTX_DISABLE", "1".to_string())], Duration::from_secs(timeout), on_line)?;
+    // stream-json ends with the result line; json is that line alone.
+    let last = out.lines().rev().find(|l| l.contains("\"type\":\"result\"")).unwrap_or(out.trim());
+    let outer: Json = serde_json::from_str(last.trim()).map_err(|_| format!("claude -p (exit {code}) answered no JSON: {}", one_line(&tail(&format!("{out}{err}"), 400), 400)))?;
     let text = outer["result"].as_str().unwrap_or("");
     let mut inner = extract_json(text).ok_or_else(|| format!("the {role} answer held no JSON object: {}", one_line(text, 300)))?;
     inner["cost_usd"] = json!(outer["total_cost_usd"].as_f64().unwrap_or(0.0));
@@ -732,7 +911,7 @@ fn prompt_for(role: &str, job: &Json) -> String {
                 None => String::new(),
             };
             format!(
-                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nDo it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits non-zero while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
+                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nAs you start each step of your journey, say so on a line of its own, as \"Step N of M: <the step, in a few words>\". Do it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits 1 while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
                 name = p["name"].as_str().unwrap_or("a user"),
                 role = p["role"].as_str().unwrap_or(""),
                 traits = p["traits"].as_array().map(|a| a.iter().filter_map(Json::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default(),
@@ -771,7 +950,7 @@ fn similarity(a: &Finding, b: &Finding) -> f64 {
 const DUP: f64 = 0.6;
 
 /// Found: merged into an open finding that says the same thing, else on to reproduce.
-fn gate_found(sup: &Supervisor, f: &mut Finding) -> Result<(), ApiError> {
+fn gate_found(sup: &Supervisor, st: &Settings, f: &mut Finding) -> Result<(), ApiError> {
     let others: Vec<Finding> = findings_of(sup, &f.repo).into_iter().filter(|o| o.id != f.id && o.state == "active" && o.created <= f.created).collect();
     let best = others.iter().map(|o| (similarity(f, o), o)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     if let Some((sim, o)) = best.filter(|(sim, _)| *sim >= DUP) {
@@ -791,7 +970,56 @@ fn gate_found(sup: &Supervisor, f: &mut Finding) -> Result<(), ApiError> {
         return failed(sup, f, "dedup", "autopilot", &format!("The same as {} ({}, similarity {sim:.2})", target.id, target.title), json!({ "duplicate_of": target.id, "similarity": sim }));
     }
     let best_sim = best.map(|b| b.0).unwrap_or(0.0);
+    // You choose what is worth reproducing, unless the autopilot may.
+    if !st.found_auto {
+        if f.needs_you.is_none() {
+            f.needs_you = Some(TRIAGE.into());
+            f.updated = now_ms();
+            put_finding(sup, f)?;
+        }
+        return Ok(());
+    }
     advance_to(sup, f, "reproduce", "dedup", true, "autopilot", &format!("No open finding says the same (best match {best_sim:.2})"), json!({ "best_similarity": best_sim }))
+}
+
+const TRIAGE: &str = "New finding: choose Reproduce to chase it, or Dismiss.";
+
+/// An agent in its own worktree writes `.converge/repro.sh`, with the fix
+/// agents' allow-list so it does not stop at every command.
+fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &str) -> Result<(), ApiError> {
+    let st = settings(sup, &f.repo);
+    let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
+    let task = format!(
+        "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.",
+        f.title, f.detail
+    );
+    let req = SpawnRequest {
+        repo: f.repo.clone(),
+        task: Some(task),
+        name: Some(format!("cvr-{short}")),
+        worktree: Some(true),
+        model: st.dev_model.clone(),
+        permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
+        permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+        ..Default::default()
+    };
+    let a = crate::goals::spawn(sup, lv, req)?;
+    let aid = a["id"].as_str().unwrap_or("").to_string();
+    f.agent = Some(aid.clone());
+    f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
+    f.needs_you = None;
+    failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid }))
+}
+
+/// The repro agent's `.converge/repro.sh` becomes the finding's repro.
+fn take_repro(sup: &Arc<Supervisor>, f: &mut Finding, by: &str) -> Result<(), ApiError> {
+    let wt = f.worktree.clone().ok_or_else(|| ApiError::conflict("no repro agent's worktree"))?;
+    let text = std::fs::read_to_string(Path::new(&wt).join(".converge/repro.sh")).map_err(|_| ApiError::conflict("the agent has not written .converge/repro.sh yet"))?;
+    f.repro = Some(text);
+    f.agent = None;
+    f.worktree = None;
+    f.needs_you = None;
+    failed(sup, f, "repro_agent", by, "The agent's repro was taken", Json::Null)
 }
 
 /// Reproduce: the repro must fail every run at the base branch.
@@ -809,10 +1037,19 @@ fn gate_reproduce(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
     let scratch = Scratch::new(sup, &repo, &rev, &f.id).map_err(ApiError::internal)?;
     let runs = run_repro(sup, &f, &scratch.path, st.repro_runs.max(1), st.repro_timeout_s);
     drop(scratch);
-    let fails = runs.iter().filter(|(c, _)| *c != 0).count();
+    // Exit 1 says the problem is there, 0 that it is not; anything else
+    // (a timeout, a build that broke, a missing tool) says the repro is broken.
+    let fails = runs.iter().filter(|(c, _)| *c == 1).count();
     let n = runs.len();
     let evidence = json!({ "commit": rev, "base": base, "runs": runs.iter().map(|(c, o)| json!({ "exit": c, "output": o })).collect::<Vec<_>>() });
     f.repro_attempts += 1;
+    if let Some((code, _)) = runs.iter().find(|(c, _)| *c != 0 && *c != 1) {
+        let why = if *code < 0 { "did not finish in time".to_string() } else { format!("exited {code}") };
+        f.repro = None;
+        f.needs_you = (f.repro_attempts >= 2).then(|| format!("The repro is broken: it {why}, not 1 (problem there) or 0 (fixed). Paste one that works, or park it."));
+        let msg = format!("repro.sh {why} at {base}: it must exit 1 while the problem is there{}", if f.repro_attempts < 2 { "; an agent writes another" } else { "" });
+        return failed(sup, &mut f, "repro_broken", "autopilot", &msg, evidence);
+    }
     if fails == n {
         f.repro_hash = Some(repro_hash(&text));
         f.needs_you = None;
@@ -1109,8 +1346,17 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
         "purpose": run.purpose, "commit": rev,
         "finding": f.as_ref().map(|f| json!({ "id": f.id, "title": f.title, "detail": f.detail, "step": f.step })),
     });
-    let answer = runner(sup, "play", &job, &scratch.path, &st.model, st.run_timeout_s);
+    PLAYING.lock().unwrap().get_or_insert_with(HashMap::new).insert(pe.id.clone(), run.id.clone());
+    live_push(&run.id, Json::Null, None);
+    let answer = runner_live(sup, "play", &job, &scratch.path, &st.model, st.run_timeout_s, Some(&run.id));
     drop(scratch);
+    if let Some(m) = PLAYING.lock().unwrap().as_mut() {
+        m.remove(&pe.id);
+    }
+    if let Some((steps, at)) = live_end(&run.id) {
+        run.steps = steps;
+        run.at = at;
+    }
     run.ended = Some(now_ms());
     pe.last_run = Some(now_ms());
     match answer {
@@ -1451,13 +1697,14 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
     let budget_left = st.budget_usd_day - spent_today(sup, repo);
     let mut fs = findings_of(sup, repo);
     for f in fs.iter_mut().filter(|f| f.state == "active" && f.stage == "found") {
-        if busy_what(&f.id).is_none() {
-            gate_found(sup, f)?;
+        if busy_what(&f.id).is_none() && f.needs_you.as_deref() != Some(TRIAGE) {
+            gate_found(sup, &st, f)?;
             started.push(format!("{} dedup", f.id));
         }
     }
     let fs = findings_of(sup, repo);
     let active: Vec<&Finding> = fs.iter().filter(|f| f.state == "active").collect();
+    let mut repro_agents = active.iter().filter(|f| f.stage == "reproduce" && f.repro.is_none() && f.agent.is_some()).count();
     for f in &active {
         let id = f.id.clone();
         let (s2, l2) = (sup.clone(), lv.clone());
@@ -1468,6 +1715,36 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
                     let _ = gate_reproduce(&s2, &id);
                 }
             }),
+            // A repro agent finished: take its script, or say it wrote none.
+            "reproduce" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) => {
+                if let Ok(mut g) = get_finding(sup, &id) {
+                    if take_repro(sup, &mut g, "autopilot").is_err() {
+                        g.agent = None;
+                        g.needs_you = Some("The repro agent finished without writing .converge/repro.sh: paste a repro, ask again, or park it.".into());
+                        g.repro_attempts += 1;
+                        g.updated = now_ms();
+                        let _ = put_finding(sup, &g);
+                    }
+                }
+                None
+            }
+            "reproduce" if f.agent.is_some() => None,
+            // No repro yet: an agent writes one before you are asked (once per finding).
+            "reproduce" if f.repro_attempts < 2 && repro_agents < st.repro_agents && !f.needs_you.as_deref().is_some_and(|n| n.contains("repro agent")) => {
+                if let Ok(mut g) = get_finding(sup, &id) {
+                    match start_repro_agent(sup, lv, &mut g, "autopilot") {
+                        Ok(()) => {
+                            repro_agents += 1;
+                            started.push(format!("{id} repro agent"));
+                        }
+                        Err(e) => {
+                            g.needs_you = Some(format!("Could not start a repro agent: {}", e.message));
+                            let _ = put_finding(sup, &g);
+                        }
+                    }
+                }
+                None
+            }
             "reproduce" if f.needs_you.is_none() => {
                 let _ = gate_reproduce(sup, &id);
                 None
@@ -1826,6 +2103,7 @@ pub fn routes() -> Router<App> {
         .route("/api/converge/tick", post(tick_route))
         .route("/api/converge/seed", post(seed_route))
         .route("/api/converge/metrics", get(metrics_route))
+        .route("/api/converge/timeline", get(timeline_route))
         .route("/api/converge/findings", post(finding_new))
         .route("/api/converge/findings/:id", get(finding_get).put(finding_put))
         .route("/api/converge/findings/:id/:verb", post(finding_verb))
@@ -1873,9 +2151,44 @@ async fn overview_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiRe
     Ok(AxJson(v).into_response())
 }
 
+/// The findings that wait for you, for the inbox (`/api/needs`): one item
+/// per reason, so twenty findings missing a repro are one card.
+pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, Json)> {
+    let all: Vec<Finding> = docs(sup, "SELECT doc FROM cv_findings WHERE state = 'active' LIMIT 5000", &Params::new());
+    let mut groups: Vec<(String, String, Vec<&Finding>)> = Vec::new();
+    for f in all.iter().filter(|f| keep(&f.repo)) {
+        let why = if let Some(n) = &f.needs_you {
+            n.clone()
+        } else if f.stage == "review" && f.ci.as_deref() == Some("pass") {
+            "CI passed: approve the merge.".into()
+        } else if f.stage == "prioritize" && f.door.is_some() {
+            "Touches a one-way door: approve it for development.".into()
+        } else {
+            continue;
+        };
+        // Reasons that differ only in their details group together.
+        let key = format!("{}\u{0}{}", f.repo, why.split([':', '(']).next().unwrap_or(&why).trim());
+        match groups.iter_mut().find(|g| g.0 == key) {
+            Some(g) => g.2.push(f),
+            None => groups.push((key, why, vec![f])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(key, why, fs)| {
+            let since = fs.iter().map(|f| f.updated).min().unwrap_or(0);
+            let list: Vec<Json> = fs.iter().take(50).map(|f| json!({ "id": f.id, "title": f.title, "stage": f.stage, "severity": f.severity, "severity_name": sev_name(f.severity), "why": f.needs_you })).collect();
+            let repo = fs[0].repo.clone();
+            let hash = format!("cv-{:x}", key.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
+            (since, json!({ "kind": "converge", "id": hash, "repo": repo, "since_ms": since, "text": why, "count": fs.len(), "findings": list, "stage": fs[0].stage }))
+        })
+        .collect()
+}
+
 fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
     let mut v = serde_json::to_value(p).unwrap();
     v["busy"] = json!(busy_what(&format!("persona:{}", p.id)));
+    v["live_run"] = json!(playing_run(&p.id));
     v["repro_rate"] = json!(if p.reported == 0 { None } else { Some(p.reproduced as f64 / p.reported as f64) });
     v["open"] = json!(findings_of(sup, &p.repo).iter().filter(|f| f.state == "active" && f.stage != "merged" && f.personas_hit.contains(&p.id)).count());
     v
@@ -1956,6 +2269,82 @@ async fn seed_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> 
     })
     .await?;
     Ok((StatusCode::CREATED, AxJson(v)).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct TimelineQ {
+    repo: Option<String>,
+    /// 24h, 7d or 30d
+    range: Option<String>,
+}
+
+/// When a finding left the open set: merged, or out of the loop (a
+/// duplicate, can't reproduce, parked); none while it is open.
+fn closed_at(f: &Finding) -> Option<(i64, bool)> {
+    if f.stage == "merged" {
+        Some((f.stage_since.max(f.created), true))
+    } else if f.state != "active" {
+        Some((f.updated.max(f.created), false))
+    } else {
+        None
+    }
+}
+
+/// Open findings over time, by severity, with what was found and merged in
+/// each bucket and the persona runs' mean ease: rebuilt from the findings'
+/// own times, so it reaches back to the first one.
+pub fn timeline(sup: &Supervisor, repo: &str, range: &str, now: i64) -> Json {
+    let (span, n) = match range {
+        "7d" => (7 * 86_400_000i64, 28i64),
+        "30d" => (30 * 86_400_000i64, 30i64),
+        _ => (86_400_000i64, 24i64),
+    };
+    let step = span / n;
+    let end = now - now % step + step;
+    let start = end - span;
+    let fs = findings_of(sup, repo);
+    let runs: Vec<Run> = docs(sup, "SELECT doc FROM cv_runs WHERE repo = :repo AND created >= :since ORDER BY created ASC LIMIT 5000", &Params::new().set("repo", s(repo)).set("since", t(start)));
+    let buckets: Vec<Json> = (0..n)
+        .map(|i| {
+            let (b0, b1) = (start + i * step, start + (i + 1) * step);
+            // Open at the bucket's end (now, for the last).
+            let at = b1.min(now);
+            let mut open = [0i64; 4];
+            let (mut found, mut merged, mut dropped) = (0, 0, 0);
+            for f in &fs {
+                let c = closed_at(f);
+                if f.created <= at && c.is_none_or(|(ts, _)| ts > at) {
+                    open[(4 - f.severity.clamp(1, 4)) as usize] += 1;
+                }
+                if f.created >= b0 && f.created < b1 {
+                    found += 1;
+                }
+                if let Some((ts, m)) = c {
+                    if ts >= b0 && ts < b1 {
+                        if m {
+                            merged += 1;
+                        } else {
+                            dropped += 1;
+                        }
+                    }
+                }
+            }
+            let eases: Vec<f64> = runs.iter().filter(|r| r.created >= b0 && r.created < b1 && r.purpose == "explore").filter_map(|r| r.ease).collect();
+            let ease = (!eases.is_empty()).then(|| eases.iter().sum::<f64>() / eases.len() as f64);
+            json!({ "t": b0, "end": b1, "open": { "blocker": open[0], "major": open[1], "minor": open[2], "papercut": open[3] }, "open_total": open.iter().sum::<i64>(), "found": found, "merged": merged, "dropped": dropped, "ease": ease, "runs": eases.len() })
+        })
+        .collect();
+    json!({ "repo": repo, "range": range, "step_ms": step, "start": start, "end": end, "now": now, "buckets": buckets })
+}
+
+async fn timeline_route(State(app): State<App>, Query(q): Query<TimelineQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let repo = repo_of(q.repo)?;
+        Ok(timeline(&sup, &repo, q.range.as_deref().unwrap_or("24h"), now_ms()))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
 }
 
 async fn metrics_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult {
@@ -2092,7 +2481,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
 
 async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
     let v: Json = if body.is_empty() { json!({}) } else { parse_body(&body)? };
-    if matches!(verb.as_str(), "approve" | "start" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr") {
+    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr") {
         user_only(&app, &headers)?;
     }
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
@@ -2117,6 +2506,13 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 f.state = "dismissed".into();
                 f.note = Some(reason.to_string());
                 failed(&sup, &mut f, "dismissed", "you", reason, Json::Null)?;
+            }
+            "reproduce" => {
+                if f.stage != "found" {
+                    return Err(ApiError::conflict(format!("{} is in {}, not found", f.id, f.stage)));
+                }
+                f.needs_you = None;
+                advance_to(&sup, &mut f, "reproduce", "triage", true, "you", "You chose to reproduce it", Json::Null)?;
             }
             "start" => {
                 if f.stage != "prioritize" {
@@ -2164,27 +2560,9 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 if f.stage != "reproduce" {
                     return Err(ApiError::conflict(format!("{} is in {}, not reproduce", f.id, f.stage)));
                 }
-                let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
-                let task = format!(
-                    "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits non-zero while the problem is there and 0 once it is fixed. Keep it under a few minutes. Run it to check that it fails now, then stop.",
-                    f.title, f.detail
-                );
-                let a = crate::goals::spawn(&sup, &lv, SpawnRequest { repo: f.repo.clone(), task: Some(task), name: Some(format!("cvr-{short}")), worktree: Some(true), ..Default::default() })?;
-                let aid = a["id"].as_str().unwrap_or("").to_string();
-                f.agent = Some(aid.clone());
-                f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
-                f.needs_you = None;
-                failed(&sup, &mut f, "repro_agent", "you", &format!("Agent {aid} is writing the repro"), json!({ "agent": aid }))?;
+                start_repro_agent(&sup, &lv, &mut f, "you")?;
             }
-            "take-repro" => {
-                let wt = f.worktree.clone().ok_or_else(|| ApiError::conflict("no repro agent's worktree"))?;
-                let text = std::fs::read_to_string(Path::new(&wt).join(".converge/repro.sh")).map_err(|_| ApiError::conflict("the agent has not written .converge/repro.sh yet"))?;
-                f.repro = Some(text);
-                f.repro_attempts = 0;
-                f.agent = None;
-                f.worktree = None;
-                failed(&sup, &mut f, "repro_agent", "you", "The agent's repro was taken", Json::Null)?;
-            }
+            "take-repro" => take_repro(&sup, &mut f, "you")?,
             _ => return Err(ApiError::not_found(format!("no action {verb}"))),
         }
         Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
@@ -2284,7 +2662,16 @@ async fn persona_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
 
 async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResult {
     let sup = app.sup.clone();
-    let v = blocking(move || Ok(json!({ "run": get_run(&sup, &id)? }))).await?;
+    let v = blocking(move || {
+        let mut r = get_run(&sup, &id)?;
+        if let Some((steps, at)) = live_of(&id) {
+            r.steps = steps;
+            r.at = at;
+        }
+        let persona = r.persona.as_deref().and_then(|p| get_persona(&sup, p).ok()).map(|p| json!({ "id": p.id, "name": p.name, "journey": p.journey }));
+        Ok(json!({ "run": r, "live": r.state == "running", "persona": persona, "now": now_ms() }))
+    })
+    .await?;
     Ok(AxJson(v).into_response())
 }
 
@@ -2369,6 +2756,22 @@ mod tests {
         assert_eq!(theme_of(Some("nonsense"), "Ops-scope keys read transcripts", ""), "security");
         assert_eq!(theme_of(None, "A new shard answers reads before it holds the tables", ""), "scalability");
         assert_eq!(theme_of(None, "The button is hard to find", ""), "usability");
+    }
+
+    #[test]
+    fn a_persona_stream_becomes_steps() {
+        let l = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Step 2 of 5: Load a CSV\nReading the quickstart."},{"type":"tool_use","name":"Bash","input":{"command":"cargo build --release"}}]}}"#;
+        let st = steps_of_line(l);
+        assert_eq!(st.len(), 2, "{st:?}");
+        assert_eq!(st[0].0["kind"], "say");
+        assert_eq!(st[0].1, Some(json!({ "n": 2, "of": 5, "name": "Load a CSV" })));
+        assert_eq!(st[1].0["tool"], "Bash");
+        assert_eq!(st[1].0["text"], "cargo build --release");
+        // The final answer is the result, not a step; other lines are nothing.
+        assert!(steps_of_line(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"{\"outcome\":\"done\"}"}]}}"#).is_empty());
+        assert!(steps_of_line(r#"{"type":"user","message":{}}"#).is_empty());
+        assert!(steps_of_line("not json").is_empty());
+        assert_eq!(journey_step("**Step 3 of 6: Accept a teammate's rules**"), Some(json!({ "n": 3, "of": 6, "name": "Accept a teammate's rules" })));
     }
 
     #[test]

@@ -258,7 +258,7 @@
    "severity": "blocker",
    "kind": "bug",
    "title": "Operator rollout verification reads the demo products table and rolls back every change",
-   "detail": "On a StrataCluster without schema or demo, rollout verification queries the demo table (operator first_table() -> demo::schema), fails, and rolls back each spec change.",
+   "detail": "On a ChloeDB cluster run by the Kubernetes operator (resource kind StrataCluster) without schema or demo, rollout verification queries the demo table (operator first_table() -> demo::schema), fails, and rolls back each spec change.",
    "step": "Stage 4: DOKS cluster",
    "source": "p6-sam/REPORT.md bug 1",
    "theme": "reliability"

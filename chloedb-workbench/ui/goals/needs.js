@@ -4,10 +4,10 @@
 // agent=&kind=&sort=` keeps the filters in the address.
 import { h, useStyle, page, btn, kc, parseJSON, toMs } from "/levels/common.js";
 
-const KINDS = [["", "All"], ["permission", "Permission"], ["question", "Question"], ["trust", "Trust"], ["alert", "Alert"], ["waiting", "Waiting"]];
+const KINDS = [["", "All"], ["permission", "Permission"], ["question", "Question"], ["trust", "Trust"], ["alert", "Alert"], ["waiting", "Waiting"], ["converge", "Converge"]];
 
 export function kindOf(it) {
-  if (it.kind === "alert" || it.kind === "trust" || it.kind === "waiting") return it.kind;
+  if (it.kind === "alert" || it.kind === "trust" || it.kind === "waiting" || it.kind === "converge") return it.kind;
   return it.question && it.question.kind === "ask" ? "question" : "permission";
 }
 
@@ -52,7 +52,7 @@ export function mount(root, ctx) {
     const filtered = list.length !== all.length;
     const sub = all.length
       ? `${all.length} across ${projects.length} project${projects.length === 1 ? "" : "s"}. ${F.sort === "blocked" ? "The answers that unblock the most work first." : "Oldest first."}`
-      : "Nothing needs you: no agent is waiting on you, and no alert asks you.";
+      : "Nothing needs you: no agent is waiting on you, no alert asks you, and no finding waits for you.";
     el.replaceChildren(page({ kicker: "Inbox", title: "Needs you", sub, wide: true },
       all.length ? h("div", { class: "g-fbar" },
         sel("project", [["", "Every project"], ...projects.map((p) => [p, p])], "Project"),

@@ -422,6 +422,12 @@ fn run_rule(sup: &Supervisor, sql: &str, now: i64, window_s: i64, repo: Option<&
         for r in &rows {
             let Some(entity) = text_of(&r[ie]) else { continue };
             let Some(v) = num(&r[iv]) else { continue };
+            // Converge's own files (`.converge/repro.sh`): each agent writes
+            // its own in its own worktree, which is no overlap.
+            let file = ifl.and_then(|i| text_of(&r[i])).unwrap_or_else(|| entity.clone());
+            if file.starts_with(".converge/") {
+                continue;
+            }
             let pick = |i: Option<usize>| i.and_then(|i| text_of(&r[i]));
             hits.push(Hit { entity, agent: pick(ia), file: pick(ifl), repo: pick(ir), detail: pick(id), v });
         }

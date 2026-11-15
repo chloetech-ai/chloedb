@@ -58,9 +58,37 @@ const CSS = `
 .cv-chip.s4 { background: var(--crit-soft); color: var(--crit-ink); } .cv-chip.s3 { background: var(--warn-soft); color: var(--warn-ink); }
 .cv-chip.ok { background: var(--good-soft); color: var(--good-ink); } .cv-chip.bad { background: var(--crit-soft); color: var(--crit-ink); }
 .cv-chip.run { background: var(--accent-soft); color: var(--accent-text); } .cv-chip.you { background: var(--warn-soft); color: var(--warn-ink); }
-.cv-gates { display: flex; gap: 3px; } .cv-gates i { width: 14px; height: 4px; border-radius: 2px; background: var(--surface-3); }
-.cv-gates i.p { background: var(--good); } .cv-gates i.n { background: var(--accent); }
+.cv-live { display: inline-flex; align-items: center; gap: 5px; }
+.cv-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: cv-pulse 1.4s ease-in-out infinite; }
+.cv-live.still::before { animation: none; opacity: .6; }
+@keyframes cv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .cv-live::before { animation: none; } }
+.cv-card.working { box-shadow: 0 0 0 2px var(--accent-line); }
+.cv-now { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: var(--s-3); font-size: var(--fs-sm); color: var(--text-2); }
+.cv-now button { font: inherit; border: var(--hair) solid var(--accent-line); background: var(--accent-soft); color: var(--accent-text); border-radius: var(--r-pill); padding: 4px 10px; cursor: pointer; min-height: 32px; }
+.cv-prog { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.cv-prog .bar { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+.cv-prog .bar i { height: 6px; border-radius: 3px; background: var(--surface-3); position: relative; overflow: hidden; }
+.cv-prog .bar i.p { background: var(--good); }
+.cv-prog .bar i.n { background: var(--accent-soft); }
+.cv-prog .bar i.n::after { content: ""; position: absolute; inset: 0; width: var(--in, 35%); background: var(--accent); border-radius: 3px; }
+.cv-prog .bar i.stop { background: var(--warn); }
+.cv-prog .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--text-2); }
+.cv-prog .lbl b { font-weight: var(--w-mid); color: var(--text); }
 .cv-empty { color: var(--muted); font-size: var(--fs-sm); padding: 4px; }
+.cv-btn.live { width: 100%; justify-content: center; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text); }
+.cv-steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); }
+.cv-steps li { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); }
+.cv-steps li.s { background: none; padding-left: 0; color: var(--text); }
+.cv-steps li .w { color: var(--text-2); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
+.cv-steps li code { font-family: var(--mono); font-size: var(--fs-xs); word-break: break-all; }
+.cv-steps li .ts { margin-left: auto; color: var(--text-3, var(--muted)); font-size: var(--fs-xs); }
+.cv-panel.wide { grid-column: 1 / -1; }
+.cv-tl-svg { width: 100%; height: auto; display: block; margin-top: 8px; }
+.cv-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: var(--fs-xs); color: var(--text-2); margin-top: 4px; }
+.cv-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cv-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.cv-legend i.ln { width: 16px; height: 0; border-top: 2px solid; border-radius: 0; }
 .cv-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 40; }
 .cv-sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(600px, 100%); background: var(--surface); box-shadow: var(--shadow-3); z-index: 41; display: flex; flex-direction: column; }
 .cv-sheet-h { padding: 16px 20px 12px; border-bottom: var(--hair) solid var(--line); display: flex; flex-direction: column; gap: 8px; }
@@ -171,16 +199,36 @@ export function mount(root, ctx) {
   const api = (p, o) => ctx.api(p, o);
   const view = () => (location.hash.split("?")[0].split("/")[2] || "board");
   const fid = () => new URLSearchParams(location.hash.split("?")[1] || "").get("f");
+  const rid = () => new URLSearchParams(location.hash.split("?")[1] || "").get("run");
+  const here = () => `#/converge${view() === "board" ? "" : "/" + view()}`;
 
   async function load() {
     if (!repo()) { host.replaceChildren(h("p", { class: "cv-intro" }, "Open a project first: Converge works on one repository.")); return; }
     try {
-      S.d = await api(`/api/converge?repo=${enc(repo())}`);
+      const d = await api(`/api/converge?repo=${enc(repo())}`);
+      // Nothing changed: keep the page as it is (its scroll, a card being tapped).
+      const sig = JSON.stringify({ ...d, metrics: { ...d.metrics, history: (d.metrics?.history || []).length } }).replace(/"(stage_since|updated|ts_ms|last_run)":\d+/g, "");
+      if (S.d && sig === S.sig) return;
+      S.d = d;
+      S.sig = sig;
     } catch (err) {
-      host.replaceChildren(h("p", { class: "cv-intro" }, `Converge did not load: ${err.message || err}`));
+      if (!S.d) host.replaceChildren(h("p", { class: "cv-intro" }, `Converge did not load: ${err.message || err}`));
       return;
     }
     if (S.alive) draw();
+  }
+
+  // Where the page and each sideways strip are scrolled, kept across a redraw.
+  function scrollState() {
+    const els = [];
+    for (let e = host; e; e = e.parentElement) if (e.scrollTop) els.push([e, e.scrollTop]);
+    const wraps = [...host.querySelectorAll(".cv-wrap, .cv-strip, .cv-bar.kinds")].map((w) => w.scrollLeft);
+    const cols = [...host.querySelectorAll(".cv-cards")].map((c) => c.scrollTop);
+    return () => {
+      for (const [e, t] of els) e.scrollTop = t;
+      host.querySelectorAll(".cv-wrap, .cv-strip, .cv-bar.kinds").forEach((w, i) => { if (wraps[i] != null) w.scrollLeft = wraps[i]; });
+      host.querySelectorAll(".cv-cards").forEach((c, i) => { if (cols[i] != null) c.scrollTop = cols[i]; });
+    };
   }
 
   function draw() {
@@ -198,9 +246,13 @@ export function mount(root, ctx) {
       h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, enabled: !st.enabled } }), st.enabled ? "Autopilot paused: running steps finish" : "Autopilot on") }, st.enabled ? "Pause" : "Turn on"));
     const tabs = h("nav", { class: "cv-tabs", "aria-label": "Converge" }, TABS.map(([k, l, href]) => h("a", { href, class: k === v ? "on" : null, "aria-current": k === v ? "page" : null }, l)));
     const body = v === "personas" ? personas() : v === "metrics" ? metrics() : v === "settings" ? settings() : board();
+    const restore = scrollState();
     host.replaceChildren(top, tabs, body);
+    restore();
     const f = fid();
-    if (f) openSheet(f);
+    if (f && document.querySelector(".cv-sheet")?.dataset.id !== f) openSheet(f);
+    const r = rid();
+    if (r && document.querySelector(".cv-sheet")?.dataset.run !== r) openRun(r);
   }
 
   async function act(fn, msg) {
@@ -247,7 +299,15 @@ export function mount(root, ctx) {
       })
       : d.stages.map((s) => col(s.name, s.gate, shown.filter((f) => f.stage === s.stage).sort((a, b) => (b.pinned - a.pinned) || b.score - a.score), s.you, false));
     const parked = all.filter((f) => f.state === "parked");
-    return h("div", {}, strip, chips, bar,
+    // What is running now: agents on findings, gates being checked, personas playing.
+    const running = all.filter((f) => f.busy || (f.agent && ["starting", "working", "waiting"].includes(f.agent_state)));
+    const playing = (d.personas || []).filter((p) => p.busy);
+    const now = running.length || playing.length
+      ? h("div", { class: "cv-now", role: "status" }, h("span", { class: "cv-label" }, "Now"),
+        running.map((f) => h("button", { type: "button", onclick: () => { location.hash = `#/converge?f=${f.id}`; } }, h("span", { class: "cv-live" }, `${liveWord(f)}: ${f.title.slice(0, 40)}${f.title.length > 40 ? "…" : ""}`))),
+        playing.map((p) => h("button", { type: "button", onclick: () => { location.hash = p.live_run ? `#/converge?run=${p.live_run}` : "#/converge/personas"; } }, h("span", { class: "cv-live" }, `${p.name.split(",")[0]} is playing: watch`))))
+      : h("div", { class: "cv-now" }, h("span", { class: "cv-label" }, "Now"), h("span", {}, d.settings?.enabled ? "Nothing running; the next tick starts what is due." : "Nothing running. Run a tick, or turn the autopilot on."));
+    return h("div", {}, strip, now, chips, bar,
       h("div", { class: "cv-wrap" }, h("div", { class: `cv-board${S.group === "theme" ? " theme" : ""}` }, cols.length ? cols : h("p", { class: "cv-empty" }, "Nothing matches these filters."))),
       parked.length ? h("details", { style: { marginTop: "12px" } }, h("summary", {}, `${parked.length} parked`), h("div", { class: "cv-cards" }, parked.map(card))) : null);
   }
@@ -256,8 +316,37 @@ export function mount(root, ctx) {
 
   function col(name, gate, items, you, showStage) {
     return h("section", { class: `cv-col${you ? " you" : ""}`, "aria-label": name },
-      h("div", { class: "cv-col-h" }, h("div", { class: "t" }, h("span", {}, name), h("span", { class: "c" }, String(items.length))), h("div", { class: "g" }, gate)),
+      h("div", { class: "cv-col-h" }, h("div", { class: "t" }, h("span", {}, name), h("span", { class: "c" }, items.some((f) => liveWord(f)) ? h("span", { class: "cv-live", style: { color: "var(--accent-text)", marginRight: "8px" } }, `${items.filter((f) => liveWord(f)).length} working`) : null, String(items.length))), h("div", { class: "g" }, gate)),
       h("div", { class: "cv-cards" }, items.length ? items.map((f) => card(f, showStage)) : h("div", { class: "cv-empty" }, "Nothing here")));
+  }
+
+  /** What is happening to a finding right now, in words, or null. */
+  function liveWord(f) {
+    if (f.busy) return f.busy[0].toUpperCase() + f.busy.slice(1);
+    if (!f.agent || !f.agent_state || f.state !== "active") return null;
+    const who = f.stage === "reproduce" ? "Agent writing the repro" : "Agent fixing";
+    return { starting: `${who}: starting`, working: `${who}`, waiting: `${who}: needs you`, idle: f.stage === "develop" ? "Agent done: gate next tick" : null }[f.agent_state] || null;
+  }
+
+  /** Where a finding is in its journey: a bar of the eight stages, the
+   *  current one filled as far as its own steps go, and what comes next. */
+  function progress(f) {
+    const st = S.d.stages || [];
+    const i = f.stage_index;
+    const merged = f.stage === "merged";
+    const stuck = !!f.needs_you || f.agent_state === "waiting";
+    // How far into its stage: the rounds of develop, CI at review, a running step.
+    const rounds = Math.max(1, S.d.settings?.max_rounds || 3);
+    const inside = merged ? 100
+      : f.stage === "develop" ? Math.min(90, 25 + (f.rounds || 0) * (60 / rounds) + (f.agent_state === "idle" ? 15 : 0))
+      : f.stage === "review" ? (f.ci === "pass" ? 85 : f.pr_url ? 50 : 20)
+      : f.busy ? 60 : 25;
+    const pct = merged ? 100 : Math.round(((i + inside / 100) / 8) * 100);
+    const next = merged ? (f.guard_ok === false ? "regressed" : "done") : `next: ${(st[i + 1] || {}).name || "merged"}`;
+    const sub = f.stage === "develop" && f.rounds ? ` · round ${f.rounds + 1} of ${rounds}` : f.stage === "review" && f.ci ? ` · CI ${f.ci}` : "";
+    return h("span", { class: "cv-prog", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct), "aria-label": `${(st[i] || {}).name || f.stage}, stage ${i + 1} of 8` },
+      h("span", { class: "bar" }, [0, 1, 2, 3, 4, 5, 6, 7].map((k) => h("i", { class: k < i || merged ? "p" : k === i ? (stuck ? "stop" : "n") : null, style: k === i && !merged ? { "--in": `${inside}%` } : null, title: (st[k] || {}).name }))),
+      h("span", { class: "lbl" }, h("span", {}, h("b", {}, `${i + 1}/8 ${(st[i] || {}).name || f.stage}`), sub), h("span", {}, stuck ? "waiting on you" : next)));
   }
 
   function personaName(id) { const p = (S.d.personas || []).find((x) => x.id === id); return p ? p.name.split(",")[0] : id; }
@@ -269,21 +358,26 @@ export function mount(root, ctx) {
     if (showStage) chips.push(h("span", { class: "cv-chip run" }, stageName));
     if (f.score && f.stage_index >= 3 && f.stage !== "merged") chips.push(h("span", { class: "cv-chip" }, `score ${f.score}`));
     if (f.door) chips.push(h("span", { class: "cv-chip you" }, `door: ${f.door}`));
-    if (f.busy) chips.push(h("span", { class: "cv-chip run" }, f.busy));
+    const live = liveWord(f);
+    if (live) chips.unshift(h("span", { class: `cv-chip ${f.agent_state === "waiting" ? "you" : "run"}` }, h("span", { class: `cv-live${f.busy || ["starting", "working"].includes(f.agent_state) ? "" : " still"}` }, live)));
     if (f.needs_you) chips.push(h("span", { class: "cv-chip you" }, "needs you"));
     if (f.stage === "review" && f.ci) chips.push(h("span", { class: `cv-chip ${f.ci === "pass" ? "ok" : f.ci === "fail" ? "bad" : ""}` }, `CI ${f.ci}`));
     if (f.stage === "merged" && f.guard_ok != null) chips.push(h("span", { class: `cv-chip ${f.guard_ok ? "ok" : "bad"}` }, f.guard_ok ? "guard green" : "guard red"));
-    return h("button", { class: "cv-card", type: "button", "data-sev": String(f.severity), onclick: () => { location.hash = `#/converge${view() === "board" ? "" : "/" + view()}?f=${f.id}`; } },
+    return h("button", { class: `cv-card${live ? " working" : ""}`, type: "button", "data-sev": String(f.severity), "data-id": f.id, onclick: () => { location.hash = `#/converge${view() === "board" ? "" : "/" + view()}?f=${f.id}`; } },
       h("span", { class: "ttl" }, f.title),
       h("span", { class: "cv-meta" }, h("span", {}, (f.personas_hit || []).map(personaName).join(", ") || f.by), f.occurrences > 1 ? h("span", {}, `${f.occurrences} times`) : null, h("span", {}, ago(f.stage_since))),
       h("span", { class: "cv-meta" }, chips),
-      h("span", { class: "cv-gates", "aria-label": `stage ${f.stage_index + 1} of 8` }, [0, 1, 2, 3, 4, 5, 6, 7].map((i) => h("i", { class: i < f.stage_index ? "p" : i === f.stage_index ? "n" : null }))));
+      progress(f));
   }
 
   // ------------------------------------------------------------ the sheet
   async function openSheet(id) {
+    const req = (S.sheetReq = (S.sheetReq || 0) + 1);
     let d;
     try { d = await api(`/api/converge/findings/${enc(id)}`); } catch (err) { toast(err.message); return; }
+    // A later tap, or a closed sheet, wins over this answer.
+    if (req !== S.sheetReq || fid() !== id || !S.alive) return;
+    document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove());
     const f = d.finding;
     const close = () => { history.replaceState(history.state, "", location.hash.split("?")[0]); sheet.remove(); scrim.remove(); };
     const scrim = h("div", { class: "cv-scrim", onclick: close });
@@ -292,10 +386,11 @@ export function mount(root, ctx) {
     const post = (verb, body) => api(`/api/converge/findings/${enc(id)}/${verb}`, { method: "POST", body: body || {} });
     const sc = f.scope || {};
     const repro = h("textarea", { class: "cv-ta", "aria-label": "Repro script", spellcheck: "false" });
-    repro.value = f.repro || "#!/bin/sh\n# exits non-zero while the problem is there, 0 once it is fixed\n";
+    repro.value = f.repro || "#!/bin/sh\n# exits 1 while the problem is there, 0 once it is fixed\n";
     const actions = [];
     if (f.stage === "review" && f.ci === "pass") actions.push(h("button", { class: "cv-btn good", type: "button", onclick: run(() => post("approve"), "Approved and merged") }, "Approve and merge"));
     if (f.stage === "review" || f.stage === "verify") actions.push(h("button", { class: "cv-btn", type: "button", onclick: run(() => post("back", { text: "Sent back from Converge" }), "Sent back to develop") }, "Send back to develop"));
+    if (f.stage === "found" && f.state === "active") actions.push(h("button", { class: "cv-btn pri", type: "button", onclick: run(() => post("reproduce"), "On to Reproduce: an agent writes its repro") }, "Reproduce"));
     if (f.stage === "prioritize") actions.push(h("button", { class: "cv-btn pri", type: "button", onclick: run(() => post("start"), "Development started") }, "Start development"));
     if (f.stage === "reproduce" && !f.agent) actions.push(h("button", { class: "cv-btn", type: "button", onclick: run(() => post("repro-agent"), "An agent is writing the repro") }, "Ask an agent for the repro"));
     if (f.stage === "reproduce" && f.agent) actions.push(h("button", { class: "cv-btn", type: "button", onclick: run(() => post("take-repro"), "Took the agent's repro") }, "Take the agent's repro"));
@@ -305,7 +400,7 @@ export function mount(root, ctx) {
     actions.push(reason, h("button", { class: "cv-btn", type: "button", onclick: run(() => post("dismiss", { reason: reason.value }), "Dismissed") }, "Dismiss"));
     const themeSel = h("select", { "aria-label": "Kind of problem", onchange: run(() => api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body: { theme: themeSel.value } }), "Kind changed") },
       (S.d.themes || Object.keys(THEME_WORDS)).map((t) => h("option", { value: t, selected: t === f.theme ? true : null }, THEME_WORDS[t] || t)));
-    const sheet = h("aside", { class: "cv-sheet", role: "dialog", "aria-modal": "true", "aria-label": f.title },
+    const sheet = h("aside", { class: "cv-sheet", "data-id": id, role: "dialog", "aria-modal": "true", "aria-label": f.title },
       h("button", { class: "cv-x", type: "button", "aria-label": "Close", onclick: close }, "×"),
       h("div", { class: "cv-sheet-h" },
         h("div", { class: "cv-meta" }, h("span", { class: "cv-chip" }, f.id), h("span", { class: `cv-chip s${f.severity}` }, SEV[f.severity]), themeSel, h("span", {}, (S.d.stages[f.stage_index] || {}).name), f.state !== "active" ? h("span", { class: "cv-chip bad" }, f.state) : null),
@@ -314,7 +409,8 @@ export function mount(root, ctx) {
       h("div", { class: "cv-sheet-b" },
         f.needs_you ? h("div", { class: "cv-needs" }, f.needs_you) : null,
         h("section", {}, h("div", { class: "cv-label" }, "What happened"), h("p", { style: { margin: "6px 0 0" } }, f.detail || "–"),
-          h("p", { class: "cv-meta", style: { marginTop: "6px" } }, d.persona ? `Found by ${d.persona.name}${f.step ? ` at “${f.step}”` : ""}` : `Reported by ${f.by}`, f.occurrences > 1 ? ` · ${f.personas_hit.length} personas, ${f.occurrences} times` : "")),
+          h("p", { class: "cv-meta", style: { marginTop: "6px" } }, d.persona ? `Found by ${d.persona.name}${f.step ? ` at “${f.step}”` : ""}` : `Reported by ${f.by}`, f.occurrences > 1 ? ` · ${f.personas_hit.length} personas, ${f.occurrences} times` : "",
+            f.run ? h("a", { href: `#/converge?run=${f.run}`, style: { marginLeft: "8px" } }, "See the run") : null)),
         h("section", {}, h("div", { class: "cv-label" }, f.repro_hash ? `Repro · locked ${f.repro_hash.slice(0, 8)}` : "Repro"),
           f.repro_hash ? h("pre", { class: "cv-pre" }, f.repro) : h("div", {}, repro, h("button", { class: "cv-btn", type: "button", style: { marginTop: "6px" }, onclick: run(() => api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body: { repro: repro.value } }), "Repro saved: the next tick runs it") }, "Save the repro"))),
         f.scope ? h("section", {}, h("div", { class: "cv-label" }, "Scope"), h("dl", { class: "cv-kv" },
@@ -344,6 +440,57 @@ export function mount(root, ctx) {
     return svg;
   }
 
+  function lastRun(pid) { return (S.d.runs || []).find((r) => r.persona === pid && r.state !== "running"); }
+
+  // ------------------------------------------------------------ a run, live
+  const TOOL_WORDS = { Bash: "ran", Read: "read", Write: "wrote", Edit: "edited", MultiEdit: "edited", Glob: "looked for", Grep: "searched for", WebFetch: "opened", WebSearch: "searched the web for", TodoWrite: "planned" };
+  async function openRun(id) {
+    const req = (S.sheetReq = (S.sheetReq || 0) + 1);
+    document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove());
+    const close = () => { clearInterval(timer); history.replaceState(history.state, "", here()); sheet.remove(); scrim.remove(); };
+    const scrim = h("div", { class: "cv-scrim", onclick: close });
+    const body = h("div", { class: "cv-sheet-b" }, h("p", { class: "cv-empty" }, "Loading the run…"));
+    const head = h("div", { class: "cv-sheet-h" });
+    const sheet = h("aside", { class: "cv-sheet", "data-run": id, role: "dialog", "aria-modal": "true", "aria-label": "A persona's run" },
+      h("button", { class: "cv-x", type: "button", "aria-label": "Close", onclick: close }, "×"), head, body);
+    document.body.append(scrim, sheet);
+    let stick = true, seen = -1;
+    body.addEventListener("scroll", () => { stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 40; }, { passive: true });
+    const paint = async () => {
+      let d;
+      try { d = await api(`/api/converge/runs/${enc(id)}`); } catch (err) { body.replaceChildren(h("p", { class: "cv-empty" }, err.message || String(err))); clearInterval(timer); return; }
+      if (req !== S.sheetReq || !sheet.isConnected) { clearInterval(timer); return; }
+      const r = d.run, pe = d.persona || {};
+      const secs = Math.max(0, Math.round(((r.ended || d.now) - r.created) / 1000));
+      const dur = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60} s` : `${secs} s`;
+      const at = r.at;
+      const pct = at && at.of ? Math.min(100, Math.round(((at.n - (d.live ? 0.5 : 0)) / at.of) * 100)) : null;
+      head.replaceChildren(
+        h("div", { class: "cv-meta" }, d.live ? h("span", { class: "cv-chip run" }, h("span", { class: "cv-live" }, "playing now")) : h("span", { class: `cv-chip ${r.state === "failed" ? "bad" : "ok"}` }, r.state === "failed" ? "failed" : r.outcome || r.state),
+          h("span", { class: "cv-chip" }, r.purpose), h("span", {}, dur), r.cost_usd ? h("span", {}, usd(r.cost_usd)) : null, r.ease != null ? h("span", {}, `ease ${r.ease}`) : null),
+        h("h2", {}, pe.name || "A persona's run"),
+        at ? h("div", { class: "cv-prog" }, h("div", { class: "bar", style: { gridTemplateColumns: `repeat(${Math.min(at.of, 12)}, 1fr)` } },
+          Array.from({ length: Math.min(at.of, 12) }, (_, i) => h("i", { class: i + 1 < at.n || (!d.live && i + 1 <= at.n) ? "p" : i + 1 === at.n ? "n" : null }))),
+          h("div", { class: "lbl" }, h("span", {}, h("b", {}, `Step ${at.n} of ${at.of}`), at.name ? `: ${at.name}` : ""), h("span", {}, pct != null ? `${pct}%` : ""))) : h("div", { class: "cv-meta" }, d.live ? "Starting its journey…" : ""));
+      const steps = r.steps || [];
+      if (steps.length === seen && !d.live) { clearInterval(timer); }
+      if (steps.length === seen) return;
+      seen = steps.length;
+      body.replaceChildren(
+        pe.journey ? h("details", {}, h("summary", { class: "cv-label" }, "The journey"), h("p", { class: "role" }, pe.journey)) : null,
+        steps.length ? h("ol", { class: "cv-steps" }, steps.map((x) => x.kind === "tool"
+          ? h("li", { class: "t" }, h("span", { class: "w" }, TOOL_WORDS[x.tool] || x.tool), " ", h("code", {}, x.text || ""), h("span", { class: "ts" }, ago(x.ts)))
+          : h("li", { class: "s" }, x.text, h("span", { class: "ts" }, ago(x.ts)))))
+          : h("p", { class: "cv-empty" }, d.live ? "Nothing yet: Claude Code is starting in a fresh checkout." : "This run kept no steps (it ran before steps were recorded)."),
+        !d.live && r.answer ? h("section", {}, h("div", { class: "cv-label" }, "What they achieved"), h("p", {}, r.answer)) : null,
+        !d.live && (r.findings || []).length ? h("section", {}, h("div", { class: "cv-label" }, `What they reported (${r.findings.length})`), h("ul", {}, r.findings.map((x) => h("li", {}, x.title)))) : null,
+        r.error ? h("div", { class: "cv-needs" }, r.error) : null);
+      if (stick) body.scrollTop = body.scrollHeight;
+    };
+    const timer = setInterval(paint, 2000);
+    await paint();
+  }
+
   function personas() {
     const d = S.d;
     const ps = d.personas || [];
@@ -358,7 +505,9 @@ export function mount(root, ctx) {
         h("div", {}, h("div", { class: "v" }, String(p.runs)), h("div", { class: "l" }, "runs")),
         h("div", {}, h("div", { class: "v" }, p.repro_rate == null ? "–" : `${Math.round(p.repro_rate * 100)}%`), h("div", { class: "l" }, "repro rate")),
         h("div", {}, h("div", { class: "v" }, String(p.open)), h("div", { class: "l" }, "open"))),
+      p.live_run ? h("button", { class: "cv-btn live", type: "button", onclick: () => { location.hash = `#/converge/personas?run=${p.live_run}`; } }, h("span", { class: "cv-live" }, "Playing now: watch what they do")) : null,
       h("div", { class: "cv-meta" },
+        !p.live_run && lastRun(p.id) ? h("button", { class: "cv-btn", type: "button", onclick: () => { location.hash = `#/converge/personas?run=${lastRun(p.id).id}`; } }, "Last run") : null,
         h("button", { class: "cv-btn", type: "button", disabled: p.busy ? true : null, onclick: () => act(() => api(`/api/converge/personas/${p.id}/play`, { method: "POST", body: {} }), `${p.name.split(",")[0]} is playing`) }, "Play now"),
         p.state === "retired" ? h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api(`/api/converge/personas/${p.id}/activate`, { method: "POST", body: {} }), "Active again") }, "Activate")
           : h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api(`/api/converge/personas/${p.id}/retire`, { method: "POST", body: {} }), "Retired") }, "Retire")));
@@ -378,6 +527,56 @@ export function mount(root, ctx) {
   }
 
   // ------------------------------------------------------------ metrics
+  const SEV_COL = [["blocker", "var(--crit, #d14343)"], ["major", "var(--warn, #d9822b)"], ["minor", "var(--accent)"], ["papercut", "var(--text-3, #999)"]];
+  function timelinePanel() {
+    const range = S.range || "24h";
+    const box = h("div", { class: "cv-chart" }, h("p", { class: "cv-empty" }, "Loading…"));
+    const panel = h("div", { class: "cv-panel wide" },
+      h("div", { class: "cv-bar", style: { margin: 0 } }, h("h3", { style: { margin: 0, flex: "1" } }, "Open issues over time"),
+        h("div", { class: "cv-seg", role: "radiogroup", "aria-label": "Range" }, [["24h", "24 h"], ["7d", "7 d"], ["30d", "30 d"]].map(([k, l]) =>
+          h("button", { type: "button", class: range === k ? "on" : null, role: "radio", "aria-checked": String(range === k), onclick: () => { S.range = k; S.tl = null; draw(); } }, l)))),
+      h("div", { class: "sub" }, "Open by severity, stacked; the lines are found and merged in each period"), box);
+    const paint = (t) => box.replaceChildren(chart(t));
+    if (S.tl && S.tl.range === range && Date.now() - S.tlAt < 30000) paint(S.tl);
+    else api(`/api/converge/timeline?repo=${enc(repo())}&range=${range}`).then((t) => { S.tl = t; S.tlAt = Date.now(); if (box.isConnected) paint(t); }).catch((e) => box.replaceChildren(h("p", { class: "cv-empty" }, e.message || String(e))));
+    return panel;
+  }
+
+  function chart(t) {
+    const b = t.buckets || [];
+    if (!b.length) return h("p", { class: "cv-empty" }, "No findings yet.");
+    const W = 600, H = 200, L = 30, R = 8, T = 8, B = 22;
+    const max = Math.max(1, ...b.map((x) => Math.max(x.open_total, x.found, x.merged)));
+    const nice = max <= 5 ? 5 : Math.ceil(max / 5) * 5;
+    const X = (i) => L + (i + 0.5) * ((W - L - R) / b.length), Y = (v) => T + (H - T - B) * (1 - v / nice);
+    const bw = Math.max(2, ((W - L - R) / b.length) * 0.7);
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("class", "cv-tl-svg"); svg.setAttribute("role", "img");
+    const last = b.at(-1);
+    svg.setAttribute("aria-label", `Open issues now: ${last.open_total}. Found in the range: ${b.reduce((a, x) => a + x.found, 0)}, merged: ${b.reduce((a, x) => a + x.merged, 0)}.`);
+    const fmt = (ms) => { const d = new Date(ms); return t.range === "24h" ? `${String(d.getHours()).padStart(2, "0")}:00` : `${d.getMonth() + 1}/${d.getDate()}`; };
+    let g = "";
+    for (let k = 0; k <= 5; k++) { const v = (nice / 5) * k; g += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line-1, #eee)"/><text x="${L - 4}" y="${Y(v) + 3}" text-anchor="end" font-size="10" fill="var(--text-3, #888)">${v}</text>`; }
+    const every = Math.ceil(b.length / 6);
+    b.forEach((x, i) => {
+      let y0 = Y(0);
+      for (const [k, c] of SEV_COL) { const n = x.open[k] || 0; if (!n) continue; const y1 = Y(0) - (Y(0) - Y(n)); const hgt = Y(0) - Y(n); g += `<rect x="${X(i) - bw / 2}" y="${y0 - hgt}" width="${bw}" height="${hgt}" fill="${c}" opacity=".85"><title>${fmt(x.t)}: ${n} ${k}</title></rect>`; y0 -= hgt; void y1; }
+      if (i % every === 0) g += `<text x="${X(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--text-3, #888)">${fmt(x.t)}</text>`;
+    });
+    const line = (k, c, dash) => `<polyline points="${b.map((x, i) => `${X(i)},${Y(x[k])}`).join(" ")}" fill="none" stroke="${c}" stroke-width="2" ${dash ? `stroke-dasharray="4 3"` : ""}/>`;
+    g += line("found", "var(--text, #222)", true) + line("merged", "var(--good, #2f9e44)", false);
+    svg.innerHTML = g;
+    const sum = (k) => b.reduce((a, x) => a + x[k], 0);
+    const ease = b.filter((x) => x.ease != null);
+    return h("div", {},
+      svg,
+      h("div", { class: "cv-legend" }, SEV_COL.map(([k, c]) => h("span", {}, h("i", { style: { background: c } }), k)),
+        h("span", {}, h("i", { class: "ln", style: { borderColor: "var(--text, #222)", borderTopStyle: "dashed" } }), "found"), h("span", {}, h("i", { class: "ln", style: { borderColor: "var(--good, #2f9e44)" } }), "merged")),
+      h("p", { class: "cv-meta", style: { marginTop: "6px" } }, `Now ${last.open_total} open · ${sum("found")} found, ${sum("merged")} merged, ${sum("dropped")} out of the loop in this range`,
+        ease.length ? ` · persona ease ${ease[0].ease.toFixed(1)} → ${ease.at(-1).ease.toFixed(1)}` : ""));
+  }
+
   function metrics() {
     const m = S.d.metrics || {};
     const f = m.funnel || {};
@@ -387,6 +586,7 @@ export function mount(root, ctx) {
     const tmax = Math.max(1, ...Object.values(bt).map((x) => x.open));
     const hist = m.history || [];
     return h("div", { class: "cv-panels" },
+      timelinePanel(),
       h("div", { class: "cv-panel" }, h("h3", {}, "Open problems by kind"), h("div", { class: "sub" }, "Where the product is weakest now; a click filters the board"),
         h("table", { class: "cv-t" }, h("thead", {}, h("tr", {}, h("th", {}, "Kind"), h("th", {}, ""), h("th", { class: "n" }, "Open"), h("th", { class: "n" }, "Blockers"), h("th", { class: "n" }, "Merged"))),
           h("tbody", {}, Object.entries(bt).sort((a, b) => b[1].blocker - a[1].blocker || b[1].open - a[1].open).map(([k, x]) => h("tr", { style: { cursor: "pointer" }, onclick: () => { S.theme = k; location.hash = "#/converge"; } },
@@ -429,7 +629,8 @@ export function mount(root, ctx) {
         field("budget_usd_day", "Model budget per day (USD)", "Persona runs, scoping and new personas. A spent budget pauses new work."),
         field("runs_at_once", "Persona runs at once", "Each in its own checkout."),
         field("wip", "Findings in development at once", "Each agent on its own worktree and branch."),
-        field("max_rounds", "Rounds before it asks you", "Develop and verify rounds without passing.")),
+        field("max_rounds", "Rounds before it asks you", "Develop and verify rounds without passing."),
+        field("repro_agents", "Repro agents at once", "A finding in Reproduce without a script gets an agent to write one; 0 leaves it to you.")),
       h("div", { class: "cv-panel" }, h("h3", {}, "Cadence and checks"), h("div", { class: "sub" }, "When personas play and what a fix must pass"),
         field("tick_s", "Autopilot tick (seconds)", "How often it advances what it can."),
         field("replay_every_h", "Replay each persona every (hours)", "Plus once after each merge."),
@@ -443,18 +644,37 @@ export function mount(root, ctx) {
         list("dev_deny", "Never", "One rule a line")),
       h("div", { class: "cv-panel" }, h("h3", {}, "What runs on its own"), h("div", { class: "sub" }, "Merges and one-way doors always wait for you"),
         tog("enabled", "Autopilot", "Ticks on its own, every tick."),
+        tog("found_auto", "Move new findings to Reproduce", "Off: each new finding waits in Found until you choose Reproduce or Dismiss."),
         tog("generate", "Generate new personas", "When new serious findings dry up, one aimed at the least-played part."),
         tog("retire", "Retire stale personas", "After 3 runs with nothing new, or a repro rate under 40%."),
         tog("open_pr", "Open pull requests", "Push the branch and open its pull request with gh at review."),
         h("button", { class: "cv-btn pri", type: "button", onclick: () => act(() => api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, settings: st } }), "Settings saved") }, "Save")));
   }
 
-  const onHash = () => { if (location.hash.startsWith("#/converge")) { document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove()); if (S.d) draw(); } };
+  const onHash = () => {
+    if (!location.hash.startsWith("#/converge") || !S.d) return;
+    const f = fid();
+    const open = document.querySelector(".cv-sheet")?.dataset.id;
+    if (view() !== S.view) { S.view = view(); document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove()); draw(); return; }
+    const r = rid();
+    if (r) { if (document.querySelector(".cv-sheet")?.dataset.run !== r) openRun(r); return; }
+    if (!f) { S.sheetReq = (S.sheetReq || 0) + 1; document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove()); return; }
+    if (open !== f) openSheet(f);
+  };
+  // A finger on the page: the refresh waits, so nothing moves under it.
+  const touched = () => { S.touched = Date.now(); };
+  host.addEventListener("pointerdown", touched, { passive: true });
+  host.addEventListener("scroll", touched, { passive: true, capture: true });
   const onKey = (e) => { if (e.key === "Escape") { const x = document.querySelector(".cv-sheet .cv-x"); if (x) x.click(); } };
   window.addEventListener("hashchange", onHash);
   document.addEventListener("keydown", onKey);
   load();
-  S.timer = setInterval(() => { if (!document.querySelector(".cv-sheet") && !document.querySelector(".cv input:focus, .cv textarea:focus")) load(); }, 10000);
+  S.view = view();
+  S.timer = setInterval(() => {
+    if (document.hidden || document.querySelector(".cv-sheet") || document.querySelector(".cv input:focus, .cv textarea:focus, .cv select:focus")) return;
+    if (Date.now() - (S.touched || 0) < 4000) return;
+    load();
+  }, 10000);
   return {
     update() {},
     unmount() {

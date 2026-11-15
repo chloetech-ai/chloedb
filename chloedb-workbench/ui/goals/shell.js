@@ -235,6 +235,7 @@ function drawMore() {
  *  prompt, an agent waiting with no question read yet, or an alert. */
 export function needCard(it, { big = false } = {}) {
   if (it.kind === "alert") return alertCard(it);
+  if (it.kind === "converge") return convergeCard(it);
   if (it.kind === "waiting" && it.asked) {
     // Its turn ended with a question to you: answered in words, with Tell.
     return h("div", { class: "wait-card", tabindex: "0", "data-need": it.id },
@@ -259,6 +260,21 @@ export function needCard(it, { big = false } = {}) {
   if (O.sel.has(it.id)) card.classList.add("picked");
   if (it.kind === "trust") card.prepend(h("div", { class: "qc-trust" }, "Claude Code asks whether to trust this folder. Workbench answers it for its own worktrees and for projects you trusted when you opened them."));
   return card;
+}
+
+/** Converge's findings that wait for you, one card per reason. */
+function convergeCard(it) {
+  const fs = it.findings || [];
+  const n = it.count || fs.length;
+  const one = n === 1 && fs[0];
+  const triage = it.stage === "found" && /^New finding/.test(it.text || "");
+  const title = triage ? `${n} new finding${n === 1 ? "" : "s"} to triage` : one ? one.title : `${n} findings: ${(it.text || "").split(/[:(]/)[0]}`;
+  return h("div", { class: "alert-card", tabindex: "0", "data-need": it.id },
+    h("div", { class: "hd" }, icon("bug", "i sm"), h("b", {}, `Converge · ${fs[0] ? fs[0].stage : ""}`), h("span", { class: "t" }, since(it.since_ms))),
+    h("div", { class: "ti" }, title),
+    h("p", { class: "qc-what" }, triage ? "Choose Reproduce to chase one (an agent writes its repro), or Dismiss it." : it.text),
+    n > 1 ? h("ul", { class: "qc-what", style: { margin: 0, paddingLeft: "18px" } }, fs.slice(0, 5).map((f) => h("li", {}, h("a", { href: `#/converge?f=${enc(f.id)}` }, f.title))), n > 5 ? h("li", {}, `and ${n - 5} more`) : null) : null,
+    h("div", { class: "act" }, btn(one ? "Open it" : "Open the board", { sm: true, href: one ? `#/converge?f=${enc(one.id)}` : "#/converge" })));
 }
 
 function alertCard(it) {

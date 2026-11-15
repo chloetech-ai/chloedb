@@ -3,7 +3,7 @@
 //! all show, and the cards of its drawer. It counts an agent blocked on you
 //! (an open question: a permission prompt, Claude Code's trust prompt, an
 //! `ask_human`; or an agent waiting with no question read yet) and an alert
-//! that asks you. An agent that finished its turn is ready, not here.
+//! that asks you, and Converge's findings that wait for you. An agent that finished its turn is ready, not here.
 //!
 //! `GET /api/needs[?repo=]`: `{count, items: [...], by_repo: {path: n}}`,
 //! the agents' items oldest first, then the alerts', oldest first.
@@ -83,7 +83,10 @@ pub fn needs(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: Option<&str>) -> Jso
         alert_items.push((since, json!({ "kind": "alert", "id": i["id"], "repo": r, "since_ms": since, "incident": i })));
     }
     alert_items.sort_by_key(|(t, _)| *t);
-    let items: Vec<Json> = agent_items.into_iter().chain(alert_items).map(|(_, v)| v).collect();
+    // Converge's findings that wait for you, one item per reason.
+    let mut cv_items = crate::converge::needs_items(sup, &|r: &str| keep(r));
+    cv_items.sort_by_key(|(t, _)| *t);
+    let items: Vec<Json> = agent_items.into_iter().chain(alert_items).chain(cv_items).map(|(_, v)| v).collect();
     let mut by_repo: HashMap<String, usize> = HashMap::new();
     for it in &items {
         *by_repo.entry(it["repo"].as_str().unwrap_or("").to_string()).or_default() += 1;

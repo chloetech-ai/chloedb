@@ -6614,11 +6614,29 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/start"), &key, Some(&aid0), None).0, 403);
     assert_eq!(call_as(&s, "POST", "/api/converge/tick", &key, Some(&aid0), Some(json!({ "repo": r }))).0, 403);
 
-    // Tick 2: dedup (yours is merged into the persona's), then the repro fails 2 of 2 at main.
+    // Tick 2: dedup (yours is merged into the persona's); the others wait in Found for you.
     cv_tick(&s, &r);
     let d = cv_finding(&s, &dup_id);
     assert_eq!(d["finding"]["state"], "duplicate", "{d}");
     assert_eq!(d["finding"]["dup_of"], json!(fid));
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "found", "{f}");
+    assert!(f["finding"]["needs_you"].as_str().unwrap().starts_with("New finding"), "{f}");
+    // The inbox shows them as one item: three new findings to triage.
+    let (_, needs) = s.get("/api/needs");
+    let cv: Vec<&Value> = needs["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "converge").collect();
+    assert_eq!(cv.len(), 1, "{needs}");
+    assert_eq!(cv[0]["count"], 3, "{needs}");
+    // An agent cannot choose; you can.
+    assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/reproduce"), &key, Some(&aid0), None).0, 403);
+    for id in [&fid, &nr_id] {
+        let (st, v) = s.post(&format!("/api/converge/findings/{id}/reproduce"), json!({}));
+        assert_eq!(st, 200, "{v}");
+        assert_eq!(v["finding"]["stage"], "reproduce", "{v}");
+    }
+
+    // Then the repro fails 2 of 2 at main.
+    cv_tick(&s, &r);
     let f = cv_finding(&s, &fid);
     assert_eq!(f["finding"]["stage"], "scope", "{f}");
     assert_eq!(f["finding"]["occurrences"], 2, "{f}");
