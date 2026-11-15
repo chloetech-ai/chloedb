@@ -152,6 +152,14 @@ turn() {
       printf '\n%s\n❯ \n%s\n' "────────────────────────────────────────────────────────────" "────────────────────────────────────────────────────────────"
       sleep 7
       printf '%s\n' "$text" >> "$file";;
+    PERMC\ *)
+      # PERMC <command>: Claude Code's permission prompt for that Bash
+      # command, after its PreToolUse; No or Esc ends the turn.
+      CMD="${1#PERMC }"
+      hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"'"$CMD"'"},"session_id":"'"$SID"'"}'
+      NOTIFY='{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
+      menu perm "Do you want to proceed?" "Yes" "Yes, and switch to auto mode · auto mode handles these prompts for you" "No"
+      case "$CHOSE" in Yes*) ;; *) interrupted; return;; esac;;
     PERM3\ *|PERM4\ *)
       # PERM3 / PERM4 <text>: Claude Code's permission prompt for the Bash
       # command, in its 3- and 4-option forms, then its Notification; No
@@ -6395,6 +6403,52 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     assert_eq!(runs["runs"][0]["id"], run.as_str());
     let (_, suites) = s.get(&format!("/api/harness/suites?{}", harness_q(&r)));
     assert_eq!(suites["suites"][0]["name"], "Optimize this", "{suites}");
+}
+
+#[test]
+fn harness_optimize_this_allows_every_command_its_replays_were_asked_about_in_one_round() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // Two prompts: the check alone, then the check chained after the
+    // project's own command, which no rule allows either.
+    let a = s.spawn(json!({ "repo": r, "task": "PERMC ./check.sh", "name": "orig", "permission_mode": "acceptEdits" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let yes = |n: usize| {
+        let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "the prompt", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
+        assert_eq!(s.post(&format!("/api/questions/{}/answer", v["questions"][0]["id"].as_str().unwrap()), json!({ "option": 0 })).0, 200, "prompt {n}");
+    };
+    yes(1);
+    ws_read_until(&s, &id, "DONE: PERMC ./check.sh", &[]);
+    s.wait(&id, "idle");
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "PERMC python -m tool run && ./check.sh" }));
+    yes(2);
+    ws_read_until(&s, &id, "DONE: PERMC python -m tool run", &[]);
+    s.wait(&id, "idle");
+
+    let checks = json!([{ "kind": "command", "run": "test -d .git" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 2, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }], "checks": checks });
+    let started = start_run(&s, body);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "needs you", |v| v["run"]["state"] == "needs_you" || v["run"]["state"] == "done" || v["run"]["state"] == "failed");
+    assert_eq!(v["run"]["state"], "needs_you", "{v}");
+    for x in v["cases"][0]["a"].as_array().unwrap() {
+        assert_eq!((x["state"].as_str(), x["interventions"].as_i64()), (Some("passed"), Some(2)), "{x}");
+    }
+    // Its first change allows both commands: one alone leaves the chain
+    // asking.
+    let ch = v["run"]["waiting"].clone();
+    assert_eq!(ch["title"], "Allow `./check.sh` and `python -m tool` without asking", "{ch}");
+    assert_eq!(ch["edit"]["permissions"]["allow"], json!(["Bash(./check.sh:*)", "Bash(python -m tool:*)"]), "{ch}");
+    assert_eq!(ch["saves"], 4, "{ch}");
+    assert_eq!(s.post(&format!("/api/harness/runs/{run}/decide"), json!({ "approve_widening": ch["patterns"] })).0, 200);
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let log = v["run"]["log"].as_array().unwrap();
+    assert_eq!(log[0]["change"]["key"], "allow\nBash(./check.sh:*)\nBash(python -m tool:*)", "{v}");
+    // Its replays ran with both rules.
+    let tried = log[0]["version"].as_str().unwrap();
+    let (_, tv) = s.get(&format!("/api/harness/versions/{tried}"));
+    let perms = tv["parts"].as_array().unwrap().iter().find(|p| p["kind"] == "permissions").unwrap()["text"].as_str().unwrap().to_string();
+    assert!(perms.contains("Bash(./check.sh:*)") && perms.contains("Bash(python -m tool:*)"), "{tv}");
 }
 
 #[test]

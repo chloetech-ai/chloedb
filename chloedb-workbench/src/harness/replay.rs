@@ -1161,36 +1161,64 @@ fn permission_and_pin_changes(sup: &Supervisor, run: &Run, best: &Version, e: &E
         }
         out.push(json!({ "key": key, "title": f["title"], "part": "memory", "edit": f["edit"], "why": "The week's sessions left this record out where it was needed", "saves": 0, "widens": false, "patterns": [], "aims": ["pass_rate", "turns"] }));
     }
-    // Allow rules, for the commands the replays were asked about.
-    let agents: HashSet<String> = results(sup, &run.id).into_iter().filter(|r| r.version == best.id).filter_map(|r| r.agent).collect();
+    // Allow rules, for the commands the replays were asked about: each
+    // prompt keyed under the rules its own replay ran with, over every
+    // version tried, so that what one rule left is found (under a version
+    // that allows ./check.sh, `python -m x && ./check.sh` asks for python
+    // -m x).
+    let res = results(sup, &run.id);
+    let version_of: std::collections::HashMap<String, String> = res.iter().filter_map(|r| r.agent.clone().map(|a| (a, r.version.clone()))).collect();
+    let mut rules_of: std::collections::HashMap<String, Vec<super::perms::Rule>> = std::collections::HashMap::new();
     let mut asked: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for q in crate::questions::all(sup).into_iter().filter(|q| q.kind == "permission" && q.agent.as_ref().is_some_and(|a| agents.contains(a))) {
+    for q in crate::questions::all(sup).into_iter().filter(|q| q.kind == "permission") {
+        let Some(v) = q.agent.as_ref().and_then(|a| version_of.get(a)) else { continue };
+        let vrules = rules_of.entry(v.clone()).or_insert_with(|| if *v == best.id { rules.clone() } else { super::version(sup, v).map(|vv| super::rules_under(sup, &run.repo, &vv, &edits_of(sup, v))).unwrap_or_default() });
         let cwd = q.agent.as_deref().and_then(|a| sup.agent_row(a)).map(|a| a.cwd).unwrap_or_default();
-        if let Some(k) = q.detail.as_ref().and_then(|d| d["command"].as_str()).and_then(|c| asked_key(&rules, c, &cwd)) {
+        if let Some(k) = q.detail.as_ref().and_then(|d| d["command"].as_str()).and_then(|c| asked_key(vrules, c, &cwd)) {
             *asked.entry(k).or_default() += 1;
         }
     }
     let mut calls = Vec::new();
-    for a in agents.iter().filter_map(|a| sup.agent_row(a)) {
+    for a in version_of.keys().filter_map(|a| sup.agent_row(a)) {
         calls.extend(super::perms::calls_of(&a.id, &a.name, &a.cwd, &sup.all_events(&a.id).unwrap_or_default()));
     }
     calls.extend(w.calls.iter().cloned());
-    let mut rules_out: Vec<(usize, Json)> = Vec::new();
-    // A rule asked about less than once a replay cannot be better beyond
-    // the noise of its replays: not worth a round.
-    for (k, n) in asked.into_iter().filter(|(_, n)| *n >= run.n) {
-        let rule = format!("Bash({k}:*)");
-        let key = format!("allow\n{rule}");
-        if tried.contains(&key) || e.permissions.allow.contains(&rule) {
-            continue;
-        }
+    let allow_change = |ks: &[&String], n: usize| -> Json {
+        let rules_new: Vec<String> = ks.iter().map(|k| format!("Bash({k}:*)")).collect();
         let mut after_e = e.permissions.clone();
-        after_e.allow.push(rule.clone());
+        after_e.allow.extend(rules_new.iter().cloned());
         let after = super::perms::effective(&super::baseline(sup, &run.repo), &after_e, "draft");
         let rep = super::widen_report(&rules, &after, &calls, &w.cwd());
         let patterns = rep["patterns"].clone();
         let widens = patterns.as_array().is_some_and(|p| !p.is_empty());
-        rules_out.push((n, json!({ "key": key, "title": format!("Allow `{k}` without asking"), "part": "permissions", "edit": { "permissions": { "allow": [rule] } }, "why": format!("Its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }), "saves": n, "widens": widens, "patterns": patterns, "aims": ["interventions", "wall_s"] })));
+        let names: Vec<String> = ks.iter().map(|k| format!("`{k}`")).collect();
+        let title = match names.len() {
+            1 => format!("Allow {} without asking", names[0]),
+            _ => format!("Allow {} and {} without asking", names[..names.len() - 1].join(", "), names[names.len() - 1]),
+        };
+        let why = if ks.len() == 1 { format!("Its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }) } else { format!("Its replays were asked about these {n} times: one round for all of them, as one alone leaves the others asking") };
+        json!({ "key": format!("allow\n{}", rules_new.join("\n")), "title": title, "part": "permissions", "edit": { "permissions": { "allow": rules_new } }, "why": why, "saves": n, "widens": widens, "patterns": patterns, "aims": ["interventions", "wall_s"] })
+    };
+    let mut rules_out: Vec<(usize, Json)> = Vec::new();
+    // A rule asked about less than once a replay cannot be better beyond
+    // the noise of its replays: not worth a round.
+    let often: Vec<(&String, usize)> = asked.iter().map(|(k, n)| (k, *n)).filter(|(k, n)| *n >= run.n && !e.permissions.allow.contains(&format!("Bash({k}:*)"))).collect();
+    for (k, n) in &often {
+        let ch = allow_change(&[*k], *n);
+        if !tried.contains(ch["key"].as_str().unwrap_or("")) {
+            rules_out.push((*n, ch));
+        }
+    }
+    // All of them at once, before any alone: a chain asks for each of its
+    // commands no rule allows, so one rule alone can leave every prompt.
+    let group: Vec<(&String, usize)> = often.iter().copied().filter(|(k, _)| !failed_in_log(run, &format!("allow\nBash({k}:*)"))).take(5).collect();
+    if group.len() >= 2 {
+        let ks: Vec<&String> = group.iter().map(|(k, _)| *k).collect();
+        let n = group.iter().map(|(_, n)| n).sum();
+        let ch = allow_change(&ks, n);
+        if !tried.contains(ch["key"].as_str().unwrap_or("")) {
+            rules_out.push((n, ch));
+        }
     }
     // The most asked first, a widening one too (it waits for you): a
     // round spent on a rule that saves little is a round, and replays,
