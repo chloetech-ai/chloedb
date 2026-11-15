@@ -109,6 +109,20 @@ impl Keys {
         }
     }
 
+    /// Forgets every key, as a restart does: when the server's role
+    /// changes. A primary that steps down may be sent a copy of its new
+    /// primary that lacks a write it answered from here, and elected again
+    /// it would answer a retry of that write from memory, 200 for a write
+    /// no copy holds (TLC, spec/idempotency `KeysNow`). Its database's rows
+    /// answer retries from then, and a request still running finds its key
+    /// gone, which [`Self::finish`] allows; the writer keeps one from
+    /// being applied twice ([`crate::service`]'s `once_per_key`).
+    pub fn forget_all(&self) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.keys.clear();
+        g.order.clear();
+    }
+
     /// Records the outcome of the request that claimed `key`: what it
     /// wrote, or `None` if it did not commit (the key is then forgotten,
     /// so a retry applies it).
@@ -243,6 +257,20 @@ mod tests {
         // A late failure report does not forget a committed key.
         k.finish("a", None);
         assert_eq!(k.begin("a", 1), Begin::Done(w));
+    }
+
+    #[test]
+    fn a_change_of_role_forgets_every_key() {
+        let k = Keys::default();
+        assert_eq!(k.begin("a", 1), Begin::New);
+        k.finish("a", Some(Written { rows: 1, seq_no: Some(3), ..Default::default() }));
+        assert_eq!(k.begin("b", 1), Begin::New);
+        k.forget_all();
+        // The database's row answers from now on; a request still running
+        // finishes into nothing.
+        k.finish("b", Some(Written::default()));
+        assert_eq!(k.begin("a", 1), Begin::New);
+        assert_eq!(k.begin("b", 1), Begin::New);
     }
 
     #[test]

@@ -212,8 +212,10 @@ One shard of three copies (`idem.rs`, `Service::begin_key`,
 client's keyed write, retried through the coordinator to any primary; the
 key in the write's own log entry; memory lost on restart and kept on
 stepping down. Elections are abstract: a copy at least as up to date as a
-majority wins. `ForgetOnStepDown` and `WriterChecks` are fixes;
-`AcksAnOlderTerm` puts DS-5 back.
+majority wins. `ForgetOnStepDown` and `WriterChecks` are the two fixes
+the code has made since TLC found the bugs below, so `EvictFix` and
+`CIEvictFix`, which set both, are the code; `AcksAnOlderTerm` puts DS-5
+back.
 
 | model | fixes | bounds (terms, sends, other writes, crashes, evictions) | result | states |
 |---|---|---|---|---|
@@ -226,7 +228,7 @@ majority wins. `ForgetOnStepDown` and `WriterChecks` are fixes;
 
 What TLC found:
 
-1. **The keys in memory outlive the log (`KeysNow`, open).**
+1. **The keys in memory outlive the log (`KeysNow`, fixed).**
    `Service.idempotency` is made once (`Service::new`) and nothing clears
    it, while the role changes inside the process (`step_down`,
    `fail_over`, `promote`, `configure`), `install_copy` replaces `_sources`
@@ -245,22 +247,28 @@ What TLC found:
       c1's transaction 2 is acknowledged, so `acked(1)` holds and the
       retry is answered 200, though no copy holds w.
 
-   The fix TLC passes: forget the keys whenever the role changes (or tag
-   each with its term). The simulator answers retries only from the
-   database (`sim/copy.rs`), so it cannot find this.
+   Fixed as TLC passes it: a server forgets every key in memory when its
+   role changes (`Service::set_role`, `Keys::forget_all`), which covers
+   stepping down. The simulator answers retries only from the database
+   (`sim/copy.rs`), so it cannot find this.
 2. **DS-5 (`KeysDS5`).** Put back, a retry answered from the key's row
    with the database's last number is acknowledged by an older term's
    transaction, and the write is then lost; the same bounds without it
    find nothing (`KeysFix`).
-3. **A key evicted while its write runs (`KeysEvict`, open).**
+3. **A key evicted while its write runs (`KeysEvict`, fixed).**
    `Keys::begin` forgets the oldest keys past the TTL or 100,000 whatever
    their state, `Busy` ones too. A retry while the write is in flight is
    then New, no row is there yet (`idem::record` writes it in the write's
    own transaction, with `set_source`, which replaces), and both attempts
    commit. It needs 100,000 other keys claimed on the shard during one
    write, which a busy coordinator (every write it sends has a key) can
-   reach while a write waits for an embedding core. The fix TLC passes:
-   the writer looks the key's row up in the write's own transaction.
+   reach while a write waits for an embedding core. Fixed as TLC passes
+   it: the writer looks each key's row up before it applies a write and
+   answers a retry it finds there (`once_per_key` in `service.rs`; the
+   writer is the only one to commit, one group at a time, so that is the
+   write's own transaction's view), and runs a repeat of a key within one
+   group after the first, which the model, applying one attempt at a
+   time, does not need.
 4. **The documentation (`KeysRowSeq`).** server.md says a retry is
    answered the first attempt's seq_no; one answered from the key's row
    gets the database's last number, as its section on keys says
@@ -400,8 +408,8 @@ with the fix its specification checks:
    replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): changes
    that land on, and sync from, a majority (`Quorum`).
 3. **A retry is answered 200 for a write no copy holds, or applied twice**
-   (`idempotency/`, `KeysNow`, `KeysEvict`): forget the keys at a change of
-   role, and look the key's row up in the write's own transaction.
+   (`idempotency/`, `KeysNow`, `KeysEvict`): fixed, the keys forgotten at a
+   change of role and the key's row looked up by the writer.
 4. **Stale reads under the lease** (`handover/`, `HoldUnasked`, `Restart`):
    no wait only when every other copy granted, and the sticky refusal
    counted from the replica's start.

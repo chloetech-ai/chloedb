@@ -22,6 +22,15 @@ changes collect under "Unreleased".
   were lost (the follow-up to N-E2 that TLC found in `spec/replication`;
   `chloedb-sim --uncounted-candidate` places it, and `--bug
   campaigns-uncounted` puts it back).
+- A retried write with an idempotency key is applied once, and answered
+  only for a write the server's copy holds. A server forgets the keys it
+  keeps in memory when its role changes: a primary that stepped down, was
+  sent a copy of its new primary lacking a write, and was elected again
+  answered a retry of that write 200 from memory, though no copy held it.
+  And the writer looks each key's row up before it applies a write: a
+  retry that memory had forgotten (the oldest of 100,000 keys, the first
+  attempt still queued) was applied a second time. TLC found both in
+  `spec/idempotency` (`KeysNow`, `KeysEvict`).
 
 ### Formal specifications
 

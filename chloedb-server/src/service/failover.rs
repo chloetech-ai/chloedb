@@ -112,7 +112,7 @@ impl Service {
         }
         match Follow::open(db, self.replication_file.as_deref()) {
             Ok(f) => {
-                *self.replication.write().unwrap_or_else(|e| e.into_inner()) = Replication::Replica(Arc::new(f));
+                self.set_role(Replication::Replica(Arc::new(f)));
                 tracing::warn!(replaced_by = term, "a primary of a newer term replaced this one, which is a replica now: it follows the new primary");
             }
             Err(e) => tracing::error!(error = %e, "could not make the replaced primary a replica"),
@@ -186,7 +186,7 @@ impl Service {
         opts.replicas = won.others.clone();
         match f.take_over(Some(won.term), opts).await {
             Ok((p, _)) => {
-                *self.replication.write().unwrap_or_else(|e| e.into_inner()) = Replication::Primary(p);
+                self.set_role(Replication::Primary(p));
                 self.models_changed.send_modify(|n| *n += 1);
                 tracing::warn!(term = won.term, replicas = %won.others.join(", "), "elected: this server is its shard's primary");
             }
