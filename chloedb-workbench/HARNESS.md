@@ -1119,15 +1119,43 @@ with the checks and name on its page,
 replays the current version N times, then tries one change at a time on
 the best so far, each a version of its own (`tried`; the one kept is a
 `candidate`, which the user promotes as any version):
-- the changes are an allow rule for each command its replays were asked
-  about, most asked first (on equal counts, those that do not widen), then
-  the pins Fix the harness proposes for the week's missed memory. A prompt
-  counts for the first of its simple commands the rules do not allow
-  (`git status; ./check.sh` was asked for `./check.sh`), and a rule asked
-  about less than once a replay is not tried: it cannot be better beyond
-  the noise of its replays;
+- the changes, each saying what it aims at, are tried those aimed at more
+  of the targets not met yet first, and otherwise in this order:
+  - an allow rule for each command its replays were asked about, most asked
+    first (on equal counts, those that do not widen); a prompt counts for
+    the first of its simple commands the rules do not allow (`git status;
+    ./check.sh` was asked for `./check.sh`), and a rule asked about less
+    than once a replay is not tried: it cannot be better beyond the noise
+    of its replays (aims: interventions, wall time);
+  - a faster model, one step down Opus, Sonnet, Haiku from the best's (the
+    session's when the version names none); a step whose replays failed
+    what the one above passed ends the ladder, one only not better goes on
+    to the next (aims: cost, wall time);
+  - less effort (`--effort low`, then `medium` if low failed), not on
+    Haiku (aims: wall time, cost);
+  - instructions given as each session starts (a SessionStart hook, as the
+    pins are: a resumed conversation keeps the system prompt it recorded),
+    up to 3 a version, written by Opus (`claude -p`, no tools, once per
+    best version, paid from the run's budget) from the case, the targets,
+    what was tried, and the best version's replays call by call with their
+    times; each must hold for the repository in general and never skip or
+    weaken a check (aims: what the writer says);
+  - the pins Fix the harness proposes for the week's missed memory;
+- a version's `agent` part holds its model, effort and instructions; a
+  replay plays the version's model and effort, a new session gets them
+  when it names none (its own choice wins);
 - a change is kept only by the keep rule against the best so far, so one
-  that loses a pass A had is never kept;
+  that loses a pass A had is never kept; on one stretch, worse beyond the
+  noise rejects only on what the user pays (interventions, wall time,
+  cost): a faster model that takes more turns or tokens for less time and
+  money is better;
+- wall time counts each intervention at the time the user took to answer
+  in the session (the median of their own answers, at most 5 minutes; a
+  rule's answers take no one's time), since the scripted user answers at
+  once; a replay keeps that share (`wait_ms`) apart;
+- a replay's cost is read from its transcript as it ends, at the price of
+  the model it ran (Workbench's own reading runs every 30 s, and left a
+  replay's last turns out);
 - the user ticks one or more targets (interventions ticked by default, wall
   time, cost per run, pass rate), each a share better than A and beyond the
   noise, 30% by default and editable;
@@ -1145,11 +1173,14 @@ promoting it. One run plays at a time, one replay at a time.
 - A case started before this build can only start at turn 1.
 - Cassettes (recorded tool results) are not built: every replay runs its
   commands for real, in its sandbox.
-- The proposer is the two kinds of change above; a model proposing edits
-  to instructions or tools is phase 3.
+- The proposer does not edit tools, skills or MCP servers, nor the
+  context a replay resumes (a shorter one would cut cost on stretches that
+  start late in a session): phase 3.
 
 Tests: `harness_a_stretch_of_a_session_becomes_a_test_and_replays_a_against_b`,
 `harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_you`,
+`harness_optimize_this_for_cost_keeps_a_faster_model_and_stops_when_its_target_is_met`,
+`harness_a_version_runs_its_model_effort_and_instructions_in_replays_and_new_sessions`,
 and the unit tests in `evals.rs`, `replay.rs` and `score.rs`.
 
 ## Risks

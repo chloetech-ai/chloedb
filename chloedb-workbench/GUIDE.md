@@ -127,6 +127,10 @@ rate; each 30% better than now and beyond the noise, editable), see the
 price, and start. It replays the stretch under your current harness, then
 under one change at a time, each in a sandbox with no remote and its own
 empty memory, and keeps a change only when it is better and loses nothing.
+The changes go after the targets not met yet: allowing a command it kept
+asking about, a faster model, less effort, and instructions a model writes
+from what the replays did. Wall time counts each prompt at the time you
+took to answer it in the session.
 **Enough** stops it and keeps the best so far, as a candidate version you
 promote yourself. A change that would let agents do more waits for you.
 

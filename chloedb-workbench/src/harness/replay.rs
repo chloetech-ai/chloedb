@@ -65,7 +65,7 @@ use crate::supervisor::{one_line, ApiError, SpawnRequest, Supervisor};
 
 pub const TABLES: [&str; 2] = [
     "CREATE TABLE IF NOT EXISTS optimize_runs (id KEYWORD PRIMARY KEY, repo KEYWORD, kind KEYWORD, a KEYWORD, b KEYWORD, cases TEXT, n INT, rounds INT, cap_usd FLOAT, cap_run_usd FLOAT, est_usd FLOAT, spent_usd FLOAT, state KEYWORD, why TEXT, targets TEXT, log TEXT OPTIONS(indexed = false), best KEYWORD, approved TEXT, waiting TEXT OPTIONS(indexed = false), made_by KEYWORD, created TIMESTAMP, started TIMESTAMP, ended TIMESTAMP)",
-    "CREATE TABLE IF NOT EXISTS eval_runs (id KEYWORD PRIMARY KEY, run KEYWORD, \"case\" KEYWORD, side KEYWORD, version KEYWORD, k INT, agent KEYWORD, state KEYWORD, passed BOOL, diverged BOOL, why TEXT, checks TEXT OPTIONS(indexed = false), not_in_log TEXT OPTIONS(indexed = false), interventions INT, prompts INT, turns INT, wall_ms INT, tokens INT, cost_usd FLOAT, started TIMESTAMP, ended TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS eval_runs (id KEYWORD PRIMARY KEY, run KEYWORD, \"case\" KEYWORD, side KEYWORD, version KEYWORD, k INT, agent KEYWORD, state KEYWORD, passed BOOL, diverged BOOL, why TEXT, checks TEXT OPTIONS(indexed = false), not_in_log TEXT OPTIONS(indexed = false), interventions INT, prompts INT, turns INT, wall_ms INT, tokens INT, cost_usd FLOAT, started TIMESTAMP, ended TIMESTAMP, wait_ms INT, model KEYWORD)",
 ];
 
 /// Runs a side, by default, and the most.
@@ -77,8 +77,8 @@ pub const CAP_RUN_USD: f64 = 0.60;
 /// What a replay of a case with no cost recorded is estimated at.
 const UNKNOWN_COST: f64 = 0.10;
 /// Changes Optimize this tries, by default and at most.
-const DEFAULT_ROUNDS: usize = 4;
-const MAX_ROUNDS: usize = 8;
+const DEFAULT_ROUNDS: usize = 6;
+const MAX_ROUNDS: usize = 12;
 /// A replay's time limit: three times the original's, within these.
 const MIN_LIMIT_MS: i64 = 10 * 60_000;
 const MAX_LIMIT_MS: i64 = 60 * 60_000;
@@ -265,14 +265,20 @@ pub struct Res {
     pub interventions: i64,
     pub prompts: i64,
     pub turns: i64,
+    /// Its wall time, your answers included (`wait_ms` of it).
     pub wall_ms: i64,
     pub tokens: i64,
     pub cost_usd: f64,
     pub started: i64,
     pub ended: Option<i64>,
+    /// The time its interventions would have taken you, at the pace you
+    /// answered in the session (the scripted user answers at once).
+    pub wait_ms: i64,
+    /// The model it ran.
+    pub model: Option<String>,
 }
 
-const E_COLS: &str = "id, run, \"case\", side, version, k, agent, state, passed, diverged, why, checks, not_in_log, interventions, prompts, turns, wall_ms, tokens, cost_usd, started, ended";
+const E_COLS: &str = "id, run, \"case\", side, version, k, agent, state, passed, diverged, why, checks, not_in_log, interventions, prompts, turns, wall_ms, tokens, cost_usd, started, ended, wait_ms, model";
 
 impl Res {
     fn of(r: &[Value]) -> Res {
@@ -299,6 +305,8 @@ impl Res {
             cost_usd: fv(&r[18]),
             started: get_ms(&r[19]).unwrap_or(0),
             ended: get_ms(&r[20]),
+            wait_ms: get_int(&r[21]).unwrap_or(0),
+            model: get_str(&r[22]),
         }
     }
 
@@ -328,6 +336,8 @@ impl Res {
                 ("cost_usd", Value::Float(money(self.cost_usd))),
                 ("started", ts(self.started)),
                 ("ended", self.ended.map_or(Value::Null, ts)),
+                ("wait_ms", Value::Int(self.wait_ms)),
+                ("model", ov(&self.model)),
             ],
         )
     }
@@ -346,7 +356,7 @@ impl Res {
             "id": self.id, "case": self.case, "side": self.side, "version": self.version, "k": self.k, "agent": self.agent, "state": self.state,
             "passed": self.passed, "diverged": self.diverged, "why": self.why, "checks": self.checks, "not_in_log": self.not_in_log,
             "interventions": self.interventions, "prompts": self.prompts, "turns": self.turns, "wall_s": self.wall_ms as f64 / 1000.0,
-            "tokens": self.tokens, "cost_usd": money(self.cost_usd), "started": iso(self.started), "ended": self.ended.map(iso),
+            "wait_s": self.wait_ms as f64 / 1000.0, "model": self.model, "tokens": self.tokens, "cost_usd": money(self.cost_usd), "started": iso(self.started), "ended": self.ended.map(iso),
         })
     }
 }
@@ -762,8 +772,13 @@ fn answer_one(sup: &Arc<Supervisor>, lv: &Arc<Levels>, c: &Case, script: &mut Sc
 }
 
 /// A replay's tokens and dollars so far (its transcript's usage since it
-/// started: a resumed conversation's earlier turns are not its cost).
-fn cost_so_far(sup: &Supervisor, agent: &str, model: Option<&str>, since: i64) -> (i64, f64) {
+/// started: a resumed conversation's earlier turns are not its cost), at
+/// the price of the model its agent runs.
+fn cost_so_far(sup: &Supervisor, agent: &str, since: i64) -> (i64, f64) {
+    // Its transcript read up to now: Workbench's own reading runs every
+    // 30 s, and a replay's last turns would be left out of its cost.
+    crate::alerts::ingest_tokens_of(sup, Some(agent));
+    let model = sup.agent_row(agent).and_then(|a| a.model);
     let p = Params::new().set("agent", sv(agent)).set("from", ts(since));
     let rows = sup.db().query("SELECT input, output, cache_read FROM token_use WHERE agent = :agent AND ts >= :from LIMIT 100000", &p).unwrap_or_default();
     let (mut i, mut o, mut c) = (0, 0, 0);
@@ -772,7 +787,7 @@ fn cost_so_far(sup: &Supervisor, agent: &str, model: Option<&str>, since: i64) -
         o += get_int(&r[1]).unwrap_or(0);
         c += get_int(&r[2]).unwrap_or(0);
     }
-    (i + o, crate::routing::cost_usd(&crate::routing::model_of(model), i, o, c))
+    (i + o, crate::routing::cost_usd(&crate::routing::model_of(model.as_deref()), i, o, c))
 }
 
 /// The case's checks, in the sandbox after the replay.
@@ -856,12 +871,15 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, run: &Run, c: &Case, version: &
         let script = Script::of(c);
         let first = script.prompts.first().cloned().ok_or("the case has no prompt to play")?;
         let name = format!("rp-{}-{k}{side}", &run.id[1..7]);
+        // The version's model and effort, else the session's.
+        let how = edits_of(sup, version).agent;
         let req = SpawnRequest {
             repo: dir.to_string_lossy().to_string(),
             task: Some(first),
             name: Some(name),
             worktree: Some(false),
-            model: c.model.clone(),
+            model: how.model.clone().or_else(|| c.model.clone()),
+            effort: how.effort.clone(),
             // The session's own mode: without it Claude Code's default
             // decides what is asked, and the replay measures another thing.
             permission_mode: c.permission_mode.clone(),
@@ -923,7 +941,7 @@ fn drive(sup: &Arc<Supervisor>, lv: &Arc<Levels>, run: &Run, c: &Case, mut scrip
             end = Err(format!("it ran over its time limit of {} min", limit / 60_000));
             break;
         }
-        let (_, cost) = cost_so_far(sup, agent, c.model.as_deref(), started);
+        let (_, cost) = cost_so_far(sup, agent, started);
         if cost > run.cap_run_usd {
             end = Err(format!("it cost over its cap of ${:.2}", run.cap_run_usd));
             break;
@@ -1011,9 +1029,14 @@ fn finish_counts(sup: &Supervisor, c: &Case, agent: &str, res: &mut Res, counts:
     res.turns = evs.iter().filter(|e| e.kind == "UserPromptSubmit").count() as i64;
     let last = evs.iter().filter(|e| e.kind == "Stop").map(|e| e.ts).max().unwrap_or_else(now_ms);
     res.wall_ms = (last - started).max(0);
-    let (tokens, cost) = cost_so_far(sup, agent, c.model.as_deref(), started);
+    let (tokens, cost) = cost_so_far(sup, agent, started);
     res.tokens = tokens;
     res.cost_usd = cost;
+    res.model = sup.agent_row(agent).and_then(|a| a.model);
+    // Your answers, at your pace in the session: the scripted user answers
+    // at once, and a prompt costs you the time you take to answer it.
+    res.wait_ms = counts.interventions * c.your_wait_ms().unwrap_or(0);
+    res.wall_ms += res.wait_ms;
     res.interventions = counts.interventions;
     res.prompts = counts.prompts;
     res.diverged = !counts.not_in_log.is_empty();
@@ -1057,12 +1080,40 @@ fn version_with(sup: &Supervisor, run: &Run, parent: &Version, e: &Edits, note: 
     Ok(v)
 }
 
-/// The changes Optimize this can try on top of `best`, most useful first,
-/// those that do not widen before those that do: an allow rule for each
-/// command the best version's replays were asked about, and the pins the
-/// week's missed memory calls for.
-fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
+/// The changes Optimize this can try on top of `best`, those aimed at the
+/// targets not met yet first: an allow rule for each command the best
+/// version's replays were asked about (most asked first), a faster model,
+/// less effort, instructions a model wrote from what the replays did, and
+/// the pins the week's missed memory calls for. Each says what it `aims`
+/// at.
+fn changes(sup: &Supervisor, run: &Run, best: &Version, c: &Case) -> Vec<Json> {
     let e = edits_of(sup, &best.id);
+    let mut out = permission_and_pin_changes(sup, run, best, &e);
+    out.extend(how_changes(run, &e, c));
+    out.extend(brief_changes(sup, run, best, &e, c));
+    by_aims(out, &unmet_targets(sup, run, best, c))
+}
+
+/// Changes, those aimed at more of the unmet targets first; stable, so
+/// that within as many the order they came in holds.
+fn by_aims(mut out: Vec<Json>, unmet: &[String]) -> Vec<Json> {
+    out.sort_by_key(|ch| std::cmp::Reverse(ch["aims"].as_array().into_iter().flatten().filter(|a| a.as_str().is_some_and(|a| unmet.iter().any(|u| u == a))).count()));
+    out
+}
+
+/// The targets the best so far does not meet against A (all of them before
+/// anything is kept), by what a change aims at.
+fn unmet_targets(sup: &Supervisor, run: &Run, best: &Version, c: &Case) -> Vec<String> {
+    let aim = |m: &str| if score::target_metric(m) && matches!(m, "pass_rate" | "success") { "pass_rate".to_string() } else { m.to_string() };
+    if best.id == run.a {
+        return run.targets.iter().map(|t| aim(&t.metric)).collect();
+    }
+    let vs_a = card(sup, run, c, &run.a, &best.id, &run.targets, true);
+    vs_a["targets"].as_array().into_iter().flatten().filter(|t| t["met"] != true).filter_map(|t| t["metric"].as_str().map(aim)).collect()
+}
+
+/// Allow rules and pins.
+fn permission_and_pin_changes(sup: &Supervisor, run: &Run, best: &Version, e: &Edits) -> Vec<Json> {
     let tried: HashSet<String> = run.log.iter().filter_map(|l| l["change"]["key"].as_str().map(str::to_string)).collect();
     let mut out: Vec<Json> = Vec::new();
     // Pins, from the week's fixes.
@@ -1076,7 +1127,7 @@ fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
         if tried.contains(&key) {
             continue;
         }
-        out.push(json!({ "key": key, "title": f["title"], "part": "memory", "edit": f["edit"], "why": "The week's sessions left this record out where it was needed", "saves": 0, "widens": false, "patterns": [] }));
+        out.push(json!({ "key": key, "title": f["title"], "part": "memory", "edit": f["edit"], "why": "The week's sessions left this record out where it was needed", "saves": 0, "widens": false, "patterns": [], "aims": ["pass_rate", "turns"] }));
     }
     // Allow rules, for the commands the replays were asked about.
     let agents: HashSet<String> = results(sup, &run.id).into_iter().filter(|r| r.version == best.id).filter_map(|r| r.agent).collect();
@@ -1107,7 +1158,7 @@ fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
         let rep = super::widen_report(&rules, &after, &calls, &w.cwd());
         let patterns = rep["patterns"].clone();
         let widens = patterns.as_array().is_some_and(|p| !p.is_empty());
-        rules_out.push((n, json!({ "key": key, "title": format!("Allow `{k}` without asking"), "part": "permissions", "edit": { "permissions": { "allow": [rule] } }, "why": format!("Its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }), "saves": n, "widens": widens, "patterns": patterns })));
+        rules_out.push((n, json!({ "key": key, "title": format!("Allow `{k}` without asking"), "part": "permissions", "edit": { "permissions": { "allow": [rule] } }, "why": format!("Its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }), "saves": n, "widens": widens, "patterns": patterns, "aims": ["interventions", "wall_s"] })));
     }
     // The most asked first, a widening one too (it waits for you): a
     // round spent on a rule that saves little is a round, and replays,
@@ -1129,12 +1180,273 @@ fn asked_key(rules: &[super::perms::Rule], cmd: &str, cwd: &str) -> Option<Strin
     super::storm_key(part)
 }
 
+// ------------------------------------------- changes for time and cost
+
+/// Claude Code's models, from the most able: each step down is faster and
+/// cheaper, and is kept only when it passes what the one above passed.
+const LADDER: [&str; 3] = ["opus", "sonnet", "haiku"];
+/// The model that writes instructions from the replays.
+const BRIEF_MODEL: &str = "opus";
+/// How long it may take.
+const BRIEF_LIMIT: Duration = Duration::from_secs(180);
+/// The most of a replay's tool calls shown to it.
+const BRIEF_CALLS: usize = 90;
+
+/// What a result in the log says about its change's replays: they failed
+/// what the version before passed (a step down that far is too far).
+fn failed_in_log(run: &Run, key: &str) -> bool {
+    run.log.iter().filter(|l| l["change"]["key"] == key && l["result"] != "kept").any(|l| l["vs_best"]["success"]["verdict"] == "worse" || l["vs_best"]["success"]["lost"].as_u64().unwrap_or(0) > 0)
+}
+
+fn tried_in_log(run: &Run, key: &str) -> bool {
+    run.log.iter().any(|l| l["change"]["key"] == key)
+}
+
+fn model_name(m: &str) -> String {
+    let mut c = m.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
+/// A faster, cheaper model, one step down from the best's, and less
+/// effort: each kept only when it passes all the best passed.
+fn how_changes(run: &Run, e: &Edits, c: &Case) -> Vec<Json> {
+    let mut out = Vec::new();
+    let now = crate::routing::model_of(e.agent.model.as_deref().or(c.model.as_deref()));
+    let at = LADDER.iter().position(|m| *m == now).unwrap_or(0);
+    // A typical turn's mix of tokens, to say what a model saves.
+    let price = |m: &str| crate::routing::cost_usd(m, 20_000, 3_000, 200_000);
+    for m in LADDER.iter().skip(at + 1) {
+        let key = format!("model\n{m}");
+        if tried_in_log(run, &key) {
+            if failed_in_log(run, &key) {
+                break;
+            }
+            continue;
+        }
+        let saves = 1.0 - price(m) / price(LADDER[at]).max(1e-9);
+        out.push(json!({
+            "key": key, "title": format!("Run on {} instead of {}", model_name(m), model_name(LADDER[at])), "part": "agent", "edit": { "agent": { "model": m } },
+            "why": format!("A faster model whose tokens cost {:.0}% less: kept only if it passes all {} passed", saves * 100.0, model_name(LADDER[at])),
+            "saves": (saves * 100.0).round(), "widens": false, "patterns": [], "aims": ["cost_usd", "wall_s"],
+        }));
+        break;
+    }
+    // Less thinking, on the models that take an effort.
+    if LADDER[at] != "haiku" {
+        let now_effort = e.agent.effort.clone();
+        for x in ["low", "medium"] {
+            if now_effort.as_deref() == Some(x) || (x == "medium" && now_effort.as_deref() == Some("low")) {
+                break;
+            }
+            let key = format!("effort\n{x}");
+            if tried_in_log(run, &key) {
+                if failed_in_log(run, &key) {
+                    continue;
+                }
+                break;
+            }
+            out.push(json!({
+                "key": key, "title": format!("Think less: effort {x}"), "part": "agent", "edit": { "agent": { "effort": x } },
+                "why": format!("{} at effort {x} thinks less before it acts: fewer output tokens and less waiting", model_name(LADDER[at])),
+                "saves": 0, "widens": false, "patterns": [], "aims": ["wall_s", "cost_usd"],
+            }));
+            break;
+        }
+    }
+    out
+}
+
+/// What the instructions' writer said for a (run, best version): asked
+/// once.
+fn briefs() -> &'static Mutex<std::collections::HashMap<String, Vec<Json>>> {
+    static B: OnceLock<Mutex<std::collections::HashMap<String, Vec<Json>>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+const BRIEF_SYSTEM: &str = "You tune the harness of a coding agent (Claude Code) for one repository. You are shown replays of one stretch of work: the same code and the same scripted user prompts each time, under the harness as it is now, with every tool call the agent made, how long each took, the permission prompts it raised, and what each replay cost. Propose up to 3 instructions to give the agent as its session starts, each of which would make these replays reach the targets without failing a check: for example fewer turns and tool calls, no work done twice, a slow command run no more often than needed, files read together rather than one by one, nothing asked of the user that the repository already answers. Each instruction must be true of this repository's work in general, not of this one task; must never tell the agent to skip, fake or weaken a check, a test or a step the repository's own instructions require; and is at most 300 characters. Answer with JSON only, no prose: {\"changes\":[{\"title\":\"what it changes, imperative, at most 70 characters\",\"instruction\":\"the words the agent gets\",\"aims\":[one or more of \"wall_s\", \"cost_usd\", \"interventions\", \"turns\", \"pass_rate\"],\"why\":\"what in these replays it would save, with their numbers, at most 200 characters\"}]}. Answer {\"changes\":[]} rather than propose an instruction you do not expect to help.";
+
+/// Instructions a model wrote from the best version's replays: each a
+/// change of its own.
+fn brief_changes(sup: &Supervisor, run: &Run, best: &Version, e: &Edits, c: &Case) -> Vec<Json> {
+    let key = format!("{}:{}", run.id, best.id);
+    if let Some(v) = briefs().lock().unwrap().get(&key) {
+        return v.iter().filter(|ch| !tried_in_log(run, ch["key"].as_str().unwrap_or(""))).cloned().collect();
+    }
+    let mine: Vec<Res> = results(sup, &run.id).into_iter().filter(|r| r.version == best.id && r.counts()).collect();
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    let input = brief_input(sup, run, best, e, c, &mine);
+    let dir = sup.cfg.data_dir.join("harness");
+    let _ = std::fs::create_dir_all(&dir);
+    let args: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--settings", "{\"disableAllHooks\":true}", "--no-session-persistence", "--model", BRIEF_MODEL, "--system-prompt", BRIEF_SYSTEM]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once(input))
+        .collect();
+    let out = match crate::goals::run_print(&sup.cfg.claude_bin, &args, &dir, BRIEF_LIMIT) {
+        Ok(raw) => {
+            let (list, cost) = briefs_of_answer(&raw);
+            if cost > 0.0 {
+                spend(sup, &run.id, cost);
+            }
+            list
+        }
+        Err(_) => Vec::new(),
+    };
+    briefs().lock().unwrap().insert(key, out.clone());
+    out.into_iter().filter(|ch| !tried_in_log(run, ch["key"].as_str().unwrap_or(""))).collect()
+}
+
+/// The changes in the writer's answer, and what the call cost.
+fn briefs_of_answer(raw: &str) -> (Vec<Json>, f64) {
+    let Some(res) = raw.lines().rev().find_map(|l| serde_json::from_str::<Json>(l.trim()).ok().filter(|v| v.get("result").is_some())).or_else(|| serde_json::from_str::<Json>(raw.trim()).ok()) else {
+        return (Vec::new(), 0.0);
+    };
+    let cost = res["total_cost_usd"].as_f64().unwrap_or(0.0);
+    let text = res["result"].as_str().unwrap_or("").trim();
+    let text = text.find('{').and_then(|i| text.rfind('}').map(|j| &text[i..=j])).unwrap_or("");
+    let Ok(v) = serde_json::from_str::<Json>(text) else { return (Vec::new(), cost) };
+    const AIMS: [&str; 5] = ["wall_s", "cost_usd", "interventions", "turns", "pass_rate"];
+    let list = v["changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|ch| {
+            let text = ch["instruction"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+            let text = one_line(text, 400);
+            let title = ch["title"].as_str().map(|t| one_line(t.trim(), 90)).filter(|t| !t.is_empty()).unwrap_or_else(|| one_line(&text, 70));
+            let aims: Vec<&str> = ch["aims"].as_array().into_iter().flatten().filter_map(Json::as_str).filter(|a| AIMS.contains(a)).collect();
+            Some(json!({
+                "key": format!("brief\n{}", hash(&text)), "title": format!("Tell it: {title}"), "part": "agent", "edit": { "agent": { "brief": [text] } },
+                "why": ch["why"].as_str().map(|w| one_line(w, 240)).unwrap_or_else(|| "Written from what its replays did".into()),
+                "saves": 0, "widens": false, "patterns": [], "aims": if aims.is_empty() { vec!["wall_s", "cost_usd"] } else { aims }, "by": BRIEF_MODEL,
+            }))
+        })
+        .take(3)
+        .collect();
+    (list, cost)
+}
+
+/// What the writer reads: the repository's instructions, the case, the
+/// targets, what was tried, and the best version's replays call by call.
+fn brief_input(sup: &Supervisor, run: &Run, best: &Version, e: &Edits, c: &Case, mine: &[Res]) -> String {
+    let mut out = String::new();
+    if let Some(commit) = &c.commit {
+        if let Ok(t) = git(Path::new(&c.repo), &["show", &format!("{commit}:CLAUDE.md")]) {
+            out += &format!("The repository's CLAUDE.md:\n{}\n\n", t.chars().take(3000).collect::<String>());
+        }
+    }
+    out += &format!("The stretch: {}, {} prompt{} from the user.\n", c.name, c.prompts().len(), if c.prompts().len() == 1 { "" } else { "s" });
+    let checks: Vec<String> = c.checks.as_array().into_iter().flatten().filter(|k| k["on"] != false).map(|k| match k["kind"].as_str().unwrap_or("") {
+        "fail_to_pass" | "pass_to_pass" => format!("the test {} passes", k["test"].as_str().unwrap_or("")),
+        "command" => format!("`{}` exits 0", k["run"].as_str().unwrap_or("")),
+        "never" => format!("no command contains `{}`", k["pattern"].as_str().unwrap_or("")),
+        "limit" => format!("at most {} {}", k["max"], k["metric"].as_str().unwrap_or("")),
+        k => k.to_string(),
+    }).collect();
+    out += &format!("A replay passes when: {}.\n", checks.join("; "));
+    let targets: Vec<String> = run.targets.iter().map(|t| format!("{} {}% better", t.metric, t.pct)).collect();
+    out += &format!("Targets, against the harness the run started from: {}.\n", targets.join(", "));
+    if let Some(w) = c.your_wait_ms() {
+        out += &format!("Each intervention (a permission prompt or a question) costs the user about {:.0} s, counted in wall time.\n", w as f64 / 1000.0);
+    }
+    let how = &e.agent;
+    out += &format!("The harness now: model {}, effort {}, allow rules added: {}, instructions: {}.\n",
+        how.model.clone().or_else(|| c.model.clone()).unwrap_or_else(|| "the default".into()),
+        how.effort.clone().unwrap_or_else(|| "the default".into()),
+        if e.permissions.allow.is_empty() { "none".to_string() } else { e.permissions.allow.join(", ") },
+        if how.brief.is_empty() { "none".to_string() } else { how.brief.iter().map(|b| format!("“{b}”")).collect::<Vec<_>>().join(" ") });
+    let tried: Vec<String> = run.log.iter().filter(|l| l["version"].is_string()).map(|l| format!("{} ({})", l["change"]["title"].as_str().unwrap_or(""), l["result"].as_str().unwrap_or(""))).collect();
+    if !tried.is_empty() {
+        out += &format!("Tried already: {}.\n", tried.join("; "));
+    }
+    out += &format!("These are the replays of {}.\n\n", best.name);
+    let mut shown: Vec<&Res> = mine.iter().filter(|r| r.passed).take(2).collect();
+    if shown.is_empty() {
+        shown = mine.iter().take(2).collect();
+    }
+    for r in shown {
+        out += &trace_of(sup, r);
+        out += "\n";
+    }
+    out
+}
+
+/// One replay, call by call, as the writer reads it.
+fn trace_of(sup: &Supervisor, r: &Res) -> String {
+    let Some(agent) = &r.agent else { return String::new() };
+    let evs = sup.all_events(agent).unwrap_or_default();
+    let data = |e: &crate::db::Event| e.data.as_deref().and_then(|d| serde_json::from_str::<Json>(d).ok()).unwrap_or(Json::Null);
+    let mut ends: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for e in evs.iter().filter(|e| e.kind.starts_with("PostToolUse")) {
+        if let Some(id) = data(e)["tool_use_id"].as_str() {
+            ends.insert(id.to_string(), e.ts);
+        }
+    }
+    let asked: Vec<String> = crate::questions::all(sup).into_iter().filter(|q| q.agent.as_deref() == Some(agent.as_str())).map(|q| q.detail.as_ref().and_then(|d| d["command"].as_str().map(str::to_string)).unwrap_or_else(|| one_line(&q.text, 120))).collect();
+    let mut out = format!(
+        "Replay {} ({}{}): {} interventions, {} turns, {:.0} s of the agent's time, {} tokens, ${:.3}.\n",
+        r.k,
+        if r.passed { "passed" } else { "failed" },
+        r.model.as_deref().map(|m| format!(", model {m}")).unwrap_or_default(),
+        r.interventions,
+        r.turns,
+        (r.wall_ms - r.wait_ms) as f64 / 1000.0,
+        r.tokens,
+        r.cost_usd
+    );
+    if !asked.is_empty() {
+        out += &format!("It asked the user {} time{}: {}.\n", asked.len(), if asked.len() == 1 { "" } else { "s" }, asked.iter().map(|a| format!("`{}`", one_line(a, 120))).collect::<Vec<_>>().join(", "));
+    }
+    let t0 = r.started;
+    let mut calls = 0usize;
+    let mut turn = 0;
+    for e in &evs {
+        match e.kind.as_str() {
+            "UserPromptSubmit" => {
+                turn += 1;
+                out += &format!("Turn {turn} at +{:.0} s, the user: {}\n", (e.ts - t0) as f64 / 1000.0, one_line(&evals::prompt_of(e).unwrap_or_default(), 400));
+            }
+            "PreToolUse" => {
+                calls += 1;
+                if calls > BRIEF_CALLS {
+                    continue;
+                }
+                let d = data(e);
+                let i = &d["tool_input"];
+                let what = i["command"].as_str().or(i["file_path"].as_str()).or(i["pattern"].as_str()).or(i["description"].as_str()).or(i["url"].as_str()).unwrap_or("");
+                let took = d["tool_use_id"].as_str().and_then(|id| ends.get(id)).map(|t| format!(" ({:.1} s)", (t - e.ts) as f64 / 1000.0)).unwrap_or_default();
+                out += &format!("  {} {}{took}\n", e.tool.as_deref().unwrap_or("tool"), one_line(what, 200));
+            }
+            "Stop" => out += &format!("  (the turn ended at +{:.0} s)\n", (e.ts - t0) as f64 / 1000.0),
+            _ => {}
+        }
+    }
+    if calls > BRIEF_CALLS {
+        out += &format!("  ... and {} more tool calls\n", calls - BRIEF_CALLS);
+    }
+    out
+}
+
 /// `best`'s edits with a change on top.
 fn with_change(sup: &Supervisor, best: &Version, ch: &Json) -> Edits {
     let mut e = edits_of(sup, &best.id);
     for r in ch["edit"]["permissions"]["allow"].as_array().into_iter().flatten().filter_map(Json::as_str) {
         if !e.permissions.allow.iter().any(|x| x == r) {
             e.permissions.allow.push(r.to_string());
+        }
+    }
+    let how = &ch["edit"]["agent"];
+    if let Some(m) = how["model"].as_str() {
+        e.agent.model = Some(m.to_string());
+    }
+    if let Some(x) = how["effort"].as_str() {
+        e.agent.effort = Some(x.to_string());
+    }
+    for b in how["brief"].as_array().into_iter().flatten().filter_map(Json::as_str) {
+        if !e.agent.brief.iter().any(|x| x == b) {
+            e.agent.brief.push(b.to_string());
         }
     }
     for p in ch["edit"]["memory"]["pins"].as_array().into_iter().flatten() {
@@ -1171,7 +1483,7 @@ fn optimize(sup: &Arc<Supervisor>, lv: &Arc<Levels>, run: &mut Run) -> Result<Op
         if tried >= run.rounds {
             return Ok(Some(format!("it tried {tried} change{} without meeting every target", if tried == 1 { "" } else { "s" })));
         }
-        let Some(ch) = changes(sup, run, &best).into_iter().find(|ch| !run.log.iter().any(|l| l["change"]["key"] == ch["key"])) else {
+        let Some(ch) = changes(sup, run, &best, &c).into_iter().find(|ch| !run.log.iter().any(|l| l["change"]["key"] == ch["key"])) else {
             return Ok(Some(if run.best.is_some() { "no more changes to try: the best so far is kept as a candidate".into() } else { "no change to try: its replays were asked nothing, and the week calls for no pin".into() }));
         };
         // A change that widens waits for the user.
@@ -1703,5 +2015,55 @@ mod tests {
         assert_eq!(asked_key(&rules, "git stash -q && ./scripts/check.sh; git stash pop", "/w").as_deref(), Some("./scripts/check.sh"));
         assert_eq!(asked_key(&rules, "cd sub && make lint", "/w").as_deref(), Some("make lint"));
         assert_eq!(asked_key(&[], "head -5 a.py; ./scripts/check.sh", "/w").as_deref(), Some("head -5"));
+    }
+
+    fn keys(v: &[Json]) -> Vec<String> {
+        v.iter().map(|c| c["key"].as_str().unwrap_or("").replace('\n', " ")).collect()
+    }
+
+    #[test]
+    fn a_faster_model_is_tried_a_step_at_a_time_and_less_effort_beside_it() {
+        let c = Case { model: Some("opus".into()), ..Case::default() };
+        let mut run = Run::default();
+        assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["model sonnet", "effort low"]);
+        // The session named none: the default is Opus.
+        assert_eq!(keys(&how_changes(&run, &Edits::default(), &Case::default())), ["model sonnet", "effort low"]);
+        // Sonnet not better beyond the noise, but it passed: Haiku next.
+        run.log.push(json!({ "change": { "key": "model\nsonnet" }, "version": "v1", "result": "not_kept", "vs_best": { "success": { "verdict": "noise", "lost": 0 } } }));
+        assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["model haiku", "effort low"]);
+        // Sonnet failed what Opus passed: no model below it either.
+        run.log[0]["vs_best"]["success"] = json!({ "verdict": "worse", "lost": 1 });
+        assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["effort low"]);
+        // Low effort failed: medium; once on Haiku, no effort at all.
+        run.log.push(json!({ "change": { "key": "effort\nlow" }, "version": "v2", "result": "not_kept", "vs_best": { "success": { "verdict": "worse", "lost": 1 } } }));
+        assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["effort medium"]);
+        let on_haiku = Edits { agent: super::super::AgentEdits { model: Some("haiku".into()), ..Default::default() }, ..Edits::default() };
+        assert!(how_changes(&Run::default(), &on_haiku, &c).is_empty());
+        let ch = &how_changes(&Run::default(), &Edits::default(), &c)[0];
+        assert_eq!((ch["title"].as_str(), ch["edit"]["agent"]["model"].as_str()), (Some("Run on Sonnet instead of Opus"), Some("sonnet")), "{ch}");
+    }
+
+    #[test]
+    fn changes_aimed_at_the_targets_not_met_go_first() {
+        let ch = |k: &str, aims: Json| json!({ "key": k, "aims": aims });
+        let all = vec![ch("allow", json!(["interventions", "wall_s"])), ch("model", json!(["cost_usd", "wall_s"])), ch("brief", json!(["turns"])), ch("pin", json!(["pass_rate", "turns"]))];
+        assert_eq!(keys(&by_aims(all.clone(), &["interventions".into()])), ["allow", "model", "brief", "pin"]);
+        assert_eq!(keys(&by_aims(all.clone(), &["cost_usd".into()])), ["model", "allow", "brief", "pin"]);
+        assert_eq!(keys(&by_aims(all.clone(), &["cost_usd".into(), "wall_s".into()])), ["model", "allow", "brief", "pin"]);
+        assert_eq!(keys(&by_aims(all, &["turns".into(), "pass_rate".into()])), ["pin", "brief", "allow", "model"]);
+    }
+
+    #[test]
+    fn the_writers_answer_becomes_changes() {
+        let raw = r#"{"type":"result","is_error":false,"total_cost_usd":0.042,"result":"Here:\n```json\n{\"changes\":[{\"title\":\"Run the checks once\",\"instruction\":\"Run ./scripts/check.sh once, after your last edit.\",\"aims\":[\"wall_s\",\"bogus\"],\"why\":\"it ran 3 times\"},{\"title\":\"x\",\"instruction\":\"\"}]}\n```"}"#;
+        let (list, cost) = briefs_of_answer(raw);
+        assert!((cost - 0.042).abs() < 1e-9);
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0]["title"], "Tell it: Run the checks once");
+        assert_eq!(list[0]["edit"]["agent"]["brief"][0], "Run ./scripts/check.sh once, after your last edit.");
+        assert_eq!(list[0]["aims"], json!(["wall_s"]));
+        assert!(list[0]["key"].as_str().unwrap().starts_with("brief\n"));
+        assert!(briefs_of_answer("not json").0.is_empty());
+        assert!(briefs_of_answer(r#"{"result":"{\"changes\":[]}"}"#).0.is_empty());
     }
 }

@@ -13,7 +13,7 @@ import { tabs, fmtMs, fmtTok, rich, toast, failed, loading, seg, repoName } from
 /** The targets of Optimize this: key, label, what it counts. */
 export const TARGETS = [
   ["interventions", "Interventions", "times you would have stepped in: prompts answered, questions, stuck"],
-  ["wall_s", "Wall time", "from its first prompt to its last stop"],
+  ["wall_s", "Wall time", "from its first prompt to its last stop, your answers at the pace you answered in the session"],
   ["cost_usd", "Cost per run", "dollars a replay, from its usage"],
   ["pass_rate", "Pass rate", "replays whose checks all pass, in points"],
 ];
@@ -40,7 +40,7 @@ export function render(host, ctx, path) {
   const S = {
     alive: true, agent, tl: null, from: Number(q.get("from")) || 1, to: Number(q.get("to")) || 0, pick: "from",
     prop: null, propErr: null, on: {}, name: "", set: null, extra: "", busy: false,
-    opt: { open: q.get("optimize") === "1", targets: Object.fromEntries(TARGETS.map(([k]) => [k, { on: k === "interventions", pct: 30 }])), n: 3, rounds: 4, cap: 8, est: null, estErr: null },
+    opt: { open: q.get("optimize") === "1", targets: Object.fromEntries(TARGETS.map(([k]) => [k, { on: k === "interventions", pct: 30 }])), n: 3, rounds: 6, cap: 8, est: null, estErr: null },
     seq: 0,
   };
   host.replaceChildren(loading("Reading the session's turns…"));
@@ -193,7 +193,7 @@ function optimizePanel(host, ctx, S) {
   const est = o.est;
   return h("div", { class: "hxe-opt" },
     label("Optimize this"),
-    h("p", { class: "hx-note" }, "It replays this stretch under your current harness first, to measure its noise, then tries one change at a time (an allow rule for a command its replays were asked about, a memory pin the week's misses call for), keeping a change only when it is better beyond the noise and passes everything the last one passed. It stops when every target you tick is met, the budget is spent, or you press Enough."),
+    h("p", { class: "hx-note" }, "It replays this stretch under your current harness first, to measure its noise, then tries one change at a time, aimed at the targets not met yet: an allow rule for a command its replays were asked about, a faster model, less effort, instructions a model writes from what the replays did, a memory pin the week's misses call for. It keeps a change only when it is better beyond the noise and passes everything the last one passed. It stops when every target you tick is met, the budget is spent, or you press Enough."),
     h("div", { class: "hxe-tgs" }, rows),
     h("p", { class: "hxe-small hx-mut" }, "Each target is a share better than your current harness, and beyond the noise of its own replays."),
     h("div", { class: "hxe-ns" },

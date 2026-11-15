@@ -37,9 +37,15 @@ while [ $# -gt 0 ]; do
     --fork-session) FORK=1; shift;;
     --) TASK="$2"; shift $#;;
     -p) PRINT=1; shift;;
+    --system-prompt) SYSTEM="$2"; shift 2;;
     *) TASK="$1"; shift;;
   esac
 done
+# claude -p as Optimize this's writer of instructions: one of them.
+if [ -n "$PRINT" ] && [ "${SYSTEM#*tune the harness}" != "$SYSTEM" ]; then
+  echo '{"type":"result","is_error":false,"total_cost_usd":0.01,"result":"{\"changes\":[{\"title\":\"Write the notes in one go\",\"instruction\":\"Write each file in one edit, not line by line.\",\"aims\":[\"turns\",\"wall_s\"],\"why\":\"fake: it wrote one line\"}]}"}'
+  exit 0
+fi
 # claude -p (autocomplete's model ghost): one result, no session.
 [ -n "$PRINT" ] && { echo '{"type":"result","is_error":false,"result":" and keep every total in integer cents."}'; exit 0; }
 SDIR=$(dirname "$SETTINGS")
@@ -6344,8 +6350,11 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     // waits for you.
     let v = replay_until(&s, &run, "needs you", |v| v["run"]["state"] == "needs_you" || v["run"]["state"] == "done" || v["run"]["state"] == "failed");
     assert_eq!(v["run"]["state"], "needs_you", "{v}");
+    let wait = made["case"]["your_wait_ms"].as_i64().expect("you answered its prompt: your time is known");
     for x in v["cases"][0]["a"].as_array().unwrap() {
         assert_eq!((x["state"].as_str(), x["interventions"].as_i64(), x["diverged"].as_bool()), (Some("passed"), Some(1), Some(false)), "{x}");
+        // Its wall time counts that intervention at your pace.
+        assert!((x["wait_s"].as_f64().unwrap() - wait as f64 / 1000.0).abs() < 1e-6 && x["wall_s"].as_f64().unwrap() >= x["wait_s"].as_f64().unwrap(), "{x}");
         let (_, ag) = s.get(&format!("/api/agents/{}", x["agent"].as_str().unwrap()));
         assert_eq!(ag["agent"]["permission_mode"], "acceptEdits", "a replay runs in the session's mode: {ag}");
     }
@@ -6378,6 +6387,83 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     assert_eq!(runs["runs"][0]["id"], run.as_str());
     let (_, suites) = s.get(&format!("/api/harness/suites?{}", harness_q(&r)));
     assert_eq!(suites["suites"][0]["name"], "Optimize this", "{suites}");
+}
+
+#[test]
+fn harness_optimize_this_for_cost_keeps_a_faster_model_and_stops_when_its_target_is_met() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "WRITE notes.txt started", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q started notes.txt" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 4, "targets": [{ "metric": "cost_usd", "pct": 30 }], "checks": checks });
+    let started = start_run(&s, body);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done" || v["run"]["state"] == "failed" || v["run"]["state"] == "needs_you");
+    assert_eq!(v["run"]["state"], "done", "{v}");
+    // The cost target picks a faster model first; Sonnet's tokens cost
+    // half of the default's, it passes as A did, and the target is met.
+    let log = v["run"]["log"].as_array().unwrap();
+    assert_eq!(log.len(), 1, "{v}");
+    assert_eq!((log[0]["change"]["key"].as_str(), log[0]["result"].as_str()), (Some("model\nsonnet"), Some("kept")), "{v}");
+    assert_eq!(log[0]["vs_a"]["targets_met"], true, "{v}");
+    assert!(v["run"]["why"].as_str().unwrap().contains("every target is met"), "{v}");
+    for x in v["cases"][0]["a"].as_array().unwrap() {
+        assert!(x["model"].is_null() && x["state"] == "passed", "A runs the session's model (none named): {x}");
+    }
+    for x in v["cases"][0]["b"].as_array().unwrap() {
+        assert_eq!((x["model"].as_str(), x["state"].as_str()), (Some("sonnet"), Some("passed")), "{x}");
+        let (_, ag) = s.get(&format!("/api/agents/{}", x["agent"].as_str().unwrap()));
+        assert_eq!(ag["agent"]["model"], "sonnet", "{ag}");
+    }
+    // What it kept is a candidate that carries the model.
+    let best = v["run"]["best"]["id"].as_str().unwrap().to_string();
+    let (_, vs) = s.get(&format!("/api/harness/versions?{}", harness_q(&r)));
+    let t = vs["versions"].as_array().unwrap().iter().find(|x| x["id"] == best.as_str()).unwrap().clone();
+    assert_eq!(t["state"], "candidate", "{t}");
+    assert_eq!(t["edits"]["agent"]["model"], "sonnet", "{t}");
+    // The writer of instructions was asked once, about A's replays, and
+    // its call is paid from the run's budget.
+    assert!(v["run"]["spent_usd"].as_f64().unwrap() >= 0.01, "{v}");
+}
+
+#[test]
+fn harness_a_version_runs_its_model_effort_and_instructions_in_replays_and_new_sessions() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let repo_s = r.to_string_lossy().to_string();
+    let a = s.spawn(json!({ "repo": r, "task": "WRITE notes.txt started", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q started notes.txt" }]);
+    let (status, c) = s.post("/api/harness/cases", json!({ "agent": id, "from": 1, "to": 1, "checks": checks }));
+    assert_eq!(status, 201, "{c}");
+    // A version of how its agents run.
+    assert_eq!(s.post("/api/harness/versions", json!({ "repo": repo_s, "parts": { "agent": { "effort": "huge" } } })).0, 400);
+    let brief = "Run the checks once, after your last edit.";
+    let (status, nv) = s.post("/api/harness/versions", json!({ "repo": repo_s, "parts": { "agent": { "model": "haiku", "effort": "low", "brief": [brief] } } }));
+    assert_eq!(status, 201, "{nv}");
+    assert_eq!(nv["edits"]["agent"]["model"], "haiku", "{nv}");
+    let b = nv["version"]["id"].as_str().unwrap().to_string();
+    let cur = s.get(&format!("/api/harness/versions?{}", harness_q(&r))).1["current"]["id"].as_str().unwrap().to_string();
+    let started = start_run(&s, json!({ "repo": repo_s, "a": cur, "b": b, "n": 1 }));
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let bx = v["cases"][0]["b"][0].clone();
+    assert_eq!((bx["model"].as_str(), bx["state"].as_str()), (Some("haiku"), Some("passed")), "{bx}");
+    let agent = bx["agent"].as_str().unwrap();
+    let (_, ag) = s.get(&format!("/api/agents/{agent}"));
+    assert_eq!(ag["agent"]["effort"], "low", "{ag}");
+    // Its instructions are given as its session starts, by a hook.
+    let dir = s.data.join("sessions").join(agent);
+    assert!(std::fs::read_to_string(dir.join("harness-brief.md")).unwrap().contains(brief));
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    assert!(settings["hooks"]["SessionStart"].as_array().unwrap().iter().any(|h| h["hooks"][0]["command"].as_str().unwrap_or("").contains("harness-brief.md")), "{settings}");
+    // A's replay has none of it.
+    let ax = v["cases"][0]["a"][0].clone();
+    assert!(ax["model"].is_null(), "{ax}");
+    assert!(!s.data.join("sessions").join(ax["agent"].as_str().unwrap()).join("harness-brief.md").exists());
 }
 
 // Sam's findings: a loop of runs, Run it N times in a chosen checkout with

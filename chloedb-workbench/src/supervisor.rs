@@ -706,6 +706,10 @@ impl Supervisor {
         let applied = crate::harness::at_spawn(self, &harness_repo, &cwd, &session_dir, &id, &name, settings_v, mcp_v, req.replay.as_ref().map(|r| r.config.as_str()));
         write_private(&settings, &applied.settings)?;
         write_private(&mcp, &applied.mcp)?;
+        // The version's model and effort, when the request names none (a
+        // replay names the version's: src/harness/replay.rs).
+        let model = model.or(applied.model.clone());
+        let effort = req.effort.clone().filter(|e| !e.trim().is_empty()).or(applied.effort.clone());
 
         // The process.
         let session_id = uuid4();
@@ -728,7 +732,7 @@ impl Supervisor {
             cmd.arg("--model");
             cmd.arg(m);
         }
-        if let Some(e) = req.effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
             cmd.arg("--effort");
             cmd.arg(e);
         }
@@ -832,6 +836,9 @@ impl Supervisor {
         }
         if let Some(m) = &permission_mode {
             extra.insert("permission_mode".into(), json!(m));
+        }
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+            extra.insert("effort".into(), json!(e));
         }
         if req.own_permissions == Some(false) {
             extra.insert("own_permissions".into(), json!(false));

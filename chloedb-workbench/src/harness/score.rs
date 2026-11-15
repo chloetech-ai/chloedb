@@ -40,6 +40,9 @@ pub const METRICS: [(&str, &str, &str); 6] = [
     ("cost_usd", "Cost", "$ a run"),
 ];
 
+/// The metrics a stretch's change is rejected on when it is worse.
+pub const DECIDES: [&str; 3] = ["interventions", "wall_s", "cost_usd"];
+
 /// One run's result.
 #[derive(Clone, Debug, Default)]
 pub struct RunM {
@@ -429,7 +432,10 @@ pub fn stretch(c: &CaseRuns, n: usize, finished: bool, targets: &[Target]) -> Js
         })
         .collect();
     let mut why: Vec<String> = Vec::new();
-    let worse: Vec<&Json> = metrics.iter().filter(|m| m["verdict"] == "worse").collect();
+    // What you pay decides a reject: your interventions, the time and the
+    // money. More turns or tokens for less time and money (a faster model
+    // that takes more steps) is still better.
+    let worse: Vec<&Json> = metrics.iter().filter(|m| m["verdict"] == "worse" && DECIDES.contains(&m["key"].as_str().unwrap_or(""))).collect();
     let better: Vec<&Json> = metrics.iter().filter(|m| m["verdict"] == "better").collect();
     let result = if regression {
         why.push(format!("A passed all {} of its runs and B failed {} of {}", c.a.len(), c.b.len() - pb, c.b.len()));
@@ -626,5 +632,20 @@ mod tests {
         assert_eq!(stretch(&c4, 1, true, &[])["decision"]["result"], "too_few");
         assert!(target_metric("wall_s") && target_metric("pass_rate") && !target_metric("dollars"));
         assert!((fisher_greater(0, 3, 3, 3) - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn more_turns_and_tokens_for_less_time_and_money_is_kept() {
+        // A faster model: twice the turns and tokens, half the time and cost.
+        let mk = |turns: f64, wall: f64, tokens: f64, cost: f64, jitter: &[f64]| -> Vec<RunM> { jitter.iter().map(|j| RunM { passed: true, diverged: false, m: [0.0, 0.0, turns + j, wall + j, tokens + j * 10.0, cost + j / 1000.0] }).collect() };
+        let c = CaseRuns { case: "c1".into(), name: "fix".into(), held_out: false, a: mk(4.0, 60.0, 1000.0, 0.40, &[0.0, 1.0, 2.0]), b: mk(9.0, 30.0, 2500.0, 0.10, &[0.0, 1.0, 2.0]) };
+        let s = stretch(&c, 3, true, &[Target { metric: "cost_usd".into(), pct: 30.0 }]);
+        let v = |k: &str| s["metrics"].as_array().unwrap().iter().find(|m| m["key"] == k).unwrap()["verdict"].clone();
+        assert_eq!((v("turns"), v("tokens"), v("wall_s"), v("cost_usd")), (json!("worse"), json!("worse"), json!("better"), json!("better")), "{s}");
+        assert_eq!(s["decision"]["result"], "keep", "{s}");
+        assert_eq!(s["targets_met"], true, "{s}");
+        // Slower, though cheaper: a reject.
+        let slow = CaseRuns { b: mk(4.0, 90.0, 1000.0, 0.10, &[0.0, 1.0, 2.0]), ..c };
+        assert_eq!(stretch(&slow, 3, true, &[])["decision"]["result"], "reject");
     }
 }

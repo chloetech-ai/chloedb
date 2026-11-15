@@ -108,14 +108,22 @@ function decisionBlock(sc) {
       (sc.regressions || []).length ? h("p", { class: "hxr-bad" }, icon("warn", "i sm"), ` Passed under A and fails under B: ${sc.regressions.map((x) => x.name).join(", ")}. A regression always rejects.`) : null));
 }
 
-function metricsBlock(sc) {
+function metricsBlock(sc, d) {
   if (!sc || !(sc.metrics || []).length) return null;
+  const wait = d && d.cases[0] && d.cases[0].case.your_wait_ms;
   return h("section", { class: "hx-sec" }, label("Each metric", h("span", { class: "hx-mut" }, "lower is better · B against A, beyond the noise of A's runs")),
     h("div", { class: "pane hxr-ms" }, sc.metrics.map((m) => h("div", { class: `hxr-m ${m.verdict}` },
       h("span", { class: "hxr-ml" }, m.label),
       h("span", { class: "hxr-mv hx-num" }, `${metricVal(m.key, m.a)} → ${metricVal(m.key, m.b)}`),
       h("span", { class: "hxr-mn hx-num hx-mut" }, m.noise != null ? `noise ±${metricVal(m.key, m.noise)}` : ""),
-      h("span", { class: "hxr-mvd" }, VERDICT_WORDS[m.verdict] || m.verdict)))));
+      h("span", { class: "hxr-mvd" }, VERDICT_WORDS[m.verdict] || m.verdict)))),
+    wait ? h("p", { class: "hx-note hx-num" }, `Wall time counts each intervention at ${Math.round(wait / 1000)} s, the time you took to answer in the session (its median): a replay's scripted user answers at once.`) : null);
+}
+
+/** The words an instruction change gives the agent. */
+function briefOf(ch) {
+  const b = ch && ch.edit && ch.edit.agent && ch.edit.agent.brief;
+  return b && b.length ? b.join(" ") : null;
 }
 
 function roundsBlock(run) {
@@ -126,6 +134,7 @@ function roundsBlock(run) {
       h("span", { class: "hxr-rn hx-num" }, l.round ? String(l.round) : "–"),
       h("div", { class: "hxr-rt" },
         h("div", {}, h("b", {}, rich((l.change && l.change.title) || "A change")), l.name ? h("span", { class: "hx-mut hx-num" }, ` · ${l.name}`) : null, l.change && l.change.widens ? [" ", h("span", { class: "hx-flag" }, icon("warn"), "widens")] : null),
+        briefOf(l.change) ? h("blockquote", { class: "hxr-brief" }, briefOf(l.change)) : null,
         h("div", { class: "hx-mut hxr-why" }, rich([l.change && l.change.why, ...(Array.isArray(l.why) ? l.why : l.why ? [l.why] : [])].filter(Boolean).join(" · ")))),
       h("span", { class: "hxr-rw" }, ROUND_WORDS[l.result] || l.result))))
       : h("p", { class: "hx-note" }, "Nothing tried yet: it replays your current harness first, to measure its noise."));
@@ -133,7 +142,7 @@ function roundsBlock(run) {
 
 function replayChip(r) {
   const tone = r.state === "passed" ? "ok" : r.state === "running" ? "run" : r.state === "error" ? "err" : "bad";
-  const tip = [`run ${r.k}: ${r.state}`, r.why, r.interventions ? `${r.interventions} intervention${r.interventions === 1 ? "" : "s"}` : null, r.not_in_log && r.not_in_log.length ? `${r.not_in_log.length} not in the log` : null, r.cost_usd ? money(r.cost_usd) : null].filter(Boolean).join(" · ");
+  const tip = [`run ${r.k}: ${r.state}`, r.why, r.model ? `on ${r.model}` : null, r.wall_s ? `${Math.round(r.wall_s)} s${r.wait_s ? ` (${Math.round(r.wait_s)} s of it your answers)` : ""}` : null, r.interventions ? `${r.interventions} intervention${r.interventions === 1 ? "" : "s"}` : null, r.not_in_log && r.not_in_log.length ? `${r.not_in_log.length} not in the log` : null, r.cost_usd ? money(r.cost_usd) : null].filter(Boolean).join(" · ");
   return h("span", { class: `hxr-chip ${tone}`, title: tip }, h("i"), h("span", { class: "hx-num" }, r.state === "running" ? "…" : `${r.interventions}`));
 }
 
@@ -190,10 +199,11 @@ function draw(host, ctx, S, reload) {
     title,
     sub: isOpt ? "Your current harness first, to measure its noise; then one change at a time, each kept only when it is better beyond the noise and loses nothing A passed." : "Each case replayed under both versions, the order turning each time; a case passes only when every one of its runs does.",
     inspector: insp, cls: "hx-page hxr-page",
-  }, tabs("evals"), waitingCard(ctx, S, reload), nowBlock(d), targetsBlock(sc, run), decisionBlock(sc), roundsBlock(run), metricsBlock(sc), casesBlock(d)));
+  }, tabs("evals"), waitingCard(ctx, S, reload), nowBlock(d), targetsBlock(sc, run), decisionBlock(sc), roundsBlock(run), metricsBlock(sc, d), casesBlock(d)));
 }
 
 useStyle("harness-run", `
+.hxr-brief{margin:var(--s-1) 0;padding:var(--s-1) var(--s-3);border-left:2px solid var(--line-strong, var(--line));color:var(--text-2);font-size:var(--fs-sm)}
 .hxr-wait{padding:var(--s-4);border-color:var(--warn-line);background:var(--warn-soft);margin-bottom:var(--s-4)}
 .hxr-wait h2{margin:var(--s-2) 0 0;font:var(--w-title) var(--fs-lg)/var(--lh-lg) var(--sans)}
 .hxr-tgs{display:flex;flex-direction:column}

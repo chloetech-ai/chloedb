@@ -154,6 +154,14 @@ pub(super) fn answer_kind(label: &str) -> &'static str {
 
 /// The user's side of a stretch of a session, in order: its prompts, and
 /// the answers to its permission prompts and questions.
+/// The most of one answer counted as your time: past it you were away.
+pub const MAX_WAIT_MS: i64 = 5 * 60_000;
+
+/// Whether an answer was yours (not a rule's).
+fn by_you(by: &Json) -> bool {
+    matches!(by.as_str(), Some("you" | "terminal" | "screen"))
+}
+
 fn script_of(sup: &Supervisor, a: &Agent, turns: &[Turn]) -> Json {
     let mut out: Vec<Json> = turns.iter().map(|t| json!({ "kind": "prompt", "turn": t.n, "text": t.prompt })).collect();
     let (from, to) = (turns.first().map(|t| t.ts).unwrap_or(0), turns.last().map(|t| t.end).unwrap_or(i64::MAX));
@@ -162,14 +170,16 @@ fn script_of(sup: &Supervisor, a: &Agent, turns: &[Turn]) -> Json {
     qs.sort_by_key(|q| q.created);
     for q in qs {
         let answer = q.answer.clone().unwrap_or_default();
+        // How long it waited for its answer.
+        let wait = q.answered.map(|t| (t - q.created).max(0));
         if q.kind == "permission" {
             let d = q.detail.clone().unwrap_or(Json::Null);
             if d["menu"]["kind"] == "trust" {
                 continue;
             }
-            out.push(json!({ "kind": "permission", "turn": turn_at(q.created), "key": perm_key(&d), "what": d["summary"].as_str().unwrap_or(&q.text), "label": answer, "answer": answer_kind(&answer), "by": q.answered_by }));
+            out.push(json!({ "kind": "permission", "turn": turn_at(q.created), "key": perm_key(&d), "what": d["summary"].as_str().unwrap_or(&q.text), "label": answer, "answer": answer_kind(&answer), "by": q.answered_by, "wait_ms": wait }));
         } else {
-            out.push(json!({ "kind": "answer", "turn": turn_at(q.created), "question": q.text, "options": q.labels(), "answer": answer, "by": q.answered_by }));
+            out.push(json!({ "kind": "answer", "turn": turn_at(q.created), "question": q.text, "options": q.labels(), "answer": answer, "by": q.answered_by, "wait_ms": wait }));
         }
     }
     Json::Array(out)
@@ -495,6 +505,19 @@ impl Case {
         )
     }
 
+    /// How long you took to answer, in the session, the median of what
+    /// you answered yourself (a rule's answers take no one's time), at most
+    /// [`MAX_WAIT_MS`] (time away is not time answering). `None` when you
+    /// answered nothing in it.
+    pub fn your_wait_ms(&self) -> Option<i64> {
+        let mut w: Vec<i64> = self.script.as_array().into_iter().flatten().filter(|x| x["kind"] != "prompt" && by_you(&x["by"])).filter_map(|x| x["wait_ms"].as_i64()).filter(|w| *w >= 0).collect();
+        if w.is_empty() {
+            return None;
+        }
+        w.sort_unstable();
+        Some(w[w.len() / 2].min(MAX_WAIT_MS))
+    }
+
     /// The prompts it plays, in order.
     pub fn prompts(&self) -> Vec<String> {
         self.script.as_array().into_iter().flatten().filter(|x| x["kind"] == "prompt").filter_map(|x| x["text"].as_str().map(str::to_string)).collect()
@@ -507,7 +530,7 @@ impl Case {
             "start_from": self.start_from, "from": self.from, "to": self.to, "turns_all": self.turns_all,
             "script": self.script, "checks": self.checks, "set": self.set, "context": self.context, "setup": self.setup,
             "model": self.model, "permission_mode": self.permission_mode, "cost_usd": self.cost_usd, "made_by": self.made_by, "created": iso(self.created),
-            "prompts": n("prompt"), "permissions": n("permission"), "answers": n("answer"),
+            "prompts": n("prompt"), "permissions": n("permission"), "answers": n("answer"), "your_wait_ms": self.your_wait_ms(),
         })
     }
 }
@@ -911,5 +934,22 @@ mod tests {
         assert!(check_of(&json!({ "kind": "limit", "metric": "dollars", "max": 1 }), 0).is_err());
         assert_eq!(check_of(&json!({ "kind": "never", "pattern": " git push " }), 2).unwrap()["id"], "k3");
         assert!(check_of(&json!({ "kind": "judge" }), 0).is_err());
+    }
+
+    #[test]
+    fn your_time_is_the_median_of_your_own_answers() {
+        let c = |items: Json| Case { script: items, ..Case::default() };
+        let mine = json!([
+            { "kind": "prompt", "text": "go" },
+            { "kind": "permission", "by": "you", "wait_ms": 4000 },
+            { "kind": "permission", "by": "rule:r1", "wait_ms": 0 },
+            { "kind": "answer", "by": "terminal", "wait_ms": 12000 },
+            { "kind": "permission", "by": "screen", "wait_ms": 20000 },
+        ]);
+        assert_eq!(c(mine).your_wait_ms(), Some(12000));
+        // Time away is not time answering.
+        assert_eq!(c(json!([{ "kind": "permission", "by": "you", "wait_ms": 3_600_000 }])).your_wait_ms(), Some(MAX_WAIT_MS));
+        assert_eq!(c(json!([{ "kind": "permission", "by": "rule:r1", "wait_ms": 9 }])).your_wait_ms(), None);
+        assert_eq!(c(json!([])).your_wait_ms(), None);
     }
 }
