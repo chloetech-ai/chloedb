@@ -11,6 +11,27 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Wrong answers fixed (November audit: ENG-Q1, ENG-Q2)
+
+- **A function of a `CASE` on DataFusion is no longer NULL on every row of a
+  batch but the first** (ENG-Q1). DataFusion runs a compound query whose
+  leaves read more than 4,096 rows, and computes a `CASE` whose rows of a
+  batch all take one branch of literals as one value for the batch: `abs`,
+  `round`, `ln`, `log`, `exp`, `sqrt`, `pow`, `least`, `greatest`, `sigmoid`
+  and `clamp` of it read that value on the batch's first row alone, in a
+  SELECT and in a WHERE (`WHERE abs(CASE WHEN qty >= 0 THEN -1 END) = 1`
+  kept 2 rows of 10,000).
+- **OpenSearch API: `must_not`, a query string's `NOT` and `-`, and a
+  `filters` aggregation's other bucket keep the documents without the
+  field** (ENG-Q2), as OpenSearch's do: `must_not: {term: {deleted: true}}`
+  left out every document without `deleted`. Inside a negation, each
+  condition on a field a document may lack also asks for the field, so
+  that it is false rather than unknown where the field is missing; outside
+  one it is as before. A document whose field holds a value of another
+  type than the query's (a number where the query has a word) is still
+  left out. A `filters` aggregation's other bucket is empty when one of its
+  filters matches every document.
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries
