@@ -1055,7 +1055,7 @@ export function checkScreen(screen, columnsOf = () => null) {
     const sql = typeof q === 'string' ? q : q && q.sql;
     if (typeof sql !== 'string') { problems.push(`data.${name}: give a SELECT, {"sql", "params"} or an "=expression"`); continue; }
     if (sql.startsWith('=')) expr(sql, `data.${name}`);
-    else if (!/^\s*(select|with)\b/i.test(sql)) problems.push(`data.${name}: only SELECT (or WITH) queries; write with app.insert, app.update and app.remove`);
+    else if (!/^\s*(select|with)\b/i.test(sql)) problems.push(`data.${name}: only SELECT (or WITH) queries, or an "=expression" (what a function returns is "=app.call('its-slug', {...})"); write with app.insert, app.update and app.remove`);
   }
   walkValues(screen.state || {}, 'state');
   walkValues(screen.let || {}, 'let');
@@ -2158,7 +2158,12 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   await write(pieces);
   takeExamples();
   problems = await tr.span('check', 'Check the code', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
-  if (problems.length) {
+  // A piece that still fails after its fix gets one more (a first version
+  // that fails its checks does not build at all); what is only over budget
+  // or only in the tests is settled below without another round.
+  const blocking = () => problems.some((p) => !isBudget(p) && !(parallel && /^tests\[/.test(p)));
+  for (let round = 1; round <= 2; round++) {
+    if (round === 1 ? !problems.length : !blocking()) break;
     const notes = new Map();
     for (const pc of pieces) {
       const mine = problems.filter((p) => (pc.owns ? pc.owns(p) : p.startsWith(`${pc.label}:`) || p.startsWith(`${pc.label} `)));
@@ -2166,11 +2171,10 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     }
     const again = pieces.filter((pc) => notes.has(pc.slug));
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'} (${problems.slice(0, 3).join('; ').slice(0, 400)})${again.length ? `; writing ${again.map((p) => p.label).join(', ')} again` : ''}`);
-    if (again.length) {
-      await write(again, notes);
-      takeExamples();
-      problems = await tr.span('check', 'Check the code again', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
-    }
+    if (!again.length) break;
+    await write(again, notes);
+    takeExamples();
+    problems = await tr.span('check', round === 1 ? 'Check the code again' : 'Check the code a third time', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
   }
   // A screen's budget was asked of the plan already; over it, it is kept.
   if (problems.some(isBudget)) {
