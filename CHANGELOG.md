@@ -11,6 +11,39 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The crawler and Sheets that chloedb-server starts itself work for their
+  callers again** (DAT-5, broken since 0.3.2): an app's own key, limited to
+  its tables, narrowed to a caller's tables (`x-chloedb-as-tables`) keeps on
+  each table the lower of its scope and the caller's, where the server
+  refused it before, so every crawl failed and no table opened as a
+  workbook, for every key and the root. A key limited to tables that sends
+  the header is narrowed the same way rather than refused. The crawler a
+  server starts takes `CHLOEDB_CRAWL_ALLOW_PRIVATE` from the server's
+  environment, for an intranet crawl.
+- **A request that names no table no longer goes to the apps' tables**
+  (PLT-2): on a database made with no tables, where the apps a server
+  starts make `sheets_books`, `sheets_cells` and `ctx_spaces` first, it goes
+  to the first table people made. The apps' own state (Sheets' `sheets_*`,
+  ChloeCtx's `ctx_*`, the app engine's `sa_*`) never takes one, and their
+  data (a crawl's `crawl_*`, network operations' `netops_*`) only while
+  there is no other table (a database `chloedb-crawl --local` filled).
+  Until then such a write is refused, as on an empty database.
+- `/v1/explain` explains the statements `/v1/sql` runs that the binder of
+  single-table queries does not take, such as `GROUP BY date_trunc('week',
+  day)`, by its plan's tree, where it answered 400 (UIA-3); the app
+  engine's check of a screen's queries no longer asks the model to fix
+  working TREND screens.
+- A query past `--max-result-window` keeps its code, `query_invalid`, with
+  a hint that says to add a LIMIT or read it a page at a time, not that it
+  does not parse (UIA-2).
+- Netops: Tab leaves the search box (it switched Search and Ask when the
+  box was empty, so focus never left it, WCAG 2.1.2); the buttons before the
+  box switch the mode (UIA-1).
+- Feature store: training reads its training set a page at a time, so Train
+  works when the demo is an app of a server with the default window
+  (`serve --server`), and a refusal of the server reaches the page as its
+  status and one sentence, not a 502 of nested JSON (UIA-2).
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries
