@@ -1174,7 +1174,7 @@ fn permission_and_pin_changes(sup: &Supervisor, run: &Run, best: &Version, e: &E
         let Some(v) = q.agent.as_ref().and_then(|a| version_of.get(a)) else { continue };
         let vrules = rules_of.entry(v.clone()).or_insert_with(|| if *v == best.id { rules.clone() } else { super::version(sup, v).map(|vv| super::rules_under(sup, &run.repo, &vv, &edits_of(sup, v))).unwrap_or_default() });
         let cwd = q.agent.as_deref().and_then(|a| sup.agent_row(a)).map(|a| a.cwd).unwrap_or_default();
-        if let Some(k) = q.detail.as_ref().and_then(|d| d["command"].as_str()).and_then(|c| asked_key(vrules, c, &cwd)) {
+        for k in q.detail.as_ref().and_then(|d| d["command"].as_str()).map(|c| asked_keys(vrules, c, &cwd)).unwrap_or_default() {
             *asked.entry(k).or_default() += 1;
         }
     }
@@ -1230,14 +1230,31 @@ fn permission_and_pin_changes(sup: &Supervisor, run: &Run, best: &Version, e: &E
     out
 }
 
-/// What a prompt for `cmd` was about: the first of its simple commands the
-/// rules do not allow (`git status; ./check.sh` asks for `./check.sh`), as
-/// the prefix a rule would name.
-fn asked_key(rules: &[super::perms::Rule], cmd: &str, cwd: &str) -> Option<String> {
+/// Commands Claude Code runs without asking, as it reads them as read
+/// only: never what a prompt was for.
+const READ_ONLY: [&str; 15] = ["echo", "printf", "cat", "head", "tail", "ls", "pwd", "wc", "grep", "rg", "sort", "uniq", "cut", "true", "which"];
+
+/// What a prompt for `cmd` was about: each of its simple commands the
+/// rules do not allow (`git status; ./check.sh` asks for `./check.sh`,
+/// `./check.sh; echo $?; python -m x run` for both ./check.sh and python
+/// -m x: a rule for one leaves it asking), as the prefix a rule would name.
+fn asked_keys(rules: &[super::perms::Rule], cmd: &str, cwd: &str) -> Vec<String> {
     let probe = |part: &str| super::perms::Probe { tool: "Bash".into(), command: Some(part.to_string()), path: None, cwd: cwd.to_string() };
     let parts = super::perms::parts(cmd);
-    let part = parts.iter().filter(|p| !p.starts_with("cd ") && p.as_str() != "cd").find(|p| super::perms::decide(rules, &probe(p)) != "allow").or(parts.first())?;
-    super::storm_key(part)
+    let asks = |p: &&String| {
+        let first = p.split_whitespace().find(|w| !w.contains('=')).unwrap_or("");
+        !p.starts_with("cd ") && p.as_str() != "cd" && !READ_ONLY.contains(&first) && super::perms::decide(rules, &probe(p)) != "allow"
+    };
+    let mut out: Vec<String> = Vec::new();
+    for k in parts.iter().filter(asks).filter_map(|p| super::storm_key(p)) {
+        if !out.contains(&k) {
+            out.push(k);
+        }
+    }
+    if out.is_empty() {
+        out.extend(parts.first().and_then(|p| super::storm_key(p)));
+    }
+    out
 }
 
 // ------------------------------------------- changes for time and cost
@@ -2071,10 +2088,15 @@ mod tests {
         let rules = vec![rule("Bash(git status:*)"), rule("Bash(git stash:*)")];
         // Seen in a real replay: the prompt was for the check script, not
         // for git, which Workbench already allows.
-        assert_eq!(asked_key(&rules, "git status --short; git stash list; ./scripts/check.sh", "/w").as_deref(), Some("./scripts/check.sh"));
-        assert_eq!(asked_key(&rules, "git stash -q && ./scripts/check.sh; git stash pop", "/w").as_deref(), Some("./scripts/check.sh"));
-        assert_eq!(asked_key(&rules, "cd sub && make lint", "/w").as_deref(), Some("make lint"));
-        assert_eq!(asked_key(&[], "head -5 a.py; ./scripts/check.sh", "/w").as_deref(), Some("head -5"));
+        assert_eq!(asked_keys(&rules, "git status --short; git stash list; ./scripts/check.sh", "/w"), ["./scripts/check.sh"]);
+        assert_eq!(asked_keys(&rules, "git stash -q && ./scripts/check.sh; git stash pop", "/w"), ["./scripts/check.sh"]);
+        assert_eq!(asked_keys(&rules, "cd sub && make lint", "/w"), ["make lint"]);
+        assert_eq!(asked_keys(&[], "head -5 a.py; ./scripts/check.sh", "/w"), ["./scripts/check.sh"]);
+        // Seen in a real run: the prompt was for both, so a rule for the
+        // check alone left every one of them asking.
+        assert_eq!(asked_keys(&[], "./scripts/check.sh; echo \"exit=$?\"; python -m shipments.cli export | head -3", "/w"), ["./scripts/check.sh", "python -m shipments.cli"]);
+        let check = vec![rule("Bash(./scripts/check.sh:*)")];
+        assert_eq!(asked_keys(&check, "./scripts/check.sh && python -m shipments.cli export", "/w"), ["python -m shipments.cli"]);
     }
 
     fn keys(v: &[Json]) -> Vec<String> {

@@ -1132,10 +1132,12 @@ the best so far, each a version of its own (`tried`; the one kept is a
   of the targets not met yet first, and otherwise in this order:
   - allow rules for the commands its replays were asked about: all of
     them in one change first (up to 5), then each alone, most asked first
-    (on equal counts, those that do not widen). A prompt counts for the
-    first of its simple commands the rules its own replay ran with do not
-    allow (`git status; ./check.sh` was asked for `./check.sh`), over every
-    version tried, so what one rule left is found; a rule asked about less
+    (on equal counts, those that do not widen). A prompt counts for each
+    of its simple commands the rules its own replay ran with do not allow,
+    other than those Claude Code runs without asking (`echo`, `cat`,
+    `head`, ...): `git status; ./check.sh` was asked for `./check.sh`,
+    `./check.sh; echo $?; python -m x run` for both; over every version
+    tried, so what one rule left is found. A rule asked about less
     than once a replay is not tried: it cannot be better beyond the noise
     of its replays (aims: interventions, wall time). All at once because
     agents chain: in a real run, allowing `./scripts/check.sh` alone left

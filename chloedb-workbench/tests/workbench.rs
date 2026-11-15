@@ -6439,7 +6439,7 @@ fn harness_optimize_this_allows_every_command_its_replays_were_asked_about_in_on
     let ch = v["run"]["waiting"].clone();
     assert_eq!(ch["title"], "Allow `./check.sh` and `python -m tool` without asking", "{ch}");
     assert_eq!(ch["edit"]["permissions"]["allow"], json!(["Bash(./check.sh:*)", "Bash(python -m tool:*)"]), "{ch}");
-    assert_eq!(ch["saves"], 4, "{ch}");
+    assert_eq!(ch["saves"], 6, "the check twice a replay, the tool once: {ch}");
     assert_eq!(s.post(&format!("/api/harness/runs/{run}/decide"), json!({ "approve_widening": ch["patterns"] })).0, 200);
     let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
     let log = v["run"]["log"].as_array().unwrap();
