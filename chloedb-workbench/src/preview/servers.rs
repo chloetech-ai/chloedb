@@ -323,11 +323,11 @@ async fn stop_one(State(app): State<App>, Path(pid): Path<i32>) -> ApiResult {
     Ok(AxJson(v).into_response())
 }
 
-#[cfg(test)]
+// Its one test reads /proc.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn finds_a_listening_child_by_its_environment() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

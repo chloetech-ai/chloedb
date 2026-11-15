@@ -85,9 +85,11 @@ limited to `chloectx_memory` can no longer push: make a project's key with
   (X-G5).
 - A replica that lost its volume and starts again with `--replica` votes
   only once a primary has caught it up, and is a member only from then
-  (N-E2). The cost: if a shard's first primary stops after calling its
-  replicas but before they caught up, they cannot elect a new primary,
-  where before they could and might lose writes.
+  (N-E2). Meanwhile it grants its vote to the primary that called it, and
+  to no other copy, so a shard whose first primary steps down before its
+  replicas caught up elects that primary again. The cost: if that primary
+  stops for good before they caught up, the shard waits for it, where
+  before it could elect another copy and might lose writes.
 - A server started as its shard's primary on an empty database asks its
   replicas first, and starts as a replica (with `--failover-after-ms`) or
   refuses to start when one holds the shard's transactions (N-E2).
