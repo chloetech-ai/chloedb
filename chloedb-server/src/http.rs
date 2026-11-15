@@ -515,6 +515,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/simulator", get(sim_view).post(sim_start))
         .route("/v1/admin/simulator/stop", post(sim_stop))
         .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/routing", post(sim_routing))
         .route("/v1/admin/simulator/runs/:id", get(sim_report))
         .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
@@ -1023,7 +1024,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/admin/simulator/routing" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -3928,6 +3929,12 @@ async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
 /// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
 async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `POST /v1/admin/simulator/routing`: the ways of choosing a shard's
+/// copy, compared by the model ([`crate::traffic::run::routing_preview`]).
+async fn sim_routing(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::routing_preview(&app.svc, b).await?))
 }
 
 /// `GET /v1/admin/simulator/runs/:id`: a report kept.

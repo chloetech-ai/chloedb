@@ -224,6 +224,28 @@ const limited = { L, d: { resources: { requests: { memory: "512Mi" }, limits: { 
 assert.match(memory.warn("512Mi", limited), /a limit of 512Mi would restart it/);
 assert.equal(memory.warn("1Gi", { L, d: { resources: { requests: { memory: "1Gi" } } } }), null);
 
+// Routing settings: least-cost and prefer-caught-up are chloedb-server's
+// defaults, so leaving them as they are writes no flag, and turning
+// prefer-caught-up off writes --prefer-caught-up=false.
+const spec = await import(new URL("spec.js", app));
+const routeSt = SETTINGS.find((x) => x.at === "cargs:--route"), preferSt = SETTINGS.find((x) => x.at === "cargs:--prefer-caught-up"), adaptiveSt = SETTINGS.find((x) => x.at === "cargs:--hedge-adaptive");
+const cs = { coordinatorArgs: ["--hedge-ms", "50"] };
+assert.deepEqual([spec.value(cs, routeSt), spec.value(cs, preferSt), spec.value(cs, adaptiveSt)], ["least-cost", true, false]);
+assert.equal(spec.shown(routeSt, spec.value(cs, routeSt)), "the one that costs least");
+spec.assign(cs, preferSt, false);
+spec.assign(cs, routeSt, "round-robin");
+spec.assign(cs, adaptiveSt, true);
+assert.deepEqual(cs.coordinatorArgs, ["--hedge-ms", "50", "--prefer-caught-up=false", "--route", "round-robin", "--hedge-adaptive"]);
+assert.deepEqual([spec.value(cs, routeSt), spec.value(cs, preferSt), spec.value(cs, adaptiveSt)], ["round-robin", false, true]);
+assert.match(preferSt.warn(true, { d: cs }), /each in turn ignores it/);
+spec.assign(cs, preferSt, true);
+spec.assign(cs, routeSt, "least-cost");
+spec.assign(cs, adaptiveSt, false);
+assert.deepEqual(cs.coordinatorArgs, ["--hedge-ms", "50"]);
+assert.equal(spec.value({ coordinatorArgs: ["--prefer-caught-up"] }, preferSt), true);
+assert.equal(spec.value({ coordinatorArgs: ["--partial"] }, SETTINGS.find((x) => x.at === "cargs:--partial")), true);
+assert.equal(spec.value({}, SETTINGS.find((x) => x.at === "cargs:--partial")), false);
+
 // LIV-10: advice names the spec's field when an operator runs the cluster, the flag otherwise.
 assert.equal(data.howToSet({ flag: "--environment", field: "spec.environment", value: "production" }), "start the server with --environment production");
 data.state.kube = { managed: true, namespace: "chloedb", name: "e2e" };

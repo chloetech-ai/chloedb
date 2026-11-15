@@ -17,6 +17,7 @@ pub mod dist;
 pub mod model;
 pub mod profile;
 pub mod report;
+pub mod routing;
 pub mod run;
 
 /// The kinds of `chloedb-server-bench`, then five more (phrase, typo,

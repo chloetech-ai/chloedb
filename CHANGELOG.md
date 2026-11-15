@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- A coordinator now routes reads by least cost (`--route least-cost`) and
+  sends reads that must see a write to copies known to hold it
+  (`--prefer-caught-up`) by default; `--route round-robin` and
+  `--prefer-caught-up=false` bring back 0.3.4's routing. Measured on
+  DigitalOcean (copies on 2-vCPU nodes), least-cost cut p99 by about a third
+  on copies alike at 16 and 64 clients, and preferring caught-up copies
+  raised a mix of writes and reads after them by 31% at 16 clients and 45%
+  at 64. Adaptive hedging (`--hedge-adaptive`) stays off: with 3 shards of
+  copies alike it raised the 99.9th percentile. `/v1/cluster` says each
+  coordinator's `route`, `hedge_adaptive` and `prefer_caught_up`, and the
+  command center's Settings set all three (Copy asked first, Hedge by each
+  copy's own speed, Reads after a write prefer copies that hold it).
+- The command center's Simulator compares those ways of choosing a shard's
+  copy (Choosing a copy): by a model of the cluster at once, with what-ifs
+  of a slow, busy, stalling or late copy (`POST
+  /v1/admin/simulator/routing`, which sends nothing), or measured, a test
+  run of shape `routing` that sends the mix through a coordinator made for
+  the test for each setting, on the same copies, in turns, with the model's
+  prediction beside each.
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries

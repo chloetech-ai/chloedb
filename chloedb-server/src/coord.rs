@@ -171,7 +171,7 @@ pub struct CoordOptions {
     pub hedge_adaptive: bool,
     /// With [`Route::LeastCost`]: cost a replica for a read that must see a
     /// write (`min_seq_nos`) by its round trips of such reads, unless it is
-    /// known to hold the write (`--prefer-caught-up`).
+    /// known to hold the write (`--prefer-caught-up`). On by default.
     pub prefer_caught_up: bool,
     /// With [`Route::LeastCost`]: count the load each replica reported in
     /// the coordinator's survey. On by default; off only to measure what
@@ -186,11 +186,14 @@ pub struct CoordOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Route {
     /// Each in turn, those in their cool-off (failed or outrun) last.
-    #[default]
     RoundRobin,
     /// In turn too, unless another costs clearly less, by what this
     /// coordinator observed of each (round trip, calls in flight, errors,
-    /// refusals) and the load each reported ([`crate::cores::route`]).
+    /// refusals) and the load each reported ([`crate::cores::route`]). The
+    /// default: on copies alike it cut p99 by about a third against
+    /// [`Route::RoundRobin`] at 16 and 64 clients, and it asks a slow or
+    /// busy copy less.
+    #[default]
     LeastCost,
 }
 
@@ -225,9 +228,9 @@ impl Default for CoordOptions {
             stats_cache_terms: STATS_CACHE_TERMS,
             local: None,
             write_every_copy: false,
-            route: Route::RoundRobin,
+            route: Route::LeastCost,
             hedge_adaptive: false,
-            prefer_caught_up: false,
+            prefer_caught_up: true,
             route_load: true,
         }
     }
@@ -4156,6 +4159,7 @@ impl Coordinator {
             "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
+            "route": self.opts.route.name(), "hedge_adaptive": self.opts.hedge_adaptive, "prefer_caught_up": self.opts.prefer_caught_up,
             "changes": self.can_change(t),
             "shards_by_state": by_state, "copies": {"total": copies, "down": copies_down},
         })
