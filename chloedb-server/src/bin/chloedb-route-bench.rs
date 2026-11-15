@@ -133,6 +133,14 @@ struct Args {
     /// `--lag-ms` late), which the primary ships replica 1 through.
     #[arg(long)]
     late_link: Option<String>,
+    /// Configurations to run instead of each scenario's own, by label,
+    /// comma-separated: `round-robin`, `round-robin adaptive`,
+    /// `least-cost`, `least-cost adaptive`, `least-cost no-load`,
+    /// `least-cost prefer`. For copies slowed outside the bench (with
+    /// `--external`, under `equal`), which then names no configurations
+    /// of its own.
+    #[arg(long, value_delimiter = ',')]
+    configs: Vec<String>,
 }
 
 const WORDS: usize = 5_000;
@@ -666,8 +674,24 @@ async fn main() {
     let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), ..Default::default() };
     let rr = CoordOptions { route: Route::RoundRobin, ..base.clone() };
     let lc = CoordOptions { route: Route::LeastCost, ..base.clone() };
+    let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
+    let every: Vec<(&'static str, CoordOptions)> = vec![
+        ("round-robin", rr.clone()),
+        ("round-robin adaptive", adaptive(&rr)),
+        ("least-cost", lc.clone()),
+        ("least-cost adaptive", adaptive(&lc)),
+        ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() }),
+        ("least-cost prefer", CoordOptions { prefer_caught_up: true, ..lc.clone() }),
+    ];
+    let chosen: Vec<(&'static str, CoordOptions)> = a
+        .configs
+        .iter()
+        .map(|l| every.iter().find(|(k, _)| *k == l.trim()).cloned().unwrap_or_else(|| panic!("no configuration {l:?}: {:?}", every.iter().map(|(k, _)| *k).collect::<Vec<_>>())))
+        .collect();
     let configs = |scenario: &str| -> Vec<(&'static str, CoordOptions)> {
-        let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
+        if !chosen.is_empty() {
+            return chosen.clone();
+        }
         match scenario {
             "equal" | "stall" => vec![("round-robin", rr.clone()), ("round-robin adaptive", adaptive(&rr)), ("least-cost", lc.clone()), ("least-cost adaptive", adaptive(&lc))],
             "busy" => vec![("round-robin", rr.clone()), ("least-cost", lc.clone()), ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() })],
