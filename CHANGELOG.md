@@ -11,6 +11,12 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Comparison page, benchmark harness and `latest` (audit of 15 November: CMP-1, CMP-2, PRF-1, PLT-3)
+
+- The comparison page says what ChloeDB's docs say: graph queries, `ppr()` and `DROP COLUMN` are marked as one server's (a cluster refuses them), the local BERT, ColBERT, cross-encoder, image and sound models as needing a build with `--features` (the release, image and wheel leave them out), and the autoscaler, the Cloud view and the on-call agent as experimental, with a mark of their own. Other systems' cells that were wrong are corrected (among them Elasticsearch's embeddings on write, multi-vector, learning to rank and reranking, which need its Enterprise licence; Qdrant's BM25 and Qdrant Edge; the Vespa operator, which is commercial; Milvus 3.0's facets, multi-vector and column changes), 42 of the 99 unchecked cells are checked, and each system says the day it was checked. While any cell is unchecked the page says above the matrix that it is a draft, and CI's documentation job fails without that line (`docs/site/scripts/check_compare.py`). (CMP-1, CMP-2)
+- The benchmark harness (`chloedb-server/deploy/compare`, `graph-compare`, `compare/recsys/local.sh`) starts ChloeDB with `--answer-cache-mb 0`: since 0.3.1 its answer cache answered 99.5% of a timed run's repeated queries. `engine-compare run` reads each server's `chloedb_answer_cache_total` and fails a run in which any answer came from the cache. Every published ChloeDB run was measured on a build from before the cache. (PRF-1)
+- CI tests a push to main from the newest commit of main whose run passed, rather than from the commit before it, so a documentation change after a failed or cancelled run no longer passes without testing the code before it, and `latest` is published only from tested code. (PLT-3)
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries
