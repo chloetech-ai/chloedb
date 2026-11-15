@@ -38,6 +38,8 @@ cloud container these were written in, one TLC worker a model, 2026-11-15.
 | [slots/SlotMove.tla](slots/SlotMove.tla) | `chloedb-server/src/coord/moves.rs`, `src/cores/slots.rs` (`flip_ok`, `Hold`, `Change::give`), `src/service/moving.rs`, `Service::set_slots` | once any server holds a move's flip, the shard the slots go to holds every write to them that was acknowledged, and none comes after |
 | [clustermap/MapChange.tla](clustermap/MapChange.tla) | `chloedb-server/src/coord.rs` (`Coordinator::change`, `sync_heard`, the map Lease, `connect_with`'s survey), `src/cores/slots.rs` (`Change::synced`, `give`, `answered`, `in_doubt`, `flip_ok`), `Service::set_slots` | no two maps of one epoch, a coordinator routes only by a map a server held, and no server is left refusing every later map |
 | [idempotency/IdempotencyKeys.tla](idempotency/IdempotencyKeys.tla) | `chloedb-server/src/idem.rs` (`Keys::begin`, `finish`, `record`, `recorded`), `src/service.rs` (`begin_key`, `apply_keyed_in`, `replicated`), `Primary::holding`, `term_opened` | a write retried with its key is applied once, and answered as acknowledged only while a majority holds it |
+| [handover/Handover.tla](handover/Handover.tla) | `chloedb-server/src/replication.rs` (`Follow::promote`, `catch_up`, `campaign`), `src/cores/shard.rs` (`promote_check`, `hand_over`, `handover_hold`, `Replica::vote`), `src/service/failover.rs` (`Failover::due`) | a read served under the primary's lease holds every write acknowledged, one copy a term, and a handover leaves a primary serving |
+| [wal/WalRecovery.tla](wal/WalRecovery.tla) | `chloedb/src/db/writes.rs` (group commit), `chloedb/src/storage/` (`commit_logged`, `flush_inner`, `install_merge`, `write_version`, `write_meta`, `Wal::reset`, `Database::load`, `damaged_slots`, `fallback_decision`, `fallback_keeps_commits`) | after any crash the rows are a prefix of the commits holding every acknowledged one, merges lose no delete, an open that lost nothing is not refused, and no loss goes unreported |
 
 ### Shard elections (`replication/`)
 
@@ -264,31 +266,156 @@ What TLC found:
    gets the database's last number, as its section on keys says
    elsewhere. `RetrySeesWrite` (the number covers the write) holds.
 
+### Handover and the read lease (`handover/`)
+
+A discrete clock; each duration the code measures is an age capped at its
+bound. A promotion by hand: the copies' `Hello` (`promote_check`), the
+pre-vote that pauses a serving primary (`hand_over`), `vote_self`, the
+copies of `Asked.primaries` asked first, then the rest, and
+`handover_hold`. Automatic failover: `Failover::due` and `Replica::vote`'s
+sticky refusal. Calls may be lost; `Drift` takes durations at their worst.
+Invariants: `LeaseReadsFresh` (a read served under the lease holds every
+write acknowledged to its client), `OneCopyATerm`, `OldPrimaryAcksNothing`,
+`OneWriter` (which the code does not promise: `TwoWriters`) and
+`NoOrphanedFence` (with two copies by hand: never a fenced primary and none
+serving). Three copies, terms 2 and a failover delay of 3 ticks unless a
+model says otherwise.
+
+| model | result | states (time) |
+|---|---|---|
+| LeaseBug (`--bug takes-writes-in-a-lease`) | **stale read** in 11 states | 5,986 (4 s) |
+| CILease, Lease (delay 4) | no error | 94,335 (49 s), 277,263 (141 s) |
+| HoldUnasked (terms 3) | **stale read** in 19 states (below) | 450,708 (123 s) |
+| HoldAllGranted (its fix, terms 3, behaviours of 21 steps) | no error | 908,342 (349 s) |
+| Auto | no error | 9,790 (8 s) |
+| Restart, RestartFix (its fix) | **stale read** in 11 states (below), no error | 6,656 (4 s), 72,480 (36 s) |
+| Drift1, Drift2 (delay 8, clocks off by 1 or 2) | no error, **stale read** in 13 states | 154,024 (58 s), 10,286 (6 s) |
+| TwoWriters (no failover) | **two writers** in 8 states | 561 (2 s) |
+| OrderBug, Order (two copies, terms 3) | **orphaned fence** in 9 states, no error | 94, 502 (3 s) |
+| OrderLossy, OrderRace | **orphaned fence** in 8 and 18 states | 236, 716 (5 s) |
+
+What TLC found:
+
+1. **`handover_hold` trusts a `Hello` that failed (`HoldUnasked`, open).**
+   1. c1 is promoted while no `Hello` is answered; c0, term 1's primary,
+      answers only the pre-vote, and c1 wins term 2 with c2.
+   2. c2 is promoted: c0, not fenced yet, answers `Hello` and c1's
+      fails, so `Asked.primaries` is [c0].
+   3. c1's `Replicate` to c2 is answered, and c2 votes for itself.
+   4. c0 grants and steps down; c2 wins term 3, and as every copy of
+      `Asked.primaries` granted, it holds no lease wait.
+   5. c2's write is acknowledged with c0's copy, and c1 serves reads
+      without it until it is fenced.
+
+   Rare (the copy that did not answer must be the newest primary), but
+   real. The fix TLC passes: no wait only when every other copy granted.
+2. **A replica started again votes at once (`Restart`, open).**
+   `Replica::vote` refuses a vote for the failover delay after a call of
+   its primary only when `called_at` is set, and a replica started again
+   has none. c0's calls to c2 fail for the delay; c1 answers c0 and
+   starts again; c2 asks to be elected (`Failover::due`) and c1 grants;
+   c2 wins term 2, its write is acknowledged with c1, and c0 still serves
+   reads on c1's answer from before. It needs a restart quicker than the
+   lease (the simulator's crashes last 50 ms to 4 s). The fix TLC passes:
+   refuse for the delay from `opened` too.
+3. **The vote order covers its own path only (`Order`).** A lost `Hello`
+   or vote, the pause running out, or two promotions at once leave the
+   candidate's own vote fencing the primary: two copies with no automatic
+   failover have no primary until an operator promotes again (which
+   works).
+4. **Clocks.** The lease holds with each copy's clock off by an eighth of
+   the failover delay (`Drift1`), not by more (`Drift2`).
+
+`LeaseReadsFresh` counts the writes acknowledged to their client: a write
+answered in doubt that a later term commits may be seen only on the new
+primary. Promotions that overlap are checked with two copies only.
+
+### Commit path and crash recovery (`wal/`)
+
+Group commit, one log append and fdatasync per transaction, foreground and
+background flushes, a merge built outside the writer lock, the two meta
+slots, a crash at any step, and `Database::load`. Sync is on unless a
+model says otherwise. After every recovery the rows are a prefix of the
+commits and hold every acknowledged one, merges neither bring back nor
+drop rows, and a writer is told of its write only once it is durable
+(`CIRecover`, `CIGroups`, and `Recover` with 757,341 states).
+`CIMergeNoCarry` and `CINoSyncFirst` each drop a step the code takes, to
+show why it is there.
+
+| model | differs from the default (w1 upserts k1 twice, w2 deletes it; 3 versions, 1 merge, 1 crash, slots written whole) | result | states | s |
+|---|---|---|---|---|
+| CIRecover | | no error | 74,275 | 11 |
+| CIMergeNoCarry | a merge drops the deletes made since its snapshot | `LiveRowsCommitted` broken in 19 states | 8,561 | 3 |
+| CINoSyncFirst | no sync, nor `sync_appends` | `RecoveredPrefix` broken in 15 states | 4,704 | 2 |
+| CINoSync | no sync | no error | 128,965 | 20 |
+| CITornSlot | slots can tear | **`OpensAfterCrash` broken** in 14 states (below) | 2,549 | 2 |
+| CITornSafe | slots can tear, without `OpensAfterCrash` | no error | 90,973 | 15 |
+| CIRot | slots can tear or be damaged later | `NoSilentLoss` broken in 13 states (documented) | 2,696 | 2 |
+| CIRotTold, RotTold | as CIRot but the documented case, 1 write each (default writes) | no error | 25,346 (709,663) | 5 (113) |
+| CIFixIntent, FixTorn | the fix, slots can tear (2 crashes) | no error | 114,545 (369,966) | 18 (120) |
+| CIFixRot, FixRot | the fix, later damage, 1 write each (default writes) | no error | 37,342 (985,908) | 6 (156) |
+| CIGroups | groups that fail, 2 keys | no error | 209,294 | 28 |
+| Recover | either writer upserts or deletes, 2 crashes | no error | 757,341 | 221 |
+
+What TLC found:
+
+1. **A torn slot refuses an open that lost nothing (`CITornSlot`, open).**
+   1. w1's upsert commits as transaction 2.
+   2. A flush writes version 3 to slot 1, and `Wal::reset` empties the
+      log.
+   3. `install_merge` writes version 4 to slot 0, and a crash in
+      `write_meta` tears it: it fails its checksum and its fields cannot
+      be read.
+   4. `Database::load`: `damaged_slots` answers no manifest, so
+      `fallback_decision` does not know the newer version, and
+      `fallback_keeps_commits(3, 2, None, [])` refuses to open without
+      `recover`, though version 3 holds every write.
+
+   It needs a device that tears a write inside the 84-byte meta (the
+   tests' power-loss model writes sectors whole). Torn slots never lose
+   data (`CITornSafe`).
+2. **Slot 1 zeroed later, beside the first version (`CIRot`, documented
+   in [index.md](../docs/chloedb/index.md)).** The open goes ahead at
+   version 1 and loses the first flush's commits without a word. Other
+   damage after the fact is caught (`CIRotTold`, `RotTold`).
+3. **A fix TLC passes (`FixIntent`).** Before it writes a slot,
+   `write_version` writes and syncs a record of the version's transaction
+   and slot, and marks it done after the slot's sync and before
+   `Wal::reset` or `remove_sealed`; an open marks it done when it opens
+   that version or a newer one. A damaged slot the record names in flight,
+   newer than the version opened, is then a write the crash cut short,
+   not damage; and any record shows that slot 1 was written. No clean
+   crash is refused and no loss goes unreported (`CIFixIntent`,
+   `FixTorn`, `CIFixRot`, `FixRot`).
+
 ## What is next, by risk
 
-The protocols left, ranked by what a bug would cost and how little the
-tests reach them. Each would follow the code as these do.
+The open findings above, by what they cost and how likely they are, each
+with the fix its specification checks:
 
-1. **Handover and the read lease** (`handover_hold`, the handover vote
-   order in `Replica::campaign`, `promote_check`): a replica elected by
-   hand must not take writes inside the replaced primary's lease, and the
-   primaries' votes come first. Needs time in the model (a lease), so a
-   bounded clock or PlusCal with a tick action.
-2. **Idempotency keys across failover** (the key kept in the write's own
-   transaction, DS-5's `term_start`, retries whose answer was lost): a
-   retried write applies once, and is answered as acknowledged only once
-   a majority holds it in the current term. Extends `ShardElection`.
-3. **Cluster map changes** (`Change::synced`, `give`, `failed`, maps in
-   doubt, two coordinators, `sync_heard`'s take-up of the newest map): no
-   two servers hold different maps of one epoch, and a change in doubt is
-   redone before any other. Composes with `SlotMove`.
-4. **WAL, flush, merge and the two meta slots** (`Database::commit`, group
-   commit #273, `install_merge` outside the writer lock, crash recovery
-   from either meta slot): a crash at any step recovers a prefix of the
-   committed transactions, and a merge loses no delete that raced it.
-5. **The operator's rolling upgrades** (one server at a time, handover
-   before restart, the protocol version gate) and **ChloeCtx sync**
-   (per-project keys, pushes that cross): liveness more than safety.
+1. **A slot move loses a write when its source fails over during the
+   flip** (`slots/`, `MoveNow`): the mark committed through the source's
+   log.
+2. **The cluster map forks under the Lease, and on a restart with
+   replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): changes
+   that land on, and sync from, a majority (`Quorum`).
+3. **A retry is answered 200 for a write no copy holds, or applied twice**
+   (`idempotency/`, `KeysNow`, `KeysEvict`): forget the keys at a change of
+   role, and look the key's row up in the write's own transaction.
+4. **Stale reads under the lease** (`handover/`, `HoldUnasked`, `Restart`):
+   no wait only when every other copy granted, and the sticky refusal
+   counted from the replica's start.
+5. **A copy that lost its volume forgets its vote** (`replication/`,
+   `MembersAmnesia`): ask the other copies first, as a primary does.
+6. **A torn meta slot refuses an open that lost nothing, and a slot zeroed
+   later loses the first flush unreported** (`wal/`, `CITornSlot`,
+   `CIRot`): a record of the version in flight.
+
+Not specified yet: **the operator's rolling upgrades** (one server at a
+time, handover before restart, the protocol version gate) and **ChloeCtx
+sync** (per-project keys, pushes that cross), liveness more than safety;
+**follow** between clusters (`src/operator/follow.rs`); and **merges'
+deletes across a slot move** (where `slots/` and `wal/` meet).
 
 Where another tool fits better:
 
