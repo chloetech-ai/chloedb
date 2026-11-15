@@ -235,6 +235,14 @@ pub struct Daemon {
     snapshots: crate::snapshots::Snapshots,
     /// A recall showed records since the last snapshot was kept.
     keep_pending: std::sync::atomic::AtomicBool,
+    /// Connections being answered, from the request read to the answer
+    /// written: shutdown waits for them before the exit, which would
+    /// close them unanswered.
+    serving: std::sync::atomic::AtomicUsize,
+    /// Shutdown is past the point where requests are handled: one that
+    /// comes is answered [`closing_answer`], and its client sends it to
+    /// the next daemon.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
@@ -276,7 +284,8 @@ impl Daemon {
         let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
             logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), last_activity: AtomicI64::new(now()),
-            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default() })
+            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default(),
+            serving: Default::default(), closing: Default::default() })
     }
 
     /// Wraps work to run after the answer, so that shutdown waits for it.
@@ -460,6 +469,17 @@ impl Daemon {
         }
         // What was recorded since the last push goes before the daemon does.
         let _ = self.sync_now(false);
+        // Requests were handled until now. From here each one is answered
+        // `closing`, not handled, and its client sends it to the next
+        // daemon, once this one is gone; the exit would otherwise close it
+        // unanswered (`chloectx sync setup`, which stops the daemon, then
+        // `chloectx sync push`: "EOF while parsing a value"). SeqCst with
+        // `serving` in [`serve`]: a request either sees `closing` or is
+        // counted here, and waited for.
+        self.closing.store(true, Ordering::SeqCst);
+        while (self.serving.load(Ordering::SeqCst) > 0 || self.pending.load(Ordering::Acquire) > 0 || self.deferred.load(Ordering::Acquire) > 0) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = self.store.flush();
         self.save_receipts();
         if let Some(b) = self.receipts.get() {
@@ -467,6 +487,11 @@ impl Daemon {
         }
         self.save_state();
         let _ = std::fs::remove_file(&self.paths.socket);
+        // The connections made before the socket went, answered `closing`.
+        let last = Instant::now() + Duration::from_millis(500);
+        while self.serving.load(Ordering::SeqCst) > 0 && Instant::now() < last {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         std::process::exit(0);
     }
 
@@ -2557,6 +2582,17 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
         let Ok(stream) = conn else { continue };
         let d = daemon.clone();
         std::thread::spawn(move || {
+            // Counted until the answer is written (and the state saved),
+            // not through the work after it, which `deferred` counts: the
+            // shutdown a request asks for runs there, and waits for this.
+            struct Serving<'a>(&'a std::sync::atomic::AtomicUsize);
+            impl Drop for Serving<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            d.serving.fetch_add(1, Ordering::SeqCst);
+            let serving = Serving(&d.serving);
             let mut reader = BufReader::new(match stream.try_clone() {
                 Ok(s) => s,
                 Err(_) => return,
@@ -2566,18 +2602,35 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
                 return;
             }
             let req: Json = serde_json::from_str(&line).unwrap_or(Json::Null);
-            let (resp, deferred) = d.handle(&req);
+            let (resp, deferred) = if d.closing.load(Ordering::SeqCst) { (closing_answer(&req), None) } else { d.handle(&req) };
             let mut w = stream;
             let _ = writeln!(w, "{resp}");
             let _ = w.flush();
             drop(w);
             d.persist();
+            drop(serving);
             if let Some(f) = deferred {
                 f();
             }
         });
     }
     Ok(())
+}
+
+/// What a daemon that is shutting down answers a request it did not
+/// handle. A shutdown has what it asked for; any other request is sent
+/// again by [`request`], to the daemon started once this one is gone.
+fn closing_answer(req: &Json) -> Json {
+    if req.get("op").and_then(|v| v.as_str()) == Some("shutdown") {
+        json!({"ok": true, "closing": true})
+    } else {
+        json!({"error": "the daemon is shutting down and did not handle the request; send it again", "closing": true})
+    }
+}
+
+/// An answer [`closing_answer`] gave for a request to send again.
+fn is_closing(r: &Json) -> bool {
+    r.get("closing").and_then(|v| v.as_bool()) == Some(true) && r.get("error").is_some()
 }
 
 // ---------------------------------------------------------------- client
@@ -2591,7 +2644,11 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
     writeln!(w, "{req}")?;
     w.flush()?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    if BufReader::new(stream).read_line(&mut line)? == 0 {
+        // Not a JSON error ("EOF while parsing a value at line 1 column
+        // 0"): the daemon went away, or failed, while it had the request.
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "it closed the connection without answering (it stopped, or failed on the request)"));
+    }
     serde_json::from_str(&line).map_err(|e| std::io::Error::other(e.to_string()))
 }
 
@@ -2611,23 +2668,39 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
     } else {
         req
     };
-    match try_request(&paths.socket, req, deadline) {
-        Ok(r) => return Ok(r),
-        // A daemon that died as the request reached it (CTX-16): a new one
-        // is started, as for one that is not there.
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(err(format!("daemon: {e}"))),
-        Err(_) => {}
-    }
-    spawn(&paths, project)?;
+    let gone = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused);
+    // A daemon is started when none listens: at first, and again after one
+    // went away under the request.
+    let mut start = true;
+    let mut first = true;
     loop {
         match try_request(&paths.socket, req, deadline) {
+            // A daemon shutting down, which did not handle the request: it
+            // goes to the next one, started once this one is gone.
+            Ok(r) if is_closing(&r) => {
+                if Instant::now() >= deadline {
+                    return Err(err(format!("daemon did not answer in time: {}", r["error"].as_str().unwrap_or("it was shutting down"))));
+                }
+                start = true;
+            }
             Ok(r) => return Ok(r),
+            // A daemon that died as the request reached it (CTX-16): a new one
+            // is started, as for one that is not there.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => start = true,
+            Err(e) if first && !gone(&e) => {
+                let log = if e.kind() == std::io::ErrorKind::UnexpectedEof { format!("; its log: {}", paths.log.display()) } else { String::new() };
+                return Err(err(format!("daemon: {e}{log}")));
+            }
             Err(e) if Instant::now() >= deadline => return Err(err(format!("daemon did not answer in time: {e}"))),
-            Err(_) => std::thread::sleep(Duration::from_millis(15)),
+            Err(e) if start && gone(&e) => {
+                spawn(&paths, project)?;
+                (start, first) = (false, false);
+                continue;
+            }
+            Err(_) => {}
         }
+        first = false;
+        std::thread::sleep(Duration::from_millis(15));
     }
 }
 
