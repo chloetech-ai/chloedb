@@ -406,6 +406,17 @@ refresh may change in a later release.
   and "Fix the harness", which applies its changes to a draft only. A kill
   guard refuses `pkill` patterns that match another agent's processes.
   [SPEC.md](chloedb-workbench/SPEC.md) is the contract.
+- A session started in its own worktree gets the permissions a regular
+  Claude Code session in the main checkout has: the project's
+  `.claude/settings.local.json` rules (deny rules too, and paths made
+  absolute for both folders), its default mode, additional directories,
+  approved `.mcp.json` servers and the local-scope MCP servers in
+  `~/.claude.json`, carried in the session's own `--settings` and
+  `--mcp-config`; the user's files are only read. "Your Claude Code
+  permissions for this project" turns it off per session. Start a change
+  takes a permission mode (as your settings say, accept edits, auto, plan
+  or bypass); a read-only agent takes only plan or default, an agent an
+  agent starts never more than its parent's, and a restart keeps it.
 
 ### Network operations (demo)
 
