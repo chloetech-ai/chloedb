@@ -1836,10 +1836,14 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 // at once, with the example rows and tests by one more, so a first version
 // takes the time of its plan and its biggest piece rather than of all of it
 // in one answer. Measured on 12 first versions (2026-11-08) it was not
-// faster (36.6 s each against 33.7 s, the plan alone taking 14 s); since the
-// example rows got their own writer and screens grew, it is the default
-// (2026-11-14), and STRATA_APPS_PARALLEL=off turns it off.
-export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL !== 'off';
+// faster (36.6 s each against 33.7 s, the plan alone taking 14 s) and cost
+// more. Made the default on 2026-11-14 for one app's build time, it was
+// measured again on 11 apps (2026-11-15): no faster on average (0.96 min
+// against 0.85), drawn less well (6.60 against 7.11 of 10) and working less
+// (47 against 55 of 65 jobs), since screens written apart from the plan
+// miss what it decided (who may write a table). So it is off unless
+// STRATA_APPS_PARALLEL=on.
+export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL === 'on';
 
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
 
