@@ -14,9 +14,11 @@ changes collect under "Unreleased".
 ## 0.3.5
 
 The audit of 15 November's first lanes (security, wrong answers, apps that
-did not open, the comparison page's claims), a replica that no primary
-counts asking for no votes (found by the TLA+ specifications now in
-`spec/`), reads routed by least cost by default, and `chloedb-server cc`,
+did not open, the comparison page's claims), three fixes found by the TLA+
+specifications now in `spec/` (a replica that no primary counts asks for
+no votes, a keyed retry is applied once, and a server that missed a map
+cannot fork the cluster map under the Lease), reads routed by least cost
+by default, and `chloedb-server cc`,
 the command center in a terminal: `chloedb-server-v0.3.5`,
 `chloedb-py-v0.3.5` and `chloedb-js-v0.3.5` (the Java package is built from
 source; `chloedb-crawl`, `chloedb-sheets` and `chloectx` are attached
