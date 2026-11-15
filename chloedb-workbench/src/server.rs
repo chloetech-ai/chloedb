@@ -643,6 +643,7 @@ pub async fn serve(listener: tokio::net::TcpListener, app: App) -> std::io::Resu
         r = server => r?,
         _ = shutdown_signal() => {}
     }
+    crate::converge::stop_runs();
     tokio::task::spawn_blocking(move || sup.shutdown()).await.ok();
     Ok(())
 }

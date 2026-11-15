@@ -171,6 +171,10 @@ pub struct SpawnRequest {
     /// has and a worktree does not (its `.claude/settings.local.json`, its
     /// local MCP servers): carried by default, `false` leaves them out.
     pub own_permissions: Option<bool>,
+    /// Environment for the session's commands (Claude Code's settings
+    /// `env`), e.g. a shared `CARGO_TARGET_DIR` so agents do not each build
+    /// from nothing.
+    pub env: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// A session's permission profile: Claude Code's `permissions.allow`,
@@ -670,10 +674,17 @@ impl Supervisor {
                 } else {
                     s
                 };
-                match &req.permissions {
+                let mut s = match &req.permissions {
                     Some(p) => p.apply(s, read_only),
                     None => s,
+                };
+                for (k, v) in req.env.iter().flatten() {
+                    if !s["env"].is_object() {
+                        s["env"] = json!({});
+                    }
+                    s["env"][k] = json!(v);
                 }
+                s
             },
             mcp_json(&exe, &self.cfg.url, &token, &id),
             &who,

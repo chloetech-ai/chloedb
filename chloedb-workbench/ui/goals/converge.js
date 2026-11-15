@@ -76,6 +76,15 @@ const CSS = `
 .cv-prog .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--text-2); }
 .cv-prog .lbl b { font-weight: var(--w-mid); color: var(--text); }
 .cv-empty { color: var(--muted); font-size: var(--fs-sm); padding: 4px; }
+.cv-quick { align-self: flex-start; min-height: 36px; }
+.cv-pill.live { text-decoration: none; color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); }
+.cv-work { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.cv-wrow { background: var(--surface); border: var(--hair) solid var(--line); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.cv-wrow.you { border-color: var(--warn); }
+.cv-wrow .k { display: flex; justify-content: space-between; align-items: center; font-size: var(--fs-xs); color: var(--text-2); }
+.cv-wrow .ttl { font-weight: var(--w-mid); }
+.cv-wrow .doing { font-family: var(--mono); font-size: var(--fs-sm); color: var(--accent-text); }
+.cv-wrow .cv-btn { align-self: flex-start; }
 .cv-btn.live { width: 100%; justify-content: center; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text); }
 .cv-steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); }
 .cv-steps li { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); }
@@ -175,7 +184,41 @@ const CSS = `
 
 export const THEME_WORDS = { onboarding: "Onboarding", reliability: "Reliability", security: "Security", scalability: "Scalability", trust: "Trust", correctness: "Correctness", usability: "Usability", performance: "Performance", observability: "Observability", docs: "Docs" };
 const SEV = { 4: "blocker", 3: "major", 2: "minor", 1: "papercut" };
-const TABS = [["board", "Board", "#/converge"], ["personas", "Personas", "#/converge/personas"], ["metrics", "Metrics", "#/converge/metrics"], ["settings", "Autopilot", "#/converge/settings"]];
+const TABS = [["board", "Board", "#/converge"], ["work", "Agents", "#/converge/work"], ["personas", "Personas", "#/converge/personas"], ["metrics", "Metrics", "#/converge/metrics"], ["settings", "Autopilot", "#/converge/settings"]];
+
+/** What an agent's last event says it is doing, in a few plain words. */
+export function doingWords(ev) {
+  if (!ev) return null;
+  if (ev === "turn finished") return "finished its turn";
+  if (ev.startsWith("prompt:")) return "reading its task";
+  if (ev.startsWith("session started")) return "starting";
+  const m = /^(\w+)( done| failed)?(?::\s*(.*))?$/s.exec(ev);
+  if (!m) return ev.slice(0, 80);
+  const [, tool, end, detail = ""] = m;
+  const base = (p) => p.split("/").filter(Boolean).pop() || p;
+  if (tool === "Bash") {
+    // The command without its cd prefix, and its first words.
+    const cmd = detail.replace(/^cd\s+\S+\s*&&\s*/, "").trim();
+    const w = cmd.split(/\s+/);
+    let what;
+    if (/repro\.sh/.test(cmd)) what = "running its repro";
+    else if (/^cargo (build|b)\b/.test(cmd)) what = "building";
+    else if (/^cargo (test|t|nextest)\b/.test(cmd) || /^(pytest|npm test|go test)/.test(cmd)) what = "running tests";
+    else if (/^cargo (clippy|check)\b/.test(cmd)) what = "checking the code";
+    else if (/^git (commit)/.test(cmd)) what = "committing";
+    else if (/^git /.test(cmd)) what = `git ${w[1] || ""}`.trim();
+    else if (/^(cat|head|tail|less|sed -n)\b/.test(cmd)) what = `reading ${base(w.at(-1) || "")}`;
+    else if (/^(grep|rg|find|ls)\b/.test(cmd)) what = "looking around the code";
+    else what = `running ${w.slice(0, 3).join(" ")}`.slice(0, 60);
+    return end === " failed" ? `${what} (failed)` : what;
+  }
+  const words = { Read: "reading", Edit: "editing", MultiEdit: "editing", Write: "writing", Grep: "searching for", Glob: "looking for", WebFetch: "opening", TodoWrite: "planning", Task: "delegating" };
+  const v = words[tool] || tool;
+  const d = /^(Read|Edit|MultiEdit|Write)$/.test(tool) ? base(detail) : detail.slice(0, 50);
+  return `${v}${d ? " " + d : ""}${end === " failed" ? " (failed)" : ""}`;
+}
+
+const mins = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 
 function toast(text) {
   const t = h("div", { class: "cv-toast", role: "status" }, text);
@@ -190,12 +233,18 @@ const ago = (ms) => {
 };
 const usd = (x) => (x == null ? "–" : `$${Number(x).toFixed(2)}`);
 
+/** The last data and view settings of each repository, kept across visits:
+ *  coming back draws at once, then refreshes. */
+const KEEP = new Map();
+
 export function mount(root, ctx) {
   useStyle("converge", CSS);
   const host = h("div", { class: "cv" });
   root.replaceChildren(host);
-  const S = { d: null, group: "stage", theme: null, sev: 0, alive: true, timer: null };
   const repo = () => (ctx.params && ctx.params.repo) || "";
+  const kept = KEEP.get(repo()) || {};
+  const S = { d: kept.d || null, sig: kept.sig, group: kept.group || "stage", theme: kept.theme || null, sev: kept.sev || 0, range: kept.range, alive: true, timer: null };
+  const keep = () => KEEP.set(repo(), { d: S.d, sig: S.sig, group: S.group, theme: S.theme, sev: S.sev, range: S.range });
   const api = (p, o) => ctx.api(p, o);
   const view = () => (location.hash.split("?")[0].split("/")[2] || "board");
   const fid = () => new URLSearchParams(location.hash.split("?")[1] || "").get("f");
@@ -233,6 +282,7 @@ export function mount(root, ctx) {
 
   function draw() {
     const d = S.d;
+    keep();
     if (ctx.crumbs) ctx.crumbs([{ label: "Start", href: "#/" }, { label: "Converge", href: "#/converge" }]);
     const st = d.settings || {};
     const m = d.metrics || {};
@@ -242,10 +292,11 @@ export function mount(root, ctx) {
       h("span", { class: "cv-sp" }),
       h("span", { class: "cv-pill" }, h("span", { class: `cv-dot${st.enabled ? " on" : ""}` }), st.enabled ? `Autopilot on · every ${Math.round(st.tick_s / 60)} min` : "Autopilot off"),
       h("span", { class: "cv-pill" }, `${usd(m.spent_today)} of ${usd(st.budget_usd_day)} today`),
+      workCount() ? h("a", { class: "cv-pill live", href: "#/converge/work" }, h("span", { class: "cv-live" }, `${workCount()} working`)) : null,
       h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api("/api/converge/tick", { method: "POST", body: { repo: d.repo } }), "Tick started: each item whose gate can be checked now is moving") }, "Run a tick"),
       h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, enabled: !st.enabled } }), st.enabled ? "Autopilot paused: running steps finish" : "Autopilot on") }, st.enabled ? "Pause" : "Turn on"));
     const tabs = h("nav", { class: "cv-tabs", "aria-label": "Converge" }, TABS.map(([k, l, href]) => h("a", { href, class: k === v ? "on" : null, "aria-current": k === v ? "page" : null }, l)));
-    const body = v === "personas" ? personas() : v === "metrics" ? metrics() : v === "settings" ? settings() : board();
+    const body = v === "work" ? work() : v === "personas" ? personas() : v === "metrics" ? metrics() : v === "settings" ? settings() : board();
     const restore = scrollState();
     host.replaceChildren(top, tabs, body);
     restore();
@@ -324,8 +375,9 @@ export function mount(root, ctx) {
   function liveWord(f) {
     if (f.busy) return f.busy[0].toUpperCase() + f.busy.slice(1);
     if (!f.agent || !f.agent_state || f.state !== "active") return null;
-    const who = f.stage === "reproduce" ? "Agent writing the repro" : "Agent fixing";
-    return { starting: `${who}: starting`, working: `${who}`, waiting: `${who}: needs you`, idle: f.stage === "develop" ? "Agent done: gate next tick" : null }[f.agent_state] || null;
+    const who = f.stage === "reproduce" ? "Repro agent" : "Fix agent";
+    const doing = doingWords(f.agent_doing);
+    return { starting: `${who}: starting`, working: `${who}: ${doing || "working"}`, waiting: `${who}: needs you`, idle: f.stage === "develop" || f.stage === "reproduce" ? `${who} done: checking it next` : null }[f.agent_state] || null;
   }
 
   /** Where a finding is in its journey: a bar of the eight stages, the
@@ -363,11 +415,17 @@ export function mount(root, ctx) {
     if (f.needs_you) chips.push(h("span", { class: "cv-chip you" }, "needs you"));
     if (f.stage === "review" && f.ci) chips.push(h("span", { class: `cv-chip ${f.ci === "pass" ? "ok" : f.ci === "fail" ? "bad" : ""}` }, `CI ${f.ci}`));
     if (f.stage === "merged" && f.guard_ok != null) chips.push(h("span", { class: `cv-chip ${f.guard_ok ? "ok" : "bad"}` }, f.guard_ok ? "guard green" : "guard red"));
-    return h("button", { class: `cv-card${live ? " working" : ""}`, type: "button", "data-sev": String(f.severity), "data-id": f.id, onclick: () => { location.hash = `#/converge${view() === "board" ? "" : "/" + view()}?f=${f.id}`; } },
+    const open = () => { location.hash = `${here()}?f=${f.id}`; };
+    const quick = (label, verb, msg) => h("button", { class: "cv-btn pri cv-quick", type: "button", onclick: (e) => { e.stopPropagation(); act(() => api(`/api/converge/findings/${enc(f.id)}/${verb}`, { method: "POST", body: {} }), msg); } }, label);
+    const pick = f.state !== "active" ? null
+      : f.stage === "found" && f.needs_you ? quick("Reproduce", "reproduce", "On its way: an agent writes the repro")
+        : f.stage === "prioritize" && !f.door ? quick("Start development", "start", "A fix agent is on it") : null;
+    return h("div", { class: `cv-card${live ? " working" : ""}`, role: "button", tabindex: "0", "data-sev": String(f.severity), "data-id": f.id, onclick: open, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
       h("span", { class: "ttl" }, f.title),
       h("span", { class: "cv-meta" }, h("span", {}, (f.personas_hit || []).map(personaName).join(", ") || f.by), f.occurrences > 1 ? h("span", {}, `${f.occurrences} times`) : null, h("span", {}, ago(f.stage_since))),
       h("span", { class: "cv-meta" }, chips),
-      progress(f));
+      progress(f),
+      pick);
   }
 
   // ------------------------------------------------------------ the sheet
@@ -438,6 +496,43 @@ export function mount(root, ctx) {
     svg.setAttribute("viewBox", `0 0 ${W} 34`); svg.setAttribute("class", "cv-spark"); svg.setAttribute("preserveAspectRatio", "none");
     svg.innerHTML = `<line x1="0" x2="200" y1="${Y(3)}" y2="${Y(3)}" stroke="var(--line-2)" stroke-dasharray="2 3"/><polyline points="${vals.map((v, i) => `${X(i)},${Y(v)}`).join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.75"/><circle cx="${X(vals.length - 1)}" cy="${Y(vals.at(-1))}" r="3" fill="var(--accent)"/>`;
     return svg;
+  }
+
+  // ------------------------------------------------------------ the work
+  function workItems() {
+    const d = S.d;
+    const out = [];
+    for (const f of d.findings || []) {
+      if (f.state !== "active") continue;
+      const agentOn = f.agent && ["starting", "working", "waiting"].includes(f.agent_state);
+      if (!agentOn && !f.busy) continue;
+      const kind = agentOn ? (f.stage === "reproduce" ? "Repro agent" : "Fix agent") : "Workbench";
+      const doing = agentOn ? (f.agent_state === "waiting" ? "waiting for you" : f.agent_state === "starting" ? "starting" : doingWords(f.agent_doing) || "working") : f.busy;
+      out.push({ kind, title: f.title, doing, since: agentOn ? f.agent_created : f.stage_since, f, href: `#/converge/work?f=${f.id}`, agent: agentOn ? f.agent : null, you: f.agent_state === "waiting" });
+    }
+    for (const p of d.personas || []) {
+      if (!p.busy) continue;
+      out.push({ kind: "Persona", title: `${p.name.split(",")[0]} plays their journey`, doing: p.live_at ? `step ${p.live_at.n} of ${p.live_at.of}${p.live_at.name ? ": " + p.live_at.name : ""}` : p.busy === "playing" ? "starting their journey" : p.busy, since: p.live_since, p, href: p.live_run ? `#/converge/work?run=${p.live_run}` : "#/converge/personas" });
+    }
+    return out;
+  }
+  function workCount() { return S.d ? workItems().length : 0; }
+
+  function work() {
+    const items = workItems();
+    const order = { "Fix agent": 0, "Repro agent": 1, Persona: 2, Workbench: 3 };
+    items.sort((a, b) => (b.you - a.you) || order[a.kind] - order[b.kind]);
+    const waiting = (S.d.findings || []).filter((f) => f.state === "active" && f.needs_you).length;
+    const row = (it) => h("div", { class: `cv-wrow${it.you ? " you" : ""}`, role: "button", tabindex: "0", onclick: () => { location.hash = it.href; } },
+      h("div", { class: "k" }, h("span", { class: `cv-chip ${it.you ? "you" : "run"}` }, h("span", { class: `cv-live${it.you ? " still" : ""}` }, it.kind)), it.since ? h("span", { class: "t" }, mins(it.since)) : null),
+      h("div", { class: "ttl" }, it.title),
+      h("div", { class: "doing" }, it.doing),
+      it.f ? progress(it.f) : null,
+      it.agent ? h("a", { class: "cv-btn", href: `#/a/${it.agent}/terminal`, onclick: (e) => e.stopPropagation() }, "Terminal") : null);
+    return h("div", {},
+      h("p", { class: "cv-intro" }, items.length ? `${items.length} at work now. Tap one to see what it is doing.` : "Nothing at work now.",
+        waiting ? h("a", { href: "#/needs", style: { marginLeft: "8px" } }, `${waiting} waiting for you`) : null),
+      h("div", { class: "cv-work" }, items.map(row)));
   }
 
   function lastRun(pid) { return (S.d.runs || []).find((r) => r.persona === pid && r.state !== "running"); }
@@ -645,6 +740,8 @@ export function mount(root, ctx) {
       h("div", { class: "cv-panel" }, h("h3", {}, "What runs on its own"), h("div", { class: "sub" }, "Merges and one-way doors always wait for you"),
         tog("enabled", "Autopilot", "Ticks on its own, every tick."),
         tog("found_auto", "Move new findings to Reproduce", "Off: each new finding waits in Found until you choose Reproduce or Dismiss."),
+        tog("develop_auto", "Start development on its own", "Off: a scoped finding waits in Prioritize until you choose Start development."),
+        tog("follow_picks", "Carry on what you pick", "With the autopilot off, a finding you picked still moves to your next decision; personas play only with it on."),
         tog("generate", "Generate new personas", "When new serious findings dry up, one aimed at the least-played part."),
         tog("retire", "Retire stale personas", "After 3 runs with nothing new, or a repro rate under 40%."),
         tog("open_pr", "Open pull requests", "Push the branch and open its pull request with gh at review."),
@@ -668,6 +765,7 @@ export function mount(root, ctx) {
   const onKey = (e) => { if (e.key === "Escape") { const x = document.querySelector(".cv-sheet .cv-x"); if (x) x.click(); } };
   window.addEventListener("hashchange", onHash);
   document.addEventListener("keydown", onKey);
+  if (S.d) draw();
   load();
   S.view = view();
   S.timer = setInterval(() => {

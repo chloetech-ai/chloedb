@@ -6573,7 +6573,7 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     git(&r, &["remote", "add", "origin", &origin.display().to_string()]);
 
     // The settings: one repro run is enough here, and the develop gate runs a test command.
-    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "repro_runs": 2, "test_cmd": "test -f src/FIXED" } }));
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "repro_runs": 2, "test_cmd": "test -f src/FIXED", "follow_picks": false } }));
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["settings"]["enabled"], false, "the autopilot starts off: {v}");
 
@@ -6654,8 +6654,13 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let n = cv_finding(&s, &nr_id);
     assert_eq!(n["finding"]["state"], "cant_reproduce", "{n}");
 
-    // Tick 4: a WIP slot, so an agent starts on its own branch.
+    // Prioritize waits for you: a tick starts nothing, and you choose.
     cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+    assert!(f["finding"]["needs_you"].as_str().unwrap_or("").starts_with("Ready for development"), "{f}");
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
     let f = cv_finding(&s, &fid);
     assert_eq!(f["finding"]["stage"], "develop", "{f}");
     let aid = f["finding"]["agent"].as_str().unwrap().to_string();

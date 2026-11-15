@@ -150,6 +150,12 @@ pub struct Settings {
     /// Findings leave Found on their own once they are not duplicates
     /// (else they wait for you to choose Reproduce or Dismiss).
     pub found_auto: bool,
+    /// Findings leave Prioritize for development on their own, under the
+    /// WIP limit (else each waits for you to choose Start development).
+    pub develop_auto: bool,
+    /// What you pick (Reproduce, Start development) carries on to your next
+    /// decision even while the autopilot is off; personas play only when on.
+    pub follow_picks: bool,
 }
 
 /// A fix agent's default allow-list: reading, editing, building and testing
@@ -184,15 +190,17 @@ impl Default for Settings {
             test_cmd: None,
             base: None,
             repro_runs: 3,
-            repro_timeout_s: 300,
+            repro_timeout_s: 900,
             run_timeout_s: 3600,
             max_rounds: 3,
             open_pr: true,
             dev_allow: dev_allow_default(),
             dev_deny: dev_deny_default(),
             dev_permission_mode: Some("auto".into()),
-            repro_agents: 3,
+            repro_agents: 2,
             found_auto: false,
+            develop_auto: false,
+            follow_picks: true,
         }
     }
 }
@@ -505,6 +513,11 @@ impl Finding {
         v["busy"] = json!(busy_what(&self.id));
         v["created_iso"] = json!(iso(self.created));
         v["agent_state"] = json!(self.agent.as_deref().and_then(|a| sup.agent_row(a)).map(|a| a.state));
+        if let Some(a) = self.agent.as_deref().and_then(|a| sup.agent_json_of(a)) {
+            v["agent_doing"] = a["last_event"].clone();
+            v["agent_created"] = a["created"].clone();
+            v["agent_cost"] = a["cost_usd"].clone();
+        }
         v
     }
 }
@@ -682,14 +695,44 @@ fn run_cmd(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs
     Ok((code, ro.join().unwrap_or_default(), re.join().unwrap_or_default()))
 }
 
-/// `run_cmd` that hands each line of stdout to `on_line` as it comes.
+/// The process groups of runs in flight (a persona's `claude -p` and the
+/// builds it starts), ended with the server or a timeout.
+static GROUPS: Mutex<Option<HashSet<i32>>> = Mutex::new(None);
+
+fn kill_group(pgid: i32) {
+    // The whole group: the run and every build it started.
+    let _ = Command::new("kill").args(["-TERM", &format!("-{pgid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
+/// Ends every Converge run still going (the server is stopping).
+pub fn stop_runs() {
+    let groups: Vec<i32> = GROUPS.lock().unwrap().as_ref().map(|g| g.iter().copied().collect()).unwrap_or_default();
+    for g in groups {
+        kill_group(g);
+    }
+}
+
+/// `run_cmd` that hands each line of stdout to `on_line` as it comes; the
+/// command runs in a process group of its own, ended with it.
 fn run_cmd_lines(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs: &[(&str, String)], timeout: Duration, mut on_line: impl FnMut(&str)) -> Result<(i32, String, String), String> {
+    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(cwd).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args(args).current_dir(cwd).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).env("GIT_TERMINAL_PROMPT", "0").process_group(0);
     for (k, v) in envs {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
+    let pgid = child.id() as i32;
+    GROUPS.lock().unwrap().get_or_insert_with(HashSet::new).insert(pgid);
+    struct Ungroup(i32);
+    impl Drop for Ungroup {
+        fn drop(&mut self) {
+            if let Some(g) = GROUPS.lock().unwrap().as_mut() {
+                g.remove(&self.0);
+            }
+        }
+    }
+    let _ungroup = Ungroup(pgid);
     if let (Some(text), Some(mut w)) = (stdin, child.stdin.take()) {
         let text = text.to_string();
         std::thread::spawn(move || {
@@ -731,6 +774,7 @@ fn run_cmd_lines(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>
                 }
             }
             _ => {
+                kill_group(pgid);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("{program} did not finish in {} s", timeout.as_secs()));
@@ -821,8 +865,9 @@ fn run_repro(sup: &Supervisor, f: &Finding, cwd: &Path, n: u32, timeout: u64) ->
     };
     (0..n)
         .map(|_| {
-            let envs = [("CV_FINDING", f.id.clone()), ("CV_REPO", f.repo.clone())];
-            match run_cmd("sh", &[file.to_string_lossy().to_string()], cwd, None, &envs, Duration::from_secs(timeout)) {
+            let target = shared_env(sup, &f.repo).remove("CARGO_TARGET_DIR").unwrap_or_default();
+            let envs = [("CV_FINDING", f.id.clone()), ("CV_REPO", f.repo.clone()), ("CARGO_TARGET_DIR", target)];
+            match run_cmd_lines("sh", &[file.to_string_lossy().to_string()], cwd, None, &envs, Duration::from_secs(timeout), |_| {}) {
                 Ok((code, out, err)) => (code, tail(&format!("{out}{err}"), 1500)),
                 Err(e) => (-1, e),
             }
@@ -866,7 +911,13 @@ fn runner_live(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str
         _ => args.extend(["--allowedTools".into(), "Read Glob Grep".into()]),
     }
     // The prompt on stdin: --allowedTools takes every word after it.
-    let (code, out, err) = run_cmd_lines(&sup.cfg.claude_bin, &args, cwd, Some(&prompt), &[("CHLOECTX_DISABLE", "1".to_string())], Duration::from_secs(timeout), on_line)?;
+    // Its builds share the repository's target directory (see shared_env).
+    let target = job["repo"].as_str().map(|r| shared_env(sup, r).remove("CARGO_TARGET_DIR").unwrap_or_default()).unwrap_or_default();
+    let mut envs = vec![("CHLOECTX_DISABLE", "1".to_string())];
+    if !target.is_empty() {
+        envs.push(("CARGO_TARGET_DIR", target));
+    }
+    let (code, out, err) = run_cmd_lines(&sup.cfg.claude_bin, &args, cwd, Some(&prompt), &envs, Duration::from_secs(timeout), on_line)?;
     // stream-json ends with the result line; json is that line alone.
     let last = out.lines().rev().find(|l| l.contains("\"type\":\"result\"")).unwrap_or(out.trim());
     let outer: Json = serde_json::from_str(last.trim()).map_err(|_| format!("claude -p (exit {code}) answered no JSON: {}", one_line(&tail(&format!("{out}{err}"), 400), 400)))?;
@@ -982,7 +1033,18 @@ fn gate_found(sup: &Supervisor, st: &Settings, f: &mut Finding) -> Result<(), Ap
     advance_to(sup, f, "reproduce", "dedup", true, "autopilot", &format!("No open finding says the same (best match {best_sim:.2})"), json!({ "best_similarity": best_sim }))
 }
 
+const READY: &str = "Ready for development: choose Start development to hand it to a fix agent.";
 const TRIAGE: &str = "New finding: choose Reproduce to chase it, or Dismiss.";
+
+/// One cargo target directory per repository, shared by Converge's agents
+/// and repro runs: each new worktree reuses what was built, and cargo's lock
+/// on it lets one build run at a time instead of a dozen at once.
+fn shared_env(sup: &Supervisor, repo: &str) -> std::collections::BTreeMap<String, String> {
+    let key = repo.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+    let dir = sup.cfg.data_dir.join("cargo-target").join(format!("{key:016x}"));
+    let _ = std::fs::create_dir_all(&dir);
+    [("CARGO_TARGET_DIR".to_string(), dir.to_string_lossy().to_string())].into_iter().collect()
+}
 
 /// An agent in its own worktree writes `.converge/repro.sh`, with the fix
 /// agents' allow-list so it does not stop at every command.
@@ -1001,6 +1063,7 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
         model: st.dev_model.clone(),
         permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
         permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+        env: Some(shared_env(sup, &f.repo)),
         ..Default::default()
     };
     let a = crate::goals::spawn(sup, lv, req)?;
@@ -1210,6 +1273,7 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
         model: st.dev_model.clone(),
         permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
         permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+        env: Some(shared_env(sup, &f.repo)),
         ..Default::default()
     };
     let a = crate::goals::spawn(sup, lv, req)?;
@@ -1343,7 +1407,7 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
     let scratch = Scratch::new(sup, &repo, &rev, &run.id).map_err(ApiError::internal)?;
     let job = json!({
         "persona": { "id": pe.id, "name": pe.name, "role": pe.role, "traits": pe.traits, "journey": pe.journey, "surfaces": pe.surfaces },
-        "purpose": run.purpose, "commit": rev,
+        "purpose": run.purpose, "commit": rev, "repo": pe.repo,
         "finding": f.as_ref().map(|f| json!({ "id": f.id, "title": f.title, "detail": f.detail, "step": f.step })),
     });
     PLAYING.lock().unwrap().get_or_insert_with(HashMap::new).insert(pe.id.clone(), run.id.clone());
@@ -1691,6 +1755,12 @@ fn spent_today(sup: &Supervisor, repo: &str) -> f64 {
 /// One pass over a repository: every item whose gate can be checked now
 /// gets its work started. Answers what it started; `wait` joins it.
 pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> Result<Json, ApiError> {
+    tick_with(sup, lv, repo, wait, true)
+}
+
+/// A tick; `personas` false moves findings only (what you picked, while
+/// the autopilot is off), and plays and generates no persona.
+fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, personas: bool) -> Result<Json, ApiError> {
     let st = settings(sup, repo);
     let mut started: Vec<String> = Vec::new();
     let mut handles = Vec::new();
@@ -1796,9 +1866,19 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
             handles.push(h);
         }
     }
+    // Prioritize waits for you unless the autopilot may start development.
+    if !st.develop_auto {
+        for f in fs.iter().filter(|f| f.state == "active" && f.stage == "prioritize" && f.needs_you.is_none()) {
+            if let Ok(mut g) = get_finding(sup, &f.id) {
+                g.needs_you = Some(READY.into());
+                g.updated = now_ms();
+                let _ = put_finding(sup, &g);
+            }
+        }
+    }
     // Prioritize → develop, under the WIP limit; doors wait for you.
     let mut in_dev = fs.iter().filter(|f| f.state == "active" && f.stage == "develop").count();
-    let mut queue: Vec<Finding> = fs.iter().filter(|f| f.state == "active" && f.stage == "prioritize" && f.door.is_none()).cloned().collect();
+    let mut queue: Vec<Finding> = fs.iter().filter(|f| st.develop_auto && f.state == "active" && f.stage == "prioritize" && f.door.is_none()).cloned().collect();
     queue.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
     for mut f in queue {
         if in_dev >= st.wip || budget_left <= 0.0 {
@@ -1815,7 +1895,8 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
             }
         }
     }
-    // Personas due to replay.
+    // Personas due to replay (not in a tick that only follows your picks).
+    let budget_left = if personas { budget_left } else { 0.0 };
     let due_ms = (st.replay_every_h * 3_600_000.0) as i64;
     let mut playing = busy_count("playing");
     for p in personas_of(sup, repo).into_iter().filter(|p| p.state != "retired") {
@@ -1861,6 +1942,33 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
     Ok(json!({ "started": started, "spent_today": spent_today(sup, repo), "budget_usd_day": st.budget_usd_day }))
 }
 
+/// Whether a finding can move now: an agent's turn ended, a repro waits to
+/// run or to be written, a scope to be set.
+fn follow_up(sup: &Supervisor, repo: &str) -> bool {
+    findings_of(sup, repo).iter().filter(|f| f.state == "active" && busy_what(&f.id).is_none()).any(|f| match f.stage.as_str() {
+        "reproduce" => f.agent.as_deref().map_or(f.needs_you.is_none() || f.repro.is_some(), |a| agent_done(sup, a)),
+        "develop" => f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) && f.needs_you.is_none(),
+        "scope" | "verify" => true,
+        "review" => f.pr_url.is_none() && f.needs_you.is_none(),
+        _ => false,
+    })
+}
+
+/// A tick now, in the background, after you chose something, when the
+/// autopilot is on: what you picked moves without waiting for the tick.
+fn kick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str) {
+    let st = settings(sup, repo);
+    if !st.enabled && !st.follow_picks {
+        return;
+    }
+    let (s2, l2, r) = (sup.clone(), lv.clone(), repo.to_string());
+    in_background(&format!("kick:{repo}"), "ticking", move || {
+        if let Err(e) = tick_with(&s2, &l2, &r, false, st.enabled) {
+            eprintln!("converge: tick of {r}: {}", e.message);
+        }
+    });
+}
+
 /// The autopilot: a thread that ticks each enabled repository.
 pub fn start(sup: &Arc<Supervisor>, lv: &Arc<Levels>) {
     let (sup, lv) = (sup.clone(), lv.clone());
@@ -1869,14 +1977,18 @@ pub fn start(sup: &Arc<Supervisor>, lv: &Arc<Levels>) {
         loop {
             std::thread::sleep(Duration::from_secs(5));
             for (repo, st) in repos(&sup) {
-                if !st.enabled {
+                // Off, it still carries on what you picked (follow_picks).
+                if !st.enabled && !(st.follow_picks && follow_up(&sup, &repo)) {
                     continue;
                 }
-                if last.get(&repo).is_some_and(|l| l.elapsed() < Duration::from_secs(st.tick_s.max(10))) {
+                // Work waiting on a step that just finished goes on within
+                // seconds; the rest waits for the tick.
+                let every = if follow_up(&sup, &repo) { st.tick_s.clamp(10, 20) } else { st.tick_s.max(10) };
+                if last.get(&repo).is_some_and(|l| l.elapsed() < Duration::from_secs(every)) {
                     continue;
                 }
                 last.insert(repo.clone(), Instant::now());
-                if let Err(e) = tick(&sup, &lv, &repo, false) {
+                if let Err(e) = tick_with(&sup, &lv, &repo, false, st.enabled) {
                     eprintln!("converge: tick of {repo}: {}", e.message);
                 }
             }
@@ -2188,7 +2300,10 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
 fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
     let mut v = serde_json::to_value(p).unwrap();
     v["busy"] = json!(busy_what(&format!("persona:{}", p.id)));
-    v["live_run"] = json!(playing_run(&p.id));
+    let live = playing_run(&p.id);
+    v["live_since"] = json!(live.as_deref().and_then(|r| get_run(sup, r).ok()).map(|r| r.created));
+    v["live_at"] = json!(live.as_deref().and_then(live_of).and_then(|(_, at)| at));
+    v["live_run"] = json!(live);
     v["repro_rate"] = json!(if p.reported == 0 { None } else { Some(p.reproduced as f64 / p.reported as f64) });
     v["open"] = json!(findings_of(sup, &p.repo).iter().filter(|f| f.state == "active" && f.stage != "merged" && f.personas_hit.contains(&p.id)).count());
     v
@@ -2432,6 +2547,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
     let v: Json = parse_body(&body)?;
     let by = caller(&headers);
     let sup = app.sup.clone();
+    let app_lv = app.lv.clone();
     let out = blocking(move || {
         let mut f = get_finding(&sup, &id)?;
         if let Some(x) = v["title"].as_str().map(str::trim).filter(|x| !x.is_empty()) {
@@ -2473,6 +2589,9 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
         f.score = score(&f);
         f.updated = now_ms();
         put_finding(&sup, &f)?;
+        if v["repro"].is_string() {
+            kick(&sup, &app_lv, &f.repo);
+        }
         Ok(json!({ "finding": f.to_json(&sup) }))
     })
     .await?;
@@ -2564,6 +2683,9 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
             }
             "take-repro" => take_repro(&sup, &mut f, "you")?,
             _ => return Err(ApiError::not_found(format!("no action {verb}"))),
+        }
+        if matches!(verb.as_str(), "reproduce" | "start" | "take-repro" | "repro-agent" | "unpark") {
+            kick(&sup, &lv, &f.repo);
         }
         Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
     })

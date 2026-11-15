@@ -3087,16 +3087,20 @@ async function route(hash) {
   G.key = key;
   const req = G.req;
   const host = $("goal-view");
-  host.replaceChildren(h("div", { class: "lv-loading", text: "Loading…" }));
+  // "Loading…" only when the page is slow to come: a page already loaded
+  // once mounts at once, from its module and its last data.
+  host.replaceChildren();
+  const slow = setTimeout(() => { if (req === G.req && !host.childNodes.length) host.replaceChildren(h("div", { class: "lv-loading", text: "Loading…" })); }, 400);
   // The agents and the projects first, so a page opened by its address knows them.
   await Promise.race([Promise.all([firstSnapshot, firstProjects]), new Promise((ok) => setTimeout(ok, 3000))]);
-  if (req !== G.req) return;
+  if (req !== G.req) { clearTimeout(slow); return; }
   const ctx = goalCtx(r);
   let m = null;
   try { m = await import(GOAL[r.page]); } catch (err) {
     if (req === G.req) host.replaceChildren(h("div", { class: "lv-loading bad", text: `This page did not load: ${err.message || err}` }));
     return;
   }
+  clearTimeout(slow);
   if (req !== G.req) return;
   host.replaceChildren();
   host.scrollTop = 0;
