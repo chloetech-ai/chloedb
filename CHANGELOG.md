@@ -13,6 +13,22 @@ changes collect under "Unreleased".
 
 ### What changes by default
 
+- **Adding a server to a cluster takes the cluster's token** (audit
+  2026-11-15, CLU-3; a carry-over of BUG-R1). `POST /v1/admin/shards`,
+  `POST /v1/admin/shards/:i/replicas`, and applying or resuming a plan with
+  a step that adds a server answer 403 `cluster_token_required` to an API
+  key, and to the admin's `--token` beside a `--cluster-token`, before any
+  call: the coordinator asks a server it adds who it is with the cluster's
+  token, so an admin could make it send that token, the cluster's root, to
+  a server of their choosing. A plan made with them says so in its
+  preflight. An open cluster, and the `--token` of a cluster without a
+  cluster token, add servers as before. The Kubernetes operator adds them
+  with `clusterTokenSecret` (it reads that Secret now), and `chloedb-chaos`
+  with the cluster's token. **Scripts that add shards or copies with an
+  admin key or the admin token need the cluster's token. On Kubernetes,
+  upgrade the operator before the coordinators**: an older operator adds
+  servers with the admin token, which new coordinators refuse, and older
+  coordinators take the cluster's token for those calls too.
 - **Workbench: an agent's key starts agents only as its own children**
   (audit 2026-11-15, APP-1). `POST /api/agents` with a `wba…` key takes
   that agent as the parent whatever the body names (another parent answers

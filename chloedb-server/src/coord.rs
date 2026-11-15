@@ -1071,6 +1071,18 @@ tokio::task_local! {
     static PARTIAL: std::cell::RefCell<Option<Json>>;
 }
 
+tokio::task_local! {
+    /// Set for a plan's run, in the background, when whoever applied or
+    /// resumed it holds the cluster's token ([`Coordinator::may_admit`]).
+    pub static ADMITTING: bool;
+}
+
+/// Why a server is not added for the request being served: adding one
+/// sends it the cluster's token (audit CLU-3).
+pub fn admit_refused(what: &str) -> ApiError {
+    ApiError::coded(403, "cluster_token_required", format!("{what} takes the cluster's token: the coordinator sends it to the server it adds, so a key or the admin token may not name one (on Kubernetes the operator adds them with the clusterTokenSecret)"))
+}
+
 /// Runs `f`, and answers with it what a write through a coordinator did
 /// on each shard when it failed partway: `{shards, idempotency_key?}`,
 /// `shards` being `[{shard, short, rows}]` for the shards that took it and
@@ -4518,7 +4530,29 @@ impl Coordinator {
     /// no rows (unless `force`) and no slot map, and serve the cluster's
     /// first table: of a cluster that began with no tables, the
     /// placeholder, which a server made with no tables serves.
+    /// Whether the request being served may add a server to the cluster:
+    /// the coordinator dials it with the cluster's token, before it knows
+    /// what answers there (audit CLU-3), so only the holder of that token
+    /// names one (the token of a coordinator with no cluster token; anyone
+    /// on an open cluster, which has no token to give away). A plan's run
+    /// may when whoever applied or resumed it did ([`ADMITTING`]); the
+    /// process's own work, outside any request, may.
+    pub fn may_admit(&self) -> bool {
+        if self.opts.token.is_none() {
+            return true;
+        }
+        match ADMITTING.try_with(|a| *a) {
+            Ok(a) => a,
+            // Every request over HTTP or gRPC says whether it is the
+            // cluster's own ([`crate::service::OWN`]).
+            Err(_) => crate::service::OWN.try_with(|o| *o).unwrap_or(true),
+        }
+    }
+
     async fn admit(&self, url: &str, force: bool) -> Result<(Client, Said), ApiError> {
+        if !self.may_admit() {
+            return Err(admit_refused(&format!("adding {url} to the cluster")));
+        }
         let t = self.topo();
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
             return Err(ApiError::bad(format!("{url} serves shard {i} already")));

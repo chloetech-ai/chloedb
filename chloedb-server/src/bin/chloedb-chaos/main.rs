@@ -237,9 +237,20 @@ impl World {
     /// An admin call to a coordinator that answers, as the command center's
     /// buttons make it (with the admin token).
     pub async fn admin(&self, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+        self.call_as(&self.cluster.layout.admin_token, method, path, body).await
+    }
+
+    /// A call that adds a server to the cluster (a shard, a copy), with the
+    /// cluster's token, as an operator makes it: the coordinator sends that
+    /// token to the server it adds, so it takes no other (audit CLU-3).
+    pub async fn join(&self, path: &str, body: Json) -> Result<Json, String> {
+        self.call_as(&self.cluster.layout.cluster_token, reqwest::Method::POST, path, Some(body)).await
+    }
+
+    async fn call_as(&self, token: &str, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
         let mut last = String::from("no coordinator");
         for c in self.cluster.coordinators() {
-            let mut req = self.http.request(method.clone(), format!("{c}{path}")).header("authorization", format!("Bearer {}", self.cluster.layout.admin_token)).header("x-strata-client", "chloedb-chaos").timeout(Duration::from_secs(60));
+            let mut req = self.http.request(method.clone(), format!("{c}{path}")).header("authorization", format!("Bearer {token}")).header("x-strata-client", "chloedb-chaos").timeout(Duration::from_secs(60));
             if let Some(b) = &body {
                 req = req.json(b);
             }

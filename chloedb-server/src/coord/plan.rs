@@ -1081,6 +1081,11 @@ pub fn apply(svc: &Arc<Service>, body: &Json, who: Who) -> Result<Json, ApiError
         return Err(ApiError::bad("a plan runs 10,000 steps at most"));
     }
     let steps: Vec<Json> = list.iter().enumerate().map(|(k, v)| step_of(k, v)).collect::<Result<_, _>>()?;
+    // A step that adds a server sends it the cluster's token (audit CLU-3).
+    let may_admit = c.may_admit();
+    if !may_admit && steps.iter().any(|st| adds_server(st["kind"].as_str().unwrap_or_default())) {
+        return Err(super::admit_refused("a plan that adds servers"));
+    }
     let Ok(busy) = c.plans.busy.clone().try_lock_owned() else {
         return Err(ApiError { code: None, status: 409, message: "a plan is being applied on this coordinator: wait for it, or stop it".into() });
     };
@@ -1144,8 +1149,13 @@ pub fn apply(svc: &Arc<Service>, body: &Json, who: Who) -> Result<Json, ApiError
     *lock(&c.plans.run) = Some(run);
     c.plans.stop.store(false, Ordering::Relaxed);
     c.plans.save();
-    tokio::spawn(run_from(svc.clone(), c, 0, busy, false));
+    tokio::spawn(super::ADMITTING.scope(may_admit, run_from(svc.clone(), c, 0, busy, false)));
     Ok(view(svc))
+}
+
+/// Whether a step of kind `kind` adds a server to the cluster.
+fn adds_server(kind: &str) -> bool {
+    matches!(kind, "add_copy" | "add_shard")
 }
 
 /// Asks the plan running here to stop once its step under way ends (a
@@ -1172,11 +1182,15 @@ pub fn resume(svc: &Arc<Service>, by: String) -> Result<Json, ApiError> {
     let Ok(busy) = c.plans.busy.clone().try_lock_owned() else {
         return Err(ApiError { code: None, status: 409, message: "a plan is being applied on this coordinator already".into() });
     };
+    let may_admit = c.may_admit();
     let at = {
         let mut g = lock(&c.plans.run);
         let r = g.as_mut().ok_or_else(|| ApiError { code: None, status: 409, message: "no plan to resume".into() })?;
         if !matches!(r.state.as_str(), "interrupted" | "failed" | "stopped") {
             return Err(ApiError { code: None, status: 409, message: format!("the plan is {}: only one that stopped is resumed", r.state) });
+        }
+        if !may_admit && r.steps.iter().skip(r.at).any(|s| adds_server(s.kind())) {
+            return Err(super::admit_refused("resuming a plan that adds servers"));
         }
         r.state = "running".into();
         r.error = None;
@@ -1193,7 +1207,7 @@ pub fn resume(svc: &Arc<Service>, by: String) -> Result<Json, ApiError> {
     };
     c.plans.stop.store(false, Ordering::Relaxed);
     c.plans.save();
-    tokio::spawn(run_from(svc.clone(), c, at, busy, true));
+    tokio::spawn(super::ADMITTING.scope(may_admit, run_from(svc.clone(), c, at, busy, true)));
     Ok(view(svc))
 }
 
