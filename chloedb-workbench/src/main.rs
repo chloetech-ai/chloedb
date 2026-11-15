@@ -51,6 +51,7 @@ mod review;
 mod turns;
 // The rewrite (JOURNEYS.md, "Rules and notifications"): suggested rules and the interrupt model.
 mod notify;
+mod ownperms;
 mod rulesuggest;
 // The rewrite around goals (JOURNEYS.md): the one Needs-you count, and what
 // sessions were allowed without asking.

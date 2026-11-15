@@ -158,6 +158,16 @@ pub struct SpawnRequest {
     /// (JOURNEYS.md, "Start a change"): Claude Code rules such as `Read`,
     /// `Bash(python3 -m pytest:*)`, written into the session's settings.
     pub permissions: Option<PermissionProfile>,
+    /// Claude Code's permission mode to start in (`--permission-mode`):
+    /// plan, default, acceptEdits, auto or bypassPermissions. Without it,
+    /// what the user's settings say, as for `claude` in a terminal; an
+    /// agent another agent starts gets its mode, and never one that allows
+    /// more (src/ownperms.rs).
+    pub permission_mode: Option<String>,
+    /// The permissions a regular Claude Code session in the main checkout
+    /// has and a worktree does not (its `.claude/settings.local.json`, its
+    /// local MCP servers): carried by default, `false` leaves them out.
+    pub own_permissions: Option<bool>,
 }
 
 /// A session's permission profile: Claude Code's `permissions.allow`,
@@ -525,6 +535,24 @@ impl Supervisor {
         let restart = req.restart.clone();
         // Read-only when asked, or when the agent that starts it is.
         let read_only = req.read_only.unwrap_or(false) || req.parent.as_deref().is_some_and(|p| self.is_read_only(p));
+        // The permission mode: the one asked for, else its parent's; never
+        // one that allows more than its parent's, or than plan or default
+        // for a read-only agent.
+        let parent_mode = req.parent.as_deref().and_then(|p| self.extra_of(p)["permission_mode"].as_str().map(str::to_string));
+        let permission_mode = req.permission_mode.clone().filter(|m| !m.trim().is_empty()).or(parent_mode.clone());
+        if let Some(m) = &permission_mode {
+            let r = crate::ownperms::rank(m).ok_or_else(|| ApiError::bad(format!("permission_mode {m:?} is not one of {}", crate::ownperms::MODES.join(", "))))?;
+            let default = crate::ownperms::rank("default").unwrap_or(1);
+            if read_only && r > default {
+                return Err(ApiError::bad(format!("a read-only agent starts in plan or default, not {m}")));
+            }
+            if req.parent.is_some() {
+                let limit = parent_mode.as_deref().and_then(crate::ownperms::rank).unwrap_or(default);
+                if r > limit {
+                    return Err(ApiError::bad(format!("an agent may not start one in {m}: it allows more than its own mode ({})", parent_mode.as_deref().unwrap_or("default"))));
+                }
+            }
+        }
 
         // Limits, the parent and the name, checked together.
         let (depth, name) = {
@@ -647,6 +675,19 @@ impl Supervisor {
             mcp_json(&exe, &self.cfg.url, &token, &id),
             &who,
         )?;
+        // What a regular Claude Code session in the main checkout has and
+        // its worktree does not: its local settings and MCP servers.
+        let (settings_v, mcp_v, carried) = if cwd.as_path() != co.main.as_path() && req.own_permissions != Some(false) {
+            let (s, mut c) = match crate::ownperms::local_settings(&co.main) {
+                Some(local) => crate::ownperms::with_local(settings_v, &local, &co.main, &cwd, !read_only),
+                None => (settings_v, crate::ownperms::Carried::default()),
+            };
+            let (m, n) = crate::ownperms::with_servers(mcp_v, &crate::ownperms::local_servers(&co.main));
+            c.servers = n;
+            (s, m, c)
+        } else {
+            (settings_v, mcp_v, crate::ownperms::Carried::default())
+        };
         // The repository's current harness version, applied and recorded (src/harness.rs).
         let applied = crate::harness::at_spawn(self, &co.main.to_string_lossy(), &cwd, &session_dir, &id, &name, settings_v, mcp_v);
         write_private(&settings, &applied.settings)?;
@@ -676,6 +717,10 @@ impl Supervisor {
         if let Some(e) = req.effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
             cmd.arg("--effort");
             cmd.arg(e);
+        }
+        if let Some(m) = &permission_mode {
+            cmd.arg("--permission-mode");
+            cmd.arg(m);
         }
         let first = match &restart {
             Some(r) => r.prompt.clone().filter(|p| !p.trim().is_empty()),
@@ -763,6 +808,15 @@ impl Supervisor {
         }
         if let Some(r) = &resume {
             extra.insert("resumed".into(), json!(r));
+        }
+        if let Some(m) = &permission_mode {
+            extra.insert("permission_mode".into(), json!(m));
+        }
+        if req.own_permissions == Some(false) {
+            extra.insert("own_permissions".into(), json!(false));
+        }
+        if !carried.is_empty() {
+            extra.insert("carried".into(), carried.to_json());
         }
         let extra = Json::Object(extra);
         if extra.as_object().is_some_and(|o| !o.is_empty()) {
@@ -1010,6 +1064,8 @@ impl Supervisor {
             goal: a.goal.clone(),
             outcome: a.outcome.clone(),
             read_only: Some(extra["read_only"] == json!(true)),
+            permission_mode: extra["permission_mode"].as_str().map(str::to_string),
+            own_permissions: extra["own_permissions"].as_bool(),
             restart: Some(Restart { of: a, resume, prompt }),
             ..SpawnRequest::default()
         })

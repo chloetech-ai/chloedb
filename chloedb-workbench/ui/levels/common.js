@@ -908,3 +908,59 @@ textarea.field{height:auto;min-height:96px;padding:var(--s-2) var(--s-3);line-he
 }
 @media (pointer:coarse){.qc-opt,.gp-step{min-height:var(--touch)}.field{font-size:16px}}
 `);
+
+/** Claude Code's permission modes as a new agent can start in them
+ *  (`claude --permission-mode`): value, words, what it means. */
+export const PERMISSION_MODES = [
+  ["", "As your settings say", "The mode your Claude Code settings name, else Claude Code's default: it asks before what your rules don't allow."],
+  ["acceptEdits", "Accept edits", "It edits files without asking. Commands outside your rules still ask."],
+  ["auto", "Auto", "Claude Code runs what it judges safe without asking, and asks for the rest."],
+  ["plan", "Plan", "It reads and plans, and changes nothing until you approve the plan."],
+  ["bypassPermissions", "Bypass permissions", "It asks for nothing. Workbench's guarded commands (a push to main, a migration) are still stopped."],
+];
+const PM_KEY = "wb-permission-mode";
+
+/** The permissions a new agent starts with, as a regular Claude Code
+ *  session has them: its mode, and your own rules for this project
+ *  (`.claude/settings.local.json` and its MCP servers), which a worktree
+ *  does not have by itself. The last mode chosen is remembered here.
+ *  `body()` is what to merge into `POST /api/agents`; `limit(readOnly)`
+ *  keeps a read-only agent to plan or the default. */
+export function permissionChoice({ mode } = {}) {
+  useStyle("pm-choice", `
+.pm-choice{display:flex;flex-direction:column;gap:var(--s-1);padding:var(--s-2) 0}
+.pm-choice .pm-row{display:flex;gap:var(--s-2);align-items:center;flex-wrap:wrap}
+.pm-choice select{max-width:260px}
+.pm-choice .pm-hint{color:var(--text-2);font-size:var(--fs-sm)}
+.pm-choice .pm-own{display:flex;gap:var(--s-2);align-items:flex-start;color:var(--text-2);font-size:var(--fs-sm)}
+.pm-choice .pm-own b{color:var(--text);font-weight:var(--w-mid)}
+.pm-choice .pm-own input{margin-top:3px;accent-color:var(--accent)}
+`);
+  let saved = "";
+  try { saved = localStorage.getItem(PM_KEY) || ""; } catch { /* a private window */ }
+  const sel = h("select", { class: "field", "aria-label": "Permission mode" }, PERMISSION_MODES.map(([v, l]) => h("option", { value: v }, l)));
+  sel.value = PERMISSION_MODES.some(([v]) => v === (mode ?? saved)) ? (mode ?? saved) : "";
+  const hint = h("span", { class: "pm-hint" });
+  const own = h("input", { type: "checkbox", checked: true });
+  const paint = () => { hint.textContent = (PERMISSION_MODES.find(([v]) => v === sel.value) || PERMISSION_MODES[0])[2]; };
+  sel.addEventListener("change", () => { paint(); try { localStorage.setItem(PM_KEY, sel.value); } catch { /* not kept */ } });
+  paint();
+  const el = h("div", { class: "pm-choice" },
+    h("div", { class: "pm-row" }, h("b", {}, "Permission mode"), sel),
+    hint,
+    h("label", { class: "pm-own" }, own, h("span", {}, h("b", {}, "Your Claude Code permissions for this project"), " The rules, default mode and MCP servers you gave Claude Code here (",
+      h("code", {}, ".claude/settings.local.json"), "), in its worktree too, as a regular session has them.")));
+  return {
+    el, select: sel, own,
+    limit(readOnly) {
+      for (const o of sel.options) o.disabled = readOnly && !["", "plan", "default"].includes(o.value);
+      if (readOnly && sel.selectedOptions[0] && sel.selectedOptions[0].disabled) { sel.value = ""; paint(); }
+    },
+    body() {
+      const b = {};
+      if (sel.value) b.permission_mode = sel.value;
+      if (!own.checked) b.own_permissions = false;
+      return b;
+    },
+  };
+}

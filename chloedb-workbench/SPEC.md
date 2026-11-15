@@ -2885,6 +2885,32 @@ printed in the output above the text prompt.
    by default. When it is on, or outside a worktree, none of this is
    added. The help line under it says what is allowed.
 
+10. **The permissions of a regular Claude Code session** (src/ownperms.rs).
+   Claude Code reads `~/.claude/settings.json` and the committed
+   `.claude/settings.json` in any folder, a worktree too. What it keeps
+   for the main checkout's folder alone, a worktree does not have, so each
+   session's own files carry it: the main checkout's
+   `.claude/settings.local.json` (its allow, ask and deny rules, each rule
+   that names the main checkout also for the worktree and each path rule
+   relative to the project made absolute; its `defaultMode`, except for a
+   read-only agent; its `additionalDirectories`; and which `.mcp.json`
+   servers were approved), and the folder's local-scope MCP servers from
+   `~/.claude.json` (or `$CLAUDE_CONFIG_DIR`). Its hooks are not carried:
+   Workbench wires ChloeCtx itself. The user's files are only read.
+   `own_permissions: false` on `POST /api/agents` leaves it out; the
+   agent's JSON says what came (`carried`: rules, default mode,
+   directories, servers).
+
+   `permission_mode` on `POST /api/agents` is Claude Code's
+   `--permission-mode`: `plan`, `default`, `acceptEdits`, `auto` or
+   `bypassPermissions`; without it, what the settings say. A read-only
+   agent starts in plan or default. An agent that another agent starts
+   gets that agent's mode and may not ask for one that allows more. A
+   restart keeps both. Start a change has the choice (remembered in the
+   browser) and the tick for the user's own permissions, on by default;
+   the agent's page says the mode and how many of the user's rules it got.
+   Guarded commands are denied by the hook in every mode.
+
 ### When the prompt cannot be read
 
 A Notification whose prompt never shows as a menu (a layout this reader
@@ -2904,7 +2930,7 @@ screen shows neither the text prompt nor a spinner. Anything else is 409
   closed. 409 `not_typed` means nothing was typed and the question stays
   open.
 - `POST /api/agents/:id/steer` answers `message` too.
-- `POST /api/agents` takes `ask_edits`.
+- `POST /api/agents` takes `ask_edits`, `permission_mode` and `own_permissions`.
 
 ### Tests
 

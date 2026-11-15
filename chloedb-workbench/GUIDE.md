@@ -79,6 +79,14 @@ the permissions: **Edit files on its branch and run the tests** lets it
 edit with the Edit and Write tools and run reading commands, the tests and
 local git, alone or chained; anything on the network, a delete or a guarded
 command still asks. **Read only** starts it changing nothing.
+**Permission mode** is the mode Claude Code starts in, as `claude
+--permission-mode` takes it: as your settings say (the default), accept
+edits, auto, plan or bypass permissions; a guarded command is stopped in
+every mode. **Your Claude Code permissions for this project**, on by
+default, gives the agent what a regular session in your checkout has and a
+worktree does not: the rules you allowed with "Yes, and don't ask again"
+(`.claude/settings.local.json`), its default mode, its extra folders and
+the MCP servers you added there. Your files are read, never changed.
 
 ### The agent page
 
