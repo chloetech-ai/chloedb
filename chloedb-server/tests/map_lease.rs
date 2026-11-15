@@ -168,8 +168,8 @@ async fn a_change_on_another_coordinator_gives_the_map_left_in_doubt_first() {
     first.add_shard(vec![s1.clone()], Acks::All).await.unwrap();
     let made = first.map().unwrap();
     // It took the Lease, kept the map before it gave it, and let the Lease
-    // go with nothing in doubt.
-    assert_eq!(holder(&a), (String::new(), String::new()));
+    // go keeping the map it made, the newest a server may hold.
+    assert_eq!(holder(&a), (String::new(), made.to_json().to_string()));
     let calls = a.lock().unwrap().calls.clone();
     assert!(calls.len() >= 4 && calls[..2] == ["GET", "POST"] && calls[2..].iter().all(|c| c == "PUT"), "{calls:?}");
 
@@ -191,5 +191,85 @@ async fn a_change_on_another_coordinator_gives_the_map_left_in_doubt_first() {
     let now = second.map().unwrap();
     assert_eq!(now.epoch, gone.epoch + 1, "its change is made from the map in doubt: {j}");
     assert_eq!(now.replicas(), [vec![s0.clone()], vec![s1.clone()], vec![s2.clone()]]);
-    assert_eq!(holder(&a), (String::new(), String::new()));
+    assert_eq!(holder(&a), (String::new(), now.to_json().to_string()));
+}
+
+/// A server behind a gate that can be shut: while shut, it closes the
+/// connections it carries and every new one, as a server cut off from a
+/// coordinator does.
+struct Gate {
+    url: String,
+    open: tokio::sync::watch::Sender<bool>,
+}
+
+impl Gate {
+    async fn to(url: &str) -> Gate {
+        let to = url.trim_start_matches("http://").to_string();
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let (open, rx) = tokio::sync::watch::channel(true);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut client, _)) = l.accept().await else { continue };
+                let (mut rx, to) = (rx.clone(), to.clone());
+                tokio::spawn(async move {
+                    if !*rx.borrow_and_update() {
+                        return;
+                    }
+                    let Ok(mut server) = tokio::net::TcpStream::connect(&to).await else { return };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut client, &mut server) => {}
+                        _ = rx.wait_for(|open| !open) => {}
+                    }
+                });
+            }
+        });
+        Gate { url, open }
+    }
+
+    fn open(&self, open: bool) {
+        self.open.send_replace(open);
+    }
+}
+
+/// The fork TLC finds under the Lease (spec/clustermap, `LeaseRacing`): a
+/// change lands while a server does not answer, and the next, made by a
+/// coordinator that reaches only that server, would make a second map of
+/// the same epoch from the one before. The Lease keeps the map made, the
+/// newest a server may hold, and the next change gives it again first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_map_made_while_a_server_missed_it_is_given_again_by_the_next_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (a, kube) = api_server().await;
+    let s0 = Gate::to(&serve(d, "s0.strata", |_| true).await).await;
+    let s1 = Gate::to(&serve(d, "s1.strata", |_| false).await).await;
+    let s2 = Gate::to(&serve(d, "s2.strata", |_| false).await).await;
+    let s3 = serve(d, "s3.strata", |_| false).await;
+
+    // Two shards, and a second coordinator that routes by their map.
+    let first = Coordinator::connect(vec![s0.url.clone()]).await.unwrap();
+    first.lease_map_changes(MapLease::new(kube.clone(), "shop", "orders", "coord-a"));
+    first.add_shard(vec![s1.url.clone()], Acks::All).await.unwrap();
+    let second = Coordinator::connect(vec![s0.url.clone(), s1.url.clone()]).await.unwrap();
+    second.lease_map_changes(MapLease::new(kube.clone(), "shop", "orders", "coord-b"));
+
+    // The first adds a shard while s1 does not answer: the map is made,
+    // and kept in the Lease, as s1 may be given it or not.
+    s1.open(false);
+    let j = first.add_shard(vec![s2.url.clone()], Acks::All).await.unwrap();
+    assert_eq!(j["missed"].as_array().map(Vec::len), Some(1), "{j}");
+    let made = first.map().unwrap();
+    assert_eq!(holder(&a), (String::new(), made.to_json().to_string()));
+    drop(first);
+
+    // The second, which reaches s1 alone, adds another: it gives s1 the
+    // map made first, and makes its own from it.
+    s1.open(true);
+    s0.open(false);
+    s2.open(false);
+    let j = second.add_shard(vec![s3.clone()], Acks::All).await.unwrap();
+    let now = second.map().unwrap();
+    assert_eq!(now.epoch, made.epoch + 1, "made from the first's map, not another of its epoch: {j}");
+    assert_eq!(now.replicas(), [vec![s0.url.clone()], vec![s1.url.clone()], vec![s2.url.clone()], vec![s3.clone()]]);
 }

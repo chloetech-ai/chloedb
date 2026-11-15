@@ -154,7 +154,9 @@ call may still arrive later. Coordinators also follow the servers' maps
 (watch) and give theirs to servers behind (speak). Constants: `Racing`,
 `Forgetful`, `Lease`, `Survey` (what a restarted coordinator routes by:
 `kept`, `all`, `any`), `Move` (the flip, source first, `flip_ok`), `Bugs`
-(the simulator's four map bugs put back) and `Quorum` (a proposal).
+(the simulator's four map bugs put back), `LeaseKeeps` (the Lease keeps
+the newest map a server may hold, which `Coordinator::change` does since
+TLC found `LeaseRacing`) and `Quorum` (a proposal).
 Invariants: `NoFork` (no two maps of one epoch ever taken), `RoutesHeld`
 (a coordinator routes only by a map some server holds or held) and
 `NoStuck` (no server left refusing every later map).
@@ -169,6 +171,8 @@ Invariants: `NoFork` (no two maps of one epoch ever taken), `RoutesHeld`
 | Racing | racing | 2, 0 | **fork** in 7 | 107 | 2 |
 | LeaseRacing | racing under the Lease | 2, 0 | **fork** in 9 (below) | 319 | 2 |
 | SurveyAny | one coordinator keeping its doubt, `any` | 2, 1 | **fork** in 10 (below) | 559 | 2 |
+| KeepsRacing | as LeaseRacing, LeaseKeeps | 2, 0 | no error | 4,552 | 2 |
+| Keeps (CIKeeps) | racing, Lease, forgetful, `any`, Move, LeaseKeeps | 4, 2 (2, 1) | no error | 10,581,320 (42,650) | 1,552 (7) |
 | QuorumRacing | Quorum, no Lease | 2, 0 | **fork** in 15 | 2,593 | 4 |
 | OneKeeps (CIOneKeeps) | one coordinator keeping its doubt | 5, 2 (3, 1) | no error | 198,101 (9,103) | 51 (4) |
 | OneMove (CIOneMove) | as OneKeeps, Move | 4, 2 (3, 1) | no error | 297,659 (43,206) | 55 (8) |
@@ -182,7 +186,7 @@ What TLC found:
    forgetful coordinators; it finds no fork and no stuck source with one
    coordinator that keeps its doubt (as the simulator's do, in memory, or
    in the Lease with shards of one server).
-2. **The Lease does not close the fork (`LeaseRacing`, open).**
+2. **The Lease did not close the fork (`LeaseRacing`, fixed).**
    [server.md](../docs/chloedb/server.md) says the Lease narrows the fork
    to a coordinator paused for longer than 90 s. But c1's change takes the
    Lease, gives map `<<11>>` (epoch 2), and lands on s1 and s2 while s3's
@@ -191,12 +195,27 @@ What TLC found:
    s2 (its watch never heard of `<<11>>`), takes the Lease, syncs from s3
    alone (`sync_heard` needs no answer from any particular server), makes
    `<<21>>` of epoch 2, and s3 takes it: two maps of epoch 2.
-3. **A restart forks with replicated shards (`SurveyAny`, open).** The same
+
+   Fixed (`LeaseKeeps`): a change that ends keeps in the Lease the newest
+   map a server may hold, the map it made among them, not only the one in
+   doubt, and the next change gives it again first unless the servers it
+   reaches hold it. c2 then gives `<<11>>` to s3 and makes its change from
+   it. The Lease is an agreement (the API server's compare-and-swap), so
+   this closes the fork for coordinators the operator runs without
+   waiting for a majority of servers, which `Quorum` would: a cluster of
+   two servers with one down could not change its map. `KeepsRacing` and
+   `Keeps`, with restarts surveying any copy and a move, find no fork;
+   `tests/map_lease.rs` makes the same race with real servers.
+3. **A restart forks with replicated shards (`SurveyAny`, open without the
+   Lease).** The same
    first steps without the Lease: c1 starts again, and `connect_with`'s
    `survey` fails only when every copy of a shard fails, so with s3 alone
    answering c1 routes by epoch 1, and its next change gives `<<12>>` of
    epoch 2 to s3. The cluster simulator cannot find this: its shards have
    one server each and its coordinators keep their map when they crash.
+   Under the Lease the fix above closes it too (c1 finds `<<11>>` in the
+   Lease, `Keeps`); without it, it is the fork server.md names for a
+   coordinator that starts again.
 4. **A direction TLC passes (`Quorum`).** Under the Lease, a change lands
    once a majority took its map, a sync takes up the newest map of a
    majority, and a change first gives the map it synced to again until a
@@ -212,8 +231,10 @@ One shard of three copies (`idem.rs`, `Service::begin_key`,
 client's keyed write, retried through the coordinator to any primary; the
 key in the write's own log entry; memory lost on restart and kept on
 stepping down. Elections are abstract: a copy at least as up to date as a
-majority wins. `ForgetOnStepDown` and `WriterChecks` are fixes;
-`AcksAnOlderTerm` puts DS-5 back.
+majority wins. `ForgetOnStepDown` and `WriterChecks` are the two fixes
+the code has made since TLC found the bugs below, so `EvictFix` and
+`CIEvictFix`, which set both, are the code; `AcksAnOlderTerm` puts DS-5
+back.
 
 | model | fixes | bounds (terms, sends, other writes, crashes, evictions) | result | states |
 |---|---|---|---|---|
@@ -226,7 +247,7 @@ majority wins. `ForgetOnStepDown` and `WriterChecks` are fixes;
 
 What TLC found:
 
-1. **The keys in memory outlive the log (`KeysNow`, open).**
+1. **The keys in memory outlive the log (`KeysNow`, fixed).**
    `Service.idempotency` is made once (`Service::new`) and nothing clears
    it, while the role changes inside the process (`step_down`,
    `fail_over`, `promote`, `configure`), `install_copy` replaces `_sources`
@@ -245,22 +266,28 @@ What TLC found:
       c1's transaction 2 is acknowledged, so `acked(1)` holds and the
       retry is answered 200, though no copy holds w.
 
-   The fix TLC passes: forget the keys whenever the role changes (or tag
-   each with its term). The simulator answers retries only from the
-   database (`sim/copy.rs`), so it cannot find this.
+   Fixed as TLC passes it: a server forgets every key in memory when its
+   role changes (`Service::set_role`, `Keys::forget_all`), which covers
+   stepping down. The simulator answers retries only from the database
+   (`sim/copy.rs`), so it cannot find this.
 2. **DS-5 (`KeysDS5`).** Put back, a retry answered from the key's row
    with the database's last number is acknowledged by an older term's
    transaction, and the write is then lost; the same bounds without it
    find nothing (`KeysFix`).
-3. **A key evicted while its write runs (`KeysEvict`, open).**
+3. **A key evicted while its write runs (`KeysEvict`, fixed).**
    `Keys::begin` forgets the oldest keys past the TTL or 100,000 whatever
    their state, `Busy` ones too. A retry while the write is in flight is
    then New, no row is there yet (`idem::record` writes it in the write's
    own transaction, with `set_source`, which replaces), and both attempts
    commit. It needs 100,000 other keys claimed on the shard during one
    write, which a busy coordinator (every write it sends has a key) can
-   reach while a write waits for an embedding core. The fix TLC passes:
-   the writer looks the key's row up in the write's own transaction.
+   reach while a write waits for an embedding core. Fixed as TLC passes
+   it: the writer looks each key's row up before it applies a write and
+   answers a retry it finds there (`once_per_key` in `service.rs`; the
+   writer is the only one to commit, one group at a time, so that is the
+   write's own transaction's view), and runs a repeat of a key within one
+   group after the first, which the model, applying one attempt at a
+   time, does not need.
 4. **The documentation (`KeysRowSeq`).** server.md says a retry is
    answered the first attempt's seq_no; one answered from the key's row
    gets the database's last number, as its section on keys says
@@ -397,11 +424,12 @@ with the fix its specification checks:
    flip** (`slots/`, `MoveNow`): the mark committed through the source's
    log.
 2. **The cluster map forks under the Lease, and on a restart with
-   replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): changes
-   that land on, and sync from, a majority (`Quorum`).
+   replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): fixed
+   under the Lease, which keeps the newest map made (`Keeps`); without the
+   Lease, changes that land on, and sync from, a majority (`Quorum`).
 3. **A retry is answered 200 for a write no copy holds, or applied twice**
-   (`idempotency/`, `KeysNow`, `KeysEvict`): forget the keys at a change of
-   role, and look the key's row up in the write's own transaction.
+   (`idempotency/`, `KeysNow`, `KeysEvict`): fixed, the keys forgotten at a
+   change of role and the key's row looked up by the writer.
 4. **Stale reads under the lease** (`handover/`, `HoldUnasked`, `Restart`):
    no wait only when every other copy granted, and the sticky refusal
    counted from the replica's start.
