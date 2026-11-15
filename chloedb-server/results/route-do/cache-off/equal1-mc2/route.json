@@ -1,0 +1,6478 @@
+{
+  "args": {
+    "busy_slots": 1,
+    "copies": 3,
+    "delay_ms": 30,
+    "hedge_delay_ms": 150,
+    "rounds": 5,
+    "rows": 1000000,
+    "seconds": 10.0,
+    "shards": 1,
+    "slots": 64,
+    "stats_cache_terms": 100000,
+    "warmup": 6.0
+  },
+  "coordinator": "CoordOptions::default() with each run's config set: hedge 100 ms, kept BM25 statistics",
+  "lag_ms": 50,
+  "machine": {
+    "arch": "x86_64",
+    "cores": 32,
+    "cpu": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz",
+    "memory_gb": null,
+    "os": "Linux 6.12.113+deb13-amd64",
+    "setup": "DigitalOcean nyc1, DOKS 1.37.2: one shard of 1M rows, each of its 3 copies a pod on a c-2 node of its own (2 dedicated vCPUs), the coordinator, clients and delay lines one pod on a c-32 node (32 dedicated vCPUs), pod network; every server with --answer-cache-mb 0 (no answer cache); copies alike, every copy with --max-concurrent 2 (asked by the simulation thread)"
+  },
+  "runs": [
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 8.02,
+        "p50_ms": 2.93,
+        "p90_ms": 3.63,
+        "p999_ms": 7.08,
+        "p99_ms": 4.86,
+        "qps": 329.0,
+        "queries": 3292,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1098,
+          1097,
+          1098
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.22,
+        0.41
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1697,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.935,
+            "slow": 1.96
+          },
+          "plain_rtt_ms": {
+            "dev": 0.292,
+            "fast": 2.654,
+            "slow": 2.646
+          },
+          "query_rtt_ms": {
+            "fast": 2.654,
+            "slow": 2.646
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.654,
+            "slow": 2.646
+          },
+          "tail_ms": 4.398
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1697,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.955,
+            "slow": 1.946
+          },
+          "plain_rtt_ms": {
+            "dev": 0.288,
+            "fast": 2.617,
+            "slow": 2.582
+          },
+          "query_rtt_ms": {
+            "fast": 2.617,
+            "slow": 2.582
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.617,
+            "slow": 2.582
+          },
+          "tail_ms": 4.309
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1696,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.078,
+            "slow": 2.073
+          },
+          "plain_rtt_ms": {
+            "dev": 0.288,
+            "fast": 2.816,
+            "slow": 2.786
+          },
+          "query_rtt_ms": {
+            "fast": 2.816,
+            "slow": 2.786
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 2.816,
+            "slow": 2.786
+          },
+          "tail_ms": 4.514
+        }
+      ],
+      "shard0_per_second": [
+        [
+          76,
+          76,
+          76
+        ],
+        [
+          103,
+          103,
+          104
+        ],
+        [
+          106,
+          105,
+          105
+        ],
+        [
+          104,
+          105,
+          105
+        ],
+        [
+          105,
+          105,
+          104
+        ],
+        [
+          109,
+          109,
+          109
+        ],
+        [
+          121,
+          121,
+          121
+        ],
+        [
+          117,
+          116,
+          117
+        ],
+        [
+          112,
+          112,
+          112
+        ],
+        [
+          116,
+          117,
+          116
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 11.22,
+        "p50_ms": 2.83,
+        "p90_ms": 3.37,
+        "p999_ms": 7.41,
+        "p99_ms": 4.39,
+        "qps": 343.0,
+        "queries": 3436,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1146,
+          1146,
+          1146
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.34,
+        0.24,
+        0.32
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 2200,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.988,
+            "slow": 2.029
+          },
+          "plain_rtt_ms": {
+            "dev": 0.272,
+            "fast": 2.575,
+            "slow": 2.686
+          },
+          "query_rtt_ms": {
+            "fast": 2.575,
+            "slow": 2.686
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.575,
+            "slow": 2.686
+          },
+          "tail_ms": 4.317
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 2202,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.965,
+            "slow": 1.987
+          },
+          "plain_rtt_ms": {
+            "dev": 0.261,
+            "fast": 2.585,
+            "slow": 2.6
+          },
+          "query_rtt_ms": {
+            "fast": 2.585,
+            "slow": 2.6
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.585,
+            "slow": 2.6
+          },
+          "tail_ms": 4.168
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1263,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.104,
+            "slow": 2.123
+          },
+          "plain_rtt_ms": {
+            "dev": 0.257,
+            "fast": 2.776,
+            "slow": 2.803
+          },
+          "query_rtt_ms": {
+            "fast": 2.776,
+            "slow": 2.803
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.776,
+            "slow": 2.803
+          },
+          "tail_ms": 4.342
+        }
+      ],
+      "shard0_per_second": [
+        [
+          90,
+          90,
+          89
+        ],
+        [
+          118,
+          117,
+          118
+        ],
+        [
+          117,
+          118,
+          117
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          119,
+          119,
+          119
+        ],
+        [
+          111,
+          111,
+          112
+        ],
+        [
+          111,
+          111,
+          110
+        ],
+        [
+          111,
+          111,
+          112
+        ],
+        [
+          111,
+          111,
+          111
+        ],
+        [
+          111,
+          111,
+          110
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 12.68,
+        "p50_ms": 2.92,
+        "p90_ms": 3.45,
+        "p999_ms": 8.2,
+        "p99_ms": 4.62,
+        "qps": 332.0,
+        "queries": 3323,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1108,
+          1108,
+          1108
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.27,
+        0.2
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1757,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.024,
+            "slow": 2.015
+          },
+          "plain_rtt_ms": {
+            "dev": 0.283,
+            "fast": 2.714,
+            "slow": 2.699
+          },
+          "query_rtt_ms": {
+            "fast": 2.714,
+            "slow": 2.699
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.714,
+            "slow": 2.699
+          },
+          "tail_ms": 4.396
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1757,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.033,
+            "slow": 2.029
+          },
+          "plain_rtt_ms": {
+            "dev": 0.28,
+            "fast": 2.793,
+            "slow": 2.675
+          },
+          "query_rtt_ms": {
+            "fast": 2.793,
+            "slow": 2.675
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.793,
+            "slow": 2.675
+          },
+          "tail_ms": 4.353
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1757,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.174,
+            "slow": 2.146
+          },
+          "plain_rtt_ms": {
+            "dev": 0.265,
+            "fast": 2.855,
+            "slow": 2.835
+          },
+          "query_rtt_ms": {
+            "fast": 2.855,
+            "slow": 2.835
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.855,
+            "slow": 2.835
+          },
+          "tail_ms": 4.426
+        }
+      ],
+      "shard0_per_second": [
+        [
+          81,
+          81,
+          82
+        ],
+        [
+          108,
+          108,
+          108
+        ],
+        [
+          111,
+          110,
+          110
+        ],
+        [
+          111,
+          112,
+          112
+        ],
+        [
+          113,
+          112,
+          112
+        ],
+        [
+          114,
+          114,
+          114
+        ],
+        [
+          110,
+          111,
+          111
+        ],
+        [
+          111,
+          111,
+          110
+        ],
+        [
+          112,
+          111,
+          112
+        ],
+        [
+          109,
+          110,
+          110
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 12.2,
+        "p50_ms": 2.91,
+        "p90_ms": 3.47,
+        "p999_ms": 7.12,
+        "p99_ms": 4.71,
+        "qps": 334.0,
+        "queries": 3337,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1113,
+          1113,
+          1113
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.2,
+        0.27,
+        0.29
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1767,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.963,
+            "slow": 2.044
+          },
+          "plain_rtt_ms": {
+            "dev": 0.367,
+            "fast": 2.622,
+            "slow": 2.767
+          },
+          "query_rtt_ms": {
+            "fast": 2.622,
+            "slow": 2.767
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.622,
+            "slow": 2.767
+          },
+          "tail_ms": 4.97
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1767,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.91,
+            "slow": 1.919
+          },
+          "plain_rtt_ms": {
+            "dev": 0.307,
+            "fast": 2.621,
+            "slow": 2.555
+          },
+          "query_rtt_ms": {
+            "fast": 2.621,
+            "slow": 2.555
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.621,
+            "slow": 2.555
+          },
+          "tail_ms": 4.396
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1767,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.024,
+            "slow": 2.103
+          },
+          "plain_rtt_ms": {
+            "dev": 0.275,
+            "fast": 2.691,
+            "slow": 2.803
+          },
+          "query_rtt_ms": {
+            "fast": 2.691,
+            "slow": 2.803
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.691,
+            "slow": 2.803
+          },
+          "tail_ms": 4.453
+        }
+      ],
+      "shard0_per_second": [
+        [
+          82,
+          82,
+          82
+        ],
+        [
+          111,
+          111,
+          112
+        ],
+        [
+          109,
+          109,
+          108
+        ],
+        [
+          111,
+          110,
+          111
+        ],
+        [
+          110,
+          111,
+          111
+        ],
+        [
+          111,
+          111,
+          111
+        ],
+        [
+          112,
+          112,
+          112
+        ],
+        [
+          112,
+          112,
+          111
+        ],
+        [
+          113,
+          113,
+          114
+        ],
+        [
+          112,
+          112,
+          112
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 8.67,
+        "p50_ms": 2.72,
+        "p90_ms": 3.22,
+        "p999_ms": 6.26,
+        "p99_ms": 4.41,
+        "qps": 357.0,
+        "queries": 3571,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1191,
+          1190,
+          1191
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.29,
+        0.39
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1903,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.965,
+            "slow": 1.97
+          },
+          "plain_rtt_ms": {
+            "dev": 0.278,
+            "fast": 2.55,
+            "slow": 2.635
+          },
+          "query_rtt_ms": {
+            "fast": 2.55,
+            "slow": 2.635
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.55,
+            "slow": 2.635
+          },
+          "tail_ms": 4.302
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1903,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.885,
+            "slow": 1.892
+          },
+          "plain_rtt_ms": {
+            "dev": 0.255,
+            "fast": 2.485,
+            "slow": 2.512
+          },
+          "query_rtt_ms": {
+            "fast": 2.485,
+            "slow": 2.512
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.485,
+            "slow": 2.512
+          },
+          "tail_ms": 4.042
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1902,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.015,
+            "slow": 2.035
+          },
+          "plain_rtt_ms": {
+            "dev": 0.242,
+            "fast": 2.703,
+            "slow": 2.728
+          },
+          "query_rtt_ms": {
+            "fast": 2.703,
+            "slow": 2.728
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.703,
+            "slow": 2.728
+          },
+          "tail_ms": 4.181
+        }
+      ],
+      "shard0_per_second": [
+        [
+          90,
+          89,
+          90
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          119,
+          120,
+          119
+        ],
+        [
+          121,
+          121,
+          122
+        ],
+        [
+          121,
+          121,
+          120
+        ],
+        [
+          121,
+          120,
+          121
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          119,
+          120,
+          119
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          116,
+          115,
+          116
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 9.19,
+        "p50_ms": 2.74,
+        "p90_ms": 3.31,
+        "p999_ms": 7.26,
+        "p99_ms": 4.79,
+        "qps": 352.0,
+        "queries": 3519,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          931,
+          1286,
+          1305
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.17,
+        0.39,
+        0.29
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1618,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.905,
+            "slow": 1.92
+          },
+          "plain_rtt_ms": {
+            "dev": 0.276,
+            "fast": 2.558,
+            "slow": 2.596
+          },
+          "query_rtt_ms": {
+            "fast": 2.558,
+            "slow": 2.596
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.558,
+            "slow": 2.596
+          },
+          "tail_ms": 4.253
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1973,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.866,
+            "slow": 1.916
+          },
+          "plain_rtt_ms": {
+            "dev": 0.262,
+            "fast": 2.572,
+            "slow": 2.574
+          },
+          "query_rtt_ms": {
+            "fast": 2.572,
+            "slow": 2.574
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.572,
+            "slow": 2.574
+          },
+          "tail_ms": 4.147
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1991,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.038,
+            "slow": 2.081
+          },
+          "plain_rtt_ms": {
+            "dev": 0.279,
+            "fast": 2.882,
+            "slow": 2.84
+          },
+          "query_rtt_ms": {
+            "fast": 2.882,
+            "slow": 2.84
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.882,
+            "slow": 2.84
+          },
+          "tail_ms": 4.515
+        }
+      ],
+      "shard0_per_second": [
+        [
+          28,
+          115,
+          122
+        ],
+        [
+          0,
+          181,
+          187
+        ],
+        [
+          59,
+          146,
+          152
+        ],
+        [
+          117,
+          118,
+          118
+        ],
+        [
+          118,
+          117,
+          117
+        ],
+        [
+          115,
+          115,
+          115
+        ],
+        [
+          117,
+          118,
+          118
+        ],
+        [
+          112,
+          112,
+          112
+        ],
+        [
+          118,
+          117,
+          117
+        ],
+        [
+          117,
+          118,
+          117
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 8.79,
+        "p50_ms": 2.9,
+        "p90_ms": 3.46,
+        "p999_ms": 7.44,
+        "p99_ms": 4.99,
+        "qps": 334.0,
+        "queries": 3341,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1114,
+          1114,
+          1114
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.41,
+        0.24
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1795,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.853,
+            "slow": 1.933
+          },
+          "plain_rtt_ms": {
+            "dev": 0.332,
+            "fast": 2.512,
+            "slow": 2.652
+          },
+          "query_rtt_ms": {
+            "fast": 2.512,
+            "slow": 2.652
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.512,
+            "slow": 2.652
+          },
+          "tail_ms": 4.642
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1794,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.875,
+            "slow": 1.925
+          },
+          "plain_rtt_ms": {
+            "dev": 0.262,
+            "fast": 2.492,
+            "slow": 2.521
+          },
+          "query_rtt_ms": {
+            "fast": 2.492,
+            "slow": 2.521
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.492,
+            "slow": 2.521
+          },
+          "tail_ms": 4.09
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1794,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.139,
+            "slow": 2.118
+          },
+          "plain_rtt_ms": {
+            "dev": 0.32,
+            "fast": 2.842,
+            "slow": 2.868
+          },
+          "query_rtt_ms": {
+            "fast": 2.842,
+            "slow": 2.868
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.842,
+            "slow": 2.868
+          },
+          "tail_ms": 4.786
+        }
+      ],
+      "shard0_per_second": [
+        [
+          82,
+          82,
+          82
+        ],
+        [
+          111,
+          110,
+          110
+        ],
+        [
+          110,
+          111,
+          111
+        ],
+        [
+          108,
+          108,
+          108
+        ],
+        [
+          111,
+          111,
+          111
+        ],
+        [
+          109,
+          109,
+          108
+        ],
+        [
+          110,
+          110,
+          111
+        ],
+        [
+          113,
+          112,
+          112
+        ],
+        [
+          113,
+          114,
+          114
+        ],
+        [
+          117,
+          116,
+          116
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 17.37,
+        "p50_ms": 2.85,
+        "p90_ms": 3.4,
+        "p999_ms": 7.29,
+        "p99_ms": 4.7,
+        "qps": 340.0,
+        "queries": 3404,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1137,
+          1139,
+          1129
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.27,
+        0.37
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1854,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.945,
+            "slow": 1.996
+          },
+          "plain_rtt_ms": {
+            "dev": 0.278,
+            "fast": 2.582,
+            "slow": 2.673
+          },
+          "query_rtt_ms": {
+            "fast": 2.582,
+            "slow": 2.673
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.582,
+            "slow": 2.673
+          },
+          "tail_ms": 4.34
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1856,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.975,
+            "slow": 1.975
+          },
+          "plain_rtt_ms": {
+            "dev": 0.285,
+            "fast": 2.623,
+            "slow": 2.606
+          },
+          "query_rtt_ms": {
+            "fast": 2.623,
+            "slow": 2.606
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.623,
+            "slow": 2.606
+          },
+          "tail_ms": 4.318
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1845,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.167,
+            "slow": 2.162
+          },
+          "plain_rtt_ms": {
+            "dev": 0.241,
+            "fast": 2.879,
+            "slow": 2.885
+          },
+          "query_rtt_ms": {
+            "fast": 2.879,
+            "slow": 2.885
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.879,
+            "slow": 2.885
+          },
+          "tail_ms": 4.333
+        }
+      ],
+      "shard0_per_second": [
+        [
+          88,
+          88,
+          88
+        ],
+        [
+          114,
+          115,
+          114
+        ],
+        [
+          116,
+          118,
+          109
+        ],
+        [
+          113,
+          113,
+          112
+        ],
+        [
+          113,
+          113,
+          114
+        ],
+        [
+          116,
+          115,
+          115
+        ],
+        [
+          113,
+          114,
+          113
+        ],
+        [
+          112,
+          112,
+          112
+        ],
+        [
+          113,
+          113,
+          114
+        ],
+        [
+          110,
+          110,
+          110
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 22.73,
+        "p50_ms": 2.76,
+        "p90_ms": 3.3,
+        "p999_ms": 11.48,
+        "p99_ms": 4.61,
+        "qps": 349.0,
+        "queries": 3491,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1164,
+          1164,
+          1164
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.44,
+        0.27
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1867,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.899,
+            "slow": 1.918
+          },
+          "plain_rtt_ms": {
+            "dev": 0.279,
+            "fast": 2.525,
+            "slow": 2.592
+          },
+          "query_rtt_ms": {
+            "fast": 2.525,
+            "slow": 2.592
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.525,
+            "slow": 2.592
+          },
+          "tail_ms": 4.268
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1866,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.919,
+            "slow": 1.938
+          },
+          "plain_rtt_ms": {
+            "dev": 0.255,
+            "fast": 2.658,
+            "slow": 2.579
+          },
+          "query_rtt_ms": {
+            "fast": 2.658,
+            "slow": 2.579
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.658,
+            "slow": 2.579
+          },
+          "tail_ms": 4.11
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1866,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.037,
+            "slow": 2.048
+          },
+          "plain_rtt_ms": {
+            "dev": 0.272,
+            "fast": 2.788,
+            "slow": 2.771
+          },
+          "query_rtt_ms": {
+            "fast": 2.788,
+            "slow": 2.771
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.788,
+            "slow": 2.771
+          },
+          "tail_ms": 4.406
+        }
+      ],
+      "shard0_per_second": [
+        [
+          87,
+          87,
+          87
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          119,
+          118,
+          119
+        ],
+        [
+          117,
+          117,
+          117
+        ],
+        [
+          116,
+          117,
+          116
+        ],
+        [
+          114,
+          113,
+          114
+        ],
+        [
+          112,
+          113,
+          112
+        ],
+        [
+          116,
+          116,
+          117
+        ],
+        [
+          117,
+          117,
+          116
+        ],
+        [
+          119,
+          118,
+          119
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 13.34,
+        "p50_ms": 2.78,
+        "p90_ms": 3.36,
+        "p999_ms": 6.73,
+        "p99_ms": 4.6,
+        "qps": 348.0,
+        "queries": 3482,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          1161,
+          1161,
+          1161
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.17,
+        0.34,
+        0.39
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1879,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.044,
+            "slow": 2.002
+          },
+          "plain_rtt_ms": {
+            "dev": 0.302,
+            "fast": 2.668,
+            "slow": 2.717
+          },
+          "query_rtt_ms": {
+            "fast": 2.668,
+            "slow": 2.717
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.668,
+            "slow": 2.717
+          },
+          "tail_ms": 4.528
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1879,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.962,
+            "slow": 1.956
+          },
+          "plain_rtt_ms": {
+            "dev": 0.262,
+            "fast": 2.599,
+            "slow": 2.562
+          },
+          "query_rtt_ms": {
+            "fast": 2.599,
+            "slow": 2.562
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.599,
+            "slow": 2.562
+          },
+          "tail_ms": 4.136
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 1879,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.245,
+            "slow": 2.147
+          },
+          "plain_rtt_ms": {
+            "dev": 0.266,
+            "fast": 3.0,
+            "slow": 2.89
+          },
+          "query_rtt_ms": {
+            "fast": 3.0,
+            "slow": 2.89
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.0,
+            "slow": 2.89
+          },
+          "tail_ms": 4.486
+        }
+      ],
+      "shard0_per_second": [
+        [
+          89,
+          89,
+          89
+        ],
+        [
+          119,
+          119,
+          120
+        ],
+        [
+          121,
+          121,
+          120
+        ],
+        [
+          118,
+          118,
+          118
+        ],
+        [
+          118,
+          118,
+          119
+        ],
+        [
+          120,
+          120,
+          120
+        ],
+        [
+          114,
+          114,
+          114
+        ],
+        [
+          113,
+          113,
+          112
+        ],
+        [
+          110,
+          110,
+          111
+        ],
+        [
+          111,
+          111,
+          110
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 28.41,
+        "p50_ms": 3.1,
+        "p90_ms": 5.64,
+        "p999_ms": 19.74,
+        "p99_ms": 11.35,
+        "qps": 4400.0,
+        "queries": 44031,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14685,
+          14698,
+          14682
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.61,
+        4.8,
+        5.41
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23828,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.976,
+            "slow": 1.928
+          },
+          "plain_rtt_ms": {
+            "dev": 2.088,
+            "fast": 4.38,
+            "slow": 4.459
+          },
+          "query_rtt_ms": {
+            "fast": 4.38,
+            "slow": 4.459
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 4.38,
+            "slow": 4.459
+          },
+          "tail_ms": 16.99
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23828,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.631,
+            "slow": 1.709
+          },
+          "plain_rtt_ms": {
+            "dev": 0.913,
+            "fast": 2.518,
+            "slow": 2.894
+          },
+          "query_rtt_ms": {
+            "fast": 2.518,
+            "slow": 2.894
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.518,
+            "slow": 2.894
+          },
+          "tail_ms": 8.372
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23828,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.728,
+            "slow": 1.931
+          },
+          "plain_rtt_ms": {
+            "dev": 1.346,
+            "fast": 4.453,
+            "slow": 3.63
+          },
+          "query_rtt_ms": {
+            "fast": 4.453,
+            "slow": 3.63
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 4.453,
+            "slow": 3.63
+          },
+          "tail_ms": 11.706
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1053,
+          1068,
+          1052
+        ],
+        [
+          1490,
+          1488,
+          1491
+        ],
+        [
+          1377,
+          1374,
+          1379
+        ],
+        [
+          1476,
+          1480,
+          1476
+        ],
+        [
+          1535,
+          1536,
+          1535
+        ],
+        [
+          1377,
+          1374,
+          1375
+        ],
+        [
+          1507,
+          1503,
+          1505
+        ],
+        [
+          1491,
+          1494,
+          1493
+        ],
+        [
+          1478,
+          1488,
+          1486
+        ],
+        [
+          1559,
+          1557,
+          1557
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 17.54,
+        "p50_ms": 3.09,
+        "p90_ms": 4.95,
+        "p999_ms": 11.13,
+        "p99_ms": 7.42,
+        "qps": 4731.0,
+        "queries": 47341,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15501,
+          16593,
+          15266
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.22,
+        5.49,
+        5.29
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24738,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.842,
+            "slow": 1.798
+          },
+          "plain_rtt_ms": {
+            "dev": 0.927,
+            "fast": 3.616,
+            "slow": 3.264
+          },
+          "query_rtt_ms": {
+            "fast": 3.616,
+            "slow": 3.264
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 3.616,
+            "slow": 3.264
+          },
+          "tail_ms": 8.826
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26859,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.936,
+            "slow": 1.81
+          },
+          "plain_rtt_ms": {
+            "dev": 1.017,
+            "fast": 3.561,
+            "slow": 3.477
+          },
+          "query_rtt_ms": {
+            "fast": 3.561,
+            "slow": 3.477
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.561,
+            "slow": 3.477
+          },
+          "tail_ms": 9.581
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24124,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.744,
+            "slow": 1.692
+          },
+          "plain_rtt_ms": {
+            "dev": 0.768,
+            "fast": 3.096,
+            "slow": 2.932
+          },
+          "query_rtt_ms": {
+            "fast": 3.096,
+            "slow": 2.932
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.096,
+            "slow": 2.932
+          },
+          "tail_ms": 7.541
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1299,
+          1051,
+          1156
+        ],
+        [
+          1551,
+          1544,
+          1652
+        ],
+        [
+          1431,
+          1585,
+          1647
+        ],
+        [
+          1624,
+          1631,
+          1528
+        ],
+        [
+          1623,
+          1675,
+          1528
+        ],
+        [
+          1485,
+          1662,
+          1576
+        ],
+        [
+          1500,
+          1631,
+          1535
+        ],
+        [
+          1531,
+          1783,
+          1483
+        ],
+        [
+          1502,
+          1835,
+          1397
+        ],
+        [
+          1569,
+          1754,
+          1404
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 24.47,
+        "p50_ms": 3.07,
+        "p90_ms": 5.26,
+        "p999_ms": 15.67,
+        "p99_ms": 10.01,
+        "qps": 4541.0,
+        "queries": 45447,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15157,
+          15155,
+          15154
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.34,
+        4.93,
+        5.76
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24247,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.578,
+            "slow": 1.781
+          },
+          "plain_rtt_ms": {
+            "dev": 1.534,
+            "fast": 2.557,
+            "slow": 3.823
+          },
+          "query_rtt_ms": {
+            "fast": 2.557,
+            "slow": 3.823
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.557,
+            "slow": 3.823
+          },
+          "tail_ms": 13.029
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24247,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.788,
+            "slow": 1.638
+          },
+          "plain_rtt_ms": {
+            "dev": 0.93,
+            "fast": 4.698,
+            "slow": 2.864
+          },
+          "query_rtt_ms": {
+            "fast": 4.698,
+            "slow": 2.864
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 4.698,
+            "slow": 2.864
+          },
+          "tail_ms": 8.442
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24247,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.885,
+            "slow": 1.806
+          },
+          "plain_rtt_ms": {
+            "dev": 1.177,
+            "fast": 5.105,
+            "slow": 3.718
+          },
+          "query_rtt_ms": {
+            "fast": 5.105,
+            "slow": 3.718
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 5.105,
+            "slow": 3.718
+          },
+          "tail_ms": 10.783
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1149,
+          1157,
+          1153
+        ],
+        [
+          1564,
+          1559,
+          1562
+        ],
+        [
+          1516,
+          1515,
+          1514
+        ],
+        [
+          1496,
+          1499,
+          1494
+        ],
+        [
+          1521,
+          1523,
+          1522
+        ],
+        [
+          1503,
+          1499,
+          1505
+        ],
+        [
+          1546,
+          1547,
+          1549
+        ],
+        [
+          1525,
+          1523,
+          1520
+        ],
+        [
+          1507,
+          1508,
+          1507
+        ],
+        [
+          1444,
+          1444,
+          1445
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 23.25,
+        "p50_ms": 3.12,
+        "p90_ms": 5.01,
+        "p999_ms": 12.07,
+        "p99_ms": 7.98,
+        "qps": 4652.0,
+        "queries": 46540,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15599,
+          16244,
+          14711
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.46,
+        5.56,
+        5.15
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25120,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.673,
+            "slow": 1.726
+          },
+          "plain_rtt_ms": {
+            "dev": 0.811,
+            "fast": 3.169,
+            "slow": 2.978
+          },
+          "query_rtt_ms": {
+            "fast": 3.169,
+            "slow": 2.978
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.169,
+            "slow": 2.978
+          },
+          "tail_ms": 7.845
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25852,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.918,
+            "slow": 1.854
+          },
+          "plain_rtt_ms": {
+            "dev": 0.843,
+            "fast": 3.34,
+            "slow": 3.172
+          },
+          "query_rtt_ms": {
+            "fast": 3.34,
+            "slow": 3.172
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.34,
+            "slow": 3.172
+          },
+          "tail_ms": 8.232
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23968,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.75,
+            "slow": 1.774
+          },
+          "plain_rtt_ms": {
+            "dev": 0.979,
+            "fast": 3.333,
+            "slow": 3.388
+          },
+          "query_rtt_ms": {
+            "fast": 3.333,
+            "slow": 3.388
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.333,
+            "slow": 3.388
+          },
+          "tail_ms": 9.26
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1212,
+          1176,
+          1148
+        ],
+        [
+          1622,
+          1545,
+          1481
+        ],
+        [
+          1447,
+          1571,
+          1602
+        ],
+        [
+          1320,
+          1553,
+          1611
+        ],
+        [
+          1663,
+          1512,
+          1498
+        ],
+        [
+          1692,
+          1515,
+          1527
+        ],
+        [
+          1628,
+          1664,
+          1200
+        ],
+        [
+          1548,
+          1686,
+          1417
+        ],
+        [
+          1585,
+          1771,
+          1459
+        ],
+        [
+          1526,
+          1797,
+          1402
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 23.43,
+        "p50_ms": 3.09,
+        "p90_ms": 5.25,
+        "p999_ms": 16.69,
+        "p99_ms": 10.13,
+        "qps": 4524.0,
+        "queries": 45312,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15114,
+          15101,
+          15113
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.66,
+        4.73,
+        5.49
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24272,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.765,
+            "slow": 1.754
+          },
+          "plain_rtt_ms": {
+            "dev": 1.131,
+            "fast": 3.203,
+            "slow": 3.398
+          },
+          "query_rtt_ms": {
+            "fast": 3.203,
+            "slow": 3.398
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.203,
+            "slow": 3.398
+          },
+          "tail_ms": 10.181
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24272,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 4.888,
+            "slow": 2.172
+          },
+          "plain_rtt_ms": {
+            "dev": 2.884,
+            "fast": 17.801,
+            "slow": 5.077
+          },
+          "query_rtt_ms": {
+            "fast": 17.801,
+            "slow": 5.077
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 17.801,
+            "slow": 5.077
+          },
+          "tail_ms": 22.379
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24272,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.769,
+            "slow": 1.882
+          },
+          "plain_rtt_ms": {
+            "dev": 1.315,
+            "fast": 2.693,
+            "slow": 3.578
+          },
+          "query_rtt_ms": {
+            "fast": 2.693,
+            "slow": 3.578
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.693,
+            "slow": 3.578
+          },
+          "tail_ms": 11.466
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1114,
+          1105,
+          1113
+        ],
+        [
+          1551,
+          1563,
+          1550
+        ],
+        [
+          1521,
+          1526,
+          1530
+        ],
+        [
+          1555,
+          1549,
+          1543
+        ],
+        [
+          1510,
+          1509,
+          1513
+        ],
+        [
+          1489,
+          1488,
+          1480
+        ],
+        [
+          1467,
+          1470,
+          1478
+        ],
+        [
+          1542,
+          1541,
+          1540
+        ],
+        [
+          1508,
+          1508,
+          1506
+        ],
+        [
+          1481,
+          1480,
+          1480
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 24.82,
+        "p50_ms": 3.16,
+        "p90_ms": 4.98,
+        "p999_ms": 10.96,
+        "p99_ms": 7.56,
+        "qps": 4627.0,
+        "queries": 46299,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15715,
+          15782,
+          14821
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.61,
+        5.29,
+        5.15
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24052,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.603,
+            "slow": 1.695
+          },
+          "plain_rtt_ms": {
+            "dev": 0.713,
+            "fast": 3.052,
+            "slow": 2.898
+          },
+          "query_rtt_ms": {
+            "fast": 3.052,
+            "slow": 2.898
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.052,
+            "slow": 2.898
+          },
+          "tail_ms": 7.177
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25787,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.216,
+            "slow": 1.947
+          },
+          "plain_rtt_ms": {
+            "dev": 1.131,
+            "fast": 4.533,
+            "slow": 3.804
+          },
+          "query_rtt_ms": {
+            "fast": 4.533,
+            "slow": 3.804
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 4.533,
+            "slow": 3.804
+          },
+          "tail_ms": 10.59
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24175,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.767,
+            "slow": 1.736
+          },
+          "plain_rtt_ms": {
+            "dev": 0.768,
+            "fast": 3.069,
+            "slow": 3.039
+          },
+          "query_rtt_ms": {
+            "fast": 3.069,
+            "slow": 3.039
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.069,
+            "slow": 3.039
+          },
+          "tail_ms": 7.645
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1162,
+          1147,
+          1096
+        ],
+        [
+          1592,
+          1626,
+          1478
+        ],
+        [
+          1529,
+          1660,
+          1558
+        ],
+        [
+          1627,
+          1628,
+          1411
+        ],
+        [
+          1583,
+          1600,
+          1432
+        ],
+        [
+          1524,
+          1565,
+          1608
+        ],
+        [
+          1529,
+          1568,
+          1604
+        ],
+        [
+          1694,
+          1423,
+          1476
+        ],
+        [
+          1668,
+          1463,
+          1451
+        ],
+        [
+          1436,
+          1682,
+          1368
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 24.54,
+        "p50_ms": 3.1,
+        "p90_ms": 5.61,
+        "p999_ms": 16.07,
+        "p99_ms": 11.13,
+        "qps": 4402.0,
+        "queries": 44052,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14694,
+          14695,
+          14693
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.24,
+        5.1,
+        5.39
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23881,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.673,
+            "slow": 1.657
+          },
+          "plain_rtt_ms": {
+            "dev": 0.759,
+            "fast": 2.393,
+            "slow": 2.677
+          },
+          "query_rtt_ms": {
+            "fast": 2.393,
+            "slow": 2.677
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 2.393,
+            "slow": 2.677
+          },
+          "tail_ms": 7.233
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23880,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.631,
+            "slow": 1.6
+          },
+          "plain_rtt_ms": {
+            "dev": 0.777,
+            "fast": 2.8,
+            "slow": 2.742
+          },
+          "query_rtt_ms": {
+            "fast": 2.8,
+            "slow": 2.742
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 2.8,
+            "slow": 2.742
+          },
+          "tail_ms": 7.406
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23880,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.326,
+            "slow": 2.006
+          },
+          "plain_rtt_ms": {
+            "dev": 1.384,
+            "fast": 5.092,
+            "slow": 4.618
+          },
+          "query_rtt_ms": {
+            "fast": 5.092,
+            "slow": 4.618
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 5.092,
+            "slow": 4.618
+          },
+          "tail_ms": 12.921
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1167,
+          1166,
+          1170
+        ],
+        [
+          1540,
+          1540,
+          1536
+        ],
+        [
+          1498,
+          1491,
+          1501
+        ],
+        [
+          1364,
+          1375,
+          1368
+        ],
+        [
+          1386,
+          1383,
+          1380
+        ],
+        [
+          1490,
+          1492,
+          1496
+        ],
+        [
+          1490,
+          1484,
+          1480
+        ],
+        [
+          1369,
+          1374,
+          1366
+        ],
+        [
+          1468,
+          1467,
+          1476
+        ],
+        [
+          1521,
+          1522,
+          1523
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 32.99,
+        "p50_ms": 3.14,
+        "p90_ms": 4.99,
+        "p999_ms": 12.86,
+        "p99_ms": 7.84,
+        "qps": 4638.0,
+        "queries": 46402,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15626,
+          16149,
+          14657
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.63,
+        4.93,
+        5.29
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25588,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.89,
+            "slow": 1.737
+          },
+          "plain_rtt_ms": {
+            "dev": 0.851,
+            "fast": 3.635,
+            "slow": 3.275
+          },
+          "query_rtt_ms": {
+            "fast": 3.635,
+            "slow": 3.275
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 3.635,
+            "slow": 3.275
+          },
+          "tail_ms": 8.379
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26242,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.959,
+            "slow": 1.767
+          },
+          "plain_rtt_ms": {
+            "dev": 0.829,
+            "fast": 3.203,
+            "slow": 3.041
+          },
+          "query_rtt_ms": {
+            "fast": 3.203,
+            "slow": 3.041
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.203,
+            "slow": 3.041
+          },
+          "tail_ms": 8.017
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 22520,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.812,
+            "slow": 1.682
+          },
+          "plain_rtt_ms": {
+            "dev": 0.761,
+            "fast": 2.999,
+            "slow": 2.945
+          },
+          "query_rtt_ms": {
+            "fast": 2.999,
+            "slow": 2.945
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 2.999,
+            "slow": 2.945
+          },
+          "tail_ms": 7.513
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1273,
+          1193,
+          1034
+        ],
+        [
+          1672,
+          1514,
+          1400
+        ],
+        [
+          1563,
+          1633,
+          1466
+        ],
+        [
+          1551,
+          1625,
+          1489
+        ],
+        [
+          1571,
+          1435,
+          1531
+        ],
+        [
+          1699,
+          1453,
+          1561
+        ],
+        [
+          1405,
+          1632,
+          1560
+        ],
+        [
+          1491,
+          1697,
+          1403
+        ],
+        [
+          1436,
+          1780,
+          1407
+        ],
+        [
+          1538,
+          1780,
+          1394
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 26.89,
+        "p50_ms": 3.1,
+        "p90_ms": 5.39,
+        "p999_ms": 15.22,
+        "p99_ms": 9.71,
+        "qps": 4499.0,
+        "queries": 45025,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15015,
+          15020,
+          15016
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.9,
+        4.15,
+        6.07
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24060,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.235,
+            "slow": 2.012
+          },
+          "plain_rtt_ms": {
+            "dev": 1.868,
+            "fast": 4.478,
+            "slow": 4.707
+          },
+          "query_rtt_ms": {
+            "fast": 4.478,
+            "slow": 4.707
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 4.478,
+            "slow": 4.707
+          },
+          "tail_ms": 15.918
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24060,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.775,
+            "slow": 1.678
+          },
+          "plain_rtt_ms": {
+            "dev": 0.819,
+            "fast": 2.889,
+            "slow": 2.8
+          },
+          "query_rtt_ms": {
+            "fast": 2.889,
+            "slow": 2.8
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 2.889,
+            "slow": 2.8
+          },
+          "tail_ms": 7.716
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 24060,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.093,
+            "slow": 1.923
+          },
+          "plain_rtt_ms": {
+            "dev": 1.159,
+            "fast": 3.29,
+            "slow": 3.49
+          },
+          "query_rtt_ms": {
+            "fast": 3.29,
+            "slow": 3.49
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 3.29,
+            "slow": 3.49
+          },
+          "tail_ms": 10.445
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1130,
+          1136,
+          1132
+        ],
+        [
+          1515,
+          1511,
+          1514
+        ],
+        [
+          1527,
+          1529,
+          1523
+        ],
+        [
+          1509,
+          1507,
+          1512
+        ],
+        [
+          1467,
+          1466,
+          1464
+        ],
+        [
+          1502,
+          1504,
+          1501
+        ],
+        [
+          1515,
+          1519,
+          1523
+        ],
+        [
+          1492,
+          1487,
+          1483
+        ],
+        [
+          1519,
+          1519,
+          1523
+        ],
+        [
+          1481,
+          1483,
+          1485
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 19.93,
+        "p50_ms": 3.11,
+        "p90_ms": 5.02,
+        "p999_ms": 11.79,
+        "p99_ms": 7.85,
+        "qps": 4652.0,
+        "queries": 46550,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15918,
+          15927,
+          14718
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.93,
+        5.24,
+        5.27
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25256,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.962,
+            "slow": 1.781
+          },
+          "plain_rtt_ms": {
+            "dev": 0.826,
+            "fast": 4.227,
+            "slow": 3.074
+          },
+          "query_rtt_ms": {
+            "fast": 4.227,
+            "slow": 3.074
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 4.227,
+            "slow": 3.074
+          },
+          "tail_ms": 8.032
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25961,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.698,
+            "slow": 1.702
+          },
+          "plain_rtt_ms": {
+            "dev": 0.817,
+            "fast": 3.385,
+            "slow": 2.968
+          },
+          "query_rtt_ms": {
+            "fast": 3.385,
+            "slow": 2.968
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.385,
+            "slow": 2.968
+          },
+          "tail_ms": 7.867
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 23552,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.859,
+            "slow": 1.858
+          },
+          "plain_rtt_ms": {
+            "dev": 1.008,
+            "fast": 3.431,
+            "slow": 3.792
+          },
+          "query_rtt_ms": {
+            "fast": 3.431,
+            "slow": 3.792
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.431,
+            "slow": 3.792
+          },
+          "tail_ms": 9.839
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1301,
+          1225,
+          1045
+        ],
+        [
+          1548,
+          1565,
+          1543
+        ],
+        [
+          1561,
+          1593,
+          1526
+        ],
+        [
+          1544,
+          1520,
+          1506
+        ],
+        [
+          1363,
+          1716,
+          1367
+        ],
+        [
+          1654,
+          1628,
+          1483
+        ],
+        [
+          1728,
+          1592,
+          1498
+        ],
+        [
+          1689,
+          1553,
+          1284
+        ],
+        [
+          1678,
+          1588,
+          1439
+        ],
+        [
+          1463,
+          1579,
+          1609
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 51.67,
+        "p50_ms": 8.42,
+        "p90_ms": 28.13,
+        "p999_ms": 46.58,
+        "p99_ms": 39.93,
+        "qps": 5042.0,
+        "queries": 50452,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16821,
+          16823,
+          16825
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.51,
+        8.88,
+        38.71
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26849,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.847,
+            "slow": 1.877
+          },
+          "plain_rtt_ms": {
+            "dev": 2.059,
+            "fast": 3.695,
+            "slow": 4.042
+          },
+          "query_rtt_ms": {
+            "fast": 3.695,
+            "slow": 4.042
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0009669090724224837,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 3.695,
+            "slow": 4.042
+          },
+          "tail_ms": 16.397
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26849,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.891,
+            "slow": 1.78
+          },
+          "plain_rtt_ms": {
+            "dev": 1.388,
+            "fast": 3.063,
+            "slow": 3.919
+          },
+          "query_rtt_ms": {
+            "fast": 3.063,
+            "slow": 3.919
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 3.063,
+            "slow": 3.919
+          },
+          "tail_ms": 12.249
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26849,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 3.042,
+            "slow": 2.253
+          },
+          "plain_rtt_ms": {
+            "dev": 4.151,
+            "fast": 31.07,
+            "slow": 31.144
+          },
+          "query_rtt_ms": {
+            "fast": 31.07,
+            "slow": 31.144
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 31.07,
+            "slow": 31.144
+          },
+          "tail_ms": 56.049
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1268,
+          1256,
+          1277
+        ],
+        [
+          1623,
+          1630,
+          1623
+        ],
+        [
+          1677,
+          1698,
+          1723
+        ],
+        [
+          1721,
+          1725,
+          1714
+        ],
+        [
+          1706,
+          1669,
+          1667
+        ],
+        [
+          1676,
+          1682,
+          1676
+        ],
+        [
+          1622,
+          1639,
+          1650
+        ],
+        [
+          1704,
+          1668,
+          1686
+        ],
+        [
+          1660,
+          1708,
+          1695
+        ],
+        [
+          1734,
+          1711,
+          1699
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 39.23,
+        "p50_ms": 11.77,
+        "p90_ms": 15.04,
+        "p999_ms": 32.86,
+        "p99_ms": 20.97,
+        "qps": 5341.0,
+        "queries": 53445,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          17661,
+          18669,
+          17143
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        20.17,
+        22.02,
+        21.02
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 28285,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.931,
+            "slow": 2.135
+          },
+          "plain_rtt_ms": {
+            "dev": 2.266,
+            "fast": 11.877,
+            "slow": 11.959
+          },
+          "query_rtt_ms": {
+            "fast": 11.877,
+            "slow": 11.959
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 11.877,
+            "slow": 11.959
+          },
+          "tail_ms": 25.554
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 30046,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.092,
+            "slow": 2.062
+          },
+          "plain_rtt_ms": {
+            "dev": 1.623,
+            "fast": 12.087,
+            "slow": 11.798
+          },
+          "query_rtt_ms": {
+            "fast": 12.087,
+            "slow": 11.798
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 12.087,
+            "slow": 11.798
+          },
+          "tail_ms": 21.533
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 27274,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.078,
+            "slow": 1.981
+          },
+          "plain_rtt_ms": {
+            "dev": 1.63,
+            "fast": 10.687,
+            "slow": 11.904
+          },
+          "query_rtt_ms": {
+            "fast": 10.687,
+            "slow": 11.904
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 10.687,
+            "slow": 11.904
+          },
+          "tail_ms": 21.682
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1294,
+          1441,
+          1280
+        ],
+        [
+          1724,
+          1835,
+          1712
+        ],
+        [
+          1685,
+          1880,
+          1752
+        ],
+        [
+          1774,
+          1869,
+          1745
+        ],
+        [
+          1846,
+          1804,
+          1709
+        ],
+        [
+          1788,
+          1868,
+          1649
+        ],
+        [
+          1796,
+          1883,
+          1732
+        ],
+        [
+          1775,
+          1910,
+          1719
+        ],
+        [
+          1798,
+          1845,
+          1718
+        ],
+        [
+          1756,
+          1855,
+          1698
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 84.59,
+        "p50_ms": 9.18,
+        "p90_ms": 28.83,
+        "p999_ms": 72.21,
+        "p99_ms": 46.93,
+        "qps": 4853.0,
+        "queries": 48561,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16206,
+          16194,
+          16190
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        23.49,
+        9.93,
+        29.41
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26281,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.369,
+            "slow": 2.236
+          },
+          "plain_rtt_ms": {
+            "dev": 1.675,
+            "fast": 18.871,
+            "slow": 18.375
+          },
+          "query_rtt_ms": {
+            "fast": 18.871,
+            "slow": 18.375
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 18.871,
+            "slow": 18.375
+          },
+          "tail_ms": 28.423
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26281,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.265,
+            "slow": 2.22
+          },
+          "plain_rtt_ms": {
+            "dev": 2.952,
+            "fast": 7.015,
+            "slow": 8.853
+          },
+          "query_rtt_ms": {
+            "fast": 7.015,
+            "slow": 8.853
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 7.015,
+            "slow": 8.853
+          },
+          "tail_ms": 26.563
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26280,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.034,
+            "slow": 2.062
+          },
+          "plain_rtt_ms": {
+            "dev": 3.293,
+            "fast": 11.199,
+            "slow": 9.953
+          },
+          "query_rtt_ms": {
+            "fast": 11.199,
+            "slow": 9.953
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 11.199,
+            "slow": 9.953
+          },
+          "tail_ms": 29.71
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1346,
+          1311,
+          1269
+        ],
+        [
+          1658,
+          1707,
+          1749
+        ],
+        [
+          1715,
+          1695,
+          1702
+        ],
+        [
+          1574,
+          1542,
+          1564
+        ],
+        [
+          1627,
+          1632,
+          1555
+        ],
+        [
+          1487,
+          1495,
+          1560
+        ],
+        [
+          1694,
+          1716,
+          1689
+        ],
+        [
+          1526,
+          1493,
+          1464
+        ],
+        [
+          1597,
+          1603,
+          1600
+        ],
+        [
+          1568,
+          1588,
+          1615
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 34.95,
+        "p50_ms": 11.83,
+        "p90_ms": 15.26,
+        "p999_ms": 26.01,
+        "p99_ms": 21.45,
+        "qps": 5286.0,
+        "queries": 52885,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          17533,
+          18698,
+          16695
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        20.2,
+        21.39,
+        21.24
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 28117,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.076,
+            "slow": 2.058
+          },
+          "plain_rtt_ms": {
+            "dev": 2.107,
+            "fast": 9.208,
+            "slow": 11.759
+          },
+          "query_rtt_ms": {
+            "fast": 9.208,
+            "slow": 11.759
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 9.208,
+            "slow": 11.759
+          },
+          "tail_ms": 24.403
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 29758,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.57,
+            "slow": 2.192
+          },
+          "plain_rtt_ms": {
+            "dev": 2.174,
+            "fast": 15.444,
+            "slow": 12.204
+          },
+          "query_rtt_ms": {
+            "fast": 15.444,
+            "slow": 12.204
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 15.444,
+            "slow": 12.204
+          },
+          "tail_ms": 25.246
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26876,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.068,
+            "slow": 2.005
+          },
+          "plain_rtt_ms": {
+            "dev": 1.97,
+            "fast": 12.523,
+            "slow": 11.753
+          },
+          "query_rtt_ms": {
+            "fast": 12.523,
+            "slow": 11.753
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 12.523,
+            "slow": 11.753
+          },
+          "tail_ms": 23.572
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1409,
+          1419,
+          1266
+        ],
+        [
+          1778,
+          1828,
+          1731
+        ],
+        [
+          1760,
+          1884,
+          1628
+        ],
+        [
+          1793,
+          1851,
+          1629
+        ],
+        [
+          1766,
+          1921,
+          1687
+        ],
+        [
+          1759,
+          1816,
+          1715
+        ],
+        [
+          1762,
+          1931,
+          1705
+        ],
+        [
+          1658,
+          1904,
+          1620
+        ],
+        [
+          1693,
+          1823,
+          1614
+        ],
+        [
+          1715,
+          1863,
+          1651
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 82.64,
+        "p50_ms": 8.51,
+        "p90_ms": 28.19,
+        "p999_ms": 70.75,
+        "p99_ms": 40.21,
+        "qps": 4954.0,
+        "queries": 49583,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16537,
+          16531,
+          16544
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.12,
+        10.07,
+        38.68
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26677,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.455,
+            "slow": 2.05
+          },
+          "plain_rtt_ms": {
+            "dev": 3.806,
+            "fast": 10.111,
+            "slow": 9.318
+          },
+          "query_rtt_ms": {
+            "fast": 10.111,
+            "slow": 9.318
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 10.111,
+            "slow": 9.318
+          },
+          "tail_ms": 32.156
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26677,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.025,
+            "slow": 1.844
+          },
+          "plain_rtt_ms": {
+            "dev": 2.329,
+            "fast": 7.577,
+            "slow": 5.422
+          },
+          "query_rtt_ms": {
+            "fast": 7.577,
+            "slow": 5.422
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 7.577,
+            "slow": 5.422
+          },
+          "tail_ms": 19.395
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26677,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.943,
+            "slow": 2.171
+          },
+          "plain_rtt_ms": {
+            "dev": 7.955,
+            "fast": 20.858,
+            "slow": 26.142
+          },
+          "query_rtt_ms": {
+            "fast": 20.858,
+            "slow": 26.142
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 20.858,
+            "slow": 26.142
+          },
+          "tail_ms": 73.871
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1282,
+          1270,
+          1259
+        ],
+        [
+          1641,
+          1644,
+          1658
+        ],
+        [
+          1723,
+          1715,
+          1717
+        ],
+        [
+          1631,
+          1644,
+          1666
+        ],
+        [
+          1686,
+          1684,
+          1650
+        ],
+        [
+          1584,
+          1582,
+          1580
+        ],
+        [
+          1721,
+          1721,
+          1719
+        ],
+        [
+          1653,
+          1660,
+          1666
+        ],
+        [
+          1582,
+          1574,
+          1566
+        ],
+        [
+          1664,
+          1666,
+          1664
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 36.92,
+        "p50_ms": 11.82,
+        "p90_ms": 15.28,
+        "p999_ms": 28.68,
+        "p99_ms": 22.56,
+        "qps": 5277.0,
+        "queries": 52802,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 2,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          17389,
+          18582,
+          16861
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        20.34,
+        21.15,
+        21.39
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 28005,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.083,
+            "slow": 2.05
+          },
+          "plain_rtt_ms": {
+            "dev": 1.845,
+            "fast": 12.043,
+            "slow": 11.768
+          },
+          "query_rtt_ms": {
+            "fast": 12.043,
+            "slow": 11.768
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 12.043,
+            "slow": 11.768
+          },
+          "tail_ms": 22.837
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 29787,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.233,
+            "slow": 2.064
+          },
+          "plain_rtt_ms": {
+            "dev": 2.047,
+            "fast": 9.905,
+            "slow": 10.99
+          },
+          "query_rtt_ms": {
+            "fast": 9.905,
+            "slow": 10.99
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 9.905,
+            "slow": 10.99
+          },
+          "tail_ms": 23.27
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26909,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.018,
+            "slow": 2.22
+          },
+          "plain_rtt_ms": {
+            "dev": 1.71,
+            "fast": 13.023,
+            "slow": 11.911
+          },
+          "query_rtt_ms": {
+            "fast": 13.023,
+            "slow": 11.911
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 13.023,
+            "slow": 11.911
+          },
+          "tail_ms": 22.172
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1329,
+          1370,
+          1300
+        ],
+        [
+          1727,
+          1921,
+          1710
+        ],
+        [
+          1808,
+          1834,
+          1785
+        ],
+        [
+          1699,
+          1923,
+          1651
+        ],
+        [
+          1795,
+          1669,
+          1674
+        ],
+        [
+          1483,
+          1872,
+          1610
+        ],
+        [
+          1793,
+          1857,
+          1687
+        ],
+        [
+          1789,
+          1870,
+          1755
+        ],
+        [
+          1732,
+          1853,
+          1525
+        ],
+        [
+          1780,
+          1940,
+          1703
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 63.1,
+        "p50_ms": 8.08,
+        "p90_ms": 28.96,
+        "p999_ms": 53.81,
+        "p99_ms": 40.04,
+        "qps": 5074.0,
+        "queries": 50766,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16902,
+          16925,
+          16950
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.1,
+        8.8,
+        40.12
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 27223,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.359,
+            "slow": 2.072
+          },
+          "plain_rtt_ms": {
+            "dev": 4.801,
+            "fast": 16.916,
+            "slow": 9.04
+          },
+          "query_rtt_ms": {
+            "fast": 16.916,
+            "slow": 9.04
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 16.916,
+            "slow": 9.04
+          },
+          "tail_ms": 37.848
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 27222,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.787,
+            "slow": 1.769
+          },
+          "plain_rtt_ms": {
+            "dev": 1.006,
+            "fast": 2.81,
+            "slow": 3.186
+          },
+          "query_rtt_ms": {
+            "fast": 2.81,
+            "slow": 3.186
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 2.81,
+            "slow": 3.186
+          },
+          "tail_ms": 9.223
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 27222,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.945,
+            "slow": 2.192
+          },
+          "plain_rtt_ms": {
+            "dev": 4.487,
+            "fast": 18.516,
+            "slow": 26.159
+          },
+          "query_rtt_ms": {
+            "fast": 18.516,
+            "slow": 26.159
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.5
+          },
+          "rtt_ms": {
+            "fast": 18.516,
+            "slow": 26.159
+          },
+          "tail_ms": 53.078
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1270,
+          1285,
+          1315
+        ],
+        [
+          1687,
+          1676,
+          1661
+        ],
+        [
+          1637,
+          1631,
+          1623
+        ],
+        [
+          1734,
+          1765,
+          1796
+        ],
+        [
+          1754,
+          1725,
+          1691
+        ],
+        [
+          1710,
+          1705,
+          1722
+        ],
+        [
+          1750,
+          1752,
+          1727
+        ],
+        [
+          1611,
+          1625,
+          1636
+        ],
+        [
+          1676,
+          1672,
+          1680
+        ],
+        [
+          1678,
+          1670,
+          1656
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 37.37,
+        "p50_ms": 11.95,
+        "p90_ms": 15.42,
+        "p999_ms": 29.14,
+        "p99_ms": 21.99,
+        "qps": 5224.0,
+        "queries": 52272,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 3,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16824,
+          18501,
+          16966
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        19.85,
+        21.46,
+        21.66
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26949,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.935,
+            "slow": 2.05
+          },
+          "plain_rtt_ms": {
+            "dev": 1.577,
+            "fast": 10.664,
+            "slow": 11.392
+          },
+          "query_rtt_ms": {
+            "fast": 10.664,
+            "slow": 11.392
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 10.664,
+            "slow": 11.392
+          },
+          "tail_ms": 20.856
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 29789,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.205,
+            "slow": 1.989
+          },
+          "plain_rtt_ms": {
+            "dev": 1.831,
+            "fast": 13.086,
+            "slow": 11.91
+          },
+          "query_rtt_ms": {
+            "fast": 13.086,
+            "slow": 11.91
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 13.086,
+            "slow": 11.91
+          },
+          "tail_ms": 22.894
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 27245,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 1.954,
+            "slow": 2.06
+          },
+          "plain_rtt_ms": {
+            "dev": 2.318,
+            "fast": 11.594,
+            "slow": 12.51
+          },
+          "query_rtt_ms": {
+            "fast": 11.594,
+            "slow": 12.51
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 11.594,
+            "slow": 12.51
+          },
+          "tail_ms": 26.419
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1239,
+          1479,
+          1272
+        ],
+        [
+          1643,
+          1843,
+          1640
+        ],
+        [
+          1706,
+          1868,
+          1650
+        ],
+        [
+          1671,
+          1842,
+          1768
+        ],
+        [
+          1694,
+          1799,
+          1650
+        ],
+        [
+          1617,
+          1821,
+          1722
+        ],
+        [
+          1711,
+          1826,
+          1718
+        ],
+        [
+          1697,
+          1830,
+          1764
+        ],
+        [
+          1691,
+          1920,
+          1670
+        ],
+        [
+          1692,
+          1824,
+          1700
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 94.29,
+        "p50_ms": 8.9,
+        "p90_ms": 29.09,
+        "p999_ms": 75.07,
+        "p99_ms": 46.17,
+        "qps": 4928.0,
+        "queries": 49318,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16446,
+          16450,
+          16441
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.83,
+        10.73,
+        35.73
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26529,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.336,
+            "slow": 1.893
+          },
+          "plain_rtt_ms": {
+            "dev": 1.624,
+            "fast": 6.413,
+            "slow": 5.272
+          },
+          "query_rtt_ms": {
+            "fast": 6.413,
+            "slow": 5.272
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 6.413,
+            "slow": 5.272
+          },
+          "tail_ms": 15.017
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26529,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.019,
+            "slow": 1.961
+          },
+          "plain_rtt_ms": {
+            "dev": 2.888,
+            "fast": 3.571,
+            "slow": 6.114
+          },
+          "query_rtt_ms": {
+            "fast": 3.571,
+            "slow": 6.114
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 0.0
+          },
+          "rtt_ms": {
+            "fast": 3.571,
+            "slow": 6.114
+          },
+          "tail_ms": 23.443
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26529,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.738,
+            "slow": 2.413
+          },
+          "plain_rtt_ms": {
+            "dev": 4.203,
+            "fast": 25.932,
+            "slow": 24.154
+          },
+          "query_rtt_ms": {
+            "fast": 25.932,
+            "slow": 24.154
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 25.932,
+            "slow": 24.154
+          },
+          "tail_ms": 49.37
+        }
+      ],
+      "shard0_per_second": [
+        [
+          1280,
+          1279,
+          1273
+        ],
+        [
+          1721,
+          1719,
+          1716
+        ],
+        [
+          1666,
+          1684,
+          1711
+        ],
+        [
+          1728,
+          1708,
+          1681
+        ],
+        [
+          1690,
+          1688,
+          1700
+        ],
+        [
+          1480,
+          1481,
+          1469
+        ],
+        [
+          1455,
+          1481,
+          1501
+        ],
+        [
+          1753,
+          1731,
+          1714
+        ],
+        [
+          1664,
+          1671,
+          1673
+        ],
+        [
+          1544,
+          1518,
+          1555
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 71.16,
+        "p50_ms": 12.0,
+        "p90_ms": 16.83,
+        "p999_ms": 33.5,
+        "p99_ms": 25.78,
+        "qps": 5052.0,
+        "queries": 50548,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 4,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16653,
+          17825,
+          16103
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        19.66,
+        22.24,
+        21.07
+      ],
+      "shard0_observed_by_copy": [
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 26591,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.171,
+            "slow": 2.113
+          },
+          "plain_rtt_ms": {
+            "dev": 2.015,
+            "fast": 11.241,
+            "slow": 12.122
+          },
+          "query_rtt_ms": {
+            "fast": 11.241,
+            "slow": 12.122
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 11.241,
+            "slow": 12.122
+          },
+          "tail_ms": 24.214
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 28204,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.247,
+            "slow": 2.037
+          },
+          "plain_rtt_ms": {
+            "dev": 1.751,
+            "fast": 10.318,
+            "slow": 11.212
+          },
+          "query_rtt_ms": {
+            "fast": 10.318,
+            "slow": 11.212
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 10.318,
+            "slow": 11.212
+          },
+          "tail_ms": 21.717
+        },
+        {
+          "after_write_rtt_ms": {
+            "fast": null,
+            "slow": null
+          },
+          "calls": {
+            "failed": 0,
+            "ok": 25376,
+            "refused": 0,
+            "timeouts": 0,
+            "unfinished": 0
+          },
+          "error_rate": 0.0,
+          "held": 0,
+          "inflight": 0,
+          "overhead_ms": {
+            "fast": 2.039,
+            "slow": 2.092
+          },
+          "plain_rtt_ms": {
+            "dev": 2.356,
+            "fast": 12.521,
+            "slow": 12.201
+          },
+          "query_rtt_ms": {
+            "fast": 12.521,
+            "slow": 12.201
+          },
+          "refusal_rate": 0.0,
+          "reported": {
+            "age_ms": 0,
+            "memory": 0.0,
+            "slots": 1.0
+          },
+          "rtt_ms": {
+            "fast": 12.521,
+            "slow": 12.201
+          },
+          "tail_ms": 26.339
+        }
+      ],
+      "shard0_per_second": [
+        [
+          882,
+          906,
+          911
+        ],
+        [
+          1322,
+          1423,
+          1399
+        ],
+        [
+          1704,
+          1871,
+          1670
+        ],
+        [
+          1815,
+          1865,
+          1643
+        ],
+        [
+          1755,
+          1877,
+          1682
+        ],
+        [
+          1733,
+          1935,
+          1682
+        ],
+        [
+          1770,
+          1886,
+          1660
+        ],
+        [
+          1771,
+          1870,
+          1633
+        ],
+        [
+          1682,
+          1901,
+          1704
+        ],
+        [
+          1769,
+          1830,
+          1677
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    }
+  ],
+  "ryw_share": 0.25
+}

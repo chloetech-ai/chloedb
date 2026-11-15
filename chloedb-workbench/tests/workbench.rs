@@ -42,9 +42,15 @@ while [ $# -gt 0 ]; do
     --fork-session) FORK=1; shift;;
     --) TASK="$2"; shift $#;;
     -p) PRINT=1; shift;;
+    --system-prompt) SYSTEM="$2"; shift 2;;
     *) TASK="$1"; shift;;
   esac
 done
+# claude -p as Optimize this's writer of instructions: one of them.
+if [ -n "$PRINT" ] && [ "${SYSTEM#*tune the harness}" != "$SYSTEM" ]; then
+  echo '{"type":"result","is_error":false,"total_cost_usd":0.01,"result":"{\"changes\":[{\"title\":\"Write the notes in one go\",\"instruction\":\"Write each file in one edit, not line by line.\",\"aims\":[\"turns\",\"wall_s\"],\"why\":\"fake: it wrote one line\"}]}"}'
+  exit 0
+fi
 # claude -p (autocomplete's model ghost): one result, no session.
 [ -n "$PRINT" ] && { echo '{"type":"result","is_error":false,"result":" and keep every total in integer cents."}'; exit 0; }
 SDIR=$(dirname "$SETTINGS")
@@ -143,6 +149,22 @@ turn() {
       # process group, as a command an agent backgrounds is.
       setsid python3 -m http.server "${1#SERVE }" --bind 127.0.0.1 >/dev/null 2>&1 < /dev/null &
       ;;
+    PAUSE\ *)
+      # PAUSE <file> <text>: a turn that shows Claude Code's text prompt and
+      # no spinner for a while, as it does between two of its steps, then
+      # writes <text> to <file>.
+      local rest="${1#PAUSE }"; local file="${rest%% *}"; local text="${rest#* }"
+      printf '\n%s\n❯ \n%s\n' "────────────────────────────────────────────────────────────" "────────────────────────────────────────────────────────────"
+      sleep 7
+      printf '%s\n' "$text" >> "$file";;
+    PERMC\ *)
+      # PERMC <command>: Claude Code's permission prompt for that Bash
+      # command, after its PreToolUse; No or Esc ends the turn.
+      CMD="${1#PERMC }"
+      hook PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"'"$CMD"'"},"session_id":"'"$SID"'"}'
+      NOTIFY='{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"'"$SID"'"}'
+      menu perm "Do you want to proceed?" "Yes" "Yes, and switch to auto mode · auto mode handles these prompts for you" "No"
+      case "$CHOSE" in Yes*) ;; *) interrupted; return;; esac;;
     PERM3\ *|PERM4\ *)
       # PERM3 / PERM4 <text>: Claude Code's permission prompt for the Bash
       # command, in its 3- and 4-option forms, then its Notification; No
@@ -399,7 +421,7 @@ fn spawns_in_a_worktree_and_hooks_set_its_state() {
     // The settings and MCP config it was started with.
     let sess = s.data.join("sessions").join(&id);
     let settings: Value = serde_json::from_str(&std::fs::read_to_string(sess.join("settings.json")).unwrap()).unwrap();
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"] {
         let h = &settings["hooks"][ev][0]["hooks"][0];
         assert!(h["command"].as_str().unwrap().ends_with(" hook"), "{ev}");
         assert_eq!(h["timeout"], 5);
@@ -848,7 +870,9 @@ fn the_hook_subcommand_never_fails() {
 // The decision trail.
 
 /// A fake `chloectx`: it prints the canned JSON of `<dir>/<command>.json`
-/// and keeps where it ran and its arguments in `<dir>/<command>.args`.
+/// and keeps where it ran and its arguments in `<dir>/<command>.args` (the
+/// last call), and every call's arguments, one line each, in
+/// `<dir>/<command>.log`.
 fn fake_chloectx(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join("fake-chloectx");
@@ -856,6 +880,7 @@ fn fake_chloectx(dir: &Path) -> PathBuf {
         r#"#!/bin/bash
 D='{}'
 printf '%s\n' "$PWD" "$@" > "$D/$1.args"
+printf '%s\n' "$*" >> "$D/$1.log"
 [ -f "$D/$1.json" ] || {{ echo "chloectx: no store for $PWD" >&2; exit 1; }}
 cat "$D/$1.json"
 "#,
@@ -1394,7 +1419,9 @@ fn a_goal_is_planned_by_a_lead_and_outcomes_follow_their_agents() {
     let learned = d["learned"].as_array().unwrap();
     assert_eq!(learned.len(), 2, "{d}");
     assert_eq!((learned[0]["kind"].as_str(), learned[1]["kind"].as_str()), (Some("decision"), Some("fix")));
-    assert!(args_of(ctx.path(), "sql")[3].contains("tag = 'fix'"));
+    // Among the calls, as another may come after it (the last one's
+    // arguments are what sql.args keeps).
+    assert!(std::fs::read_to_string(ctx.path().join("sql.log")).unwrap().contains("tag = 'fix'"));
     let pulse = d["pulse"].as_array().unwrap();
     assert_eq!(pulse.len(), 60);
     assert!(pulse.iter().map(|p| p[1].as_i64().unwrap()).sum::<i64>() >= 10, "{pulse:?}");
@@ -1858,6 +1885,49 @@ fn sessions_get_the_permissions_a_regular_claude_code_session_has() {
     let (status, v) = s.post(&format!("/api/agents/{did}/restart"), json!({}));
     assert_eq!(status, 201, "{v}");
     assert_eq!(s.agent(v["agent"]["id"].as_str().unwrap())["permission_mode"], "auto");
+}
+
+/// Audit APP-1: the ceiling on an agent another starts held only when the
+/// body named the parent, so a read-only agent's key called the API with
+/// none and started a top-level agent in bypassPermissions. An agent's key
+/// now starts agents as that agent, whatever the body says.
+#[test]
+fn an_agents_key_starts_agents_only_as_its_own_child() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "reader", "task": "say hi", "read_only": true, "permission_mode": "plan" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let key = agent_token(&s, &id);
+    let free = s.spawn(json!({ "repo": r, "name": "free", "task": "say hi", "permission_mode": "bypassPermissions" }));
+    let fid = free["id"].as_str().unwrap().to_string();
+
+    // No parent in the body: bounded by the caller all the same.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "permission_mode": "bypassPermissions" })));
+    assert_eq!(status, 400, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "read_only": false, "permissions": { "allow": ["Bash"] } })));
+    assert_eq!(status, 400, "{v}");
+    assert!(v["error"].as_str().unwrap_or_default().contains("Bash"), "{v}");
+    // Another agent named as the parent (one that may do more): refused.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "parent": fid })));
+    assert_eq!(status, 403, "{v}");
+    let all = s.get("/api/agents?all=1").1;
+    assert!(!all["agents"].as_array().unwrap().iter().any(|a| a["name"] == "escaped"), "nothing was started: {all}");
+
+    // What it may start: its own child, read-only and in plan like it, one deeper.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "kid", "read_only": false })));
+    assert_eq!(status, 201, "{v}");
+    let kid = s.agent(v["agent"]["id"].as_str().unwrap());
+    assert_eq!((kid["parent"].as_str(), kid["read_only"].as_bool(), kid["permission_mode"].as_str(), kid["depth"].as_i64()), (Some(id.as_str()), Some(true), Some("plan"), Some(1)), "{kid}");
+
+    // A restart and a goal start agents no parent bounds: the user's.
+    let (status, v) = call_as(&s, "POST", &format!("/api/agents/{fid}/restart"), &key, None, Some(json!({})));
+    assert_eq!(status, 403, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/goals", &key, None, Some(json!({ "repo": r, "text": "ship it", "plan": true })));
+    assert_eq!(status, 403, "{v}");
+    // The user's key still starts what it asks.
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "mine", "permission_mode": "bypassPermissions", "worktree": false }));
+    assert_eq!(status, 201, "{v}");
 }
 
 #[test]
@@ -2504,12 +2574,15 @@ fn health_counts_tests_by_name_without_permission_waits_and_runs_one_again() {
     let (_d, r) = repo();
     let a = s.spawn(json!({ "repo": r, "name": "flake", "worktree": false }));
     let id = a["id"].as_str().unwrap().to_string();
-    let a = s.until(&id, "started", |a| a["session_id"].is_string());
+    let started = s.until(&id, "started", |a| a["session_id"].is_string());
     let junit = s.data.join("sessions").join(&id).join("pytest-junit.xml");
-    // The session's pytest writes its junit report where Workbench reads it.
+    // The session's pytest writes its junit report where Workbench reads it
+    // (read from /proc, so on Linux only).
+    #[cfg(not(target_os = "linux"))]
+    let _ = started;
     #[cfg(target_os = "linux")]
     {
-        let env = std::fs::read(format!("/proc/{}/environ", a["pid"])).unwrap_or_default();
+        let env = std::fs::read(format!("/proc/{}/environ", started["pid"])).unwrap_or_default();
         let env = String::from_utf8_lossy(&env);
         assert!(env.contains(&format!("PYTEST_ADDOPTS=--junitxml='{}'", junit.display())), "the agent's environment has no PYTEST_ADDOPTS");
     }
@@ -3270,8 +3343,11 @@ fn guarded_commands_are_denied_proposed_and_decided_only_by_the_user() {
     // when its turn ends.
     assert_eq!((v["request"]["state"].as_str(), v["request"]["told"].as_str()), (Some("declined"), Some("queued")));
     call_as(&s, "POST", "/api/hook", &key, Some(&id), Some(json!({ "hook_event_name": "Stop", "session_id": "s" })));
-    let screen = ws_read_until(&s, &id, "not before the backup", &[]);
-    assert!(screen.contains("declined your change request"), "{screen}");
+    // Typed in, it starts a turn: wait for that turn's end (its DONE, then
+    // its Stop), or the approval below can find it working and queue (the
+    // hooks' python3 makes a turn slow on macOS).
+    let screen = ws_read_until(&s, &id, "DONE: The user declined your change request", &[]);
+    assert!(screen.contains("not before the backup"), "{screen}");
     s.wait(&id, "idle");
 
     // Approve runs it in the agent's worktree, keeps its output and tells it.
@@ -6183,11 +6259,358 @@ fn harness_only_the_users_token_changes_the_harness_and_secrets_are_refused() {
 #[test]
 fn harness_pages_are_served_under_goals() {
     let s = Server::start(&[]);
-    for f in ["index.js", "parts.js", "overview.js", "fixes.js", "permissions.js", "memory.js", "sees.js", "versions.js"] {
+    for f in ["index.js", "parts.js", "overview.js", "fixes.js", "permissions.js", "memory.js", "sees.js", "versions.js", "evals.js", "timeline.js", "run.js"] {
         let r = http().get(format!("{}/goals/harness/{f}", s.url)).call().unwrap();
         assert_eq!(r.status().as_u16(), 200, "{f}");
     }
     assert_eq!(http().get(format!("{}/goals/harness/nope.js", s.url)).call().unwrap().status().as_u16(), 404);
+}
+
+// Harness step 3 (HARNESS.md): Make this a test, replay A against B, and
+// Optimize this, played by the fake claude in sandboxes.
+
+/// Polls a run until `f` of it holds (replays take seconds each).
+fn replay_until(s: &Server, id: &str, what: &str, f: impl Fn(&Value) -> bool) -> Value {
+    let end = Instant::now() + Duration::from_secs(180);
+    loop {
+        let (status, v) = s.get(&format!("/api/harness/runs/{id}"));
+        if status == 200 && f(&v) {
+            return v;
+        }
+        assert!(Instant::now() < end, "run {id}: {what} never held: {v}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Starts a run: refused until its price is confirmed, then queued.
+fn start_run(s: &Server, body: Value) -> Value {
+    let (status, v) = s.post("/api/harness/runs", body.clone());
+    assert_eq!((status, v["error_code"].as_str()), (409, Some("confirm_cost")), "{v}");
+    let (status, est) = s.post("/api/harness/runs/estimate", body.clone());
+    assert_eq!(status, 200, "{est}");
+    let mut b = body;
+    b["confirm_usd"] = est["confirm_usd"].clone();
+    let (status, v) = s.post("/api/harness/runs", b);
+    assert_eq!(status, 201, "{v}");
+    v
+}
+
+#[test]
+fn harness_a_stretch_of_a_session_becomes_a_test_and_replays_a_against_b() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let repo_s = r.to_string_lossy().to_string();
+    // The session: turn 1 leaves a line uncommitted, turn 2 fixes it.
+    let a = s.spawn(json!({ "repo": r, "task": "WRITE notes.txt started", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "WRITE notes.txt fixed" }));
+    ws_read_until(&s, &id, "DONE: WRITE notes.txt fixed", &[]);
+    s.wait(&id, "idle");
+
+    // Its timeline: two turns, the code at each start recorded.
+    let tl = s.get_until(&format!("/api/harness/timeline?agent={id}"), "the code at turn 2", |v| v["turns"][1]["code"] == true);
+    assert_eq!(tl["turns"].as_array().unwrap().len(), 2, "{tl}");
+    assert_eq!(tl["turns"][1]["prompt"], "WRITE notes.txt fixed");
+    assert!(tl["turns"][1]["edits"].as_i64().unwrap() >= 1, "{tl}");
+
+    // Turn 2 alone: its code has turn 1's line, uncommitted; the
+    // conversation before it is kept; no test ran, so it says so.
+    let (status, p) = s.get(&format!("/api/harness/cases/propose?agent={id}&from=2&to=2"));
+    assert_eq!(status, 200, "{p}");
+    assert_eq!((p["from"].as_i64(), p["to"].as_i64(), p["context"].as_str(), p["replayable"].as_bool()), (Some(2), Some(2), Some("transcript"), Some(true)), "{p}");
+    assert!(p["tree"].is_string() && p["tree"] != p["commit"], "the uncommitted line is in its tree: {p}");
+    assert!(p["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("No test passed")), "{p}");
+    assert_eq!(p["script"].as_array().unwrap().iter().filter(|x| x["kind"] == "prompt").count(), 1);
+    assert!(p["checks"].as_array().unwrap().iter().any(|c| c["kind"] == "never" && c["on"] == true), "{p}");
+    // A turn out of range is clamped.
+    assert_eq!(s.get(&format!("/api/harness/cases/propose?agent={id}&from=9")).1["from"], 2);
+
+    // Kept as a test, with a command check of the user's own.
+    assert_eq!(s.post("/api/harness/cases", json!({ "agent": id, "from": 2, "to": 2, "checks": [] })).0, 400, "a test needs a check");
+    assert_eq!(s.post("/api/harness/cases", json!({ "agent": id, "from": 2, "checks": [{ "kind": "judge" }] })).0, 400);
+    let checks = json!([{ "kind": "command", "run": "grep -q fixed notes.txt" }, { "kind": "never", "pattern": "git push" }]);
+    let (status, c) = s.post("/api/harness/cases", json!({ "agent": id, "from": 2, "to": 2, "name": "fix the notes", "set": "train", "checks": checks }));
+    assert_eq!(status, 201, "{c}");
+    let case = c["case"].clone();
+    let cid = case["id"].as_str().unwrap().to_string();
+    assert_eq!((case["name"].as_str(), case["context"].as_str(), case["set"].as_str(), case["prompts"].as_i64()), (Some("fix the notes"), Some("transcript"), Some("train"), Some(1)), "{case}");
+    // Its commit is kept by a ref, and the conversation before it on disk,
+    // cut before turn 2's prompt.
+    assert_eq!(git(&r, &["rev-parse", &format!("refs/workbench/cases/{cid}")]), case["tree"].as_str().unwrap());
+    let before = std::fs::read_to_string(s.data.join("cases").join(&cid).join("before.jsonl")).unwrap();
+    assert!(before.contains("WRITE notes.txt started") && !before.contains("WRITE notes.txt fixed"), "{before}");
+    let (_, suites) = s.get(&format!("/api/harness/suites?{}", harness_q(&r)));
+    assert_eq!(suites["cases"], 1, "{suites}");
+    assert_eq!(suites["sessions"][0]["cases"], 1, "{suites}");
+    let (status, c2) = s.post(&format!("/api/harness/cases/{cid}"), json!({ "set": "held_out" }));
+    assert_eq!((status, c2["case"]["set"].as_str()), (200, Some("held_out")), "{c2}");
+    assert_eq!(s.post(&format!("/api/harness/cases/{cid}"), json!({ "set": "test" })).0, 400);
+
+    // A against itself: the noise. Refused until its price is seen.
+    let cur = s.get(&format!("/api/harness/versions?{}", harness_q(&r))).1["current"]["id"].as_str().unwrap().to_string();
+    assert_eq!(s.post("/api/harness/runs", json!({ "repo": repo_s, "b": cur, "n": 1 })).0, 400, "A against itself needs 2 runs a side");
+    let started = start_run(&s, json!({ "repo": repo_s, "b": cur, "n": 2 }));
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(started["estimate"]["replays"], 4, "{started}");
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let reps: Vec<&Value> = v["cases"][0]["a"].as_array().unwrap().iter().chain(v["cases"][0]["b"].as_array().unwrap()).collect();
+    assert_eq!(reps.len(), 4, "{v}");
+    for x in &reps {
+        assert_eq!(x["state"], "passed", "{x}");
+        assert_eq!(x["checks"].as_array().unwrap().iter().filter(|k| k["passed"] == true).count(), 2, "{x}");
+    }
+    assert_eq!(v["scores"]["success"]["a"], 2, "{v}");
+    assert_eq!(v["scores"]["success"]["b"], 2, "{v}");
+    assert_eq!(v["scores"]["decision"]["result"], "no_detectable_difference", "{v}");
+    // The sandboxes and their memory are gone; the replays are not agents
+    // of yours, and the repository has no new branch or worktree.
+    assert_eq!(std::fs::read_dir(s.data.join("replays").join(&run)).map(|d| d.count()).unwrap_or(0), 0);
+    assert_eq!(std::fs::read_dir(s.data.join("rx")).map(|d| d.count()).unwrap_or(0), 0);
+    let (_, agents) = s.get("/api/agents");
+    assert_eq!(agents["agents"].as_array().unwrap().len(), 1, "{agents}");
+    assert!(!git(&r, &["branch", "--list"]).contains("rp-"));
+    // The test shows its result under the version.
+    let (_, one) = s.get(&format!("/api/harness/cases/{cid}"));
+    assert_eq!((one["results"][0]["runs"].as_i64(), one["results"][0]["pass_k"].as_bool()), (Some(4), Some(true)), "{one}");
+
+    // Enough: a run stopped ends stopped.
+    let again = start_run(&s, json!({ "repo": repo_s, "b": cur, "n": 2 }));
+    let run2 = again["run"]["id"].as_str().unwrap().to_string();
+    let (status, _) = s.post(&format!("/api/harness/runs/{run2}/stop"), json!({}));
+    assert_eq!(status, 200);
+    replay_until(&s, &run2, "stopped", |v| v["run"]["state"] == "stopped");
+    // Deleting the test takes its ref; its runs stay.
+    assert_eq!(s.delete(&format!("/api/harness/cases/{cid}")).0, 200);
+    assert!(git(&r, &["for-each-ref", "refs/workbench/cases/"]).is_empty());
+    assert_eq!(s.get(&format!("/api/harness/runs/{run}")).0, 200);
+}
+
+#[test]
+fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_you() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // The session: a permission prompt the user said Yes to.
+    let a = s.spawn(json!({ "repo": r, "task": "PERM3 tidy up", "name": "orig", "permission_mode": "acceptEdits" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "waiting");
+    let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "the prompt", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
+    let qid = v["questions"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(s.post(&format!("/api/questions/{qid}/answer"), json!({ "option": 0 })).0, 200);
+    s.wait(&id, "idle");
+    let (_, p) = s.get(&format!("/api/harness/cases/propose?agent={id}"));
+    let perms: Vec<&Value> = p["script"].as_array().unwrap().iter().filter(|x| x["kind"] == "permission").collect();
+    assert_eq!(perms.len(), 1, "{p}");
+    assert_eq!((perms[0]["key"].as_str(), perms[0]["answer"].as_str()), (Some("Bash: echo hi"), Some("yes")), "{p}");
+    // Its permission mode is the case's, so that its replays ask what it asked.
+    assert_eq!(p["permission_mode"], "acceptEdits", "{p}");
+
+    // Optimize this: a target is needed, and the price is confirmed.
+    let checks = json!([{ "kind": "never", "pattern": "git push" }, { "kind": "command", "run": "test -d .git" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }], "checks": checks, "name": "tidy" });
+    let mut none = body.clone();
+    none["targets"] = json!([]);
+    none["confirm_usd"] = json!(100);
+    assert_eq!(s.post("/api/harness/runs", none).0, 400);
+    let started = start_run(&s, body);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    assert!(started["case"].is_string(), "{started}");
+    // Its case keeps the checks and the name the page had.
+    let (_, made) = s.get(&format!("/api/harness/cases/{}", started["case"].as_str().unwrap()));
+    assert_eq!(made["case"]["name"], "tidy", "{made}");
+    assert_eq!(made["case"]["checks"].as_array().unwrap().iter().map(|c| c["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["never", "command"], "{made}");
+
+    // A's replays: the prompt answered from the log, an intervention each;
+    // then its one change, an allow rule for that command, widens, so it
+    // waits for you.
+    let v = replay_until(&s, &run, "needs you", |v| v["run"]["state"] == "needs_you" || v["run"]["state"] == "done" || v["run"]["state"] == "failed");
+    assert_eq!(v["run"]["state"], "needs_you", "{v}");
+    let wait = made["case"]["your_wait_ms"].as_i64().expect("you answered its prompt: your time is known");
+    for x in v["cases"][0]["a"].as_array().unwrap() {
+        assert_eq!((x["state"].as_str(), x["interventions"].as_i64(), x["diverged"].as_bool()), (Some("passed"), Some(1), Some(false)), "{x}");
+        // Its wall time counts that intervention at your pace.
+        assert!((x["wait_s"].as_f64().unwrap() - wait as f64 / 1000.0).abs() < 1e-6 && x["wall_s"].as_f64().unwrap() >= x["wait_s"].as_f64().unwrap(), "{x}");
+        let (_, ag) = s.get(&format!("/api/agents/{}", x["agent"].as_str().unwrap()));
+        assert_eq!(ag["agent"]["permission_mode"], "acceptEdits", "a replay runs in the session's mode: {ag}");
+    }
+    let ch = v["run"]["waiting"].clone();
+    assert_eq!(ch["part"], "permissions", "{ch}");
+    let pats = ch["patterns"].clone();
+    assert!(!pats.as_array().unwrap().is_empty(), "{ch}");
+    // Not tried until each pattern is named.
+    let (status, e) = s.post(&format!("/api/harness/runs/{run}/decide"), json!({ "approve_widening": [] }));
+    assert_eq!((status, e["error_code"].as_str()), (409, Some("widens")), "{e}");
+    assert_eq!(s.post(&format!("/api/harness/runs/{run}/decide"), json!({ "approve_widening": pats })).0, 200);
+
+    // The change's replays: the fake still asks, so nothing is better
+    // beyond the noise, the change is not kept, and its one round is spent.
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let log = v["run"]["log"].as_array().unwrap();
+    assert_eq!(log.len(), 1, "{v}");
+    assert_eq!(log[0]["result"], "not_kept", "{v}");
+    assert!(v["run"]["best"].is_null(), "{v}");
+    assert!(v["run"]["why"].as_str().unwrap().contains("tried 1 change"), "{v}");
+    assert_eq!(v["cases"][0]["b"].as_array().unwrap().len(), 2, "{v}");
+    // What it tried is a version of its own, not a draft or current.
+    let tried = log[0]["version"].as_str().unwrap();
+    let (_, vs) = s.get(&format!("/api/harness/versions?{}", harness_q(&r)));
+    let t = vs["versions"].as_array().unwrap().iter().find(|x| x["id"] == tried).unwrap().clone();
+    assert_eq!((t["state"].as_str(), t["made_by"].as_str()), (Some("tried"), Some(format!("optimize:{run}").as_str())), "{t}");
+    assert_ne!(vs["current"]["id"], tried);
+    // The page lists the run, and the case is in its own suite.
+    let (_, runs) = s.get(&format!("/api/harness/runs?{}", harness_q(&r)));
+    assert_eq!(runs["runs"][0]["id"], run.as_str());
+    let (_, suites) = s.get(&format!("/api/harness/suites?{}", harness_q(&r)));
+    assert_eq!(suites["suites"][0]["name"], "Optimize this", "{suites}");
+}
+
+#[test]
+fn harness_optimize_this_allows_every_command_its_replays_were_asked_about_in_one_round() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    // Two prompts: the check alone, then the check chained after the
+    // project's own command, which no rule allows either.
+    let a = s.spawn(json!({ "repo": r, "task": "PERMC ./check.sh", "name": "orig", "permission_mode": "acceptEdits" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    let yes = |n: usize| {
+        let v = s.get_until(&format!("/api/questions?agent={id}&state=open"), "the prompt", |v| v["questions"].as_array().is_some_and(|q| q.len() == 1 && q[0]["options"].as_array().is_some_and(|o| !o.is_empty())));
+        assert_eq!(s.post(&format!("/api/questions/{}/answer", v["questions"][0]["id"].as_str().unwrap()), json!({ "option": 0 })).0, 200, "prompt {n}");
+    };
+    yes(1);
+    ws_read_until(&s, &id, "DONE: PERMC ./check.sh", &[]);
+    s.wait(&id, "idle");
+    s.post(&format!("/api/agents/{id}/input"), json!({ "text": "PERMC python -m tool run && ./check.sh" }));
+    yes(2);
+    ws_read_until(&s, &id, "DONE: PERMC python -m tool run", &[]);
+    s.wait(&id, "idle");
+
+    let checks = json!([{ "kind": "command", "run": "test -d .git" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 2, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }], "checks": checks });
+    let started = start_run(&s, body);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "needs you", |v| v["run"]["state"] == "needs_you" || v["run"]["state"] == "done" || v["run"]["state"] == "failed");
+    assert_eq!(v["run"]["state"], "needs_you", "{v}");
+    for x in v["cases"][0]["a"].as_array().unwrap() {
+        assert_eq!((x["state"].as_str(), x["interventions"].as_i64()), (Some("passed"), Some(2)), "{x}");
+    }
+    // Its first change allows both commands: one alone leaves the chain
+    // asking.
+    let ch = v["run"]["waiting"].clone();
+    assert_eq!(ch["title"], "Allow `./check.sh` and `python -m tool` without asking", "{ch}");
+    assert_eq!(ch["edit"]["permissions"]["allow"], json!(["Bash(./check.sh:*)", "Bash(python -m tool:*)"]), "{ch}");
+    assert_eq!(ch["saves"], 6, "the check twice a replay, the tool once: {ch}");
+    assert_eq!(s.post(&format!("/api/harness/runs/{run}/decide"), json!({ "approve_widening": ch["patterns"] })).0, 200);
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let log = v["run"]["log"].as_array().unwrap();
+    assert_eq!(log[0]["change"]["key"], "allow\nBash(./check.sh:*)\nBash(python -m tool:*)", "{v}");
+    // Its replays ran with both rules.
+    let tried = log[0]["version"].as_str().unwrap();
+    let (_, tv) = s.get(&format!("/api/harness/versions/{tried}"));
+    let perms = tv["parts"].as_array().unwrap().iter().find(|p| p["kind"] == "permissions").unwrap()["text"].as_str().unwrap().to_string();
+    assert!(perms.contains("Bash(./check.sh:*)") && perms.contains("Bash(python -m tool:*)"), "{tv}");
+}
+
+#[test]
+fn harness_optimize_this_for_cost_keeps_a_faster_model_and_stops_when_its_target_is_met() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "WRITE notes.txt started", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q started notes.txt" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 4, "targets": [{ "metric": "cost_usd", "pct": 30 }], "checks": checks });
+    let started = start_run(&s, body);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done" || v["run"]["state"] == "failed" || v["run"]["state"] == "needs_you");
+    assert_eq!(v["run"]["state"], "done", "{v}");
+    // The cost target picks a faster model first; Sonnet's tokens cost
+    // half of the default's, it passes as A did, and the target is met.
+    let log = v["run"]["log"].as_array().unwrap();
+    assert_eq!(log.len(), 1, "{v}");
+    assert_eq!((log[0]["change"]["key"].as_str(), log[0]["result"].as_str()), (Some("model\nsonnet"), Some("kept")), "{v}");
+    assert_eq!(log[0]["vs_a"]["targets_met"], true, "{v}");
+    assert!(v["run"]["why"].as_str().unwrap().contains("every target is met"), "{v}");
+    for x in v["cases"][0]["a"].as_array().unwrap() {
+        assert!(x["model"].is_null() && x["state"] == "passed", "A runs the session's model (none named): {x}");
+    }
+    for x in v["cases"][0]["b"].as_array().unwrap() {
+        assert_eq!((x["model"].as_str(), x["state"].as_str()), (Some("sonnet"), Some("passed")), "{x}");
+        let (_, ag) = s.get(&format!("/api/agents/{}", x["agent"].as_str().unwrap()));
+        assert_eq!(ag["agent"]["model"], "sonnet", "{ag}");
+    }
+    // What it kept is a candidate that carries the model.
+    let best = v["run"]["best"]["id"].as_str().unwrap().to_string();
+    let (_, vs) = s.get(&format!("/api/harness/versions?{}", harness_q(&r)));
+    let t = vs["versions"].as_array().unwrap().iter().find(|x| x["id"] == best.as_str()).unwrap().clone();
+    assert_eq!(t["state"], "candidate", "{t}");
+    assert_eq!(t["edits"]["agent"]["model"], "sonnet", "{t}");
+    // The writer of instructions was asked once, about A's replays, and
+    // its call is paid from the run's budget.
+    assert!(v["run"]["spent_usd"].as_f64().unwrap() >= 0.01, "{v}");
+}
+
+#[test]
+fn harness_a_version_runs_its_model_effort_and_instructions_in_replays_and_new_sessions() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let repo_s = r.to_string_lossy().to_string();
+    let a = s.spawn(json!({ "repo": r, "task": "WRITE notes.txt started", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q started notes.txt" }]);
+    let (status, c) = s.post("/api/harness/cases", json!({ "agent": id, "from": 1, "to": 1, "checks": checks }));
+    assert_eq!(status, 201, "{c}");
+    // A version of how its agents run.
+    assert_eq!(s.post("/api/harness/versions", json!({ "repo": repo_s, "parts": { "agent": { "effort": "huge" } } })).0, 400);
+    let brief = "Run the checks once, after your last edit.";
+    let (status, nv) = s.post("/api/harness/versions", json!({ "repo": repo_s, "parts": { "agent": { "model": "haiku", "effort": "low", "brief": [brief] } } }));
+    assert_eq!(status, 201, "{nv}");
+    assert_eq!(nv["edits"]["agent"]["model"], "haiku", "{nv}");
+    let b = nv["version"]["id"].as_str().unwrap().to_string();
+    let cur = s.get(&format!("/api/harness/versions?{}", harness_q(&r))).1["current"]["id"].as_str().unwrap().to_string();
+    let started = start_run(&s, json!({ "repo": repo_s, "a": cur, "b": b, "n": 1 }));
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    let bx = v["cases"][0]["b"][0].clone();
+    assert_eq!((bx["model"].as_str(), bx["state"].as_str()), (Some("haiku"), Some("passed")), "{bx}");
+    let agent = bx["agent"].as_str().unwrap();
+    let (_, ag) = s.get(&format!("/api/agents/{agent}"));
+    assert_eq!(ag["agent"]["effort"], "low", "{ag}");
+    // Its instructions are given as its session starts, by a hook.
+    let dir = s.data.join("sessions").join(agent);
+    assert!(std::fs::read_to_string(dir.join("harness-brief.md")).unwrap().contains(brief));
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    assert!(settings["hooks"]["SessionStart"].as_array().unwrap().iter().any(|h| h["hooks"][0]["command"].as_str().unwrap_or("").contains("harness-brief.md")), "{settings}");
+    // A's replay has none of it.
+    let ax = v["cases"][0]["a"][0].clone();
+    assert!(ax["model"].is_null(), "{ax}");
+    assert!(!s.data.join("sessions").join(ax["agent"].as_str().unwrap()).join("harness-brief.md").exists());
+}
+
+#[test]
+fn harness_a_replay_ends_when_its_turn_ends_not_when_its_screen_looks_idle() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let repo_s = r.to_string_lossy().to_string();
+    // A turn that sits at the text prompt, no spinner, for 7 s before it
+    // writes: Workbench reads the agent as idle meanwhile.
+    let a = s.spawn(json!({ "repo": r, "task": "PAUSE notes.txt late", "name": "orig" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    ws_read_until(&s, &id, "DONE: PAUSE notes.txt late", &[]);
+    s.wait(&id, "idle");
+    let checks = json!([{ "kind": "command", "run": "grep -q late notes.txt" }]);
+    let (status, c) = s.post("/api/harness/cases", json!({ "agent": id, "from": 1, "to": 1, "checks": checks }));
+    assert_eq!(status, 201, "{c}");
+    let cur = s.get(&format!("/api/harness/versions?{}", harness_q(&r))).1["current"]["id"].as_str().unwrap().to_string();
+    let started = start_run(&s, json!({ "repo": repo_s, "b": cur, "n": 2 }));
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let v = replay_until(&s, &run, "done", |v| v["run"]["state"] == "done");
+    // Each replay waited for the turn's Stop: the line is there, and the
+    // turn's 7 s are in its wall time.
+    for x in v["cases"][0]["a"].as_array().unwrap().iter().chain(v["cases"][0]["b"].as_array().unwrap()) {
+        assert_eq!(x["state"], "passed", "{x}");
+        assert!(x["wall_s"].as_f64().unwrap() >= 7.0, "{x}");
+    }
 }
 
 // Sam's findings: a loop of runs, Run it N times in a chosen checkout with
@@ -6467,4 +6890,69 @@ fn a_replaced_decision_that_was_yours_says_yours() {
     let d = o["decisions"]["list"].as_array().unwrap().iter().find(|d| d["why"] == "replaces").cloned().unwrap_or_else(|| panic!("{}", o["decisions"]));
     assert_eq!(d["replaces"]["who"], "yours", "{d}");
     assert_eq!(d["replaces"]["text"], "Shipping is free over 100 euros.", "{d}");
+}
+
+/// The Simple view (ui/goals/simple/, at #/s): its modules are served under
+/// /goals/simple/, as JavaScript, without the token, as the goal pages are.
+#[test]
+fn simple_view_pages_are_served_under_goals() {
+    let s = Server::start(&[]);
+    for f in ["index.js", "stage.js", "compose.js", "request.js", "switch.js"] {
+        let r = http().get(format!("{}/goals/simple/{f}", s.url)).call().unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{f}");
+        assert!(r.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/javascript"), "{f}");
+    }
+    assert_eq!(http().get(format!("{}/goals/simple/nope.js", s.url)).call().unwrap().status().as_u16(), 404);
+    // The shell links to it: the switch in the top bar and the phone's tabs.
+    let mut r = http().get(format!("{}/?token={TOKEN}", s.url)).call().unwrap();
+    let page = r.body_mut().read_to_string().unwrap();
+    assert!(page.contains(r#"data-view-switch="simple""#) && page.contains(r##"href="#/s/new""##), "the switch and the tabs are on the page");
+}
+
+/// Sub-agents started with Claude Code's own Agent tool run inside the
+/// agent's session, so they are not Workbench agents; each one is followed
+/// from its hooks (they carry its `agent_id`) as a helper of its agent: a
+/// brief in the agent's JSON, every detail at /api/agents/:id/helpers.
+#[test]
+fn sub_agents_of_claude_codes_agent_tool_are_followed_as_helpers() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "fix the rounding", "name": "round" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    assert!(s.agent(&id).get("helpers").is_none(), "no helpers yet");
+    hook_as(&s, &id, json!({ "hook_event_name": "UserPromptSubmit", "prompt": "fix the rounding" }));
+    for (u, d) in [("u0", "Map the refund code"), ("u1", "Find the callers")] {
+        hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": u, "tool_input": { "description": d, "prompt": format!("{d}, please"), "subagent_type": "Explore", "isolation": "worktree" } }));
+    }
+    for sub in ["s0", "s1"] {
+        hook_as(&s, &id, json!({ "hook_event_name": "SubagentStart", "agent_id": sub, "agent_type": "Explore" }));
+    }
+    hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "agent_id": "s0", "agent_type": "Explore", "cwd": "/w", "tool_name": "Read", "tool_input": { "file_path": "/w/src/refunds.rs" } }));
+    let a = s.agent(&id);
+    assert_eq!((a["helpers"]["total"].as_u64(), a["helpers"]["running"].as_u64()), (Some(2), Some(2)), "{}", a["helpers"]);
+    assert_eq!(a["helpers"]["list"][0]["doing"], "Reading src/refunds.rs");
+
+    // The second reports: its call answers with the report, which is kept
+    // whole even when long, so it reads back from the events.
+    let long = format!("Two callers. {}", "More. ".repeat(5000));
+    hook_as(&s, &id, json!({ "hook_event_name": "SubagentStop", "agent_id": "s1", "agent_type": "Explore", "last_assistant_message": "Two callers." }));
+    hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "u1", "tool_input": { "description": "Find the callers", "prompt": "x".repeat(20000) }, "tool_response": { "status": "completed", "agentId": "s1", "content": [{ "type": "text", "text": long }], "totalTokens": 900, "totalToolUseCount": 4, "totalDurationMs": 12000 } }));
+    let (status, v) = s.get(&format!("/api/agents/{id}/helpers"));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["running"], 1, "{v}");
+    let hs = v["helpers"].as_array().unwrap();
+    assert_eq!(hs.len(), 2);
+    assert_eq!((hs[0]["state"].as_str(), hs[0]["calls"].as_u64(), hs[0]["worktree"].as_bool()), (Some("running"), Some(1), Some(true)));
+    assert_eq!((hs[1]["state"].as_str(), hs[1]["tool_uses"].as_u64(), hs[1]["tokens"].as_u64()), (Some("done"), Some(4), Some(900)));
+    assert!(hs[1]["report"].as_str().unwrap().starts_with("Two callers. More."), "{}", hs[1]["report"]);
+    assert_eq!(hs[1]["summary"], "Two callers. More.");
+    assert_eq!(hs[1]["prompt"], "Find the callers, please");
+
+    // The turn ends with the first still open: it was stopped.
+    hook_as(&s, &id, json!({ "hook_event_name": "Stop" }));
+    assert_eq!(s.agent(&id)["helpers"]["running"], 0);
+    let (_, v) = s.get(&format!("/api/agents/{id}/helpers"));
+    assert_eq!(v["helpers"][0]["state"], "stopped");
+    assert_eq!(s.get("/api/agents/nope/helpers").0, 404);
 }

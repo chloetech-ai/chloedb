@@ -81,7 +81,8 @@ export function withArg(argv, flag, v, bool) {
     if (a.startsWith(flag + "=")) continue;
     out.push(a);
   }
-  if (bool ? v : v !== undefined && v !== null && v !== "") out.push(...(bool ? [flag] : [flag, String(v)]));
+  // A switch on by default is turned off as --flag=false (v "false").
+  if (bool ? v : v !== undefined && v !== null && v !== "") out.push(...(bool ? [v === "false" ? flag + "=false" : flag] : [flag, String(v)]));
   return out;
 }
 
@@ -178,6 +179,15 @@ export const SETTINGS = [
   { g: "Search", label: "Hedge after", at: "cargs:--hedge-ms", type: "step", list: [10, 20, 30, 50, 75, 100, 150, 200, 500, 1000], def: 100, show: (v) => v + " ms",
     effect: (v, x) => `When a shard's copy has not answered after ${v} ms, the coordinator asks another copy of it.` + (x.L.p99 != null ? (v > x.L.p99 ? ` The slowest copy's p99 is ${fmt.ms(x.L.p99)} now: it rarely fires.` : ` The slowest copy's p99 is ${fmt.ms(x.L.p99)} now: it fires for the slowest searches.`) : ""),
     warn: (v, x) => (x.R < 2 ? "one copy a shard: there is no other copy to hedge to" : null), takes: "coordinators" },
+  { g: "Search", label: "Copy asked first", at: "cargs:--route", type: "seg", def: "least-cost", opts: [["least-cost", "the one that costs least"], ["round-robin", "each in turn"]],
+    effect: (v) => ({ "least-cost": "Each read asks a shard's copies in turn, unless another costs clearly less by its recent round trips, its calls in flight, its errors and the load it reports: a slow or busy copy is asked less.", "round-robin": "Each read asks a shard's copies in turn, however fast each answers; one that failed or was outrun in the last 5 s goes last." })[v],
+    warn: (v, x) => (x.R < 2 ? "one copy a shard: there is no other copy to choose" : null), takes: "coordinators" },
+  { g: "Search", label: "Hedge by each copy's own speed", at: "cargs:--hedge-adaptive", type: "toggle", bool: true,
+    effect: (v) => (v ? "A search is hedged once the copy asked has taken longer than it usually does (its average plus six deviations, 2 ms at least, Hedge after at most). It cuts the slowest searches when a copy stalls now and then; on copies alike it hedges more and slows the slowest one in a thousand." : "A search is hedged after the fixed time of Hedge after."),
+    warn: (v, x) => (v && x.R < 2 ? "one copy a shard: there is no other copy to hedge to" : null), takes: "coordinators" },
+  { g: "Search", label: "Reads after a write prefer copies that hold it", at: "cargs:--prefer-caught-up", type: "toggle", bool: true, def: true,
+    effect: (v) => (v ? "A read that must see a write goes to the copies known to hold it, or those that answered such reads fast: a replica that applies writes late is asked few of them, and its share of other reads as before." : "A read that must see a write goes where any other read would, and waits there for the write."),
+    warn: (v, x) => (v && argOf(x.d?.coordinatorArgs, "--route") === "round-robin" ? "only with the copy that costs least asked first: each in turn ignores it" : null), takes: "coordinators" },
   { g: "Search", label: "Give up on a shard after", at: "cargs:--shard-timeout-ms", type: "step", list: [undefined, 100, 250, 500, 1000, 2000, 5000], show: (v) => (v ? v + " ms" : "the deadline"),
     effect: (v) => (v ? `A shard that has not answered in ${v} ms fails the search, or is left out of a partial answer.` : "A search waits for every shard until its deadline."), takes: "coordinators" },
   { g: "Search", label: "Partial answers", at: "cargs:--partial", type: "toggle", bool: true,
@@ -263,8 +273,8 @@ export function value(d, st) {
   if (where === "spec") return getPath(d, rest) ?? undefined;
   if (where === "argv") return d[rest] || [];
   const v = argOf(d[where === "args" ? "args" : "coordinatorArgs"], rest, st.bool);
-  if (st.bool) return !!v;
-  if (v === undefined) return undefined;
+  if (st.bool) return v === undefined ? !!st.def : !!v;
+  if (v === undefined) return st.type === "seg" ? st.def : undefined;
   return typeof (st.list || []).find((x) => x != null) === "number" && !Number.isNaN(Number(v)) ? Number(v) : v;
 }
 export function assign(d, st, v) {
@@ -277,10 +287,10 @@ export function assign(d, st, v) {
   }
   if (where === "argv") { d[rest] = v; return; }
   const key = where === "args" ? "args" : "coordinatorArgs";
-  d[key] = withArg(d[key], rest, st.def !== undefined && v === st.def ? undefined : v, st.bool);
+  d[key] = withArg(d[key], rest, st.def !== undefined && v === st.def ? undefined : st.bool && st.def && !v ? "false" : v, st.bool);
 }
 /** The value shown: what is set, or what the server does without it. */
-export const shown = (st, v) => (st.type === "seg" ? (st.opts.find((o) => same(o[0], v)) || [, String(v)])[1] : st.type === "toggle" ? (v ? "on" : "off") : st.show ? st.show(v ?? st.def) : v);
+export const shown = (st, v) => (st.type === "seg" ? (st.opts.find((o) => same(o[0], v ?? st.def)) || [, String(v)])[1] : st.type === "toggle" ? (v ? "on" : "off") : st.show ? st.show(v ?? st.def) : v);
 
 // ------------------------------------------------------------ YAML
 export function yaml(spec) {

@@ -359,8 +359,12 @@ table.matrix thead th.self { background: var(--accent-wash); color: var(--accent
 .mk.n::before { content: "\2013"; }
 .mk.paid { color: var(--paid); }
 .mk.paid::before { content: "$"; }
+.mk.e { color: var(--yes); }
+.mk.e::before { content: "\25CE"; font-size: 0.95rem; }
 .mk.v { border: 1px dashed var(--ph-rule); background: var(--ph-wash); }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 0.84rem; color: var(--ink-2); align-items: center; }
+.matrix-draft { margin-bottom: 14px; }
+.matrix-draft p { margin: 0; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ---------- benchmark charts ---------- */

@@ -184,6 +184,8 @@ sequenceDiagram
 
 The briefing also ends with a one-line index of the notes it had no room for ("31 older notes are not shown here, about: …"), so the model knows what to ask for.
 
+**Text from outside the project is data.** What `WebFetch`, `WebSearch` and every MCP tool returned (a page, an issue, a mail, a chat message) is stored, but it is never put into a prompt by itself: the prompt's recall, query understanding and the file notes leave it out, since whoever wrote that page or issue could otherwise plant an instruction that every later session got as "earlier work". `memory_search` and `memory_timeline` still find it, and show it fenced as quoted data (`<third_party_text source="WebFetch">`, its own closing tag escaped inside), and every block of recalled records says that records are data and only the user's messages are instructions. Stores written before this keep their records; only what recall picks changes.
+
 ### Ranking
 
 BM25 and vector search each return their top *n* = 50 under the exclusion filter. Scores are min-max normalised over the union *C*, a missing score counting as 0:

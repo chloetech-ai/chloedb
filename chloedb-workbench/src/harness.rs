@@ -19,9 +19,12 @@
 //! receipts (missed memory, `recomputed` when a replay on the snapshot
 //! ChloeCtx kept gives the same decision). No model is called.
 
+mod evals;
 mod fixes;
 mod memory;
 mod perms;
+mod replay;
+mod score;
 mod stats;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -44,8 +47,10 @@ use crate::db::{get_int, get_ms, get_str, iso, now_ms, ts, Agent, Event};
 use crate::server::{blocking, parse_body, ApiResult, App};
 use crate::supervisor::{one_line, ApiError, Supervisor};
 
+pub use evals::after_hook;
 pub use memory::{MemEdits, Pin};
 pub use perms::{PermEdits, Rule};
+pub use replay::ReplayTag;
 
 /// The tables (src/db.rs makes them with the others). `kind` is `config`
 /// (a version the user edits) or `run` (what a session ran); a run
@@ -57,6 +62,9 @@ pub const TABLES: [&str; 5] = [
     "CREATE TABLE IF NOT EXISTS harness_findings (id KEYWORD PRIMARY KEY, repo KEYWORD, kind KEYWORD, title TEXT, detail TEXT, sessions TEXT, agents TEXT, cost_s FLOAT, cost_tokens INT, cost_checks INT, level KEYWORD, row_ids TEXT OPTIONS(indexed = false), version KEYWORD, state KEYWORD, first_ts TIMESTAMP, last_ts TIMESTAMP)",
     "CREATE TABLE IF NOT EXISTS hook_runs (id KEYWORD PRIMARY KEY, agent KEYWORD, version KEYWORD, event KEYWORD, source KEYWORD, command TEXT, ms INT, exit_code INT, tokens_added INT, ts TIMESTAMP)",
 ];
+
+/// The tables of cases and replays (src/harness/evals.rs, replay.rs).
+pub const EVAL_TABLES: [&str; 5] = [evals::TABLES[0], evals::TABLES[1], evals::TABLES[2], replay::TABLES[0], replay::TABLES[1]];
 
 /// The default window, in days.
 const WINDOW_DAYS: i64 = 7;
@@ -199,21 +207,56 @@ pub struct Edits {
     pub permissions: PermEdits,
     pub memory: MemEdits,
     pub timing: bool,
+    pub agent: AgentEdits,
+}
+
+/// How a version's agents run (Optimize this's changes for time and
+/// cost): the model and effort when the session names none (a replay
+/// plays the version's), and instructions given as each session starts.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, Deserialize)]
+pub struct AgentEdits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brief: Vec<String>,
+}
+
+impl AgentEdits {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.effort.is_none() && self.brief.is_empty()
+    }
+
+    /// The instructions as the session's start shows them.
+    fn brief_text(&self) -> Option<String> {
+        if self.brief.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = self.brief.iter().map(|b| format!("- {}", b.trim())).collect();
+        Some(format!("Instructions for this repository (its harness, Workbench):\n{}\n", lines.join("\n")))
+    }
 }
 
 impl Edits {
-    fn texts(&self) -> [(&'static str, String); 3] {
-        [
+    /// Its parts as stored. The agent's only when it has one, so that the
+    /// versions made before it keep their ids.
+    fn texts(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![
             ("permissions", serde_json::to_string_pretty(&self.permissions).unwrap_or_default()),
             ("memory", serde_json::to_string_pretty(&self.memory).unwrap_or_default()),
             ("hooks", serde_json::to_string_pretty(&json!({ "timing": self.timing })).unwrap_or_default()),
-        ]
+        ];
+        if !self.agent.is_empty() {
+            out.push(("agent", serde_json::to_string_pretty(&self.agent).unwrap_or_default()));
+        }
+        out
     }
     fn id(&self) -> String {
         hash(&self.texts().iter().map(|(k, t)| format!("{k}\n{t}\n")).collect::<String>())
     }
     fn to_json(&self) -> Json {
-        json!({ "permissions": self.permissions, "memory": self.memory, "hooks": { "timing": self.timing } })
+        json!({ "permissions": self.permissions, "memory": self.memory, "hooks": { "timing": self.timing }, "agent": self.agent })
     }
 }
 
@@ -223,6 +266,7 @@ fn edits_of(sup: &Supervisor, version: &str) -> Edits {
         permissions: parts.get("permissions").and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
         memory: parts.get("memory").and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
         timing: parts.get("hooks").and_then(|t| serde_json::from_str::<Json>(t).ok()).and_then(|v| v["timing"].as_bool()).unwrap_or(false),
+        agent: parts.get("agent").and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
     }
 }
 
@@ -310,6 +354,9 @@ pub struct Applied {
     pub mcp: Json,
     /// The run version it got.
     pub version: Option<String>,
+    /// The version's model and effort, for a session that names none.
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// Claude Code's version (`claude --version`), once per program file.
@@ -380,11 +427,13 @@ fn normalize(text: &str, cwd: &str, session_dir: &str, agent: &str, name: &str) 
     t
 }
 
-/// Applies the repository's current version to a session's files, writes
-/// what it needs beside them, and records the run version it makes.
-/// Never fails: a harness that cannot be read leaves the files as they were.
-pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, agent: &str, name: &str, mut settings: Json, mut mcp: Json) -> Applied {
-    let cfg = current(sup, repo);
+/// Applies the repository's current version (or `config`, the version a
+/// replay plays) to a session's files, writes what it needs beside them,
+/// and records the run version it makes. Never fails: a harness that
+/// cannot be read leaves the files as they were.
+#[allow(clippy::too_many_arguments)]
+pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, agent: &str, name: &str, mut settings: Json, mut mcp: Json, config: Option<&str>) -> Applied {
+    let cfg = config.and_then(|c| version(sup, c)).filter(|v| v.kind == "config" && v.repo == repo).unwrap_or_else(|| current(sup, repo));
     let e = edits_of(sup, &cfg.id);
     let cwd_s = cwd.to_string_lossy().to_string();
     // Permissions: Workbench's rules the version takes away, and its own.
@@ -426,6 +475,20 @@ pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, ag
     }
     if let Some(text) = e.memory.pins_text() {
         let file = session_dir.join("harness-pins.md");
+        if std::fs::write(&file, text).is_ok() {
+            if !settings["hooks"].is_object() {
+                settings["hooks"] = json!({});
+            }
+            let mut list = settings["hooks"]["SessionStart"].as_array().cloned().unwrap_or_default();
+            list.push(json!({ "hooks": [{ "type": "command", "command": format!("cat {}", shell_quote(&file.to_string_lossy())), "timeout": 5 }] }));
+            settings["hooks"]["SessionStart"] = Json::Array(list);
+        }
+    }
+    // The agent's instructions, given at its start as the pins are (a
+    // hook's words reach a resumed conversation too; a system prompt
+    // would not: Claude Code keeps the one it recorded).
+    if let Some(text) = e.agent.brief_text() {
+        let file = session_dir.join("harness-brief.md");
         if std::fs::write(&file, text).is_ok() {
             if !settings["hooks"].is_object() {
                 settings["hooks"] = json!({});
@@ -478,6 +541,10 @@ pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, ag
         ("memory", serde_json::to_string_pretty(&e.memory).unwrap_or_default()),
         ("claude", claude.clone()),
     ];
+    let mut parts = parts;
+    if !e.agent.is_empty() {
+        parts.push(("agent", serde_json::to_string_pretty(&e.agent).unwrap_or_default()));
+    }
     let id = hash(&parts.iter().map(|(k, t)| format!("{k}\n{t}\n")).collect::<String>());
     if version(sup, &id).is_none() {
         let v = Version { id: id.clone(), repo: repo.into(), name: cfg.name.clone(), kind: "run".into(), config: Some(cfg.id.clone()), parent: Some(cfg.id.clone()), state: "observed".into(), made_by: "spawn".into(), claude_version: Some(claude), created: now_ms(), ..Version::default() };
@@ -488,7 +555,7 @@ pub fn at_spawn(sup: &Supervisor, repo: &str, cwd: &Path, session_dir: &Path, ag
         }
     }
     let _ = &mut mcp;
-    Applied { settings, mcp, version: Some(id) }
+    Applied { settings, mcp, version: Some(id), model: e.agent.model.clone(), effort: e.agent.effort.clone() }
 }
 
 // ------------------------------------------------------------------ window
@@ -1579,7 +1646,14 @@ fn new_version(sup: &Supervisor, b: NewVersionB) -> Result<Json, ApiError> {
                 e.memory = serde_json::from_value(t).map_err(|e| ApiError::bad(format!("memory: {e}")))?;
             }
             "hooks" => e.timing = v["timing"].as_bool().unwrap_or(false),
-            k => return Err(ApiError::bad(format!("the part {k} is not edited in this build: permissions, memory or hooks"))),
+            "agent" => {
+                let a: AgentEdits = serde_json::from_value(v.clone()).map_err(|e| ApiError::bad(format!("agent: {e}")))?;
+                if let Some(m) = a.effort.as_deref().filter(|m| !crate::goals::EFFORTS.contains(m)) {
+                    return Err(ApiError::bad(format!("agent: effort {m:?} is not one of {}", crate::goals::EFFORTS.join(", "))));
+                }
+                e.agent = a;
+            }
+            k => return Err(ApiError::bad(format!("the part {k} is not edited in this build: permissions, memory, hooks or agent"))),
         }
     }
     for (k, t) in e.texts() {
@@ -1934,6 +2008,8 @@ pub fn routes() -> Router<App> {
         .route("/api/harness/sees", get(sees_route))
         .route("/dev/harness-live.html", get(dev_page))
         .route("/dev/harness/fonts/:file", get(dev_font))
+        .merge(evals::routes())
+        .merge(replay::routes())
 }
 
 #[cfg(test)]

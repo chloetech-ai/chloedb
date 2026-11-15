@@ -258,12 +258,21 @@ const GOALS: &[(&str, &str)] = &[
     // Optimize the harness (src/harness.rs), at /goals/harness/<file>.
     ("harness/index.js", include_str!("../ui/goals/harness/index.js")),
     ("harness/parts.js", include_str!("../ui/goals/harness/parts.js")),
+    ("harness/evals.js", include_str!("../ui/goals/harness/evals.js")),
+    ("harness/timeline.js", include_str!("../ui/goals/harness/timeline.js")),
+    ("harness/run.js", include_str!("../ui/goals/harness/run.js")),
     ("harness/overview.js", include_str!("../ui/goals/harness/overview.js")),
     ("harness/permissions.js", include_str!("../ui/goals/harness/permissions.js")),
     ("harness/memory.js", include_str!("../ui/goals/harness/memory.js")),
     ("harness/sees.js", include_str!("../ui/goals/harness/sees.js")),
     ("harness/fixes.js", include_str!("../ui/goals/harness/fixes.js")),
     ("harness/versions.js", include_str!("../ui/goals/harness/versions.js")),
+    // The Simple view: the board of requests by stage, at #/s.
+    ("simple/index.js", include_str!("../ui/goals/simple/index.js")),
+    ("simple/stage.js", include_str!("../ui/goals/simple/stage.js")),
+    ("simple/compose.js", include_str!("../ui/goals/simple/compose.js")),
+    ("simple/request.js", include_str!("../ui/goals/simple/request.js")),
+    ("simple/switch.js", include_str!("../ui/goals/simple/switch.js")),
 ];
 
 async fn ui_goal(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -339,8 +348,10 @@ pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Ap
     tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::internal(e.to_string()))?
 }
 
-async fn spawn(State(app): State<App>, body: Bytes) -> ApiResult {
-    let req: SpawnRequest = parse_body(&body)?;
+async fn spawn(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    let mut req: SpawnRequest = parse_body(&body)?;
+    // An agent's key: the new agent is that agent's child (audit APP-1).
+    crate::guarded::spawn_as_caller(&headers, &mut req)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     // With its goal and outcome (SPEC.md, "Goals and outcomes").
     let agent = blocking(move || crate::goals::spawn(&sup, &lv, req)).await?;
@@ -471,6 +482,8 @@ async fn hook(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiRes
     let output = blocking(move || {
         sup.hook(&id, v.clone())?;
         crate::testruns::after_hook(&sup, &id, &v);
+        // The code at each turn's start, for a case that starts there (src/harness/evals.rs).
+        crate::harness::after_hook(&sup, &id, &v);
         let out = crate::levels::after_hook(&sup, &lv, &id, &v);
         // Guarded actions (src/guarded.rs): a guarded Bash command is denied.
         // Hotspots (src/hotspots.rs): a first edit of one gets its history.
