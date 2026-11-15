@@ -68,6 +68,11 @@
 (*              of a majority of the servers (else it waits); and a        *)
 (*              change gives the map it synced to again, as a map in       *)
 (*              doubt, until a majority holds it, before it makes its own  *)
+(*   LeaseKeeps under the Lease, a change that ends keeps there the       *)
+(*              newest map it made or may have made (the map made, the     *)
+(*              map in doubt given again and taken, the one in doubt, and  *)
+(*              the one the Lease kept as it began), not only the one in   *)
+(*              doubt: the next change gives it again first              *)
 (*   Bugs       the simulator's map bugs put back (Change's flags):        *)
 (*              "forgets_doubt"  (gives-an-epoch-twice)                    *)
 (*              "keeps_untaken"  (routes-by-a-map-no-server-took)          *)
@@ -86,6 +91,7 @@ CONSTANTS
     Servers,        \* the cluster's servers
     Src,            \* with Move, the server the slots copy from
     Racing, Forgetful, Lease, Move, Quorum,
+    LeaseKeeps,     \* the Lease keeps the newest map made, not only one in doubt
     Survey,         \* "kept" | "all" | "any"
     Bugs,
     FirstTries,     \* FIRST_TRIES (3)
@@ -127,7 +133,7 @@ vars == <<held, covered, msgs, everHeld, cmap, doubt, ch, lholder, ldoubt, resta
 (* A coordinator that changes nothing. `n` counts its changes. *)
 Idle(n) == [pc |-> "idle", n |-> n, next |-> None, cd |-> None, redoing |-> FALSE,
             base |-> None, took |-> 0, unans |-> FALSE, raced |-> FALSE,
-            tries |-> 0, ftries |-> 0, waiting |-> {}]
+            tries |-> 0, ftries |-> 0, waiting |-> {}, kept |-> None]
 
 Init ==
     /\ held = [s \in Servers |-> <<>>]
@@ -243,6 +249,16 @@ DoneRoute(o, now) ==
               THEN Install(now, o.x.base) ELSE now
     IN IF o.end = "ok" THEN Install(r1, o.made) ELSE r1
 
+(* What the Lease keeps as a change ends: its map in doubt; with         *)
+(* LeaseKeeps the newest of that, the map made, the map given again and   *)
+(* taken, and the map the Lease kept when the change began: the newest    *)
+(* map a server may hold, which the next change gives again first. Of     *)
+(* two of one epoch, the later in that list, as Coordinator::change.      *)
+Left(o) == IF LeaseKeeps
+           THEN Newer(Newer(o.x.kept, IF "forgets_redone" \in Bugs THEN None ELSE o.x.base),
+                      Newer(InDoubt(o.x), IF o.end = "ok" THEN o.made ELSE None))
+           ELSE InDoubt(o.x)
+
 (* Coordinator c takes step o of its change, routing by `now` meanwhile. *)
 Apply(c, o, now) ==
     /\ ch' = [ch EXCEPT ![c] = IF o.end = "no" THEN o.x ELSE Idle(o.x.n)]
@@ -251,7 +267,7 @@ Apply(c, o, now) ==
                                      ELSE IF o.give # None /\ ~ Forgetful THEN o.give
                                      ELSE @]
     /\ ldoubt' = IF ~ Lease THEN ldoubt
-                 ELSE IF o.end # "no" THEN InDoubt(o.x)
+                 ELSE IF o.end # "no" THEN Left(o)
                  ELSE IF o.give # None THEN o.give
                  ELSE ldoubt
     /\ lholder' = IF Lease /\ o.end # "no" THEN 0 ELSE lholder
@@ -267,7 +283,8 @@ Start(c) ==
     /\ Lease => lholder = 0
     /\ ch' = [ch EXCEPT ![c] = [Idle(@.n + 1) EXCEPT !.pc = "sync",
                  !.cd = IF "forgets_doubt" \in Bugs THEN None
-                        ELSE IF Lease THEN Newer(ldoubt, doubt[c]) ELSE doubt[c]]]
+                        ELSE IF Lease THEN Newer(ldoubt, doubt[c]) ELSE doubt[c],
+                 !.kept = IF Lease /\ LeaseKeeps THEN ldoubt ELSE None]]
     /\ lholder' = IF Lease THEN c ELSE lholder
     /\ UNCHANGED <<held, covered, msgs, everHeld, cmap, doubt, ldoubt, restarts>>
 

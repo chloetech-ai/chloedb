@@ -4403,17 +4403,31 @@ impl Coordinator {
         let _one = self.changing.lock().await;
         let lease = self.lease.get();
         let mut doubt = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut kept = None;
         if let Some(l) = lease {
             // The map another coordinator, or this one before it started
             // again, left in doubt: the newer of it and this one's own.
-            let kept = l.take(crate::operator::lease::WAIT, &crate::operator::now_ms).await?;
+            kept = l.take(crate::operator::lease::WAIT, &crate::operator::now_ms).await?;
             if kept.as_ref().map_or(0, |m| m.epoch) > doubt.as_ref().map_or(0, |m| m.epoch) {
-                doubt = kept;
+                doubt = kept.clone();
             }
         }
-        let r = self.change_held(f, first, doubt, lease).await;
+        let (mut change, step) = core::Change::new(first, doubt);
+        let r = self.change_held(f, &mut change, step, lease).await;
         if let Some(l) = lease {
-            let left = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // The newest map a server may hold, which the next change gives
+            // again first unless the servers it reaches hold it: the one
+            // this change left in doubt, and also the map it made, the map
+            // in doubt it gave again and a server took, and the one the
+            // Lease kept as it began (of two of one epoch, the later in
+            // that list). With only the map in doubt kept, a change that
+            // was made while a server did not answer left nothing there,
+            // and the next, on a coordinator that reached only that server,
+            // made a second map of the epoch (TLC, spec/clustermap
+            // `LeaseRacing`).
+            let own = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let made = r.as_ref().ok().map(|(m, _)| m.clone());
+            let left = [kept, change.redone().cloned(), own, made].into_iter().flatten().max_by_key(|m| m.epoch);
             if let Err(e) = l.release(left.as_ref(), crate::operator::now_ms()).await {
                 // The map it last kept there stays in doubt: given again,
                 // which is safe, by the next change.
@@ -4423,9 +4437,9 @@ impl Coordinator {
         r
     }
 
-    /// A [`Self::change`], with the Lease held when there is one.
-    async fn change_held(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, first: &[String], doubt: Option<SlotMap>, lease: Option<&crate::operator::lease::MapLease>) -> Result<(SlotMap, Vec<String>), ApiError> {
-        let (mut change, mut step) = core::Change::new(first, doubt);
+    /// A [`Self::change`] from its first step, with the Lease held when
+    /// there is one.
+    async fn change_held(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, change: &mut core::Change, mut step: core::ChangeStep, lease: Option<&crate::operator::lease::MapLease>) -> Result<(SlotMap, Vec<String>), ApiError> {
         let mut t = self.topo();
         // The epoch of the map last given to a server, which may hold it.
         let mut given = 0;
