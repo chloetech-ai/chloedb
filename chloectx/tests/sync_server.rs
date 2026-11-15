@@ -260,7 +260,7 @@ const ADMIN: &str = "admin-token-for-the-forget-test";
 
 /// A remote of the server at `url` with the admin key, set up in `home`.
 fn admin_remote(home: &Path, url: &str) -> sync::Remote {
-    sync::setup(home, url, Some(ADMIN), "", &[]).unwrap();
+    sync::setup(home, &home.to_string_lossy(), url, Some(ADMIN), "", &[], true).unwrap();
     sync::remote(home).unwrap()
 }
 
