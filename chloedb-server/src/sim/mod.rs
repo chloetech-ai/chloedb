@@ -193,10 +193,17 @@ pub enum Bug {
     /// copy without the writes it had acknowledged is elected (finding
     /// N-E2).
     VotesWithALostVolume,
+    /// A replica no primary counted a member asks to be elected
+    /// ([`crate::cores::shard::Replica::counted`]): a copy that lost its
+    /// volume, started again empty and learned its shard's membership
+    /// from a call it could not apply, or one being caught up since, is
+    /// elected with the vote of a member behind it, both lacking writes a
+    /// majority acknowledged (TLC, spec/replication: nine steps).
+    CampaignsUncounted,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 10] = [
+    pub const ALL: [Bug; 11] = [
         Bug::AsksAKnownTerm,
         Bug::TakesWritesInALease,
         Bug::RefusesOlderTerms,
@@ -207,6 +214,7 @@ impl Bug {
         Bug::TrustsTheSameTerm,
         Bug::InstallsALateCopy,
         Bug::VotesWithALostVolume,
+        Bug::CampaignsUncounted,
     ];
 
     pub fn name(self) -> &'static str {
@@ -221,6 +229,7 @@ impl Bug {
             Bug::TrustsTheSameTerm => "trusts-the-same-term",
             Bug::InstallsALateCopy => "installs-a-late-copy",
             Bug::VotesWithALostVolume => "votes-with-a-lost-volume",
+            Bug::CampaignsUncounted => "campaigns-uncounted",
         }
     }
 
@@ -319,6 +328,40 @@ impl Config {
             acks: Acks::Majority,
             isolate: vec![(2, at, cut)],
             lost_volumes: vec![(1, lost, empty)],
+            crashes: vec![(0, crash, r.ms(2000, 5000))],
+            ..Config::of(seed)
+        }
+    }
+}
+
+impl Config {
+    /// Seed `seed` where the replica that loses its volume asks to be
+    /// elected (`chloedb-sim --uncounted-candidate`): three copies
+    /// acknowledged by a majority, three clients, the drawn faults, and at
+    /// 4 to 12 s copy 1 cut off for 1 to 3 s, so that it lacks what copies
+    /// 0 and 2 acknowledge meanwhile; copy 2 losing its volume a moment
+    /// before that cut ends, empty for 50 ms to 1 s; and copy 0, usually
+    /// the primary, crashing for 2 to 5 s at most 1.5 s after copy 2 is
+    /// back, while it catches copy 2 up, one transaction a call. With
+    /// [`Bug::CampaignsUncounted`] put back, copy 2 asks to be elected
+    /// holding less than copy 0 acknowledged and more than copy 1 holds,
+    /// and copy 1's vote elects it; without, it asks for no votes until a
+    /// primary counts it, and copy 0 is elected once back.
+    pub fn uncounted_candidate(seed: u64) -> Config {
+        let mut r = Rng::new(seed ^ 0x0c_0a_47_ed);
+        let at = r.ms(4000, 12_000);
+        let cut = r.ms(1000, 3000);
+        let lost = at + cut - r.ms(100, 900);
+        let empty = r.ms(50, 1000);
+        let crash = lost + empty + r.ms(1, 300);
+        Config {
+            copies: 3,
+            clients: 3,
+            acks: Acks::Majority,
+            ship_max: 4096,
+            batch: 1,
+            isolate: vec![(1, at, cut)],
+            lost_volumes: vec![(2, lost, empty)],
             crashes: vec![(0, crash, r.ms(2000, 5000))],
             ..Config::of(seed)
         }

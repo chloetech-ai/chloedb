@@ -1364,7 +1364,8 @@ impl Follow {
     /// copies that granted it refuse the primary of an older term from then.
     ///
     /// It asks for the term after the newest it knows or a copy told it
-    /// ([`shard::Replica::heard`]). On its own (not a `handover`), each
+    /// ([`shard::Replica::heard`]), and only as a copy a primary counted
+    /// ([`shard::Replica::counted`]). On its own (not a `handover`), each
     /// round ends once its answers decide it ([`shard::Campaign::decided`]):
     /// it waits for no copy that is down.
     ///
@@ -1376,6 +1377,7 @@ impl Follow {
     /// it. Refused, the primary is fenced and does not step down, and with
     /// two copies the shard is left with no primary.
     pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool, first: &[String]) -> Result<Elected, ApiError> {
+        self.core().counted()?;
         let c = self.core().campaign(&self.numbering()?, handover);
         let early = (!handover && first.is_empty()).then_some(&c);
         let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts, early).await);

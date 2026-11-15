@@ -11,6 +11,24 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Replication
+
+- A replica that no primary counts among its shard's copies (one that
+  joined, or lost its volume and started again empty, and that no primary
+  has found caught up since) asks for no votes: its election answers 409,
+  and the shard elects a copy that is counted. Before, such a copy that had
+  learned the shard's membership from a call it could not apply could be
+  elected with the vote of a member behind it, and the writes both lacked
+  were lost (the follow-up to N-E2 that TLC found in `spec/replication`;
+  `chloedb-sim --uncounted-candidate` places it, and `--bug
+  campaigns-uncounted` puts it back).
+
+### Formal specifications
+
+- `spec/` holds TLA+ specifications of ChloeDB's protocols, checked with
+  TLC on small models by CI (`spec/README.md`): shard elections and N-E2,
+  published snapshots, and slot moves from a replicated shard.
+
 ## 0.3.4
 
 The second wave of the fourth audit and two more series of fixes, queries

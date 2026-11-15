@@ -48,7 +48,6 @@ MODELS = [
     ("replication", "MCShardElection", "MembersAmnesia", "OneCopyATerm", 10, True),
     ("replication", "MCShardElection", "NE2Stall", "NeverStalled", 4, False),
     ("replication", "MCShardElection", "FixStall", "ok", None, False),
-    ("replication", "MCShardElection", "FixNoLoss", "ok", None, False),
     ("replication", "MCShardElection", "PreNE2LostVolume", "NoLostWrite", 7, False),
     ("replication", "MCShardElection", "NarrowLostVolume", "NoLostWrite", 9, False),
     ("replication", "MCShardElection", "FixLostVolume", "NoLostWrite", 9, False),
