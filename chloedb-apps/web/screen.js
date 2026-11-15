@@ -152,6 +152,15 @@ window.__sa_numbers = (() => {
     let state = {};
     let data = {};
     let lets = {};
+    // The signed-in person ({id, name, email, role}) or null, known before
+    // the screen is worked out: expressions read it as "me". app.me() is a
+    // promise, so in an expression (which cannot wait) it also carries the
+    // person's fields once they are known: app.me().name reads right.
+    // (Once a load has asked, app.me() in an expression answers from it.)
+    let me = null;
+    let meAsked = false;
+    const meOf = () => Promise.resolve(app.me ? app.me() : null).catch(() => null);
+    const appS = new Proxy(app, { get: (t, k) => (k === 'me' ? () => (meAsked ? Object.assign(Promise.resolve(me), me || {}) : meOf()) : t[k]) });
     let drawing = false;
     let refused = false;
     let gated = false;
@@ -179,6 +188,7 @@ window.__sa_numbers = (() => {
       return out;
     };
     const mentions = (v, res) => exprIds(v).some((i) => res.some((re) => re.test(String(SRC[i] || ''))));
+    const dataReadsMe = mentions(spec.data || {}, [/(^|[^.\w$])me\b/]);
     const resultsFor = (key) => {
       const k = String(key).replace(/[^A-Za-z0-9_$]/g, '');
       if (!k) return undefined;
@@ -226,7 +236,7 @@ window.__sa_numbers = (() => {
       if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = val(x, s, `${where}.${k}`); return o; }
       return v;
     };
-    const scope = (extra) => ({ ...data, ...lets, data, state, set, refresh, app, ui, lib, h, svg, fmt: app.fmt, params: app.params, today: app.today(), ...(extra || {}) });
+    const scope = (extra) => ({ ...data, ...lets, data, state, set, refresh, app: appS, me, ui, lib, h, svg, fmt: app.fmt, params: app.params, today: app.today(), ...(extra || {}) });
 
     // A handler: run it, then fetch the data again (writes show at once).
     // What a tap was refused, by the handler's path: said under its button
@@ -311,6 +321,9 @@ window.__sa_numbers = (() => {
     }
 
     async function load() {
+      // Asked beside the data, waited for first only when a data entry reads it.
+      const mine = preview ? Promise.resolve(null) : meOf();
+      if (dataReadsMe) { me = await mine; meAsked = !preview; }
       const s = scope();
       const entries = Object.entries(spec.data || {});
       // A preview has no app to ask yet: its data is empty.
@@ -335,8 +348,9 @@ window.__sa_numbers = (() => {
         }
       }));
       data = Object.fromEntries(entries.map(([name], i) => [name, out[i] ?? []]));
+      me = await mine; meAsked = !preview;
       // A front page stays public: what a visitor may not read stays out of it, and no wall hides the storefront.
-      gated = refused && !isFront && !(await app.me().catch(() => null));
+      gated = refused && !isFront && !me;
       refused = false;
     }
     function compute() {
