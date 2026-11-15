@@ -249,6 +249,16 @@ enum Cmd {
         /// asking the project's ChloeCtx.
         #[arg(long)]
         store: Option<PathBuf>,
+        /// Ask the distiller about each case of this JSON-lines file
+        /// (`{"id", "request", "answer"?, "before": [{"id", "text"}],
+        /// "expect": [id]}`) and count the repeats it finds against
+        /// `expect`; nothing is stored.
+        #[arg(long)]
+        judge: Option<PathBuf>,
+        /// The distiller's model for `--judge` (otherwise
+        /// `CHLOECTX_DISTILL_MODEL`, or the store's).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
@@ -653,9 +663,31 @@ fn main() {
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user"}), 30)),
-        Cmd::Repeats { days, json: as_json, store } => {
-            let r = match store {
-                Some(dir) => {
+        Cmd::Repeats { days, json: as_json, store, judge, model } => {
+            let r = match (store, judge) {
+                (store, Some(file)) => {
+                    let mut cfg = store.map(|d| daemon::Config::load(&d.join("config.json")).distill).unwrap_or_default();
+                    if let Some(m) = model {
+                        std::env::remove_var("CHLOECTX_DISTILL_MODEL");
+                        cfg.model = m;
+                    }
+                    let cases: Vec<Json> = std::fs::read_to_string(&file)
+                        .unwrap_or_else(|e| {
+                            eprintln!("chloectx repeats: {}: {e}", file.display());
+                            std::process::exit(1)
+                        })
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| {
+                            serde_json::from_str(l).unwrap_or_else(|e| {
+                                eprintln!("chloectx repeats: {}: a line is not JSON: {e}", file.display());
+                                std::process::exit(2)
+                            })
+                        })
+                        .collect();
+                    chloectx::repeats::judge(&cfg, &cases, 4)
+                }
+                (Some(dir), None) => {
                     let cfg = daemon::Config::load(&dir.join("config.json"));
                     let scanned = embed::open(&cfg.embedder)
                         .and_then(|e| chloectx::store::Store::open_read_only(&dir.join("memory.strata"), std::sync::Arc::from(e)))
@@ -665,7 +697,7 @@ fn main() {
                         std::process::exit(1)
                     })
                 }
-                None => send(&project, json!({"op": "repeats", "days": days}), 120),
+                (None, None) => send(&project, json!({"op": "repeats", "days": days}), 120),
             };
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());

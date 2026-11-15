@@ -246,6 +246,75 @@ pub fn receipts(sup: &Supervisor, agents: &[crate::db::Agent], since_ms: i64) ->
     (out, missing)
 }
 
+/// What the user said in more than one session, from ChloeCtx
+/// (`chloectx repeats`, chloectx/src/repeats.rs): the rules it kept for
+/// being said again, with how often each was said again once kept and how
+/// often after the session had been shown it, and the instructions said
+/// in more than one session that it did not keep (a ChloeCtx from before
+/// it kept them). One finding each, from `from_ms` on; nothing when the
+/// installed ChloeCtx cannot say.
+pub struct SaidAgain {
+    pub kept: Vec<KeptRule>,
+    pub unkept: Vec<(String, usize)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeptRule {
+    pub id: String,
+    /// The instruction, without "(the user has said this in N sessions)".
+    pub text: String,
+    pub sessions: usize,
+    pub said_again: usize,
+    pub after_shown: usize,
+    pub ts_ms: i64,
+}
+
+/// A rule's text without its count.
+pub fn without_count(t: &str) -> &str {
+    match t.rfind(" (the user has said this in ") {
+        Some(i) if t.ends_with(" sessions)") => &t[..i],
+        _ => t,
+    }
+}
+
+/// [`SaidAgain`] from `chloectx repeats --json`'s answer.
+pub fn said_again_of(v: &Json, from_ms: i64) -> SaidAgain {
+    let n = |x: &Json| x.as_u64().unwrap_or(0) as usize;
+    let kept = v["rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| KeptRule {
+            id: r["id"].as_str().unwrap_or("").to_string(),
+            text: without_count(r["rule"].as_str().unwrap_or("")).to_string(),
+            sessions: n(&r["sessions"]),
+            said_again: n(&r["said_again"]),
+            after_shown: n(&r["said_again_after_shown"]),
+            ts_ms: r["ts"].as_i64().unwrap_or(0) * 1000,
+        })
+        .filter(|r| r.ts_ms >= from_ms && !r.text.is_empty())
+        .collect();
+    let unkept = v["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|g| g["said"].as_array().into_iter().flatten().any(|s| s["ts"].as_i64().unwrap_or(0) * 1000 >= from_ms))
+        .map(|g| (without_count(g["rule"].as_str().unwrap_or("")).to_string(), n(&g["sessions"])))
+        .filter(|(t, _)| !t.is_empty())
+        .collect();
+    SaidAgain { kept, unkept }
+}
+
+/// Asks ChloeCtx in `dir` for what was said again since `from_ms`.
+pub fn said_again(sup: &Supervisor, dir: &Path, from_ms: i64) -> Result<SaidAgain, String> {
+    let days = ((crate::db::now_ms() - from_ms) / 86_400_000 + 1).clamp(1, 90).to_string();
+    match trail::run_chloectx(&sup.cfg.chloectx_bin, dir, &["repeats", "--days", &days, "--json"], Duration::from_secs(30)) {
+        Ran::Out(v) => Ok(said_again_of(&v, from_ms)),
+        Ran::Missing => Err(trail::not_installed(&sup.cfg.chloectx_bin)),
+        Ran::Failed(e) => Err(e),
+    }
+}
+
 /// The settings the window's receipts were made with (the newest full one).
 pub fn observed(rcs: &[Rc]) -> Json {
     let last = rcs.iter().rev().find(|r| r.full);

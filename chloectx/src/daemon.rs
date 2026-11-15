@@ -912,7 +912,7 @@ impl Daemon {
                 let (turn, ep, first, ex) = self.with_session(&sid, |s| {
                     let first = !s.episode_stored;
                     s.episode_stored = true;
-                    let ex = crate::distill::Exchange { by: Some(crate::record::Source::parse(&s.source)), agent: s.agent.clone(), prev_answer: s.prev_answer.clone() };
+                    let ex = crate::distill::Exchange { by: Some(crate::record::Source::parse(&s.source)), agent: s.agent.clone(), prev_answer: s.prev_answer.clone(), ..Default::default() };
                     if first {
                         // Redacted: the state is a file too.
                         let tail: Vec<char> = crate::redact::redact(&answer).chars().collect();
@@ -1030,8 +1030,13 @@ impl Daemon {
         }
         known.sort_by_key(|r| -r.seq);
         let listed: Vec<(String, Kind, String)> = known.iter().rev().map(|r| (r.id.clone(), r.kind, r.text.clone())).collect();
+        // The user's earlier instructions most like this request: the model
+        // says which an item says again.
+        let mut ex = ex.clone();
+        let before: Vec<Record> = if matches!(ex.by, None | Some(crate::record::Source::User)) { crate::repeats::said_before(&self.store, prompt).unwrap_or_default() } else { Vec::new() };
+        ex.said_before = crate::repeats::listed(&before);
         let t0 = Instant::now();
-        match crate::distill::distill_exchange(&self.distill_cfg(), prompt, answer, commands, &listed, ts, ex) {
+        match crate::distill::distill_exchange(&self.distill_cfg(), prompt, answer, commands, &listed, ts, &ex) {
             Ok(d) => {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
@@ -1043,7 +1048,7 @@ impl Daemon {
                     let st = self.state.lock().unwrap();
                     st.sessions.get(sid).map(|s| if s.shown_before.0 == turn { s.shown_before.1.clone() } else { s.injected.clone() }).unwrap_or_default()
                 };
-                let promoted = crate::repeats::promote(&self.store, d.drafts, sid, &shown);
+                let promoted = crate::repeats::promote(d.drafts, sid, &shown, &before);
                 // Near-copies of what is noted (other than what they replace,
                 // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
@@ -1266,11 +1271,11 @@ impl Daemon {
         let s = st.sessions.entry(sid.to_string()).or_default();
         // A coordinator's brief to the session (a relay) is that agent's
         // instruction, as another agent's brief is, not the user's words.
-        let relay = req.get("payload").and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).is_some_and(|t| t.trim_start().starts_with("<coordinator-relay"));
-        let src = match (noted, first) {
-            (Some(n), _) => n.to_string(),
-            (None, Some(f)) if s.turn == 0 => f.to_string(),
-            _ if relay => "agent:coordinator".to_string(),
+        let relay = req.get("payload").and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).and_then(crate::envelope::relay_from);
+        let src = match (noted, first, relay) {
+            (Some(n), _, _) => n.to_string(),
+            (None, Some(f), _) if s.turn == 0 => f.to_string(),
+            (_, _, Some(from)) => format!("agent:{from}"),
             _ => "user".to_string(),
         };
         s.source = crate::record::Source::parse(&src).as_str();

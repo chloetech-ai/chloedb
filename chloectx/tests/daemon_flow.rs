@@ -231,13 +231,15 @@ fn an_instruction_said_in_two_sessions_becomes_a_rule() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let script = dir.path().join("fake-model.sh");
-    std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+    // The fake model says its item repeats the first instruction it was
+    // shown as said before, if any.
+    std::fs::write(&script, format!("#!/bin/sh\np=$(cat)\nid=$(printf '%s\\n' \"$p\" | sed -n '/<said_before>/,/<\\/said_before>/p' | sed -n 's/^\\[\\([^]]*\\)\\].*/\\1/p' | head -1)\nsed \"s/__ID__/$id/\" '{}'\n", out.display())).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
     std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
     let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
     let model_says = |text: &str| {
-        let line = json!({"kind": "rule", "text": text, "said_by": "requester", "scope": "task"}).to_string();
+        let line = json!({"kind": "rule", "text": text, "said_by": "requester", "scope": "task", "repeats": ["__ID__"]}).to_string();
         std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": line}).to_string()).unwrap();
     };
     let turn = |sid: &str, prompt: &str| {
@@ -254,12 +256,16 @@ fn an_instruction_said_in_two_sessions_becomes_a_rule() {
     let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
     assert!(!brief.contains("Rules and conventions"), "{brief}");
 
-    // A coordinator's brief that says it again (and "never"): the agent's words.
+    // A coordinator's brief that says it again (and "never"), in either
+    // form a relay takes: the agent's words.
     model_says("Build the shop from the CREATE statements in schema.sql.");
     turn("s2", "<coordinator-relay><relay from=\"coordinator\"><note>Build the shop from the CREATE statements in schema.sql. Never touch production.</note></relay></coordinator-relay>");
+    turn("s2", "<relay from=\"coordinator\">\nBuild the shop from the CREATE statements in schema.sql, as before.\n</relay>");
     assert!(rules().is_empty(), "{:?}", rules());
-    let p = sql(&d, "SELECT ctx FROM memory WHERE kind = 'prompt' AND session = 's2' LIMIT 5");
-    assert!(p[0][0].as_str().unwrap().contains("By: agent:coordinator"), "{p:?}");
+    let p = sql(&d, "SELECT ctx, text FROM memory WHERE kind = 'prompt' AND session = 's2' LIMIT 5");
+    assert_eq!(p.len(), 2, "{p:?}");
+    assert!(p.iter().all(|r| r[0].as_str().unwrap().contains("By: agent:coordinator")), "{p:?}");
+    assert!(p.iter().all(|r| !r[1].as_str().unwrap().contains("<relay")), "{p:?}");
 
     // The user, in another session: a rule, counted, every session told.
     model_says("Build the shop from the SQL CREATE statements in schema.sql.");
@@ -281,7 +287,7 @@ fn an_instruction_said_in_two_sessions_becomes_a_rule() {
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(r[0][0], "Build the shop from the CREATE statements in schema.sql, every table (the user has said this in 3 sessions)");
     let ctx = r[0][1].as_str().unwrap();
-    assert!(ctx.starts_with("Sessions: 3\nSaid again: 1\nSaid again after it was shown: 1\nTurn 1 request:"), "{ctx}");
+    assert!(ctx.starts_with("Sessions: 3\nSaid: 3\nSaid again: 1\nSaid again after it was shown: 1\nTurn 1 request:"), "{ctx}");
 
     // `chloectx repeats` writes nothing and lists the rule kept.
     let before = sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1");
