@@ -1076,13 +1076,14 @@ fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
         if tried.contains(&key) {
             continue;
         }
-        out.push(json!({ "key": key, "title": f["title"], "part": "memory", "edit": f["edit"], "why": "the week's sessions left this record out where it was needed", "saves": 0, "widens": false, "patterns": [] }));
+        out.push(json!({ "key": key, "title": f["title"], "part": "memory", "edit": f["edit"], "why": "The week's sessions left this record out where it was needed", "saves": 0, "widens": false, "patterns": [] }));
     }
     // Allow rules, for the commands the replays were asked about.
     let agents: HashSet<String> = results(sup, &run.id).into_iter().filter(|r| r.version == best.id).filter_map(|r| r.agent).collect();
     let mut asked: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for q in crate::questions::all(sup).into_iter().filter(|q| q.kind == "permission" && q.agent.as_ref().is_some_and(|a| agents.contains(a))) {
-        if let Some(k) = q.detail.as_ref().and_then(|d| d["command"].as_str()).and_then(super::storm_key) {
+        let cwd = q.agent.as_deref().and_then(|a| sup.agent_row(a)).map(|a| a.cwd).unwrap_or_default();
+        if let Some(k) = q.detail.as_ref().and_then(|d| d["command"].as_str()).and_then(|c| asked_key(&rules, c, &cwd)) {
             *asked.entry(k).or_default() += 1;
         }
     }
@@ -1092,7 +1093,9 @@ fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
     }
     calls.extend(w.calls.iter().cloned());
     let mut rules_out: Vec<(usize, Json)> = Vec::new();
-    for (k, n) in asked {
+    // A rule asked about less than once a replay cannot be better beyond
+    // the noise of its replays: not worth a round.
+    for (k, n) in asked.into_iter().filter(|(_, n)| *n >= run.n) {
         let rule = format!("Bash({k}:*)");
         let key = format!("allow\n{rule}");
         if tried.contains(&key) || e.permissions.allow.contains(&rule) {
@@ -1104,12 +1107,26 @@ fn changes(sup: &Supervisor, run: &Run, best: &Version) -> Vec<Json> {
         let rep = super::widen_report(&rules, &after, &calls, &w.cwd());
         let patterns = rep["patterns"].clone();
         let widens = patterns.as_array().is_some_and(|p| !p.is_empty());
-        rules_out.push((n, json!({ "key": key, "title": format!("Allow `{k}` without asking"), "part": "permissions", "edit": { "permissions": { "allow": [rule] } }, "why": format!("its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }), "saves": n, "widens": widens, "patterns": patterns })));
+        rules_out.push((n, json!({ "key": key, "title": format!("Allow `{k}` without asking"), "part": "permissions", "edit": { "permissions": { "allow": [rule] } }, "why": format!("Its replays were asked about it {n} time{}", if n == 1 { "" } else { "s" }), "saves": n, "widens": widens, "patterns": patterns })));
     }
-    rules_out.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+    // The most asked first, a widening one too (it waits for you): a
+    // round spent on a rule that saves little is a round, and replays,
+    // not spent on the one that saves most. Then the pins.
+    rules_out.sort_by_key(|(n, j)| (std::cmp::Reverse(*n), j["widens"] == true));
+    let pins = std::mem::take(&mut out);
     out.extend(rules_out.into_iter().map(|(_, j)| j));
-    out.sort_by_key(|c| c["widens"] == true);
+    out.extend(pins);
     out
+}
+
+/// What a prompt for `cmd` was about: the first of its simple commands the
+/// rules do not allow (`git status; ./check.sh` asks for `./check.sh`), as
+/// the prefix a rule would name.
+fn asked_key(rules: &[super::perms::Rule], cmd: &str, cwd: &str) -> Option<String> {
+    let probe = |part: &str| super::perms::Probe { tool: "Bash".into(), command: Some(part.to_string()), path: None, cwd: cwd.to_string() };
+    let parts = super::perms::parts(cmd);
+    let part = parts.iter().filter(|p| !p.starts_with("cd ") && p.as_str() != "cd").find(|p| super::perms::decide(rules, &probe(p)) != "allow").or(parts.first())?;
+    super::storm_key(part)
 }
 
 /// `best`'s edits with a change on top.
@@ -1231,6 +1248,10 @@ pub struct StartB {
     pub from: Option<i64>,
     #[serde(alias = "turns_to")]
     pub to: Option<i64>,
+    /// Optimize this on a stretch: the checks its case keeps (the page's
+    /// ticks and commands); without it, the proposal's ticked ones.
+    pub checks: Option<Vec<Json>>,
+    pub name: Option<String>,
     pub n: Option<usize>,
     pub rounds: Option<usize>,
     pub cap_usd: Option<f64>,
@@ -1389,7 +1410,7 @@ pub fn start(sup: &Arc<Supervisor>, lv: &Arc<Levels>, mut b: StartB) -> Result<J
         if b.confirm_usd.is_none_or(|c| c + 0.005 < most) {
             return Err(ApiError::new(409, "confirm_cost", format!("Optimize this costs at most ${most:.2} (about ${:.2} a replay, {} replays a round): start it again with confirm_usd: {most}", money(cost_one), n as usize)));
         }
-        let mk = evals::create(sup, evals::CreateB { agent, from: b.from, to: b.to, suite: Some("Optimize this".into()), ..evals::CreateB::default() })?;
+        let mk = evals::create(sup, evals::CreateB { agent, from: b.from, to: b.to, suite: Some("Optimize this".into()), checks: b.checks.clone(), name: b.name.clone().filter(|n| !n.trim().is_empty()), ..evals::CreateB::default() })?;
         let id = mk["case"]["id"].as_str().unwrap_or("").to_string();
         made_case = Some(id.clone());
         b.cases = Some(vec![id]);
@@ -1670,5 +1691,17 @@ mod tests {
         assert!(alike("Should totals round half up?", "Do totals round half up or down?") >= 0.35);
         assert!(alike("Which database?", "Should totals round half up?") < 0.35);
         assert_eq!(claude_slug(Path::new("/Users/x/.local/share/w b/r1")), "-Users-x--local-share-w-b-r1");
+    }
+
+    #[test]
+    fn a_prompt_is_keyed_on_the_command_the_rules_do_not_allow() {
+        let rule = |t: &str| super::super::perms::Rule { decision: "allow".into(), text: t.into(), from: "Workbench".into() };
+        let rules = vec![rule("Bash(git status:*)"), rule("Bash(git stash:*)")];
+        // Seen in a real replay: the prompt was for the check script, not
+        // for git, which Workbench already allows.
+        assert_eq!(asked_key(&rules, "git status --short; git stash list; ./scripts/check.sh", "/w").as_deref(), Some("./scripts/check.sh"));
+        assert_eq!(asked_key(&rules, "git stash -q && ./scripts/check.sh; git stash pop", "/w").as_deref(), Some("./scripts/check.sh"));
+        assert_eq!(asked_key(&rules, "cd sub && make lint", "/w").as_deref(), Some("make lint"));
+        assert_eq!(asked_key(&[], "head -5 a.py; ./scripts/check.sh", "/w").as_deref(), Some("head -5"));
     }
 }

@@ -146,7 +146,8 @@ async function makeTest(host, ctx, S) {
 
 function optBody(S) {
   const targets = TARGETS.filter(([k]) => S.opt.targets[k].on).map(([k]) => ({ metric: k, pct: Number(S.opt.targets[k].pct) || 0 }));
-  return { kind: "optimize", agent: S.agent, from: S.from, to: S.to, n: S.opt.n, rounds: S.opt.rounds, cap_usd: S.opt.cap, targets };
+  // The checks on this page judge its replays, as they would a test's.
+  return { kind: "optimize", agent: S.agent, from: S.from, to: S.to, n: S.opt.n, rounds: S.opt.rounds, cap_usd: S.opt.cap, targets, checks: chosenChecks(S), name: S.name || undefined };
 }
 
 async function estimate(host, ctx, S) {

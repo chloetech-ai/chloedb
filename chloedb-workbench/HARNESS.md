@@ -1082,7 +1082,9 @@ where it ends.
 - `git clone --shared --no-checkout` of the repository, its remote removed
   (checked), the case's commit checked out detached, its uncommitted tree
   put back. Nothing can be pushed. It is removed after.
-- Its agent runs with the version's permissions, hooks and memory settings
+- Its agent runs in the session's permission mode (the case keeps it:
+  without it Claude Code's own default decides what is asked), with the
+  version's permissions, hooks and memory settings
   (`at_spawn` with the version), the worktree's edit and test defaults, and
   the replayed repository's `.claude/settings.local.json` (as a session
   there has it; never its local MCP servers). Its memory is a ChloeCtx
@@ -1112,13 +1114,18 @@ it is the scorecard above (too few under 6 complete cases); one case is
 scored over its runs (`score::stretch`: a bootstrap over each side's runs,
 Fisher's exact test on the pass counts).
 
-**Optimize this** (`kind: optimize`) on one stretch: it makes the case,
+**Optimize this** (`kind: optimize`) on one stretch: it makes the case
+with the checks and name on its page,
 replays the current version N times, then tries one change at a time on
 the best so far, each a version of its own (`tried`; the one kept is a
 `candidate`, which the user promotes as any version):
 - the changes are an allow rule for each command its replays were asked
-  about, most asked first, and the pins Fix the harness proposes for the
-  week's missed memory; those that do not widen go first;
+  about, most asked first (on equal counts, those that do not widen), then
+  the pins Fix the harness proposes for the week's missed memory. A prompt
+  counts for the first of its simple commands the rules do not allow
+  (`git status; ./check.sh` was asked for `./check.sh`), and a rule asked
+  about less than once a replay is not tried: it cannot be better beyond
+  the noise of its replays;
 - a change is kept only by the keep rule against the best so far, so one
   that loses a pass A had is never kept;
 - the user ticks one or more targets (interventions ticked by default, wall

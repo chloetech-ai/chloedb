@@ -49,8 +49,6 @@ pub const TABLES: [&str; 3] = [
 
 /// The most checks a case keeps of each test kind.
 const MAX_TEST_CHECKS: usize = 40;
-/// The words a prompt keeps in a case's name.
-const NAME_WORDS: usize = 5;
 
 /// Writes a row: `cols` are its columns and values (quoted, so that
 /// `commit`, `set` and `case` can be names).
@@ -243,13 +241,12 @@ fn set_of(agent: &str) -> &'static str {
     }
 }
 
-fn name_of(prompt: &str) -> String {
-    let words: Vec<String> = prompt.split_whitespace().take(NAME_WORDS).map(|w| w.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect::<String>().to_lowercase()).filter(|w| !w.is_empty()).collect();
-    let n = words.join("-");
-    if n.is_empty() {
-        "case".into()
+/// A case's name until you give it one: its session's, and its turns.
+fn name_of(session: &str, from: i64, to: i64) -> String {
+    if from == to {
+        format!("{session}, turn {from}")
     } else {
-        n.chars().take(48).collect()
+        format!("{session}, turns {from}–{to}")
     }
 }
 
@@ -389,11 +386,10 @@ pub fn propose(sup: &Supervisor, q: &ProposeQ) -> Result<Json, ApiError> {
 
     let (tokens, cost) = cost_in(sup, &a, t0, t1);
     let wall_ms = evs.iter().filter(|e| e.kind == "Stop" && e.ts >= t0 && e.ts < t1).map(|e| e.ts).max().unwrap_or(t1) - t0;
-    let first = turns.first().map(|t| t.prompt.clone()).unwrap_or_default();
     let pq = script.as_array().map(|s| s.iter().filter(|x| x["kind"] == "prompt").count()).unwrap_or(0);
     Ok(json!({
         "agent": { "id": a.id, "name": a.name, "repo": a.repo, "model": a.model, "harness": a.harness },
-        "name": name_of(&first), "repo": a.repo, "from": from, "to": to, "turns_all": last,
+        "name": name_of(&a.name, from, to), "repo": a.repo, "from": from, "to": to, "turns_all": last,
         "commit": commit, "tree": tree, "start_from": start_from, "context": context, "wall_ms": wall_ms.max(0),
         "script": script, "prompts": pq, "permissions": prompts,
         "checks": checks, "set": set_of(&a.id),
@@ -903,7 +899,8 @@ mod tests {
         // By its count when the words differ (Claude Code may expand them).
         assert_eq!(cut_transcript(&text, 2, "other words").unwrap().lines().count(), 4);
         assert!(cut_transcript(&text, 3, "x").is_none());
-        assert_eq!(name_of("Fix the rounding in money.py please now"), "fix-the-rounding-in-moneypy");
+        assert_eq!(name_of("invoice-fixes", 1, 3), "invoice-fixes, turns 1–3");
+        assert_eq!(name_of("invoice-fixes", 2, 2), "invoice-fixes, turn 2");
     }
 
     #[test]

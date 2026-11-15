@@ -6325,7 +6325,8 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     assert_eq!(p["permission_mode"], "acceptEdits", "{p}");
 
     // Optimize this: a target is needed, and the price is confirmed.
-    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }] });
+    let checks = json!([{ "kind": "never", "pattern": "git push" }, { "kind": "command", "run": "test -d .git" }]);
+    let body = json!({ "kind": "optimize", "agent": id, "from": 1, "to": 1, "n": 2, "rounds": 1, "targets": [{ "metric": "interventions", "pct": 30 }], "checks": checks, "name": "tidy" });
     let mut none = body.clone();
     none["targets"] = json!([]);
     none["confirm_usd"] = json!(100);
@@ -6333,6 +6334,10 @@ fn harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_
     let started = start_run(&s, body);
     let run = started["run"]["id"].as_str().unwrap().to_string();
     assert!(started["case"].is_string(), "{started}");
+    // Its case keeps the checks and the name the page had.
+    let (_, made) = s.get(&format!("/api/harness/cases/{}", started["case"].as_str().unwrap()));
+    assert_eq!(made["case"]["name"], "tidy", "{made}");
+    assert_eq!(made["case"]["checks"].as_array().unwrap().iter().map(|c| c["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["never", "command"], "{made}");
 
     // A's replays: the prompt answered from the log, an intervention each;
     // then its one change, an allow rule for that command, widens, so it

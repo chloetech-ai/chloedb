@@ -125,7 +125,7 @@ function roundsBlock(run) {
     log.length ? h("ol", { class: "pane hxr-rounds" }, log.map((l) => h("li", { class: `hxr-r ${l.result}` },
       h("span", { class: "hxr-rn hx-num" }, l.round ? String(l.round) : "–"),
       h("div", { class: "hxr-rt" },
-        h("div", {}, h("b", {}, rich((l.change && l.change.title) || "A change")), l.name ? h("span", { class: "hx-mut hx-num" }, ` · ${l.name}`) : null, l.change && l.change.widens ? h("span", { class: "hx-flag" }, icon("warn"), "widens") : null),
+        h("div", {}, h("b", {}, rich((l.change && l.change.title) || "A change")), l.name ? h("span", { class: "hx-mut hx-num" }, ` · ${l.name}`) : null, l.change && l.change.widens ? [" ", h("span", { class: "hx-flag" }, icon("warn"), "widens")] : null),
         h("div", { class: "hx-mut hxr-why" }, rich([l.change && l.change.why, ...(Array.isArray(l.why) ? l.why : l.why ? [l.why] : [])].filter(Boolean).join(" · ")))),
       h("span", { class: "hxr-rw" }, ROUND_WORDS[l.result] || l.result))))
       : h("p", { class: "hx-note" }, "Nothing tried yet: it replays your current harness first, to measure its noise."));
