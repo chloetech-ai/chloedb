@@ -30,6 +30,9 @@ nothing here. The workflow Demos (demos.yml) tests them, on a pull request
 that touches one and every night, and a failure there does not hold a
 ChloeDB release (docs/compatibility.md, "Demos").
 
+The TLA+ specifications (spec/) run nothing here either: the workflow
+Specs (specs.yml) runs TLC on their models.
+
 `python3 .github/scripts/ci_changes.py --self-test` checks the rules.
 """
 import json
@@ -53,6 +56,8 @@ CRATES = ["chloedb", "chloectx", "chloedb-server", "chloedb-crawl", "chloedb-she
 SMOKE = ["smoke_crawl", "smoke_sheets", "smoke_ctx", "smoke_apps"]
 # The demo train (demos.yml): nothing in CI.
 DEMOS = ("chloedb-netops/", "chloedb-swarm/", "examples/feature-store/", "examples/parley/")
+# The TLA+ specifications (specs.yml): nothing in CI.
+SPECS = "spec/"
 JOBS = ["python", "javascript", "java", "docs"]
 # The guide's pages run as scripts: a change to them or to the site's
 # generator runs the docs job even though it is documentation.
@@ -78,7 +83,7 @@ def plan(paths, everything=False):
             continue
         if RESULTS.match(p) and not RESULTS_CODE.match(p):
             continue
-        if p.startswith(DEMOS):
+        if p.startswith(DEMOS) or p.startswith(SPECS):
             continue
         for prefix, (cs, gs) in APPS.items():
             if p.startswith(prefix):
@@ -122,6 +127,8 @@ def self_test():
     assert on(["chloectx/src/app.rs"]) == {"any", "test:chloectx", "smoke", "smoke_ctx", "docs", "server"}
     assert on(["chloedb-apps/src/x.js"]) == {"any", "smoke", "smoke_apps", "server"}
     assert on(["chloedb-swarm/x.js"]) == set()
+    assert on(["spec/replication/ShardElection.tla", "spec/check.py"]) == set()
+    assert on(["spec/check.py", "chloedb-server/src/cores/shard.rs"]) == every
     assert on(["chloedb-py/python/chloedb/x.py"]) == {"any", "python", "docs", "server"}
     assert on(["chloedb-js/client.js"]) == {"any", "javascript", "server"}
     assert on(["chloedb-java/pom.xml"]) == {"any", "java"}
