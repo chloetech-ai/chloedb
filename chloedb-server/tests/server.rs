@@ -3539,7 +3539,12 @@ async fn explain_plans_the_group_by_forms_sql_runs() {
     let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({ "sql": "CREATE TABLE walks (id KEYWORD PRIMARY KEY, dog KEYWORD, km INT, day TIMESTAMP, price FLOAT, paid BOOL)" })).await;
     assert_eq!(status, 200, "{r}");
     let days = ["2026-11-02T10:00:00Z", "2026-11-03T10:00:00Z", "2026-11-10T10:00:00Z", "2026-12-01T10:00:00Z"];
-    let ops: Vec<Json> = (0..8).map(|i| json!({"op": "insert", "table": "walks", "doc": {"id": format!("w{i}"), "dog": ["rex", "ada"][i % 2], "km": i % 3, "day": days[i % 4], "price": 10.0 + i as f64, "paid": i % 2 == 0}})).collect();
+    let ops: Vec<Json> = (0..8)
+        .map(|i| {
+            let (dog, day, price, paid) = (["rex", "ada"][i % 2], days[i % 4], 10.0 + i as f64, i % 2 == 0);
+            json!({"op": "insert", "table": "walks", "doc": {"id": format!("w{i}"), "dog": dog, "km": i % 3, "day": day, "price": price, "paid": paid}})
+        })
+        .collect();
     let (status, r) = post(&c, &format!("{base}/v1/write"), json!({ "ops": ops })).await;
     assert_eq!(status, 200, "{r}");
     for sql in [
