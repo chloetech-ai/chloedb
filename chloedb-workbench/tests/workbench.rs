@@ -848,7 +848,9 @@ fn the_hook_subcommand_never_fails() {
 // The decision trail.
 
 /// A fake `chloectx`: it prints the canned JSON of `<dir>/<command>.json`
-/// and keeps where it ran and its arguments in `<dir>/<command>.args`.
+/// and keeps where it ran and its arguments in `<dir>/<command>.args` (the
+/// last call), and every call's arguments, one line each, in
+/// `<dir>/<command>.log`.
 fn fake_chloectx(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join("fake-chloectx");
@@ -856,6 +858,7 @@ fn fake_chloectx(dir: &Path) -> PathBuf {
         r#"#!/bin/bash
 D='{}'
 printf '%s\n' "$PWD" "$@" > "$D/$1.args"
+printf '%s\n' "$*" >> "$D/$1.log"
 [ -f "$D/$1.json" ] || {{ echo "chloectx: no store for $PWD" >&2; exit 1; }}
 cat "$D/$1.json"
 "#,
@@ -1394,7 +1397,9 @@ fn a_goal_is_planned_by_a_lead_and_outcomes_follow_their_agents() {
     let learned = d["learned"].as_array().unwrap();
     assert_eq!(learned.len(), 2, "{d}");
     assert_eq!((learned[0]["kind"].as_str(), learned[1]["kind"].as_str()), (Some("decision"), Some("fix")));
-    assert!(args_of(ctx.path(), "sql")[3].contains("tag = 'fix'"));
+    // Among the calls, as another may come after it (the last one's
+    // arguments are what sql.args keeps).
+    assert!(std::fs::read_to_string(ctx.path().join("sql.log")).unwrap().contains("tag = 'fix'"));
     let pulse = d["pulse"].as_array().unwrap();
     assert_eq!(pulse.len(), 60);
     assert!(pulse.iter().map(|p| p[1].as_i64().unwrap()).sum::<i64>() >= 10, "{pulse:?}");
@@ -2504,12 +2509,15 @@ fn health_counts_tests_by_name_without_permission_waits_and_runs_one_again() {
     let (_d, r) = repo();
     let a = s.spawn(json!({ "repo": r, "name": "flake", "worktree": false }));
     let id = a["id"].as_str().unwrap().to_string();
-    let a = s.until(&id, "started", |a| a["session_id"].is_string());
+    let started = s.until(&id, "started", |a| a["session_id"].is_string());
     let junit = s.data.join("sessions").join(&id).join("pytest-junit.xml");
-    // The session's pytest writes its junit report where Workbench reads it.
+    // The session's pytest writes its junit report where Workbench reads it
+    // (read from /proc, so on Linux only).
+    #[cfg(not(target_os = "linux"))]
+    let _ = started;
     #[cfg(target_os = "linux")]
     {
-        let env = std::fs::read(format!("/proc/{}/environ", a["pid"])).unwrap_or_default();
+        let env = std::fs::read(format!("/proc/{}/environ", started["pid"])).unwrap_or_default();
         let env = String::from_utf8_lossy(&env);
         assert!(env.contains(&format!("PYTEST_ADDOPTS=--junitxml='{}'", junit.display())), "the agent's environment has no PYTEST_ADDOPTS");
     }
@@ -3270,8 +3278,11 @@ fn guarded_commands_are_denied_proposed_and_decided_only_by_the_user() {
     // when its turn ends.
     assert_eq!((v["request"]["state"].as_str(), v["request"]["told"].as_str()), (Some("declined"), Some("queued")));
     call_as(&s, "POST", "/api/hook", &key, Some(&id), Some(json!({ "hook_event_name": "Stop", "session_id": "s" })));
-    let screen = ws_read_until(&s, &id, "not before the backup", &[]);
-    assert!(screen.contains("declined your change request"), "{screen}");
+    // Typed in, it starts a turn: wait for that turn's end (its DONE, then
+    // its Stop), or the approval below can find it working and queue (the
+    // hooks' python3 makes a turn slow on macOS).
+    let screen = ws_read_until(&s, &id, "DONE: The user declined your change request", &[]);
+    assert!(screen.contains("not before the backup"), "{screen}");
     s.wait(&id, "idle");
 
     // Approve runs it in the agent's worktree, keeps its output and tells it.
