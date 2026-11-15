@@ -85,6 +85,30 @@ const CSS = `
 .cv-wrow .ttl { font-weight: var(--w-mid); }
 .cv-wrow .doing { font-family: var(--mono); font-size: var(--fs-sm); color: var(--accent-text); }
 .cv-wrow .cv-btn { align-self: flex-start; }
+.cv-pc.live { cursor: pointer; box-shadow: 0 0 0 2px var(--accent-line); }
+.cv-iv { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.cv-iv-msg { display: flex; gap: 8px; align-items: flex-end; max-width: 92%; }
+.cv-iv-msg .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--surface); font-weight: var(--w-title); font-size: var(--fs-sm); }
+.cv-iv-msg .bub { background: var(--surface-2); border-radius: 14px 14px 14px 4px; padding: 8px 12px; line-height: var(--lh-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cv-iv-msg .bub .ts { display: block; margin-top: 4px; font-size: var(--fs-xs); color: var(--muted); }
+.cv-iv-msg.think .bub { background: none; border: var(--hair) dashed var(--line-2); color: var(--text-2); font-style: italic; }
+.cv-iv-msg .bub .lbl { display: block; font-style: normal; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 2px; }
+.cv-iv-acts { margin-left: 36px; display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 8px; }
+.cv-iv-act { font-size: var(--fs-xs); color: var(--text-2); overflow-wrap: anywhere; }
+.cv-iv-act .w { text-transform: uppercase; letter-spacing: .04em; }
+.cv-iv-act code { font-family: var(--mono); }
+.cv-iv-step { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--accent-text); text-transform: uppercase; letter-spacing: .05em; margin: 6px 0; }
+.cv-iv-step::before, .cv-iv-step::after { content: ""; flex: 1; border-top: var(--hair) solid var(--accent-line); }
+.cv-iv-typing { display: flex; gap: 4px; margin: 10px 0 0 36px; }
+.cv-iv-typing[hidden] { display: none; }
+.cv-iv-typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: cv-pulse 1.2s infinite; }
+.cv-iv-typing i:nth-child(2) { animation-delay: .2s; } .cv-iv-typing i:nth-child(3) { animation-delay: .4s; }
+.cv-dragme { touch-action: pan-x pan-y; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.cv-ghost { position: fixed; z-index: 60; pointer-events: none; transform: rotate(2deg) scale(1.03); box-shadow: var(--shadow-3); opacity: .95; }
+.cv-lifted { opacity: .35; }
+.cv-col.cv-can { outline: 2px dashed var(--accent-line); outline-offset: -2px; }
+.cv-col.cv-cannot { opacity: .45; }
+.cv-col.cv-over { outline: 2px solid var(--accent); background: var(--accent-soft); }
 .cv-btn.live { width: 100%; justify-content: center; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text); }
 .cv-steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); }
 .cv-steps li { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); }
@@ -348,7 +372,7 @@ export function mount(root, ctx) {
         const items = shown.filter((f) => f.theme === t).sort((a, b) => a.stage_index - b.stage_index || b.score - a.score);
         return col(THEME_WORDS[t] || t, `${items.filter((f) => f.stage === "merged").length} merged · ${items.filter((f) => f.severity >= 4 && f.stage !== "merged").length} blockers open`, items, false, true);
       })
-      : d.stages.map((s) => col(s.name, s.gate, shown.filter((f) => f.stage === s.stage).sort((a, b) => (b.pinned - a.pinned) || b.score - a.score), s.you, false));
+      : d.stages.map((s) => col(s.name, s.gate, shown.filter((f) => f.stage === s.stage).sort((a, b) => (b.pinned - a.pinned) || b.score - a.score), s.you, false, s.stage));
     const parked = all.filter((f) => f.state === "parked");
     // What is running now: agents on findings, gates being checked, personas playing.
     const running = all.filter((f) => f.busy || (f.agent && ["starting", "working", "waiting"].includes(f.agent_state)));
@@ -365,8 +389,8 @@ export function mount(root, ctx) {
 
   function tile(l, v, d) { return h("div", {}, h("div", { class: "cv-label" }, l), h("div", { class: "v" }, String(v)), h("div", { class: "d" }, d)); }
 
-  function col(name, gate, items, you, showStage) {
-    return h("section", { class: `cv-col${you ? " you" : ""}`, "aria-label": name },
+  function col(name, gate, items, you, showStage, stage) {
+    return h("section", { class: `cv-col${you ? " you" : ""}`, "aria-label": name, "data-stage": stage || null },
       h("div", { class: "cv-col-h" }, h("div", { class: "t" }, h("span", {}, name), h("span", { class: "c" }, items.some((f) => liveWord(f)) ? h("span", { class: "cv-live", style: { color: "var(--accent-text)", marginRight: "8px" } }, `${items.filter((f) => liveWord(f)).length} working`) : null, String(items.length))), h("div", { class: "g" }, gate)),
       h("div", { class: "cv-cards" }, items.length ? items.map((f) => card(f, showStage)) : h("div", { class: "cv-empty" }, "Nothing here")));
   }
@@ -420,12 +444,100 @@ export function mount(root, ctx) {
     const pick = f.state !== "active" ? null
       : f.stage === "found" && f.needs_you ? quick("Reproduce", "reproduce", "On its way: an agent writes the repro")
         : f.stage === "prioritize" && !f.door ? quick("Start development", "start", "A fix agent is on it") : null;
-    return h("div", { class: `cv-card${live ? " working" : ""}`, role: "button", tabindex: "0", "data-sev": String(f.severity), "data-id": f.id, onclick: open, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
+    const el = h("div", { class: `cv-card${live ? " working" : ""}`, role: "button", tabindex: "0", "data-sev": String(f.severity), "data-id": f.id, onclick: (e) => { if (Date.now() - (S.dragEnd || 0) > 300) open(); }, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
       h("span", { class: "ttl" }, f.title),
       h("span", { class: "cv-meta" }, h("span", {}, (f.personas_hit || []).map(personaName).join(", ") || f.by), f.occurrences > 1 ? h("span", {}, `${f.occurrences} times`) : null, h("span", {}, ago(f.stage_since))),
       h("span", { class: "cv-meta" }, chips),
       progress(f),
       pick);
+    if (!showStage && S.group !== "theme") draggable(el, f);
+    return el;
+  }
+
+  // ------------------------------------------------------------ drag and drop
+  // A card moves where one of your picks takes it: Found to Reproduce,
+  // Prioritize to Develop, Verify or Review back to Develop, Review to
+  // Merged (asks first). A gate decides every other move, so the board says
+  // which columns take the card while you hold it. Hold a card (a quarter of
+  // a second on a phone) to pick it up.
+  function movesOf(f) {
+    if (f.state !== "active") return {};
+    const m = {};
+    if (f.stage === "found") m.reproduce = ["reproduce", "On to Reproduce: an agent writes its repro"];
+    if (f.stage === "prioritize" && !f.door) m.develop = ["start", "A fix agent is on it"];
+    if (f.stage === "verify" || f.stage === "review") m.develop = ["back", "Sent back to develop"];
+    if (f.stage === "review" && f.ci === "pass") m.merged = ["approve", "Approved and merged"];
+    return m;
+  }
+
+  function draggable(el, f) {
+    const moves = movesOf(f);
+    if (!Object.keys(moves).length) return;
+    el.classList.add("cv-dragme");
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest("button, a")) return;
+      const x0 = e.clientX, y0 = e.clientY;
+      let ghost = null, over = null;
+      const hold = setTimeout(start, e.pointerType === "mouse" ? 120 : 260);
+      function start() {
+        S.dragging = true;
+        const r = el.getBoundingClientRect();
+        ghost = el.cloneNode(true);
+        ghost.classList.add("cv-ghost");
+        Object.assign(ghost.style, { width: `${r.width}px`, left: `${r.left}px`, top: `${r.top}px` });
+        ghost.dataset.dx = String(x0 - r.left); ghost.dataset.dy = String(y0 - r.top);
+        document.body.append(ghost);
+        el.classList.add("cv-lifted");
+        host.querySelectorAll(".cv-col[data-stage]").forEach((c) => c.classList.add(moves[c.dataset.stage] ? "cv-can" : "cv-cannot"));
+        if (navigator.vibrate) try { navigator.vibrate(10); } catch { /* not on this device */ }
+      }
+      const move = (ev) => {
+        if (!ghost) {
+          if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) cancel();
+          return;
+        }
+        ev.preventDefault();
+        ghost.style.left = `${ev.clientX - Number(ghost.dataset.dx)}px`;
+        ghost.style.top = `${ev.clientY - Number(ghost.dataset.dy)}px`;
+        ghost.hidden = true;
+        const col = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".cv-col[data-stage]");
+        ghost.hidden = false;
+        if (over !== col) { over?.classList.remove("cv-over"); over = col && moves[col.dataset.stage] ? col : null; over?.classList.add("cv-over"); }
+        // Near an edge, the board scrolls sideways under the card.
+        const wrap = host.querySelector(".cv-wrap");
+        if (wrap) { const w = wrap.getBoundingClientRect(); if (ev.clientX > w.right - 40) wrap.scrollLeft += 14; else if (ev.clientX < w.left + 40) wrap.scrollLeft -= 14; }
+      };
+      const touchBlock = (ev) => { if (ghost) ev.preventDefault(); };
+      function cleanup() {
+        clearTimeout(hold);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", cancel);
+        window.removeEventListener("touchmove", touchBlock);
+        host.querySelectorAll(".cv-col").forEach((c) => c.classList.remove("cv-can", "cv-cannot", "cv-over"));
+        el.classList.remove("cv-lifted");
+        ghost?.remove();
+        if (ghost) S.dragEnd = Date.now();
+        S.dragging = false;
+        S.touched = Date.now();
+      }
+      function cancel() { cleanup(); }
+      function up() {
+        const target = over && moves[over.dataset.stage];
+        const name = over ? (S.d.stages.find((x) => x.stage === over.dataset.stage) || {}).name : "";
+        const lifted = !!ghost;
+        cleanup();
+        if (lifted && !target) toast("A gate moves it there, not a drag: the board shows where it can go");
+        if (!target) return;
+        const [verb, msg] = target;
+        if (verb === "approve" && !confirm(`Merge the pull request of “${f.title}”?`)) return;
+        act(() => api(`/api/converge/findings/${enc(f.id)}/${verb}`, { method: "POST", body: verb === "back" ? { text: `Sent back from the board to ${name}` } : {} }), msg);
+      }
+      window.addEventListener("pointermove", move, { passive: false });
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", cancel);
+      window.addEventListener("touchmove", touchBlock, { passive: false });
+    });
   }
 
   // ------------------------------------------------------------ the sheet
@@ -544,12 +656,15 @@ export function mount(root, ctx) {
     document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((e) => e.remove());
     const close = () => { clearInterval(timer); history.replaceState(history.state, "", here()); sheet.remove(); scrim.remove(); };
     const scrim = h("div", { class: "cv-scrim", onclick: close });
-    const body = h("div", { class: "cv-sheet-b" }, h("p", { class: "cv-empty" }, "Loading the run…"));
+    const body = h("div", { class: "cv-sheet-b" }, h("p", { class: "cv-empty" }, "Joining the interview…"));
     const head = h("div", { class: "cv-sheet-h" });
     const sheet = h("aside", { class: "cv-sheet", "data-run": id, role: "dialog", "aria-modal": "true", "aria-label": "A persona's run" },
       h("button", { class: "cv-x", type: "button", "aria-label": "Close", onclick: close }, "×"), head, body);
     document.body.append(scrim, sheet);
     let stick = true, seen = -1;
+    const chat = h("div", { class: "cv-iv", role: "log", "aria-live": "polite" });
+    const typing = h("div", { class: "cv-iv-typing", "aria-hidden": "true" }, h("i"), h("i"), h("i"));
+    const tail = h("div", {});
     body.addEventListener("scroll", () => { stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 40; }, { passive: true });
     const paint = async () => {
       let d;
@@ -568,28 +683,48 @@ export function mount(root, ctx) {
           Array.from({ length: Math.min(at.of, 12) }, (_, i) => h("i", { class: i + 1 < at.n || (!d.live && i + 1 <= at.n) ? "p" : i + 1 === at.n ? "n" : null }))),
           h("div", { class: "lbl" }, h("span", {}, h("b", {}, `Step ${at.n} of ${at.of}`), at.name ? `: ${at.name}` : ""), h("span", {}, pct != null ? `${pct}%` : ""))) : h("div", { class: "cv-meta" }, d.live ? "Starting its journey…" : ""));
       const steps = r.steps || [];
-      if (steps.length === seen && !d.live) { clearInterval(timer); }
-      if (steps.length === seen) return;
+      const initial = (pe.name || "?").trim()[0] || "?";
+      // The interview: their words as bubbles, their actions as small lines
+      // between them, new ones appended so nothing jumps while you read.
+      if (seen < 0) {
+        body.replaceChildren(
+          pe.journey ? h("details", { class: "cv-iv-journey" }, h("summary", { class: "cv-label" }, "Their task"), h("p", { class: "role" }, pe.journey)) : null,
+          chat, typing, tail);
+        seen = 0;
+      }
+      if (steps.length < seen) { chat.replaceChildren(); seen = 0; }
+      for (const x of steps.slice(seen)) {
+        if (x.kind === "step") {
+          chat.append(h("div", { class: "cv-iv-step" }, h("span", {}, x.text)));
+        } else if (x.kind === "tool") {
+          const last = chat.lastElementChild;
+          const line = h("div", { class: "cv-iv-act" }, h("span", { class: "w" }, TOOL_WORDS[x.tool] || x.tool), " ", h("code", {}, x.text || ""));
+          if (last && last.classList.contains("cv-iv-acts")) last.append(line); else chat.append(h("div", { class: "cv-iv-acts" }, line));
+        } else {
+          chat.append(h("div", { class: `cv-iv-msg${x.kind === "think" ? " think" : ""}` },
+            h("span", { class: "av", "aria-hidden": "true" }, initial),
+            h("div", { class: "bub" }, x.kind === "think" ? h("span", { class: "lbl" }, "thinking") : null, x.text, h("span", { class: "ts" }, new Date(x.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })))));
+        }
+      }
       seen = steps.length;
-      body.replaceChildren(
-        pe.journey ? h("details", {}, h("summary", { class: "cv-label" }, "The journey"), h("p", { class: "role" }, pe.journey)) : null,
-        steps.length ? h("ol", { class: "cv-steps" }, steps.map((x) => x.kind === "tool"
-          ? h("li", { class: "t" }, h("span", { class: "w" }, TOOL_WORDS[x.tool] || x.tool), " ", h("code", {}, x.text || ""), h("span", { class: "ts" }, ago(x.ts)))
-          : h("li", { class: "s" }, x.text, h("span", { class: "ts" }, ago(x.ts)))))
-          : h("p", { class: "cv-empty" }, d.live ? "Nothing yet: Claude Code is starting in a fresh checkout." : "This run kept no steps (it ran before steps were recorded)."),
+      if (!steps.length) chat.replaceChildren(h("p", { class: "cv-empty" }, d.live ? `${(pe.name || "They").split(",")[0]} is opening a fresh checkout…` : "This run kept no conversation (it ran before runs were recorded)."));
+      else if (chat.firstElementChild?.classList.contains("cv-empty")) chat.firstElementChild.remove();
+      typing.hidden = !d.live;
+      tail.replaceChildren(...[
         !d.live && r.answer ? h("section", {}, h("div", { class: "cv-label" }, "What they achieved"), h("p", {}, r.answer)) : null,
         !d.live && (r.findings || []).length ? h("section", {}, h("div", { class: "cv-label" }, `What they reported (${r.findings.length})`), h("ul", {}, r.findings.map((x) => h("li", {}, x.title)))) : null,
-        r.error ? h("div", { class: "cv-needs" }, r.error) : null);
+        r.error ? h("div", { class: "cv-needs" }, r.error) : null].filter(Boolean));
+      if (!d.live) clearInterval(timer);
       if (stick) body.scrollTop = body.scrollHeight;
     };
-    const timer = setInterval(paint, 2000);
+    const timer = setInterval(paint, 1500);
     await paint();
   }
 
   function personas() {
     const d = S.d;
     const ps = d.personas || [];
-    const pc = (p) => h("div", { class: `cv-pc ${p.state}` },
+    const pc = (p) => h("div", { class: `cv-pc ${p.state}${p.live_run ? " live" : ""}`, onclick: p.live_run ? (e) => { if (!e.target.closest("button, a, summary")) location.hash = `#/converge/personas?run=${p.live_run}`; } : null },
       h("div", {}, h("div", { class: "name" }, p.name), h("div", { class: "role" }, p.role)),
       h("div", { class: "cv-meta" }, h("span", { class: "cv-chip" }, p.origin), h("span", { class: `cv-chip ${p.state === "active" ? "ok" : p.state === "probation" ? "run" : ""}` }, p.state), (p.surfaces || []).map((x) => h("span", { class: "cv-chip" }, x)), p.busy ? h("span", { class: "cv-chip run" }, p.busy) : null),
       p.why ? h("div", { class: "role" }, p.why) : null,
@@ -600,7 +735,7 @@ export function mount(root, ctx) {
         h("div", {}, h("div", { class: "v" }, String(p.runs)), h("div", { class: "l" }, "runs")),
         h("div", {}, h("div", { class: "v" }, p.repro_rate == null ? "–" : `${Math.round(p.repro_rate * 100)}%`), h("div", { class: "l" }, "repro rate")),
         h("div", {}, h("div", { class: "v" }, String(p.open)), h("div", { class: "l" }, "open"))),
-      p.live_run ? h("button", { class: "cv-btn live", type: "button", onclick: () => { location.hash = `#/converge/personas?run=${p.live_run}`; } }, h("span", { class: "cv-live" }, "Playing now: watch what they do")) : null,
+      p.live_run ? h("button", { class: "cv-btn live", type: "button", onclick: () => { location.hash = `#/converge/personas?run=${p.live_run}`; } }, h("span", { class: "cv-live" }, "Playing now: join the live interview")) : null,
       h("div", { class: "cv-meta" },
         !p.live_run && lastRun(p.id) ? h("button", { class: "cv-btn", type: "button", onclick: () => { location.hash = `#/converge/personas?run=${lastRun(p.id).id}`; } }, "Last run") : null,
         h("button", { class: "cv-btn", type: "button", disabled: p.busy ? true : null, onclick: () => act(() => api(`/api/converge/personas/${p.id}/play`, { method: "POST", body: {} }), `${p.name.split(",")[0]} is playing`) }, "Play now"),
@@ -770,7 +905,7 @@ export function mount(root, ctx) {
   S.view = view();
   S.timer = setInterval(() => {
     if (document.hidden || document.querySelector(".cv-sheet") || document.querySelector(".cv input:focus, .cv textarea:focus, .cv select:focus")) return;
-    if (Date.now() - (S.touched || 0) < 4000) return;
+    if (S.dragging || Date.now() - (S.touched || 0) < 4000) return;
     load();
   }, 10000);
   return {

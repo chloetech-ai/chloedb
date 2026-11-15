@@ -578,10 +578,20 @@ pub fn steps_of_line(line: &str) -> Vec<(Json, Option<Json>)> {
                     Some(i) => text[..i].trim(),
                     None => text,
                 };
+                let shown = spoken(shown, 1500);
+                // A new step of the journey, as a marker of its own.
+                if let Some(a) = &at {
+                    out.push((json!({ "ts": now_ms(), "kind": "step", "text": format!("Step {} of {}{}", a["n"], a["of"], a["name"].as_str().filter(|n| !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default()) }), at.clone()));
+                }
                 if !shown.is_empty() {
-                    out.push((json!({ "ts": now_ms(), "kind": "say", "text": one_line(shown, 600) }), at));
-                } else if at.is_some() {
-                    out.push((Json::Null, at));
+                    out.push((json!({ "ts": now_ms(), "kind": "say", "text": shown }), None));
+                }
+            }
+            // What it thinks before it acts: the persona's inner voice.
+            Some("thinking") => {
+                let text = c["thinking"].as_str().unwrap_or("").trim();
+                if !text.is_empty() {
+                    out.push((json!({ "ts": now_ms(), "kind": "think", "text": spoken(text, 1500) }), journey_step(text)));
                 }
             }
             Some("tool_use") => {
@@ -592,6 +602,18 @@ pub fn steps_of_line(line: &str) -> Vec<(Json, Option<Json>)> {
             }
             _ => {}
         }
+    }
+    out
+}
+
+/// What a persona said, whole (its lines kept, the step markers left out),
+/// up to `max` characters.
+fn spoken(text: &str, max: usize) -> String {
+    let kept: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && journey_step(l).is_none()).collect();
+    let all = kept.join("\n");
+    let mut out: String = all.chars().take(max).collect();
+    if all.chars().count() > max {
+        out.push('…');
     }
     out
 }
@@ -962,7 +984,7 @@ fn prompt_for(role: &str, job: &Json) -> String {
                 None => String::new(),
             };
             format!(
-                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nAs you start each step of your journey, say so on a line of its own, as \"Step N of M: <the step, in a few words>\". Do it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits 1 while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
+                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nThink aloud in the first person as you go, as in a user interview: before each thing you try, say in a sentence or two what you expect and why, and after it, what you saw and how it felt. As you start each step of your journey, say so on a line of its own, as \"Step N of M: <the step, in a few words>\". Do it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits 1 while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
                 name = p["name"].as_str().unwrap_or("a user"),
                 role = p["role"].as_str().unwrap_or(""),
                 traits = p["traits"].as_array().map(|a| a.iter().filter_map(Json::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default(),
@@ -2884,14 +2906,19 @@ mod tests {
     fn a_persona_stream_becomes_steps() {
         let l = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Step 2 of 5: Load a CSV\nReading the quickstart."},{"type":"tool_use","name":"Bash","input":{"command":"cargo build --release"}}]}}"#;
         let st = steps_of_line(l);
-        assert_eq!(st.len(), 2, "{st:?}");
-        assert_eq!(st[0].0["kind"], "say");
+        assert_eq!(st.len(), 3, "{st:?}");
+        assert_eq!(st[0].0["kind"], "step");
+        assert_eq!(st[0].0["text"], "Step 2 of 5: Load a CSV");
         assert_eq!(st[0].1, Some(json!({ "n": 2, "of": 5, "name": "Load a CSV" })));
-        assert_eq!(st[1].0["tool"], "Bash");
-        assert_eq!(st[1].0["text"], "cargo build --release");
+        assert_eq!(st[1].0["kind"], "say");
+        assert_eq!(st[1].0["text"], "Reading the quickstart.");
+        assert_eq!(st[2].0["tool"], "Bash");
+        assert_eq!(st[2].0["text"], "cargo build --release");
         // The final answer is the result, not a step; other lines are nothing.
         assert!(steps_of_line(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"{\"outcome\":\"done\"}"}]}}"#).is_empty());
         assert!(steps_of_line(r#"{"type":"user","message":{}}"#).is_empty());
+        let th = steps_of_line(r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"I expect the quickstart to work as written."}]}}"#);
+        assert_eq!(th[0].0["kind"], "think");
         assert!(steps_of_line("not json").is_empty());
         assert_eq!(journey_step("**Step 3 of 6: Accept a teammate's rules**"), Some(json!({ "n": 3, "of": 6, "name": "Accept a teammate's rules" })));
     }
