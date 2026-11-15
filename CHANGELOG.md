@@ -83,6 +83,15 @@ changes collect under "Unreleased".
   were lost (the follow-up to N-E2 that TLC found in `spec/replication`;
   `chloedb-sim --uncounted-candidate` places it, and `--bug
   campaigns-uncounted` puts it back).
+- A retried write with an idempotency key is applied once, and answered
+  only for a write the server's copy holds. A server forgets the keys it
+  keeps in memory when its role changes: a primary that stepped down, was
+  sent a copy of its new primary lacking a write, and was elected again
+  answered a retry of that write 200 from memory, though no copy held it.
+  And the writer looks each key's row up before it applies a write: a
+  retry that memory had forgotten (the oldest of 100,000 keys, the first
+  attempt still queued) was applied a second time. TLC found both in
+  `spec/idempotency` (`KeysNow`, `KeysEvict`).
 - A slot move from a replicated shard no longer loses a write when the
   shard's primary fails over during the flip. The primary now writes a
   mark of the flip through its log (`_strata/move flip`) and waits until
@@ -97,6 +106,18 @@ changes collect under "Unreleased".
   so a replica of this release under one refuses the flips it takes, and
   the maps after them, until a later flip from that shard is marked or the
   replica is replaced: finish an upgrade before moving slots.
+
+### Cluster map
+
+- On Kubernetes, a change of the cluster map keeps in the map's Lease the
+  newest map a server may hold when it ends, the map it made among them,
+  not only a map left in doubt, and the next change gives it again first
+  unless the servers it reaches hold it. Before, a change made while one
+  server did not answer left nothing in the Lease, and the next, on a
+  coordinator that reached only that server, made a second map of the
+  same epoch (TLC, `spec/clustermap` `LeaseRacing`; `tests/map_lease.rs`
+  makes the race with real servers). A coordinator started again under
+  the Lease finds that map there too.
 
 ### Wrong answers fixed (November audit: ENG-Q1, ENG-Q2)
 
