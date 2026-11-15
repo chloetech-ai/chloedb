@@ -9,7 +9,10 @@ name: Image
 #
 # A run of CI on main that passed publishes the commit it tested as `latest`
 # and as its full sha: a commit whose CI failed or was cancelled is never
-# published, so a cluster that follows `latest` runs only tested code. Only
+# published, and the next run tests its change again (CI's job `changes`
+# takes a push's change from the newest commit whose run passed, so a
+# documentation change after a failed run is no longer a pass of the code
+# before it), so a cluster that follows `latest` runs only tested code. Only
 # CI's runs of this repository's main count (a push, the nightly run or a
 # run by hand): a pull request from a fork whose branch is also called
 # `main` starts a CI run whose head branch is `main` too, and must not
