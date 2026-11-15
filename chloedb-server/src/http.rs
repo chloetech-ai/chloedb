@@ -3405,8 +3405,16 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {
             let schema = tables.iter().find(|t| t.table.eq_ignore_ascii_case(plan.table())).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", plan.table())))?;
-            // A query by a rank profile binds as written out.
-            format!("{:#?}", chloedb::query::bind(&chloedb::query::profile::written_out(sql, &profiles)?, schema, &params)?)
+            // A query by a rank profile binds as written out. The binder
+            // of single-table queries takes less than the planner (a
+            // `GROUP BY date_trunc(...)`, UIA-3): a statement the plan was
+            // made for is explained by the plan's own tree then, never
+            // refused, since `/v1/sql` runs it.
+            let bound = chloedb::query::profile::written_out(sql, &profiles).map_err(ApiError::from).and_then(|w| chloedb::query::bind(&w, schema, &params).map_err(ApiError::from));
+            match bound {
+                Ok(q) => format!("{q:#?}"),
+                Err(_) => format!("{:#?}", plan.root),
+            }
         }
     };
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
