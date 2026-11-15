@@ -11,6 +11,44 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Replication
+
+- A slot move from a replicated shard no longer loses a write when the
+  shard's primary fails over during the flip. The primary now writes a
+  mark of the flip through its log (`_strata/move flip`) and waits until
+  its copies hold it before it takes the flip; a replica takes the flip
+  only once it applied the mark, and a primary elected while its log holds
+  it refuses writes to the moving slots until it takes the flip. A hold of
+  the writes and an export count only in the term they were made in.
+  Before, a primary that started again as a replica took the flip given
+  first, while the new primary took writes to the slots that no copy
+  reached, and the new primary then refused the flip for good (TLC,
+  `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.5 or earlier
+  writes no mark, so a replica of this release under one refuses the flips
+  it takes, and the maps after them, until a later flip from that shard is
+  marked or the replica is replaced: finish an upgrade before moving slots.
+
+## 0.3.5
+
+The audit of 15 November's first lanes (security, wrong answers, apps that
+did not open, the comparison page's claims), three fixes found by the TLA+
+specifications now in `spec/` (a replica that no primary counts asks for
+no votes, a keyed retry is applied once, and a server that missed a map
+cannot fork the cluster map under the Lease), reads routed by least cost
+by default, and `chloedb-server cc`,
+the command center in a terminal: `chloedb-server-v0.3.5`,
+`chloedb-py-v0.3.5` and `chloedb-js-v0.3.5` (the Java package is built from
+source; `chloedb-crawl`, `chloedb-sheets` and `chloectx` are attached
+prebuilt to the server's release). The file format stays 3 and the shard
+protocol stays 21, with no new field or plan feature, so servers of 0.3.4
+and 0.3.5 mix in a cluster in either order. Auth changes: adding a server
+to a cluster takes the cluster's token, a Workbench agent's key starts
+agents only as its own children, and the crawler and Sheets that a server
+starts work again for keys limited to tables (below). **Scripts that add
+shards or copies with an admin key or the admin token need the cluster's
+token, and on Kubernetes the operator is upgraded before the
+coordinators.**
+
 ### What changes by default
 
 - **Adding a server to a cluster takes the cluster's token** (audit
@@ -92,20 +130,6 @@ changes collect under "Unreleased".
   retry that memory had forgotten (the oldest of 100,000 keys, the first
   attempt still queued) was applied a second time. TLC found both in
   `spec/idempotency` (`KeysNow`, `KeysEvict`).
-- A slot move from a replicated shard no longer loses a write when the
-  shard's primary fails over during the flip. The primary now writes a
-  mark of the flip through its log (`_strata/move flip`) and waits until
-  its copies hold it before it takes the flip; a replica takes the flip
-  only once it applied the mark, and a primary elected while its log holds
-  it refuses writes to the moving slots until it takes the flip. A hold of
-  the writes and an export count only in the term they were made in.
-  Before, a primary that started again as a replica took the flip given
-  first, while the new primary took writes to the slots that no copy
-  reached, and the new primary then refused the flip for good (TLC,
-  `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.4 writes no mark,
-  so a replica of this release under one refuses the flips it takes, and
-  the maps after them, until a later flip from that shard is marked or the
-  replica is replaced: finish an upgrade before moving slots.
 
 ### Cluster map
 
