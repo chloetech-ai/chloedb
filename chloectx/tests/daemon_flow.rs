@@ -274,10 +274,20 @@ fn an_instruction_said_in_two_sessions_becomes_a_rule() {
     let rules_part = brief.split("Rules and conventions:").nth(1).unwrap_or("");
     assert!(rules_part.contains("SQL CREATE statements in schema.sql (the user has said this in 2 sessions)"), "{brief}");
 
-    // `chloectx repeats` writes nothing and counts the rule kept.
+    // Shown the rule, s4 still had to be told: said again after it was shown.
+    model_says("Build the shop from the CREATE statements in schema.sql, every table.");
+    turn("s4", "No: build it from the CREATE statements in schema.sql, every table.");
+    let r = sql(&d, "SELECT text, ctx FROM memory WHERE kind = 'preference' AND tag = 'repeated' LIMIT 10");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0][0], "Build the shop from the CREATE statements in schema.sql, every table (the user has said this in 3 sessions)");
+    let ctx = r[0][1].as_str().unwrap();
+    assert!(ctx.starts_with("Sessions: 3\nSaid again: 1\nSaid again after it was shown: 1\nTurn 1 request:"), "{ctx}");
+
+    // `chloectx repeats` writes nothing and lists the rule kept.
     let before = sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1");
     let r = call(&d, json!({"op": "repeats", "days": 30}));
     assert_eq!(r["kept"], 1, "{r}");
+    assert_eq!((r["rules"][0]["sessions"].as_u64(), r["rules"][0]["said_again_after_shown"].as_u64()), (Some(3), Some(1)), "{r}");
     assert_eq!(sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1"), before);
 }
 

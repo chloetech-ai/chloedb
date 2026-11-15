@@ -169,6 +169,10 @@ pub struct Session {
     /// transcript, kept until its result arrives ([`crate::report`]).
     #[serde(skip)]
     pub calls: HashMap<String, i64>,
+    /// What the window held when a turn's prompt came, before its recall:
+    /// the turn, and the records shown ([`crate::repeats::promote`]).
+    #[serde(skip)]
+    pub shown_before: (i64, HashSet<String>),
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -705,6 +709,7 @@ impl Daemon {
                 let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
                 let (turn, recent) = self.with_session(&sid, |s| {
                     s.turn += 1;
+                    s.shown_before = (s.turn, s.injected.clone());
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
                     s.episode_stored = false;
                     let recent: Vec<String> = s.last_prompts.iter().rev().take(2).rev().cloned().collect();
@@ -1033,7 +1038,12 @@ impl Daemon {
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
                 // An instruction for this task that the user gave in
                 // another session too is a rule of every session now.
-                let promoted = crate::repeats::promote(&self.store, d.drafts, sid);
+                // One that says what a rule says is that rule anew.
+                let shown = {
+                    let st = self.state.lock().unwrap();
+                    st.sessions.get(sid).map(|s| if s.shown_before.0 == turn { s.shown_before.1.clone() } else { s.injected.clone() }).unwrap_or_default()
+                };
+                let promoted = crate::repeats::promote(&self.store, d.drafts, sid, &shown);
                 // Near-copies of what is noted (other than what they replace,
                 // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
@@ -1056,6 +1066,8 @@ impl Daemon {
                         // Anchored to the code the note is about, as it is now.
                         let a = anchor::make(Path::new(&tree), &x.text, &x.files, files);
                         let ctx = if a.is_empty() { ctx.clone() } else { format!("{ctx}\n{}", a.to_line()) };
+                        // A rule's counts (its `Sessions:` line) go first.
+                        let ctx = if x.ctx.is_empty() { ctx } else { format!("{}\n{ctx}", x.ctx) };
                         let mut x = x.ctx(ctx);
                         if let Some(src) = &source {
                             x = x.link("from", src.clone());
