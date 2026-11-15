@@ -2509,12 +2509,15 @@ fn health_counts_tests_by_name_without_permission_waits_and_runs_one_again() {
     let (_d, r) = repo();
     let a = s.spawn(json!({ "repo": r, "name": "flake", "worktree": false }));
     let id = a["id"].as_str().unwrap().to_string();
-    let a = s.until(&id, "started", |a| a["session_id"].is_string());
+    let started = s.until(&id, "started", |a| a["session_id"].is_string());
     let junit = s.data.join("sessions").join(&id).join("pytest-junit.xml");
-    // The session's pytest writes its junit report where Workbench reads it.
+    // The session's pytest writes its junit report where Workbench reads it
+    // (read from /proc, so on Linux only).
+    #[cfg(not(target_os = "linux"))]
+    let _ = started;
     #[cfg(target_os = "linux")]
     {
-        let env = std::fs::read(format!("/proc/{}/environ", a["pid"])).unwrap_or_default();
+        let env = std::fs::read(format!("/proc/{}/environ", started["pid"])).unwrap_or_default();
         let env = String::from_utf8_lossy(&env);
         assert!(env.contains(&format!("PYTEST_ADDOPTS=--junitxml='{}'", junit.display())), "the agent's environment has no PYTEST_ADDOPTS");
     }
