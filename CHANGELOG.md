@@ -11,6 +11,28 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### What changes by default
+
+- **ChloeCtx: what you have to say again becomes a rule, for one more
+  small-model call after each of your turns.** An instruction ChloeCtx kept
+  for one task only, said again in that session or another (reworded, or as
+  a complaint that it still is not done), is now a rule every session is
+  given, counted in sessions and times ("... (the user has said this in 2
+  sessions)"). A rule said again is written anew and counts whether the
+  session had been shown it. Deciding this takes a call of its own after
+  each of the user's turns that is like something said before: about
+  $0.0005 with haiku, on top of the distillation's $0.001 or so.
+  `CHLOECTX_DISTILL=0` turns both off. On cases from a week of real
+  sessions it caught 7 of 10 instructions said again. `chloectx repeats`
+  lists the rules kept this way.
+- **ChloeCtx: a brief relayed to a session is the relaying agent's.** A
+  prompt that is a `<relay from="NAME">`, or that opens "The coordinator
+  sent a message while you were working:" or "Another Claude session sent
+  a message:", is no longer recorded as the user's, so its "never ..." is
+  no longer one of the user's rules.
+- Workbench's Fix the harness lists what you said again and the rules
+  broken though the session was shown them, when ChloeCtx is on.
+
 ## 0.3.5
 
 The audit of 15 November's first lanes (security, wrong answers, apps that
