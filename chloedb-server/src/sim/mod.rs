@@ -341,7 +341,7 @@ impl Config {
     /// 4 to 12 s copy 1 cut off for 1 to 3 s, so that it lacks what copies
     /// 0 and 2 acknowledge meanwhile; copy 2 losing its volume a moment
     /// before that cut ends, empty for 50 ms to 1 s; and copy 0, usually
-    /// the primary, crashing for 2 to 5 s at most 1.5 s after copy 2 is
+    /// the primary, crashing for 2 to 5 s at most 300 ms after copy 2 is
     /// back, while it catches copy 2 up, one transaction a call. With
     /// [`Bug::CampaignsUncounted`] put back, copy 2 asks to be elected
     /// holding less than copy 0 acknowledged and more than copy 1 holds,
