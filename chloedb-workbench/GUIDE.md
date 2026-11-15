@@ -62,7 +62,11 @@ agent each), and each card moves through Planning, Building, Review and
 Done, with the buttons that fit where it is: Tell or Reply while it plans,
 Watch while it builds, Merge or Send back in Review, Undo or Follow up
 when it is done. A card that needs you is ringed and answered in place.
-Click a card to see its conversation beside the board.
+Click a card to see its conversation beside the board. When an agent
+splits its work with Claude Code's own Agent tool, its sub-agents show as
+**helpers** on its card and in its request: what each one does now, and
+each one's report when it finishes. They run inside that agent's session,
+so they have no card or terminal of their own.
 
 ### Start
 

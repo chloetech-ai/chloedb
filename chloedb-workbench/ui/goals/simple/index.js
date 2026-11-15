@@ -7,7 +7,7 @@
 // you like. A request opens beside the board on a desktop (#/s/r/<id>) and
 // full screen on a phone; #/s/new is the box on a phone.
 import { h, useStyle, btn, avatar, since, toMs, setFleet } from "/levels/common.js";
-import { STAGES, stageOf, replied, titleOf, modeWords } from "/goals/simple/stage.js";
+import { STAGES, stageOf, replied, titleOf, modeWords, helping } from "/goals/simple/stage.js";
 import { composer } from "/goals/simple/compose.js";
 import { requestPanel } from "/goals/simple/request.js";
 
@@ -160,7 +160,7 @@ export function mount(root, ctx) {
     const list = fleet().map(requestOf);
     const N = ctx.needs();
     // The minute is in it, so "4 min" moves on with nothing else changing.
-    const key = JSON.stringify([Math.floor(Date.now() / 60000), S.project, S.tab, S.route.agent, phone(), N.items.map((i) => i.id), list.map((q) => [q.a.id, q.stage, q.a.state, q.a.narration, q.stat && [q.stat.added, q.stat.removed], q.ready && q.ready.gate, q.merged && q.merged.commit]), projects().map((p) => p.project)]);
+    const key = JSON.stringify([Math.floor(Date.now() / 60000), S.project, S.tab, S.route.agent, phone(), N.items.map((i) => i.id), list.map((q) => [q.a.id, q.stage, q.a.state, q.a.narration, q.stat && [q.stat.added, q.stat.removed], q.ready && q.ready.gate, q.merged && q.merged.commit, q.a.helpers || null]), projects().map((p) => p.project)]);
     if (!force && key === S.boardKey) return;
     S.boardKey = key;
     const by = Object.fromEntries(STAGES.map((s) => [s.key, []]));
@@ -244,14 +244,18 @@ export function mount(root, ctx) {
     } else if (a.running && a.state === "waiting") {
       body.push(h("p", { class: "sv-asks" }, a.narration || "Claude Code is showing a prompt."));
     }
+    const hp = helpersOf(a, stage);
     if (stage === "planning") {
       if (!need) body.push(live(a, q.replied ? (a.narration || "Its turn ended. It waits for your reply.") : a.state === "starting" ? "Starting…" : a.narration || "Reading"));
+      body.push(hp);
       body.push(acts(q.replied ? btn("Reply", { sm: true, primary: true, href: `${go}?tell=1` }) : null, a.running && !need ? btn(`Tell ${a.name}…`, { sm: true, href: `${go}?tell=1` }) : null));
     } else if (stage === "building") {
       body.push(h("div", { class: "sv-chips" }, statChip(q.stat)));
       if (!need) body.push(live(a, a.narration || "Working"));
+      body.push(hp);
       body.push(acts(btn("Watch", { sm: true, href: `#/a/${a.id}/terminal` }), !need ? btn(`Tell ${a.name}…`, { sm: true, href: `${go}?tell=1` }) : null));
     } else if (stage === "review") {
+      body.push(hp);
       const r = q.ready;
       const g = (r && r.gate) || {};
       body.push(h("ul", { class: "sv-checks" },
@@ -262,6 +266,7 @@ export function mount(root, ctx) {
       body.push(acts(statChip(q.stat), h("span", { class: "sp" }), btn("Review", { sm: true, primary: !canMerge, href: go }), canMerge ? btn(S.merging.has(a.id) ? "Merging…" : "Merge", { sm: true, primary: true, disabled: S.merging.has(a.id), onclick: () => merge(q) }) : null));
     } else {
       body.push(h("p", { class: "sv-meta num" }, doneWords(q)));
+      body.push(hp);
     }
     return h("article", { class: `sv-card${need ? " need" : ""}${open ? " sel" : ""}${stage === "done" ? " done" : ""}`, "data-agent": a.id, "data-href": go, tabindex: "0",
       onclick: (e) => { if (!e.target.closest("a, button, input, textarea, select, .qc, .wait-card")) ctx.go(go); } }, head, body);
@@ -292,6 +297,23 @@ export function mount(root, ctx) {
       refreshTwice(ctx);
     } catch (e) { ctx.toast(`Not undone: ${e.message}`, true); }
     refreshReviewSoon(true);
+  }
+
+  /** Its helpers: the sub-agents its session started with Claude Code's
+   *  Agent tool, which have no card of their own. What each running one
+   *  does; a count when they are over (none on a Done card). */
+  function helpersOf(a, stage) {
+    const hp = a.helpers;
+    if (!hp || !hp.total) return null;
+    const on = helping(a);
+    if (!on && (stage === "done" || stage === "review")) return null;
+    const words = [on ? `${hp.running} working` : null, hp.done ? `${hp.done} done` : null, hp.failed ? `${hp.failed} stopped` : null].filter(Boolean).join(", ");
+    const rows = on ? (hp.list || []).filter((x) => x.state === "running").slice(-3) : [];
+    const more = on ? hp.running - rows.length : 0;
+    return h("div", { class: "sv-hp", title: "Sub-agents it started with Claude Code's Agent tool. Open the request to see each one's work and report." },
+      h("div", { class: "sv-hph" }, h("b", {}, `${hp.total} helper${hp.total === 1 ? "" : "s"}`), words ? h("span", { class: "num" }, ` · ${words}`) : null),
+      rows.length ? h("ul", { class: "sv-hpl" }, rows.map((x) => h("li", {}, h("i", { class: "on" }), h("span", { class: "d" }, x.description), h("span", { class: "w" }, x.doing || "Starting…"))),
+        more > 0 ? h("li", { class: "more" }, `and ${more} more`) : null) : null);
   }
 
   const acts = (...kids) => { const k = kids.flat().filter(Boolean); return k.length ? h("div", { class: "sv-acts" }, k) : null; };
@@ -424,6 +446,14 @@ const CSS = `
 .sv-live span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
 .sv-live i{width:7px;height:7px;border-radius:50%;background:var(--text-3);flex:none;transform:translateY(-1px)}
 .sv-live i.on{background:var(--good);animation:pulse 1.6s ease-in-out infinite}
+.sv-hp{display:flex;flex-direction:column;gap:4px;padding:6px var(--s-2);border-radius:var(--r-sm);background:var(--surface-2);font-size:var(--fs-xs);line-height:var(--lh-xs);color:var(--text-2);min-width:0}
+.sv-hph b{font-weight:var(--w-mid);color:var(--text)}
+.sv-hpl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px;min-width:0}
+.sv-hpl li{display:grid;grid-template-columns:6px minmax(0,1fr);column-gap:6px;align-items:baseline;min-width:0}
+.sv-hpl li i{width:6px;height:6px;border-radius:50%;background:var(--good);animation:pulse 1.6s ease-in-out infinite;transform:translateY(-1px)}
+.sv-hpl .d{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-hpl .w{grid-column:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-3)}
+.sv-hpl li.more{display:block;color:var(--text-3);padding-left:13px}
 .sv-asks{margin:0;font-size:var(--fs-sm);color:var(--accent-text)}
 .sv-said{display:flex;flex-direction:column;gap:2px;padding:var(--s-2) var(--s-3);border-radius:var(--r-sm);background:var(--accent-soft);font-size:var(--fs-sm);line-height:var(--lh-sm)}
 .sv-said b{font-weight:var(--w-mid);color:var(--accent-text)}

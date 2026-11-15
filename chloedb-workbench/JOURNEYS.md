@@ -1230,6 +1230,17 @@ in this browser as the pref `simple`, which only says what `#/` opens.
   each, what it said), and one box whose verb follows the stage (Tell,
   Reply, Send back, Follow up, Resume: steer, or restart with the prompt
   when it ended). "Open in Advanced" goes to its agent page.
+- **Helpers** (Roberto, 14 Nov: "I only see the primary agent, I can't
+  see the sub agents"): sub-agents an agent starts with Claude Code's own
+  Agent tool run inside its session, with no card or terminal of their
+  own. Each one is followed from its hooks (`src/helpers.rs`, SPEC.md
+  "Helpers"): its card says "3 helpers · 2 working, 1 done" with what each
+  running one does, and the request lists each with its type, its own
+  worktree, its time and tool calls, what it does now or its report's
+  first sentences, and, opened, what it was asked and its whole report.
+  An agent whose turn ended while a background helper works stays in
+  Planning or Building. `spawn_agent` is still what gives an agent's
+  sub-agents cards of their own.
 
 Not in Simple: the terminal grid, Debug, the harness, rules, the
 decisions timeline and Search's deep views, one click away in Advanced.

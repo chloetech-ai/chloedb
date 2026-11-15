@@ -10,6 +10,8 @@
 //   - Done: merged with nothing new since, or ended with no change.
 // Needs you is not a stage: it rides on top of any of them, so a card
 // keeps its column while it waits (JOURNEYS.md rule 4: the one count).
+// An agent whose turn ended while its helpers (the sub-agents it started
+// with Claude Code's Agent tool, in the background) still work is at work.
 
 export const STAGES = [
   { key: "planning", title: "Planning", sub: "Reading and planning. No change yet." },
@@ -27,18 +29,24 @@ export function stageOf(a, { group, merged = null, changed = false } = {}) {
   // Review's merge record is kept only while its worktree has nothing new
   // (src/repos.rs), so it wins over a review list read before the merge;
   // an agent at work again after it is not done.
-  const busy = a.running && (a.state === "working" || a.state === "starting" || a.state === "waiting");
+  const busy = a.running && (a.state === "working" || a.state === "starting" || a.state === "waiting" || helping(a));
   if (merged && !busy) return "done";
   if (merged && !changed) return "done";
   if (group === "ready") return "review";
   if (!a.running) return changed ? "review" : "done";
-  if (a.state === "idle") return changed ? "review" : "planning";
+  if (a.state === "idle" && !helping(a)) return changed ? "review" : "planning";
   return changed ? "building" : "planning";
+}
+
+/** Whether sub-agents it started still work (the agent's `helpers`,
+ *  src/helpers.rs). */
+export function helping(a) {
+  return !!(a && a.running && a.helpers && a.helpers.running > 0);
 }
 
 /** Whether its turn ended with no change: it answered, or asked in words. */
 export function replied(a, stage) {
-  return !!a && a.running && a.state === "idle" && stage === "planning";
+  return !!a && a.running && a.state === "idle" && !helping(a) && stage === "planning";
 }
 
 /** A request's title in a few words: Review's title when it has one, else

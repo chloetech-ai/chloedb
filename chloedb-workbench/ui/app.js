@@ -874,6 +874,7 @@ const KIND = {
   PostToolUse: ["result", "c-tool"],
   Notification: ["asks", "c-ask"],
   Stop: ["done", "c-stop"],
+  SubagentStart: ["subagent", "c-sys"],
   SubagentStop: ["subagent", "c-sys"],
   SessionEnd: ["ended", "c-end"],
   input: ["input", "c-prompt"],

@@ -118,7 +118,8 @@ the agents waiting or idle, oldest `state_since` first.
    checkout; a worktree passed as `repo` is read back to its main checkout.
 2. A settings file `<data-dir>/sessions/<id>/settings.json` holding hooks
    for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-   `Notification`, `Stop`, `SubagentStop` and `SessionEnd`, each running
+   `Notification`, `Stop`, `SubagentStart`, `SubagentStop` and
+   `SessionEnd`, each running
    `<this exe> hook` with a timeout of 5 s. It adds to the user's own
    settings and hooks (ChloeCtx's keep working); it never edits theirs.
 3. An MCP config `<data-dir>/sessions/<id>/mcp.json` naming the server
@@ -465,6 +466,30 @@ per agent), cached in the event's data.
   Enter; a working one gets it as additional context at its next
   `PostToolUse` ("The user adds: …").
 
+### Helpers (sub-agents of Claude Code's Agent tool)
+
+A sub-agent started with Claude Code's own Agent tool runs inside the
+agent's session: it is not a Workbench agent (only `spawn_agent` makes
+those), but every hook fired inside it carries its `agent_id`, and
+`SubagentStart` and `SubagentStop` open and close it (`src/helpers.rs`).
+The Agent call's `PreToolUse` opens a helper (description, prompt,
+`subagent_type`, `isolation: "worktree"`, `run_in_background`);
+`SubagentStart` links Claude Code's id to the oldest open helper of its
+type; a hook inside it sets what it does now; the call's `PostToolUse`
+closes it with its report and totals (and its `agentId` corrects a link
+made by order), or `SubagentStop` does for one in the background. A turn
+that ends stops its foreground helpers; an agent that exits stops them
+all. An Agent call's answer is clipped (report 8,000 characters, prompt
+2,000) before it is kept, so the event stays whole JSON.
+
+The agent's JSON has `helpers: {total, running, done, failed, list}` once
+its session started one since the server started (the newest 8, without
+prompts and reports). `Helper` in `GET /api/agents/:id/helpers` is
+`{n, agent_id, kind, description, prompt, worktree, worktree_branch, cwd,
+background, state: "running"|"done"|"failed"|"stopped", started, ended,
+doing, doing_at, calls, summary, report, tokens, tool_uses, duration_ms}`,
+read from the agent's events.
+
 ### Story (one agent)
 
 `GET /api/agents/:id/story` →
@@ -790,6 +815,7 @@ Record   {id, kind: "decision"|"preference"|"fact"|"fix", text, ts, ts_ms,
 | `PATCH /api/rules/:id` | `{active?, text?}` | `{rule}` |
 | `POST /api/agents/:id/steer` | `{text}` | `{ok, steer: {id, text}, delivered: "typed"\|"queued"}`; 409 when not running |
 | `GET /api/agents/:id/story` | | as above, plus `missing` |
+| `GET /api/agents/:id/helpers` | | `{agent, running, helpers: [Helper]}`: the sub-agents its session started with Claude Code's Agent (or Task) tool, oldest first, see below |
 | `POST /api/seen` | `{ts_ms?}` | `{ok, last_seen_ms, previous_ms}` |
 | `GET /api/digest?since=&repo=` | | see below |
 | `POST /api/hook` | as before | `{ok, output: {hookSpecificOutput: {hookEventName, additionalContext}} \| null}` |

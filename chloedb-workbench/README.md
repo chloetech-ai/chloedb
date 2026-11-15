@@ -432,6 +432,11 @@ a model.
   chapters of grouped steps, with its tokens (from the transcript's
   `usage`) and what ChloeCtx put in its context (`chloectx receipts
   --json`), déjà vus marked.
+- **Helpers**: `GET /api/agents/:id/helpers` lists the sub-agents an
+  agent's session started with Claude Code's own Agent tool, followed from
+  their hooks (`SubagentStart`, `SubagentStop`, and the `agent_id` every
+  hook inside one carries): what each was asked, what it does now, its
+  report. The agent's JSON carries a brief of them (`helpers`).
 - **Away**: `POST /api/seen` and `GET /api/digest` tell what happened since
   you last looked: outcomes done, questions decided and open, what was
   learned, a line per agent, how long each agent waited on you, and the
