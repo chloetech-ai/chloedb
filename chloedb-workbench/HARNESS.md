@@ -1131,7 +1131,7 @@ the best so far, each a version of its own (`tried`; the one kept is a
     session's when the version names none); a step whose replays failed
     what the one above passed ends the ladder, one only not better goes on
     to the next (aims: cost, wall time);
-  - less effort (`--effort low`, then `medium` if low failed), not on
+  - less effort (`--effort low`; Claude Code's default is medium), not on
     Haiku (aims: wall time, cost);
   - instructions given as each session starts (a SessionStart hook, as the
     pins are: a resumed conversation keeps the system prompt it recorded),

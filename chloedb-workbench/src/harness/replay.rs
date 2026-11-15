@@ -1239,27 +1239,15 @@ fn how_changes(run: &Run, e: &Edits, c: &Case) -> Vec<Json> {
         }));
         break;
     }
-    // Less thinking, on the models that take an effort.
-    if LADDER[at] != "haiku" {
-        let now_effort = e.agent.effort.clone();
-        for x in ["low", "medium"] {
-            if now_effort.as_deref() == Some(x) || (x == "medium" && now_effort.as_deref() == Some("low")) {
-                break;
-            }
-            let key = format!("effort\n{x}");
-            if tried_in_log(run, &key) {
-                if failed_in_log(run, &key) {
-                    continue;
-                }
-                break;
-            }
-            out.push(json!({
-                "key": key, "title": format!("Think less: effort {x}"), "part": "agent", "edit": { "agent": { "effort": x } },
-                "why": format!("{} at effort {x} thinks less before it acts: fewer output tokens and less waiting", model_name(LADDER[at])),
-                "saves": 0, "widens": false, "patterns": [], "aims": ["wall_s", "cost_usd"],
-            }));
-            break;
-        }
+    // Less thinking, on the models that take an effort. Only low: Claude
+    // Code's default is medium, so medium would be a round spent on nothing.
+    let key = "effort\nlow".to_string();
+    if LADDER[at] != "haiku" && e.agent.effort.as_deref() != Some("low") && !tried_in_log(run, &key) {
+        out.push(json!({
+            "key": key, "title": "Think less: effort low", "part": "agent", "edit": { "agent": { "effort": "low" } },
+            "why": format!("{} at effort low thinks less before it acts: fewer output tokens and less waiting", model_name(LADDER[at])),
+            "saves": 0, "widens": false, "patterns": [], "aims": ["wall_s", "cost_usd"],
+        }));
     }
     out
 }
@@ -2042,9 +2030,10 @@ mod tests {
         // Sonnet failed what Opus passed: no model below it either.
         run.log[0]["vs_best"]["success"] = json!({ "verdict": "worse", "lost": 1 });
         assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["effort low"]);
-        // Low effort failed: medium; once on Haiku, no effort at all.
+        // Low effort tried: nothing more (medium is Claude Code's default);
+        // once on Haiku, no effort at all.
         run.log.push(json!({ "change": { "key": "effort\nlow" }, "version": "v2", "result": "not_kept", "vs_best": { "success": { "verdict": "worse", "lost": 1 } } }));
-        assert_eq!(keys(&how_changes(&run, &Edits::default(), &c)), ["effort medium"]);
+        assert!(how_changes(&run, &Edits::default(), &c).is_empty());
         let on_haiku = Edits { agent: super::super::AgentEdits { model: Some("haiku".into()), ..Default::default() }, ..Edits::default() };
         assert!(how_changes(&Run::default(), &on_haiku, &c).is_empty());
         let ch = &how_changes(&Run::default(), &Edits::default(), &c)[0];
