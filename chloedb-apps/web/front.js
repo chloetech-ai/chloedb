@@ -235,9 +235,15 @@
       // a photo is one placed (src): a photo named but not found (or not yet,
       // while the page is drawn during a build) is no grey box, the words
       // stand on the design's gradient instead
-      const pic0 = b.src;
-      const asked = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'gradient');
-      const look = (asked === 'photo' || asked === 'split') && !pic0 ? 'gradient' : asked;
+      // (an =expression for src counts only when it gives a photo now)
+      let pic0 = b.src;
+      if (typeof pic0 === 'string' && pic0.startsWith('=')) { try { pic0 = val(pic0, s, `${path}.src`); } catch { pic0 = null; } }
+      if (typeof pic0 !== 'string' || !pic0.trim()) pic0 = null;
+      // No photo: the headline is the picture (type), short, so the part
+      // after it starts on the first screen; never an empty gradient where
+      // a photo would be.
+      const asked = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'type');
+      const look = (asked === 'photo' || asked === 'split') && !pic0 ? 'type' : asked;
       const align = b.align || (look === 'split' || pageLayout === 'editorial' ? 'left' : 'center');
       // (a type-led hero is short: its words are the hero, not the space)
       const height = b.height || (look === 'photo' ? 'full' : look === 'type' ? 'short' : 'tall');
@@ -267,7 +273,7 @@
       }
       return h('section', { class: cls, id: b.id || null }, look === 'gradient' ? blobs() : null,
         h('div', { class: 'fp-wrap' }, text,
-          b.src ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
+          pic0 ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
     };
 
     F.band = (b, s, path) => {

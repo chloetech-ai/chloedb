@@ -331,3 +331,16 @@ test(':today is the day in any SQL that names it, unless given', async () => {
   assert.deepEqual(withToday('SELECT * FROM t WHERE day = :todays', {}), {});
   assert.doesNotMatch(STATEMENT_DOC, /day >= :today/);
 });
+
+test('a members\' screen whose example queries find no rows gets no preview (its sign-in shows)', async () => {
+  const { gateSamples } = await import('../engine/forge.mjs');
+  const screen = JSON.stringify({ data: { outings: 'SELECT * FROM outings' }, body: [], gate: { title: 'Sign in' } });
+  let kept = null;
+  const engine = {
+    view: async () => ({ views: [{ slug: 'week', spec: { screen: true }, code: screen }] }),
+    sql: async () => [],
+    store: { putSetting: async (app, key, value) => { kept = [key, value]; } },
+  };
+  assert.deepEqual(await gateSamples(engine, 'a1', { today: '2026-11-20' }), {});
+  assert.equal(kept, null, 'nothing kept');
+});

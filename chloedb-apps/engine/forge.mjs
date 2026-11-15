@@ -322,7 +322,7 @@ Working screens are drawn like a good phone app: a large title, the screen's num
 
 ## Front pages
 
-An app that people outside it will visit (a shop, café, restaurant, studio, practice, event, wedding, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. Its structure follows the art direction's layout ("layout" on the screen, LAYOUT in a statement): hero (a photo hero), split (words beside the photo), editorial (a plain left-aligned hero over a ruled list, for menus and lessons), gallery (photos first); its hero stays short enough that the main action shows on a phone's first screen. A tool only its owner uses has no front page unless asked.
+An app that people outside it will visit (a shop, café, restaurant, studio, practice, event, wedding, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. Its structure follows the art direction's layout ("layout" on the screen, LAYOUT in a statement): hero (a photo hero), split (words beside the photo), editorial (a plain left-aligned hero over a ruled list, for menus and lessons), gallery (photos first); its hero stays short enough that the main action shows on a phone's first screen. The part visitors come for (the next race, the menu and its prices, the products, the timetable) comes right after the hero and starts on the first screen: never a section of slogan or story before it. A tool only its owner uses has no front page unless asked.
 
 Its blocks (they work in any screen; on a front page each is a section of its own):
 - {"nav": "Brand", "links": [action, ...], "action": action}: the site's header, first in the body. Links go to parts of the page ("href": "#id") or to views ("open": "slug").
@@ -2281,7 +2281,8 @@ export async function gateSamples(engine, appId, { today = new Date().toISOStrin
       if (/:today\b/.test(def.sql) && params.today === undefined) params.today = today;
       try { data[name] = (await engine.sql(appId, def.sql, params)).slice(0, 12); } catch { /* left out: the screen draws it empty */ }
     }
-    if (Object.keys(data).length) out[v.slug] = data;
+    // (a screen whose example queries found no rows gets no preview: its sign-in shows)
+    if (Object.values(data).some((rows) => Array.isArray(rows) && rows.length)) out[v.slug] = data;
   }
   if (Object.keys(out).length) await engine.store.putSetting(appId, 'samples', JSON.stringify(out));
   return out;

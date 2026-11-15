@@ -149,7 +149,10 @@ window.__sa_numbers = (() => {
     if (spec && spec.gate && !spec.preview) {
       const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
       if (!me) {
-        if (spec.gate.sample && typeof spec.gate.sample === 'object' && !Array.isArray(spec.gate.sample)) sample = spec.gate.sample;
+        // (example rows that hold nothing are no preview: an empty page under a
+        // banner promising examples reads as broken, so the sign-in shows instead)
+        const rows = spec.gate.sample && typeof spec.gate.sample === 'object' && !Array.isArray(spec.gate.sample) ? spec.gate.sample : null;
+        if (rows && Object.values(rows).some((v) => Array.isArray(v) && v.length)) sample = rows;
         else { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
       }
     }
