@@ -924,6 +924,7 @@ In short:
 | `#/debug/code[?q=]`, `#/debug/failing`, `#/debug/records` | D's other ways in |
 | `#/more/terminals`, `/time`, `/decisions`, `/library`, `/rules`, `/guide`, `/keys`, `/setup` | More |
 | `#/harness`, `/edit/permissions`, `/edit/memory`, `/sees/<agent>[?turn=]`, `/versions` | Optimize the harness ([HARNESS.md](HARNESS.md)); `#/more/harness` redirects there |
+| `#/s`, `#/s/r/<agent>[?tell=1]`, `#/s/new` | the Simple view: the board of requests, one request beside it (its own page on a phone), the box on a phone; `#/` redirects to `#/s` while Simple is your view |
 
 `<project>` is a short name the server gives each repository: its
 folder's name, made unique (`shop`, `shop-2`). A route never carries an
@@ -1190,6 +1191,48 @@ from R1's router as the page `harness` (`ui/goals/harness/index.js`, which
 follows its own hash between Overview, Permissions, Memory, What the model
 sees and Versions, as Review and Debug do). Start shows it as a line under
 the four goals, and More lists it. Its pages set the shell's crumbs.
+
+## Built (S): the Simple view
+
+Roberto, 14 Nov: a view between Claude Code desktop and the goal pages,
+for many requests in flight, each one agent in its own worktree, with
+where each is in the process on a board, and the buttons following the
+stage. The goal pages stay as they are and are called **Advanced**; a
+switch in the top bar (on a phone, the other view's name) picks one, kept
+in this browser as the pref `simple`, which only says what `#/` opens.
+
+- **Stages** (`ui/goals/simple/stage.js`, pure): Planning (running with
+  nothing changed in its worktree, or in Plan mode; a turn that ended with
+  no change stays here as "replied", with Reply), Building (running with a
+  change), Review (its turn over, or exited, with a change: today's
+  "ready"), Done (merged with nothing new, or ended with nothing to
+  merge). Needs you is not a stage: the card keeps its column and is
+  ringed in the accent, with Claude Code's own options on it (the
+  shell's question card). Nothing new on the server: the stages come from
+  `/api/repos` (groups and merge records) and `/api/review` (what changed
+  on each branch, and the checks of what is ready), read again per
+  project when an agent's state changes, at most every 5 s.
+- **The board** (`index.js`): four columns on a desktop, one stage at a
+  time on a phone (Needs you first when anything does). Planning: Tell,
+  Reply; Building: Watch (its terminal), Tell; Review: the tests on its
+  branch, whether it merges, decisions to confirm, and Merge only when
+  the gate passes with nothing to type, else Review (Advanced's Review);
+  Done: Undo a merge, Resume one that ended. `j`/`k` move between cards,
+  `n` starts a request, Enter opens one.
+- **The box** (`compose.js`): what an agent should do, the project, the
+  permission mode (`permissionChoice()`, the same choice as Start a
+  change), the model, and "One request per line", which starts one agent
+  per line. Continue's check of the sentences (`intentCheck`) runs first.
+- **A request** (`request.js`): a stepper (Plan, Build, Review, Done, with
+  "needs you" on the current step), what it can do there (Merge into
+  main, Send back, Open a pull request instead, Undo merge, Follow up),
+  the conversation from its story (each turn's prompt, its steps in a line
+  each, what it said), and one box whose verb follows the stage (Tell,
+  Reply, Send back, Follow up, Resume: steer, or restart with the prompt
+  when it ended). "Open in Advanced" goes to its agent page.
+
+Not in Simple: the terminal grid, Debug, the harness, rules, the
+decisions timeline and Search's deep views, one click away in Advanced.
 
 ## What the rewrite changes
 

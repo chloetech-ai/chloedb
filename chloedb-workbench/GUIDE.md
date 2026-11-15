@@ -53,6 +53,17 @@ design.
 
 ## The places
 
+### Simple and Advanced
+
+The switch in the top bar picks how Workbench opens. **Advanced** is
+everything this guide describes. **Simple** is one board of your
+requests: type what an agent should do (one request per line starts one
+agent each), and each card moves through Planning, Building, Review and
+Done, with the buttons that fit where it is: Tell or Reply while it plans,
+Watch while it builds, Merge or Send back in Review, Undo or Follow up
+when it is done. A card that needs you is ringed and answered in place.
+Click a card to see its conversation beside the board.
+
 ### Start
 
 What you came to do: continue a project, review what is ready, start a new

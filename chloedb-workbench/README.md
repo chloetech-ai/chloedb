@@ -77,7 +77,11 @@ and `--data-dir`); they start nothing themselves.
 
 ### The pages
 
-Every page answers one question, and the goal comes first:
+Every page answers one question, and the goal comes first. A switch in
+the top bar picks the view: **Advanced** is these pages; **Simple**
+(`#/s`) is one board of requests by stage (Planning, Building, Review,
+Done) with a box that starts one agent per line and each request's
+conversation beside it ([JOURNEYS.md](JOURNEYS.md), "Built (S)").
 
 - **Start** (`#/`): start a new project, continue one, review and ship,
   or find out why something went wrong, with your projects below and

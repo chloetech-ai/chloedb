@@ -6463,3 +6463,20 @@ fn a_replaced_decision_that_was_yours_says_yours() {
     assert_eq!(d["replaces"]["who"], "yours", "{d}");
     assert_eq!(d["replaces"]["text"], "Shipping is free over 100 euros.", "{d}");
 }
+
+/// The Simple view (ui/goals/simple/, at #/s): its modules are served under
+/// /goals/simple/, as JavaScript, without the token, as the goal pages are.
+#[test]
+fn simple_view_pages_are_served_under_goals() {
+    let s = Server::start(&[]);
+    for f in ["index.js", "stage.js", "compose.js", "request.js", "switch.js"] {
+        let r = http().get(format!("{}/goals/simple/{f}", s.url)).call().unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{f}");
+        assert!(r.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/javascript"), "{f}");
+    }
+    assert_eq!(http().get(format!("{}/goals/simple/nope.js", s.url)).call().unwrap().status().as_u16(), 404);
+    // The shell links to it: the switch in the top bar and the phone's tabs.
+    let mut r = http().get(format!("{}/?token={TOKEN}", s.url)).call().unwrap();
+    let page = r.body_mut().read_to_string().unwrap();
+    assert!(page.contains(r#"data-view-switch="simple""#) && page.contains(r##"href="#/s/new""##), "the switch and the tabs are on the page");
+}

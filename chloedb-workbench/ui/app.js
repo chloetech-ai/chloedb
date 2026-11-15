@@ -11,6 +11,7 @@ import { resolve } from "/goals/router.js";
 import * as Shell from "/goals/shell.js";
 import * as AG from "/goals/agent.js";
 import { kc } from "/levels/common.js";
+import * as View from "/goals/simple/switch.js";
 
 const TOKEN_KEY = "chloedb-workbench-token";
 const REPO_KEY = "chloedb-workbench-repo";
@@ -2986,6 +2987,7 @@ const GOAL = {
   open: "/goals/continue.js", continue: "/goals/continue.js", understand: "/goals/continue.js", change: "/goals/continue.js", main: "/goals/continue.js",
   ship: "/goals/review.js", debug: "/goals/debug.js", more: "/goals/more.js",
   harness: "/goals/harness/index.js",
+  simple: "/goals/simple/index.js",
 };
 
 function go(hash) {
@@ -3029,6 +3031,9 @@ async function route(hash) {
   hash = hash || "#/";
   const r = resolve(hash, { project: currentProject()?.project || null, agentIds: [...S.agents.keys()] });
   if (r.redirect) { replaceHash(r.redirect); return; }
+  // The Simple view's home is its board (the switch in the top bar).
+  if (r.page === "start" && View.simpleHome()) { replaceHash("#/s"); return; }
+  View.paint(r.page);
   Shell.close();
   Shell.closeSheet();
   if (T.open) closeSheet({ focus: false });
@@ -3079,7 +3084,7 @@ async function route(hash) {
   showView("goal-view");
   // Review and Debug follow their own steps (their hashchange): a step
   // within one of them keeps the page mounted.
-  const key = r.page === "ship" || r.page === "harness" ? JSON.stringify([r.page, r.project]) : r.page === "debug" ? JSON.stringify([r.page])
+  const key = r.page === "ship" || r.page === "harness" ? JSON.stringify([r.page, r.project]) : r.page === "debug" || r.page === "simple" ? JSON.stringify([r.page])
     : JSON.stringify([r.page, r.project, r.agent, r.step, r.item, r.rest, r.tab, r.query.toString()]);
   if (G.view && G.key === key) { G.ukey = ""; goalUpdate(); return; }
   unmountGoal();
@@ -3203,6 +3208,7 @@ function start() {
       if (NOTIFY && NOTIFY.control) { NOTIFY.control.classList.add("tb", "icon", "nt-top"); $("more-btn").before(NOTIFY.control); }
     }).catch((err) => console.error(err));
   }
+  View.init(PREFS);
   // Settings › Open on the inbox.
   if ((!location.hash || location.hash === "#/") && PREFS.get("openOnInbox")) history.replaceState(history.state, "", "#/needs");
   connectStream();
