@@ -14,7 +14,7 @@ changes collect under "Unreleased".
 - A coordinator now routes reads by least cost (`--route least-cost`) and
   sends reads that must see a write to copies known to hold it
   (`--prefer-caught-up`) by default; `--route round-robin` and
-  `--prefer-caught-up=false` bring back 0.3.4's routing. Measured on
+  `--prefer-caught-up=false` bring back 0.3.4's choice of copy. Measured on
   DigitalOcean (copies on 2-vCPU nodes), least-cost cut p99 by about a third
   on copies alike at 16 and 64 clients, and preferring caught-up copies
   raised a mix of writes and reads after them by 31% at 16 clients and 45%
@@ -23,6 +23,15 @@ changes collect under "Unreleased".
   coordinator's `route`, `hedge_adaptive` and `prefer_caught_up`, and the
   command center's Settings set all three (Copy asked first, Hedge by each
   copy's own speed, Reads after a write prefer copies that hold it).
+- A copy outrun less than `--hedge-ms` after it was asked, as one a hedge
+  asked is when the copy asked before it answers moments later, is no
+  longer put in its 5 s cool-off (before, only with `--hedge-adaptive`),
+  and when every copy of a shard is in its cool-off, least-cost orders
+  them by cost rather than in turn. Under heavy overload every copy was
+  outrun in its turn and least-cost fell below round-robin: on
+  DigitalOcean, one copy of three on a node also running 24 CPU-bound
+  threads, at 64 clients it now serves 4,252 queries a second (p99 32 ms)
+  where it served 2,557 (p99 230 ms) and round-robin 2,775.
 - The command center's Simulator compares those ways of choosing a shard's
   copy (Choosing a copy): by a model of the cluster at once, with what-ifs
   of a slow, busy, stalling or late copy (`POST

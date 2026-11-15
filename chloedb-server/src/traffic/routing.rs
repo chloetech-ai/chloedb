@@ -10,8 +10,8 @@
 //!   follows `coord.rs`: the turn, least-cost's draw and margin
 //!   ([`crate::cores::route`]), the hedge after `--hedge-ms` or after the
 //!   copy's own tail, the hedges' budget, the 5 s cool-off of a copy that
-//!   failed or was outrun, cancelling the call that lost, and reads after a
-//!   write. It is the study of load balancing of 2026-11-15 cut down to
+//!   failed or was outrun after it had `--hedge-ms`, cancelling the call
+//!   that lost, and reads after a write. It is the study of load balancing of 2026-11-15 cut down to
 //!   ChloeDB's own choices, with the numbers it was calibrated with on
 //!   DigitalOcean c-2 copies (2 dedicated vCPUs, one shard of 1M rows,
 //!   answer cache off); a test run's model of the cluster replaces them
@@ -925,7 +925,8 @@ impl<'a> Sim<'a> {
             return o.into_iter().map(|x| x as u32).collect();
         }
         // least-cost (cores::route::order): in turn, unless another drawn at
-        // random costs clearly less; the rest by cost; those cooling last.
+        // random costs clearly less; the rest by cost; those cooling last,
+        // unless every one is.
         let split = self.v.prefer_caught_up;
         let views: Vec<(bool, Option<f64>, u32, Option<f64>)> = reps
             .iter()
@@ -939,6 +940,8 @@ impl<'a> Sim<'a> {
                 (x.avoid_until > now, rtt, x.inflight, x.busy)
             })
             .collect();
+        let all = views.iter().all(|v| v.0);
+        let views: Vec<_> = views.into_iter().map(|v| (v.0 && !all, v.1, v.2, v.3)).collect();
         let mut known: Vec<f64> = views.iter().filter_map(|v| v.1).collect();
         let neutral = if known.is_empty() { 1.0 } else { quantile(&mut known, 0.5) };
         let costs: Vec<f64> = views.iter().map(|v| v.1.unwrap_or(neutral).max(1.0) * (1.0 + v.2 as f64) * (1.0 + v.3.unwrap_or(0.0).clamp(0.0, 1.0))).collect();
@@ -1271,8 +1274,9 @@ impl<'a> Sim<'a> {
             }
         }
         // The others were outrun: abandoned, cancelled, and cooling off
-        // unless an adaptive hedge outran them early, or they are behind
-        // the write a read after it must see (coord.rs).
+        // unless they were outrun less than --hedge-ms after they were
+        // asked, or they are behind the write a read after it must see
+        // (coord.rs).
         let others: Vec<(u32, f64)> = {
             let g = &self.groups[gi as usize];
             g.calls.iter().zip(&g.asked_at).filter(|(&c, _)| c != ci).map(|(&c, &t)| (c, t)).collect()
@@ -1284,7 +1288,7 @@ impl<'a> Sim<'a> {
             }
             self.abandon(oc, true);
             let orep = self.calls[oc as usize].rep as usize;
-            let early = self.v.hedge_adaptive && now - asked_at < self.v.hedge_ms;
+            let early = now - asked_at < self.v.hedge_ms;
             let behind = self.v.prefer_caught_up && self.v.lc() && min_seq > 0 && self.seen[orep].held < min_seq;
             if !early && !behind {
                 self.seen[orep].avoid_until = now + COOL_OFF_MS;
@@ -1620,7 +1624,7 @@ mod tests {
         let sc = Scenario { fault: "cpu".into(), clients: 64, seconds: 5.0, ..Scenario::default() };
         let (a, b) = (simulate(&setup, &lc(), &sc), simulate(&setup, &rr(), &sc));
         assert!(a.qps > b.qps * 1.1, "least cost {a:?} round-robin {b:?}");
-        assert!(a.by_copy[0] < b.by_copy[0], "least cost asks the busy copy less: {a:?} {b:?}");
+        assert!(a.by_copy[0] < 0.3, "least cost asks the busy copy less than its turn: {a:?}");
     }
 
     /// Adaptive hedges cut the tail of a copy whose answers stall now and
