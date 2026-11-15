@@ -93,7 +93,10 @@ changes collect under "Unreleased".
   Before, a primary that started again as a replica took the flip given
   first, while the new primary took writes to the slots that no copy
   reached, and the new primary then refused the flip for good (TLC,
-  `spec/slots` `MoveNow`, `MoveStuck`).
+  `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.4 writes no mark,
+  so a replica of this release under one refuses the flips it takes, and
+  the maps after them, until a later flip from that shard is marked or the
+  replica is replaced: finish an upgrade before moving slots.
 
 ### Wrong answers fixed (November audit: ENG-Q1, ENG-Q2)
 
