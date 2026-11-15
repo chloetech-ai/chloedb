@@ -74,6 +74,9 @@ nothing here. The workflow Demos (demos.yml) tests them, on a pull request
 that touches one and every night, and a failure there does not hold a
 ChloeDB release (docs/compatibility.md, "Demos").
 
+The TLA+ specifications (spec/) run nothing here either: the workflow
+Specs (specs.yml) runs TLC on their models.
+
 `python3 .github/scripts/ci_changes.py --self-test` checks the rules, that
 every job of ci.yml has its entry in CI_JOBS, and that every file a crate
 compiles in and every script ci.yml runs reaches the jobs that use it.
@@ -187,6 +190,8 @@ NOTHING = re.compile(
     # Research and ChloeDB's notes, reports and benchmark scripts, which
     # no test reads (perf.yml runs chloedb/scripts/prepare_beir.py).
     r"|research/|chloedb/(notes|report|scripts)/"
+    # The TLA+ specifications: specs.yml runs TLC on them.
+    r"|spec/"
     r")"
 )
 
@@ -391,6 +396,8 @@ def self_test():
     assert on(["chloedb-apps/src/x.js"]) == {"any", "smoke", "smoke_apps", "server"}
     assert on(["chloedb-swarm/x.js"]) == set()
     assert on(["chloedb-py/python/chloedb/x.py"]) == {"any", "python", "python_gate", "docs", "server"}
+    assert on(["spec/replication/ShardElection.tla", "spec/check.py"]) == set()
+    assert on(["spec/check.py", "chloedb-server/src/cores/shard.rs"]) == on(["chloedb-server/src/cores/shard.rs"])
     assert on(["chloedb-js/client.js"]) == {"any", "javascript", "server"}
     assert on(["chloedb-java/pom.xml"]) == {"any", "java"}
     assert on(["chloedb-java/pom.xml", "chloedb-js/client.js"]) == {"any", "java", "javascript", "server"}

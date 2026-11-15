@@ -10,6 +10,7 @@
 //! chloedb-sim --no-pauses --no-slow-links   # without those two faults
 //! chloedb-sim --late-copies --seeds 0..1000  # copies of the primary often arriving late
 //! chloedb-sim --lost-volume --seeds 0..1000  # a replica losing its volume as its primary stops
+//! chloedb-sim --uncounted-candidate --seeds 0..1000  # the replica losing its volume asks to be elected
 //! ```
 //!
 //! A seed that fails is run again to check that it replays exactly (the
@@ -66,6 +67,7 @@ fn main() {
     let mut forgetful = false;
     let mut late_copies = false;
     let mut lost_volume = false;
+    let mut uncounted = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -107,6 +109,7 @@ fn main() {
             "--forgetful" => forgetful = true,
             "--late-copies" => late_copies = true,
             "--lost-volume" => lost_volume = true,
+            "--uncounted-candidate" => uncounted = true,
             "--trace" => trace = true,
             "--verbose" | "-v" => verbose = true,
             _ => usage(),
@@ -114,9 +117,10 @@ fn main() {
         i += 1;
     }
     let config = |s: u64| {
-        let c = match (late_copies, lost_volume) {
-            (true, _) => Config::late_copies(s),
-            (_, true) => Config::lost_volume(s),
+        let c = match (late_copies, lost_volume, uncounted) {
+            (true, ..) => Config::late_copies(s),
+            (_, true, _) => Config::lost_volume(s),
+            (.., true) => Config::uncounted_candidate(s),
             _ => Config::of(s),
         };
         Config {
@@ -207,6 +211,6 @@ fn print_report(r: &Found) {
 
 fn usage() -> ! {
     let bugs: Vec<&str> = Bug::ALL.iter().map(|b| b.name()).chain(cluster::Bug::ALL.iter().map(|b| b.name())).collect();
-    eprintln!("usage: chloedb-sim [--seeds A..B | --seed N] [--trace] [--jobs N] [--verbose] [--promote-ppm N] [--drop-ppm N] [--no-pauses] [--no-slow-links] [--late-copies | --lost-volume] [--bug {}] [--cluster [--racing] [--forgetful]]", bugs.join(" | "));
+    eprintln!("usage: chloedb-sim [--seeds A..B | --seed N] [--trace] [--jobs N] [--verbose] [--promote-ppm N] [--drop-ppm N] [--no-pauses] [--no-slow-links] [--late-copies | --lost-volume | --uncounted-candidate] [--bug {}] [--cluster [--racing] [--forgetful]]", bugs.join(" | "));
     std::process::exit(2)
 }

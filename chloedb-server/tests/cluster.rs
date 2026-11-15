@@ -311,6 +311,9 @@ async fn replicas_join_and_leave_a_shard() {
         r2.query(QueryReq { sql: "SELECT id FROM products LIMIT 10000".into(), ..Default::default() }).await.is_ok()
     })
     .await;
+    // Not before a call of its primary counts it (asks for no votes, N-E2's
+    // follow-up), at most a heartbeat after it caught up.
+    until("the new replica counts among its shard's copies", || async { r2.health().await["replication"]["member"] == true }).await;
     let j = a.promote(1, &u_r2, false).await.unwrap();
     assert_eq!((&j["primary"], &j["seq_no"]), (&serde_json::json!(u_r2.clone()), &serde_json::json!(1)), "{j}"); // the term's first transaction
     assert_eq!((r2.role(), shards[1].role()), (pb::Role::Primary, pb::Role::Replica));
