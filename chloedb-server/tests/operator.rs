@@ -732,12 +732,13 @@ async fn a_cluster_is_made_grown_shrunk_and_healed() {
 
 /// The same steps with a cluster token: the operator holds the admin
 /// token, which the servers do not take, and every step the coordinator
-/// passes on to them goes with the cluster's.
+/// passes on to them goes with the cluster's. It adds servers with the
+/// cluster's token, which the coordinator sends them (audit CLU-3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
     let dir = tempfile::tempdir().unwrap();
     let procs = Procs::new(dir.path(), Some(("admin-token", "cluster-token")));
-    let admin = Admin::new(&format!("http://127.0.0.1:{}", procs.coordinator_port), Some("admin-token".into()));
+    let admin = Admin::new(&format!("http://127.0.0.1:{}", procs.coordinator_port), Some("admin-token".into())).joining_with(Some("cluster-token".into()));
     let spec = Spec {
         shards: 2,
         replicas: 2,

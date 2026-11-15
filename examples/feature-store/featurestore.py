@@ -86,7 +86,7 @@ class Chloe:
                 time.sleep(0.3 * (attempt + 1))
                 continue
             if r.status >= 300:
-                raise ChloeError(r.status, data.decode(errors="replace")[:500])
+                raise ChloeError(r.status, data.decode(errors="replace"))
             return json.loads(data) if data else {}
 
     def sql(self, q):
@@ -101,6 +101,21 @@ class Chloe:
     def rows(self, q, params=None):
         return self.query(q, params)["rows"]
 
+    def rows_all(self, q, params=None, page=5000):
+        """Every row `q` answers, a page at a time (a scroll, on the one
+        version it started on): a training set is more rows than the
+        server's window (--max-result-window, 10,000 by default) as soon as
+        the demo runs beside a server of its own settings (UIA-2)."""
+        b = {"sql": q, "objects": True, "timeout_ms": 120000, "page_size": page}
+        if params:
+            b["params"] = params
+        r = self.call("POST", "/v1/query", b)
+        rows = list(r["rows"])
+        while r.get("cursor"):
+            r = self.call("POST", "/v1/query", {"cursor": r["cursor"], "objects": True, "timeout_ms": 120000})
+            rows.extend(r["rows"])
+        return rows
+
     def write(self, ops):
         return self.call("POST", "/v1/write", {"ops": ops})
 
@@ -112,8 +127,15 @@ class Chloe:
 
 
 class ChloeError(Exception):
+    """A refusal or failure of the server: its status, and its `error`
+    (the whole body when it is not ChloeDB's JSON)."""
+
     def __init__(self, status, text):
-        super().__init__(f"{status}: {text}")
+        try:
+            message = json.loads(text).get("error") or text
+        except (ValueError, AttributeError):
+            message = text
+        super().__init__(message[:500])
         self.status = status
 
 
@@ -710,7 +732,7 @@ class App:
     def training_set(self, leaky, since, until):
         sql = LEAKY_SQL if leaky else ASOF_SQL
         t0 = time.perf_counter()
-        rows = self.db.rows(sql, {"since": since, "until": until})
+        rows = self.db.rows_all(sql, {"since": since, "until": until})
         return rows, (time.perf_counter() - t0) * 1000, sql
 
     def train(self, leaky=False, minutes=None):
@@ -793,7 +815,7 @@ class App:
             since = max(since, r["t"] or now)
         vec = lambda r: [float(r.get(f.replace(".", "__"))) if isinstance(r.get(f.replace(".", "__")), (int, float)) else 0.0 for f in feats]
         t0 = time.perf_counter()
-        rows = self.db.rows(sql, {"since": since, "until": cut})
+        rows = self.db.rows_all(sql, {"since": since, "until": cut})
         build_ms = (time.perf_counter() - t0) * 1000
         if len(rows) < 200:
             raise ValueError(f"only {len(rows)} impressions to train on")
@@ -801,8 +823,8 @@ class App:
         t0 = time.perf_counter()
         m = train_lr(X, y)
         train_ms = (time.perf_counter() - t0) * 1000
-        hold_own = self.db.rows(sql, {"since": cut, "until": now})
-        hold_true = self.db.rows(true_sql, {"since": cut, "until": now})
+        hold_own = self.db.rows_all(sql, {"since": cut, "until": now})
+        hold_true = self.db.rows_all(true_sql, {"since": cut, "until": now})
         n = 1 + self.db.rows("SELECT COUNT(*) AS n FROM fs_models")[0]["n"]
         row = {"id": f"m{now}", "created": now, "name": f"{'wf-leaky' if leaky else 'wf'}-v{n}", "join_kind": "latest (leaks)" if leaky else "asof",
                "features": json.dumps(feats), "weights": json.dumps(m), "train_rows": len(rows),
@@ -1219,7 +1241,10 @@ def handler(app, token):
                     return self.send(200, measured())
                 return self.send(404, {"error": f"no {p}"})
             except ChloeError as e:
-                return self.send(502, {"error": str(e)})
+                # The server's refusal of the request is the request's (a
+                # 400 stays one), in its own words; a refusal of the demo's
+                # own key, or a failure, is a bad gateway.
+                return self.send(e.status if e.status in (400, 404, 409, 422) else 502, {"error": str(e)})
             except (KeyError, ValueError, wfm.SpecError) as e:
                 return self.send(400, {"error": str(e)})
             except Exception as e:  # noqa: BLE001

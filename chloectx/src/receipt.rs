@@ -76,6 +76,9 @@ pub struct FilterSpec {
     pub since_ts: Option<i64>,
     pub until_ts: Option<i64>,
     pub session: Option<String>,
+    /// [`Filter::first_party`]; a receipt from before it read every record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_party: bool,
 }
 
 impl FilterSpec {
@@ -86,6 +89,7 @@ impl FilterSpec {
             since_ts: f.since_ts,
             until_ts: f.until_ts,
             session: f.session.clone(),
+            first_party: f.first_party,
         }
     }
 
@@ -96,6 +100,7 @@ impl FilterSpec {
             since_ts: self.since_ts,
             until_ts: self.until_ts,
             session: self.session.clone(),
+            first_party: self.first_party,
         }
     }
 }

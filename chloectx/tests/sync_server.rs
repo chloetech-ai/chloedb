@@ -117,7 +117,7 @@ fn machines_that_number_alike_sync_every_record() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let home = dir.path().join("home");
-    sync::setup(&home, &url, None, "", &[]).unwrap();
+    sync::setup(&home, &dir.path().to_string_lossy(), &url, None, "", &[], false).unwrap();
     let remote = sync::remote(&home).unwrap();
     let project = "acme/shop";
 
@@ -138,7 +138,7 @@ fn machines_that_number_alike_sync_every_record() {
     // C pulls both machines' records, the second 500 too.
     let c = store(dir.path(), "c.strata");
     let mut sc = SyncState::default();
-    assert_eq!(sync::pull(&remote, &c, project, &mut sc).unwrap(), 501);
+    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap(), 501);
     assert_eq!(c.len(), 501);
     let got = c.get(&["a-00500".to_string(), "b-00500".to_string()]).unwrap();
     assert_eq!(got.len(), 2, "both records numbered 500");
@@ -150,7 +150,7 @@ fn machines_that_number_alike_sync_every_record() {
     assert!(sent >= 3, "C's own records were sent: {sent}");
     assert_eq!(remote.count(project).unwrap(), 504);
     // And a second pull stores nothing new.
-    assert_eq!(sync::pull(&remote, &c, project, &mut sc).unwrap(), 0);
+    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap(), 0);
 }
 
 fn note(id: &str, kind: Kind, text: &str, seq: i64) -> Record {
@@ -171,7 +171,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     let (_server, url) = serve(&bin, dir.path(), Some(admin));
     let machine = |name: &str, key: &str| {
         let home = dir.path().join(name);
-        sync::setup(&home, &url, Some(key), "", &[]).unwrap();
+        sync::setup(&home, &dir.path().to_string_lossy(), &url, Some(key), "", &[], false).unwrap();
         (sync::remote(&home).unwrap(), home)
     };
     let (ra, home_a) = machine("home-a", admin);
@@ -192,7 +192,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     // B pulls acme/web: the rule is stored, marked as from A, and kept out
     // of the briefing until B accepts A.
     let b = store(dir.path(), "b.strata");
-    assert_eq!(sync::pull(&rb, &b, "acme/web", &mut SyncState::default()).unwrap(), 2);
+    assert_eq!(sync::pull(&rb, &b, "acme/web", &mut SyncState::default(), dir.path()).unwrap(), 2);
     let rule = b.get(&["a-00001".to_string()]).unwrap().pop().unwrap();
     assert!(sync::held_back(&rule), "{:?}", rule.links);
     assert_eq!(sync::pending_origin(&rule), Some(sync::origin(&home_a).as_str()));
@@ -216,7 +216,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     let e = rk.count("acme/payroll").unwrap_err().to_string();
     assert!(e.contains("403"), "{e}");
     let stolen = store(dir.path(), "k.strata");
-    assert!(sync::pull(&rk, &stolen, "acme/payroll", &mut SyncState::default()).is_err());
+    assert!(sync::pull(&rk, &stolen, "acme/payroll", &mut SyncState::default(), dir.path()).is_err());
     assert_eq!(stolen.len(), 0);
     let (code, _) = post(&url, k["secret"].as_str().unwrap(), "/v1/query", serde_json::json!({"sql": format!("SELECT content FROM {} LIMIT 5", sync::table_for("acme/payroll"))}));
     assert_eq!(code, 403);
@@ -228,7 +228,143 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     assert_eq!(code, 200, "{j}");
     let (rc, _) = machine("home-c", admin);
     let c = store(dir.path(), "c.strata");
-    assert_eq!(sync::pull(&rc, &c, "acme/web", &mut SyncState::default()).unwrap(), 3);
+    assert_eq!(sync::pull(&rc, &c, "acme/web", &mut SyncState::default(), dir.path()).unwrap(), 3);
     let old = c.get(&["old-1".to_string()]).unwrap().pop().unwrap();
     assert_eq!(sync::pending_origin(&old), Some("unknown"));
+}
+
+/// The program, in project folder `project` with ChloeCtx's home `home`,
+/// syncing with the server at `url`.
+fn chloectx(home: &Path, project: &Path, url: &str, args: &[&str]) -> (i32, String) {
+    let key = ADMIN;
+    let out = Command::new(env!("CARGO_BIN_EXE_chloectx"))
+        .args(args)
+        .current_dir(project)
+        .env("HOME", home)
+        .env("CHLOECTX_HOME", home)
+        .env("CHLOECTX_SYNC_URL", url)
+        .env("CHLOECTX_EMBEDDER", "hash:64")
+        .env("CHLOECTX_DISTILL", "0")
+        .env("CHLOECTX_DEEP", "off")
+        .env("CHLOECTX_RECEIPTS", "0")
+        .env("CHLOECTX_SYNC_TOKEN", key)
+        .env_remove("CHLOECTX_SYNC_ORIGIN")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    (out.status.code().unwrap_or(-1), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+const ADMIN: &str = "admin-token-for-the-forget-test";
+
+/// A remote of the server at `url` with the admin key, set up in `home`.
+fn admin_remote(home: &Path, url: &str) -> sync::Remote {
+    sync::setup(home, &home.to_string_lossy(), url, Some(ADMIN), "", &[], true).unwrap();
+    sync::remote(home).unwrap()
+}
+
+struct Stop<'a>(Vec<(&'a Path, &'a Path, &'a str)>);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        for (home, project, url) in &self.0 {
+            let _ = chloectx(home, project, url, &["stop", "--all"]);
+        }
+    }
+}
+
+#[test]
+fn a_record_forgotten_here_leaves_the_server_and_is_never_pulled_back() {
+    // CTX-33: a forget deleted the local record alone, and the next pull
+    // stored the server's copy again.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    let (home_a, home_b) = (dir.path().join("home-a"), dir.path().join("home-b"));
+    let _stop = Stop(vec![(&home_a, &project, &url), (&home_b, &project, &url)]);
+    let key = sync::project_key(&home_a, &project.to_string_lossy());
+    let remote = admin_remote(&dir.path().join("home-t"), &url);
+    let count_here = |home: &Path, needle: &str| {
+        let (_, out) = chloectx(home, &project, &url, &["sql", &format!("SELECT id FROM memory WHERE text LIKE '%{needle}%'")]);
+        out.lines().filter(|l| l.contains(':') && !l.contains("id")).count()
+    };
+
+    // A remembers a secret and a fact and pushes both; B pulls them.
+    let remember = |text: &str| {
+        let (code, out) = chloectx(&home_a, &project, &url, &["remember", "fact", text]);
+        assert_eq!(code, 0, "{out}");
+        out.split("Stored fact as ").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or_else(|| panic!("no id in {out}")).trim_end_matches('.').to_string()
+    };
+    let secret = remember("The staging codeword is Zebra-Quartz-77");
+    remember("The web app deploys on Tuesdays");
+    let (code, out) = chloectx(&home_a, &project, &url, &["sync", "push"]);
+    assert_eq!(code, 0, "{out}");
+    let on_server = remote.count(&key).unwrap();
+    assert!(on_server >= 2, "{on_server} rows");
+    let (code, out) = chloectx(&home_b, &project, &url, &["sync", "pull"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(count_here(&home_b, "Zebra-Quartz"), 1);
+
+    // A forgets the secret: its row on the server goes too.
+    let (code, out) = chloectx(&home_a, &project, &url, &["forget", &secret]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("sync server deleted too"), "{out}");
+    assert_eq!(remote.count(&key).unwrap(), on_server - 1);
+    assert_eq!(count_here(&home_a, "Zebra-Quartz"), 0);
+
+    // B, which pulled it before, keeps its copy and sends it back; A's
+    // next pull does not store it again.
+    let doc = serde_json::json!({"id": format!("{key}:{secret}"), "origin": "m-b", "project": key, "rid": secret, "session": "s", "kind": "fact", "tag": "", "turn": 1, "seq": 1, "ts": 1, "importance": 1.0, "files": "", "content": "The staging codeword is Zebra-Quartz-77", "context": "", "links_json": "[]"});
+    let (code, j) = post(&url, ADMIN, "/v1/write", serde_json::json!({"ops": [{"op": "upsert", "table": sync::table_for(&key), "doc": doc}]}));
+    assert_eq!(code, 200, "{j}");
+    assert_eq!(remote.count(&key).unwrap(), on_server);
+    let (code, out) = chloectx(&home_a, &project, &url, &["sync", "pull"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(count_here(&home_a, "Zebra-Quartz"), 0, "pulled back");
+    assert_eq!(count_here(&home_a, "Tuesdays"), 1);
+}
+
+#[test]
+fn a_delete_the_server_did_not_answer_is_sent_again() {
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let remote = admin_remote(&dir.path().join("home-t"), &url);
+    let project = "acme/forget";
+    let (da, db) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&da).unwrap();
+    std::fs::create_dir_all(&db).unwrap();
+    let a = store(&da, "memory.strata");
+    load(&a, &records("a", 1..=3));
+    assert_eq!(sync::push(&remote, &a, project, &mut SyncState::default()).unwrap(), 3);
+
+    // The server is out of reach when a-00002 is forgotten.
+    assert!(a.delete("a-00002").unwrap());
+    sync::forget(&da, &["a-00002".to_string()]).unwrap();
+    let away = admin_remote(&dir.path().join("home-away"), "http://127.0.0.1:9");
+    assert!(sync::send_forgets(&away, project, &da).is_err());
+    assert!(sync::load_forgotten(&da).unsent.contains("a-00002"));
+    assert_eq!(remote.count(project).unwrap(), 3);
+    // Another store pulls it meanwhile, and this one does not.
+    let b = store(&db, "memory.strata");
+    assert_eq!(sync::pull(&remote, &b, project, &mut SyncState::default(), &db).unwrap(), 3);
+    assert_eq!(sync::pull(&remote, &a, project, &mut SyncState::default(), &da).unwrap(), 0);
+    assert!(a.get(&["a-00002".to_string()]).unwrap().is_empty());
+
+    // The next push sends the delete again.
+    assert_eq!(sync::send_forgets(&remote, project, &da).unwrap(), 1);
+    assert_eq!(remote.count(project).unwrap(), 2);
+    let f = sync::load_forgotten(&da);
+    assert!(f.unsent.is_empty() && f.ids.contains("a-00002"), "{f:?}");
+    assert_eq!(sync::send_forgets(&remote, project, &da).unwrap(), 0);
 }

@@ -421,7 +421,7 @@ fn spawns_in_a_worktree_and_hooks_set_its_state() {
     // The settings and MCP config it was started with.
     let sess = s.data.join("sessions").join(&id);
     let settings: Value = serde_json::from_str(&std::fs::read_to_string(sess.join("settings.json")).unwrap()).unwrap();
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"] {
         let h = &settings["hooks"][ev][0]["hooks"][0];
         assert!(h["command"].as_str().unwrap().ends_with(" hook"), "{ev}");
         assert_eq!(h["timeout"], 5);
@@ -1885,6 +1885,49 @@ fn sessions_get_the_permissions_a_regular_claude_code_session_has() {
     let (status, v) = s.post(&format!("/api/agents/{did}/restart"), json!({}));
     assert_eq!(status, 201, "{v}");
     assert_eq!(s.agent(v["agent"]["id"].as_str().unwrap())["permission_mode"], "auto");
+}
+
+/// Audit APP-1: the ceiling on an agent another starts held only when the
+/// body named the parent, so a read-only agent's key called the API with
+/// none and started a top-level agent in bypassPermissions. An agent's key
+/// now starts agents as that agent, whatever the body says.
+#[test]
+fn an_agents_key_starts_agents_only_as_its_own_child() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "name": "reader", "task": "say hi", "read_only": true, "permission_mode": "plan" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    let key = agent_token(&s, &id);
+    let free = s.spawn(json!({ "repo": r, "name": "free", "task": "say hi", "permission_mode": "bypassPermissions" }));
+    let fid = free["id"].as_str().unwrap().to_string();
+
+    // No parent in the body: bounded by the caller all the same.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "permission_mode": "bypassPermissions" })));
+    assert_eq!(status, 400, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "read_only": false, "permissions": { "allow": ["Bash"] } })));
+    assert_eq!(status, 400, "{v}");
+    assert!(v["error"].as_str().unwrap_or_default().contains("Bash"), "{v}");
+    // Another agent named as the parent (one that may do more): refused.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "escaped", "parent": fid })));
+    assert_eq!(status, 403, "{v}");
+    let all = s.get("/api/agents?all=1").1;
+    assert!(!all["agents"].as_array().unwrap().iter().any(|a| a["name"] == "escaped"), "nothing was started: {all}");
+
+    // What it may start: its own child, read-only and in plan like it, one deeper.
+    let (status, v) = call_as(&s, "POST", "/api/agents", &key, None, Some(json!({ "repo": r, "name": "kid", "read_only": false })));
+    assert_eq!(status, 201, "{v}");
+    let kid = s.agent(v["agent"]["id"].as_str().unwrap());
+    assert_eq!((kid["parent"].as_str(), kid["read_only"].as_bool(), kid["permission_mode"].as_str(), kid["depth"].as_i64()), (Some(id.as_str()), Some(true), Some("plan"), Some(1)), "{kid}");
+
+    // A restart and a goal start agents no parent bounds: the user's.
+    let (status, v) = call_as(&s, "POST", &format!("/api/agents/{fid}/restart"), &key, None, Some(json!({})));
+    assert_eq!(status, 403, "{v}");
+    let (status, v) = call_as(&s, "POST", "/api/goals", &key, None, Some(json!({ "repo": r, "text": "ship it", "plan": true })));
+    assert_eq!(status, 403, "{v}");
+    // The user's key still starts what it asks.
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "mine", "permission_mode": "bypassPermissions", "worktree": false }));
+    assert_eq!(status, 201, "{v}");
 }
 
 #[test]
@@ -6847,4 +6890,69 @@ fn a_replaced_decision_that_was_yours_says_yours() {
     let d = o["decisions"]["list"].as_array().unwrap().iter().find(|d| d["why"] == "replaces").cloned().unwrap_or_else(|| panic!("{}", o["decisions"]));
     assert_eq!(d["replaces"]["who"], "yours", "{d}");
     assert_eq!(d["replaces"]["text"], "Shipping is free over 100 euros.", "{d}");
+}
+
+/// The Simple view (ui/goals/simple/, at #/s): its modules are served under
+/// /goals/simple/, as JavaScript, without the token, as the goal pages are.
+#[test]
+fn simple_view_pages_are_served_under_goals() {
+    let s = Server::start(&[]);
+    for f in ["index.js", "stage.js", "compose.js", "request.js", "switch.js"] {
+        let r = http().get(format!("{}/goals/simple/{f}", s.url)).call().unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{f}");
+        assert!(r.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/javascript"), "{f}");
+    }
+    assert_eq!(http().get(format!("{}/goals/simple/nope.js", s.url)).call().unwrap().status().as_u16(), 404);
+    // The shell links to it: the switch in the top bar and the phone's tabs.
+    let mut r = http().get(format!("{}/?token={TOKEN}", s.url)).call().unwrap();
+    let page = r.body_mut().read_to_string().unwrap();
+    assert!(page.contains(r#"data-view-switch="simple""#) && page.contains(r##"href="#/s/new""##), "the switch and the tabs are on the page");
+}
+
+/// Sub-agents started with Claude Code's own Agent tool run inside the
+/// agent's session, so they are not Workbench agents; each one is followed
+/// from its hooks (they carry its `agent_id`) as a helper of its agent: a
+/// brief in the agent's JSON, every detail at /api/agents/:id/helpers.
+#[test]
+fn sub_agents_of_claude_codes_agent_tool_are_followed_as_helpers() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let a = s.spawn(json!({ "repo": r, "task": "fix the rounding", "name": "round" }));
+    let id = a["id"].as_str().unwrap().to_string();
+    s.wait(&id, "idle");
+    assert!(s.agent(&id).get("helpers").is_none(), "no helpers yet");
+    hook_as(&s, &id, json!({ "hook_event_name": "UserPromptSubmit", "prompt": "fix the rounding" }));
+    for (u, d) in [("u0", "Map the refund code"), ("u1", "Find the callers")] {
+        hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": u, "tool_input": { "description": d, "prompt": format!("{d}, please"), "subagent_type": "Explore", "isolation": "worktree" } }));
+    }
+    for sub in ["s0", "s1"] {
+        hook_as(&s, &id, json!({ "hook_event_name": "SubagentStart", "agent_id": sub, "agent_type": "Explore" }));
+    }
+    hook_as(&s, &id, json!({ "hook_event_name": "PreToolUse", "agent_id": "s0", "agent_type": "Explore", "cwd": "/w", "tool_name": "Read", "tool_input": { "file_path": "/w/src/refunds.rs" } }));
+    let a = s.agent(&id);
+    assert_eq!((a["helpers"]["total"].as_u64(), a["helpers"]["running"].as_u64()), (Some(2), Some(2)), "{}", a["helpers"]);
+    assert_eq!(a["helpers"]["list"][0]["doing"], "Reading src/refunds.rs");
+
+    // The second reports: its call answers with the report, which is kept
+    // whole even when long, so it reads back from the events.
+    let long = format!("Two callers. {}", "More. ".repeat(5000));
+    hook_as(&s, &id, json!({ "hook_event_name": "SubagentStop", "agent_id": "s1", "agent_type": "Explore", "last_assistant_message": "Two callers." }));
+    hook_as(&s, &id, json!({ "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "u1", "tool_input": { "description": "Find the callers", "prompt": "x".repeat(20000) }, "tool_response": { "status": "completed", "agentId": "s1", "content": [{ "type": "text", "text": long }], "totalTokens": 900, "totalToolUseCount": 4, "totalDurationMs": 12000 } }));
+    let (status, v) = s.get(&format!("/api/agents/{id}/helpers"));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["running"], 1, "{v}");
+    let hs = v["helpers"].as_array().unwrap();
+    assert_eq!(hs.len(), 2);
+    assert_eq!((hs[0]["state"].as_str(), hs[0]["calls"].as_u64(), hs[0]["worktree"].as_bool()), (Some("running"), Some(1), Some(true)));
+    assert_eq!((hs[1]["state"].as_str(), hs[1]["tool_uses"].as_u64(), hs[1]["tokens"].as_u64()), (Some("done"), Some(4), Some(900)));
+    assert!(hs[1]["report"].as_str().unwrap().starts_with("Two callers. More."), "{}", hs[1]["report"]);
+    assert_eq!(hs[1]["summary"], "Two callers. More.");
+    assert_eq!(hs[1]["prompt"], "Find the callers, please");
+
+    // The turn ends with the first still open: it was stopped.
+    hook_as(&s, &id, json!({ "hook_event_name": "Stop" }));
+    assert_eq!(s.agent(&id)["helpers"]["running"], 0);
+    let (_, v) = s.get(&format!("/api/agents/{id}/helpers"));
+    assert_eq!(v["helpers"][0]["state"], "stopped");
+    assert_eq!(s.get("/api/agents/nope/helpers").0, 404);
 }

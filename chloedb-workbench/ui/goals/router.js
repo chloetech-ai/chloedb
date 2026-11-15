@@ -31,6 +31,8 @@ export function resolve(hash, { project = null, agentIds = [] } = {}) {
   switch (a) {
     case "new": return { page: "new", step: b || "folder", query };
     case "needs": return { page: "needs", query };
+    // The Simple view (goals/simple/): the board, a request, the box.
+    case "s": return { page: "simple", rest: parts.slice(1), query };
     case "p":
       if (!b) return { page: "open", query };
       if (!c) return { page: "continue", project: b, query };

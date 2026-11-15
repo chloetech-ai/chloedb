@@ -2,17 +2,29 @@ name: Release gate
 
 # What a release tag must have before anything is built or published for it,
 # called by the release workflows (server-release.yml, py-release.yml,
-# js-release.yml) and by image.yml for its version tags:
+# js-release.yml, crate-release.yml) and by image.yml for its version tags:
 #
 # - the tagged commit is on main (main is at it or past it), so a tag on a
 #   branch or on a commit that never merged releases nothing;
-# - CI's full matrix passed on that commit: a run of CI for it, started by
-#   the nightly schedule or by hand (both run every job, macOS included,
-#   and test the whole tree, whatever changed), concluded `success`. A
-#   push's run is not enough: it runs ChloeDB's tests only on macOS and its
-#   summary does not wait for them.
+# - CI's full matrix passed on that commit, in one of two ways:
+#   1. a run of CI for it, started by the nightly schedule or by hand
+#      without `since` (both run every job, macOS included, and test the
+#      whole tree, whatever changed), concluded `success`;
+#   2. such a full run passed on an earlier commit A of main (the tagged
+#      commit descends from it), and a run by hand of the tagged commit
+#      given `since` A passed: it runs, on Linux and macOS as a full run
+#      does, every job the change from A to the tag needs
+#      (.github/scripts/ci_changes.py), and a job the change does not reach
+#      tests the same files it passed on in A. CI names such a run
+#      `CI since <A>`, which is how this gate reads A.
+#   A push's run is not enough: it runs ChloeDB's tests only on macOS and
+#   its summary does not wait for them.
 #
-# When no such run exists yet, the gate fails and says how to start one:
+# When neither exists yet, the gate fails and says how to start one: the
+# second, from the newest commit of main before the tag on which a full
+# run passed (the nightly's, usually), when there is one,
+#   gh workflow run ci.yml --repo chloetech-ai/chloedb --ref <tag> -f since=<A>
+# and otherwise the first,
 #   gh workflow run ci.yml --repo chloetech-ai/chloedb --ref <tag>
 # and, when it has passed, re-run the release's failed jobs.
 #
@@ -54,24 +66,79 @@ jobs:
               exit 1 ;;
           esac
 
-          # A full-matrix CI run on the commit that passed.
-          runs=$(gh api --paginate "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success&per_page=100" \
-            --jq '.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch") | "\(.id) \(.event) \(.html_url)"')
-          if [ -n "$runs" ]; then
+          # CI's runs that passed on a commit, one line each: id, what it
+          # tested ("full", the sha of `since`, or "other" for a run by hand
+          # named neither way, which counts for nothing) and its address.
+          runs_on() {
+            gh api --paginate "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$1&status=success&per_page=100" \
+              --jq '.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch")
+                | [.id,
+                   (if .event == "schedule" or .display_title == "CI" then "full"
+                    elif (.display_title | test("^CI since [0-9a-f]{40}$")) then (.display_title | ltrimstr("CI since "))
+                    else "other" end),
+                   .html_url] | @tsv'
+          }
+          # Whether commit $1 is $2 or before it.
+          before() {
+            case "$(gh api "repos/$REPO/compare/$1...$2" --jq .status 2>/dev/null || true)" in
+              ahead|identical) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # 1. A full run on the tagged commit.
+          tagged=$(runs_on "$SHA")
+          full=$(printf '%s\n' "$tagged" | awk -F'\t' '$2 == "full"')
+          if [ -n "$full" ]; then
             echo "CI's full matrix passed on $SHA:"
-            echo "$runs"
+            echo "$full"
             exit 0
+          fi
+
+          # 2. A run of the jobs the change since A needs, on the tagged
+          # commit, and a full run on A.
+          while IFS=$'\t' read -r id since url; do
+            case "$since" in "" | full | other) continue ;; esac
+            if ! before "$since" "$SHA"; then
+              echo "Run $url tested the change since $since, which is not a commit of main before $SHA."
+              continue
+            fi
+            base=$(runs_on "$since" | awk -F'\t' '$2 == "full"')
+            if [ -n "$base" ]; then
+              echo "CI's full matrix passed on $since:"
+              echo "$base"
+              echo "and every job the change from $since to $SHA needs passed on $SHA, on Linux and macOS:"
+              echo "$id $url"
+              exit 0
+            fi
+            echo "Run $url tested the change since $since, but no full run of CI passed on $since."
+          done <<< "$tagged"
+
+          # Neither: say how to start the run that is missing. The newest
+          # commit of main before the tag on which a full run passed, among
+          # main's last 100 runs that passed.
+          from=""
+          for a in $(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=100" \
+              --jq '.workflow_runs[] | select(.event == "schedule" or (.event == "workflow_dispatch" and .display_title == "CI")) | .head_sha' | awk '!seen[$0]++' | head -n 10); do
+            if before "$a" "$SHA"; then from=$a; break; fi
+          done
+          if [ -n "$from" ]; then
+            cmd="gh workflow run ci.yml --repo $REPO --ref $GITHUB_REF_NAME -f since=$from"
+            why="CI's full matrix passed on $from, a commit of main before this one: this runs, on Linux and macOS, only the jobs the change since it needs."
+          else
+            cmd="gh workflow run ci.yml --repo $REPO --ref $GITHUB_REF_NAME"
+            why="No full run passed on a recent commit of main before this one: this runs the whole matrix."
           fi
           {
             echo "### No full CI run passed on $GITHUB_REF_NAME"
             echo
-            echo "A release needs a run of CI's whole matrix (the nightly run or one started by hand) that passed on $SHA. Start one:"
+            echo "A release needs CI's whole matrix (the nightly run or one started by hand) to have passed on $SHA, or on an earlier commit of main together with a run by hand of the jobs the change since it needs. $why Start it:"
             echo
             echo '```'
-            echo "gh workflow run ci.yml --repo $REPO --ref $GITHUB_REF_NAME"
+            echo "$cmd"
             echo '```'
             echo
             echo "When it has passed, re-run this run's failed jobs: \`gh run rerun $GITHUB_RUN_ID --failed --repo $REPO\`."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::No CI run of the full matrix passed on $SHA. Run: gh workflow run ci.yml --ref $GITHUB_REF_NAME, then re-run this release's failed jobs."
+          echo "::error::No CI run of the full matrix passed on $SHA. Run: $cmd, then re-run this release's failed jobs."
           exit 1

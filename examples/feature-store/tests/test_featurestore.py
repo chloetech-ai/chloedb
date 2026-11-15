@@ -49,6 +49,40 @@ def test_auc_and_transforms():
     assert fs.transform(raw)[fs.FEATURES.index("price_ratio")] == 2.0
 
 
+def test_rows_past_the_window(tmp_path):
+    """UIA-2: a training set is read a page at a time, so a server's window
+    (10,000 rows by default; 50 here) does not fail Train, and a refusal of
+    the server is its status and its one sentence."""
+    b = server_bin()
+    if not b:
+        pytest.skip("no chloedb-server built (cd chloedb-server && cargo build --release)")
+    port = free_port()
+    env = dict(os.environ, CHLOEDB_START_APPS="off")
+    env.pop("CHLOEDB_APPS", None)
+    p = subprocess.Popen([b, "--db", str(tmp_path / "w.chloedb"), "--listen", f"127.0.0.1:{port}", "--grpc", f"127.0.0.1:{free_port()}",
+                          "--max-result-window", "50"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        url = f"http://127.0.0.1:{port}"
+        fs.wait_up(url)
+        db = fs.Chloe(url)
+        db.sql("CREATE TABLE fs_imps (id KEYWORD PRIMARY KEY, ts INT, usr KEYWORD)")
+        db.sql("CREATE TABLE fs_snaps (id KEYWORD PRIMARY KEY, ts INT, usr KEYWORD, views INT)")
+        db.write([{"op": "insert", "table": "fs_imps", "doc": {"id": f"i{i}", "ts": i, "usr": f"u{i % 7}"}} for i in range(300)])
+        db.write([{"op": "insert", "table": "fs_snaps", "doc": {"id": f"s{i}", "ts": i * 10, "usr": f"u{i % 7}", "views": i}} for i in range(30)])
+        q = "SELECT id, ts FROM fs_imps WHERE ts >= :since AND ts < :until"
+        with pytest.raises(fs.ChloeError) as e:
+            db.rows(q, {"since": 0, "until": 300})
+        assert e.value.status == 400 and "the most a query returns" in str(e.value) and not str(e.value).startswith("{")
+        assert sorted(r["id"] for r in db.rows_all(q, {"since": 0, "until": 300}, page=40)) == sorted(f"i{i}" for i in range(300))
+        asof = ("SELECT s.id AS id, u.views AS views FROM fs_imps s ASOF JOIN fs_snaps u MATCH_CONDITION (s.ts > u.ts) ON s.usr = u.usr"
+                " WHERE s.ts >= :since AND s.ts < :until")
+        rows = db.rows_all(asof, {"since": 0, "until": 300}, page=40)
+        assert len(rows) == len({r["id"] for r in rows}) and len(rows) > 250
+    finally:
+        p.terminate()
+        p.wait(timeout=30)
+
+
 @pytest.fixture(scope="module")
 def demo(tmp_path_factory):
     b = server_bin()

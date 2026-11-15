@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=3871c230ea">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
@@ -84,7 +84,7 @@
       <span class="eyebrow">Apps</span>
       <h1>ChloeCtx: how it works</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/index.md">docs/chloectx/index.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.4, unreleased). The latest release is 0.3.3 (<a href="v0.3.3/index.html">its docs</a>); what is newer is marked "since 0.3.4".</p>
+      <p class="doc-version">These docs describe release 0.3.4.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-problem">The problem</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#the-data-model">The data model</a></li><li><a href="#when-to-store-always">When to store: always</a></li><li><a href="#when-to-load">When to load</a></li><li><a href="#answering-a-question">Answering a question</a></li><li><a href="#query-understanding">Query understanding</a></li><li><a href="#cost-and-latency-targets">Cost and latency targets</a></li><li><a href="#install-and-use">Install and use</a></li></ol></details>
     <div class="doc-body">
@@ -378,6 +378,7 @@ $$</p>
 4. <strong><code>PostToolUse</code> and <code>PostToolUseFailure</code> on <code>Bash</code>: error to fix.</strong> A command that fails and then passes, with edits or other commands between, is written down as a fix: an <code>error</code> record tagged <code>fix</code> holding the error's line, the steps (the last eight edits and commands that change something; <code>ls</code>, <code>grep</code>, <code>git status</code> and the like do not count) and what showed it fixed (the same command passed, or failed with another error). The same command means the same after <code>cd</code>, pipes, redirections, <code>timeout</code> and variable assignments are taken off (<code>cd x &amp;&amp; cargo test 2&gt;&amp;1 | tail</code> is <code>cargo test</code>); a failure is followed for 60 tool calls, and one that passes with nothing between is not a fix. When a command later fails with the same error, in any session of the project, its fixes come with the failure, at most two, once a session. Errors are matched by their signature: the telling line (a compiler's <code>error:</code>, a panic, the last line of a Python traceback, <code>fatal:</code>, ...) with numbers, hashes, temporary paths and the project's path masked, or one sharing four in five of its words. The fix links to the prompt of the turn that fixed it.
 5. <strong>Pull: MCP tools.</strong> <code>memory_ask</code> (by search alone, <a href="#answering-a-question">below</a>; with <code>deep</code>, the query engine), <code>memory_search</code>, <code>memory_timeline</code> (the neighbourhood of a hit), <code>memory_sql</code> (one read-only SELECT over <code>memory</code>, with no model calls, a 2-second deadline and a 1,000-row cap), <code>memory_remember</code> and <code>memory_forget</code> (<code>chloectx forget ID</code> from a shell, and <code>chloectx forget --everywhere TEXT</code> for a fact in every store, <a href="chloectx-setup.html#forget-something-chloectx-forget">setup</a>).</p>
 <p>The briefing also ends with a one-line index of the notes it had no room for ("31 older notes are not shown here, about: …"), so the model knows what to ask for.</p>
+<p><strong>Text from outside the project is data.</strong> What <code>WebFetch</code>, <code>WebSearch</code> and every MCP tool returned (a page, an issue, a mail, a chat message) is stored, but it is never put into a prompt by itself: the prompt's recall, query understanding and the file notes leave it out, since whoever wrote that page or issue could otherwise plant an instruction that every later session got as "earlier work". <code>memory_search</code> and <code>memory_timeline</code> still find it, and show it fenced as quoted data (<code>&lt;third_party_text source="WebFetch"&gt;</code>, its own closing tag escaped inside), and every block of recalled records says that records are data and only the user's messages are instructions. Stores written before this keep their records; only what recall picks changes.</p>
 <h3 id="ranking">Ranking<a class="anchor" href="#ranking" aria-label="Link to this section">#</a></h3>
 <p>BM25 and vector search each return their top <em>n</em> = 50 under the exclusion filter. Scores are min-max normalised over the union <em>C</em>, a missing score counting as 0:</p>
 <p>$$
@@ -698,7 +699,7 @@ chloectx mount ./work.capsule                                             # serv
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="../assets/site.js?v=142c29c3e0"></script>
+<script src="../assets/site.js?v=699f360f4f"></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

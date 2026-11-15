@@ -933,6 +933,16 @@ impl Service {
         *self.replication.get_mut().unwrap_or_else(|e| e.into_inner()) = r;
     }
 
+    /// Changes its part in replication while it serves (promoted, elected,
+    /// stepped down, configured), forgetting the idempotency keys it keeps
+    /// in memory ([`idem::Keys::forget_all`]): from then on a retry is
+    /// answered from its database's row of the key, which holds only what
+    /// the copy holds.
+    pub(crate) fn set_role(&self, r: Replication) {
+        *self.replication.write().unwrap_or_else(|e| e.into_inner()) = r;
+        self.idempotency.forget_all();
+    }
+
     /// Its role in replication, as `Hello` says it.
     pub fn role(&self) -> pb::Role {
         match &self.replication() {
@@ -1187,7 +1197,7 @@ impl Service {
         ));
         let opts = PrimaryOptions { replicas, acks, ..self.primary_options() };
         let (p, answer) = f.promote(opts, voters, force).await?;
-        *self.replication.write().unwrap_or_else(|e| e.into_inner()) = Replication::Primary(p);
+        self.set_role(Replication::Primary(p));
         // A primary fills in what its rows lack.
         self.models_changed.send_modify(|n| *n += 1);
         Ok(answer)
@@ -1280,7 +1290,7 @@ impl Service {
             }
         };
         if let Some(r) = next {
-            *self.replication.write().unwrap_or_else(|e| e.into_inner()) = r;
+            self.set_role(r);
         }
         Ok(self.configured())
     }
@@ -1843,7 +1853,7 @@ impl Service {
         let now = chloedb::timestamp::now();
         let t0 = Instant::now();
         let mut n = 0;
-        let first = chloedb::db::default_table(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
+        let first = default_of(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
         for schema in db.catalog() {
             let wanted: Vec<usize> = models.iter().filter(|m| m.model.is_ok() && m.table.eq_ignore_ascii_case(&schema.table)).filter_map(|m| schema.field_index(&m.field)).collect();
             let media: Vec<usize> = (0..schema.fields.len()).filter(|&f| schema.fields[f].media.is_some()).collect();
@@ -2149,14 +2159,15 @@ impl Service {
 
     /// The table a request that names none reads or writes: the first
     /// table, or on a database made with no tables (`chloedb-server --db`
-    /// on a new path, [`chloedb::db::Db::create_empty`]) the first one made
-    /// after its placeholder. An error while there is none.
+    /// on a new path, [`chloedb::db::Db::create_empty`]) the first one
+    /// people made after its placeholder ([`default_of`]). An error while
+    /// there is none.
     pub fn default_table(&self) -> Result<Arc<Schema>, ApiError> {
         let first = self.first_table();
         if !first.is_placeholder() {
             return Ok(first);
         }
-        chloedb::db::default_table(&self.catalog()).ok_or_else(|| ApiError::bad(NO_TABLES))
+        default_of(&self.catalog()).cloned().ok_or_else(|| ApiError::bad(NO_TABLES))
     }
 
     /// The tables people made, the first first: [`Self::catalog_now`]
@@ -6331,19 +6342,44 @@ pub fn op_schema<'a>(catalog: &'a [Arc<Schema>], op: &Json) -> Result<&'a Arc<Sc
 }
 
 /// The table of `catalog` an operation that names none writes: the first,
-/// or on a database made with no tables the first made after its
-/// placeholder ([`Service::default_table`]).
+/// or on a database made with no tables the first people made after its
+/// placeholder ([`default_of`], [`Service::default_table`]).
 fn op_default(catalog: &[Arc<Schema>]) -> Result<&Arc<Schema>, ApiError> {
     let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    Ok(default_of(catalog).unwrap_or(first))
+}
+
+/// The prefixes of the tables the apps beside a server keep their own
+/// state in ([`crate::app_procs::grants`], and the operator's apps):
+/// Sheets' workbooks and cells (`sheets_books`, `sheets_cells`), ChloeCtx's
+/// spaces (`ctx_*`) and the app engine's (`sa_*`).
+pub const APP_STATE: &[&str] = &["sheets_", "ctx_", "sa_"];
+
+/// The prefixes of the tables apps fill with data a person asked for: the
+/// crawler's, one a crawl, and network operations' network.
+pub const APP_DATA: &[&str] = &["crawl_", "netops_"];
+
+/// The table of `catalog` (a database's tables, the first first) that a
+/// request naming none reads or writes: the first, or on a database made
+/// with no tables (whose first is its placeholder) the first one people
+/// made, so that a database the apps beside a server made their tables in
+/// before anyone else (PLT-2) gives requests to the first table of its
+/// own. The apps' own state ([`APP_STATE`]) is never that table, and an
+/// app's data ([`APP_DATA`]) only when there is no other (a database
+/// `chloedb-crawl --local` crawled into). `None` while there is none.
+pub fn default_of(catalog: &[Arc<Schema>]) -> Option<&Arc<Schema>> {
+    let first = catalog.first()?;
     if !first.is_placeholder() {
-        return Ok(first);
+        return Some(first);
     }
-    Ok(catalog.iter().find(|t| !t.is_placeholder()).unwrap_or(first))
+    let starts = |t: &Schema, ps: &[&str]| ps.iter().any(|p| t.table.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
+    let open = |t: &&Arc<Schema>| !t.is_placeholder() && !starts(t, APP_STATE);
+    catalog.iter().filter(open).find(|t| !starts(t, APP_DATA)).or_else(|| catalog.iter().find(open))
 }
 
 /// What a request that names no table is told on a database made with no
 /// tables, before its first ([`Service::default_table`]).
-pub const NO_TABLES: &str = "this database has no tables yet: create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
+pub const NO_TABLES: &str = "this database has no tables yet (the apps' own, sheets_*, ctx_* and sa_*, take only requests that name them): create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
 
 /// What places the row an operation writes on a shard: its key, or for a
 /// table placed by a column ([`Schema::with_shard_by`]) that column's
@@ -6597,8 +6633,57 @@ fn writer(db: &Db, rx: mpsc::Receiver<Queued>, state: &WriterState) {
     }
 }
 
-/// Applies one group of write requests and answers each.
+/// Applies one group of write requests and answers each, each key's once
+/// ([`once_per_key`]).
 fn apply_group(db: &Db, group: Vec<Queued>) {
+    let (group, again) = once_per_key(db, group);
+    apply_unique(db, group);
+    if !again.is_empty() {
+        apply_group(db, again);
+    }
+}
+
+/// Answers from its key's row each request of `group` whose key a write
+/// already recorded ([`idem::recorded`]: its first attempt committed),
+/// unapplied, and puts aside each that repeats a key of an earlier request
+/// of the group, to run once that one did; returns the rest and those put
+/// aside. Memory alone does not keep a key from being applied twice: it
+/// forgets the oldest keys, a request still running among them, and every
+/// key when the server's role changes ([`idem::Keys::forget_all`]), so a
+/// retry that comes then is new to it while its first attempt is queued or
+/// committed (TLC, spec/idempotency `KeysEvict`). The writer applies one
+/// group at a time, so the database it reads here holds every earlier
+/// group's keys.
+fn once_per_key(db: &Db, group: Vec<Queued>) -> (Vec<Queued>, Vec<Queued>) {
+    if group.iter().all(|q| q.key.is_none()) {
+        return (group, Vec::new());
+    }
+    let (mut rest, mut again) = (Vec::with_capacity(group.len()), Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    for q in group {
+        let Some((k, hash)) = q.key.clone() else {
+            rest.push(q);
+            continue;
+        };
+        if seen.contains(&k) {
+            again.push(q);
+            continue;
+        }
+        match idem::recorded(db, &k, hash) {
+            Ok(None) => {
+                seen.insert(k);
+                rest.push(q);
+            }
+            Ok(Some(Ok(w))) => q.answer(Ok(w)),
+            Ok(Some(Err(()))) => q.answer(Err(ApiError { code: None, status: 422, message: "this idempotency key was used for different operations".into() })),
+            Err(e) => q.answer(Err(e)),
+        }
+    }
+    (rest, again)
+}
+
+/// [`apply_group`] of requests whose keys are all different.
+fn apply_unique(db: &Db, group: Vec<Queued>) {
     // A request still queued at its deadline is refused unapplied.
     let now = Instant::now();
     let (late, group): (Vec<Queued>, Vec<Queued>) = group.into_iter().partition(|q| q.deadline <= now);
@@ -7403,6 +7488,54 @@ mod tests {
             let j: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert!(bodies.contains(&j), "{j}");
         }
+    }
+
+    // TLC (spec/idempotency `KeysEvict`): memory forgot a key whose write
+    // was still queued (the oldest of 100,000, or every key at a change of
+    // role), so a retry was new to it, and both attempts committed. The
+    // writer now applies each key once: a repeat in the same group after
+    // the first, and one whose key's row a write recorded is answered from
+    // it, unapplied.
+    #[test]
+    fn a_key_memory_forgot_is_applied_once() {
+        let schema = Schema::from_json(r#"{"table": "c", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}]}"#).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(&dir.path().join("t.strata"), schema, chloedb::storage::DbOptions::default()).unwrap();
+        apply_requests(&db, &[(&[json!({"op": "upsert", "doc": {"id": "x", "n": 0}})], 0)], None).unwrap();
+        let add = || WriteJob::Ops(vec![json!({"op": "add", "key": "x", "field": "n", "value": 1})]);
+        // A key's row keeps the high half of the hash (`idem::pack`).
+        const H: u64 = 7 << 32;
+        let keys = Arc::new(idem::Keys::default());
+        let state = WriterState::default();
+        let queued = |key: &str, hash: u64| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let q = Queued { job: add(), deadline: Instant::now() + Duration::from_secs(5), reply: Some(tx), key: Some((key.into(), hash)), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0, term: None };
+            (q, rx)
+        };
+        let n = || db.query("SELECT n FROM c WHERE id = 'x'", &Params::new()).unwrap().rows[0][0].as_i64().unwrap();
+        // The first attempt and a retry memory no longer knows, in one group.
+        assert_eq!(keys.begin("k", H), idem::Begin::New);
+        let (a, mut ra) = queued("k", H);
+        keys.forget_all();
+        assert_eq!(keys.begin("k", H), idem::Begin::New);
+        let (b, mut rb) = queued("k", H);
+        apply_group(&db, vec![a, b]);
+        let (wa, wb) = (ra.try_recv().unwrap().unwrap(), rb.try_recv().unwrap().unwrap());
+        assert_eq!(n(), 1, "applied once");
+        assert_eq!((wa.rows, wb.rows), (1, 1));
+        assert!(wb.seq_no >= wa.seq_no);
+        // A retry in a later group, memory forgotten again: from the row.
+        keys.forget_all();
+        let (c, mut rc) = queued("k", H);
+        apply_group(&db, vec![c]);
+        assert_eq!((rc.try_recv().unwrap().unwrap().rows, n()), (1, 1));
+        // The key with other operations is refused, and another key applies.
+        let (d, mut rd) = queued("k", H + (1 << 32));
+        let (e, mut re) = queued("other", H);
+        apply_group(&db, vec![d, e]);
+        assert_eq!(rd.try_recv().unwrap().unwrap_err().status, 422);
+        assert_eq!((re.try_recv().unwrap().unwrap().rows, n()), (1, 2));
+        assert_eq!(state.queued.load(Ordering::Relaxed), 0);
     }
 
     // OPS-6: a panic in the writer thread ended it, and every later write

@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=3871c230ea">
+<link rel="stylesheet" href="assets/site.css?v=f586f110cf">
 </head>
 <body>
 <header class="top gutter"><div class="wrap">
@@ -77,7 +77,7 @@
       <div><b>Equal budgets, enforced</b><p>Kubernetes limits: 6.8 CPUs per engine in the cloud, 3 CPUs and 6 GiB on the laptop. Each engine is told its budget.</p></div>
       <div><b>The same text analysis</b><p>Folding, English stopwords, Snowball stemming, BM25 k1 1.2 and b 0.75 everywhere. The Lucene engines' top 10s share 93 to 96% of ChloeDB's.</p></div>
       <div><b>The same vector settings</b><p>HNSW m 16, ef_construction 200, 64 candidates, 8-bit codes re-scored where supported.</p></div>
-      <div><b>No result caches</b><p>Result caches off for every engine, its SQL endpoint included, since 5 November (<a href="#audit">our audit</a>); filter and page caches stay on, and each run records its cache hits. Every answer is recorded and checked.</p></div>
+      <div><b>No result caches</b><p>Result caches off for every engine, its SQL endpoint included, since 5 November (<a href="#audit">our audit</a>); filter and page caches stay on, and each run records its cache hits. ChloeDB has kept an answer cache since 13 November (0.3.1): the harness starts it with <code>--answer-cache-mb 0</code> and fails a run in which any answer came from it. Every ChloeDB run on these pages was measured on a build from before that cache. Every answer is recorded and checked.</p></div>
       <div><b>Pinned versions</b><p>Images pinned by tag, ChloeDB by commit, data by SHA-256.</p></div>
       <div><b>Defaults plus documented tuning</b><p>What each engine's own docs recommend, committed beside the results.</p></div>
     </div>
@@ -198,7 +198,7 @@ deploy/compare/fanout.sh down</code></pre></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js?v=376b5cfc2f"></script>
-<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>

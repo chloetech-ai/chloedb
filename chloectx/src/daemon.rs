@@ -188,6 +188,10 @@ struct State {
     active: String,
 }
 
+/// One sync with the server at a time: a push, a pull, or a forget's
+/// deletes there (audit CTX-33).
+static SYNC_ONE: Mutex<()> = Mutex::new(());
+
 pub struct Daemon {
     pub paths: StorePaths,
     pub project: String,
@@ -235,6 +239,14 @@ pub struct Daemon {
     snapshots: crate::snapshots::Snapshots,
     /// A recall showed records since the last snapshot was kept.
     keep_pending: std::sync::atomic::AtomicBool,
+    /// Connections being answered, from the request read to the answer
+    /// written: shutdown waits for them before the exit, which would
+    /// close them unanswered.
+    serving: std::sync::atomic::AtomicUsize,
+    /// Shutdown is past the point where requests are handled: one that
+    /// comes is answered [`closing_answer`], and its client sends it to
+    /// the next daemon.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
@@ -276,7 +288,8 @@ impl Daemon {
         let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
             logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), last_activity: AtomicI64::new(now()),
-            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default() })
+            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default(),
+            serving: Default::default(), closing: Default::default() })
     }
 
     /// Wraps work to run after the answer, so that shutdown waits for it.
@@ -460,6 +473,17 @@ impl Daemon {
         }
         // What was recorded since the last push goes before the daemon does.
         let _ = self.sync_now(false);
+        // Requests were handled until now. From here each one is answered
+        // `closing`, not handled, and its client sends it to the next
+        // daemon, once this one is gone; the exit would otherwise close it
+        // unanswered (`chloectx sync setup`, which stops the daemon, then
+        // `chloectx sync push`: "EOF while parsing a value"). SeqCst with
+        // `serving` in [`serve`]: a request either sees `closing` or is
+        // counted here, and waited for.
+        self.closing.store(true, Ordering::SeqCst);
+        while (self.serving.load(Ordering::SeqCst) > 0 || self.pending.load(Ordering::Acquire) > 0 || self.deferred.load(Ordering::Acquire) > 0) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = self.store.flush();
         self.save_receipts();
         if let Some(b) = self.receipts.get() {
@@ -467,6 +491,11 @@ impl Daemon {
         }
         self.save_state();
         let _ = std::fs::remove_file(&self.paths.socket);
+        // The connections made before the socket went, answered `closing`.
+        let last = Instant::now() + Duration::from_millis(500);
+        while self.serving.load(Ordering::SeqCst) > 0 && Instant::now() < last {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         std::process::exit(0);
     }
 
@@ -475,20 +504,25 @@ impl Daemon {
     /// project's records the server holds and the store lacks): the
     /// sync's state after, or `None` with no server set up. One at a time.
     pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
-        static ONE: Mutex<()> = Mutex::new(());
-        let remote = crate::sync::remote(&crate::paths::home())?;
-        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        // No server set up: done, without asking git what the project is.
+        crate::sync::remote(&crate::paths::home())?;
         let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // Read each time: `chloectx sync setup` may have given the project a key since.
+        let remote = crate::sync::remote_for(&crate::paths::home(), &key)?;
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        // The rows of records forgotten here go first (audit CTX-33): a
+        // server that did not answer a forget's delete is asked again.
+        let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
         let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
         // replaced by themselves. Taking them as pushed (pushed_seq set to
         // the store's last) also took as pushed whatever the hooks recorded
         // while the pull ran, which then never reached the server.
-        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
-        st.last_error = match (&pushed, &pulled) {
-            (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st, &self.paths.dir)) } else { None };
+        st.last_error = match (&forgets, &pushed, &pulled) {
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Some(Err(e))) => e.to_string(),
             _ => String::new(),
         };
         let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
@@ -497,6 +531,28 @@ impl Daemon {
         }
         crate::sync::save_state(&self.paths.dir, &st);
         Some(st)
+    }
+
+    /// Deletes the sync server's rows of the records just forgotten (audit
+    /// CTX-33), between pushes: one that read a record before its delete
+    /// has sent it by then. What the forget says of them; nothing with no
+    /// server set up.
+    fn forget_on_server(&self) -> String {
+        // No server set up: nothing to delete, without asking git what the project is.
+        if crate::sync::remote(&crate::paths::home()).is_none() {
+            return String::new();
+        }
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // The project's own key where it has one (`chloectx sync setup`), as a push uses.
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::sync::send_forgets(&remote, &key, &self.paths.dir) {
+            Ok(_) => "its row on the sync server deleted too (a machine that pulled it before keeps its copy)".into(),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
+                format!("the sync server's row is not deleted yet ({e}): each push asks again, and a pull never brings it back here")
+            }
+        }
     }
 
     /// `{"op": "sync", "what": "status" | "push" | "pull"}`.
@@ -522,7 +578,8 @@ impl Daemon {
             let me = crate::sync::origin(&crate::paths::home());
             return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
         }
-        let Some(remote) = crate::sync::remote(&crate::paths::home()) else {
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
             return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
         };
         let st = match what {
@@ -532,10 +589,9 @@ impl Daemon {
             w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
         }
         .unwrap_or_default();
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
         Ok(json!({
-            "server": remote.url, "token": remote.has_token(), "project": self.project, "synced_as": key,
+            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
@@ -1209,7 +1265,9 @@ impl Daemon {
             let s = st.sessions.get(sid).cloned().unwrap_or_default();
             (s.window_start, s.injected)
         };
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
+        // What it puts into the prompt by itself quotes no third party
+        // (audit CTX-32): memory_search and memory_ask still find those.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
         let tree = self.tree(sid);
         let project = Path::new(&tree);
         let res = crate::deep::run(&self.store, &self.deep_cfg(), &self.distill_cfg(), prompt, recent, &filter, Some(project), now());
@@ -1447,7 +1505,9 @@ impl Daemon {
             (s.window_start, s.injected, s.turn)
         };
         let query: String = prompt.chars().take(2000).collect();
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
+        // A page, an issue or a mail read once is not recalled into later
+        // prompts as earlier work (audit CTX-32): memory_search finds it.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
         let t0 = Instant::now();
         // Knowledge that matches the prompt on its own text is shown even
         // when the gate holds back the rest: a request that does not sound
@@ -1560,7 +1620,7 @@ impl Daemon {
             return Ok(String::new());
         }
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note, Kind::Episode];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut where_ = filter.conds();
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
@@ -1599,7 +1659,7 @@ impl Daemon {
         }
         let w = self.with_session(sid, |s| s.window_start);
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut s = format!("In earlier work, edits of {rel} were usually followed by edits of: {}.\n", next.join(", "));
         let mut shown = shown.to_string();
         let mut ck = self.checker_in(&tree);
@@ -1970,6 +2030,11 @@ impl Daemon {
         // No snapshot from here until the segments are rewritten.
         self.snapshots.hold();
         let held = Held(&self.snapshots);
+        // Noted as forgotten for the sync before they are deleted (audit
+        // CTX-33): a pull that runs meanwhile then either stores none of
+        // them again or stores them before the deletes, which remove them.
+        let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
+        let mut noted = crate::sync::forget(&self.paths.dir, &present);
         let (mut deleted, mut missing, mut forgotten) = (Vec::new(), Vec::new(), Vec::new());
         for id in &ids {
             let rec = self.store.get(&[id.clone()])?.pop();
@@ -2001,6 +2066,16 @@ impl Daemon {
             }
             scrubbed.push(self.scrub_history(Some(last)));
         }
+        // One a pull stored after the look above, and the sync server's
+        // rows go too.
+        let late: Vec<String> = deleted.iter().filter(|d| !present.contains(d)).cloned().collect();
+        if noted.is_ok() {
+            noted = crate::sync::forget(&self.paths.dir, &late);
+        }
+        if let Err(e) = noted {
+            scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
+        }
+        let synced = !deleted.is_empty() && crate::sync::remote(&crate::paths::home()).is_some();
         let mut later = None;
         if !deleted.is_empty() {
             // The hold passes to the compaction, which releases it.
@@ -2009,11 +2084,20 @@ impl Daemon {
             if wait {
                 let failed = self.compact_forgotten(&before);
                 scrubbed.push(if failed.is_empty() { format!("{what} rewritten without it") } else { failed });
+                if synced {
+                    scrubbed.push(self.forget_on_server());
+                }
             } else {
                 later = Some(self.after(move |me| {
                     me.compact_forgotten(&before);
+                    if synced {
+                        me.forget_on_server();
+                    }
                 }));
                 scrubbed.push(format!("{what} being rewritten"));
+                if synced {
+                    scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
+                }
             }
         }
         let scrubbed: Vec<String> = scrubbed.into_iter().filter(|s| !s.is_empty()).collect();
@@ -2186,9 +2270,9 @@ impl Daemon {
         }
 
         // The server's copies.
-        let sync = match crate::sync::remote(&crate::paths::home()) {
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let sync = match crate::sync::remote_for(&crate::paths::home(), &key) {
             Some(remote) if !dry && !fixed.is_empty() => {
-                let key = crate::sync::project_key(&crate::paths::home(), &self.project);
                 match crate::sync::push_records(&remote, &key, &fixed) {
                     Ok(n) => json!({"server": remote.url, "replaced": n}),
                     Err(e) => json!({"server": remote.url, "error": e.to_string()}),
@@ -2557,6 +2641,17 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
         let Ok(stream) = conn else { continue };
         let d = daemon.clone();
         std::thread::spawn(move || {
+            // Counted until the answer is written (and the state saved),
+            // not through the work after it, which `deferred` counts: the
+            // shutdown a request asks for runs there, and waits for this.
+            struct Serving<'a>(&'a std::sync::atomic::AtomicUsize);
+            impl Drop for Serving<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            d.serving.fetch_add(1, Ordering::SeqCst);
+            let serving = Serving(&d.serving);
             let mut reader = BufReader::new(match stream.try_clone() {
                 Ok(s) => s,
                 Err(_) => return,
@@ -2566,18 +2661,35 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
                 return;
             }
             let req: Json = serde_json::from_str(&line).unwrap_or(Json::Null);
-            let (resp, deferred) = d.handle(&req);
+            let (resp, deferred) = if d.closing.load(Ordering::SeqCst) { (closing_answer(&req), None) } else { d.handle(&req) };
             let mut w = stream;
             let _ = writeln!(w, "{resp}");
             let _ = w.flush();
             drop(w);
             d.persist();
+            drop(serving);
             if let Some(f) = deferred {
                 f();
             }
         });
     }
     Ok(())
+}
+
+/// What a daemon that is shutting down answers a request it did not
+/// handle. A shutdown has what it asked for; any other request is sent
+/// again by [`request`], to the daemon started once this one is gone.
+fn closing_answer(req: &Json) -> Json {
+    if req.get("op").and_then(|v| v.as_str()) == Some("shutdown") {
+        json!({"ok": true, "closing": true})
+    } else {
+        json!({"error": "the daemon is shutting down and did not handle the request; send it again", "closing": true})
+    }
+}
+
+/// An answer [`closing_answer`] gave for a request to send again.
+fn is_closing(r: &Json) -> bool {
+    r.get("closing").and_then(|v| v.as_bool()) == Some(true) && r.get("error").is_some()
 }
 
 // ---------------------------------------------------------------- client
@@ -2591,7 +2703,11 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
     writeln!(w, "{req}")?;
     w.flush()?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    if BufReader::new(stream).read_line(&mut line)? == 0 {
+        // Not a JSON error ("EOF while parsing a value at line 1 column
+        // 0"): the daemon went away, or failed, while it had the request.
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "it closed the connection without answering (it stopped, or failed on the request)"));
+    }
     serde_json::from_str(&line).map_err(|e| std::io::Error::other(e.to_string()))
 }
 
@@ -2611,23 +2727,39 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
     } else {
         req
     };
-    match try_request(&paths.socket, req, deadline) {
-        Ok(r) => return Ok(r),
-        // A daemon that died as the request reached it (CTX-16): a new one
-        // is started, as for one that is not there.
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(err(format!("daemon: {e}"))),
-        Err(_) => {}
-    }
-    spawn(&paths, project)?;
+    let gone = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused);
+    // A daemon is started when none listens: at first, and again after one
+    // went away under the request.
+    let mut start = true;
+    let mut first = true;
     loop {
         match try_request(&paths.socket, req, deadline) {
+            // A daemon shutting down, which did not handle the request: it
+            // goes to the next one, started once this one is gone.
+            Ok(r) if is_closing(&r) => {
+                if Instant::now() >= deadline {
+                    return Err(err(format!("daemon did not answer in time: {}", r["error"].as_str().unwrap_or("it was shutting down"))));
+                }
+                start = true;
+            }
             Ok(r) => return Ok(r),
+            // A daemon that died as the request reached it (CTX-16): a new one
+            // is started, as for one that is not there.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => start = true,
+            Err(e) if first && !gone(&e) => {
+                let log = if e.kind() == std::io::ErrorKind::UnexpectedEof { format!("; its log: {}", paths.log.display()) } else { String::new() };
+                return Err(err(format!("daemon: {e}{log}")));
+            }
             Err(e) if Instant::now() >= deadline => return Err(err(format!("daemon did not answer in time: {e}"))),
-            Err(_) => std::thread::sleep(Duration::from_millis(15)),
+            Err(e) if start && gone(&e) => {
+                spawn(&paths, project)?;
+                (start, first) = (false, false);
+                continue;
+            }
+            Err(_) => {}
         }
+        first = false;
+        std::thread::sleep(Duration::from_millis(15));
     }
 }
 

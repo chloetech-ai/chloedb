@@ -1,0 +1,40 @@
+name: Specs
+
+# TLC on the small models of ChloeDB's TLA+ specifications (spec/README.md):
+# each must find what spec/check.py says it finds, no error or a bug the
+# specification reproduces with its trace. The models take seconds; the
+# larger ones run by hand (`python3 spec/check.py --all`). A change only
+# under spec/ runs nothing in CI (.github/scripts/ci_changes.py), and no
+# ruleset requires this check.
+on:
+  pull_request:
+    paths:
+      - "spec/**"
+      - ".github/workflows/specs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "spec/**"
+      - ".github/workflows/specs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: specs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tlc:
+    name: TLC
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Check the models
+        run: python3 spec/check.py

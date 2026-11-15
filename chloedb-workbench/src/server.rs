@@ -267,6 +267,12 @@ const GOALS: &[(&str, &str)] = &[
     ("harness/sees.js", include_str!("../ui/goals/harness/sees.js")),
     ("harness/fixes.js", include_str!("../ui/goals/harness/fixes.js")),
     ("harness/versions.js", include_str!("../ui/goals/harness/versions.js")),
+    // The Simple view: the board of requests by stage, at #/s.
+    ("simple/index.js", include_str!("../ui/goals/simple/index.js")),
+    ("simple/stage.js", include_str!("../ui/goals/simple/stage.js")),
+    ("simple/compose.js", include_str!("../ui/goals/simple/compose.js")),
+    ("simple/request.js", include_str!("../ui/goals/simple/request.js")),
+    ("simple/switch.js", include_str!("../ui/goals/simple/switch.js")),
 ];
 
 async fn ui_goal(State(app): State<App>, Path(file): Path<String>) -> Response {
@@ -342,8 +348,10 @@ pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Ap
     tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::internal(e.to_string()))?
 }
 
-async fn spawn(State(app): State<App>, body: Bytes) -> ApiResult {
-    let req: SpawnRequest = parse_body(&body)?;
+async fn spawn(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    let mut req: SpawnRequest = parse_body(&body)?;
+    // An agent's key: the new agent is that agent's child (audit APP-1).
+    crate::guarded::spawn_as_caller(&headers, &mut req)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     // With its goal and outcome (SPEC.md, "Goals and outcomes").
     let agent = blocking(move || crate::goals::spawn(&sup, &lv, req)).await?;
