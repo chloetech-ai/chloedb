@@ -20,7 +20,22 @@ on:
   # anything merged: flaky tests show up there before they block a merge.
   schedule:
     - cron: "17 3 * * *"
+  # By hand: everything, as the nightly run. Given `since`, only what the
+  # change from that commit needs, on Linux and macOS: with a full run
+  # that passed on that commit, release-gate.yml accepts it for a tag
+  # (`gh workflow run ci.yml --ref <tag> -f since=<sha>`).
   workflow_dispatch:
+    inputs:
+      since:
+        description: "A commit of main on which CI's full matrix passed (its full sha): run, on Linux and macOS, only the jobs the change from it needs. Empty: everything."
+        required: false
+        default: ""
+        type: string
+
+# A run given `since` is named for it, which is how release-gate.yml tells
+# it from a full run; every other run keeps GitHub's name (a run name of
+# only whitespace).
+run-name: ${{ inputs.since && format('CI since {0}', inputs.since) || ' ' }}
 
 # A new push to a pull request cancels its older run. Pushes to main share
 # one group that never cancels the run in progress, so main's runs keep
@@ -29,13 +44,13 @@ on:
 # merge before it. (A group per commit queued every merge's whole run,
 # 5 macOS jobs each against a limit of 5 at once, and the queue grew by
 # hours.) The merge queue, the nightly run and a run by hand keep a group
-# per event and commit, so none of them is dropped.
+# per event and commit (and `since`), so none of them is dropped.
 # The jobs only read the repository: the token gets no write rights.
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}-{2}', github.event_name, github.sha, inputs.since) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -85,13 +100,17 @@ env:
 jobs:
   # Which jobs the change needs (.github/scripts/ci_changes.py, whose
   # header lists the rules). A change to the documentation site, Markdown
-  # files or benchmark results alone runs nothing; one only under an app or
-  # a package (chloectx, chloedb-crawl, chloedb-sheets, chloedb-apps,
-  # chloedb-py, chloedb-js, chloedb-java) runs that one's jobs and the jobs
-  # that use it; one only under a demo (chloedb-netops, chloedb-swarm,
-  # examples/feature-store, examples/parley) runs nothing here, since the
-  # demos are tested by demos.yml; anything else (ChloeDB, chloedb-server,
-  # the workflows, the scripts, a file at the root) runs everything. The
+  # files or benchmark results alone runs nothing; one only under an app, a
+  # package (chloectx, chloedb-crawl, chloedb-sheets, chloedb-apps,
+  # chloedb-py, chloedb-js, chloedb-java) or chloedb-server runs that one's
+  # jobs and the jobs that use it (for the server, every job that starts
+  # one, and not ChloeDB's own); one only under a demo (chloedb-netops,
+  # chloedb-swarm, examples/feature-store, examples/parley), to another
+  # workflow or to the installers runs nothing here, since each is tested
+  # by a workflow of its own; a change to ChloeDB, to this file, to
+  # ci_changes.py or to a path the rules do not know runs everything. A run
+  # by hand given `since` runs what the change from that commit needs, on
+  # Linux and macOS (the release gate's second way); otherwise the
   # nightly run and a run by hand always run everything.
   changes:
     name: changes
@@ -105,12 +124,20 @@ jobs:
         id: diff
         env:
           EVENT: ${{ github.event_name }}
+          SINCE: ${{ inputs.since }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
         run: |
           python3 .github/scripts/ci_changes.py --self-test
+          # `since` names a commit by its full sha, as the release gate
+          # reads it from the run's name: a branch or a tag would move.
+          if [ -n "$SINCE" ] && ! [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::since must be a commit's full sha (40 hex digits), not '$SINCE'"
+            exit 1
+          fi
           case "$EVENT" in
+            workflow_dispatch) base="$SINCE" ;;
             pull_request) base="$PR_BASE" ;;
             merge_group) base="$QUEUE_BASE" ;;
             push) base="$BEFORE" ;;
@@ -118,8 +145,8 @@ jobs:
           esac
           # A diff needs only the two commits' trees, not the history
           # between them. No base (a new branch, the nightly run, a run by
-          # hand) or one that cannot be fetched (a force push): test
-          # everything.
+          # hand without `since`) or one that cannot be fetched (a force
+          # push): test everything.
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git fetch --no-tags --depth=1 origin "$base"; then
             python3 .github/scripts/ci_changes.py --all | tee -a "$GITHUB_OUTPUT"
             exit 0
@@ -146,7 +173,7 @@ jobs:
   runner:
     name: runner
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).runner
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ github.ref == 'refs/heads/main' && 'ci-runner' || '' }}
@@ -411,17 +438,18 @@ jobs:
   # includes `bert`, so the cross-encoder tests against transformers'
   # scores of the small models in chloedb/tests/models run here too.
   # Two parts that run at once, ChloeDB's and the server's: each builds
-  # candle on its own, and one after the other they took 31 minutes.
+  # candle on its own, and one after the other they took 31 minutes. A
+  # change to the server alone runs only the server's part.
   vision:
     name: images (feature vision, ${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: join(fromJSON(needs.changes.outputs.run).vision, ',') != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        part: [chloedb, chloedb-server]
+        part: ${{ fromJSON(needs.changes.outputs.run).vision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -450,11 +478,11 @@ jobs:
   # through candle): decoding, resampling and mel features, text derived
   # from sound and vectors of it with test models (the real models' weights
   # are not fetched here), and clippy over the feature's code in ChloeDB and
-  # the server.
+  # the server. A change to the server alone runs only the server's step.
   audio:
     name: sound (feature audio)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).audio
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -471,6 +499,7 @@ jobs:
             chloedb-server
           key: audio
       - name: ChloeDB
+        if: fromJSON(needs.changes.outputs.run).full
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -897,11 +926,12 @@ jobs:
         run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # The Python package's recommender gate and Clippy, on Linux, beside job
-  # python's tests rather than after them. It needs no chloedb-server.
+  # python's tests rather than after them. It needs no chloedb-server, so a
+  # change to the server alone does not run it (job python does).
   python-gate:
     name: Python package, recommender gate and clippy
     needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).python }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).python_gate }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
