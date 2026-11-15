@@ -4,10 +4,11 @@
 //! Builds `--shards` databases of synthetic text (an INT key and a TEXT
 //! field `body` of 12 Zipf words of 5,000), copies each `--copies` times
 //! and serves every copy over gRPC on localhost, in this process. A fresh
-//! coordinator (default `CoordOptions`, only `route` changed: a 100 ms
-//! hedge, kept BM25 statistics) is connected for each run, warmed up, then
-//! timed for `--seconds` at each `--concurrency`, the two routes taking
-//! turns, `--rounds` times. Scenarios (`--scenarios`):
+//! coordinator (default `CoordOptions`, with the config's `route`, and
+//! adaptive hedges and `prefer_caught_up` off unless the config names
+//! them: a 100 ms hedge, kept BM25 statistics) is connected for each run,
+//! warmed up, then timed for `--seconds` at each `--concurrency`, the two
+//! routes taking turns, `--rounds` times. Scenarios (`--scenarios`):
 //!
 //! * `equal`: the copies alike (the control).
 //! * `slow`: copy 0 of shard 0 behind a delay line adding `--delay-ms` to
@@ -663,7 +664,9 @@ async fn main() {
             .collect(),
     );
 
-    let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), ..Default::default() };
+    // Each config turns on what its label names and nothing else, whatever
+    // CoordOptions's defaults are.
+    let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), hedge_adaptive: false, prefer_caught_up: false, ..Default::default() };
     let rr = CoordOptions { route: Route::RoundRobin, ..base.clone() };
     let lc = CoordOptions { route: Route::LeastCost, ..base.clone() };
     let configs = |scenario: &str| -> Vec<(&'static str, CoordOptions)> {

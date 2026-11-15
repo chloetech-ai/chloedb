@@ -17,7 +17,7 @@ use chloedb_server::auth::{self, Access, Secret, Tls};
 use chloedb_server::keys::Principal;
 use chloedb_server::replication::{Acks, Follow, Primary, PrimaryOptions};
 use chloedb_server::service::{shard_of, After, AgentConfig, Backend, QueryReq, Replication, Service, MAX_LEASES};
-use chloedb_server::coord::{CoordOptions, Coordinator};
+use chloedb_server::coord::{CoordOptions, Coordinator, Route};
 use chloedb_server::slots::{self, SlotMap};
 use chloedb_server::{demo, json as js, pb, server};
 use tokio::net::TcpListener;
@@ -1715,8 +1715,9 @@ async fn a_read_that_names_a_write_skips_a_replica_that_would_not_wait() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // No hedges: each read goes to one copy, and to the next on a failure.
-    let c = Coordinator::connect_with(vec![format!("{ru}|{pu}")], CoordOptions { hedge: Duration::from_secs(60), ..Default::default() }).await.unwrap();
+    // No hedges: each read goes to one copy, and to the next on a failure;
+    // in turn, whatever each costs.
+    let c = Coordinator::connect_with(vec![format!("{ru}|{pu}")], CoordOptions { hedge: Duration::from_secs(60), route: Route::RoundRobin, ..Default::default() }).await.unwrap();
     let coord = cluster(c);
     let sold = |after: Vec<u64>| {
         let coord = coord.clone();

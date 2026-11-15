@@ -679,6 +679,47 @@ async fn slow_proxy(to: &str, delay: Arc<std::sync::atomic::AtomicU64>) -> Strin
     url
 }
 
+/// A proxy to `to` that passes on each piece of its answers `delay` after
+/// it came: a delay line, where [`slow_proxy`] holds each piece behind the
+/// one before (an answer a coordinator no longer wants delays the next).
+async fn delay_line(to: &str, delay: Duration) -> String {
+    let to = to.trim_start_matches("http://").to_string();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let Ok((client, _)) = l.accept().await else { return };
+            let to = to.clone();
+            tokio::spawn(async move {
+                let Ok(server) = tokio::net::TcpStream::connect(&to).await else { return };
+                let _ = client.set_nodelay(true);
+                let _ = server.set_nodelay(true);
+                let (mut cr, mut cw) = client.into_split();
+                let (mut sr, mut sw) = server.into_split();
+                tokio::spawn(async move { tokio::io::copy(&mut cr, &mut sw).await });
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    while let Some((at, piece)) = rx.recv().await {
+                        tokio::time::sleep_until(at.into()).await;
+                        if cw.write_all(&piece).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+                let mut buf = vec![0u8; 64 << 10];
+                use tokio::io::AsyncReadExt;
+                while let Ok(n) = sr.read(&mut buf).await {
+                    if n == 0 || tx.send((Instant::now() + delay, buf[..n].to_vec())).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
 /// Queries answered by each copy of shard 0, as its coordinator observed.
 async fn answered(c: &Coordinator) -> Vec<u64> {
     let snap = c.snapshot().await;
@@ -843,5 +884,62 @@ async fn an_adaptive_hedge_asks_another_copy_of_a_stalled_one_sooner() {
             // The fixed hedge is longer than the stall: waited out.
             assert!(worst >= stalled * 7 / 8, "fixed: {worst:?} (stall {stalled:?})");
         }
+    }
+}
+
+/// A copy asked by a hedge and outrun moments later, by the copy asked
+/// before it, was not given its time: it is not put in its cool-off,
+/// whatever the hedge. (Under load every copy was outrun so in its turn,
+/// and least cost then asked them all in turn.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_outrun_moments_after_a_hedge_asked_it_is_not_put_in_its_cool_off() {
+    use chloedb_server::coord::{CoordOptions, Route};
+    let dir = tempfile::tempdir().unwrap();
+    let (_a, url_a) = serve(create(dir.path(), "a.strata", |_| true), dir.path(), "a.strata").await;
+    let (_b, url_b) = serve(create(dir.path(), "b.strata", |_| true), dir.path(), "b.strata").await;
+    // Both copies alike, slow enough that a hedge can be timed in a call.
+    let via_a = delay_line(&url_a, Duration::from_millis(40)).await;
+    let via_b = delay_line(&url_b, Duration::from_millis(40)).await;
+    let metric = |c: &Coordinator, name: &str| c.metrics().into_iter().find(|f| f.name == name).map(|f| f.values.iter().map(|v| v.1).sum::<f64>()).unwrap_or(0.0);
+    let ask = |svc: Arc<Service>| async move {
+        let t = Instant::now();
+        let sql = "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".to_string();
+        assert!(!svc.query(QueryReq { sql, ..Default::default() }).await.unwrap().rs.rows.is_empty());
+        t.elapsed()
+    };
+    let cluster = |opts: CoordOptions| {
+        let urls = vec![format!("{via_a}|{via_b}")];
+        async move {
+            let c = Arc::new(Coordinator::connect_with(urls, opts).await.unwrap());
+            let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+            (c, svc)
+        }
+    };
+    // How long a call to a copy takes, with no hedges: the median query
+    // over the calls each made.
+    let (c, svc) = cluster(CoordOptions { hedge: Duration::from_secs(60), ..Default::default() }).await;
+    ask(svc.clone()).await;
+    let before = metric(&c, "chloedb_shard_calls_total");
+    let mut took = Vec::new();
+    for _ in 0..10 {
+        took.push(ask(svc.clone()).await);
+    }
+    took.sort();
+    let calls = (metric(&c, "chloedb_shard_calls_total") - before) / 10.0;
+    let call = took[5].div_f64(calls.max(1.0));
+    // Hedged three quarters of the way through a call: the copy asked
+    // first answers a quarter of a call after the hedge was sent.
+    let hedge = call * 3 / 4;
+    eprintln!("a query takes {:?} at the median in {calls} call(s): --hedge-ms {hedge:?}", took[5]);
+    for route in [Route::RoundRobin, Route::LeastCost] {
+        let mut hedges = 0.0;
+        for _ in 0..4 {
+            let (c, svc) = cluster(CoordOptions { route, hedge, ..Default::default() }).await;
+            ask(svc.clone()).await;
+            hedges += metric(&c, "chloedb_shard_hedges_total");
+            assert_eq!(metric(&c, "chloedb_replicas_avoided"), 0.0, "{}: a copy outrun moments after it was asked is not put in its cool-off", route.name());
+        }
+        eprintln!("{}: {hedges} hedge(s)", route.name());
+        assert!(hedges >= 1.0, "{}: hedged: {hedges}", route.name());
     }
 }

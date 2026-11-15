@@ -176,10 +176,10 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     shard_timeout_ms: u64,
     /// With --shards: how the replica of a shard asked first for a read is
-    /// chosen: round-robin (each in turn) or least-cost (in turn, unless
-    /// another costs clearly less by its recent round trips, calls in
-    /// flight, errors and reported load).
-    #[arg(long, default_value = "round-robin", value_parser = ["round-robin", "least-cost"])]
+    /// chosen: least-cost (in turn, unless another costs clearly less by
+    /// its recent round trips, calls in flight, errors and reported load)
+    /// or round-robin (each in turn).
+    #[arg(long, default_value = "least-cost", value_parser = ["least-cost", "round-robin"])]
     route: String,
     /// With --shards: hedge a query after the replica asked has taken
     /// longer than it usually does (its recent average round trip plus six
@@ -189,8 +189,9 @@ struct Args {
     hedge_adaptive: bool,
     /// With --shards and --route least-cost: route a read that must see a
     /// write (min_seq_nos) by each replica's round trips of such reads,
-    /// unless it is known to hold the write already.
-    #[arg(long)]
+    /// unless it is known to hold the write already. On by default;
+    /// --prefer-caught-up=false routes such reads as any other.
+    #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", action = clap::ArgAction::Set)]
     prefer_caught_up: bool,
     /// With --shards: answer without shards that have no replica answering,
     /// flagged "partial" (a request's "partial" overrides it).
@@ -1915,5 +1916,22 @@ mod tests {
         for id in super::HELP_TOPICS.iter().flat_map(|(_, ids)| ids.iter()) {
             assert!(seen.insert(id), "{id} is under two topics");
         }
+    }
+
+    /// A coordinator routes by least cost and prefers copies that hold a
+    /// write for reads after it unless told otherwise, and each can be
+    /// turned off; `--prefer-caught-up` alone still means on.
+    #[test]
+    fn routing_defaults_and_their_off_switches() {
+        use clap::FromArgMatches;
+        let parse = |argv: &[&str]| super::Args::from_arg_matches(&super::args_command().try_get_matches_from(argv).unwrap()).unwrap();
+        let a = parse(&["chloedb-server"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("least-cost", true, false));
+        let a = parse(&["chloedb-server", "--route", "round-robin", "--prefer-caught-up=false", "--hedge-adaptive"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("round-robin", false, true));
+        assert!(parse(&["chloedb-server", "--prefer-caught-up"]).prefer_caught_up);
+        assert!(parse(&["chloedb-server", "--prefer-caught-up=true"]).prefer_caught_up);
+        let d = chloedb_server::coord::CoordOptions::default();
+        assert_eq!((d.route, d.prefer_caught_up, d.hedge_adaptive), (chloedb_server::coord::Route::LeastCost, true, false));
     }
 }

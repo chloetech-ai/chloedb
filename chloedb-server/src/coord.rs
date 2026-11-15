@@ -27,8 +27,9 @@
 //! [`HEDGE_SHARE`] of calls. A replica that refuses a query because too
 //! many are running is not relieved by asking its sibling, which would
 //! only be loaded more: the query fails (or leaves the shard out of a
-//! partial answer). A replica that failed, or was outrun, is asked last
-//! for [`CoordOptions::cool_off`]. With
+//! partial answer). A replica that failed, or was outrun after it had
+//! [`CoordOptions::hedge`] to answer, is asked last for
+//! [`CoordOptions::cool_off`]. With
 //! [`CoordOptions::partial`], a query whose shard has no replica answering
 //! is answered from the other shards and says which are missing, and the
 //! queries of the next second leave that shard out without asking it.
@@ -126,7 +127,8 @@ pub use moves::{plan_even, MOVE_SLOTS};
 pub struct CoordOptions {
     /// Ask another replica of a shard when one has not answered after this.
     pub hedge: Duration,
-    /// Ask a replica that failed or was outrun last, for this long.
+    /// Ask a replica that failed, or was outrun after it had
+    /// [`Self::hedge`] to answer, last, for this long.
     pub cool_off: Duration,
     /// Give up on a shard after this long (`None`: at the query's deadline).
     pub shard_timeout: Option<Duration>,
@@ -171,7 +173,7 @@ pub struct CoordOptions {
     pub hedge_adaptive: bool,
     /// With [`Route::LeastCost`]: cost a replica for a read that must see a
     /// write (`min_seq_nos`) by its round trips of such reads, unless it is
-    /// known to hold the write (`--prefer-caught-up`).
+    /// known to hold the write (`--prefer-caught-up`). On by default.
     pub prefer_caught_up: bool,
     /// With [`Route::LeastCost`]: count the load each replica reported in
     /// the coordinator's survey. On by default; off only to measure what
@@ -186,11 +188,15 @@ pub struct CoordOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Route {
     /// Each in turn, those in their cool-off (failed or outrun) last.
-    #[default]
     RoundRobin,
     /// In turn too, unless another costs clearly less, by what this
     /// coordinator observed of each (round trip, calls in flight, errors,
-    /// refusals) and the load each reported ([`crate::cores::route`]).
+    /// refusals) and the load each reported ([`crate::cores::route`]);
+    /// those in their cool-off last, unless every one is. The default: on
+    /// copies alike it cut p99 by about a third against
+    /// [`Route::RoundRobin`] at 16 and 64 clients, and it asks a slow or
+    /// busy copy less.
+    #[default]
     LeastCost,
 }
 
@@ -225,9 +231,9 @@ impl Default for CoordOptions {
             stats_cache_terms: STATS_CACHE_TERMS,
             local: None,
             write_every_copy: false,
-            route: Route::RoundRobin,
+            route: Route::LeastCost,
             hedge_adaptive: false,
-            prefer_caught_up: false,
+            prefer_caught_up: true,
             route_load: true,
         }
     }
@@ -1916,9 +1922,9 @@ impl Coordinator {
             true => t.replicas[i][r].stats.hedge_ms().map_or(self.opts.hedge, |ms| Duration::from_secs_f64(ms / 1e3).clamp(HEDGE_FLOOR, self.opts.hedge.max(HEDGE_FLOOR))),
             false => self.opts.hedge,
         };
-        // When each asked replica was asked: one outrun before --hedge-ms
-        // by an adaptive hedge was slower than usual, not failing, and is
-        // not put in its cool-off.
+        // When each asked replica was asked: one outrun less than
+        // --hedge-ms after it was asked was not given its time, or was
+        // slower than usual, not failing, and is not put in its cool-off.
         let mut asked_at = Vec::new();
         pending.push(launch(order[0], false));
         asked.push(order[0]);
@@ -1935,11 +1941,13 @@ impl Coordinator {
                         // Replicas still working were outrun (and those that
                         // failed are avoided already).
                         for (k, &other) in asked.iter().enumerate().filter(|&(_, &o)| o != r && !passed.contains(&o)) {
-                            // Outrun before --hedge-ms by an adaptive hedge, or
-                            // while waiting for a write it is not known to hold
-                            // (--prefer-caught-up): slower than usual, or
-                            // behind, not failing.
-                            let early = self.opts.hedge_adaptive && asked_at[k].elapsed() < self.opts.hedge;
+                            // Outrun less than --hedge-ms after it was asked
+                            // (a hedge the copy asked before it outran, or an
+                            // adaptive hedge), or while waiting for a write it
+                            // is not known to hold (--prefer-caught-up): not
+                            // given its time, slower than usual, or behind,
+                            // not failing.
+                            let early = asked_at[k].elapsed() < self.opts.hedge;
                             let behind = self.opts.prefer_caught_up && self.opts.route == Route::LeastCost && min > 0 && t.replicas[i][other].stats.held() < min;
                             if !early && !behind {
                                 self.avoid(t, i, other);
@@ -4156,6 +4164,7 @@ impl Coordinator {
             "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
+            "route": self.opts.route.name(), "hedge_adaptive": self.opts.hedge_adaptive, "prefer_caught_up": self.opts.prefer_caught_up,
             "changes": self.can_change(t),
             "shards_by_state": by_state, "copies": {"total": copies, "down": copies_down},
         })
