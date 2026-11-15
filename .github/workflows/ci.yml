@@ -1128,6 +1128,11 @@ jobs:
         run: |
           pip install -r docs/site/scripts/requirements.txt
           python docs/site/scripts/build_docs.py --check
+      # The comparison's cells are marks the site draws, ChloeDB's are all
+      # checked, and while any other system's cell is unchecked ("?") the
+      # page says it is a draft (the audit of 15 November 2026, CMP-2).
+      - name: python3 docs/site/scripts/check_compare.py
+        run: python docs/site/scripts/check_compare.py
       # The pages a newcomer follows use the new names (Strata and Engram are
       # the old ones), and the Python modules and extras the docs name exist,
       # marked "since" where the latest release lacks them (its tag, fetched).
