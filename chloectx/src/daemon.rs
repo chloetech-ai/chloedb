@@ -440,6 +440,10 @@ impl Daemon {
             "inspect_embed" => crate::inspect::embed(&self.store, req).map(|r| (r, None)),
             "distill_backfill" => self.distill_backfill().map(|(t, n)| (json!({"turns": t, "items": n}), None)),
             "consolidate" => self.op_consolidate().map(|r| (r, None)),
+            "repeats" => {
+                let days = req.get("days").and_then(|v| v.as_i64()).unwrap_or(30).max(1);
+                crate::repeats::scan(&self.store, now() - days * 86_400, 20_000).map(|r| (r, None))
+            }
             "ask" => self.op_ask(req).map(|r| (r, None)),
             // What `chloectx app --local-stores` shows of this store, as it
             // shows a space of the cluster ([`crate::app::view`]).
@@ -1027,16 +1031,20 @@ impl Daemon {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
-                // Near-copies of what is noted (other than what they replace) add nothing.
+                // An instruction for this task that the user gave in
+                // another session too is a rule of every session now.
+                let promoted = crate::repeats::promote(&self.store, d.drafts, sid);
+                // Near-copies of what is noted (other than what they replace,
+                // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
-                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id)).map(|r| terms(&r.text)).collect();
+                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id) && !promoted.repeats.contains(&r.id)).map(|r| terms(&r.text)).collect();
                 let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                 // Each note links to the turn it was written from.
                 let source = self.prompt_of(sid, turn);
-                let n = d.drafts.len();
+                let n = promoted.drafts.len();
                 let mut drafts = Vec::new();
                 let tree = self.tree(sid);
-                for x in d.drafts {
+                for x in promoted.drafts {
                     let t = terms(&x.text);
                     let dup = seen.iter().any(|s| {
                         let inter = s.intersection(&t).count() as f64;
@@ -1083,9 +1091,10 @@ impl Daemon {
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "repeated": repeated, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()})),
         }
@@ -1243,9 +1252,13 @@ impl Daemon {
         let first = req.get("session_source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
         let mut st = self.state.lock().unwrap();
         let s = st.sessions.entry(sid.to_string()).or_default();
+        // A coordinator's brief to the session (a relay) is that agent's
+        // instruction, as another agent's brief is, not the user's words.
+        let relay = req.get("payload").and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).is_some_and(|t| t.trim_start().starts_with("<coordinator-relay"));
         let src = match (noted, first) {
             (Some(n), _) => n.to_string(),
             (None, Some(f)) if s.turn == 0 => f.to_string(),
+            _ if relay => "agent:coordinator".to_string(),
             _ => "user".to_string(),
         };
         s.source = crate::record::Source::parse(&src).as_str();

@@ -19,7 +19,7 @@ as usual; it records each session, recalls what bears on each prompt and writes
 down decisions and rules. `chloectx doctor` says whether that is happening.
 
 More commands (`chloectx help <command>` explains each):
-  look into memory   report, blame, receipts, receipt, snapshot, sql, stats, briefing
+  look into memory   report, repeats, blame, receipts, receipt, snapshot, sql, stats, briefing
   maintain a store   forget, move, redact, distill, consolidate, backup, fetch-model, ingest-transcript
   share memory       sync, pack, mount, app
   run by Claude Code (not by hand): hook, mcp, serve, rpc, wiring";
@@ -231,6 +231,24 @@ enum Cmd {
         /// Print the JSON report.
         #[arg(long)]
         json: bool,
+    },
+    /// What you told agents for one task in more than one session: the
+    /// instructions ChloeCtx keeps as rules of every session once you say
+    /// them in a second session. Reads the store and writes nothing.
+    #[command(hide = true)]
+    Repeats {
+        /// The last N days.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// Print the JSON result: each group's rule, its number of sessions,
+        /// and what was said in each (`id`, `session`, `ts`, `text`).
+        #[arg(long)]
+        json: bool,
+        /// Read this store directory itself, read-only, beside the ChloeCtx
+        /// that writes it (one too old to answer `repeats`), instead of
+        /// asking the project's ChloeCtx.
+        #[arg(long)]
+        store: Option<PathBuf>,
     },
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
@@ -635,6 +653,26 @@ fn main() {
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user"}), 30)),
+        Cmd::Repeats { days, json: as_json, store } => {
+            let r = match store {
+                Some(dir) => {
+                    let cfg = daemon::Config::load(&dir.join("config.json"));
+                    let scanned = embed::open(&cfg.embedder)
+                        .and_then(|e| chloectx::store::Store::open_read_only(&dir.join("memory.strata"), std::sync::Arc::from(e)))
+                        .and_then(|s| chloectx::repeats::scan(&s, chloectx::now() - days.max(1) * 86_400, 20_000));
+                    scanned.unwrap_or_else(|e| {
+                        eprintln!("chloectx repeats: {}: {e}", dir.display());
+                        std::process::exit(1)
+                    })
+                }
+                None => send(&project, json!({"op": "repeats", "days": days}), 120),
+            };
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
         Cmd::Report { days, session, json: as_json } => {
             let r = send(&project, json!({"op": "report", "days": days, "session": session}), 120);
             if as_json {
