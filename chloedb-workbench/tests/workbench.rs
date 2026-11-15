@@ -19,6 +19,11 @@ const TOKEN: &str = "test-token-0123456789";
 /// next to its settings, and what a hook prints is kept in `hook-out.log`
 /// there.
 const FAKE: &str = r#"#!/bin/bash
+# How long the rest of an arrow key's escape sequence is waited for. macOS
+# has bash 3.2, whose read -t takes whole seconds only: 0.2 is refused, and
+# every arrow key would read as Esc.
+ESC_WAIT=0.2
+[ "${BASH_VERSINFO[0]}" -lt 4 ] && ESC_WAIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id) SID="$2"; shift 2;;
@@ -87,7 +92,7 @@ menu() {
     if [ -n "$NOTIFY" ]; then hook Notification "$NOTIFY"; NOTIFY=; fi
     IFS= read -rsn1 k
     case "$k" in
-      $'\033') rest=; IFS= read -rsn2 -t 0.2 rest
+      $'\033') rest=; IFS= read -rsn2 -t "$ESC_WAIT" rest
         case "$rest" in
           '[A'|'OA') [ "$sel" -gt 0 ] && sel=$((sel-1));;
           '[B'|'OB') [ "$sel" -lt $((n-1)) ] && sel=$((sel+1));;
