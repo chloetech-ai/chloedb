@@ -30,6 +30,8 @@ while [ $# -gt 0 ]; do
     --model) MODEL="$2"; shift 2;;
     # Sixth build: a goal's lead and agents may get an effort.
     --effort) EFFORT="$2"; shift 2;;
+    # Claude Code's permission mode, chosen at start.
+    --permission-mode) MODE="$2"; shift 2;;
     # A restart (SPEC.md, "Sixth build: E"): the session it continues.
     --resume) RESUME="$2"; shift 2;;
     --fork-session) FORK=1; shift;;
@@ -48,6 +50,7 @@ echo "TASK: $TASK"
 [ -n "$RESUME" ] && echo "RESUMED: $RESUME fork=$FORK"
 echo "CWD: $(pwd)"
 [ -n "$EFFORT" ] && echo "EFFORT: $EFFORT"
+[ -n "$MODE" ] && echo "MODE: $MODE"
 hook() {
   local cmd out
   cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"][sys.argv[2]][0]["hooks"][0]["command"])' "$SETTINGS" "$1")
@@ -1784,6 +1787,72 @@ fn agents_in_their_worktrees_edit_test_and_commit_without_asking() {
     assert!(settings(b["id"].as_str().unwrap()).get("permissions").is_none());
     let c = s.spawn(json!({ "repo": r, "name": "here", "worktree": false }));
     assert!(settings(c["id"].as_str().unwrap()).get("permissions").is_none());
+}
+
+#[test]
+fn sessions_get_the_permissions_a_regular_claude_code_session_has() {
+    let s = Server::start(&[]);
+    let (_d, r) = repo();
+    let rs = r.to_string_lossy().to_string();
+    // What the user's own Claude Code keeps for this folder, never committed.
+    std::fs::create_dir_all(r.join(".claude")).unwrap();
+    std::fs::write(
+        r.join(".claude/settings.local.json"),
+        json!({
+            "permissions": { "allow": ["Bash(npm run build:*)", format!("Bash({rs}/scripts/dev.sh:*)"), "Edit(/docs/**)"], "deny": ["Bash(curl:*)"], "defaultMode": "acceptEdits", "additionalDirectories": ["../shared"] },
+            "enabledMcpjsonServers": ["github"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let settings = |id: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(id).join("settings.json")).unwrap()).unwrap() };
+    let a = s.spawn(json!({ "repo": r, "name": "mine", "task": "say hi" }));
+    let id = a["id"].as_str().unwrap();
+    let cwd = a["cwd"].as_str().unwrap().to_string();
+    assert_ne!(cwd, rs);
+    let st = settings(id);
+    let allow: Vec<String> = st["permissions"]["allow"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    for want in ["Bash(npm run build:*)".to_string(), format!("Bash({rs}/scripts/dev.sh:*)"), format!("Bash({cwd}/scripts/dev.sh:*)"), format!("Edit(/{rs}/docs/**)"), format!("Edit(/{cwd}/docs/**)"), format!("Edit(/{cwd}/**)")] {
+        assert!(allow.contains(&want), "{want} not in {allow:?}");
+    }
+    assert_eq!(st["permissions"]["deny"], json!(["Bash(curl:*)"]));
+    assert_eq!(st["permissions"]["defaultMode"], "acceptEdits");
+    assert_eq!(st["permissions"]["additionalDirectories"], json!([format!("{rs}/../shared")]));
+    assert_eq!(st["enabledMcpjsonServers"], json!(["github"]));
+    let shown = s.agent(id);
+    assert_eq!(shown["carried"]["rules"], 6, "{shown}");
+    assert_eq!(shown["carried"]["default_mode"], "acceptEdits");
+    // Left out when asked.
+    let b = s.spawn(json!({ "repo": r, "name": "bare", "own_permissions": false }));
+    let sb = settings(b["id"].as_str().unwrap());
+    assert!(sb["permissions"]["defaultMode"].is_null() && sb["permissions"]["deny"].is_null(), "{sb}");
+    // A read-only agent keeps the default mode, and the denies.
+    let c = s.spawn(json!({ "repo": r, "name": "reader", "read_only": true }));
+    let sc = settings(c["id"].as_str().unwrap());
+    assert!(sc["permissions"]["defaultMode"].is_null(), "{sc}");
+    assert!(sc["permissions"]["deny"].as_array().unwrap().contains(&json!("Bash(curl:*)")));
+
+    // The mode it starts in, as `claude --permission-mode` takes it.
+    let d = s.spawn(json!({ "repo": r, "name": "auto", "task": "say hi", "permission_mode": "auto" }));
+    let did = d["id"].as_str().unwrap().to_string();
+    assert_eq!(s.agent(&did)["permission_mode"], "auto");
+    let screen = ws_read_until(&s, &did, "DONE: say hi", &[]);
+    assert!(screen.contains("MODE: auto"), "{screen}");
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "nope", "permission_mode": "yolo" }));
+    assert_eq!(status, 400, "{v}");
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "ro-bypass", "read_only": true, "permission_mode": "bypassPermissions" }));
+    assert_eq!(status, 400, "{v}");
+    // An agent it starts gets its mode, and never more.
+    let (status, v) = s.post("/api/agents", json!({ "repo": r, "name": "child", "parent": did, "permission_mode": "bypassPermissions" }));
+    assert_eq!(status, 400, "{v}");
+    let e = s.spawn(json!({ "repo": r, "name": "child", "parent": did }));
+    assert_eq!(s.agent(e["id"].as_str().unwrap())["permission_mode"], "auto");
+    // A restart keeps it.
+    s.post(&format!("/api/agents/{did}/stop"), json!({}));
+    s.until(&did, "stopped", |a| a["running"] == false);
+    let (status, v) = s.post(&format!("/api/agents/{did}/restart"), json!({}));
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(s.agent(v["agent"]["id"].as_str().unwrap())["permission_mode"], "auto");
 }
 
 #[test]
