@@ -61,6 +61,24 @@ MODELS = [
     ("slots", "MCSlotMove", "MoveStuck", "NoStuckShard", 10, True),
     ("slots", "MCSlotMove", "MoveMark", "ok", None, True),
     ("slots", "MCSlotMove", "MoveMarkStale", "ok", None, True),
+    # Changes of the cluster map (clustermap/MapChange.tla).
+    ("clustermap", "MCMapChange", "GivesTwice", "NoFork", 10, True),
+    ("clustermap", "MCMapChange", "RoutesUntaken", "RoutesHeld", 6, True),
+    ("clustermap", "MCMapChange", "ForgetsRedone", "NoFork", 15, True),
+    ("clustermap", "MCMapChange", "AroundSource", "NoStuck", 9, True),
+    ("clustermap", "MCMapChange", "Forgetful", "NoFork", 8, True),
+    ("clustermap", "MCMapChange", "Racing", "NoFork", 7, True),
+    ("clustermap", "MCMapChange", "LeaseRacing", "NoFork", 9, True),
+    ("clustermap", "MCMapChange", "SurveyAny", "NoFork", 10, True),
+    ("clustermap", "MCMapChange", "QuorumRacing", "NoFork", 15, True),
+    ("clustermap", "MCMapChange", "CIOneKeeps", "ok", None, True),
+    ("clustermap", "MCMapChange", "CIOneMove", "ok", None, True),
+    ("clustermap", "MCMapChange", "CILeaseOne", "ok", None, True),
+    ("clustermap", "MCMapChange", "CIQuorum", "ok", None, True),
+    ("clustermap", "MCMapChange", "OneKeeps", "ok", None, False),
+    ("clustermap", "MCMapChange", "OneMove", "ok", None, False),
+    ("clustermap", "MCMapChange", "LeaseOne", "ok", None, False),
+    ("clustermap", "MCMapChange", "Quorum", "ok", None, False),
 ]
 
 

@@ -36,6 +36,7 @@ cloud container these were written in, one TLC worker a model, 2026-11-15.
 | [replication/ShardElection.tla](replication/ShardElection.tla) | `chloedb-server/src/cores/shard.rs`: `decide`, `Replica::take`, `joined`, `counted`, `Campaign`, `Primary::fence`, `term_start` | one copy a term, no acknowledged write lost, logs that match, and that a shard can always elect a primary |
 | [storage/SnapshotPublish.tla](storage/SnapshotPublish.tla) | `chloedb/src/storage/db.rs`: `Database::snapshot`, `republish` (`publish_snapshots`) | a reader's snapshots never go back, and each holds every write that returned before it was asked for |
 | [slots/SlotMove.tla](slots/SlotMove.tla) | `chloedb-server/src/coord/moves.rs`, `src/cores/slots.rs` (`flip_ok`, `Hold`, `Change::give`), `src/service/moving.rs`, `Service::set_slots` | once any server holds a move's flip, the shard the slots go to holds every write to them that was acknowledged, and none comes after |
+| [clustermap/MapChange.tla](clustermap/MapChange.tla) | `chloedb-server/src/coord.rs` (`Coordinator::change`, `sync_heard`, the map Lease, `connect_with`'s survey), `src/cores/slots.rs` (`Change::synced`, `give`, `answered`, `in_doubt`, `flip_ok`), `Service::set_slots` | no two maps of one epoch, a coordinator routes only by a map a server held, and no server is left refusing every later map |
 
 ### Shard elections (`replication/`)
 
@@ -137,6 +138,69 @@ sync, `StaleView = FALSE`) and the source, then to every other server.
    refuses writes to the slots and takes the flip, and a server forgets
    its hold and export when it stops being the writer. TLC finds neither
    bug, with stale views too (27,010 states).
+
+### Changes of the cluster map (`clustermap/`)
+
+Three servers that keep their map across restarts, and two coordinators.
+A map is the sequence of the changes that made it, so two maps of one
+epoch differ exactly when different changes made them. A change syncs
+(the newest map of the servers that answer), gives its map in doubt again
+or makes its own, and gives it to the source first, one try at a time,
+then to the rest; each answer is Took, Raced, Refused or lost, and a lost
+call may still arrive later. Coordinators also follow the servers' maps
+(watch) and give theirs to servers behind (speak). Constants: `Racing`,
+`Forgetful`, `Lease`, `Survey` (what a restarted coordinator routes by:
+`kept`, `all`, `any`), `Move` (the flip, source first, `flip_ok`), `Bugs`
+(the simulator's four map bugs put back) and `Quorum` (a proposal).
+Invariants: `NoFork` (no two maps of one epoch ever taken), `RoutesHeld`
+(a coordinator routes only by a map some server holds or held) and
+`NoStuck` (no server left refusing every later map).
+
+| model | setting | changes, restarts | result | states | s |
+|---|---|---|---|---|---|
+| GivesTwice | `forgets_doubt` | 2, 0 | **fork** in 10 | 188 | 2 |
+| RoutesUntaken | `keeps_untaken` | 2, 0 | **RoutesHeld** in 6 | 27 | 2 |
+| ForgetsRedone | `forgets_redone` | 3, 0 | **fork** in 15 | 1,595 | 4 |
+| AroundSource | Move, `skips_source` | 2, 0 | **NoStuck** in 9 | 354 | 2 |
+| Forgetful | one coordinator, forgetful | 2, 1 | **fork** in 8 | 128 | 2 |
+| Racing | racing | 2, 0 | **fork** in 7 | 107 | 2 |
+| LeaseRacing | racing under the Lease | 2, 0 | **fork** in 9 (below) | 319 | 2 |
+| SurveyAny | one coordinator keeping its doubt, `any` | 2, 1 | **fork** in 10 (below) | 559 | 2 |
+| QuorumRacing | Quorum, no Lease | 2, 0 | **fork** in 15 | 2,593 | 4 |
+| OneKeeps (CIOneKeeps) | one coordinator keeping its doubt | 5, 2 (3, 1) | no error | 198,101 (9,103) | 51 (4) |
+| OneMove (CIOneMove) | as OneKeeps, Move | 4, 2 (3, 1) | no error | 297,659 (43,206) | 55 (8) |
+| LeaseOne (CILeaseOne) | one coordinator, Lease, `all`, Move | 4, 2 (3, 1) | no error | 409,678 (60,678) | 69 (13) |
+| Quorum (CIQuorum) | racing, Lease, forgetful, `any`, Move, Quorum | 4, 2 (2, 1) | no error | 2,789,110 (29,280) | 444 (10) |
+
+What TLC found:
+
+1. **The documentation holds where it says.** TLC finds each of the four
+   map bugs the simulator puts back, and the fork with racing and with
+   forgetful coordinators; it finds no fork and no stuck source with one
+   coordinator that keeps its doubt (as the simulator's do, in memory, or
+   in the Lease with shards of one server).
+2. **The Lease does not close the fork (`LeaseRacing`, open).**
+   [server.md](../docs/chloedb/server.md) says the Lease narrows the fork
+   to a coordinator paused for longer than 90 s. But c1's change takes the
+   Lease, gives map `<<11>>` (epoch 2), and lands on s1 and s2 while s3's
+   answer times out (Missed). The change is done, so no map is left in
+   doubt and `release(None)` empties the Lease's. c2, cut off from s1 and
+   s2 (its watch never heard of `<<11>>`), takes the Lease, syncs from s3
+   alone (`sync_heard` needs no answer from any particular server), makes
+   `<<21>>` of epoch 2, and s3 takes it: two maps of epoch 2.
+3. **A restart forks with replicated shards (`SurveyAny`, open).** The same
+   first steps without the Lease: c1 starts again, and `connect_with`'s
+   `survey` fails only when every copy of a shard fails, so with s3 alone
+   answering c1 routes by epoch 1, and its next change gives `<<12>>` of
+   epoch 2 to s3. The cluster simulator cannot find this: its shards have
+   one server each and its coordinators keep their map when they crash.
+4. **A direction TLC passes (`Quorum`).** Under the Lease, a change lands
+   once a majority took its map, a sync takes up the newest map of a
+   majority, and a change first gives the map it synced to again until a
+   majority holds it. Without that last rule TLC finds a fork in 14 states
+   (the sync takes up a map one server holds, the change drops it from
+   doubt, its give fails, and the next coordinator's majority misses it);
+   without the Lease, two changes at once still fork (`QuorumRacing`).
 
 ## What is next, by risk
 
