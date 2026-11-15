@@ -248,7 +248,7 @@ fn main_of(a: &Agent) -> PathBuf {
 }
 
 /// Files with uncommitted changes in a worktree (tracked and untracked).
-fn uncommitted(dir: &Path) -> Vec<String> {
+pub(crate) fn uncommitted(dir: &Path) -> Vec<String> {
     git_out(dir, &["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default().lines().filter(|l| l.len() > 3).map(|l| l[3..].trim().to_string()).collect()
 }
 

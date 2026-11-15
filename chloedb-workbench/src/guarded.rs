@@ -70,9 +70,34 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// The agent whose token the request carries.
-fn token_agent(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn token_agent(headers: &HeaderMap) -> Option<String> {
     let t = bearer(headers)?;
     tokens().lock().unwrap().iter().find(|(k, _)| same_bytes(k, &t)).map(|(_, a)| a.clone())
+}
+
+/// An agent's key starts agents as that agent only (audit APP-1): the
+/// request's parent is the agent the key is, whatever the body says, so
+/// that its read-only mode, its permission mode, its rules and its depth
+/// bound the new one ([`crate::supervisor::Supervisor::spawn`]). A body
+/// that names another agent as the parent is refused. The user's key is
+/// left as it asked.
+pub(crate) fn spawn_as_caller(headers: &HeaderMap, req: &mut crate::supervisor::SpawnRequest) -> Result<(), ApiError> {
+    let Some(me) = token_agent(headers) else { return Ok(()) };
+    if let Some(p) = req.parent.as_deref().filter(|p| *p != me) {
+        return Err(ApiError::new(403, "forbidden", format!("an agent's key starts agents as that agent ({me}), not as {p}")));
+    }
+    req.parent = Some(me);
+    Ok(())
+}
+
+/// Refuses an agent's key (audit APP-1): for the routes that start agents
+/// with no parent to bound them (a restart, a goal's lead and outcomes),
+/// which no agent's tool calls.
+pub(crate) fn not_an_agent(headers: &HeaderMap, what: &str) -> Result<(), ApiError> {
+    match token_agent(headers) {
+        Some(a) => Err(ApiError::new(403, "forbidden", format!("{what} is the user's: agent {a}'s key may not (an agent starts agents with spawn_agent, as itself)"))),
+        None => Ok(()),
+    }
 }
 
 /// Only the user's token decides.

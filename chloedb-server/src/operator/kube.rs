@@ -1151,7 +1151,18 @@ impl Cluster {
 
     /// The token the servers require, from the Secret.
     pub async fn admin_token(&self) -> Result<Option<String>, String> {
-        let Some(s) = &self.spec.token_secret else { return Ok(None) };
+        self.secret_token(self.spec.token_secret.as_deref()).await
+    }
+
+    /// The cluster's own token, from `clusterTokenSecret`: the operator adds
+    /// servers with it (audit CLU-3). `None` without one.
+    pub async fn cluster_token(&self) -> Result<Option<String>, String> {
+        self.secret_token(self.spec.cluster_token_secret.as_deref()).await
+    }
+
+    /// The key `token` of Secret `s`.
+    async fn secret_token(&self, s: Option<&str>) -> Result<Option<String>, String> {
+        let Some(s) = s else { return Ok(None) };
         let secret = self.kube.get(&format!("{}/{s}", ns_path(&self.ns, "v1", "secrets"))).await?.ok_or_else(|| format!("no Secret {s} in {}", self.ns))?;
         let b64 = secret["data"]["token"].as_str().ok_or_else(|| format!("Secret {s} has no key token"))?;
         let bytes = base64_decode(b64).ok_or_else(|| format!("Secret {s}: token is not base64"))?;
@@ -2257,7 +2268,7 @@ async fn common(c: &Cluster) -> Result<Admin, String> {
             r => drop(r?),
         }
     }
-    Ok(Admin::new(&c.admin_url(), c.admin_token().await?))
+    Ok(Admin::new(&c.admin_url(), c.admin_token().await?).joining_with(c.cluster_token().await?))
 }
 
 #[cfg(test)]

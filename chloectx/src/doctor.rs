@@ -491,19 +491,21 @@ pub fn run(project: &Path) -> i32 {
     }
 
     // Sync: where this project's memory goes, with what (X-F1).
-    if let Some(remote) = crate::sync::remote(&home) {
+    if crate::sync::remote(&home).is_some() {
         let key = crate::sync::project_key(&home, &project.to_string_lossy());
+        let remote = crate::sync::remote_for(&home, &key).expect("a server is set up");
         let st = crate::sync::load_state(&store, &remote.url);
         let line = format!(
-            "{}: this project syncs as {key} into the table {}, as machine {} (rules and decisions other machines send wait for `chloectx sync accept`)",
+            "{}: this project syncs as {key} into the table {}, as machine {}, with {} (rules and decisions other machines send wait for `chloectx sync accept`)",
             remote.url,
             crate::sync::table_for(&key),
-            crate::sync::origin(&home)
+            crate::sync::origin(&home),
+            remote.key_from
         );
         if st.last_error.is_empty() {
             r.ok("sync", line);
         } else {
-            r.warn("sync", format!("{line}; the last sync failed: {}", st.last_error));
+            r.warn("sync", format!("{line}; the last sync failed: {}{}", st.last_error, crate::sync::key_hint(&key, &st.last_error)));
         }
     }
 

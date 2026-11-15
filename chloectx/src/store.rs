@@ -60,6 +60,9 @@ pub struct Filter {
     pub until_ts: Option<i64>,
     /// Only this session.
     pub session: Option<String>,
+    /// Only records that quote no third party ([`Record::third_party`],
+    /// audit CTX-32): what recall puts into a prompt by itself.
+    pub first_party: bool,
 }
 
 impl Filter {
@@ -97,6 +100,9 @@ impl Filter {
         if self.kinds.is_empty() {
             parts.push("kind != 'entity'".into());
             parts.push("kind != 'event'".into());
+        }
+        if self.first_party {
+            parts.push(crate::record::FIRST_PARTY.into());
         }
         // An instruction given for one task ([`crate::record::TASK_TAG`])
         // is that session's only: never a rule another session is given.

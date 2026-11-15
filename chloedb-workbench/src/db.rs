@@ -323,7 +323,7 @@ impl StateDb {
         db.sql(AGENTS_ADDED_LEVELS, &Params::new()).map_err(e)?;
         db.sql(AGENTS_ADDED_PREVIEW, &Params::new()).map_err(e)?;
         db.sql(AGENTS_ADDED_HARNESS, &Params::new()).map_err(e)?;
-        for t in crate::harness::TABLES {
+        for t in crate::harness::TABLES.iter().chain(crate::harness::EVAL_TABLES.iter()) {
             db.sql(t, &Params::new()).map_err(e)?;
         }
         db.sql(MARKS, &Params::new()).map_err(e)?;

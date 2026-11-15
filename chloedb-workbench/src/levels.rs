@@ -111,6 +111,7 @@ pub fn routes() -> Router<App> {
         .route("/api/rules/:id", axum::routing::patch(rule_patch).delete(rule_delete))
         .route("/api/agents/:id/steer", post(steer_route))
         .route("/api/agents/:id/story", get(story_route))
+        .route("/api/agents/:id/helpers", get(helpers_route))
         .route("/api/seen", post(seen_route))
         .route("/api/digest", get(digest_route))
 }
@@ -130,7 +131,10 @@ async fn goals_list(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult
     json_ok(blocking(move || goals::list(&sup, &lv, q.repo.as_deref())).await?)
 }
 
-async fn goals_create(State(app): State<App>, body: Bytes) -> ApiResult {
+async fn goals_create(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    // A goal starts its lead and outcomes as top-level agents: the user's
+    // to start, not an agent's (audit APP-1).
+    crate::guarded::not_an_agent(&headers, "starting a goal")?;
     let b: goals::GoalBody = parse_body(&body)?;
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || goals::create(&sup, &lv, b)).await?;
@@ -288,6 +292,11 @@ async fn steer_route(State(app): State<App>, Path(id): Path<String>, body: Bytes
 async fn story_route(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     let sup = app.sup.clone();
     json_ok(blocking(move || story::story(&sup, &id)).await?)
+}
+
+async fn helpers_route(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let sup = app.sup.clone();
+    json_ok(blocking(move || sup.helpers_json(&id)).await?)
 }
 
 #[derive(Deserialize, Default)]

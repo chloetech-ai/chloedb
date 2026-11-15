@@ -534,3 +534,51 @@ fn multi_valued_columns_answer_as_the_operators() {
         assert!(on_datafusion(&got), "{sql}: ran on the operators: {:?}", got.stats.plan.first());
     }
 }
+
+// DataFusion computes a `CASE` whose rows of a batch all take one branch of
+// literals as one value for the batch (a Scalar). A function of it (abs,
+// round, ln, least ...: Strata's own, row by row) holds that value on every
+// row of the batch, in a SELECT and in a WHERE, as on the operators; it
+// was the first row's alone, and NULL on the others (ENG-Q1 of the
+// November audit).
+#[test]
+fn a_function_of_a_case_holds_on_every_row_of_a_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new("big", vec![Field::new("id", FieldType::Int), Field::new("price", FieldType::Float), Field::new("qty", FieldType::Int)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("big.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    // 10,000 rows: past the operators' 4,096 for auto, and two of
+    // DataFusion's batches.
+    db.load((1..=10_000).map(|i: i64| vec![Value::Int(i), Value::Float(i as f64 / 4.0), Value::Int(i % 7)])).unwrap();
+    let ran_on_datafusion = |rs: &ResultSet| rs.stats.plan.iter().any(|l| l.starts_with("datafusion:"));
+    let int = Value::Int;
+    let cases: Vec<(&str, Vec<Value>)> = vec![
+        ("SELECT COUNT(*), COUNT(r), SUM(r) FROM (SELECT id, abs(CASE WHEN qty >= 0 THEN -1 END) AS r FROM big) AS d", vec![int(10_000), int(10_000), int(10_000)]),
+        ("SELECT COUNT(*), COUNT(r), SUM(r) FROM (SELECT id, round(CASE WHEN qty >= 0 THEN 2.5 END) AS r FROM big) AS d", vec![int(10_000), int(10_000), int(30_000)]),
+        (
+            "SELECT COUNT(l), SUM(l), COUNT(g), SUM(g), COUNT(e), COUNT(p) FROM (SELECT least(CASE WHEN qty >= 0 THEN 3 END, 10) AS l, greatest(CASE WHEN qty >= 0 THEN 3 END, 1) AS g, ln(CASE WHEN qty >= 0 THEN 1.0 END) AS e, pow(CASE WHEN qty >= 0 THEN 2 END, 3) AS p FROM big) AS d",
+            vec![int(10_000), Value::Float(30_000.0), int(10_000), Value::Float(30_000.0), int(10_000), int(10_000)],
+        ),
+        // Two branches in a batch: an array, as before.
+        ("SELECT COUNT(r), SUM(r) FROM (SELECT id, abs(CASE WHEN qty > 3 THEN -1 ELSE -2 END) AS r FROM big) AS d", vec![int(10_000), int((1..=10_000).map(|i| if i % 7 > 3 { 1 } else { 2 }).sum())]),
+        ("SELECT COUNT(*) FROM (SELECT id FROM big) d WHERE abs(CASE WHEN id > 0 THEN -1 END) = 1", vec![int(10_000)]),
+        ("SELECT COUNT(*) FROM big WHERE id > 0 AND abs(CASE WHEN qty >= 0 THEN -1 END) = 1", vec![int(10_000)]),
+    ];
+    for (sql, want) in &cases {
+        let ops = run(&db, sql, Engine::Operators);
+        assert_eq!(ops.rows.len(), 1, "{sql}: {:?}", ops.rows);
+        assert!(ops.rows[0].iter().zip(want).all(|(a, b)| same_value(a, b)), "{sql}: operators {:?}, want {want:?}", ops.rows[0]);
+        for engine in [Engine::DataFusion, Engine::Auto] {
+            let got = run(&db, sql, engine);
+            same(sql, &ops, &got);
+            assert!(ran_on_datafusion(&got), "{sql} ({engine:?}): {:?}", got.stats.plan);
+        }
+    }
+    // Three rows, one batch.
+    let none = Params::new();
+    db.sql("CREATE TABLE dz (id INT PRIMARY KEY, a INT)", &none).unwrap();
+    db.sql("INSERT INTO dz (id, a) VALUES (1, 4), (2, 5), (3, 6)", &none).unwrap();
+    let sql = "SELECT id, abs(CASE WHEN a > 0 THEN -5 END) FROM dz ORDER BY id";
+    let got = run(&db, sql, Engine::DataFusion);
+    assert!(on_datafusion(&got), "{:?}", got.stats.plan);
+    assert_eq!(got.rows, (1..=3).map(|i| vec![int(i), int(5)]).collect::<Vec<_>>());
+}

@@ -65,7 +65,7 @@ fn tools() -> Json {
         },
         {
             "name": "memory_forget",
-            "description": "Delete a record that is wrong or must not be kept (for example a leaked secret), for good: it cannot be undone. The record is removed from the store and scrubbed from the receipts that showed it, and the automatic snapshots (which hold it) are dropped. It removes that one record, not its turn: the prompt, answer and tool records around it stay, so forget each that holds what must go (memory_timeline shows them). An id that is not in memory is an error.",
+            "description": "Delete a record that is wrong or must not be kept (for example a leaked secret), for good: it cannot be undone. The record is removed from the store and scrubbed from the receipts that showed it, and the automatic snapshots (which hold it) are dropped; with a sync set up, its row on the sync server is deleted and no pull brings it back. It removes that one record, not its turn: the prompt, answer and tool records around it stay, so forget each that holds what must go (memory_timeline shows them). An id that is not in memory is an error.",
             "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]}
         }
     ])

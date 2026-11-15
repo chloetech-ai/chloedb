@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=3871c230ea">
+<link rel="stylesheet" href="assets/site.css?v=f586f110cf">
 </head>
 <body>
 <header class="top gutter"><div class="wrap">
@@ -61,7 +61,7 @@
       <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes for billions of vectors, on disk or GPUs, and managed clouds. Qdrant's recall@10 at 10M is 0.941, ChloeDB's 0.791 at the shared settings.</p></div>
       <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening. SQLite reads a row by id in 8 µs against ChloeDB's 21; Postgres looks up keys in about a third of ChloeDB's time at 10M (0.37 against 0.99 ms).</p></div>
       <div class="card"><h4>Tantivy</h4><p>Faster facet counts on small collections, and faster cold range filters.</p></div>
-      <div class="card"><h4>ChloeDB itself</h4><p>A young project: analyzers for 22 languages, new and less tried than Lucene's, no managed service, no point-in-time recovery yet, and one writer per file.</p></div>
+      <div class="card"><h4>ChloeDB itself</h4><p>A young project: analyzers for 22 languages, new and less tried than Lucene's, no managed service, no point-in-time recovery yet, and one writer per file. A cluster refuses graph queries and recommenders, the local BERT, image and sound models need a build of your own, and the cloud, autoscaling and on-call features are experimental.</p></div>
     </div>
     <div class="center-row"><a class="btn primary" href="benchmarks.html">The benchmarks</a><a class="btn" href="benchmarks.html#losses">Where ChloeDB loses</a></div>
   </div></section>
@@ -74,9 +74,9 @@
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/compare-data.js?v=8ac1adcd58"></script>
+<script src="assets/compare-data.js?v=cec1237791"></script>
 <script src="assets/bench-data.js?v=376b5cfc2f"></script>
-<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>

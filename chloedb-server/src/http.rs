@@ -77,7 +77,7 @@
 //! | `GET /v1/timeseries?since=ms` | | `{interval_ms, points}`: rates and gauges every few seconds, the last hour ([`crate::telemetry::Series`]) |
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
-//! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, on a coordinator its bytes on every copy, its skew, writes and reads a minute, growth over a day and a week, and copies behind, with the totals of all tables; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
@@ -515,6 +515,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/simulator", get(sim_view).post(sim_start))
         .route("/v1/admin/simulator/stop", post(sim_stop))
         .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/routing", post(sim_routing))
         .route("/v1/admin/simulator/runs/:id", get(sim_report))
         .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
@@ -1023,7 +1024,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/admin/simulator/routing" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -3404,8 +3405,16 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {
             let schema = tables.iter().find(|t| t.table.eq_ignore_ascii_case(plan.table())).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", plan.table())))?;
-            // A query by a rank profile binds as written out.
-            format!("{:#?}", chloedb::query::bind(&chloedb::query::profile::written_out(sql, &profiles)?, schema, &params)?)
+            // A query by a rank profile binds as written out. The binder
+            // of single-table queries takes less than the planner (a
+            // `GROUP BY date_trunc(...)`, UIA-3): a statement the plan was
+            // made for is explained by the plan's own tree then, never
+            // refused, since `/v1/sql` runs it.
+            let bound = chloedb::query::profile::written_out(sql, &profiles).map_err(ApiError::from).and_then(|w| chloedb::query::bind(&w, schema, &params).map_err(ApiError::from));
+            match bound {
+                Ok(q) => format!("{q:#?}"),
+                Err(_) => format!("{:#?}", plan.root),
+            }
         }
     };
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
@@ -3928,6 +3937,12 @@ async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
 /// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
 async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `POST /v1/admin/simulator/routing`: the ways of choosing a shard's
+/// copy, compared by the model ([`crate::traffic::run::routing_preview`]).
+async fn sim_routing(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::routing_preview(&app.svc, b).await?))
 }
 
 /// `GET /v1/admin/simulator/runs/:id`: a report kept.

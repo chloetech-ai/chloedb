@@ -1915,7 +1915,7 @@ impl Service {
         let now = chloedb::timestamp::now();
         let t0 = Instant::now();
         let mut n = 0;
-        let first = chloedb::db::default_table(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
+        let first = default_of(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
         for schema in db.catalog() {
             let wanted: Vec<usize> = models.iter().filter(|m| m.model.is_ok() && m.table.eq_ignore_ascii_case(&schema.table)).filter_map(|m| schema.field_index(&m.field)).collect();
             let media: Vec<usize> = (0..schema.fields.len()).filter(|&f| schema.fields[f].media.is_some()).collect();
@@ -2221,14 +2221,15 @@ impl Service {
 
     /// The table a request that names none reads or writes: the first
     /// table, or on a database made with no tables (`chloedb-server --db`
-    /// on a new path, [`chloedb::db::Db::create_empty`]) the first one made
-    /// after its placeholder. An error while there is none.
+    /// on a new path, [`chloedb::db::Db::create_empty`]) the first one
+    /// people made after its placeholder ([`default_of`]). An error while
+    /// there is none.
     pub fn default_table(&self) -> Result<Arc<Schema>, ApiError> {
         let first = self.first_table();
         if !first.is_placeholder() {
             return Ok(first);
         }
-        chloedb::db::default_table(&self.catalog()).ok_or_else(|| ApiError::bad(NO_TABLES))
+        default_of(&self.catalog()).cloned().ok_or_else(|| ApiError::bad(NO_TABLES))
     }
 
     /// The tables people made, the first first: [`Self::catalog_now`]
@@ -6403,19 +6404,44 @@ pub fn op_schema<'a>(catalog: &'a [Arc<Schema>], op: &Json) -> Result<&'a Arc<Sc
 }
 
 /// The table of `catalog` an operation that names none writes: the first,
-/// or on a database made with no tables the first made after its
-/// placeholder ([`Service::default_table`]).
+/// or on a database made with no tables the first people made after its
+/// placeholder ([`default_of`], [`Service::default_table`]).
 fn op_default(catalog: &[Arc<Schema>]) -> Result<&Arc<Schema>, ApiError> {
     let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    Ok(default_of(catalog).unwrap_or(first))
+}
+
+/// The prefixes of the tables the apps beside a server keep their own
+/// state in ([`crate::app_procs::grants`], and the operator's apps):
+/// Sheets' workbooks and cells (`sheets_books`, `sheets_cells`), ChloeCtx's
+/// spaces (`ctx_*`) and the app engine's (`sa_*`).
+pub const APP_STATE: &[&str] = &["sheets_", "ctx_", "sa_"];
+
+/// The prefixes of the tables apps fill with data a person asked for: the
+/// crawler's, one a crawl, and network operations' network.
+pub const APP_DATA: &[&str] = &["crawl_", "netops_"];
+
+/// The table of `catalog` (a database's tables, the first first) that a
+/// request naming none reads or writes: the first, or on a database made
+/// with no tables (whose first is its placeholder) the first one people
+/// made, so that a database the apps beside a server made their tables in
+/// before anyone else (PLT-2) gives requests to the first table of its
+/// own. The apps' own state ([`APP_STATE`]) is never that table, and an
+/// app's data ([`APP_DATA`]) only when there is no other (a database
+/// `chloedb-crawl --local` crawled into). `None` while there is none.
+pub fn default_of(catalog: &[Arc<Schema>]) -> Option<&Arc<Schema>> {
+    let first = catalog.first()?;
     if !first.is_placeholder() {
-        return Ok(first);
+        return Some(first);
     }
-    Ok(catalog.iter().find(|t| !t.is_placeholder()).unwrap_or(first))
+    let starts = |t: &Schema, ps: &[&str]| ps.iter().any(|p| t.table.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
+    let open = |t: &&Arc<Schema>| !t.is_placeholder() && !starts(t, APP_STATE);
+    catalog.iter().filter(open).find(|t| !starts(t, APP_DATA)).or_else(|| catalog.iter().find(open))
 }
 
 /// What a request that names no table is told on a database made with no
 /// tables, before its first ([`Service::default_table`]).
-pub const NO_TABLES: &str = "this database has no tables yet: create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
+pub const NO_TABLES: &str = "this database has no tables yet (the apps' own, sheets_*, ctx_* and sa_*, take only requests that name them): create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
 
 /// What places the row an operation writes on a shard: its key, or for a
 /// table placed by a column ([`Schema::with_shard_by`]) that column's

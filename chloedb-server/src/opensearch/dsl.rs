@@ -171,11 +171,30 @@ pub struct Ctx<'a> {
     /// ranked query returns only rows that one of them holds, so that a
     /// search adds the others after them ([`Ctx::unscored`]).
     pub scored: Vec<String>,
+    /// Compiling the operand of a negation (`must_not`, a query string's
+    /// `-` or `NOT`, a `filters` aggregation's other bucket): see
+    /// [`Ctx::known`].
+    pub negated: bool,
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(ix: &'a Index) -> Ctx<'a> {
-        Ctx { ix, words: BTreeMap::new(), params: Vec::new(), exact: false, knn_k: None, scored: Vec::new() }
+        Ctx { ix, words: BTreeMap::new(), params: Vec::new(), exact: false, knn_k: None, scored: Vec::new(), negated: false }
+    }
+
+    /// `cond`, a condition on `t`'s values. SQL's comparison with a field
+    /// a document lacks is UNKNOWN, and so is its `NOT`, which would leave
+    /// out every such document where OpenSearch's `must_not` keeps it (a
+    /// document matches a query or does not). In a negation's operand the
+    /// condition also asks for a value (`AND t IS NOT NULL`): FALSE, not
+    /// UNKNOWN, without one, so that the `NOT` holds there. `MATCH`, the
+    /// key and `IS NOT NULL` are never UNKNOWN, and the condition means
+    /// the same outside a negation, where it is left as it is.
+    fn known(&self, cond: String, t: &Target) -> String {
+        match t {
+            Target::Json(..) | Target::Date(_) | Target::Text(..) if self.negated => format!("({cond} AND {} IS NOT NULL)", t.sql()),
+            _ => cond,
+        }
     }
 
     /// Where field `name` is.
@@ -479,7 +498,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                     }
                     format!("MATCH({}, {})", ident(&c), lit(&format!("{w}*")))
                 }
-                t => format!("PREFIX({}, {})", t.sql(), lit(&v)),
+                t => cx.known(format!("PREFIX({}, {})", t.sql(), lit(&v)), &t),
             };
             Ok(Compiled { pred: Some(pred), score: Score::Const(boost(&opts)) })
         }
@@ -545,6 +564,14 @@ fn clauses(v: Option<&Json>) -> Vec<Json> {
     }
 }
 
+/// `f`'s query compiled as the operand of a `NOT` ([`Ctx::known`]).
+pub fn negated(cx: &mut Ctx, f: impl FnOnce(&mut Ctx) -> Result<Compiled, OsError>) -> Result<Compiled, OsError> {
+    let was = std::mem::replace(&mut cx.negated, true);
+    let c = f(cx);
+    cx.negated = was;
+    c
+}
+
 /// `f`'s query compiled for its condition alone: its scores rank nothing.
 pub fn unscored(cx: &mut Ctx, f: impl FnOnce(&mut Ctx) -> Result<Compiled, OsError>) -> Result<Compiled, OsError> {
     let n = cx.scored.len();
@@ -568,7 +595,7 @@ fn compile_bool(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     for q in &must_not {
         // Words a row must not hold are not highlighted.
         let saved = cx.words.clone();
-        let c = unscored(cx, |cx| compile(q, cx))?;
+        let c = negated(cx, |cx| unscored(cx, |cx| compile(q, cx)))?;
         cx.words = saved;
         match c.pred {
             Some(p) => preds.push(format!("NOT ({p})")),
@@ -638,14 +665,14 @@ fn compile_term(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                 _ => NONE.to_string(),
             }
         }
-        Target::Date(c) => {
-            let t = parse_date(&v).map_err(|why| OsError::parsing(format!("failed to parse date field [{v}] of [{f}]: {why}")))?;
-            format!("{} = {}", ident(&c), lit(&chloedb::timestamp::format(t)))
+        t @ Target::Date(_) => {
+            let ts = parse_date(&v).map_err(|why| OsError::parsing(format!("failed to parse date field [{v}] of [{f}]: {why}")))?;
+            cx.known(format!("{} = {}", t.sql(), lit(&chloedb::timestamp::format(ts))), &t)
         }
         Target::Vector(_) => return Err(OsError::parsing(format!("[term] does not take the vector field [{f}]: use [knn]"))),
         Target::Json(p, k) => {
             let v = coerce(&v, k.as_ref());
-            if insensitive {
+            let cond = if insensitive {
                 if let Json::String(s) = &v {
                     let mut cases = vec![s.clone(), s.to_lowercase(), s.to_uppercase()];
                     cases.dedup();
@@ -656,7 +683,8 @@ fn compile_term(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                 }
             } else {
                 format!("{} = {}", json_path(&p), value_sql(&v)?)
-            }
+            };
+            cx.known(cond, &Target::Json(p, k))
         }
     };
     Ok(Compiled { pred: Some(pred), score: Score::Const(b) })
@@ -687,14 +715,14 @@ fn compile_terms(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                 format!("MATCH({}, {})", ident(&c), lit(&ws.join(" OR ")))
             }
         }
-        Target::Date(c) => {
+        t @ Target::Date(_) => {
             let ts: Vec<String> = vals.iter().map(|v| parse_date(v).map(|t| lit(&chloedb::timestamp::format(t))).map_err(|why| OsError::parsing(format!("failed to parse date [{v}] of [{f}]: {why}")))).collect::<Result<_, _>>()?;
-            format!("{} IN ({})", ident(&c), ts.join(", "))
+            cx.known(format!("{} IN ({})", t.sql(), ts.join(", ")), &t)
         }
         Target::Vector(_) => return Err(OsError::parsing(format!("[terms] does not take the vector field [{f}]"))),
         Target::Json(p, k) => {
             let list: Vec<String> = vals.iter().map(|v| value_sql(&coerce(v, k.as_ref()))).collect::<Result<_, _>>()?;
-            format!("{} IN ({})", json_path(&p), list.join(", "))
+            cx.known(format!("{} IN ({})", json_path(&p), list.join(", ")), &Target::Json(p, k))
         }
     };
     Ok(Compiled { pred: Some(pred), score: Score::Const(boost(body)) })
@@ -846,9 +874,9 @@ fn compile_range(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
         parts.push(format!("{} {op} {}", target.sql(), bound(k, v)?));
     }
     if parts.is_empty() {
-        parts.push(format!("{} IS NOT NULL", target.sql()));
+        return Ok(Compiled { pred: Some(format!("{} IS NOT NULL", target.sql())), score: Score::Const(boost(&opts)) });
     }
-    Ok(Compiled { pred: and(parts), score: Score::Const(boost(&opts)) })
+    Ok(Compiled { pred: and(parts).map(|p| cx.known(p, &target)), score: Score::Const(boost(&opts)) })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1328,7 +1356,7 @@ fn compile_qs(q: &Qs, cx: &mut Ctx, fields: &[(String, f64)]) -> Result<Compiled
             let mut score = Score::None;
             for (sign, x) in items {
                 let saved = (*sign == '-').then(|| (cx.words.clone(), cx.scored.len()));
-                let c = compile_qs(x, cx, fields)?;
+                let c = if *sign == '-' { negated(cx, |cx| compile_qs(x, cx, fields))? } else { compile_qs(x, cx, fields)? };
                 if let Some((w, n)) = saved {
                     cx.words = w;
                     cx.scored.truncate(n);
@@ -1621,12 +1649,44 @@ mod tests {
     #[test]
     fn bools() {
         let (p, s) = sql(json!({"bool": {"must": [{"match": {"title": "mug"}}], "filter": [{"term": {"tag": "x"}}], "must_not": [{"term": {"n": 3}}], "should": [{"match": {"body": "red"}}]}}));
-        assert_eq!(p.unwrap(), r#"(MATCH("title", 'mug')) AND ("_source"['tag'] = 'x') AND (NOT ("_source"['n'] = 3))"#);
+        assert_eq!(p.unwrap(), r#"(MATCH("title", 'mug')) AND ("_source"['tag'] = 'x') AND (NOT (("_source"['n'] = 3 AND "_source"['n'] IS NOT NULL)))"#);
         assert!(matches!(s, Score::Expr(e) if e.contains("bm25(\"title\"") && e.contains("bm25(\"body\"")));
         let (p, _) = sql(json!({"bool": {"should": [{"term": {"tag": "a"}}, {"term": {"tag": "b"}}, {"term": {"tag": "c"}}], "minimum_should_match": 2}}));
         assert!(p.unwrap().starts_with("AT_LEAST(2, "));
         let (p, s) = sql(json!({"bool": {"filter": {"term": {"tag": "a"}}}}));
         assert_eq!((p.unwrap().as_str(), s), (r#""_source"['tag'] = 'a'"#, Score::Const(0.0)));
+    }
+
+    // `must_not` keeps the documents without the field: each condition on
+    // a field a document may lack is FALSE there, not UNKNOWN, inside the
+    // NOT, and means the same outside one.
+    #[test]
+    fn negations_ask_for_the_field() {
+        let not = |q: Json| sql(json!({"bool": {"must_not": q}})).0.unwrap();
+        assert_eq!(not(json!({"term": {"tag": "x"}})), r#"NOT (("_source"['tag'] = 'x' AND "_source"['tag'] IS NOT NULL))"#);
+        assert_eq!(not(json!({"terms": {"tag": ["x", "y"]}})), r#"NOT (("_source"['tag'] IN ('x', 'y') AND "_source"['tag'] IS NOT NULL))"#);
+        assert_eq!(not(json!({"range": {"n": {"gte": 1, "lt": 5}}})), r#"NOT ((("_source"['n'] >= 1) AND ("_source"['n'] < 5) AND "_source"['n'] IS NOT NULL))"#);
+        assert_eq!(not(json!({"prefix": {"tag": "ab"}})), r#"NOT ((PREFIX("_source"['tag'], 'ab') AND "_source"['tag'] IS NOT NULL))"#);
+        assert_eq!(not(json!({"term": {"at": "2026-01-02"}})), r#"NOT (("at" = '2026-01-02T00:00:00Z' AND "at" IS NOT NULL))"#);
+        // Never UNKNOWN: as they are.
+        assert_eq!(not(json!({"match": {"title": "mug"}})), r#"NOT (MATCH("title", 'mug'))"#);
+        assert_eq!(not(json!({"exists": {"field": "tag"}})), r#"NOT ("_source"['tag'] IS NOT NULL)"#);
+        assert_eq!(not(json!({"ids": {"values": ["a"]}})), r#"NOT ("_id" IN ('a'))"#);
+        // A bool inside: each of its conditions.
+        assert_eq!(
+            not(json!({"bool": {"should": [{"term": {"tag": "x"}}, {"range": {"n": {"gt": 2}}}]}})),
+            r#"NOT ((("_source"['tag'] = 'x' AND "_source"['tag'] IS NOT NULL)) OR (("_source"['n'] > 2 AND "_source"['n'] IS NOT NULL)))"#
+        );
+        // A query string's NOT and -.
+        let qs = |q: &str| sql(json!({"query_string": {"query": q, "default_field": "title"}})).0.unwrap();
+        assert_eq!(qs("NOT tag:x"), r#"NOT (("_source"['tag'] = 'x' AND "_source"['tag'] IS NOT NULL))"#);
+        assert_eq!(qs("mug -tag:x"), r#"(NOT (("_source"['tag'] = 'x' AND "_source"['tag'] IS NOT NULL))) AND (MATCH("title", 'mug'))"#);
+        // Outside a negation, and after one, as before.
+        assert_eq!(sql(json!({"term": {"tag": "x"}})).0.unwrap(), r#""_source"['tag'] = 'x'"#);
+        assert_eq!(
+            sql(json!({"bool": {"must_not": {"term": {"tag": "x"}}, "filter": {"term": {"n": 2}}}})).0.unwrap(),
+            r#"("_source"['n'] = 2) AND (NOT (("_source"['tag'] = 'x' AND "_source"['tag'] IS NOT NULL)))"#
+        );
     }
 
     #[test]
