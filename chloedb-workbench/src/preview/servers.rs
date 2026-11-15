@@ -59,7 +59,8 @@ pub fn policy(sup: &Supervisor) -> Option<String> {
 
 /// Every agent's servers now (the agents Workbench knows).
 pub fn scan(sup: &Supervisor) -> Vec<Server> {
-    let agents = sup.agent_rows();
+    // The replays' too, so that a replay's servers stop with it.
+    let agents = sup.all_agent_rows();
     let known: HashMap<String, Option<i32>> = agents.iter().map(|a| (a.id.clone(), a.pid.map(|p| p as i32).filter(|_| sup.is_running(&a.id)))).collect();
     let mut out = listeners()
         .into_iter()

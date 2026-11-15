@@ -1183,7 +1183,13 @@ fn rel_path(fp: &str, base: &str) -> Option<String> {
 /// 16 MiB the first time): each assistant message's usage is a row of
 /// `token_use`, keyed by the message's id.
 fn ingest_tokens(sup: &Supervisor) {
-    let list: Vec<(String, PathBuf, u64)> = mem().lock().unwrap().transcripts.iter().map(|(a, (p, o))| (a.clone(), p.clone(), *o)).collect();
+    ingest_tokens_of(sup, None);
+}
+
+/// [`ingest_tokens`] for one agent (or all): a replay reads its own usage
+/// at once, not at the next evaluation, which may be 30 s away.
+pub fn ingest_tokens_of(sup: &Supervisor, only: Option<&str>) {
+    let list: Vec<(String, PathBuf, u64)> = mem().lock().unwrap().transcripts.iter().filter(|(a, _)| only.is_none_or(|o| o == a.as_str())).map(|(a, (p, o))| (a.clone(), p.clone(), *o)).collect();
     for (agent, path, from) in list {
         let Ok(mut f) = std::fs::File::open(&path) else { continue };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);

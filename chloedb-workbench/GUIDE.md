@@ -53,6 +53,21 @@ design.
 
 ## The places
 
+### Simple and Advanced
+
+The switch in the top bar picks how Workbench opens. **Advanced** is
+everything this guide describes. **Simple** is one board of your
+requests: type what an agent should do (one request per line starts one
+agent each), and each card moves through Planning, Building, Review and
+Done, with the buttons that fit where it is: Tell or Reply while it plans,
+Watch while it builds, Merge or Send back in Review, Undo or Follow up
+when it is done. A card that needs you is ringed and answered in place.
+Click a card to see its conversation beside the board. When an agent
+splits its work with Claude Code's own Agent tool, its sub-agents show as
+**helpers** on its card and in its request: what each one does now, and
+each one's report when it finishes. They run inside that agent's session,
+so they have no card or terminal of their own.
+
 ### Start
 
 What you came to do: continue a project, review what is ready, start a new
@@ -113,6 +128,23 @@ marked. **What agents remember** is ChloeCtx's records.
 On a line of a diff, **Why?** says who wrote it and why: the agent's edit
 (an edit made with a shell command counts too), its decision, or
 `git blame` and the commit when no agent touched it.
+
+### Make this a test
+
+From an agent's More menu, **Make this a test** shows its session as a
+strip of turns. Tap where a stretch starts, then where it ends: the page
+says where its code starts (Workbench records the code as each prompt
+arrives), what it plays back (your prompts, and your answers to its
+permission prompts and questions) and the checks that judge a replay, and
+what it cannot reproduce. Keep it as a test. Each replay runs in a sandbox
+with no remote and its own empty memory.
+
+**Optimize this**, which replayed a stretch under one change after
+another, is off for now: it is being rebuilt to start from the
+corrections you make and prove a fix for each ([HARNESS.md](HARNESS.md)).
+
+Optimize the harness › **Tests** lists your tests, and replays two
+versions against each other on them.
 
 ### More
 

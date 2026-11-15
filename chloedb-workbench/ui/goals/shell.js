@@ -127,7 +127,7 @@ export function update() {
   }
   // the tab bar: which goal the page is under
   const hsh = location.hash || "#/";
-  const tab = /^#\/needs/.test(hsh) ? "needs" : /^#\/(p|a|debug|new)\b/.test(hsh) ? "projects" : /^#\/more/.test(hsh) ? "more" : "start";
+  const tab = /^#\/s\/new\b/.test(hsh) ? "new" : /^#\/s(\/|$|\?)/.test(hsh) ? "board" : /^#\/needs/.test(hsh) ? "needs" : /^#\/(p|a|debug|new)\b/.test(hsh) ? "projects" : /^#\/more/.test(hsh) ? "more" : "start";
   for (const a of document.querySelectorAll("#tabbar a")) { if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
 }
 

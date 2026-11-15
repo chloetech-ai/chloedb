@@ -8,6 +8,9 @@
 //   #/harness/edit/memory        the memory editor
 //   #/harness/sees[/<agent>]     what the model saw at a turn
 //   #/harness/versions           versions, promote and roll back
+//   #/harness/evals              tests, replay A against B, the runs
+//   #/harness/evals/new/<agent>  a session's turns: Make this a test, Optimize this
+//   #/harness/runs/<id>          a run: what plays, the scorecard, Enough
 import { h } from "/levels/common.js";
 import * as overview from "./overview.js";
 import * as fixes from "./fixes.js";
@@ -15,6 +18,9 @@ import * as permissions from "./permissions.js";
 import * as memory from "./memory.js";
 import * as sees from "./sees.js";
 import * as versions from "./versions.js";
+import * as evals from "./evals.js";
+import * as timeline from "./timeline.js";
+import * as run from "./run.js";
 
 const ROUTES = [
   [/^#\/harness\/fixes/, fixes],
@@ -22,10 +28,13 @@ const ROUTES = [
   [/^#\/harness\/edit\/memory/, memory],
   [/^#\/harness\/sees/, sees],
   [/^#\/harness\/versions/, versions],
+  [/^#\/harness\/evals\/new\//, timeline],
+  [/^#\/harness\/evals/, evals],
+  [/^#\/harness\/runs\//, run],
   [/^#\/harness/, overview],
 ];
 
-const STEPS = [["#/harness/fixes", "Fix the harness"], ["#/harness/edit/permissions", "Permissions"], ["#/harness/edit/memory", "Memory"], ["#/harness/sees", "What the model sees"], ["#/harness/versions", "Versions"]];
+const STEPS = [["#/harness/fixes", "Fix the harness"], ["#/harness/edit/permissions", "Permissions"], ["#/harness/edit/memory", "Memory"], ["#/harness/sees", "What the model sees"], ["#/harness/versions", "Versions"], ["#/harness/evals", "Tests"], ["#/harness/runs", "Tests"]];
 
 export function mount(root, ctx) {
   const host = h("div", { class: "hx" });
@@ -35,8 +44,10 @@ export function mount(root, ctx) {
   function render(force) {
     const hash = location.hash || "#/harness";
     const path = hash.split("?")[0];
-    if (!force && path === key) return;
-    key = path;
+    // The whole hash: the pages read their query (a test's turns and
+    // ?optimize=1, the turn in What the model sees, the version to compare).
+    if (!force && hash === key) return;
+    key = hash;
     // The shell's crumbs (R1's goalCtx), when it gives them.
     const step = STEPS.find(([p]) => path.startsWith(p));
     if (ctx.crumbs) ctx.crumbs([{ label: "Start", href: "#/" }, { label: "Optimize the harness", href: "#/harness" }, ...(step ? [{ label: step[1], href: path }] : [])]);

@@ -111,6 +111,9 @@ struct Slot {
     /// What the row does not hold (the mark `agent:<id>`): `read_only`,
     /// `restarted_from`, `resumed` (the session it continued).
     extra: Json,
+    /// The sub-agents its session started with Claude Code's Agent tool,
+    /// from the hooks since this server started (`crate::helpers`).
+    helpers: crate::helpers::Helpers,
 }
 
 struct Inner {
@@ -168,6 +171,11 @@ pub struct SpawnRequest {
     /// has and a worktree does not (its `.claude/settings.local.json`, its
     /// local MCP servers): carried by default, `false` leaves them out.
     pub own_permissions: Option<bool>,
+    /// Set by the harness's replays (src/harness/replay.rs): this agent
+    /// plays a case in a sandbox, under a version of another repository's
+    /// harness.
+    #[serde(skip)]
+    pub replay: Option<crate::harness::ReplayTag>,
 }
 
 /// A session's permission profile: Claude Code's `permissions.allow`,
@@ -278,7 +286,7 @@ pub fn hex(n: usize) -> String {
 }
 
 /// A random version 4 UUID.
-fn uuid4() -> String {
+pub(crate) fn uuid4() -> String {
     use rand::RngCore;
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
@@ -352,6 +360,10 @@ pub fn summarize(kind: &str, hook: &Json) -> String {
         },
         "Notification" => one_line(s("message"), 200),
         "Stop" => "turn finished".into(),
+        "SubagentStart" => match s("agent_type") {
+            "" => "subagent started".into(),
+            t => format!("subagent started ({t})"),
+        },
         "SubagentStop" => "subagent finished".into(),
         "SessionEnd" => crate::endings::session_end_words(s("reason")),
         other => other.to_string(),
@@ -396,7 +408,7 @@ impl Supervisor {
                 db.put_agent(&a)?;
             }
             let extra = db.mark(&extra_key(&a.id)).ok().flatten().and_then(|(v, _)| serde_json::from_str(&v).ok()).unwrap_or_else(|| json!({}));
-            slots.insert(a.id.clone(), Slot { agent: a, term: None, extra });
+            slots.insert(a.id.clone(), Slot { agent: a, term: None, extra, helpers: Default::default() });
         }
         let (changes, _) = broadcast::channel(4096);
         Ok(Arc::new(Supervisor { cfg, db, inner: Mutex::new(Inner { slots, seq }), spawning: Mutex::new(()), changes }))
@@ -415,6 +427,9 @@ impl Supervisor {
             for (k, v) in x {
                 o.insert(k.clone(), v.clone());
             }
+        }
+        if !slot.helpers.is_empty() {
+            j["helpers"] = slot.helpers.brief(Self::running(slot));
         }
         Some(j)
     }
@@ -461,7 +476,7 @@ impl Supervisor {
     /// exited ones only with `all`.
     pub fn list(&self, all: bool) -> Vec<Json> {
         let inner = self.inner.lock().unwrap();
-        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| all || Self::running(s)).collect();
+        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| (all || Self::running(s)) && !Self::replays(s)).collect();
         slots.sort_by_key(|s| (!Self::running(s), s.agent.created, s.agent.id.clone()));
         slots.iter().filter_map(|s| Self::agent_json(&inner, &s.agent.id)).collect()
     }
@@ -469,7 +484,7 @@ impl Supervisor {
     /// The agents waiting or idle, longest in that state first.
     pub fn attention(&self) -> Vec<Json> {
         let inner = self.inner.lock().unwrap();
-        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| Self::running(s) && matches!(s.agent.state.as_str(), "waiting" | "idle")).collect();
+        let mut slots: Vec<&Slot> = inner.slots.values().filter(|s| Self::running(s) && !Self::replays(s) && matches!(s.agent.state.as_str(), "waiting" | "idle")).collect();
         slots.sort_by_key(|s| (s.agent.state_since, s.agent.created));
         slots.iter().filter_map(|s| Self::agent_json(&inner, &s.agent.id)).collect()
     }
@@ -674,11 +689,14 @@ impl Supervisor {
             self.cfg.chloectx_required,
             &cwd,
             {
-                let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&co.main.to_string_lossy()));
+                // A replay gets the rules of the repository it replays, and
+                // its sandbox is its worktree.
+                let of = req.replay.as_ref().map(|r| r.of_repo.clone()).unwrap_or_else(|| co.main.to_string_lossy().to_string());
+                let s = crate::flow::with_allowed(settings_json(&exe), &self.allowed(&of));
                 let s = if read_only {
                     // Read-only wins: no worktree defaults that allow edits.
                     crate::guarded::read_only_settings(s)
-                } else if worktree && !req.ask_edits.unwrap_or(false) {
+                } else if (worktree || req.replay.is_some()) && !req.ask_edits.unwrap_or(false) {
                     crate::flow::with_worktree_defaults(s, &cwd)
                 } else {
                     s
@@ -692,22 +710,32 @@ impl Supervisor {
             &who,
         )?;
         // What a regular Claude Code session in the main checkout has and
-        // its worktree does not: its local settings and MCP servers.
-        let (settings_v, mcp_v, carried) = if cwd.as_path() != co.main.as_path() && req.own_permissions != Some(false) {
-            let (s, mut c) = match crate::ownperms::local_settings(&co.main) {
-                Some(local) => crate::ownperms::with_local(settings_v, &local, &co.main, &cwd, !read_only),
+        // its worktree does not: its local settings and MCP servers. A
+        // replay gets the settings of the repository it replays (so that it
+        // is asked what a session there is asked), never its MCP servers:
+        // a server can reach what the sandbox's missing remote keeps away.
+        let main_of = req.replay.as_ref().map(|r| PathBuf::from(&r.of_repo)).unwrap_or_else(|| co.main.clone());
+        let (settings_v, mcp_v, carried) = if cwd.as_path() != main_of.as_path() && req.own_permissions != Some(false) {
+            let (s, mut c) = match crate::ownperms::local_settings(&main_of) {
+                Some(local) => crate::ownperms::with_local(settings_v, &local, &main_of, &cwd, !read_only),
                 None => (settings_v, crate::ownperms::Carried::default()),
             };
-            let (m, n) = crate::ownperms::with_servers(mcp_v, &crate::ownperms::local_servers(&co.main));
+            let (m, n) = if req.replay.is_some() { (mcp_v, 0) } else { crate::ownperms::with_servers(mcp_v, &crate::ownperms::local_servers(&main_of)) };
             c.servers = n;
             (s, m, c)
         } else {
             (settings_v, mcp_v, crate::ownperms::Carried::default())
         };
-        // The repository's current harness version, applied and recorded (src/harness.rs).
-        let applied = crate::harness::at_spawn(self, &co.main.to_string_lossy(), &cwd, &session_dir, &id, &name, settings_v, mcp_v);
+        // The repository's current harness version (or, for a replay, the
+        // version it plays), applied and recorded (src/harness.rs).
+        let harness_repo = req.replay.as_ref().map(|r| r.of_repo.clone()).unwrap_or_else(|| co.main.to_string_lossy().to_string());
+        let applied = crate::harness::at_spawn(self, &harness_repo, &cwd, &session_dir, &id, &name, settings_v, mcp_v, req.replay.as_ref().map(|r| r.config.as_str()));
         write_private(&settings, &applied.settings)?;
         write_private(&mcp, &applied.mcp)?;
+        // The version's model and effort, when the request names none (a
+        // replay names the version's: src/harness/replay.rs).
+        let model = model.or(applied.model.clone());
+        let effort = req.effort.clone().filter(|e| !e.trim().is_empty()).or(applied.effort.clone());
 
         // The process.
         let session_id = uuid4();
@@ -716,7 +744,7 @@ impl Supervisor {
         cmd.arg(&session_id);
         // A restart continues its agent's conversation in a session of its
         // own (Claude Code wants --fork-session with --session-id).
-        let resume = restart.as_ref().and_then(|r| r.resume.clone());
+        let resume = restart.as_ref().and_then(|r| r.resume.clone()).or_else(|| req.replay.as_ref().and_then(|r| r.resume.clone()));
         if let Some(r) = &resume {
             cmd.arg("--resume");
             cmd.arg(r);
@@ -730,7 +758,7 @@ impl Supervisor {
             cmd.arg("--model");
             cmd.arg(m);
         }
-        if let Some(e) = req.effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
             cmd.arg("--effort");
             cmd.arg(e);
         }
@@ -756,6 +784,13 @@ impl Supervisor {
         cmd.env("CHLOEDB_WORKBENCH_AGENT", &id);
         // Sixth build: pytest writes a junit report Health reads test by test (src/testruns.rs).
         for (k, v) in crate::testruns::session_env(Path::new(&cwd), &session_dir) {
+            cmd.env(k, v);
+        }
+        // A replay's own environment (src/harness/replay.rs): its memory in
+        // a store of its own, the distiller off. In the process's
+        // environment, not its settings, so its run version is the
+        // version's own.
+        for (k, v) in req.replay.iter().flat_map(|r| r.env.iter()) {
             cmd.env(k, v);
         }
         // A server started from inside a Claude Code session must not make
@@ -828,11 +863,17 @@ impl Supervisor {
         if let Some(m) = &permission_mode {
             extra.insert("permission_mode".into(), json!(m));
         }
+        if let Some(e) = effort.as_deref().filter(|e| crate::goals::EFFORTS.contains(e)) {
+            extra.insert("effort".into(), json!(e));
+        }
         if req.own_permissions == Some(false) {
             extra.insert("own_permissions".into(), json!(false));
         }
         if !carried.is_empty() {
             extra.insert("carried".into(), carried.to_json());
+        }
+        if let Some(r) = &req.replay {
+            extra.insert("replay".into(), r.tag.clone());
         }
         let extra = Json::Object(extra);
         if extra.as_object().is_some_and(|o| !o.is_empty()) {
@@ -840,7 +881,7 @@ impl Supervisor {
         }
         let json = {
             let mut inner = self.inner.lock().unwrap();
-            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()), extra });
+            inner.slots.insert(id.clone(), Slot { agent, term: Some(term.clone()), extra, helpers: Default::default() });
             let how = match (&restart, &resume) {
                 (Some(r), Some(_)) => format!(" (restart of {}, continuing its session)", r.of.id),
                 (Some(r), None) => format!(" (restart of {})", r.of.id),
@@ -919,11 +960,13 @@ impl Supervisor {
     }
 
     /// A hook's report: an event, and the state it implies.
-    pub fn hook(&self, id: &str, hook: Json) -> Result<(), ApiError> {
+    pub fn hook(&self, id: &str, mut hook: Json) -> Result<(), ApiError> {
         let kind = hook.get("hook_event_name").and_then(Json::as_str).ok_or_else(|| ApiError::bad("the hook's JSON has no hook_event_name"))?.to_string();
         if kind.is_empty() || kind.len() > 64 {
             return Err(ApiError::bad("hook_event_name is empty or too long"));
         }
+        // A sub-agent's answer stays whole (and so readable) as an event.
+        crate::helpers::shrink(&mut hook);
         let tool = hook.get("tool_name").and_then(Json::as_str).map(str::to_string);
         let summary = summarize(&kind, &hook);
         let data = serde_json::to_string(&hook).ok();
@@ -932,6 +975,7 @@ impl Supervisor {
         if let Some(sid) = hook.get("session_id").and_then(Json::as_str).filter(|s| !s.is_empty()) {
             slot.agent.session_id = Some(sid.to_string());
         }
+        slot.helpers.apply(&kind, &hook, now_ms());
         let a = &mut slot.agent;
         match kind.as_str() {
             "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => Self::set_state(a, "working"),
@@ -1098,7 +1142,7 @@ impl Supervisor {
 
     /// The transcript of an agent's session, when it has one with lines:
     /// the last `transcript_path` its hooks reported.
-    fn transcript_of(&self, id: &str) -> Option<PathBuf> {
+    pub(crate) fn transcript_of(&self, id: &str) -> Option<PathBuf> {
         let evs = self.db.all_events(id).ok()?;
         evs.iter().rev().filter_map(|e| e.data.as_deref()).filter_map(|d| serde_json::from_str::<Json>(d).ok()).find_map(|d| {
             let p = PathBuf::from(d["transcript_path"].as_str()?);
@@ -1113,14 +1157,40 @@ impl Supervisor {
         evs.iter().rev().find(|e| HOOKS.contains(&e.kind.as_str())).is_some_and(|e| e.kind != "Stop")
     }
 
-    /// Every agent's row.
+    /// Every agent's row, but the harness's replays (src/harness/replay.rs):
+    /// they play a case in a sandbox and are shown on their run's page.
     pub fn agent_rows(&self) -> Vec<Agent> {
+        self.inner.lock().unwrap().slots.values().filter(|s| !Self::replays(s)).map(|s| s.agent.clone()).collect()
+    }
+
+    /// Every agent's row, the replays too.
+    pub fn all_agent_rows(&self) -> Vec<Agent> {
         self.inner.lock().unwrap().slots.values().map(|s| s.agent.clone()).collect()
+    }
+
+    fn replays(s: &Slot) -> bool {
+        s.extra.get("replay").is_some()
+    }
+
+    /// Whether an agent is a replay of the harness's.
+    pub fn is_replay(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().slots.get(id).is_some_and(Self::replays)
     }
 
     /// An agent as the API answers it, or `None`.
     pub fn agent_json_of(&self, id: &str) -> Option<Json> {
         Self::agent_json(&self.inner.lock().unwrap(), id)
+    }
+
+    /// `GET /api/agents/:id/helpers`: the sub-agents its session started
+    /// with Claude Code's Agent tool, read from its events, oldest first.
+    pub fn helpers_json(&self, id: &str) -> Result<Json, ApiError> {
+        if self.agent_row(id).is_none() {
+            return Err(ApiError::not_found(format!("no agent {id}")));
+        }
+        let alive = self.is_running(id);
+        let hs = crate::helpers::of_events(&self.all_events(id)?);
+        Ok(json!({ "agent": id, "running": hs.running_of(alive), "helpers": hs.to_json(alive) }))
     }
 
     /// Every event of an agent, oldest first, with its data.
@@ -1378,7 +1448,7 @@ pub fn settings_json(exe: &str) -> Json {
     let command = format!("{} hook", shell_quote(exe));
     let hook = json!([{ "type": "command", "command": command, "timeout": 5 }]);
     let mut hooks = serde_json::Map::new();
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "SubagentStop", "SessionEnd"] {
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"] {
         let entry = if matches!(ev, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") { json!({ "matcher": "*", "hooks": hook }) } else { json!({ "hooks": hook }) };
         hooks.insert(ev.to_string(), json!([entry]));
     }
