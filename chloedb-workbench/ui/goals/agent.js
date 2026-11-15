@@ -7,6 +7,8 @@
 // Type, and the banner says which.
 import { h, useStyle, btn, kc, icon, stateDot, since, avatar, churnBar } from "/levels/common.js";
 
+const MODE_WORDS = { plan: "plan mode", default: "asks", acceptEdits: "accepts edits", auto: "auto mode", bypassPermissions: "bypasses permissions" };
+
 export const TABS = [["progress", "Progress"], ["changes", "Changes"], ["preview", "Preview"], ["terminal", "Terminal"], ["events", "Events"]];
 
 /** The header. `o`: {group, project, stat: {files, added, removed}, onStop, onRestart, onTell, ship} */
@@ -42,7 +44,9 @@ export function head(a, o = {}) {
         st && (st.added || st.removed) ? h("span", {}, churnBar(st.added, st.removed), st.files ? ` · ${st.files} file${st.files === 1 ? "" : "s"}` : "") : null,
         a.state_since && !m ? h("span", { class: "num" }, `${word} for ${since(a.state_since)}`) : null,
         m && o.ship ? h("a", { class: "lv-link", href: o.ship }, "Merged: Undo or see what went in") : null,
-        a.read_only ? h("span", {}, "read-only") : null)),
+        a.read_only ? h("span", {}, "read-only") : null,
+        a.permission_mode ? h("span", { title: "Claude Code's permission mode, chosen at start" }, MODE_WORDS[a.permission_mode] || a.permission_mode) : null,
+        a.carried && a.carried.rules ? h("span", { title: "From this project's .claude/settings.local.json, as a regular Claude Code session has them" }, `${a.carried.rules} of your rules`) : null)),
     h("div", { class: "ag-act" }, primary, menu));
 }
 
