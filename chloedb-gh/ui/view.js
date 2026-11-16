@@ -411,6 +411,9 @@ function card(title, right, ...kids) { return h("div", { class: "gx-card" }, h("
 const langColor = (l, i = 0) => LANG_COLORS[l] || PALETTE[i % PALETTE.length];
 function lang(l) { return l ? h("span", { class: "gx-lang" }, h("i", { style: { background: langColor(l) } }), l) : null; }
 function word(w) { return w ? h("span", { class: `gx-word ${w}` }, w) : null; }
+// Stars as last reported by GitHub in an event (until payloads were cut in
+// October 2025), or as counted from the events, whichever is more.
+const starsOf = (r) => Math.max(r.stars || 0, r.stars_api || 0);
 function topics(t) { return String(t || "").split(",").map((x) => x.trim()).filter(Boolean); }
 
 // --------------------------------------------------------------- charts
@@ -454,8 +457,12 @@ function lineChart(series, { height = 220, fy = short, fx = (x) => String(x), ma
     const v = (ymax / 1.08) * (i / 4), y = Y(v);
     g.append(svg("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }), svg("text", { x: L - 6, y: y + 3.5, "text-anchor": "end" }, fy(v)));
   }
-  const ticks = 6;
-  for (let i = 0; i <= ticks; i++) { const x = x0 + ((x1 - x0) * i) / ticks; g.append(svg("text", { x: X(x), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle" }, fx(x))); }
+  // Years (small whole numbers) get a tick each, or every few; time gets six.
+  const whole = xs.every((x) => Number.isInteger(x)) && x1 - x0 <= 60;
+  const tx = [];
+  if (whole) { const st = Math.max(1, Math.ceil((x1 - x0) / 10)); for (let x = x0; x <= x1; x += st) tx.push(x); }
+  else for (let i = 0; i <= 6; i++) tx.push(x0 + ((x1 - x0) * i) / 6);
+  tx.forEach((x, i) => g.append(svg("text", { x: X(x), y: H - 6, "text-anchor": tx.length > 1 && i === 0 ? "start" : tx.length > 1 && i === tx.length - 1 ? "end" : "middle" }, fx(x))));
   series.forEach((s, i) => {
     const c = s.color || PALETTE[i % PALETTE.length];
     const pts = s.points.slice().sort((a, b) => a[0] - b[0]);
@@ -532,9 +539,9 @@ function repoItem(app, r, { spark: sp = null, extra = null, why = null, compact 
     r.description ? h("div", { class: "ds" }, r.description) : null,
     h("div", { class: "mt" },
       extra,
-      h("span", { title: "stars in the archive" }, `★ ${short(r.stars)}`),
+      h("span", { title: `${fmt(starsOf(r))} stars` }, `★ ${short(starsOf(r))}`),
       lang(r.language),
-      r.forks ? h("span", {}, `${short(r.forks)} forks`) : null,
+      r.forks ? h("span", {}, `${short(r.forks)} fork${r.forks === 1 ? "" : "s"}`) : null,
       r.first_seen ? h("span", {}, `since ${my(r.first_seen)}`) : null,
       r.archived ? word("archived") : null,
       sp),
@@ -733,7 +740,7 @@ async function repoPage(app, main, name, alive, tab0) {
   for (const s of hn) events.push({ t: Date.parse(s.created) / 1000, kind: "hn", title: `“${s.title}” on Hacker News, ${fmt(s.points)} points`, url: s.url, sub: `${fmt(s.comments)} comments` });
   for (const m of j.spikes.months) if (!events.some((e) => Math.abs(e.t - m.month) < 40 * 86400)) events.push({ t: m.month, kind: "month", title: `${fmt(m.stars)} stars in ${my(m.month)}`, sub: `${Math.round(m.stars / Math.max(1, m.usual))}× a usual month${m.releases ? `, ${m.releases} release${m.releases > 1 ? "s" : ""}` : ""}` });
   events.sort((a, b) => a.t - b.t);
-  const marks = events.slice(-8).map((e, i) => ({ ...e, n: i + 1 }));
+  const marks = events.slice(-8).map((e, i) => ({ ...e, x: e.t, n: i + 1 }));
   const kept = (j.people_year || []).slice(0, 3).map((p) => p.login).filter(Boolean);
   const owner = r.name.split("/")[0];
   const tabs = [
@@ -776,8 +783,8 @@ async function repoPage(app, main, name, alive, tab0) {
       tabBar, tabBody),
     h("div", { class: "gx-right" },
       h("div", { class: "gx-tiles" },
-        h("div", { class: "gx-tile" }, h("b", {}, short(r.stars)), h("span", {}, "stars")),
-        h("div", { class: "gx-tile" }, h("b", {}, short(r.forks)), h("span", {}, "forks")),
+        h("div", { class: "gx-tile", title: `${fmt(r.stars)} stars in the events since 2011; ${fmt(r.stars_api)} as GitHub last reported` }, h("b", {}, short(starsOf(r))), h("span", {}, "stars")),
+        h("div", { class: "gx-tile" }, h("b", {}, short(Math.max(r.forks || 0, r.forks_api || 0))), h("span", {}, "forks")),
         h("div", { class: "gx-tile" }, h("b", {}, fmt(v.people_year)), h("span", {}, "people this year"))),
       card("Vital signs", null, h("div", { class: "gx-vs" },
         h("div", { class: "row" }, h("span", { class: "k" }, "Is it alive", h("small", {}, v.last_work ? `last work ${dmy(v.last_work)}` : "no work seen")), h("span", { class: `v ${v.word === "active" ? "good" : v.word === "dormant" || v.word === "slowing" ? "bad" : ""}` }, v.word)),

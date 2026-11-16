@@ -314,6 +314,7 @@ pub async fn ask(c: &Ctx<'_>, q: &str, latest: i64) -> Result<Value> {
             let who = pages::logins(c, &pages::ids(&rows, "actor")).await;
             let rows: Vec<Value> = rows
                 .iter()
+                .filter(|x| !who.get(&x.i("actor")).is_some_and(|l| l.ends_with("[bot]")))
                 .map(|x| {
                     let mut v = Value::Object(x.clone());
                     v["login"] = json!(who.get(&x.i("actor")).cloned().unwrap_or_default());

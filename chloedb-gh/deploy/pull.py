@@ -6,7 +6,7 @@ needs into its own tree, keeping the paths (TABLE/sN/DAY.parquet, so that
 the days of every node sit side by side in one folder a table):
 
     python3 pull.py --peers 10.0.0.2,10.0.0.3 --shard 1 --into /work/in
-    python3 pull.py --peers ... --shard all --tables actors,names --into /work/maps
+    python3 pull.py --peers ... --shard all --tables actors,names --until 2016-12-31 --into /work/maps
 
 Files already there at the same size are skipped, so a pull started again
 goes on. Standard library only.
@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--shard", required=True, help="a shard number, or all")
     ap.add_argument("--shards", type=int, default=4)
     ap.add_argument("--tables", default="", help="only these tables (comma-separated)")
+    ap.add_argument("--until", default="", help="only days up to this one (YYYY-MM-DD)")
     ap.add_argument("--into", required=True)
     ap.add_argument("--jobs", type=int, default=8)
     a = ap.parse_args()
@@ -51,10 +52,12 @@ def main():
         base = f"http://{peer}:{a.port}"
         for s in shards:
             for line in get(f"{base}/manifest-s{s}.txt").decode().splitlines():
-                path = line.strip().removeprefix("./")
-                if not path or (tables and path.split("/")[0] not in tables):
+                size, _, rel = line.strip().partition(" ")
+                rel = rel.removeprefix("./")
+                if not rel or (tables and rel.split("/")[0] not in tables):
                     continue
-                size, _, rel = path.partition(" ")
+                if a.until and os.path.basename(rel).removesuffix(".parquet") > a.until:
+                    continue
                 todo.append((base, rel, int(size)))
     total = sum(t[2] for t in todo)
     print(f"pull: {len(todo)} files, {total / 1e9:.1f} GB", flush=True)

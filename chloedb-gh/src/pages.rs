@@ -23,7 +23,7 @@ pub const DAY: i64 = 86_400;
 pub const YEAR: i64 = 31_556_952;
 
 /// The columns of a repo as the page lists it.
-pub const REPO_COLS: &str = "repo, name, owner, description, language, topics, license, homepage, stars, forks, stars_api, created, first_seen, archived, fork";
+pub const REPO_COLS: &str = "repo, name, owner, description, language, topics, license, homepage, stars, forks, stars_api, forks_api, created, first_seen, archived, fork";
 
 /// What people do in a repo, as opposed to starring or forking it.
 pub const WORK: &str = "('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')";
@@ -130,7 +130,7 @@ pub async fn search(c: &Ctx<'_>, s: &Search, latest: i64) -> Result<Value> {
     let order = match s.sort.as_str() {
         "stars" => "stars DESC".to_string(),
         "new" => "first_seen DESC".to_string(),
-        _ => format!("({TEXT_RANK} + 5.0 * coalesce(similarity(emb, :v), 0)) * pow(stars + 1, 0.3) DESC"),
+        _ => format!("(0.6 * {TEXT_RANK} + 18.0 * coalesce(similarity(emb, :v), 0)) * pow(stars + 1, 0.15) DESC"),
     };
     let mut p = params.clone();
     p["ids"] = json!(cand);
@@ -187,8 +187,8 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
         return Ok(json!({"found": false, "id": id}));
     };
     let (recent, ever, gazers) = tokio::join!(
-        c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 20"), json!({"id": id, "since": year_ago})),
-        c.soft("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 20"), p.clone()),
+        c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), json!({"id": id, "since": year_ago})),
+        c.soft("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone()),
         c.soft("its latest stargazers", "SELECT actor FROM gh_events WHERE repo = :id AND kind = 'star' ORDER BY t DESC LIMIT 1500", p.clone()),
     );
     let mut people: Vec<i64> = ids(&recent, "actor");
@@ -197,7 +197,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let gz = ids(&gazers, "actor");
     let (who, alike, co) = tokio::join!(
         logins(c, &people),
-        c.soft("repos that do the same job (by meaning)", format!("SELECT {REPO_COLS} FROM gh_repos WHERE repo <> :id AND stars >= 10 ORDER BY similarity(emb, :v) * pow(stars + 1, 0.15) DESC LIMIT 12"), json!({"id": id, "v": {"embed": text, "field": "emb", "table": "gh_repos"}})),
+        c.soft("repos that do the same job (by meaning)", format!("SELECT {REPO_COLS}, similarity(emb, :v) AS sim FROM gh_repos WHERE repo <> :id AND stars >= 10 ORDER BY similarity(emb, :v) * pow(stars + 1, 0.1) DESC LIMIT 40"), json!({"id": id, "v": {"embed": text, "field": "emb", "table": "gh_repos"}})),
         async {
             if gz.len() < 20 {
                 return Vec::new();
@@ -221,7 +221,40 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
         })
         .collect();
     costar.sort_by(|a, b| b["lift"].as_f64().partial_cmp(&a["lift"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    // Alternatives: what does the same job by meaning, raised when the same
+    // people starred it too (people star the alternatives they weigh), and
+    // co-starred repos close enough in meaning.
+    let lifts: HashMap<i64, f64> = costar.iter().map(|v| (v["repo"].as_i64().unwrap_or(0), v["lift"].as_f64().unwrap_or(0.0))).collect();
+    let max_lift = lifts.values().cloned().fold(0.0, f64::max).max(1e-9);
+    let alike_ids: HashSet<i64> = ids(&alike, "repo").into_iter().collect();
+    let extra: Vec<i64> = lifts.keys().copied().filter(|x| !alike_ids.contains(x)).collect();
+    let extra_sims = if extra.is_empty() { Vec::new() } else { c.soft("how close in meaning the co-starred repos are", "SELECT repo, similarity(emb, :v) AS sim FROM gh_repos WHERE repo IN (:ids)", json!({"ids": extra, "v": {"embed": text, "field": "emb", "table": "gh_repos"}})).await };
+    let top_sim = alike.iter().map(|r| r.f("sim")).fold(0.0, f64::max);
+    let mut alts: Vec<Value> = alike.iter().map(obj).collect();
+    for e in &extra_sims {
+        if let Some(v) = costar.iter().find(|v| v["repo"].as_i64() == Some(e.i("repo"))) {
+            let mut v = v.clone();
+            v["sim"] = json!(e.f("sim"));
+            alts.push(v);
+        }
+    }
+    let score = |v: &Value| {
+        let sim = v["sim"].as_f64().unwrap_or(0.0);
+        let lift = lifts.get(&v["repo"].as_i64().unwrap_or(0)).copied().unwrap_or(0.0) / max_lift;
+        sim * (1.0 + 0.8 * lift)
+    };
+    alts.retain(|v| v["sim"].as_f64().unwrap_or(0.0) >= top_sim * 0.72);
+    for v in alts.iter_mut() {
+        v["costarred"] = json!(lifts.contains_key(&v["repo"].as_i64().unwrap_or(0)));
+    }
+    alts.sort_by(|a, b| score(b).partial_cmp(&score(a)).unwrap_or(std::cmp::Ordering::Equal));
+    alts.truncate(12);
     costar.truncate(12);
+    // Bots (logins ending in "[bot]") do much of the work in big repos:
+    // who keeps a repo going, and its bus factor, are about people.
+    let is_bot = |r: &Row| who.get(&r.i("actor")).is_some_and(|l| l.ends_with("[bot]"));
+    let recent: Vec<Row> = recent.into_iter().filter(|r| !is_bot(r)).collect();
+    let ever: Vec<Row> = ever.into_iter().filter(|r| !is_bot(r)).collect();
     let named = |rows: &[Row]| -> Vec<Value> {
         rows.iter()
             .map(|x| {
@@ -237,7 +270,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
         "found": true, "repo": obj(&r), "months": months.iter().map(obj).collect::<Vec<_>>(), "days": days.iter().map(obj).collect::<Vec<_>>(),
         "names": names.iter().map(obj).collect::<Vec<_>>(),
         "work": last.first().map(obj), "people_year": named(&recent), "people_ever": named(&ever),
-        "alike": alike.iter().map(obj).collect::<Vec<_>>(), "costarred": costar, "stargazers_sampled": gz.len(),
+        "alike": alts, "costarred": costar, "stargazers_sampled": gz.len(),
         "vitals": vitals, "spikes": spikes, "latest": latest,
     }))
 }
@@ -384,7 +417,8 @@ pub async fn rising(c: &Ctx<'_>, at: i64, days: i64, hn: Option<&crate::api::Hn>
             let mut why = Vec::new();
             let first = i.i("first_seen");
             if first > b0 {
-                why.push(json!({"kind": "new", "text": format!("new: first seen {} days before", ((at - first) / DAY).max(0))}));
+                let d = ((at - first) / DAY).max(0);
+                why.push(json!({"kind": "new", "text": match d { 0 => "new: first seen that day".to_string(), 1 => "new: first seen the day before".to_string(), d => format!("new: first seen {d} days before") }}));
             }
             if let Some(n) = rel.get(&id) {
                 why.push(json!({"kind": "release", "text": if *n == 1 { "a release in the window".to_string() } else { format!("{n} releases in the window") }}));
@@ -472,7 +506,8 @@ pub async fn trends(c: &Ctx<'_>, kind: &str, names: &[String], latest: i64) -> R
         })
         .collect();
     growth.sort_by(|a, b| b["change"].as_f64().partial_cmp(&a["change"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
-    let falling: Vec<Value> = growth.iter().rev().take(8).cloned().collect();
+    let falling: Vec<Value> = growth.iter().rev().filter(|g| g["change"].as_f64().unwrap_or(0.0) < 0.0).take(8).cloned().collect();
+    growth.retain(|g| g["change"].as_f64().unwrap_or(0.0) > 0.0);
     growth.truncate(12);
     Ok(json!({"kind": kind, "picked": picked, "lines": lines, "rising": growth, "falling": falling, "top": now.iter().take(30).map(obj).collect::<Vec<_>>(), "this_year": this_year}))
 }
