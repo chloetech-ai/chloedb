@@ -19,10 +19,12 @@ Goodreads id joins the book of its title. A comment names a work when it
   - links it,
   - uses its short name (SICP, DDIA, CLRS, TAOCP, GEB),
   - writes its title as a title, each word capitalised ("Getting Things
-    Done", not "getting things done"), the title being of three words or
-    more besides small ones; a title of two such words also needs a word
-    about books or papers in the comment,
+    Done", not "getting things done"), beside a word about books or papers
+    (book, read, author, paper, arXiv...); a title of five words or more
+    besides small ones needs no such word,
   - or writes the title, in any case, beside one of its authors' names,
+    which is the only way to name a title of one or two such words
+    ("Steve Jobs", "Deep Learning"),
 
 and a paper counts only from the year of its arXiv id. The statement that
 found a work's candidates, the rule and how many each part of it kept are
@@ -47,13 +49,33 @@ class Strata:
     def __init__(self, url, token):
         self.url, self.token = url.rstrip('/'), token
 
-    def post(self, path, body, timeout=600):
+    def post(self, path, body, timeout=600, tries=6):
+        """A request, tried again on a dropped connection, a 429 or a 5xx."""
         h = {'content-type': 'application/json', **({'Authorization': 'Bearer ' + self.token} if self.token else {})}
-        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), headers=h)
-        return json.load(urllib.request.urlopen(req, timeout=timeout))
+        for i in range(tries):
+            try:
+                req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), headers=h)
+                return json.load(urllib.request.urlopen(req, timeout=timeout))
+            except urllib.error.HTTPError as e:
+                if e.code != 429 and e.code < 500 or i == tries - 1:
+                    raise
+            except (OSError, ValueError):
+                if i == tries - 1:
+                    raise
+            time.sleep(2 ** i)
 
     def scroll(self, sql, params=None, most=None):
-        """Every row of a statement, a page of 5,000 at a time."""
+        """Every row of a statement, a page of 5,000 at a time (a lost
+        cursor starts the statement again)."""
+        for attempt in range(3):
+            try:
+                return list(self._scroll(sql, params, most))
+            except (OSError, ValueError, urllib.error.HTTPError):
+                if attempt == 2:
+                    raise
+                time.sleep(5)
+
+    def _scroll(self, sql, params, most):
         j = self.post('/v1/query', {'sql': sql, 'params': params or {}, 'page_size': 5000, 'keep_alive_ms': 300000, 'timeout_ms': 600000})
         cols = None
         n = 0
@@ -65,7 +87,7 @@ class Strata:
             c = j.get('cursor')
             if not c or (most and n >= most):
                 return
-            j = self.post('/v1/query', {'cursor': c, 'keep_alive_ms': 300000, 'timeout_ms': 600000})
+            j = self.post('/v1/query', {'cursor': c, 'keep_alive_ms': 300000, 'timeout_ms': 600000}, tries=1)
 
 
 def ascii_(t):
@@ -127,9 +149,9 @@ def names_work(body, w):
         return 'alias'
     if w['names'] and w['any'].search(b) and w['names'].search(b):
         return 'name'
-    if w['sig'] >= 3 and w['cap'].search(b):
+    if w['sig'] >= 5 and w['cap'].search(b):
         return 'title'
-    if w['sig'] == 2 and w['cap'].search(b) and CUE.search(b):
+    if w['sig'] >= 3 and w['cap'].search(b) and CUE.search(b):
         return 'title'
     return None
 
@@ -232,8 +254,19 @@ def step_count(s, d, books, papers):
     groups = groups_of(json.load(open(os.path.join(d, 'works.json'))), json.load(open(os.path.join(d, 'titles.json'))))
     todo = sorted((g for g in groups.values() if g['kind'] == 'book'), key=lambda g: -len(g['who']))[:books] \
         + sorted((g for g in groups.values() if g['kind'] == 'paper'), key=lambda g: -len(g['who']))[:papers]
+    # Works counted by an earlier run that stopped are kept, a line each.
+    part = os.path.join(d, 'canon.partial.jsonl')
+    done = {}
+    if os.path.exists(part):
+        for line in open(part):
+            r = json.loads(line); done[r['_key']] = r
     rows, t0 = [], time.time()
+    pf = open(part, 'a')
     for i, g in enumerate(todo):
+        gk = g['ids'][0]
+        if gk in done:
+            rows.append({k: v for k, v in done[gk].items() if k != '_key'})
+            continue
         st = norm(g['title'])
         sig = len([x for x in st.split() if x not in STOP])
         names = last_names(g['authors'])
@@ -266,7 +299,7 @@ def step_count(s, d, books, papers):
         ys = {str(y): {'n': v[0], 'people': len(v[1])} for y, v in sorted(years.items()) if y}
         top = [r['id'] for r, _ in sorted(kept, key=lambda x: -(x[0].get('pop') or 0))[:8]]
         rule = ('a comment counts when it links the work' + (', uses its short name (' + ', '.join(aliases) + ')' if aliases else '')
-                + ((', writes the title with each word capitalised' + (' beside a word about books or papers' if sig == 2 else '')) if sig >= 2 else '')
+                + ((', writes the title with each word capitalised' + (' beside a word about books or papers' if sig < 5 else '')) if sig >= 3 else '')
                 + (', or writes the title beside ' + ' or '.join(names) if names else '') + (f'; and is from {since} or later, when the paper appeared' if since else ''))
         kid = g['ids'][0] if g['kind'] == 'paper' else 'book:' + re.sub(r'[^a-z0-9]+', '-', st)[:60] + ('-' + names[0].lower() if names else '')
         url = f"https://arxiv.org/abs/{g['arxiv']}" if g['kind'] == 'paper' else (f"https://openlibrary.org/isbn/{g['ids'][0][5:]}" if g['ids'][0].startswith('book:') else '')
@@ -275,9 +308,12 @@ def step_count(s, d, books, papers):
                      'first': min(map(int, ys)) if ys else None, 'last': max(map(int, ys)) if ys else None, 'years': json.dumps(ys),
                      'comments': json.dumps(top), 'phrase': where, 'params': json.dumps(params), 'ids': json.dumps(g['ids'][:20]),
                      'rule': rule, 'candidates': cand, 'why': json.dumps(dict(collections.Counter(w for _, w in kept)))})
+        pf.write(json.dumps({**rows[-1], '_key': gk}) + '\n'); pf.flush()
         if i % 50 == 0:
             print(f'count {i}/{len(todo)} {time.time() - t0:.0f} s: {g["title"][:50]}, {rows[-1]["people"]} people', flush=True)
+    pf.close()
     json.dump(rows, open(os.path.join(d, 'canon.json'), 'w'))
+    os.remove(part)
     print(f'count: {len(rows)} works in {time.time() - t0:.0f} s', flush=True)
 
 

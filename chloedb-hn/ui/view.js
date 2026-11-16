@@ -1813,13 +1813,13 @@ async function mindArc(main, app, topic, who, alive) {
       h("div", { class: "hn-sec" }, h("h3", {}, `${pts.length} comments read, oldest first`)),
       pts.map((p) => h("div", { class: "hn-q" },
         h("span", { class: "y" }, String(p.created || "").slice(0, 7)),
-        h("span", { class: "d", style: { background: STANCE(p.stance) }, title: `stance ${p.stance}` }),
+        h("span", { class: "d", style: p.stance == null ? { background: "transparent", border: "1.5px solid var(--muted)" } : { background: STANCE(p.stance) }, title: p.stance == null ? "no view of it in this comment" : `stance ${p.stance}` }),
         h("div", { class: "t" }, p.quote ? h("a", { href: app.href("item", p.id) }, `“${p.quote}”`) : h("a", { href: app.href("item", p.id), style: { color: "var(--muted)" } }, "(no exact quote: the comment)"),
           h("span", { class: "on" }, "on ", h("a", { href: app.href("item", p.story) }, p.story_title || `story ${p.story}`)))))),
     h("aside", { class: "hn-right", style: { display: "block" } },
       h("div", { class: "hn-card" }, h("h4", {}, "Stance, year by year"), stanceLine(a.years, 236, 70)),
       h("div", { class: "hn-card" }, h("h4", {}, "How this was read"), h("div", { style: { fontSize: "12.5px", color: "var(--text-2)" } },
-        `${a.read || pts.length} of ${who}'s comments that BM25 finds most about “${topic}”, three a year at most, read by ${String(a.model || "a model").replace(/^anthropic\//, "")} for where each stands (from −2, against, to 2, for). A quote the comment does not hold word for word is not shown. `,
+        `${a.read || pts.length} of ${who}'s comments that BM25 finds most about “${topic}”, three a year at most, read by ${String(a.model || "a model").replace(/^anthropic\//, "")} for where each stands (from −2, against, to 2, for; a hollow dot is a comment with no view of it, left out of the years). A quote the comment does not hold word for word is not shown. `,
         a.kept ? `Read ${day(a.at)} and kept.` : "Read just now, and kept.")))));
 }
 

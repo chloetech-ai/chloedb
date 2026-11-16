@@ -114,7 +114,7 @@ fn pick(rows: Vec<Row>) -> Vec<Row> {
 fn instructions(topic: &str) -> String {
     format!(
         "You read one Hacker News member's comments about \"{topic}\", oldest first, to see whether their view of it changed over the years.\n\
-For each comment give: its id; stance, a whole number from -2 to 2 for how the writer feels about {topic} itself (-2 strongly against or negative, -1 critical, 0 neutral, mixed or not really about it, 1 favourable, 2 strongly for); and quote, a short phrase of at most 20 words copied exactly from that comment that shows the stance.\n\
+For each comment give: its id; stance, a whole number from -2 to 2 for how the writer feels about {topic} itself (-2 strongly against or negative, -1 critical, 0 neutral or mixed, 1 favourable, 2 strongly for), or null when the comment only mentions {topic} or explains a detail of it without a view of it (a technical answer is null, not 0); and quote, a short phrase of at most 20 words copied exactly from that comment that shows the stance, with no double quotes in it.\n\
 Then: changed (true only if their overall view clearly moved), from and to (their view early and late, a few words each, e.g. \"skeptical of the borrow checker\" and \"ships Rust at work\"), and summary (two sentences on how their view went, in plain words, no praise).\n\
 Answer with JSON only: {{\"comments\":[{{\"id\":1,\"stance\":0,\"quote\":\"...\"}}],\"changed\":false,\"from\":\"...\",\"to\":\"...\",\"summary\":\"...\"}}"
     )
@@ -129,7 +129,39 @@ fn plain(s: &str) -> String {
 fn parse_json(s: &str) -> Option<Value> {
     let a = s.find('{')?;
     let b = s.rfind('}')?;
-    serde_json::from_str(&s[a..=b]).ok()
+    let s = &s[a..=b];
+    let r = repair(s);
+    // A reading cut short by the model's budget: the comments read so far.
+    serde_json::from_str(s).ok().or_else(|| serde_json::from_str(&r).ok()).or_else(|| serde_json::from_str(&format!("{r}]}}")).ok())
+}
+
+/// A model's JSON with double quotes left bare inside a string (a quote
+/// that quotes someone): a `"` in a string that is not followed by `,`,
+/// `}`, `]` or `:` is taken as part of the string.
+fn repair(s: &str) -> String {
+    let cs: Vec<char> = s.chars().collect();
+    let (mut out, mut in_str, mut esc) = (String::with_capacity(s.len() + 16), false, false);
+    for (i, &c) in cs.iter().enumerate() {
+        if in_str && esc {
+            esc = false;
+        } else if in_str && c == '\\' {
+            esc = true;
+        } else if c == '"' {
+            if !in_str {
+                in_str = true;
+            } else {
+                let next = cs[i + 1..].iter().find(|x| !x.is_whitespace());
+                if matches!(next, None | Some(',') | Some('}') | Some(']') | Some(':')) {
+                    in_str = false;
+                } else {
+                    out.push_str("\\\"");
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The model's reading of the comments, checked: a stance of each comment
@@ -141,15 +173,17 @@ pub fn arc_of(read: &Value, comments: &[Row]) -> Value {
     for x in read["comments"].as_array().into_iter().flatten() {
         let Some(id) = x["id"].as_i64() else { continue };
         let Some(r) = by_id.get(&id) else { continue };
-        let stance = x["stance"].as_i64().unwrap_or(0).clamp(-2, 2);
+        // null: the comment has no view of the topic (it is shown, and left out of the years' means).
+        let stance = x["stance"].as_i64().map(|v| v.clamp(-2, 2));
         let quote = x["quote"].as_str().unwrap_or("").trim().to_string();
         let held = !quote.is_empty() && plain(&r.s("body")).contains(&plain(&quote));
         points.push(json!({"id": id, "year": r.i("year"), "created": r.s("created"), "stance": stance, "quote": if held { json!(quote) } else { Value::Null }, "story": r.i("story"), "story_title": r.s("story_title")}));
     }
     let mut years: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
     for p in &points {
+        let Some(st) = p["stance"].as_f64() else { continue };
         let e = years.entry(p["year"].as_i64().unwrap_or(0)).or_default();
-        e.0 += p["stance"].as_f64().unwrap_or(0.0);
+        e.0 += st;
         e.1 += 1.0;
     }
     let ys: Vec<(i64, f64)> = years.iter().map(|(y, (s, n))| (*y, s / n)).collect();
@@ -227,16 +261,29 @@ mod tests {
     }
 
     #[test]
+    fn bare_quotes_inside_a_string_are_read() {
+        let s = r#"Here: {"comments":[{"id":1,"stance":-1,"quote":"the "safe" subset is a lie"}],"changed":false,"from":"a","to":"b","summary":"c"}"#;
+        let v = parse_json(s).unwrap();
+        assert_eq!(v["comments"][0]["quote"], "the \"safe\" subset is a lie");
+        assert_eq!(v["to"], "b");
+        let cut = r#"{"comments":[{"id":1,"stance":-1,"quote":"x"},{"id":2,"stance":1,"quote":"y"},{"id":3,"sta"#;
+        assert_eq!(parse_json(cut).unwrap()["comments"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
     fn quotes_are_the_persons_own_words() {
         let rows = vec![row(1, 2014, "I drool over Rust, too. It is *amazing*."), row(2, 2024, "Rust is far too similar to C++ for my taste.")];
         let read = json!({"comments": [
             {"id": 1, "stance": 2, "quote": "I drool over Rust, too"},
             {"id": 2, "stance": -1, "quote": "Rust is a disaster"},
             {"id": 9, "stance": 1, "quote": "not one of the comments"},
+            {"id": 3, "stance": null, "quote": "the borrow checker"},
         ], "changed": true, "from": "loves it", "to": "finds it too much like C++", "summary": "s"});
+        let rows = [rows, vec![row(3, 2019, "In Rust the borrow checker tracks lifetimes.")]].concat();
         let v = arc_of(&read, &rows);
         let p = v["points"].as_array().unwrap();
-        assert_eq!(p.len(), 2, "a comment that was not read is dropped");
+        assert_eq!(p.len(), 3, "a comment that was not read is dropped");
+        assert!(p[2]["stance"].is_null() && v["years"].as_array().unwrap().len() == 2, "a comment with no view is shown and left out of the years");
         assert_eq!(p[0]["quote"], "I drool over Rust, too");
         assert!(p[1]["quote"].is_null(), "a quote the comment does not hold is dropped");
         assert_eq!(v["shift"], -3.0);

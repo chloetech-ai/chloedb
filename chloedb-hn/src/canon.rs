@@ -6,8 +6,9 @@
 //! or named it in a comment, with those people a year. A comment names a
 //! work when it uses its short name (SICP), writes its title as a title
 //! (each word capitalised: "Getting Things Done", not "getting things
-//! done"), or writes the title beside its author's name; a paper counts
-//! from the year of its arXiv id. `canon/build.py` makes the rows: each
+//! done") beside a word about books or papers, or writes the title beside
+//! its author's name, the only way for a title of one or two words ("Steve
+//! Jobs", "Deep Learning"); a paper counts from the year of its arXiv id. `canon/build.py` makes the rows: each
 //! keeps the statement that found its candidates, the rule that kept them
 //! and how many each part of the rule kept, which the work's page shows.
 
