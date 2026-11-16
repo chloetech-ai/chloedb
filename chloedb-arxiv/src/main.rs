@@ -358,6 +358,8 @@ async fn serve(a: ServeArgs) {
         born: Default::default(),
         spread: Default::default(),
     });
+    // Standing questions are checked each hour.
+    tokio::spawn(api::watch_rounds(svc.clone()));
     {
         // Make the gap finder's list, the topics born lately and the techniques' spread before anyone asks.
         let svc = svc.clone();

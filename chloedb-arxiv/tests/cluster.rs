@@ -326,6 +326,20 @@ async fn two_servers_every_page() {
     assert!(more.iter().take(3).all(|id| rec.contains(id)), "{more:?}");
     assert!(!more.contains(&rec_id(3)) && !more.contains(&rec_id(4)), "{more:?}");
 
+    // A standing question is kept, listed, read as RSS and dropped by its
+    // reader (the made-up papers are from 2024: nothing new to read).
+    let w = post(&http, &app, "/v1/watches", json!({"user": "reader-one", "question": "Tell me when someone uses transformers for sequential recommendation"})).await;
+    let wid = w["id"].as_str().unwrap().to_string();
+    assert_eq!(w["read"], 0, "{w}");
+    let mine = get(&http, &app, "/v1/watches?user=reader-one").await;
+    assert_eq!(ids(&mine["watches"]), vec![wid.clone()], "{mine}");
+    let one = get(&http, &app, &format!("/v1/watches/{wid}?user=reader-one")).await;
+    assert_eq!(one["mine"], true, "{one}");
+    let rss = http.get(format!("{}/watches/{wid}/rss.xml", app.url)).bearer_auth(TOKEN).send().await.unwrap().text().await.unwrap();
+    assert!(rss.contains("sequential recommendation") && rss.contains("<rss"), "{rss}");
+    post(&http, &app, &format!("/v1/watches/{wid}/delete"), json!({"user": "reader-one"})).await;
+    assert!(ids(&get(&http, &app, "/v1/watches?user=reader-one").await["watches"]).is_empty());
+
     // The pages of trends, rising, gaps, new topics, spread and home answer too.
     for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;

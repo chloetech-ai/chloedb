@@ -115,6 +115,11 @@ impl Strata {
         self.post("/v1/sql", &json!({ "sql": sql })).await
     }
 
+    /// As [`Strata::sql`], with parameters (`:name`).
+    pub async fn sql_params(&self, sql: &str, params: Value) -> Result<Value> {
+        self.post("/v1/sql", &json!({ "sql": sql, "params": params })).await
+    }
+
     /// A SELECT's rows, each an object keyed by column.
     pub async fn query(&self, sql: &str, params: Value) -> Result<Vec<Row>> {
         let j = self.post("/v1/query", &json!({ "sql": sql, "params": params, "objects": true })).await?;

@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, gaps, spread, pages, schema, understand};
+use crate::{answer, ask, born, gaps, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -127,6 +127,10 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/issue/:id", get(issue))
         .route("/v1/figure/*id", get(figure))
         .route("/feeds/:id/rss.xml", get(rss))
+        .route("/v1/watches", get(watches).post(add_watch))
+        .route("/v1/watches/:id", get(watch_one))
+        .route("/v1/watches/:id/delete", post(drop_watch))
+        .route("/watches/:id/rss.xml", get(watch_rss))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(svc)
@@ -138,9 +142,11 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// What a reader without the token may do in public: read (What to cite
 /// is a read sent as a POST, a draft being too long for a URL), and keep
-/// their own events, library and feeds.
+/// their own events, library, feeds and standing questions.
 fn public_ok(method: &Method, path: &str) -> bool {
-    method == Method::GET || (method == Method::POST && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue"))))
+    method == Method::GET
+        || (method == Method::POST
+            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
 }
 
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
@@ -908,6 +914,159 @@ async fn rss(State(svc): State<Shared>, Path(id): Path<String>, headers: HeaderM
     Ok(([(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")], body).into_response())
 }
 
+// ------------------------------------------------------- standing questions
+
+#[derive(serde::Deserialize, Default)]
+struct WatchBody {
+    #[serde(default)]
+    user: String,
+    #[serde(default)]
+    question: String,
+}
+
+/// Papers' rows for the matches of a question, newest first.
+async fn with_papers(c: &Ctx<'_>, matches: Vec<crate::strata::Row>) -> Vec<Value> {
+    let ids: Vec<String> = matches.iter().map(|r| r.s("paper")).collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let rows = c.soft("the papers", &format!("SELECT {} FROM ax_papers WHERE id IN (:ids)", search::COLS), json!({"ids": ids})).await;
+    let by: HashMap<String, crate::strata::Row> = rows.into_iter().map(|r| (r.s("id"), r)).collect();
+    matches.into_iter().filter_map(|m| by.get(&m.s("paper")).map(|p| json!({"paper": p, "fit": m.get("fit"), "why": m.s("why"), "at": m.s("at")}))).collect()
+}
+
+async fn watches(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let rows = if a.user.is_empty() { Vec::new() } else { c.gsoft("your questions", "SELECT id, question, created, checked, read, fit FROM ax_watches WHERE owner = :u ORDER BY created DESC LIMIT 50", json!({"u": user_id(&a.user)?})).await };
+    done(&trace, json!({"watches": rows, "per_reader": watch::PER_READER}), t0)
+}
+
+async fn add_watch(State(svc): State<Shared>, Json(b): Json<WatchBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let u = user_id(&b.user)?;
+    let q = b.question.split_whitespace().collect::<Vec<_>>().join(" ");
+    if q.chars().count() < 8 || q.chars().count() > 300 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "a question is 8 to 300 characters".into()));
+    }
+    let (mine, all) = tokio::join!(
+        c.gsoft("your questions", "SELECT COUNT(*) AS n FROM ax_watches WHERE owner = :u", json!({"u": u})),
+        c.gsoft("all questions", "SELECT COUNT(*) AS n FROM ax_watches", Value::Null),
+    );
+    if mine.first().map(|r| r.i("n")).unwrap_or(0) >= watch::PER_READER as i64 {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, format!("a reader keeps {} questions at most: drop one first", watch::PER_READER)));
+    }
+    if all.first().map(|r| r.i("n")).unwrap_or(0) >= watch::IN_ALL as i64 {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "this explorer keeps as many questions as it can check: try again later".into()));
+    }
+    let id = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&u, &q, crate::live::now(), t0.elapsed().as_nanos()).hash(&mut h);
+        format!("w{:012x}", h.finish() & 0xffff_ffff_ffff)
+    };
+    let now = chrono::Utc::now();
+    // The first check reads the closest papers of the last month, so the
+    // question has its answers at once.
+    let since = (now - chrono::Duration::days(30)).to_rfc3339();
+    let got = watch::check(&c, &svc.model, &id, &q, &since, 20, &|| svc.spend(1).map_err(|e| e.1)).await;
+    let (read, fit) = match &got {
+        Ok(k) => (k.read as i64, k.fit as i64),
+        Err(_) => (0, 0),
+    };
+    svc.graph.upsert("ax_watches", vec![json!({"id": id, "owner": u, "question": q, "created": now.to_rfc3339(), "checked": now.to_rfc3339(), "read": read, "fit": fit})]).await?;
+    done(&trace, json!({"id": id, "read": read, "fit": fit, "error": got.err()}), t0)
+}
+
+async fn watch_one(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let row = c.gsoft("the question", "SELECT id, owner, question, created, checked, read, fit FROM ax_watches WHERE id = :w", json!({"w": id})).await.into_iter().next().ok_or_else(|| not_found(&format!("question {id}")))?;
+    let (fits, misses) = tokio::join!(
+        c.gsoft("the papers that answer it", "SELECT paper, fit, why, at, created FROM ax_matches WHERE watch = :w AND fit ORDER BY created DESC LIMIT 100", json!({"w": id})),
+        c.gsoft("the papers read and set aside", "SELECT paper, fit, why, at, created FROM ax_matches WHERE watch = :w AND NOT fit ORDER BY created DESC LIMIT 40", json!({"w": id})),
+    );
+    let (fits, misses) = tokio::join!(with_papers(&c, fits), with_papers(&c, misses));
+    let mine = !a.user.is_empty() && row.s("owner") == a.user;
+    let mut w = row.clone();
+    w.remove("owner");
+    done(&trace, json!({"watch": w, "mine": mine, "fits": fits, "misses": misses}), t0)
+}
+
+async fn drop_watch(State(svc): State<Shared>, Path(id): Path<String>, Json(b): Json<WatchBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let u = user_id(&b.user)?;
+    let row = c.gsoft("whose question it is", "SELECT owner FROM ax_watches WHERE id = :w", json!({"w": id})).await.into_iter().next().ok_or_else(|| not_found(&format!("question {id}")))?;
+    if row.s("owner") != u {
+        return Err(ApiError(StatusCode::FORBIDDEN, "that question is someone else's".into()));
+    }
+    svc.graph.sql_params("DELETE FROM ax_watches WHERE id = :w", json!({"w": id})).await?;
+    let _ = svc.graph.sql_params("DELETE FROM ax_matches WHERE watch = :w", json!({"w": id})).await;
+    done(&trace, json!({"dropped": id}), t0)
+}
+
+async fn watch_rss(State(svc): State<Shared>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, ApiError> {
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let id = id.trim_end_matches(".xml").to_string();
+    let row = c.gsoft("the question", "SELECT question FROM ax_watches WHERE id = :w", json!({"w": id})).await.into_iter().next().ok_or_else(|| not_found(&format!("question {id}")))?;
+    let fits = c.gsoft("the papers that answer it", "SELECT paper, why, created FROM ax_matches WHERE watch = :w AND fit ORDER BY created DESC LIMIT 50", json!({"w": id})).await;
+    let ids: Vec<String> = fits.iter().map(|r| r.s("paper")).collect();
+    let papers: HashMap<String, crate::strata::Row> = if ids.is_empty() { HashMap::new() } else { c.soft("the papers", "SELECT id, title, authors FROM ax_papers WHERE id IN (:ids)", json!({"ids": ids})).await.into_iter().map(|r| (r.s("id"), r)).collect() };
+    let items: Vec<crate::strata::Row> = fits.into_iter().map(|mut m| {
+        if let Some(p) = papers.get(&m.s("paper")) {
+            m.insert("title".into(), json!(p.s("title")));
+            m.insert("authors".into(), json!(p.s("authors")));
+        }
+        m
+    }).collect();
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("localhost");
+    let proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    let body = watch::rss(&id, &row.s("question"), &items, &format!("{proto}://{host}"));
+    Ok(([(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")], body).into_response())
+}
+
+/// Checks every standing question each hour against the papers of the
+/// last week (the live feed brings them in rounds, and a paper can arrive
+/// days after the date it carries), within the day's allowance.
+pub async fn watch_rounds(svc: Shared) {
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    loop {
+        let trace = Trace::new();
+        let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+        let all = c.gsoft("the questions", &format!("SELECT id, owner, question, created FROM ax_watches ORDER BY checked ASC LIMIT {}", watch::IN_ALL), Value::Null).await;
+        let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+        let (mut read, mut fit) = (0, 0);
+        for w in &all {
+            let id = w.s("id");
+            match watch::check(&c, &svc.model, &id, &w.s("question"), &since, watch::CLOSEST, &|| svc.spend(1).map_err(|e| e.1)).await {
+                Ok(k) => {
+                    read += k.read;
+                    fit += k.fit;
+                    let (r, f) = tokio::join!(
+                        c.gsoft("papers read for it", "SELECT COUNT(*) AS n FROM ax_matches WHERE watch = :w", json!({"w": id})),
+                        c.gsoft("papers that answer it", "SELECT COUNT(*) AS n FROM ax_matches WHERE watch = :w AND fit", json!({"w": id})),
+                    );
+                    // An upsert writes the whole row.
+                    let _ = svc.graph.upsert("ax_watches", vec![json!({"id": id, "owner": w.s("owner"), "question": w.s("question"), "created": w.s("created"), "checked": chrono::Utc::now().to_rfc3339(), "read": r.first().map(|x| x.i("n")).unwrap_or(0), "fit": f.first().map(|x| x.i("n")).unwrap_or(0)})]).await;
+                }
+                Err(e) => {
+                    tracing::warn!("standing question {id}: {e}");
+                    if e.contains("today's") {
+                        break;
+                    }
+                }
+            }
+        }
+        if !all.is_empty() {
+            eprintln!("chloedb-arxiv: {} standing questions checked, {read} papers read, {fit} answer one", all.len());
+        }
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,6 +1076,9 @@ mod tests {
         assert!(public_ok(&Method::GET, "/v1/gaps"));
         assert!(public_ok(&Method::POST, "/v1/cite"));
         assert!(public_ok(&Method::POST, "/v1/feeds/f1/issue"));
+        assert!(public_ok(&Method::POST, "/v1/watches"));
+        assert!(public_ok(&Method::POST, "/v1/watches/w1/delete"));
+        assert!(!public_ok(&Method::POST, "/v1/watches/w1"));
         assert!(!public_ok(&Method::POST, "/v1/sql"));
         assert!(!public_ok(&Method::DELETE, "/v1/feeds/f1"));
     }

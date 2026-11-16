@@ -208,7 +208,17 @@ const CSS = `
 .ax-gap .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); margin: 8px 0; overflow: hidden; }
 .ax-gap .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .ax-gap .s { font-size: 13px; color: var(--muted); line-height: 1.45; }
-.ax-gdet.hide, .ax-firsts.hide { display: none; }
+.ax-gdet.hide, .ax-firsts.hide, .ax-misses.hide { display: none; }
+.ax-wform { display: flex; gap: 8px; margin: 14px 0 8px; }
+.ax-wform input { flex: 1; min-width: 0; font: 14px/1.4 var(--sans); padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-wform input:focus { outline: none; border-color: var(--accent); }
+.ax-wex { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12.5px; color: var(--muted); align-items: center; }
+.ax-wex button { font: inherit; font-size: 12.5px; border: 1px dashed var(--line-2); background: none; color: var(--text-2); border-radius: 999px; padding: 2px 10px; cursor: pointer; text-align: left; }
+.ax-wex button:hover { border-color: var(--accent); color: var(--accent); }
+.ax-wq { font-size: 22px; font-weight: 650; line-height: 1.3; margin: 0 0 6px; letter-spacing: -0.01em; }
+.ax-wacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.ax-p .why { font-size: 13px; color: var(--text-2); margin-top: 4px; }
+@media (max-width: 780px) { .ax-wform { flex-direction: column; } .ax-wq { font-size: 19px; } }
 .ax-citebox { width: 100%; box-sizing: border-box; font: 13.5px/1.5 var(--sans); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); resize: vertical; margin-top: 10px; }
 .ax-citerefs summary { cursor: pointer; color: var(--text-2); font-size: 13.5px; margin-bottom: 6px; }
 .ax-gdet .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 22px; }
@@ -601,7 +611,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["foryou", "For you"], ["feeds", "Feeds"], ["library", "Library"], ["cite", "What to cite"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["library", "Library"], ["cite", "What to cite"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -679,6 +689,7 @@ function render(el, ctx) {
         case "foryou": return await forYouPage(app, main, alive);
         case "library": return await libraryPage(app, main, alive);
         case "feeds": return await feedsPage(app, main, alive);
+        case "watch": return await (arg ? watchOne(app, main, arg, alive) : watchPage(app, main, alive));
         case "feed": return await studioPage(app, main, arg, alive);
         case "issue": return await issuePage(app, main, arg, alive);
         case "about": return aboutPage(app, main);
@@ -1261,6 +1272,74 @@ async function spreadPage(app, main, arg, alive) {
   };
   fill(out, shown.length ? shown.slice(0, 40).map(card) : h("div", { class: "ax-empty" }, "Nothing reached this field."),
     h("p", { class: "s", style: { marginTop: "18px", color: "var(--muted)", fontSize: "12.5px" } }, `How it works: each technique's papers are counted by primary category and year in SQL. It reached a category in the first year with five or more of its papers there and a twentieth of its best year there, two years running. It grew up in the earliest of the categories that hold a twentieth of its papers; earlier uses of the same words in small categories, often another meaning, are left out. The first papers are its most cited in a category in the year it arrived and the next. Made from ${fmt(j.made_queries)} queries in ${((j.made_ms || 0) / 1000).toFixed(1)} s, kept 12 hours.`));
+}
+
+// ------------------------------------------------------ standing questions
+
+const WATCH_EXAMPLES = [
+  "Tell me when someone uses diffusion models for weather forecasting",
+  "New benchmarks that test LLM agents on real software engineering tasks",
+  "Graph neural networks applied to power grid operation",
+  "Quantum error correction codes demonstrated on real hardware",
+];
+
+async function watchPage(app, main, alive) {
+  fill(main, skel(6));
+  const j = await app.api(`/v1/watches?user=${enc(app.user)}`);
+  if (!alive()) return;
+  const inp = h("input", { type: "text", maxlength: 300, placeholder: WATCH_EXAMPLES[0], "aria-label": "Your question" });
+  const btn = h("button", { class: "ax-btn pri" }, "Watch");
+  const msg = h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", minHeight: "18px", margin: "4px 0" } });
+  const go = async () => {
+    const q = inp.value.trim() || inp.placeholder;
+    btn.disabled = true;
+    fill(msg, "Reading the closest papers of the last month against your question…");
+    try {
+      const r = await app.api("/v1/watches", { body: { user: app.user, question: q } });
+      location.hash = app.href("watch", r.id);
+    } catch (e) { fill(msg, h("span", { class: "ax-err" }, String(e.message || e))); btn.disabled = false; }
+  };
+  btn.addEventListener("click", go);
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const mine = j.watches || [];
+  const row = (w) => h("li", { class: "ax-p compact" },
+    h("div", { class: "ttl" }, h("a", { href: app.href("watch", w.id) }, w.question)),
+    h("div", { class: "meta" }, h("span", {}, `${fmt(w.fit || 0)} answer it`), h("span", {}, `${fmt(w.read || 0)} papers read`), h("span", {}, `checked ${ago(w.checked)}`), h("a", { href: `watches/${w.id}/rss.xml`, target: "_blank" }, "RSS")));
+  fill(main, h("div", { style: { maxWidth: "900px" } },
+    h("div", { class: "ax-ph" }, h("h1", {}, "Standing questions"), h("div", { class: "au" }, "Ask once, and every new paper that answers it comes to you. Every hour the papers of the last week are searched for your question, and the closest are read by a model against it; those that answer it land here and in your RSS reader, each with a sentence on why.")),
+    h("div", { class: "ax-wform" }, inp, btn), msg,
+    h("div", { class: "ax-wex" }, h("span", {}, "For example"), WATCH_EXAMPLES.map((x) => h("button", { onclick: () => { inp.value = x; inp.focus(); } }, x))),
+    sec("Your questions", h("span", { class: "s", style: { fontSize: "12px", color: "var(--muted)" } }, `${mine.length} of ${j.per_reader || 10}`)),
+    mine.length ? h("ul", { class: "ax-list" }, mine.map(row)) : h("div", { class: "ax-empty" }, "None yet: ask one above."),
+    h("p", { class: "s", style: { marginTop: "18px", color: "var(--muted)", fontSize: "12.5px" } }, "How it works: a question is searched as a query is, by all of its words, most of them and its meaning, over the papers of the last week, fused by rank. The fifteen closest that were not read for it yet go to a model in one call, which says for each whether it does what the question asks, and why. Every verdict is kept, so no paper is read twice for a question and an hour with nothing new calls no model. Your questions are kept under this browser's reader id.")));
+}
+
+async function watchOne(app, main, id, alive) {
+  fill(main, skel(8));
+  const j = await app.api(`/v1/watches/${enc(id)}?user=${enc(app.user)}`);
+  if (!alive()) return;
+  const w = j.watch || {};
+  const rss = new URL(`watches/${id}/rss.xml`, location.href.split("#")[0]).href;
+  const copy = h("button", { class: "ax-btn" }, "Copy RSS link");
+  copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(rss); fill(copy, "Copied"); } catch { fill(copy, rss); } });
+  const acts = h("div", { class: "ax-wacts" }, h("a", { class: "ax-btn pri", href: rss, target: "_blank" }, "RSS feed"), copy);
+  if (j.mine) {
+    const stop = h("button", { class: "ax-btn ghost" }, "Stop watching");
+    stop.addEventListener("click", async () => { stop.disabled = true; try { await app.api(`/v1/watches/${enc(id)}/delete`, { body: { user: app.user } }); location.hash = app.href("watch"); } catch (e) { fill(stop, String(e.message || e)); } });
+    acts.append(stop);
+  }
+  // The reason sits under each paper.
+  const withWhy = (xs) => h("ul", { class: "ax-list" }, xs.map((m) => paperItem(app, m.paper, { compact: true, why: m.why })));
+  const misses = h("div", { class: "ax-misses hide" }, withWhy(j.misses || []));
+  const show = h("button", { class: "ax-btn ghost" }, `Show the ${fmt((j.misses || []).length)} latest set aside`);
+  show.addEventListener("click", () => { misses.classList.toggle("hide"); fill(show, misses.classList.contains("hide") ? `Show the ${fmt(j.misses.length)} latest set aside` : "Hide them"); });
+  fill(main, h("div", { style: { maxWidth: "900px" } },
+    h("div", { class: "ax-ph" }, h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", marginBottom: "4px" } }, h("a", { href: app.href("watch") }, "Standing questions")), h("h1", { class: "ax-wq" }, w.question || id),
+      h("div", { class: "au" }, `Checked every hour · ${fmt(w.read || 0)} papers read, ${fmt(w.fit || 0)} answer it · last checked ${ago(w.checked)}`)),
+    acts,
+    sec("Papers that answer it", h("span", { class: "s", style: { fontSize: "12px", color: "var(--muted)" } }, "newest first")),
+    (j.fits || []).length ? withWhy(j.fits) : h("div", { class: "ax-empty" }, "None of the papers read so far answer it. New papers are read every hour."),
+    (j.misses || []).length ? [sec("Read and set aside", show), misses] : null));
 }
 
 // ------------------------------------------------------------------ gaps

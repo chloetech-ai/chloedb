@@ -108,6 +108,16 @@ pub fn tables(model: &str) -> Vec<(&'static str, String)> {
             id KEYWORD PRIMARY KEY, paper KEYWORD, style KEYWORD, text TEXT OPTIONS(indexed = false),
             org KEYWORD, model KEYWORD, at TIMESTAMP, ms FLOAT
         )".to_string()),
+        // Standing questions: a reader's question, and each paper read
+        // for it (`fit` when it answers it), so none is read twice.
+        ("ax_watches", "CREATE TABLE IF NOT EXISTS ax_watches (
+            id KEYWORD PRIMARY KEY, owner KEYWORD, question TEXT, created TIMESTAMP,
+            checked TIMESTAMP, read INT, fit INT
+        )".to_string()),
+        ("ax_matches", "CREATE TABLE IF NOT EXISTS ax_matches (
+            id KEYWORD PRIMARY KEY, watch KEYWORD, paper KEYWORD, fit BOOL,
+            why TEXT OPTIONS(indexed = false), created TIMESTAMP, at TIMESTAMP
+        )".to_string()),
         ("ax_answers", "CREATE TABLE IF NOT EXISTS ax_answers (
             id KEYWORD PRIMARY KEY, kind KEYWORD, question TEXT, answer TEXT OPTIONS(indexed = false),
             sources TEXT OPTIONS(indexed = false), model KEYWORD, at TIMESTAMP, ms FLOAT

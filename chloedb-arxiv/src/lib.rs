@@ -22,3 +22,4 @@ pub mod search;
 pub mod spread;
 pub mod strata;
 pub mod understand;
+pub mod watch;
