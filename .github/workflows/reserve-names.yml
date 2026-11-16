@@ -83,7 +83,7 @@ jobs:
               # Strata, and npm keeps a version's text for good.
               echo "npm has the real chloedb ($latest): no placeholder"
               for v in $(npm view chloedb versions --json | node -e 'const v = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log([].concat(v).filter((x) => x.startsWith("0.0.")).join(" "))'); do
-                npm deprecate "chloedb@$v" "A placeholder that only held the name, not ChloeDB: npm install chloedb (ChloeDB $latest)"
+                npm deprecate "chloedb@$v" "A placeholder that only held the name, not ChloeDB: npm install chloedb@latest (ChloeDB $latest)"
               done
               exit 0 ;;
           esac

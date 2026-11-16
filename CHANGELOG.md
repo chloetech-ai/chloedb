@@ -41,7 +41,8 @@ changes collect under "Unreleased".
   published there as `chloedb` with the addon of each platform as
   `@chloedb/<platform>` (darwin-arm64, darwin-x64, linux-x64-gnu,
   linux-arm64-gnu), which npm picks by itself. An app that got the
-  placeholder takes the release with `npm install chloedb` again. The
+  placeholder takes the release with `npm install chloedb@latest` (a plain
+  `npm install chloedb` keeps its `^0.0.x` range). The
   JavaScript guide installs from npm first and keeps the release tarballs
   for machines that cannot reach it, and reserve-names.yml marks the 0.0.x
   placeholders deprecated once the real package is there.
