@@ -4,6 +4,7 @@
 //
 // Without --strata it starts its own chloedb-server on DIR/apps.strata.
 
+import { decide } from './access.mjs';
 import http from 'node:http';
 import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
@@ -32,10 +33,16 @@ import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
 import { Scheduler } from './schedule.mjs';
-import { ensureDesigns } from './designs.mjs';
+import { ensureDesigns, tuneDesign, tokenChoices } from './designs.mjs';
+import { currencyOf } from './data.mjs';
 import { Evolver, MODES } from './evolve.mjs';
+import { Recommender, withHint } from './recommend.mjs';
+import { ask as askModel } from './llm.mjs';
 import { activity as activityOf } from './activity.mjs';
 import { AppKeys } from './appkeys.mjs';
+import { Comments } from './comments.mjs';
+import { Presence } from './presence.mjs';
+import { Builders, builderRefusal, keyOf as builderKeyOf, COOKIE as BUILDER_COOKIE } from './builders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -132,6 +139,12 @@ await engine.changes.init().catch((e) => { log(`changes: ${e.message}`); engine.
 await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
+// Who builds each app beside its owner, and what their key lets them do.
+const builders = new Builders(engine.db);
+// Notes on an app's screens.
+const comments = new Comments(engine.db);
+// Who is working on each app right now.
+const presence = new Presence();
 // A model and the web for apps, each switched on per app (reach.mjs).
 // Apps' secrets (API keys) are sealed with STRATA_APPS_SECRET_KEY, or with a
 // key kept in DATA/secret.key, made on first start.
@@ -189,6 +202,21 @@ function tokenOf(req) {
 }
 function setSession(res, token) {
   res.setHeader('set-cookie', `${COOKIE}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_DAYS * 86400 : 0}`);
+}
+// Who writes a note: a builder by their key, else the studio's owner, who
+// may give the name to show.
+function authorOf(cx, b) {
+  if (cx.builder) return { id: cx.builder.id, name: cx.builder.name || cx.builder.email || '' };
+  return { id: 'owner', name: String(b?.authorName || '').trim().slice(0, 80) };
+}
+function setBuilderCookie(res, key) {
+  res.setHeader('set-cookie', `${BUILDER_COOKIE}=${key}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
+}
+// Where people reach this engine, for links handed out (invitations).
+function baseOf(req) {
+  if (process.env.STRATA_APPS_PUBLIC_URL) return process.env.STRATA_APPS_PUBLIC_URL;
+  const host = String(req.headers.host || 'localhost').replace(/[^A-Za-z0-9.:[\]-]/g, '');
+  return `http://${host}`;
 }
 // Someone not signed in is told apart by a cookie of their own, so what
 // people do can be counted per person.
@@ -273,7 +301,7 @@ const eventWaiters = new Set();
 const PUBLIC_EVENTS = new Set(['data', 'app', 'design']);
 function broadcast(type, payload) {
   const line = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const [res, only] of clients) if (!only || (payload?.app === only.app && PUBLIC_EVENTS.has(type))) res.write(line);
+  for (const [res, only] of clients) if (!only || (payload?.app === only.app && (only.builder || PUBLIC_EVENTS.has(type)))) res.write(line);
   events.push({ seq: ++eventSeq, type, data: payload });
   if (events.length > EVENTS_KEPT) events.splice(0, events.length - EVENTS_KEPT);
   for (const w of eventWaiters) w();
@@ -380,6 +408,7 @@ async function runRequest(req, extra = {}) {
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
+    if (!extra.candidate) recommender.soon(req.app, { delay: 20000, reason: 'build', force: true });
     engine.changes?.soon();
   } catch (err) {
     // Stopped by its owner: whatever the forge made of the stop, it is a stop.
@@ -457,11 +486,16 @@ engine.on('drawn', (d) => {
 // strongest as a version to try. It looks after every 25 actions, at most
 // every 3 minutes, and calls the model only when a new pattern shows.
 const evolver = new Evolver({ engine, submit, broadcast, log, propose: suggestFromUse });
+// The next edit, recommended from use and, before there is any, from what
+// the app is (recommend.mjs): in the background, never during a build.
+const recommender = new Recommender({ engine, ask: askModel, signalsOf: (a, v, e) => evolver.signalsOf(a, v, e), busy: (a) => running.has(a), log,
+  emit: (k, p) => { if (!engine.feed) broadcast(k, p); } });
 const activity = new Map();
 async function noteActivity(appId) {
   const a = activity.get(appId) || { n: 0, last: 0, busy: false };
   a.n++;
   activity.set(appId, a);
+  recommender.soon(appId, { reason: 'use' });
   if (a.n < 25 || a.busy || Date.now() - a.last < 180000 || running.has(appId)) return;
   a.n = 0;
   a.busy = true;
@@ -517,6 +551,30 @@ async function body(req) {
   try { return JSON.parse(text); } catch { throw Object.assign(new Error('body is not JSON'), { status: 400 }); }
 }
 
+// The hosted payment page: the amount, what it is for, and in test mode a
+// plain statement that no card is charged and none is asked for.
+const html = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function payPage(p, shop, { token = '', problem = '', provider = '', locale = null } = {}) {
+  let amount = `${p.amount} ${p.currency}`;
+  // the amount as the app writes money (its locale), else as in Britain
+  try { amount = Number(p.amount).toLocaleString(locale || 'en-GB', { style: 'currency', currency: p.currency }); } catch { /* as it is */ }
+  const paid = p.status === 'paid' || p.status === 'paid_test';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pay ${html(shop)}</title>
+<style>:root{color-scheme:light dark}body{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#f4f4f6;color:#16161a;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
+.card{background:#fff;border-radius:18px;box-shadow:0 20px 60px -30px rgba(0,0,0,.35);padding:28px;max-width:420px;width:100%}h1{font-size:15px;margin:0;color:#666;font-weight:600}
+.amt{font-size:40px;font-weight:800;letter-spacing:-.02em;margin:6px 0 4px}.what{color:#444;margin:0 0 18px}button{width:100%;min-height:52px;border:0;border-radius:14px;background:#16161a;color:#fff;font:inherit;font-weight:700;font-size:17px;cursor:pointer}
+.test{margin:16px 0 0;padding:12px 14px;border-radius:12px;background:#fff7e0;color:#6b4a00;font-size:14px}.ok{font-size:20px;font-weight:700;color:#18794e;margin:8px 0}.lock{color:#777;font-size:13px;margin-top:14px}.bad{color:#b42318;font-weight:600}
+@media (prefers-color-scheme:dark){body{background:#0e0e11;color:#eee}.card{background:#1a1a1f}.what{color:#bbb}button{background:#fff;color:#111}.test{background:#3a2e0a;color:#ffd98a}}</style></head>
+<body><main class="card"><h1>${html(shop)}</h1><div class="amt">${html(amount)}</div><p class="what">${html(p.description || 'Your order')}</p>
+${problem ? `<p class="bad" role="alert">${html(problem)}</p>` : ''}
+${paid ? `<p class="ok" role="status">${p.status === 'paid_test' ? 'Paid in test mode. No money moved.' : 'Paid. Thank you.'}</p><p class="what">You can close this page and go back to ${html(shop)}.</p>`
+    : p.mode === 'live' ? `<p class="what">The card payment is taken and confirmed by ${html(provider || 'the card provider')}. This page does not mark it paid.</p>`
+    : token ? `<form method="post"><input type="hidden" name="t" value="${html(token)}"><button type="submit">Pay ${html(amount)} by card</button></form>`
+    : `<p class="bad" role="alert">This payment link is not valid. Go back to ${html(shop)} and pay from your order.</p>`}
+${p.mode === 'test' ? `<p class="test"><b>Test mode.</b> No card is charged and no card details are asked for here. The shop's owner connects a card payment provider to take real payments.</p>` : ''}
+<p class="lock">A secure payment page. ${html(shop)} never sees your card details.</p></main></body></html>`;
+}
+
 function send(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(data));
@@ -539,8 +597,12 @@ const directions = new Map();
 function awaitDirection(appId, provider = null) {
   let give;
   const given = new Promise((ok) => { give = ok; });
-  const made = given.then((direction) => { directions.delete(appId); return withProvider(provider, () => designsOf(appId, false, direction)); });
+  const made = given.then((direction) => withProvider(provider, () => designsOf(appId, false, direction)));
   made.catch((e) => console.error(`designs ${appId}: ${e.message}`));
+  // Kept until they are made: the art direction comes early (as the plan
+  // streams in) and again once the build is stored, and a later hook waits
+  // on the same designs instead of making them twice.
+  made.finally(() => directions.delete(appId)).catch(() => {});
   directions.set(appId, { give, made });
 }
 engine.onDirection = (appId, direction) => {
@@ -550,21 +612,35 @@ engine.onDirection = (appId, direction) => {
   return w.made;
 };
 
+// A members' screen carries the example rows the first build kept for it
+// (gate.sample, forge.mjs gateSamples), so a visitor sees it drawn with
+// them (web/screen.js). Answers the code a page gets for a capability.
+async function samplesFor(appId) {
+  let samples = {};
+  try { samples = JSON.parse((await engine.store.setting(appId, 'samples').catch(() => null)) || '{}') || {}; } catch { samples = {}; }
+  return (c) => {
+    if (c.kind !== 'view' || !c.spec?.screen || !samples[c.slug] || typeof c.code !== 'string' || !c.code.includes('"gate"')) return c.code;
+    try { const sc = JSON.parse(c.code); if (!sc.gate) return c.code; sc.gate = { ...sc.gate, sample: samples[c.slug] }; return JSON.stringify(sc, null, 1); } catch { return c.code; }
+  };
+}
+
 async function appState(appId) {
   const { store } = engine;
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const evolve = await evolver.state(appId, view).catch((e) => ({ mode: 'off', signals: [], candidates: [], error: e.message }));
+  recommender.soon(appId, { reason: 'open' });
   // A candidate's own version is listed only when it went live as built.
   const unkept = new Set(evolve.candidates.filter((c) => c.n && c.kept !== c.n).map((c) => c.n));
   const tables = [];
   for (const t of view.tables) {
     tables.push({ id: t.id, name: t.spec.name, description: t.spec.description, columns: t.spec.columns, rows: await store.countRows(`app_${appId}_${t.spec.name}`) });
   }
-  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
+  const withSample = await samplesFor(appId);
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: withSample(c), sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: { ...view.app, name: nameOf(view.app) },
+    app: { ...view.app, name: nameOf(view.app), currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await store.setting(appId, 'locale').catch(() => null)) || null },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -577,6 +653,7 @@ async function appState(appId) {
       return { components: view.components.map(one), helpers: view.helpers.map(one) };
     })()),
     tables,
+    labels: labelsOf(view),
     people: await services.people(appId).catch(() => []),
     outbox: await services.outbox(appId, 20).catch(() => []),
     suggestions: await store.suggestions(appId),
@@ -597,36 +674,60 @@ async function appState(appId) {
 
 // The options of app.ask a visitor may pass: the answer's shape only, never
 // instructions of their own, the web or a fresh (uncached) call.
-const publicAsk = (o = {}) => (o.json ? { json: true } : {});
+const publicAsk = (o = {}) => ({ ...(o.json ? { json: true } : {}), ...(o.kept ? { kept: true } : {}) });
 
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
+// Each table's naming column (name, title, label, else its first text
+// column): the frame shows a row's name wherever its id would show
+// (web/frame.js), so a reference reads "Ava", never "kid-1".
+const LABEL_COLS = ['name', 'title', 'label', 'full_name', 'display_name', 'first_name', 'subject', 'company'];
+function labelsOf(view) {
+  const out = [];
+  for (const t of view.tables || []) {
+    const cols = (t.spec?.columns || []).filter((c) => c && c.name);
+    const col = LABEL_COLS.find((n) => cols.some((c) => c.name === n)) || cols.find((c) => c.type === 'text')?.name;
+    if (col && t.spec?.name && !t.spec.links) out.push({ table: t.spec.name, col });
+  }
+  return out;
+}
+
+// Whether someone of this role may read a table at all (a page reads names
+// only from the tables its visitor may: no refusals for its labels).
+function mayRead(view, table, role) {
+  const t = view.tables.find((x) => x.spec?.name === table);
+  if (!t) return false;
+  try { decide(t.spec, 'read', { role: role || 'visitor', user: role ? { id: 'someone' } : null, company: role ? 'some' : null }); return true; } catch { return false; }
+}
+
 // An app's name as shown. One with no version yet that is still called by
 // the first 40 characters of its description (as apps were named before
 // shortName) is shown by a short name instead.
 const nameOf = (a) => (!Number(a.head) && a.name && String(a.description || '').startsWith(String(a.name).trim()) && String(a.name).trim().length >= 30 ? shortName(a.description) : a.name);
 
-async function publicState(appId, access) {
+async function publicState(appId, access, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
-  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
+  const withSample = await samplesFor(appId);
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: withSample(c), spec: c.spec });
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
     // What visitors may do with its data (publish.mjs): the page offers no
     // write a visitor who may only look would be refused.
     access: access || 'look',
-    app: { id: appId, name: view.app.name },
+    app: { id: appId, name: view.app.name, currency: (await engine.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await engine.store.setting(appId, 'locale').catch(() => null)) || null },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
     // A visitor never gets the owner's views (engine/audience.mjs).
-    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
-    functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
+    // ...but its owner and admins, signed in on its own page, get theirs.
+    views: (role === 'owner' || role === 'admin' ? view.views : forVisitors(view.views)).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title, callers: c.spec?.callers || null })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
-    tables: [], people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
+    tables: [], labels: labelsOf(view).filter((l) => mayRead(view, l.table, role)), people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
     reach: { on: { fetch: !!reachNow?.on?.fetch, hosts: (reachNow?.on?.hosts || []).map((x) => ({ host: x.host })) } },
   };
 }
@@ -649,7 +750,7 @@ const routes = [
   ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
     // A key limited to tables lists the apps whose tables it reads.
-    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id));
+    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id) && (!cx.builder || cx.builder.app === a.id));
     // Each app's state: live (a version), building, or failed (its first
     // build did not go through and none is running): the gallery said
     // "building" for ever of an app whose first build failed.
@@ -691,7 +792,7 @@ const routes = [
     const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access, (await cx.user(id))?.role || null) : appState(id))],
   // Renamed by its owner: the name stays (a later plan does not rename it).
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
     const name = String(b.name || '').trim().replace(/\s+/g, ' ');
@@ -748,6 +849,20 @@ const routes = [
     return next;
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs\/new$/, async (b, [id]) => designsOf(id, true)],
+  // The design in use, its tokens changed by hand; and what to choose from.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs\/tune$/, async (b, [id]) => {
+    const cur = await designsOf(id);
+    const designs = cur.designs.slice();
+    designs[cur.chosen] = tuneDesign(designs[cur.chosen], b || {});
+    const next = { ...cur, designs };
+    await engine.store.putDesigns(id, next);
+    broadcast('design', { app: id, chosen: cur.chosen });
+    return next;
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/designs\/choices$/, async (b, [id], url) => {
+    const cur = await designsOf(id);
+    return { choices: tokenChoices(cur.designs, cur.chosen, url.searchParams.get('scheme') === 'dark' ? 'dark' : 'light') };
+  }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/traces\/([A-Za-z0-9_-]+)$/, async (b, [id, rid]) => {
     const trace = await engine.store.trace(rid);
     if (!trace) throw Object.assign(new Error('no timeline for this build (it ran before timelines were recorded)'), { status: 404 });
@@ -764,7 +879,8 @@ const routes = [
     // A newer shared component is taken without the model: its code is in Strata.
     if (taken?.source === 'component' && taken.cap) return { request: (await submit(id, text, 'component', { cap: taken.cap })).id };
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
-    const r = await submit(id, text, source, provider ? { provider } : {});
+    // A recommended edit says what it implies: it goes with the request.
+    const r = await submit(id, taken ? withHint(text, taken) : text, source, provider ? { provider } : {});
     return { request: r.id };
   }],
   // Stop the build running for this app: its model calls are killed at once
@@ -786,7 +902,7 @@ const routes = [
   // Companies (services.mjs): the ones the signed-in person works in and the
   // one they work in now (x-sa-company, else their first); made by a member,
   // who becomes its admin; its admins add people who have an account.
-  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { if (!cx.public && url.searchParams.get('all') === '1') return { companies: await services.allCompanies(id) }; const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => ({ company: await services.createCompany(id, (await cx.user(id))?.id, b) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members$/, async (b, [id], url, cx) => {
     const user = await cx.user(id);
@@ -810,6 +926,38 @@ const routes = [
     }
     return { person: await services.setRole(id, b.person, String(b.role || '')) };
   }],
+  // The app's builders (builders.mjs): invite by address with a role, a
+  // fresh link for an invitation, a role changed, someone removed.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/builders$/, async (b, [id], url, cx) => { await engine.view(id); return { builders: await builders.list(id), me: cx.builder ? { id: cx.builder.id, role: cx.builder.role } : { role: 'owner' } }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders$/, async (b, [id], url, cx) => { await engine.view(id); return builders.invite(id, b.emails, b.role, { base: baseOf(cx.req) }); }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)\/link$/, async (b, [id, bid], url, cx) => builders.link(id, bid, { base: baseOf(cx.req) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)\/remove$/, async (b, [id, bid], url, cx) => {
+    if (cx.builder && cx.builder.id === bid) throw Object.assign(new Error('to leave, ask the owner or an admin to remove you'), { status: 400 });
+    return builders.remove(id, bid);
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/builders\/([a-z0-9]+)$/, async (b, [id, bid], url, cx) => {
+    if (cx.builder && cx.builder.id === bid) throw Object.assign(new Error('a builder does not change their own role'), { status: 400 });
+    return { builder: await builders.setRole(id, bid, b.role) };
+  }],
+  // Notes on the app's screens (comments.mjs). The author is the builder
+  // whose key it is; the owner names themselves (the studio has no account).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/comments$/, async (b, [id], url) => { await engine.view(id); const s = url.searchParams.get('status'); return { comments: await comments.list(id, { status: ['open', 'resolved'].includes(s) ? s : null }) }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments$/, async (b, [id], url, cx) => { await engine.view(id); const out = await comments.add(id, b, authorOf(cx, b)); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/reply$/, async (b, [id, cid], url, cx) => { const out = await comments.reply(id, cid, b.body, authorOf(cx, b)); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/resolve$/, async (b, [id, cid]) => { const out = await comments.resolve(id, cid, { reopen: !!b.reopen }); broadcast('comments', { app: id }); return { comment: out }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/comments\/([a-z0-9]+)\/delete$/, async (b, [id, cid]) => { const out = await comments.remove(id, cid); broadcast('comments', { app: id }); return out; }],
+  // Who is working on the app now: a heartbeat every few seconds while it is
+  // open, and leaving; everyone working on it hears of arrivals and leavings.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/presence$/, async (b, [id]) => ({ here: presence.here(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/presence$/, async (b, [id], url, cx) => {
+    await engine.view(id);
+    const who = cx.builder ? { id: cx.builder.id, name: cx.builder.name || cx.builder.email || '', role: cx.builder.role } : { id: 'owner', name: String(b?.name || '').trim().slice(0, 80), role: 'owner' };
+    const changed = b?.leave ? presence.leave(id, who.id) : presence.beat(id, { ...who, screen: b?.screen });
+    if (changed) broadcast('presence', { app: id });
+    return { here: presence.here(id), me: who.id };
+  }],
+  // An invitation taken, from the studio or another client: the key to use.
+  ['POST', /^\/api\/builders\/join$/, async (b, m, url, cx) => { const out = await builders.join(b.token, { name: b.name }); setBuilderCookie(cx.res, out.key); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -840,6 +988,23 @@ const routes = [
       signals: (await evolver.state(id, view).catch(() => ({ signals: [] }))).signals };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
+  // A card payment for a row (an order): anyone using the app may ask, the
+  // amount is the row's; the payer pays on the hosted page (/pay/<id>).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/pay$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    return { payment: await services.pay(id, b, { who: await cx.who(id), owner: !cx.public || user?.role === 'owner' }) };
+  }],
+  // The app's payments, for its owner (the studio, or the owner signed in on its page).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/payments$/, async (b, [id], url, cx) => {
+    if (cx.public) {
+      const user = await cx.user(id);
+      if (!user) throw Object.assign(new Error('Sign in first: only the app\'s owner sees its payments'), { status: 401 });
+      if (user.role !== 'owner') throw Object.assign(new Error('Only the app\'s owner sees its payments'), { status: 403 });
+    }
+    const live = !!services.payProvider;
+    return { payments: await services.payments(id), mode: live ? 'live' : 'test',
+      note: live ? `Card payments go through ${services.payProvider.name}; a payment is paid only on its signed notice.` : 'Card payments are in test mode: no card is charged and orders paid this way say "paid (test)". Connect a card payment provider to take real payments.' };
+  }],
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
   // A published app's visitors name no secret, header or method of their own
@@ -882,7 +1047,9 @@ const routes = [
     const where = cx.where(b.session);
     const screen = kind === 'open' || kind === 'leave' ? String(b.detail || '') : where.screen || b.screen;
     const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, src: cx.owner || (!cx.public && b.owner === true) ? 'owner' : null });
+    // The device: as the page says, else as its browser does.
+    const device = ['phone', 'tablet', 'computer'].includes(b.device) ? b.device : /iPad|Tablet/i.test(cx.req.headers['user-agent'] || '') ? 'tablet' : /Mobi|Android|iPhone/i.test(cx.req.headers['user-agent'] || '') ? 'phone' : cx.req.headers['user-agent'] ? 'computer' : null;
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, device, src: cx.owner || (!cx.public && b.owner === true) ? 'owner' : null });
     noteActivity(id);
     return { ok: true };
   }],
@@ -902,10 +1069,13 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggest$/, async (b, [id]) => {
     const out = await evolver.tick(id, { force: true });
     if (out.busy) throw Object.assign(new Error('the engine is already reading this app\'s use'), { status: 409 });
+    const rec = await recommender.refresh(id, { reason: 'asked' }).catch((e) => { log(`[${id}] recommend: ${e.message}`); return { added: [] }; });
     if (!engine.feed) broadcast('suggestions', { app: id });
-    return { suggestions: out.suggestions, building: out.building };
+    return { suggestions: [...(out.suggestions || []), ...rec.added], building: out.building };
   }],
   // Evolving from use: the mode (off, suggest, build), and the candidates.
+  // Every candidate the recommender finds now, scored, with its source and evidence (nothing stored).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/recommend$/, async (b, [id]) => recommender.preview(id)],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => evolver.state(id, await engine.store.resolve(id))],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => ({ mode: await evolver.setMode(id, String(b.mode || '')), modes: MODES })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/candidates\/([a-z0-9]+)$/, async (b, [id, cid]) => {
@@ -974,6 +1144,15 @@ const server = http.createServer(async (req, res) => {
   let visiting = false;
   try {
     if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+    // The kit's typefaces (web/fonts, SIL Open Font License): open to any
+    // page, a view's sandboxed frame included (it has no origin of its own).
+    let fm;
+    if (req.method === 'GET' && (fm = url.pathname.match(/^\/fonts\/([a-z-]+)\.woff2$/))) {
+      const bytes = await readFile(path.join(ROOT, 'web', 'fonts', `${fm[1]}.woff2`)).catch(() => null);
+      if (!bytes) return send(res, 404, { error: 'no such font' });
+      res.writeHead(200, { 'content-type': 'font/woff2', 'content-length': bytes.length, 'cache-control': 'public, max-age=604800', 'access-control-allow-origin': '*' });
+      return res.end(bytes);
+    }
     // Caddy asks before it gets a certificate for a host (the operator's
     // spec.apps.publish): only for published apps' hosts.
     if (req.method === 'GET' && url.pathname === '/api/tls/ask') {
@@ -1012,6 +1191,29 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(refused.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(refused.html);
     }
+    // A builder's key holds them to their app and role (builders.mjs); the
+    // studio without one is its owner, as before. Not on a published app's
+    // public path, which publish.mjs judges.
+    let builder = null;
+    if (!cx0.public) {
+      const key = builderKeyOf(req);
+      if (key) {
+        builder = await builders.ofKey(key);
+        if (!builder) return send(res, 401, { error: 'this builder key is not valid any more; ask the app\'s owner for a new invitation' });
+        const no = builderRefusal(builder, req.method, url.pathname);
+        if (no) return send(res, 403, { error: no });
+      }
+    }
+    cx0.builder = builder;
+    // An invitation link opened in a browser: taken, then the app in the studio.
+    if (req.method === 'GET' && url.pathname === '/join') {
+      try {
+        const out = await builders.join(url.searchParams.get('token'));
+        setBuilderCookie(res, out.key);
+        res.writeHead(302, { location: `/#/app/${out.app}`, 'cache-control': 'no-store' });
+        return res.end();
+      } catch (e) { return send(res, e.status || 400, { error: e.message }); }
+    }
     // An app on its own, without the studio around it (for phones and sharing).
     // On a published app's own host, / is the app.
     const hostApp = req.method === 'GET' && url.pathname === '/' ? publish.appForHost(req) : null;
@@ -1040,14 +1242,38 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
       res.write(`event: hello\ndata: ${JSON.stringify({ feed: engine.feed })}\n\n`);
-      clients.set(res, cx0.public ? { app: cx0.public } : null);
+      clients.set(res, cx0.public ? { app: cx0.public } : cx0.builder ? { app: cx0.builder.app, builder: true } : null);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => { clearInterval(ping); clients.delete(res); });
       return;
     }
+    // A card provider's signed notice that a payment went through
+    // (services.providerNotice): from the provider's servers, so before the
+    // same-origin check; its signature is what is trusted, nothing else.
+    if (req.method === 'POST' && url.pathname === '/api/payments/notice') {
+      const raw = await rawBody(req, 64 * 1024);
+      try { return send(res, 200, await services.providerNotice(raw, req.headers['x-payment-signature'])); } catch (e) { return send(res, e.status || 500, { error: e.message }); }
+    }
     // Only this page may call the API: a page on another site could otherwise
     // post to localhost.
     if (req.method === 'POST' && !login.sameOrigin(req)) return send(res, 403, { error: 'cross-origin request refused' });
+    // A payment's hosted page (services.pay): the payer pays here, never in
+    // the app, so the app never sees a card. In test mode no card is asked.
+    if ((m = url.pathname.match(/^\/pay\/([a-z0-9]{8,32})$/)) && (req.method === 'GET' || req.method === 'POST')) {
+      let p = await services.payment(m[1]);
+      if (!p) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('No such payment.'); }
+      let token = url.searchParams.get('t') || '';
+      let problem = '';
+      if (req.method === 'POST') {
+        token = new URLSearchParams(String(await rawBody(req, 8 * 1024))).get('t') || '';
+        try { p = await services.payTest(m[1], token); } catch (e) { problem = e.message; }
+      }
+      const appRow = await engine.store.getApp(p.app).catch(() => null);
+      // same-origin: the page's own Pay posts with its origin (no-referrer
+      // would send "null" and be refused above); other sites never see its address
+      res.writeHead(problem ? 403 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'same-origin' });
+      return res.end(payPage(p, appRow?.name || 'This shop', { token: p.status === 'open' && services.tokenOk(p, token) ? token : '', problem, provider: services.payProvider?.name || '', locale: await engine.store.setting(p.app, 'locale').catch(() => null) }));
+    }
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
       const bytes = await rawBody(req, MAX_FILE);

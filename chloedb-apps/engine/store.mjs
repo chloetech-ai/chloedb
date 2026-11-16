@@ -64,12 +64,27 @@ const SYSTEM_TABLES = {
   // so a row scope by :company_id (access.mjs) means what the engine says.
   sa_companies: `CREATE TABLE sa_companies (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_memberships: `CREATE TABLE sa_memberships (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, company KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Who builds an app beside its owner, with a role (builders.mjs): only
+  // hashes of their invitation tokens and keys.
+  sa_builders: `CREATE TABLE sa_builders (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, email KEYWORD, name TEXT, role KEYWORD, status KEYWORD,
+    token_hash KEYWORD, key_hash KEYWORD, expires TIMESTAMP, invited TIMESTAMP, joined TIMESTAMP)`,
+  // Notes on an app's screens and their replies (comments.mjs).
+  sa_comments: `CREATE TABLE sa_comments (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, parent KEYWORD, body TEXT, anchor TEXT, status KEYWORD,
+    author KEYWORD, author_name TEXT, created TIMESTAMP, resolved TIMESTAMP)`,
   sa_sessions: `CREATE TABLE sa_sessions (id KEYWORD PRIMARY KEY, person KEYWORD NOT NULL, expires TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_files: `CREATE TABLE sa_files (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, type KEYWORD, size INT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Each app's three designs (designs.mjs) and the one in use.
   sa_designs: `CREATE TABLE sa_designs (id KEYWORD PRIMARY KEY, designs TEXT, chosen INT, source KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_outbox: `CREATE TABLE sa_outbox (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, recipients KEYWORD[], subject TEXT, body TEXT,
     status KEYWORD, error TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Card payments an app asked for (services.mjs pay): what, how much, the
+  // row it pays for, and whether it was paid. Never a card's details: the
+  // payer pays on a hosted page.
+  sa_payments: `CREATE TABLE sa_payments (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, amount FLOAT, currency KEYWORD, description TEXT, ref_table KEYWORD, ref_id KEYWORD,
+    email KEYWORD, mode KEYWORD, status KEYWORD, paid TIMESTAMP, token_hash KEYWORD, payer KEYWORD, status_col KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Who added each row (a person's id, or a visitor's), as the engine saw
+  // the write: what binds a payment to the order its payer placed.
+  sa_rowmakers: `CREATE TABLE sa_rowmakers (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, tbl KEYWORD, rid KEYWORD, who KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
 
 // Columns added to system tables after they were first made: a store made
@@ -83,8 +98,11 @@ export function briefOf(app) {
 const ADDED_COLUMNS = {
   // The UX brief, as JSON: who, job, often, device, first, glance.
   sa_apps: ['ux TEXT'],
-  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'src KEYWORD'],
-  sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
+  // device: phone, tablet or computer, as the page or its browser says.
+  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'device KEYWORD', 'src KEYWORD'],
+  // The recommender's (recommend.mjs): the source it came from (basis), its
+  // score, and the change it implies (implies, JSON: kind, what, and a hint for the build).
+  sa_suggestions: ['signal KEYWORD', 'measure TEXT', 'basis KEYWORD', 'confidence FLOAT', 'implies TEXT'],
   // What a piece is and does, embedded, so that pieces are found by meaning
   // as well as by their words (searchCapabilities). A store whose Strata
   // cannot load the model searches by words alone.
@@ -294,7 +312,7 @@ export class Store {
       }
     }
     let rows = 0;
-    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox']) {
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_builders', 'sa_comments', 'sa_files', 'sa_outbox', 'sa_payments', 'sa_rowmakers']) {
       for (;;) {
         let ids;
         try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }
@@ -847,7 +865,7 @@ export class Store {
   // label: the name of the row written ("Monstera"), kept with the event so
   // that a removed row is still told by its name. taps: on a write or a run,
   // the taps in the app since the one before it (engine/measures.mjs).
-  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, src = null } = {}) {
+  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, device = null, src = null } = {}) {
     const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
     const word = (x, n) => { const t = String(x ?? '').trim(); return t ? t.slice(0, n) : null; };
     const num = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Math.max(0, Math.round(Number(x))));
@@ -855,7 +873,7 @@ export class Store {
       person: word(person, 40), v: Number(v) || null, session: word(session, 40), screen: word(screen, 80), tbl: word(tbl, 80), rid: word(rid, 80),
       // The fields changed, sorted: the same change on row after row is the same value.
       fields: word(Array.isArray(fields) ? [...fields].sort().join(',') : fields, 200),
-      q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps),
+      q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps), device: ['phone', 'tablet', 'computer'].includes(device) ? device : null,
       src: src === 'owner' ? 'owner' : null,
     };
     for (const [k, x] of Object.entries(more)) if (x !== null) doc[k] = x;
@@ -869,7 +887,7 @@ export class Store {
   }
 
   async recentEvents(app, limit = 200) {
-    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, taps, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, taps, device, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
   }
 
   async putSuggestions(app, items) {
@@ -881,12 +899,15 @@ export class Store {
   }
 
   async suggestions(app) {
-    return this.db.query(`SELECT id, text, why, source, cap, status, signal, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+    const rows = await this.db.query(`SELECT id, text, why, source, cap, status, signal, basis, confidence, implies, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+    // Newest first; made together (one write, one time), the recommender's best first.
+    const by = (a, b) => String(b.created).localeCompare(String(a.created)) || (Number(b.confidence) || 0) - (Number(a.confidence) || 0);
+    return rows.sort(by).map(({ implies, ...r }) => ({ ...r, confidence: r.confidence === null || r.confidence === undefined ? null : Number(r.confidence), change: implies ? parseSpec(implies) : null }));
   }
 
   // Every suggestion made to an app, with what became of it.
   async suggestionHistory(app, limit = 40) {
-    return this.db.query(`SELECT text, source, status, signal, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT id, text, source, status, signal, basis, implies AS change, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
   }
 
   // ---- candidates: versions the engine built from use, beside the live one
@@ -910,6 +931,16 @@ export class Store {
   async setting(app, name) {
     const [row] = await this.db.get('sa_settings', [`${app}:${name}`]);
     return row ? row.value : null;
+  }
+
+  // Who added a row (engine.after), and who that was.
+  async noteMaker(app, table, rid, who) {
+    await this.db.write([{ op: 'upsert', table: 'sa_rowmakers', doc: { id: `${app}:${table}:${rid}`.slice(0, 200), app, tbl: table, rid: String(rid), who: String(who).slice(0, 80) } }]);
+  }
+
+  async maker(app, table, rid) {
+    const [row] = await this.db.get('sa_rowmakers', [`${app}:${table}:${rid}`.slice(0, 200)]);
+    return row ? row.who : null;
   }
 
   async putSetting(app, name, value) {

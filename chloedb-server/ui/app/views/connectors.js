@@ -4,8 +4,12 @@
 // health, last runs and counts, runs one now, tries a config on real data
 // without writing (a dry run), and adds, changes, turns off and deletes
 // them. A push connector's key is shown once, when it is made or rotated.
+// Kafka connectors stream rather than run: their section shows each one's
+// consumer live (rate, lag by partition), starts and stops it, and the
+// test broker (a Kafka broker in the server's process, made-up click
+// events) gives one something to connect to.
 
-import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, copy, drawer, modal, every, can, needs } from "../core.js";
+import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, copy, drawer, modal, every, can, needs, toggle } from "../core.js";
 
 // A run under a millisecond reads "<1 ms" rather than "0".
 // A target table, linked to its page in Tables (a click there does not open the drawer).
@@ -14,7 +18,7 @@ const took = (v) => (v === 0 ? "<1 ms" : fmt.ms(v));
 
 export default {
   id: "connectors", title: "Connectors", icon: "streams", group: "Data",
-  keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health",
+  keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health kafka redpanda topics stream consumer broker",
   render,
 };
 
@@ -25,6 +29,8 @@ const HEALTH = {
   invalid: ["failing", "invalid"],
   stale: ["warn", "stale"],
   running: ["info", "running"],
+  streaming: ["ok", "streaming"],
+  connecting: ["info", "connecting"],
   pending: ["pending", "not run yet"],
   waiting: ["pending", "waiting for a push"],
   disabled: ["disabled", "off"],
@@ -39,10 +45,21 @@ const TEMPLATES = {
   mail: { config: {}, secrets: {} },
   webhook: { config: { preset: "alertmanager" }, secrets: {} },
   http_json: { config: { url: "https://api.example.com/items?since={cursor}", records: "$.items", cursor: "updated_at", headers: { Authorization: "Bearer {secret:token}" } }, secrets: { token: "" } },
+  kafka: { config: { brokers: "127.0.0.1:19092", topics: "demo.clicks", start: "earliest", allow_internal: true }, secrets: {} },
 };
+
+// The test broker's made-up click events, as columns of their own table.
+const DEMO_MAP = {
+  id: "$.value.event_id", user_id: { path: "$.value.user", type: "KEYWORD" }, item: { path: "$.value.item", type: "KEYWORD" }, action: { path: "$.value.action", type: "KEYWORD" }, page: { path: "$.value.page", type: "KEYWORD" },
+  price: { path: "$.value.price", as: "float" }, at: { path: "$.value.at", as: "time" }, kafka_partition: { path: "$.partition", as: "int" }, kafka_offset: { path: "$.offset", as: "int" },
+};
+const STREAM = { streaming: ["ok", "streaming"], connecting: ["info", "connecting"], starting: ["info", "starting"], retrying: ["failing", "retrying"], stopped: ["disabled", "stopped"], pending: ["pending", "waiting to start"] };
+const streamPill = (c) => { const st = !c.enabled ? "stopped" : c.stream?.state || "pending"; const [k, text] = c.health === "warning" && st === "streaming" ? ["warn", "streaming, with a warning"] : STREAM[st] || ["info", st]; return pill(k, text); };
+const rateText = (r) => (r == null ? "–" : r >= 100 ? `${fmt.si(r)}/s` : `${fmt.n(r, 1)}/s`);
 
 // A kind that pulls with no schedule (every_s 0) runs by hand (DAP-18).
 const every_text = (c, kinds) => {
+  if (c.streams) return c.enabled ? "streams" : "stopped";
   if (c.pulls) return every_pull(c);
   const k = (kinds || []).find((x) => x.kind === c.kind);
   return k?.pull ? (k.push ? "pushed, or by hand" : "by hand") : "pushed";
@@ -54,13 +71,17 @@ const pretty = (j) => JSON.stringify(j, null, 2);
 function render(page) {
   const top = h("div"), main = h("div", { class: "stack" }), side = h("div", { class: "stack" });
   page.append(top, h("div", { class: "conn-grid" }, main, side));
-  let v = null;
-  async function load() {
-    try { v = await api("/v1/admin/connectors"); }
-    catch (e) { clear(top); clear(main, failure(e, "Connectors")); clear(side); return; }
-    draw();
+  let v = null, broker = null, loaded = 0;
+  // A partitions list someone opened stays open across redraws; a form
+  // in the side someone is filling in is not redrawn under them.
+  const openParts = new Set();
+  side.addEventListener("input", () => { side.dataset.dirty = "1"; });
+  async function load(quiet = false) {
+    try { [v, broker] = await Promise.all([api("/v1/admin/connectors"), api("/v1/admin/kafka/test-broker").catch(() => null)]); loaded = Date.now(); }
+    catch (e) { if (quiet && v) return; clear(top); clear(main, failure(e, "Connectors")); clear(side); return; }
+    draw(quiet);
   }
-  function draw() {
+  function draw(quiet = false) {
     const cs = v.connectors || [];
     const counts = Object.entries(v.health || {}).map(([k, n]) => { const [st, text] = HEALTH[k] || ["info", k]; return pill(st, `${n} ${text}`); });
     clear(top, h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap", marginBottom: "12px" } },
@@ -73,22 +94,239 @@ function render(page) {
         h("td", {}, h("div", { class: "stack", style: { gap: "2px" } }, h("b", {}, c.name), h("span", { class: "small dim" }, kindTitle(c.kind), c.note ? ` · ${c.note}` : ""))),
         h("td", { class: "mono small" }, tableLink(c.target)),
         h("td", {}, healthPill(c), st.failures > 1 ? h("span", { class: "small dim" }, ` ×${st.failures}`) : null),
-        h("td", { class: "small", style: { whiteSpace: "nowrap" } }, st.last_run_ms ? fmt.ago(st.last_run_ms) : "never", last ? h("div", { class: "dim" }, `${fmt.plural(last.rows_ || 0, "row")} · ${took(last.took_ms)}`) : null),
+        c.streams ? h("td", { class: "small", style: { whiteSpace: "nowrap" } }, c.stream?.state === "streaming" && c.stream.session_ms ? `streaming since ${fmt.ago(c.stream.session_ms).replace(/ ago$/, "")}` : st.last_run_ms ? fmt.ago(st.last_run_ms) : "never", c.stream?.last_write_ms ? h("div", { class: "dim" }, `last write ${fmt.ago(c.stream.last_write_ms)}`) : null)
+          : h("td", { class: "small", style: { whiteSpace: "nowrap" } }, st.last_run_ms ? fmt.ago(st.last_run_ms) : "never", last ? h("div", { class: "dim" }, `${fmt.plural(last.rows_ || 0, "row")} · ${took(last.took_ms)}`) : null),
         h("td", { class: "num small", title: `${fmt.n(st.rows_total || 0)} rows written by ${fmt.plural(st.runs || 0, "run")}: a row upserted again counts each time, so it can be more than the rows of ${c.target}` }, fmt.si(st.rows_total || 0)),
         h("td", { class: "small dim", style: { whiteSpace: "nowrap" } }, every_text(c, v.kinds)),
-        st.last_error ? h("td", { class: "small error", style: { minWidth: "200px", maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_error.slice(0, 160))
+        (c.streams ? c.stream?.state !== "streaming" && st.last_error : st.last_error) ? h("td", { class: "small error", style: { minWidth: "200px", maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_error.slice(0, 160))
           : h("td", { class: st.last_warning ? "small warn" : "small", style: { minWidth: "200px", maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_warning ? st.last_warning.slice(0, 160) : ""));
     });
     clear(main, card({
       title: "Connectors", sub: `${fmt.plural(cs.length, "connector")} · configs in ${v.tables.configs}, runs in ${v.tables.runs}`,
-      tools: h("button", { class: "btn sm", onclick: load }, icon("refresh"), "Refresh"),
+      tools: h("button", { class: "btn sm", onclick: () => load() }, icon("refresh"), "Refresh"),
       flush: true,
       body: cs.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
         h("thead", {}, h("tr", {}, h("th", {}, "connector"), h("th", {}, "target"), h("th", {}, "health"), h("th", {}, "last run"), h("th", { class: "num", title: "Rows written by every run so far (upserts counted each time), not the rows of the table" }, "rows written"), h("th", {}, "schedule"), h("th", {}, "last error"))),
         h("tbody", {}, rows)))
-        : empty("streams", "No connectors yet", "Add one: Prometheus rollups, Jira or ServiceNow tickets and changes, Oxidized configs, carriers' emails, Alertmanager or any webhook, any REST API."),
+        : empty("streams", "No connectors yet", "Add one: Prometheus rollups, Jira or ServiceNow tickets and changes, Oxidized configs, carriers' emails, Alertmanager or any webhook, any REST API, Kafka topics."),
     }), sourcesCard());
-    clear(side, addCard());
+    main.prepend(kafkaCard());
+    if (!(quiet && (side.dataset.dirty || side.contains(document.activeElement)))) { delete side.dataset.dirty; clear(side, brokerCard(), addCard()); }
+  }
+
+  // ----- Kafka: connectors that stream, and the test broker
+
+  function kafkaCard() {
+    const ks = (v.connectors || []).filter((c) => c.streams);
+    const add = h("button", { class: "btn sm primary" }, icon("plus"), "Add a Kafka connector");
+    add.onclick = () => kafkaForm();
+    if (!can("admin")) { add.disabled = true; add.title = needs("admin"); }
+    const body = ks.length ? h("div", { class: "stack", style: { gap: "10px" } }, ks.map(kafkaRow))
+      : empty("streams", "No Kafka connectors yet", "A Kafka connector reads topics into a table while it is on, each event once: its offsets are kept with the rows. Start the test broker to try one without Kafka.",
+        broker?.running ? h("button", { class: "btn sm", onclick: () => kafkaForm(demoPrefill()) }, icon("bolt"), "Connect one to the test broker") : null);
+    return card({ title: "Kafka", sub: "topics this server reads, each event written once", tools: add, body, attrs: { "data-kafka": "" } });
+  }
+
+  function kafkaRow(c) {
+    const s = c.stream || {};
+    const parts = s.partitions || [];
+    const on = c.enabled;
+    const btn = h("button", { class: "btn sm" + (on ? "" : " primary") }, icon(on ? "stop" : "play"), on ? "Stop" : "Start");
+    if (!can("admin")) { btn.disabled = true; btn.title = needs("admin"); }
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        const r = await api(`/v1/admin/connectors/${encodeURIComponent(c.name)}/${on ? "stop" : "start"}`, { body: {} });
+        toast(on ? `${c.name} stopped` : `${c.name} started`, "ok");
+        if (r.note) toast(r.note, "info", 6000);
+        await load();
+      } catch (err) { toast(err.message, "bad"); btn.disabled = false; }
+    };
+    const cfg = c.config || {};
+    const topics = Array.isArray(cfg.topics) ? cfg.topics.join(", ") : cfg.topics;
+    const maxLag = Math.max(1, ...parts.map((p) => p.lag || 0));
+    const stat = (label, value, title) => h("div", { class: "stack", style: { gap: "0", minWidth: "84px" }, title }, h("span", { class: "small dim" }, label), h("b", { class: "mono" }, value));
+    return h("div", { class: "kafka-row", style: { border: "1px solid var(--line)", borderRadius: "8px", padding: "10px 12px" } },
+      h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap", alignItems: "center" } },
+        h("div", { class: "stack click", style: { gap: "2px", flex: "1 1 220px", minWidth: "0" }, onclick: () => open(c.name) },
+          h("b", {}, c.name),
+          h("span", { class: "small dim mono", style: { overflowWrap: "anywhere" } }, `${cfg.brokers || "?"} · ${topics || "?"} → `, tableLink(c.target))),
+        streamPill(c), btn),
+      h("div", { class: "row", style: { gap: "18px", flexWrap: "wrap", marginTop: "8px" } },
+        stat("rate", on ? rateText(s.rate_10s) : "–", "Events written a second, over the last 10 s"),
+        stat("lag", s.lag != null ? fmt.si(s.lag) : "–", "Events in the topics not yet written: each partition's end less its next offset"),
+        stat("events", fmt.si(s.events || 0), "Events read and written since this server started (replays and those that made no row included)"),
+        stat("rows", fmt.si(s.rows || 0), "Rows written since this server started"),
+        s.replays ? stat("replays", fmt.si(s.replays), "Events whose offset ChloeDB had already: skipped, not written twice") : null,
+        s.unmapped ? stat("no row", fmt.si(s.unmapped), s.first_unmapped || "Events no row came of") : null,
+        s.lost ? stat("lost", fmt.si(s.lost), "Events the topic's retention deleted before they were read") : null,
+        stat("last write", s.last_write_ms ? fmt.ago(s.last_write_ms) : "never")),
+      s.last_error && s.state !== "streaming" ? h("div", { class: "small error", style: { marginTop: "6px", overflowWrap: "anywhere" } }, icon("bad"), " ", s.last_error, s.failures > 1 ? ` (×${s.failures}, retrying)` : " (retrying)") : null,
+      s.warning ? h("div", { class: "small warn", style: { marginTop: "6px", overflowWrap: "anywhere" } }, icon("warn"), " ", s.warning) : null,
+      parts.length ? h("details", { style: { marginTop: "6px" }, open: openParts.has(c.name), ontoggle: (e) => { if (e.target.open) openParts.add(c.name); else openParts.delete(c.name); } }, h("summary", { class: "small dim" }, `${fmt.plural(parts.length, "partition")}`),
+        h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
+          h("thead", {}, h("tr", {}, h("th", {}, "partition"), h("th", { class: "num", title: "The offset of the next event to write: ChloeDB has every one before it" }, "next"), h("th", { class: "num", title: "The partition's end (Kafka's high watermark)" }, "end"), h("th", {}, "lag"), h("th", {}, "last event"))),
+          h("tbody", {}, parts.map((p) => h("tr", {},
+            h("td", { class: "mono small" }, `${p.topic}/${p.partition}`),
+            h("td", { class: "num mono small" }, fmt.n(p.next)), h("td", { class: "num mono small" }, fmt.n(p.high)),
+            h("td", { class: "small", style: { minWidth: "120px" } }, h("div", { class: "row", style: { gap: "6px" } },
+              h("div", { style: { flex: "1", height: "6px", background: "var(--line)", borderRadius: "3px", overflow: "hidden" } }, h("div", { style: { width: `${Math.round(100 * (p.lag || 0) / maxLag)}%`, height: "100%", background: p.lag > 1000 ? "var(--warn)" : "var(--accent)" } })),
+              h("span", { class: "mono" }, fmt.si(p.lag || 0)))),
+            h("td", { class: "small" }, p.last_event_ms ? fmt.ago(p.last_event_ms) : "–"))))))) : null);
+  }
+
+  // The test broker's address, topic and a map into a table of its own.
+  const demoPrefill = () => {
+    const taken = new Set((v.connectors || []).map((c) => c.name));
+    let n = 1;
+    while (taken.has(n === 1 ? "demo-clicks" : `demo-clicks-${n}`)) n++;
+    return {
+      name: n === 1 ? "demo-clicks" : `demo-clicks-${n}`, brokers: broker?.address || "127.0.0.1:19092", topics: broker?.generator?.topic || "demo.clicks",
+      target: n === 1 ? "demo_clicks" : `demo_clicks_${n}`, create: true, map: DEMO_MAP, internal: true,
+      sasl: broker?.sasl ? { mechanism: "PLAIN", username: broker.sasl.username } : null,
+    };
+  };
+
+  function brokerCard() {
+    const b = broker;
+    const admin = can("admin");
+    if (!b?.running) {
+      const listen = h("input", { class: "input mono", value: "127.0.0.1:19092", style: { width: "100%" }, spellcheck: "false" });
+      const topic = h("input", { class: "input mono", value: "demo.clicks", style: { width: "100%" }, spellcheck: "false" });
+      const rate = h("input", { class: "input mono", type: "number", min: "0", value: "5", style: { width: "90px" } });
+      const parts = h("input", { class: "input mono", type: "number", min: "1", max: "64", value: "3", style: { width: "70px" } });
+      const user = h("input", { class: "input mono", placeholder: "none", style: { width: "100%" }, autocomplete: "off" });
+      const pass = h("input", { class: "input mono", type: "password", style: { width: "100%" }, autocomplete: "new-password" });
+      const go = h("button", { class: "btn primary" }, icon("play"), "Start the test broker");
+      if (!admin) { go.disabled = true; go.title = needs("admin"); }
+      go.onclick = async () => {
+        go.disabled = true;
+        try {
+          const body = { listen: listen.value.trim(), topic: topic.value.trim(), rate: Number(rate.value || 0), partitions: Number(parts.value || 3) };
+          if (user.value.trim()) { body.username = user.value.trim(); body.password = pass.value; }
+          broker = await api("/v1/admin/kafka/test-broker", { body });
+          toast(`Test broker at ${broker.address}`, "ok");
+          draw();
+        } catch (e) { toast(e.message, "bad"); go.disabled = false; }
+      };
+      const f = (label, el) => h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, label), el);
+      return card({ title: "Test Kafka broker", sub: "a broker in this server's process, to try a connector on", body: h("div", { class: "stack", style: { gap: "8px" } },
+        h("div", { class: "small dim" }, "It speaks enough of Kafka's protocol for the connector: topics kept in memory, a topic of made-up click events written at a rate, and a box to send your own. Loopback only; it stops with the server."),
+        f("Listen on", listen), f("Topic of made-up events", topic),
+        h("div", { class: "row", style: { gap: "10px" } }, f("Events a second", rate), f("Partitions", parts)),
+        h("details", {}, h("summary", { class: "small dim" }, "Ask clients to sign in (SASL PLAIN)"), h("div", { class: "stack", style: { gap: "6px", marginTop: "6px" } }, f("User", user), f("Password", pass))),
+        h("div", { class: "row" }, go)) });
+    }
+    const g = b.generator || {};
+    const rate = h("input", { class: "input mono", type: "number", min: "0", value: String(g.rate ?? 0), style: { width: "90px" } });
+    const setRate = h("button", { class: "btn sm" }, icon("check"), "Set");
+    setRate.onclick = async () => { try { broker = await api("/v1/admin/kafka/test-broker", { body: { topic: g.topic, rate: Number(rate.value || 0) } }); toast(`${fmt.n(Number(rate.value || 0), 1)} events a second`, "ok"); draw(); } catch (e) { toast(e.message, "bad"); } };
+    const stopBtn = h("button", { class: "btn sm danger" }, icon("stop"), "Stop the broker");
+    stopBtn.onclick = async () => {
+      if (!(await confirm({ title: "Stop the test broker?", body: "Its topics and their events go. Connectors reading it fail until it starts again (their offsets stay in ChloeDB: a new broker's offsets start again from 0, so give them another prefix to read it).", ok: "Stop it", danger: true }))) return;
+      try { await api("/v1/admin/kafka/test-broker", { method: "DELETE" }); broker = { running: false }; draw(); } catch (e) { toast(e.message, "bad"); }
+    };
+    const connect = h("button", { class: "btn sm primary" }, icon("bolt"), "Connect a connector to it");
+    connect.onclick = () => kafkaForm(demoPrefill());
+    const sendTopic = h("input", { class: "input mono", value: g.topic || "demo.clicks", style: { width: "100%" }, spellcheck: "false" });
+    const sendKey = h("input", { class: "input mono", placeholder: "key (optional)", style: { width: "100%" }, spellcheck: "false" });
+    const sendValue = h("textarea", { class: "input mono", rows: 3, spellcheck: "false", style: { width: "100%" } });
+    sendValue.value = JSON.stringify({ event_id: `e-hand-${Date.now()}`, user: "u001", item: "i0042", action: "buy", page: "checkout", price: 19.5, at: new Date().toISOString() });
+    const send = h("button", { class: "btn sm" }, icon("rocket"), "Send");
+    send.onclick = async () => {
+      let value = sendValue.value; try { value = JSON.parse(value); } catch { /* sent as text */ }
+      try {
+        const r = await api("/v1/admin/kafka/test-broker/produce", { body: { topic: sendTopic.value.trim(), messages: [{ key: sendKey.value.trim() || null, value }] } });
+        const o = r.offsets?.[0];
+        toast(`Sent to ${r.topic}/${o?.partition} at offset ${o?.offset}`, "ok");
+        broker = await api("/v1/admin/kafka/test-broker"); draw();
+      } catch (e) { toast(e.message, "bad"); }
+    };
+    if (!admin) for (const x of [setRate, stopBtn, connect, send]) { x.disabled = true; x.title = needs("admin"); }
+    return card({ title: "Test Kafka broker", tools: stopBtn, body: h("div", { class: "stack", style: { gap: "10px" } },
+      h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, pill("ok", b.started_ms ? `up ${fmt.ago(b.started_ms).replace(/ ago$/, "")}` : "up"), h("span", { class: "mono" }, b.address), h("button", { class: "btn sm ghost", title: "Copy the address", onclick: () => copy(b.address, "Address copied") }, icon("copy")),
+        b.sasl ? h("span", { class: "small dim" }, icon("lock"), ` sign-in: ${b.sasl.username}`) : null),
+      h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
+        h("thead", {}, h("tr", {}, h("th", {}, "topic"), h("th", { class: "num" }, "partitions"), h("th", { class: "num" }, "events"))),
+        h("tbody", {}, (b.topics || []).map((t) => h("tr", {}, h("td", { class: "mono small" }, t.name), h("td", { class: "num small" }, t.partitions.length), h("td", { class: "num mono small", title: t.partitions.map((p) => `${p.partition}: ${p.start} to ${p.end}`).join("\n") }, fmt.n(t.messages))))))),
+      h("div", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, `Made-up click events into ${g.topic}`),
+        h("div", { class: "row", style: { gap: "6px", alignItems: "center" } }, rate, h("span", { class: "small dim" }, "a second"), setRate)),
+      h("div", { class: "small dim" }, `${fmt.n(b.connections || 0)} connections (${fmt.n(b.open || 0)} open) · ${fmt.n(b.fetches || 0)} fetches`),
+      h("div", { class: "row" }, connect),
+      h("details", {}, h("summary", { class: "small dim" }, "Send an event"), h("div", { class: "stack", style: { gap: "6px", marginTop: "6px" } }, sendTopic, sendKey, sendValue, h("div", { class: "row" }, send)))) });
+  }
+
+  /** The form of a new Kafka connector, `pre` filled in. */
+  function kafkaForm(pre = {}) {
+    const inp = (value, attrs = {}) => h("input", { class: "input mono", value: value ?? "", spellcheck: "false", autocomplete: "off", style: { width: "100%" }, ...attrs });
+    const name = inp(pre.name || "", { placeholder: "orders-in" });
+    const brokers = inp(pre.brokers || "", { placeholder: "kafka-1:9092,kafka-2:9092" });
+    const topics = inp(pre.topics || "", { placeholder: "orders, payments" });
+    const target = inp(pre.target || "", { placeholder: "kafka_events (made for it, every event as a row)" });
+    let create = pre.create ?? false, internal = pre.internal ?? true, tls = false, startNow = true;
+    const createT = toggle(create, (x) => { create = x; }, "Make the table from the map if it does not exist");
+    const startSel = h("select", { class: "select" }, h("option", { value: "earliest" }, "its first event (earliest)"), h("option", { value: "latest" }, "its end: new events only (latest)"));
+    const formatSel = h("select", { class: "select" }, h("option", { value: "json" }, "JSON"), h("option", { value: "text" }, "text"));
+    const mapIn = h("textarea", { class: "input mono", rows: 7, spellcheck: "false", style: { width: "100%", resize: "vertical" }, placeholder: "{\"id\": \"$.value.order_id\", \"total\": {\"path\": \"$.value.total\", \"as\": \"float\"}}" });
+    if (pre.map) mapIn.value = JSON.stringify(pre.map, null, 2);
+    const mech = h("select", { class: "select" }, ["none", "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"].map((m) => h("option", { value: m }, m === "none" ? "no sign-in" : m)));
+    const user = inp(pre.sasl?.username || "", { placeholder: "user" });
+    const pass = inp("", { type: "password", autocomplete: "new-password", placeholder: "password (kept on this server, never in a table)" });
+    if (pre.sasl) mech.value = pre.sasl.mechanism;
+    const prefix = inp("", { placeholder: "kafka/<name>/ (default)" });
+    const tomb = h("select", { class: "select" }, h("option", { value: "skip" }, "write nothing"), h("option", { value: "delete" }, "delete the row of its key"));
+    const note = h("div");
+    const f = (label, el, hint) => h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, label), el, hint ? h("span", { class: "small dim" }, hint) : null);
+    const body = () => {
+      const config = { brokers: brokers.value.trim(), topics: topics.value.trim(), start: startSel.value, format: formatSel.value, allow_internal: internal };
+      if (mapIn.value.trim()) { try { config.map = JSON.parse(mapIn.value); } catch (e) { throw new Error(`the map is not JSON: ${e.message}`); } }
+      if (create) config.create_target = true;
+      if (tls) config.tls = true;
+      if (mech.value !== "none") config.sasl = { mechanism: mech.value, username: user.value.trim() };
+      if (prefix.value.trim()) config.prefix = prefix.value.trim();
+      if (tomb.value !== "skip") config.tombstones = tomb.value;
+      const b = { name: name.value.trim(), kind: "kafka", config, enabled: startNow };
+      if (target.value.trim()) b.target = target.value.trim();
+      if (mech.value !== "none" && pass.value) b.secrets = { password: pass.value };
+      return b;
+    };
+    const tryIt = h("button", { class: "btn" }, icon("eye"), "Dry run");
+    const go = h("button", { class: "btn primary" }, icon("plus"), "Add the connector");
+    if (!can("admin")) { go.disabled = tryIt.disabled = true; go.title = tryIt.title = needs("admin"); }
+    tryIt.onclick = async () => {
+      clear(note, h("div", { class: "small dim" }, "Connecting and reading a few events…"));
+      try { clear(note, dryRun(await api("/v1/admin/connectors/test", { body: body(), timeout: 120000 }))); }
+      catch (e) { clear(note, h("div", { class: "error small" }, e.message)); }
+    };
+    go.onclick = async () => {
+      go.disabled = true;
+      try {
+        const r = await api("/v1/admin/connectors", { body: body(), timeout: 60000 });
+        toast(`${r.connector.name} added${r.made_target ? `, and its table ${r.connector.target}` : ""}${startNow ? ": it starts in a few seconds" : ""}`, "ok");
+        d.close();
+        await load();
+      } catch (e) { clear(note, h("div", { class: "error small" }, e.message)); go.disabled = false; }
+    };
+    const d = drawer({ title: "Add a Kafka connector", sub: "topics into a table, each event once", wide: true, body: h("div", { class: "stack", style: { gap: "10px" } },
+      h("div", { class: "small dim" }, "This server reads every partition of the topics while the connector is on, and keeps each partition's offset in ChloeDB with the rows its events made (a stream source per partition), so a restart or a replay writes no event twice. It uses no consumer group and commits nothing to Kafka."),
+      f("Name (lowercase, digits, - and _)", name),
+      f("Bootstrap brokers", brokers, "host:port, joined by commas"),
+      f("Topics", topics, "joined by commas"),
+      f("Target table", target, "empty: kafka_events, made for it, each event a row (topic, partition, offset, time, key, value as JSON)"),
+      createT,
+      f("A partition ChloeDB has no offset of starts at", startSel),
+      f("Values are", formatSel),
+      f("Map (JSON, optional)", mapIn, "column → \"$.value.field\", \"$.key\", \"$.offset\", \"$.ts\", \"{template}\" or {\"path\", \"as\"}. Without one, a JSON value's fields are the columns, and a keyed table's row without its key gets topic/partition/offset."),
+      toggle(internal, (x) => { internal = x; }, "The brokers are inside this network (a private address, or this machine)"),
+      h("details", {}, h("summary", { class: "small dim" }, "TLS and sign-in"), h("div", { class: "stack", style: { gap: "8px", marginTop: "8px" } },
+        toggle(tls, (x) => { tls = x; }, "Connect with TLS (checked against the public roots)"),
+        f("SASL", mech), user, pass)),
+      h("details", {}, h("summary", { class: "small dim" }, "More"), h("div", { class: "stack", style: { gap: "8px", marginTop: "8px" } },
+        f("Source names' prefix", prefix, "each partition is the stream source <prefix><topic>/<partition>; another prefix reads the topics again from the start"),
+        f("An event without a value (a tombstone)", tomb))),
+      toggle(startNow, (x) => { startNow = x; }, "Start it now"),
+      note, h("div", { class: "row", style: { gap: "6px" } }, tryIt, go)) });
   }
   const kindTitle = (k) => (v?.kinds || []).find((x) => x.kind === k)?.title || k;
 
@@ -218,7 +456,7 @@ function render(page) {
     let c;
     try { c = await api(`/v1/admin/connectors/${encodeURIComponent(name)}`); } catch (e) { toast(e.message, "bad"); return; }
     const out = h("div");
-    const runBtn = c.pulls || (v.kinds || []).find((k) => k.kind === c.kind)?.pull ? h("button", { class: "btn sm primary" }, icon("play"), "Run now") : null;
+    const runBtn = !c.streams && (c.pulls || (v.kinds || []).find((k) => k.kind === c.kind)?.pull) ? h("button", { class: "btn sm primary" }, icon("play"), "Run now") : null;
     if (runBtn) runBtn.onclick = async () => {
       runBtn.disabled = true;
       clear(out, h("div", { class: "small dim" }, "Running…"));
@@ -235,8 +473,15 @@ function render(page) {
         clear(out, dryRun(await api("/v1/admin/connectors/test", { body: b, timeout: 120000 })));
       } catch (e) { clear(out, h("div", { class: "error small" }, e.message)); }
     };
-    const toggleBtn = h("button", { class: "btn sm" }, icon(c.enabled ? "pause" : "play"), c.enabled ? "Turn off" : "Turn on");
-    toggleBtn.onclick = async () => { try { await api(`/v1/admin/connectors/${name}`, { body: { enabled: !c.enabled } }); d.close(); load(); } catch (e) { toast(e.message, "bad"); } };
+    const toggleBtn = c.streams ? h("button", { class: "btn sm" + (c.enabled ? "" : " primary") }, icon(c.enabled ? "stop" : "play"), c.enabled ? "Stop" : "Start")
+      : h("button", { class: "btn sm" }, icon(c.enabled ? "pause" : "play"), c.enabled ? "Turn off" : "Turn on");
+    toggleBtn.onclick = async () => {
+      try {
+        if (c.streams) await api(`/v1/admin/connectors/${name}/${c.enabled ? "stop" : "start"}`, { body: {} });
+        else await api(`/v1/admin/connectors/${name}`, { body: { enabled: !c.enabled } });
+        d.close(); load();
+      } catch (e) { toast(e.message, "bad"); }
+    };
     const keyBtn = c.pushed ? h("button", { class: "btn sm" }, icon("key"), c.push?.key_id ? "Rotate the push key" : "Make a push key") : null;
     if (keyBtn) keyBtn.onclick = async () => {
       if (!(await confirm({ title: "A new push key?", body: "The old key stops working now: the system that pushes needs the new one.", ok: "Make a new key" }))) return;
@@ -262,7 +507,19 @@ function render(page) {
       h("td", { class: "num small" }, fmt.n(r.records || 0)), h("td", { class: "num small" }, fmt.n(r.rows_ || 0)),
       h("td", { class: "num small" }, took(r.took_ms)),
       h("td", { class: r.error ? "small error" : r.warning ? "small warn" : "small", style: { maxWidth: "300px", overflowWrap: "anywhere" } }, r.error || r.warning || (r.dropped?.length ? h("span", { class: "dim" }, `left out: ${r.dropped.join(", ")}`) : ""))));
-    const facts = [
+    const sx = c.stream || {};
+    const facts = c.streams ? [
+      ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, tableLink(c.target))], ["Consumer", streamPill(c)],
+      ["Brokers", h("span", { class: "mono small" }, String(c.config?.brokers || ""))], ["Topics", h("span", { class: "mono small" }, Array.isArray(c.config?.topics) ? c.config.topics.join(", ") : String(c.config?.topics || ""))],
+      ["Sources", h("span", { class: "mono small" }, (sx.sources || []).join(", "))],
+      ["Rate", `${rateText(sx.rate_10s)} (last 10 s) · ${rateText(sx.rate_60s)} (last minute)`], ["Lag", sx.lag != null ? `${fmt.n(sx.lag)} events` : "–"],
+      ["Since start", `${fmt.n(sx.events || 0)} events, ${fmt.n(sx.rows || 0)} rows, ${fmt.n(sx.replays || 0)} replays skipped, ${fmt.n(sx.unmapped || 0)} made no row${sx.lost ? `, ${fmt.n(sx.lost)} lost to retention` : ""}`],
+      ["Sessions", `${fmt.n(sx.sessions || 0)}${sx.session_ms ? ` · this one since ${fmt.ago(sx.session_ms)}` : ""}`],
+      ["Rows written", `${fmt.n(st.rows_total || 0)} in all`],
+      ["Secrets", c.secrets?.length ? h("span", { class: "mono" }, c.secrets.join(", ")) : "none"],
+      ["Changed", c.updated_ms ? `${fmt.ago(c.updated_ms)}${c.updated_by ? ` by ${c.updated_by}` : ""}` : "–"],
+      sx.first_unmapped ? ["First without a row", h("span", { class: "small warn" }, sx.first_unmapped)] : null,
+    ].filter(Boolean) : [
       ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, tableLink(c.target))], ["Health", healthPill(c)], ["Schedule", every_text(c, v.kinds)],
       ["Runs", fmt.n(st.runs || 0)], ["Rows written", fmt.n(st.rows_total || 0)], ["Last ok", st.last_ok_ms ? fmt.ago(st.last_ok_ms) : "never"],
       ["Cursor", h("span", { class: "mono small", style: { wordBreak: "break-all" } }, (st.cursor || "–").slice(0, 120))],
@@ -292,5 +549,10 @@ function render(page) {
   }
 
   load();
-  const stop = every(15000, () => { if (!page.isConnected) { stop(); return; } return load(); }, false);
+  // Every 15 s; every 3 s while a Kafka consumer or the test broker runs.
+  const stop = every(3000, () => {
+    if (!page.isConnected) { stop(); return; }
+    const live = broker?.running || (v?.connectors || []).some((c) => c.streams && c.enabled);
+    if (live || Date.now() - loaded >= 14500) return load(true);
+  }, false);
 }

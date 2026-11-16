@@ -7,7 +7,7 @@
     "color": "#3b82f6"
    },
    {
-    "name": "Northwind data migration",
+    "name": "Fairview data migration",
     "rate": 120,
     "color": "#10b981"
    },
@@ -26,7 +26,7 @@
     "billable": true
    },
    {
-    "project": "Northwind data migration",
+    "project": "Fairview data migration",
     "day": "2026-11-03",
     "hours": 6,
     "note": "Schema mapping with client",
@@ -47,7 +47,7 @@
     "billable": true
    },
    {
-    "project": "Northwind data migration",
+    "project": "Fairview data migration",
     "day": "2026-11-06",
     "hours": 5,
     "note": "Test import of customer records",

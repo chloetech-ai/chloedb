@@ -199,8 +199,10 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
 /* an app on its own (/a/<id>) */
 .bare #nav-library, .bare .panel, .bare .mobile-only { display: none !important; }
 .bare .appview { grid-template-columns: minmax(0, 1fr); }
-.bare.front-view .top, .bare.front-view #tabs { display: none !important; }
-.bare.front-view .stage.designed.nav-sidebar { display: flex; flex-direction: column; }
+/* a visitor at a screen's sign-in sees that page alone: it names the app
+   and says what signing in gives, so neither the bar nor the tabs show */
+.bare:is(.front-view, .one-screen, .gated) .top, .bare:is(.front-view, .one-screen, .gated) #tabs { display: none !important; }
+.bare:is(.front-view, .one-screen, .gated) .stage.designed.nav-sidebar { display: flex; flex-direction: column; }
 
 /* a build's timeline */
 :root { --t-strata: #0c8599; --t-plan: #7048e8; --t-model: #ae3ec9; --t-write: #3b5bdb; --t-fix: #e8590c; --t-check: #2b8a3e; }
@@ -416,7 +418,9 @@ body.bare.designed { background: var(--bg); }
 .bare.designed.look-bold .mark { background: var(--pop); }
 .bare.designed.look-bold .top .look { background: color-mix(in srgb, var(--deep-fg) 16%, transparent); color: var(--deep-fg); }
 @media (max-width: 560px) {
-  .bare.designed:is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  /* room for the tab bar only while it shows: a front page hides it, and the
+     reserve left behind read as a blank band over the page's lists */
+  .bare.designed:not(.front-view, .one-screen, .gated):is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
   .bare.designed:is(.look-bold, .look-native) #tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0; width: auto; max-width: none; border-radius: 0;
     display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; align-self: stretch;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--card); border: 0; border-top: 1px solid var(--line); box-shadow: none; }
@@ -449,3 +453,69 @@ body.bare.designed { background: var(--bg); }
 .reach-item .send { font-size: 12px; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .reach-item .send.on { color: #b45309; }
 .reach-item .inp { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg, transparent); color: inherit; }
+
+/* ---- an app on its own: the design's type pairing (web/fonts, SIL Open Font License),
+   chrome a finger can use (44 px), and its colors as plain values */
+@font-face { font-family: "Fraunces"; src: url("/fonts/fraunces.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/fonts/playfair-display.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Instrument Serif"; src: url("/fonts/instrument-serif.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url("/fonts/bricolage-grotesque.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Nunito"; src: url("/fonts/nunito.woff2") format("woff2"); font-weight: 200 1000; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
+body.bare.designed .top { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; height: 60px; }
+body.bare.designed .brand { min-height: 44px; font-size: 20px; font-weight: var(--title-weight, 650); letter-spacing: var(--title-track, -.02em); }
+body.bare.designed .look { width: 44px; height: 44px; background: transparent; border: 1px solid var(--line-2); border-radius: 12px; color: var(--fg); }
+body.bare.designed .look:hover { background: var(--card); }
+body.bare.designed #tabs .tab { min-height: 44px; min-width: 44px; justify-content: center; }
+body.bare.designed.nav-segmented #tabs { background: var(--fill-solid, var(--fill)); }
+body.bare.designed.look-bold .top { background: var(--deep); }
+body.bare.designed.look-bold .top .look { background: transparent; border-color: var(--deep-fg); color: var(--deep-fg); }
+@media (max-width: 560px) {
+  body.bare.designed.look-native #tabs { background: var(--card); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  body.bare.designed .top { height: 56px; padding: 0 12px; }
+  body.bare.designed .brand { font-size: 18px; }
+}
+
+/* who is signed in, on an app's own page */
+.who { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 12px 4px 4px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 14px; cursor: pointer; }
+.who-av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-fg, #fff); font-weight: 700; font-size: 13px; }
+.who-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.whomenu .who-line { padding: 4px 10px 10px; }
+.who-out { min-height: 44px; padding: 0 6px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+.who-out:hover { color: var(--fg); text-decoration: underline; }
+@media (max-width: 560px) { .who { padding: 4px; } .who-name, .who-out { display: none; } }
+
+/* The app's own bar and tabs line up with its screen's content (a centred,
+   narrower page reports its edges: --content-left, --content-right) */
+@media (min-width: 861px) {
+  body.bare:not(.nav-sidebar) .top { padding-left: max(16px, var(--content-left, 16px)); padding-right: max(16px, var(--content-right, 16px)); }
+  body.bare:not(.nav-sidebar) #tabs { padding-left: max(12px, var(--content-left, 12px)); padding-right: max(12px, var(--content-right, 12px)); }
+}
+
+/* A site's header on its other screens (body.site-nav, on a computer): the
+   screens' tabs sit in the bar beside the name, as the front page's links
+   do; the current one in the accent. */
+@media (min-width: 861px) {
+  body.bare.site-nav .top { height: 64px; }
+  body.bare.site-nav .top #tabs { margin-left: auto; padding: 0; gap: 6px; border: 0; background: transparent; overflow: visible; align-self: stretch; align-items: center; }
+  body.bare.site-nav .top #tabs .tab { border: 0; border-radius: 999px; padding: 8px 14px; min-height: 40px; color: var(--fg); font-weight: 550; background: transparent; box-shadow: none; }
+  body.bare.site-nav .top #tabs .tab .ticon { display: none; }
+  body.bare.site-nav .top #tabs .tab:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+  body.bare.site-nav .top #tabs .tab.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 650; }
+  body.bare.site-nav .top .top-right { margin-left: 12px; }
+  body.bare.site-nav .top .brand { flex: none; }
+  body.bare.site-nav .top #tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+}
+
+/* An app on its own page with nothing open to visitors: its sign-in. */
+.building.signin .box { max-width: 380px; }
+.signin-form { display: flex; flex-direction: column; gap: 10px; }
+.signin-form input { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #d7d7d7); background: var(--card, #fff); color: inherit; }
+.signin-form input[hidden] { display: none; }
+.signin-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.signin-msg:empty { display: none; }
+.signin-msg { color: var(--bad, #b42318); }
+
+.signin-over { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.38); display: grid; place-items: center; padding: 16px; }
+.signin-over > .building.signin { flex: none; width: min(420px, 100%); background: var(--card, #fff); border-radius: 16px; box-shadow: 0 24px 60px -20px rgba(0,0,0,.45); padding: 24px; }

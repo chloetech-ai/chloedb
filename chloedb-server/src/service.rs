@@ -1365,9 +1365,13 @@ impl Service {
     /// refuses the map (409) until it is loaded again. A map that leaves
     /// the shard its slots (another shard's, or servers, changed) keeps
     /// serving coordinators that route by the one before. A map that gives
-    /// away the slots moving from here is taken only while writes to them
-    /// were held since their rows were last exported ([`core::flip_ok`]).
-    /// Returns the epoch now held.
+    /// away the slots moving from here (the move's flip) is taken by the
+    /// server that takes clients' writes only while writes to them were
+    /// held since their rows were last exported, in its term, or once its
+    /// log holds the flip's mark, and it writes the mark through the log
+    /// first and waits until the copies its writes wait for hold it; by a
+    /// replica only once it applied a mark acknowledged so
+    /// ([`core::flip_ok`], [`feed::FLIP`]). Returns the epoch now held.
     pub async fn set_slots(&self, map: SlotMap, shard: usize) -> Result<u64, ApiError> {
         if shard >= map.shards() {
             return Err(ApiError::bad(format!("shard {shard} of a slot map of {} shards", map.shards())));
@@ -1387,8 +1391,20 @@ impl Service {
             Replication::None => true,
         };
         let exporting = held.as_ref().and_then(|(m, s)| core::exporting(m, *s)).cloned();
-        let covered = !writer || self.moving.covers(exporting.as_ref(), frozen.as_ref().map(|f| f.since));
-        core::flip_ok(held.as_ref().map(|(m, s)| (m, *s)), &map, shard, covered)?;
+        let flips = core::flips(held.as_ref().map(|(m, s)| (m, *s)), &map, shard);
+        // The flip's mark this copy holds, if newer than its map: written
+        // by a writer of this shard that took the flip, or was about to.
+        let held_epoch = held.as_ref().map_or(0, |(m, _)| m.epoch);
+        let (marked, acked) = match flips {
+            true => feed::flip_mark(&db).map(|(e, a)| (e > held_epoch, a))?,
+            false => (false, false),
+        };
+        let term = self.term();
+        let covered = match writer {
+            true => marked || self.moving.covers(exporting.as_ref(), frozen.as_ref().filter(|f| f.term == term).map(|f| f.since), term),
+            false => marked && acked,
+        };
+        core::flip_ok(held.as_ref().map(|(m, s)| (m, *s)), &map, shard, covered, writer)?;
         let (since, check_rows) = match core::take(held.as_ref().map(|(m, s)| (m, *s)), self.slots_since.load(Ordering::Relaxed), &map, shard)? {
             core::Take::Held => return Ok(map.epoch),
             core::Take::Keep { since, check_rows } => (since, check_rows),
@@ -1405,6 +1421,13 @@ impl Service {
                     slots::slot(&key)
                 )));
             }
+        }
+        // The flip is marked through the log, and the copies hold the mark,
+        // before this server takes it: a writer replaced meanwhile cannot,
+        // a primary elected later finds it and refuses writes to the slots,
+        // and a replica takes the flip only once it applied it.
+        if writer && flips {
+            self.mark_flip(&db, map.epoch, term).await?;
         }
         // The slots that change hands here are marked in the log before
         // the map lets a write reach them, so that a cluster following this
@@ -1432,6 +1455,55 @@ impl Service {
         *held = Some((map, shard));
         drop(frozen);
         Ok(epoch)
+    }
+
+    /// Writes the mark of the flip to the map of `epoch` ([`feed::FLIP`]),
+    /// and waits until the copies this primary's writes wait for hold it,
+    /// as a write of term `term`; then writes it again, acknowledged, for
+    /// the replicas, which take the flip only once they applied that. A
+    /// primary another replaced, or one whose copies do not answer within
+    /// its timeout, takes no flip.
+    async fn mark_flip(&self, db: &Arc<Db>, epoch: u64, term: u64) -> Result<(), ApiError> {
+        let deadline = Instant::now() + self.timeout;
+        let first = self.replication();
+        // Still the writer that began the flip: the same primary, not
+        // replaced and in its term, or a server of no copies.
+        let same = || match (&first, &self.replication()) {
+            (Replication::None, Replication::None) => true,
+            (Replication::Primary(a), Replication::Primary(b)) => Arc::ptr_eq(a, b) && b.replaced_by() == 0 && self.term() == term,
+            _ => false,
+        };
+        let stepped = || conflict(format!("this server stopped being the writer of its shard (term {term}) while it marked the flip to cluster map epoch {epoch}, so it takes no flip"));
+        for acked in [false, true] {
+            if !same() {
+                return Err(stepped());
+            }
+            let d = db.clone();
+            let seq = tokio::task::spawn_blocking(move || wait_for_writer(deadline, || feed::write_flip_mark(&d, epoch, acked))).await.map_err(ApiError::internal)??;
+            let (Replication::Primary(p), Some(seq)) = (&first, seq) else { continue };
+            let held = match same() {
+                true => p.acknowledged(seq, deadline).await,
+                false => Err(stepped()),
+            };
+            match held {
+                Ok(()) => {}
+                // The flip is safe: the replicas that missed the second
+                // write refuse it until they apply it.
+                Err(e) if acked && same() => tracing::warn!(epoch, error = %e.message, "the copies did not all acknowledge the flip's mark"),
+                Err(e) if acked => return Err(e),
+                Err(e) => {
+                    return Err(ApiError {
+                        code: None,
+                        status: if e.status == 504 { 503 } else { e.status },
+                        message: format!("the copies of this shard did not acknowledge the mark of the flip to cluster map epoch {epoch}, so it takes no flip: {}", e.message),
+                    })
+                }
+            }
+        }
+        match same() {
+            true => Ok(()),
+            false => Err(stepped()),
+        }
     }
 
     /// Checks a request's slot map epoch against this shard's: 0 (a

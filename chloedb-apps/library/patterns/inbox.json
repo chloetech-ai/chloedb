@@ -1,0 +1,146 @@
+{
+ "title": "What people send, worked through: new, in progress and done, with who sent it and how to reach them",
+ "about": "Enquiries from a contact form, callback and quote requests, repair reports, applications: rows people add from a public page, which the owner works through. New ones lead with a count, each row says who, how to reach them, what they asked and when, and moves on with one tap (Start, Done, Reopen). Give it to the owner (FOR owner) beside the public form that fills the table.",
+ "params": {
+  "table": {
+   "about": "the table of what people send",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}_inbox"
+  },
+  "name": {
+   "about": "the column with who sent it",
+   "default": "name"
+  },
+  "contact": {
+   "about": "columns with how to reach them (email, phone) (a list)"
+  },
+  "text": {
+   "about": "the column with what they asked",
+   "default": "message"
+  },
+  "status": {
+   "about": "the column with its state",
+   "default": "status"
+  },
+  "states": {
+   "about": "the three states in order (a list)",
+   "default": [
+    "new",
+    "in progress",
+    "done"
+   ]
+  },
+  "sub": {
+   "about": "columns shown with it (the service asked for, a budget) (a list)"
+  },
+  "title": {
+   "about": "a heading",
+   "default": "Inbox"
+  },
+  "noun": {
+   "about": "what a row is",
+   "default": "message"
+  }
+ },
+ "example": {
+  "use": "inbox",
+  "table": "requests",
+  "name": "name",
+  "contact": [
+   "email",
+   "phone"
+  ],
+  "text": "message",
+  "status": "status",
+  "sub": [
+   "topic"
+  ],
+  "title": "Requests"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_s": "open"
+  },
+  "data": {
+   "{{key}}": "SELECT * FROM {{table}} ORDER BY created DESC LIMIT 500"
+  },
+  "let": {
+   "{{key}}_st": "={{states|json}}",
+   "{{key}}_of": "=r => r[{{status|json}}] == null || r[{{status|json}}] === '' ? {{key}}_st[0] : String(r[{{status|json}}])",
+   "{{key}}_rows": "=({{key}} || []).filter(r => state.{{key}}_s === 'all' || (state.{{key}}_s === 'open' ? {{key}}_of(r) !== {{key}}_st[2] : {{key}}_of(r) === state.{{key}}_s)).map(r => ({id: r.id, who: String(r[{{name|json}}] ?? ''), reach: ({{contact|json}} || []).map(c => r[c]).filter(Boolean).join(' · '), what: String(r[{{text|json}}] ?? ''), more: ({{sub|json}} || []).map(c => r[c]).filter(x => x != null && x !== '').join(' · '), when: r.created, state: {{key}}_of(r)}))",
+   "{{key}}_n": "=s => ({{key}} || []).filter(r => {{key}}_of(r) === s).length",
+   "{{key}}_set": "=(r, s) => app.update({{table|json}}, r.id, { {{status}}: s })"
+  },
+  "body": [
+   {
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "=('New')",
+      "value": "={{key}}_n({{key}}_st[0])"
+     },
+     {
+      "label": "=({{key}}_st[1][0].toUpperCase() + {{key}}_st[1].slice(1))",
+      "value": "={{key}}_n({{key}}_st[1])"
+     },
+     {
+      "label": "This week",
+      "value": "=({{key}} || []).filter(r => r.created && lib.dates.diffDays(String(r.created).slice(0, 10), today) <= 6).length"
+     }
+    ]
+   },
+   {
+    "chips": "{{key}}_s",
+    "options": "=[{value: 'open', label: 'Open'}, ...{{key}}_st.map(s => ({value: s, label: s[0].toUpperCase() + s.slice(1)})), {value: 'all', label: 'All'}]"
+   },
+   {
+    "table": "={{key}}_rows",
+    "columns": [
+     {
+      "key": "who",
+      "label": "From",
+      "value": "=r => r.reach ? r.who + ' · ' + r.reach : r.who"
+     },
+     {
+      "key": "what",
+      "label": "Asked",
+      "value": "=r => r.more ? r.more + ': ' + r.what : r.what"
+     },
+     {
+      "key": "when",
+      "label": "When",
+      "format": "ago"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "badge": true
+     }
+    ],
+    "actions": [
+     {
+      "label": "Start",
+      "when": "=r => r.state === {{key}}_st[0]",
+      "do": "=r => {{key}}_set(r, {{key}}_st[1])"
+     },
+     {
+      "label": "Done",
+      "when": "=r => r.state === {{key}}_st[1] || r.state === {{key}}_st[0]",
+      "do": "=r => {{key}}_set(r, {{key}}_st[2])"
+     },
+     {
+      "label": "Reopen",
+      "when": "=r => r.state === {{key}}_st[2]",
+      "do": "=r => {{key}}_set(r, {{key}}_st[0])"
+     }
+    ],
+    "empty": "=('Nothing here. New ' + {{noun|json}} + 's show up as people send them.')"
+   }
+  ]
+ }
+}

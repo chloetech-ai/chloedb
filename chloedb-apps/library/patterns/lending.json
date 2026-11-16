@@ -1,0 +1,234 @@
+{
+ "title": "Things lent out and back: who has each one now, check out and check in, what is overdue",
+ "about": "Tools, keys, cameras, kit, vehicles: a table of the things and a table of loans (a row per time one goes out: the thing, who has it, the day it went out, the day it is due back, the day it came back). Each thing shows In or Out with whom and until when, overdue ones first; a thing that is in is checked out with a short form, one that is out is checked in with a tap, and the latest loans are listed. Choose it whenever things are borrowed, assigned or handed out and come back.",
+ "params": {
+  "table": {
+   "about": "the loans table",
+   "need": true
+  },
+  "items": {
+   "about": "the table of the things",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}"
+  },
+  "item": {
+   "about": "the loans column holding the thing's id",
+   "default": "item"
+  },
+  "name": {
+   "about": "the things column with each one's name",
+   "default": "name"
+  },
+  "sub": {
+   "about": "a things column shown under the name (a serial number, a kind)"
+  },
+  "holder": {
+   "about": "the loans column saying who has it (a name, or a person's id with person)",
+   "default": "holder"
+  },
+  "person": {
+   "about": "true when holder keeps a person's account id (picked from the app's people)"
+  },
+  "out": {
+   "about": "the loans column with the day it went out",
+   "default": "out_day"
+  },
+  "due": {
+   "about": "the loans column with the day it is due back (optional)"
+  },
+  "back": {
+   "about": "the loans column with the day it came back (empty while out)",
+   "default": "back_day"
+  },
+  "days": {
+   "about": "how many days a loan lasts unless said otherwise",
+   "default": 14
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "noun": {
+   "about": "what a thing is",
+   "default": "item"
+  },
+  "label": {
+   "about": "the things' name as a heading, capitalized (Tool, Camera)",
+   "default": "Item"
+  }
+ },
+ "example": {
+  "use": "lending",
+  "table": "loans",
+  "items": "tools",
+  "item": "tool",
+  "name": "name",
+  "sub": "serial",
+  "holder": "holder",
+  "out": "out_day",
+  "due": "due_day",
+  "back": "back_day",
+  "title": "Tools",
+  "noun": "tool",
+  "label": "Tool"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_q": ""
+  },
+  "data": {
+   "{{key}}_things": "SELECT * FROM {{items}} ORDER BY {{name}} LIMIT 1000",
+   "{{key}}_open": "SELECT * FROM {{table}} WHERE {{back}} IS NULL ORDER BY created DESC LIMIT 2000",
+   "{{key}}_recent": "SELECT * FROM {{table}} ORDER BY created DESC LIMIT 12",
+   "{{key}}_people": {
+    "$when": "person",
+    "$value": "=app.people()"
+   }
+  },
+  "let": {
+   "{{key}}_who": "=v => { if (v == null || v === '') return '—'; const p = (data[{{key|json}} + '_people'] || []).find(x => String(x.id) === String(v)); return p ? (p.name || p.email) : String(v); }",
+   "{{key}}_loan": "=Object.fromEntries(({{key}}_open || []).map(l => [String(l[{{item|json}}]), l]))",
+   "{{key}}_late": "=l => !!(l && {{due|json}} && l[{{due|json}}] && String(l[{{due|json}}]) < today)",
+   "{{key}}_rows": "=({{key}}_things || []).map(t => { const l = {{key}}_loan[String(t.id)] || null; return {id: t.id, name: t[{{name|json}}], sub: {{sub|json}} ? t[{{sub|json}}] : null, loan: l, state: !l ? 'In' : {{key}}_late(l) ? 'Overdue' : 'Out', holder: l ? {{key}}_who(l[{{holder|json}}]) : '', until: l && {{due|json}} ? l[{{due|json}}] : null}; }).filter(r => !state.{{key}}_q || String(r.name + ' ' + (r.sub || '') + ' ' + r.holder).toLowerCase().includes(String(state.{{key}}_q).toLowerCase())).sort((a, b) => ['Overdue', 'Out', 'In'].indexOf(a.state) - ['Overdue', 'Out', 'In'].indexOf(b.state) || String(a.name).localeCompare(String(b.name)))",
+   "{{key}}_free": "=({{key}}_things || []).filter(t => !{{key}}_loan[String(t.id)]).map(t => ({value: t.id, label: String(t[{{name|json}}] ?? t.id)}))",
+   "{{key}}_back": "=r => r.loan && app.update({{table|json}}, r.loan.id, { {{back}}: today })"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "Overdue",
+      "value": "=({{key}}_open || []).filter(l => {{key}}_late(l)).length"
+     },
+     {
+      "label": "Out now",
+      "value": "=({{key}}_open || []).length"
+     },
+     {
+      "label": "In",
+      "value": "={{key}}_free.length"
+     }
+    ]
+   },
+   {
+    "split": [
+     {
+      "col": [
+       {
+        "input": "{{key}}_q",
+        "type": "search",
+        "placeholder": "=('Find a ' + {{noun|json}} + ' or a person')"
+       },
+       {
+        "table": "={{key}}_rows",
+        "columns": [
+         {
+          "key": "name",
+          "label": "{{label}}",
+          "value": "=r => r.sub ? r.name + ' · ' + r.sub : r.name"
+         },
+         {
+          "key": "state",
+          "label": "State",
+          "badge": true
+         },
+         {
+          "key": "holder",
+          "label": "With"
+         },
+         {
+          "$when": "due",
+          "key": "until",
+          "label": "Due back",
+          "format": "date"
+         }
+        ],
+        "actions": [
+         {
+          "label": "Check in",
+          "when": "=r => !!r.loan",
+          "do": "=r => {{key}}_back(r)"
+         }
+        ],
+        "empty": "=('No ' + {{noun|json}} + 's yet.')"
+       }
+      ]
+     },
+     {
+      "col": [
+       {
+        "card": [
+         {
+          "form": "{{table}}",
+          "submit": "Check out",
+          "fold": false,
+          "fields": [
+           {
+            "name": "{{item}}",
+            "label": "{{label}}",
+            "type": "select",
+            "required": true,
+            "options": "={{key}}_free"
+           },
+           {
+            "$when": "person",
+            "name": "{{holder}}",
+            "label": "Who takes it",
+            "required": true,
+            "type": "person"
+           },
+           {
+            "$when": "!person",
+            "name": "{{holder}}",
+            "label": "Who takes it",
+            "required": true
+           },
+           {
+            "$when": "due",
+            "name": "{{due}}",
+            "label": "Due back",
+            "type": "date",
+            "value": "=lib.dates.addDays(today, Number({{days|json}}) || 14)"
+           }
+          ],
+          "set": {
+           "{{out}}": "=today"
+          }
+         }
+        ],
+        "title": "Check out"
+       },
+       {
+        "card": [
+         {
+          "each": "={{key}}_recent",
+          "as": "l",
+          "class": "list",
+          "empty": "Nothing lent yet.",
+          "body": [
+           {
+            "text": "=String((({{key}}_things || []).find(t => String(t.id) === String(l[{{item|json}}])) || {})[{{name|json}}] ?? '') + ' · ' + {{key}}_who(l[{{holder|json}}])"
+           },
+           {
+            "text": "=(l[{{back|json}}] ? 'Back ' + app.fmt.date(l[{{back|json}}]) : 'Out since ' + app.fmt.date(l[{{out|json}}]))",
+            "muted": true,
+            "small": true
+           }
+          ]
+         }
+        ],
+        "title": "Latest"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

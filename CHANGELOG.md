@@ -90,6 +90,23 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   Workload Identity, so its own command center can act as the deployer's
   service account once the plan's one binding is made.
 
+### Replication
+
+- A slot move from a replicated shard no longer loses a write when the
+  shard's primary fails over during the flip. The primary now writes a
+  mark of the flip through its log (`_strata/move flip`) and waits until
+  its copies hold it before it takes the flip; a replica takes the flip
+  only once it applied the mark, and a primary elected while its log holds
+  it refuses writes to the moving slots until it takes the flip. A hold of
+  the writes and an export count only in the term they were made in.
+  Before, a primary that started again as a replica took the flip given
+  first, while the new primary took writes to the slots that no copy
+  reached, and the new primary then refused the flip for good (TLC,
+  `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.5 or earlier
+  writes no mark, so a replica of this release under one refuses the flips
+  it takes, and the maps after them, until a later flip from that shard is
+  marked or the replica is replaced: finish an upgrade before moving slots.
+
 ## 0.3.5
 
 The audit of 15 November's first lanes (security, wrong answers, apps that

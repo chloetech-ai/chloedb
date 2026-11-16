@@ -1,0 +1,77 @@
+{
+ "title": "A panel where the model reads the app's rows and answers a standing question about them, with the answer kept and Ask again",
+ "about": "Judge my stack, read this month's spending, what to practise next, how this week went: OVER is the query of the rows it reads (only what the question needs), PROMPT the question in full (what to answer, how long, in what shape). Shows what is sent, the answer with when it was asked, and says plainly when the app's model is switched off. Put it on the first screen, beside the rows it reads, when the request asks for the model's judgement.",
+ "params": {
+  "title": {
+   "about": "the panel's title",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "ask"
+  },
+  "over": {
+   "about": "the SQL query of the rows the model reads",
+   "need": true
+  },
+  "prompt": {
+   "about": "the question in full",
+   "need": true
+  },
+  "button": {
+   "about": "the button's words",
+   "default": "Ask"
+  },
+  "note": {
+   "about": "a line under the title (default: what is sent and to whom)"
+  },
+  "input": {
+   "about": "a label for an optional text the person adds (their goals, a question)"
+  },
+  "placeholder": {
+   "about": "with input: its placeholder"
+  },
+  "web": {
+   "about": "true: the model may search the web (slower)"
+  }
+ },
+ "example": {
+  "use": "ask",
+  "title": "A read of your month",
+  "over": "SELECT category, SUM(amount) AS spent FROM expenses WHERE day >= :month GROUP BY category",
+  "prompt": "Say in three short points where this month's money went and one thing to change.",
+  "button": "Read my month"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": "{{over}}"
+  },
+  "body": [
+   {
+    "ui": "askPanel",
+    "props": {
+     "title": "{{title}}",
+     "rows": "={{key}}",
+     "prompt": "{{prompt}}",
+     "button": "{{button}}",
+     "note": {
+      "$when": "note",
+      "$value": "{{note}}"
+     },
+     "input": {
+      "$when": "input",
+      "$value": "{{input}}"
+     },
+     "inputPlaceholder": {
+      "$when": "placeholder",
+      "$value": "{{placeholder}}"
+     },
+     "web": {
+      "$when": "web",
+      "$value": true
+     }
+    }
+   }
+  ]
+ }
+}

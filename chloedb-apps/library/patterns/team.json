@@ -1,0 +1,189 @@
+{
+ "title": "Who is on what: the app's people put on things (accounts, sites, classes), with a role each",
+ "about": "The team page of an app whose people see only what they belong to: a link table holds a row per person and thing (the person's account id, the thing's id, a role). It lists each thing with the people on it, flags things nobody is on, and lets the owner put someone on a thing (picked by name from the people who signed up) or take them off. It is what an access rule WHERE <col> IN (SELECT <thing> FROM <link table> WHERE <person> = :user_id) reads. Give it to the owner (FOR owner) or admins.",
+ "params": {
+  "table": {
+   "about": "the link table (a row per person and thing)",
+   "need": true
+  },
+  "things": {
+   "about": "the table of the things people are put on",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}"
+  },
+  "person": {
+   "about": "the link column with the person's account id",
+   "default": "person"
+  },
+  "thing": {
+   "about": "the link column with the thing's id",
+   "default": "account"
+  },
+  "name": {
+   "about": "the things column with each one's name",
+   "default": "name"
+  },
+  "role": {
+   "about": "the link column with the person's role on it (optional)"
+  },
+  "roles": {
+   "about": "the roles to choose from (a list)"
+  },
+  "title": {
+   "about": "a heading",
+   "default": "Team"
+  },
+  "label": {
+   "about": "what a thing is, as a heading (Account, Site)",
+   "default": "Account"
+  }
+ },
+ "example": {
+  "use": "team",
+  "table": "members_of",
+  "things": "accounts",
+  "person": "person",
+  "thing": "account",
+  "name": "name",
+  "role": "role",
+  "roles": [
+   "lead",
+   "member",
+   "client"
+  ],
+  "title": "Who is on what",
+  "label": "Account"
+ },
+ "screen": {
+  "data": {
+   "{{key}}_links": "SELECT * FROM {{table}} ORDER BY created LIMIT 2000",
+   "{{key}}_things": "SELECT id, {{name}} AS sa_name FROM {{things}} ORDER BY {{name}} LIMIT 500",
+   "{{key}}_people": "=app.people()"
+  },
+  "let": {
+   "{{key}}_who": "=v => { const p = ({{key}}_people || []).find(x => String(x.id) === String(v)); return p ? (p.name || p.email) : 'Someone who left'; }",
+   "{{key}}_rows": "=({{key}}_things || []).map(t => { const on = ({{key}}_links || []).filter(l => String(l[{{thing|json}}]) === String(t.id)); return {id: t.id, name: t.sa_name, n: on.length, people: on.map(l => {{key}}_who(l[{{person|json}}]) + ({{role|json}} && l[{{role|json}}] ? ' (' + l[{{role|json}}] + ')' : '')).join(', ') || 'Nobody yet'}; })",
+   "{{key}}_list": "=({{key}}_links || []).map(l => ({id: l.id, who: {{key}}_who(l[{{person|json}}]), what: (({{key}}_things || []).find(t => String(t.id) === String(l[{{thing|json}}])) || {}).sa_name || '—', role: {{role|json}} ? l[{{role|json}}] : null}))",
+   "{{key}}_opts": "=({{key}}_things || []).map(t => ({value: t.id, label: String(t.sa_name ?? t.id)}))"
+  },
+  "body": [
+   {
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "=('Nobody on it')",
+      "value": "={{key}}_rows.filter(r => r.n === 0).length"
+     },
+     {
+      "label": "People",
+      "value": "=new Set(({{key}}_links || []).map(l => String(l[{{person|json}}]))).size"
+     },
+     {
+      "label": "=({{label|json}} + 's')",
+      "value": "=({{key}}_things || []).length"
+     }
+    ]
+   },
+   {
+    "split": [
+     {
+      "col": [
+       {
+        "table": "={{key}}_rows",
+        "columns": [
+         {
+          "key": "name",
+          "label": "{{label}}"
+         },
+         {
+          "key": "people",
+          "label": "People on it"
+         },
+         {
+          "key": "n",
+          "label": "How many",
+          "format": "number"
+         }
+        ],
+        "empty": "Add the first one, then put people on it."
+       },
+       {
+        "table": "={{key}}_list",
+        "columns": [
+         {
+          "key": "who",
+          "label": "Person"
+         },
+         {
+          "key": "what",
+          "label": "{{label}}"
+         },
+         {
+          "$when": "role",
+          "key": "role",
+          "label": "Role",
+          "badge": true
+         }
+        ],
+        "actions": [
+         {
+          "label": "Take off",
+          "do": "=r => app.remove({{table|json}}, r.id)"
+         }
+        ],
+        "empty": "Nobody is on anything yet."
+       }
+      ]
+     },
+     {
+      "card": [
+       {
+        "form": "{{table}}",
+        "submit": "Put on",
+        "fold": false,
+        "fields": [
+         {
+          "name": "{{person}}",
+          "label": "Person",
+          "type": "person",
+          "required": true
+         },
+         {
+          "name": "{{thing}}",
+          "label": "{{label}}",
+          "type": "select",
+          "required": true,
+          "options": "={{key}}_opts"
+         },
+         {
+          "$when": "role&roles",
+          "name": "{{role}}",
+          "label": "Role",
+          "type": "select",
+          "options": "{{roles}}"
+         },
+         {
+          "$when": "role&!roles",
+          "name": "{{role}}",
+          "label": "Role"
+         }
+        ]
+       },
+       {
+        "text": "Only people who have signed up to the app can be picked; send them its link first.",
+        "muted": true,
+        "small": true
+       }
+      ],
+      "title": "Put someone on"
+     }
+    ]
+   }
+  ]
+ }
+}

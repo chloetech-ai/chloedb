@@ -1,0 +1,226 @@
+{
+ "title": "A week to plan: something picked for each day from a list, and what the week adds up to",
+ "about": "Jobs for the week, shifts per day, a training week, a rota: rows of a plan table (a day and the thing picked for it) over a list of things to pick from. Each day of the week is named (Monday 16 Nov), shows what is picked with Change and Clear, or a Pick button listing the things; arrows move to other weeks. With PARTS (rows of what each thing needs: an item, a quantity, a unit) the week's totals are listed beside it, summed over the days (the materials to buy, the hours, the parts). Choose it over a table of dated rows whenever the request plans a week.",
+ "params": {
+  "table": {
+   "about": "the plan table (a row per day and pick)",
+   "need": true
+  },
+  "items": {
+   "about": "the table of the things to pick from",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "day": {
+   "about": "the plan column with the day ('YYYY-MM-DD')",
+   "default": "day"
+  },
+  "item": {
+   "about": "the plan column holding the picked thing's id",
+   "default": "item"
+  },
+  "name": {
+   "about": "the things column with each one's name",
+   "default": "name"
+  },
+  "parts": {
+   "about": "a table of what each thing needs (for the week's totals)"
+  },
+  "of": {
+   "about": "the parts column holding the thing's id",
+   "default": "item"
+  },
+  "part": {
+   "about": "the parts column naming what is needed",
+   "default": "name"
+  },
+  "qty": {
+   "about": "the parts column with how much",
+   "default": "qty"
+  },
+  "unit": {
+   "about": "the parts column with its unit",
+   "default": "unit"
+  },
+  "title": {
+   "about": "a heading",
+   "default": "This week"
+  },
+  "pick": {
+   "about": "the Pick button's words",
+   "default": "Pick"
+  },
+  "totals": {
+   "about": "the heading over the week's totals",
+   "default": "For the week"
+  }
+ },
+ "example": {
+  "use": "planner",
+  "table": "rota",
+  "items": "jobs",
+  "day": "day",
+  "item": "job",
+  "name": "name",
+  "parts": "job_parts",
+  "of": "job",
+  "part": "material",
+  "qty": "qty",
+  "unit": "unit",
+  "title": "This week",
+  "pick": "Pick a job",
+  "totals": "Materials to buy"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_week": 0
+  },
+  "data": {
+   "{{key}}_rows": {
+    "sql": "SELECT * FROM {{table}} WHERE days_between(:start, {{day}}) BETWEEN 0 AND 6 LIMIT 200",
+    "params": {
+     "start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_week || 0))"
+    }
+   },
+   "{{key}}_items": "SELECT id, {{name}} AS sa_name FROM {{items}} ORDER BY {{name}} LIMIT 300",
+   "{{key}}_sum": {
+    "$when": "parts",
+    "$value": {
+     "sql": "SELECT p.{{part}} AS part, p.{{unit}} AS unit, SUM(p.{{qty}}) AS qty FROM {{table}} w JOIN {{parts}} p ON p.{{of}} = w.{{item}} WHERE days_between(:start, w.{{day}}) BETWEEN 0 AND 6 GROUP BY p.{{part}}, p.{{unit}} ORDER BY part LIMIT 300",
+     "params": {
+      "start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_week || 0))"
+     }
+    }
+   }
+  },
+  "let": {
+   "{{key}}_start": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * (state.{{key}}_week || 0))",
+   "{{key}}_days": "=[0, 1, 2, 3, 4, 5, 6].map(i => lib.dates.addDays({{key}}_start, i))",
+   "{{key}}_name": "=Object.fromEntries(({{key}}_items || []).map(t => [String(t.id), t.sa_name]))",
+   "{{key}}_on": "=d => ({{key}}_rows || []).find(r => String(r[{{day|json}}]).slice(0, 10) === d) || null",
+   "{{key}}_set": "=(d, id) => { const r = {{key}}_on(d); return r ? app.update({{table|json}}, r.id, { {{item}}: id }) : app.insert({{table|json}}, { {{day}}: d, {{item}}: id }); }",
+   "{{key}}_menu": "=d => ({{key}}_items || []).map(t => ({label: String(t.sa_name ?? ''), onClick: () => {{key}}_set(d, t.id)}))",
+   "{{key}}_label": "=d => lib.dates.weekdayName(d) + ' ' + app.fmt.date(d)",
+   "{{key}}_range": "=app.fmt.date({{key}}_start) + ' to ' + app.fmt.date(lib.dates.addDays({{key}}_start, 6))"
+  },
+  "body": [
+   {
+    "row": [
+     {
+      "h": "{{title}}",
+      "level": 2
+     },
+     {
+      "button": "‹",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_week: (state.{{key}}_week || 0) - 1 })"
+     },
+     {
+      "text": "={{key}}_range + (state.{{key}}_week ? '' : ' · this week')",
+      "muted": true
+     },
+     {
+      "button": "›",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_week: (state.{{key}}_week || 0) + 1 })"
+     }
+    ]
+   },
+   {
+    "split": [
+     {
+      "col": [
+       {
+        "each": "={{key}}_days",
+        "as": "d",
+        "class": "list",
+        "body": [
+         {
+          "row": [
+           {
+            "col": [
+             {
+              "text": "={{key}}_label(d)",
+              "small": true,
+              "muted": true
+             },
+             {
+              "if": "={{key}}_on(d)",
+              "then": [
+               {
+                "h": "=({{key}}_name[String({{key}}_on(d)[{{item|json}}])] || 'Picked')",
+                "level": 3
+               }
+              ],
+              "else": [
+               {
+                "text": "Nothing yet",
+                "muted": true
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "ui": "dropdownMenu",
+            "props": {
+             "label": "=({{key}}_on(d) ? 'Change' : {{pick|json}})",
+             "items": "={{key}}_menu(d)",
+             "align": "right"
+            }
+           },
+           {
+            "if": "={{key}}_on(d)",
+            "then": [
+             {
+              "button": "Clear",
+              "class": "ghost small",
+              "do": "=() => app.remove({{table|json}}, {{key}}_on(d).id)"
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "$when": "parts",
+      "card": [
+       {
+        "if": "=({{key}}_sum || []).length === 0",
+        "then": [
+         {
+          "text": "Pick for a day and what it needs adds up here.",
+          "muted": true
+         }
+        ],
+        "else": [
+         {
+          "table": "={{key}}_sum",
+          "columns": [
+           {
+            "key": "part",
+            "label": "What"
+           },
+           {
+            "key": "qty",
+            "label": "How much",
+            "value": "=r => app.fmt.number(r.qty) + (r.unit ? ' ' + r.unit : '')"
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "title": "{{totals}}"
+     }
+    ]
+   }
+  ]
+ }
+}

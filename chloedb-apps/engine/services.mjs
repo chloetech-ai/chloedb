@@ -5,14 +5,16 @@
 // People, sessions, file metadata and the outbox are rows in Strata; file
 // bytes sit next to the database.
 
-import { scrypt as scryptCb, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
+import { scrypt as scryptCb, randomBytes, timingSafeEqual, createHash, createHmac } from 'node:crypto';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import tls from 'node:tls';
 import os from 'node:os';
 import path from 'node:path';
-import { newId } from './store.mjs';
+import { newId, physical } from './store.mjs';
+import { currencyOf } from './data.mjs';
+import { rulesOf } from './access.mjs';
 import { personName } from './engine.mjs';
 
 const scrypt = promisify(scryptCb);
@@ -75,7 +77,28 @@ export class Services {
     const any = pub ? [1] : await this.db.query('SELECT id FROM sa_members WHERE app = :a LIMIT 1', { a: appId });
     const doc = { id: `${appId}#${personId}`, app: appId, person: personId, role: any.length ? 'member' : 'owner' };
     await this.db.write([{ op: 'insert', table: 'sa_members', doc }]);
+    if (doc.role === 'owner') await this.claimExamples(appId, personId).catch((e) => this.log?.(`[${appId}] example rows: ${e.message}`));
     return doc;
+  }
+
+  // The example rows a new app starts with belong to nobody; in a table that
+  // shows each person their own rows (ALLOW ... WHERE owner_id = :user_id),
+  // the app's owner takes them when they first sign in, so the app they
+  // open is not empty.
+  async claimExamples(appId, personId) {
+    const view = await this.engine.store.resolve(appId).catch(() => null);
+    for (const t of view?.tables || []) {
+      const rules = rulesOf(t.spec) || [];
+      // The owner reads every row already when a rule lets them read unscoped.
+      if (rules.some((r) => r.actions.includes('read') && !r.scope.length)) continue;
+      const cols = [...new Set(rules.filter((r) => r.actions.includes('read')).flatMap((r) => r.scope.filter((x) => x.by === 'user').map((x) => x.col)))].slice(0, 1);
+      for (const col of cols) {
+        // (empty, or an example person's name: nobody had an account yet)
+        const rows = (await this.db.query(`SELECT id, ${col} AS who FROM ${physical(appId, t.spec.name)} LIMIT 500`).catch(() => []))
+          .filter((r) => r.who == null || r.who === '' || (typeof r.who === 'string' && r.who !== String(personId)));
+        if (rows.length) await this.db.write(rows.map((r) => ({ op: 'set', table: physical(appId, t.spec.name), key: String(r.id), field: col, value: String(personId) })));
+      }
+    }
   }
 
   async newSession(personId) {
@@ -187,6 +210,15 @@ export class Services {
       if (asked && !invited) return null;
       return asked ? { id: rows[i].id, name: rows[i].name, role: null, invited: asked[1] } : { id: rows[i].id, name: rows[i].name, role: m.role };
     }).filter(Boolean);
+  }
+
+  // Every company of an app with who works in it, for the studio (which
+  // sees the whole app, not one person's).
+  async allCompanies(appId) {
+    const cs = await this.db.query('SELECT id, name, created FROM sa_companies WHERE app = :a ORDER BY created LIMIT 500', { a: appId });
+    if (!cs.length) return [];
+    const ms = await this.db.query('SELECT company, person, role FROM sa_memberships WHERE app = :a LIMIT 5000', { a: appId });
+    return cs.map((c) => ({ id: c.id, name: c.name, created: c.created, members: ms.filter((m) => m.company === c.id).map((m) => ({ person: m.person, role: m.role })) }));
   }
 
   // The company a person works in now: the one asked for (x-sa-company)
@@ -338,6 +370,132 @@ export class Services {
 
   async outbox(appId, limit = 50) {
     return this.db.query(`SELECT id, recipients, subject, body, status, error, created FROM sa_outbox WHERE app = :a ORDER BY created DESC LIMIT ${Number(limit)}`, { a: appId });
+  }
+
+  // ---- card payments
+  //
+  // app.pay({table, id, amount: '<column>', status: '<column>', description})
+  // asks for a payment of a row (an order, a booking): only the one who
+  // placed it (the person, or the visitor's browser, as the engine saw the
+  // insert: sa_rowmakers) or the app's owner may ask. The amount is the
+  // row's column the call names (a column named total or amount, or price
+  // times qty, only when it names none); the status column it names is the
+  // one set when the payment is paid, and no other. The payer pays on a hosted page, /pay/<id>?t=<token>, the token
+  // the server's own, single use and kept only as its hash, so the app
+  // never sees a card and a page cannot pay for an order by its id alone.
+  //
+  // With no card provider configured the page is in test mode: it asks for
+  // no card, a tap marks the payment "paid (test)" and the row "paid
+  // (test)", never "paid". With a provider (STRATA_APPS_PAYMENT_PROVIDER and
+  // STRATA_APPS_PAYMENT_SECRET), only the provider's signed notice marks a
+  // payment paid (providerNotice), never the payer's browser.
+  get payProvider() {
+    const name = process.env.STRATA_APPS_PAYMENT_PROVIDER || '';
+    const secret = process.env.STRATA_APPS_PAYMENT_SECRET || '';
+    return name && secret ? { name, secret } : null;
+  }
+
+  async pay(appId, req = {}, { who = null, owner = false } = {}) {
+    let amount = typeof req.amount === 'string' ? NaN : Number(req.amount);
+    let statusCol = null;
+    const table = req.table ? String(req.table) : null;
+    const refId = req.id !== undefined && req.id !== null ? String(req.id) : null;
+    if (!owner && !(table && refId)) throw err('pay: say the row it pays for ({table, id}), an order you placed', 400);
+    if (table && refId) {
+      if (!owner) {
+        const maker = await this.store.maker(appId, table, refId).catch(() => null);
+        if (!maker || !who || maker !== String(who).slice(0, 80)) throw err('You can pay only for an order you placed', 403);
+      }
+      const spec = await this.engine.tableSpec(appId, table);
+      const db = await this.engine.dbOf(appId);
+      const [row] = await db.get(physical(appId, spec.name), [refId]);
+      if (!row) throw err(`pay: no row ${refId} in ${table}`, 404);
+      const n = (k) => (row[k] === null || row[k] === undefined || row[k] === '' ? null : Number(row[k]));
+      const cols = new Set((spec.columns || []).map((c) => c.name));
+      const named = (k, what) => { if (k === undefined || k === null || k === '') return null; if (typeof k !== 'string' || !cols.has(k)) throw err(`pay: ${what} names a column of ${table} (its columns: ${[...cols].join(', ')})`); return k; };
+      const amountCol = typeof req.amount === 'string' ? named(req.amount, 'amount') : null;
+      statusCol = named(req.status, 'status');
+      if (statusCol && (row[statusCol] === true || /^paid\b/i.test(String(row[statusCol] ?? '')))) throw err('This is paid already', 409);
+      // the amount: the column named, else (a fallback) one called total or amount, or price times qty
+      const own = amountCol ? n(amountCol) : n('total') ?? n('amount') ?? (n('price') !== null ? n('price') * (n('qty') ?? n('quantity') ?? 1) : null);
+      if (own !== null && Number.isFinite(own)) amount = own;
+      else if (!owner || amountCol) throw err(`pay: ${amountCol ? `${table}.${amountCol} is empty` : `name the column of ${table} that holds the amount (amount: '<column>')`}`, 400);
+    }
+    if (!Number.isFinite(amount) || amount <= 0) throw err('pay: give the amount (or the row it pays for, with a total)');
+    if (amount > 100000) throw err('pay: at most 100,000 in one payment');
+    const currency = String(req.currency || (await this.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], (await this.store.getApp(appId).catch(() => null))?.description) || 'USD').toUpperCase().slice(0, 3);
+    const id = newId(16);
+    const token = randomBytes(24).toString('base64url');
+    const doc = { id, app: appId, amount: Math.round(amount * 100) / 100, currency, description: String(req.description || '').slice(0, 300), ref_table: table || '', ref_id: refId || '',
+      email: String(req.email || '').slice(0, 200), mode: this.payProvider ? 'live' : 'test', status: 'open', token_hash: createHash('sha256').update(token).digest('hex'), payer: who ? String(who).slice(0, 80) : '', status_col: statusCol || '' };
+    await this.db.write([{ op: 'insert', table: 'sa_payments', doc }]);
+    this.store.track(appId, 'action', '', 'payment asked').catch(() => {});
+    return { id, url: `/pay/${id}?t=${token}`, mode: doc.mode, amount: doc.amount, currency };
+  }
+
+  async payment(id) {
+    const [row] = await this.db.get('sa_payments', [String(id)]);
+    return row || null;
+  }
+
+  // Whether a page's token is the payment's own, still unused.
+  tokenOk(p, token) {
+    if (!p || !p.token_hash || typeof token !== 'string' || !token) return false;
+    const a = Buffer.from(createHash('sha256').update(token).digest('hex'));
+    const b = Buffer.from(String(p.token_hash));
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  // The payer's tap on the hosted page. Test mode only: the token is spent,
+  // the payment and its row are "paid (test)". With a provider the browser
+  // marks nothing: the provider's signed notice does.
+  async payTest(id, token) {
+    const p = await this.payment(id);
+    if (!p) throw err('no such payment', 404);
+    if (p.mode !== 'test' || this.payProvider) throw err('this payment is confirmed only by the card provider\'s signed notice', 409);
+    if (p.status !== 'open') return p;
+    if (!this.tokenOk(p, token)) throw err('this payment link is not valid (or was used already)', 403);
+    return this.settle(p, 'paid (test)');
+  }
+
+  async settle(p, status) {
+    const done = { ...p, status: status === 'paid' ? 'paid' : 'paid_test', paid: new Date().toISOString(), token_hash: '' };
+    await this.db.write([{ op: 'upsert', table: 'sa_payments', doc: done }]);
+    // only the status column the payment was asked with is set: a bool one
+    // true when paid for real, a text one 'paid' or 'paid (test)'
+    if (p.ref_table && p.ref_id && p.status_col) {
+      try {
+        const spec = await this.engine.tableSpec(p.app, p.ref_table);
+        const type = (spec.columns || []).find((c) => c.name === p.status_col)?.type;
+        const value = type === 'bool' ? status === 'paid' : status;
+        await this.engine.update(p.app, p.ref_table, p.ref_id, { [p.status_col]: value }, {});
+      } catch (e) { this.log(`payment ${p.id}: ${e.message}`); }
+    }
+    return done;
+  }
+
+  // A card provider's notice that a payment went through: its raw body,
+  // signed with the shared secret (HMAC-SHA256, hex, in x-payment-signature
+  // as "sha256=<hex>"), {"payment": "<id>", "status": "paid"}. The one way a
+  // payment becomes "paid". With no provider configured it says so.
+  async providerNotice(raw, signature) {
+    const prov = this.payProvider;
+    if (!prov) throw err('no card payment provider is configured here (STRATA_APPS_PAYMENT_PROVIDER and STRATA_APPS_PAYMENT_SECRET): payments stay in test mode', 501);
+    const want = Buffer.from(`sha256=${createHmac('sha256', prov.secret).update(raw).digest('hex')}`);
+    const got = Buffer.from(String(signature || ''));
+    if (want.length !== got.length || !timingSafeEqual(want, got)) throw err('the notice is not signed by the configured provider', 401);
+    let msg;
+    try { msg = JSON.parse(String(raw)); } catch { throw err('the notice is not JSON', 400); }
+    const p = await this.payment(msg && msg.payment);
+    if (!p) throw err('no such payment', 404);
+    if (msg.status !== 'paid') return { ok: true, payment: p.id, status: p.status };
+    if (p.status === 'paid') return { ok: true, payment: p.id, status: 'paid' };
+    const done = await this.settle(p, 'paid');
+    return { ok: true, payment: done.id, status: done.status };
+  }
+
+  async payments(appId, limit = 50) {
+    return this.db.query(`SELECT id, amount, currency, description, ref_table, ref_id, mode, status, paid, created FROM sa_payments WHERE app = :a ORDER BY created DESC LIMIT ${Number(limit)}`, { a: appId });
   }
 
   // ---- places

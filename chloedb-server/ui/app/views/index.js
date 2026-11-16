@@ -58,7 +58,7 @@ export const VIEWS = [
   { id: "start", title: "Start here", icon: "rocket", group: "Build", range: false, keywords: "start getting started first steps onboarding sample data tutorial quickstart sandbox connect code agent mcp", load: () => import("./start.js") },
   { id: "table", title: "Tables", icon: "table", group: "Build", range: false, keywords: "tables table home search find rows data quality filled empty used by keys storage index meaning vectors semantic", load: () => import("./table.js") },
   { id: "saved", title: "Saved searches", icon: "bookmark", group: "Build", range: false, keywords: "saved searches stored functions function endpoint api mcp tool reuse version rollback create function returns table", load: () => import("./saved.js") },
-  { id: "connectors", title: "Connectors", icon: "streams", group: "Data", keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health", load: () => import("./connectors.js") },
+  { id: "connectors", title: "Connectors", icon: "streams", group: "Data", keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health kafka redpanda topics stream consumer broker", load: () => import("./connectors.js") },
 ];
 
 export const GROUPS = ["Build", "Watch", "Run the cluster", "Apps", "Labs"];

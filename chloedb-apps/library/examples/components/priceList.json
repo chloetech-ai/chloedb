@@ -1,0 +1,21 @@
+[
+ {
+  "props": {
+   "items": [
+    {"name": "Standard wash", "price": 18, "note": "Exterior and wheels, 20 minutes", "group": "Washes"},
+    {"name": "Full valet", "price": 65, "note": "Inside and out, about two hours", "badge": "Popular", "group": "Washes"},
+    {"name": "Headlight restore", "price": "from 30", "group": "Extras"}
+   ]
+  }
+ },
+ {
+  "props": {
+   "items": [
+    {"name": "Copy edit", "rate": 0.04, "turnaround": "3 days", "best": "Reports and articles"},
+    {"name": "Proofread", "rate": 0.02, "turnaround": "2 days", "best": "Final drafts"}
+   ],
+   "columns": [{"key": "name", "label": "Service"}, {"key": "rate", "label": "Per page", "format": "money"}, {"key": "turnaround", "label": "Turnaround"}, {"key": "best", "label": "Best for"}],
+   "onSelect": "$fn"
+  }
+ }
+]
