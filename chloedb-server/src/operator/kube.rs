@@ -288,7 +288,13 @@ impl Cluster {
         // The coordinators' account: this one StrataCluster, read and scaled
         // from the command center.
         let account = self.coordinator_account();
-        let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": self.meta(&account, self.labels())});
+        // Its annotations, such as Workload Identity's on GKE: the
+        // operator's apply is the one that owns them.
+        let mut sa_meta = self.meta(&account, self.labels());
+        if !self.spec.coordinator_account_annotations.is_empty() {
+            sa_meta["annotations"] = json!(self.spec.coordinator_account_annotations);
+        }
+        let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": sa_meta});
         let role = self.coordinator_role(true);
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
@@ -2278,6 +2284,28 @@ mod tests {
     fn cluster(spec: Json) -> Cluster {
         let kube = Kube::new(&Options { api: Some("http://127.0.0.1:1".into()), ..Default::default() }).unwrap();
         Cluster { kube, ns: "db".into(), name: "orders".into(), uid: "u-1".into(), spec: serde_json::from_value(spec).unwrap() }
+    }
+
+    /// GKE's Workload Identity: the coordinators' account carries the
+    /// annotation the spec names, the servers restart for none of it, and
+    /// a cluster without it keeps its version.
+    #[test]
+    fn the_coordinators_account_carries_its_annotations() {
+        let wi = json!({"demo": 10, "coordinatorAccountAnnotations": {"iam.gke.io/gcp-service-account": "deployer@p.iam.gserviceaccount.com"}});
+        let c = cluster(wi.clone());
+        let sa = c.common().into_iter().find(|(p, _)| p.ends_with("/serviceaccounts/orders-coordinator")).unwrap().1;
+        assert_eq!(sa["metadata"]["annotations"]["iam.gke.io/gcp-service-account"], "deployer@p.iam.gserviceaccount.com");
+        let plain = cluster(json!({"demo": 10}));
+        let sa = plain.common().into_iter().find(|(p, _)| p.ends_with("/serviceaccounts/orders-coordinator")).unwrap().1;
+        assert!(sa["metadata"].get("annotations").is_none());
+        assert_eq!(c.spec.server_config(), plain.spec.server_config());
+        assert_eq!(plain.spec.version(), serde_json::from_value::<Spec>(json!({"demo": 10})).unwrap().version());
+        assert!(serde_json::to_value(&plain.spec).unwrap().get("coordinatorAccountAnnotations").is_none());
+        c.spec.check().unwrap();
+        for bad in ["", "/x", "a b", "iam.gke.io/", "x/y/z!"] {
+            let s: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorAccountAnnotations": {bad: "v"}})).unwrap();
+            assert!(s.check().is_err(), "{bad:?}");
+        }
     }
 
 

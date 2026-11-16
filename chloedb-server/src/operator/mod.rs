@@ -110,6 +110,13 @@ pub struct Spec {
     /// copies one at a time, as other settings do.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secret_env: Vec<SecretEnv>,
+    /// Annotations of the coordinators' Kubernetes account: on GKE,
+    /// `iam.gke.io/gcp-service-account` makes it act as a Google service
+    /// account through Workload Identity, so that the command center calls
+    /// Google Cloud with no key (`eks.amazonaws.com/role-arn` does the
+    /// same on EKS). No copy restarts when it changes.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub coordinator_account_annotations: std::collections::BTreeMap<String, String>,
     /// Resources of each server's and each coordinator's container.
     pub resources: Option<Json>,
     pub coordinator_resources: Option<Json>,
@@ -425,6 +432,7 @@ impl Default for Spec {
             token_secret: None,
             cluster_token_secret: None,
             secret_env: Vec::new(),
+            coordinator_account_annotations: Default::default(),
             resources: None,
             coordinator_resources: None,
             args: Vec::new(),
@@ -597,6 +605,16 @@ impl Spec {
             }
             if e.secret.is_empty() || e.key.is_empty() {
                 return Err(format!("secretEnv: {} needs a secret, and a key in it", e.name));
+            }
+        }
+        for (k, v) in &self.coordinator_account_annotations {
+            let (prefix, name) = k.rsplit_once('/').unwrap_or(("", k));
+            let ok = |x: &str, most: usize, extra: &str| !x.is_empty() && x.len() <= most && x.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
+            if !ok(name, 63, "-_.") || (!prefix.is_empty() && !ok(prefix, 253, "-.")) || k.starts_with('/') {
+                return Err(format!("coordinatorAccountAnnotations: {k:?} is not an annotation's name (an optional DNS prefix and /, then at most 63 letters, digits, -, _ and .)"));
+            }
+            if v.len() > 4096 {
+                return Err(format!("coordinatorAccountAnnotations: {k}'s value is longer than 4,096 bytes"));
             }
         }
         if !matches!(self.write_acks.as_str(), "all" | "majority" | "primary") {
@@ -2238,6 +2256,7 @@ pub fn crd() -> Json {
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
             "tokenSecret": {"type": "string", "description": "A Secret whose key token every server and coordinator requires; with clusterTokenSecret, the coordinators only (the admin token)."},
             "clusterTokenSecret": {"type": "string", "description": "A Secret whose key token is the cluster's token (--cluster-token), which the servers and coordinators send each other and clients never hold. Needs tokenSecret."},
+            "coordinatorAccountAnnotations": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Annotations of the coordinators' ServiceAccount, such as iam.gke.io/gcp-service-account (GKE's Workload Identity) or eks.amazonaws.com/role-arn: the command center then calls the cloud as that account, with no key. No copy restarts when it changes."},
             "secretEnv": {"type": "array", "description": "Environment variables of every server and coordinator taken from Secrets: the keys of models behind an API (ANTHROPIC_API_KEY for the agents, LLM fields and reranking; OPENAI_API_KEY, COHERE_API_KEY, ... for hosted embeddings). Changing it restarts the copies one at a time.", "items": {
                 "type": "object", "required": ["name", "secret"], "properties": {
                     "name": {"type": "string", "description": "The variable, such as ANTHROPIC_API_KEY."},

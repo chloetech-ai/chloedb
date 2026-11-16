@@ -613,6 +613,10 @@ pub struct Service {
     /// The cloud view's DigitalOcean token and size catalogues
     /// ([`crate::digitalocean`]).
     pub digitalocean: Arc<crate::digitalocean::DigitalOcean>,
+    /// The cloud view's Google Cloud project, credentials (Application
+    /// Default Credentials or the metadata server: never a key) and
+    /// machine catalogues ([`crate::gcp`]).
+    pub gcp: Arc<crate::gcp::Gcp>,
     /// The clusters the cloud view made, and the loop that sees each one
     /// through ([`crate::cloud::clusters`]).
     pub clouds: Arc<crate::cloud::clusters::Clusters>,
@@ -858,6 +862,7 @@ impl Service {
             connectors: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
+            gcp: Arc::new(crate::gcp::Gcp::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
             hub: Arc::new(crate::hub::Hub::memory()),
             log_store: None,

@@ -138,7 +138,7 @@ async fn error_of(r: axum::response::Response) -> String {
 /// is reached that way ([`crate::hub::ViaKube`]).
 pub async fn kube_for(svc: &Arc<Service>, name: &str) -> Result<Option<crate::operator::kube::Kube>, ApiError> {
     let Some(v) = svc.hub.get(name).and_then(|c| c.kube) else { return Ok(None) };
-    let k = svc.clouds.kube_of(&v.made, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{name}: {e}") })?;
+    let k = svc.clouds.kube_of(&v.made, &svc.aws, &svc.digitalocean, &svc.gcp).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{name}: {e}") })?;
     Ok(Some(k))
 }
 
@@ -151,7 +151,7 @@ pub async fn adopt_made(svc: &Arc<Service>, id: &str, name: Option<String>, colo
     if !matches!(m.phase, Phase::Starting | Phase::Ready) {
         return Err(ApiError { code: None, status: 409, message: format!("{} is {:?}: its command center opens once ChloeDB is installed on it", m.cluster, m.phase).to_lowercase() });
     }
-    let k = svc.clouds.kube_of(id, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{}: {e}", m.cluster) })?;
+    let k = svc.clouds.kube_of(id, &svc.aws, &svc.digitalocean, &svc.gcp).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{}: {e}", m.cluster) })?;
     let via = crate::hub::ViaKube { made: m.id.clone(), provider: m.provider.clone(), cluster: m.cluster.clone(), region: m.region.clone(), namespace: crate::cloud::NAMESPACE.to_string(), service: m.name.clone() };
     let had = svc.hub.list().iter().any(|c| c.kube.as_ref().is_some_and(|v| v.made == m.id));
     let c = svc.hub.adopt(via, name, color, &k, by).await?;

@@ -39,6 +39,7 @@ pub const READ_POSTS: &[&str] = &[
     "/v1/admin/autoscale/replay",
     "/v1/admin/aws/validate",
     "/v1/admin/digitalocean/validate",
+    "/v1/admin/gcp/validate",
     "/v1/alerts/backtest",
     "/v1/query",
     "/v1/explain",
@@ -138,6 +139,8 @@ const CREDENTIAL_ROUTES: &[&str] = &[
     "/v1/admin/aws/plan",
     "/v1/admin/digitalocean/validate",
     "/v1/admin/digitalocean/plan",
+    "/v1/admin/gcp/validate",
+    "/v1/admin/gcp/plan",
 ];
 
 /// Whether `route` carries or answers a credential ([`CREDENTIAL_ROUTES`]).
