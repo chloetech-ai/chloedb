@@ -3770,6 +3770,11 @@ fn start_lab(envs: &[(&str, &str)]) -> Server {
 
 /// `start_lab` with this ChloeCtx program (still not required of agents).
 fn start_lab_ctx(envs: &[(&str, &str)], chloectx: &str) -> Server {
+    start_lab_args(envs, chloectx, &[])
+}
+
+/// `start_lab_ctx` with more of the server's arguments.
+fn start_lab_args(envs: &[(&str, &str)], chloectx: &str, extra: &[&str]) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let fake = write_fake(dir.path());
@@ -3780,6 +3785,7 @@ fn start_lab_ctx(envs: &[(&str, &str)], chloectx: &str) -> Server {
         .arg("--claude-bin")
         .arg(&fake)
         .args(["--chloectx-bin", chloectx, "--no-chloectx"])
+        .args(extra)
         .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -7033,7 +7039,12 @@ case "$role" in
         echo '{"outcome":"done","ease":4,"answer":"Fine.","findings":[],"cost_usd":0.01}'
       fi
     fi;;
-  scope) echo '{"area":"src","files":["src/","tests/"],"root_cause":"The handler is not wired.","acceptance":"The repro exits 0","size":"S","cost_usd":0.01}';;
+  scope)
+    if printf '%s' "$job" | grep -q 'PUBLISH'; then
+      echo '{"area":"packaging","files":["packaging/"],"root_cause":"The package is not on PyPI.","acceptance":"pip install works","size":"S","blocked":{"kind":"publish","what":"Publishing needs the PyPI token, which agents do not have.","you_do":"Run twine upload dist/* with your token"},"cost_usd":0.01}'
+    else
+      echo '{"area":"src","files":["src/","tests/"],"root_cause":"The handler is not wired.","acceptance":"The repro exits 0","size":"S","cost_usd":0.01}'
+    fi;;
   generate) echo '{"name":"Omar, data engineer","role":"Loads data nightly","traits":["impatient"],"journey":"Load a CSV and query it.","surfaces":["load"],"why":"Nobody played loading","cost_usd":0.01}';;
   card)
     if printf '%s' "$job" | grep -q 'BREAK THE RUNNER'; then echo "no card today"; exit 3; fi
@@ -7127,6 +7138,16 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     assert_eq!(fs[0]["ease_before"], 2.0);
     let job = std::fs::read_to_string(fd.join("jobs-play")).unwrap();
     assert!(job.contains("Export last month") && job.contains("\"purpose\":\"explore\""), "{job}");
+    // The run says what it found, and that it is new.
+    let (st, run) = s.get(&format!("/api/converge/runs/{}", fs[0]["run"].as_str().unwrap()));
+    assert_eq!(st, 200, "{run}");
+    assert_eq!((run["summary"]["found"].as_u64(), run["summary"]["new"].as_u64(), run["summary"]["known"].as_u64()), (Some(1), Some(1), Some(0)), "{run}");
+    assert_eq!(run["summary"]["findings"][0]["id"], json!(fid), "{run}");
+    // The overview's steps: one problem.
+    let steps = o["steps"].as_array().unwrap();
+    assert_eq!(steps.iter().map(|x| x["step"].as_str().unwrap()).collect::<Vec<_>>(), ["problems", "reproducing", "ready", "building", "merge"], "{o}");
+    assert_eq!(steps[0]["count"], 1, "{o}");
+    assert_eq!(o["merged_week"], 0, "{o}");
 
     // The same problem, reported by you, and one whose repro passes already.
     let (st, dup) = s.post("/api/converge/findings", json!({ "repo": r, "title": "Export button does nothing on the orders page", "detail": "No CSV.", "severity": "minor" }));
@@ -7273,6 +7294,9 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     cv_tick(&s, &r);
     let f = cv_finding(&s, &fid);
     assert_eq!(f["finding"]["guard_ok"], true, "{f}");
+
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    assert_eq!(o["merged_week"], 1, "{o}");
 
     // Metrics: the funnel and the kinds of problem.
     let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
@@ -7588,4 +7612,256 @@ fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
     assert_eq!(v["run"]["use_memory"], false, "{v}");
     let items = cv_activity(&s, &r);
     assert!(items.iter().any(|i| i["kind"] == "decide" && i["summary"].as_str().unwrap().starts_with("Omar, engineer plays without memory: ChloeCtx is not installed")), "{items:?}");
+}
+
+/// A card's id from `POST /api/converge/findings`.
+fn cv_new(s: &Server, body: Value) -> String {
+    let (st, v) = s.post("/api/converge/findings", body);
+    assert_eq!(st, 201, "{v}");
+    v["finding"]["id"].as_str().unwrap().to_string()
+}
+
+fn cv_talk(s: &Server, id: &str, text: &str) -> Value {
+    let (st, v) = s.post(&format!("/api/converge/findings/{id}/talk"), json!({ "text": text }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["message"]["who"], "you", "{v}");
+    assert_eq!(v["message"]["text"], text, "your words, as you wrote them: {v}");
+    v
+}
+
+fn cv_thread(s: &Server, id: &str) -> Value {
+    let (st, v) = s.get(&format!("/api/converge/findings/{id}/talk"));
+    assert_eq!(st, 200, "{v}");
+    v
+}
+
+/// What an agent's settings file says.
+fn agent_settings(s: &Server, id: &str) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(s.data.join("sessions").join(id).join("settings.json")).unwrap()).unwrap()
+}
+
+/// You talk to a card's agent at every step: a read-only card agent in the
+/// main checkout answers questions on a new problem, a repro agent is
+/// started with your hint, a scope agent's revised plan becomes the
+/// card's, the running fix agent is steered, and an exited one is started
+/// again on its branch. Only your token talks; and bulk verbs.
+#[test]
+fn converge_talk_reaches_the_cards_agent_at_every_step() {
+    let (_d, r, s, _f, _fd) = cv_project();
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "follow_picks": false, "repro_agents": 0, "repro_runs": 1 } }));
+    assert_eq!(st, 200, "{v}");
+    let fid = cv_new(&s, json!({ "repo": r, "title": "The export button does nothing on the orders page", "detail": "No CSV.", "repro": "test -f src/FIXED" }));
+
+    // Found: no agent, so a card agent starts, read-only, in the main checkout.
+    let a = s.spawn(json!({ "repo": r, "task": "look around" }));
+    let aid0 = a["id"].as_str().unwrap().to_string();
+    let key = agent_token(&s, &aid0);
+    assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/talk"), &key, Some(&aid0), Some(json!({ "text": "hi" }))).0, 403);
+    assert_eq!(s.post(&format!("/api/converge/findings/{fid}/talk"), json!({ "text": "  " })).0, 400);
+    assert_eq!(s.post("/api/converge/findings/nope/talk", json!({ "text": "hi" })).0, 404);
+    let v = cv_talk(&s, &fid, "Why does the button do nothing?");
+    assert_eq!(v["started"], true, "{v}");
+    let card = v["agent"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["agent"]["kind"], "card", "{v}");
+    let ag = s.agent(&card);
+    assert_eq!(ag["cwd"].as_str().map(PathBuf::from), Some(r.clone()), "the main checkout, no worktree: {ag}");
+    assert_eq!(ag["read_only"], true, "{ag}");
+    assert!(ag["name"].as_str().unwrap().starts_with("cvt-"), "{ag}");
+    let task = ag["task"].as_str().unwrap();
+    assert!(task.contains("Why does the button do nothing?") && task.contains("The export button does nothing"), "{task}");
+    let deny = agent_settings(&s, &card)["permissions"]["deny"].clone();
+    for t in ["Edit", "Write", "Bash"] {
+        assert!(deny.as_array().unwrap().contains(&json!(t)), "{t} is denied: {deny}");
+    }
+    s.wait(&card, "idle");
+    hook_as(&s, &card, json!({ "hook_event_name": "Stop", "last_assistant_message": "The click handler is never wired to the button." }));
+    let th = cv_thread(&s, &fid);
+    let msgs = th["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2, "{th}");
+    assert_eq!((msgs[0]["who"].as_str(), msgs[1]["text"].as_str()), (Some("you"), Some("The click handler is never wired to the button.")), "{th}");
+    assert_eq!(msgs[1]["agent"], json!(card));
+    assert!(msgs[1]["who"].as_str().unwrap().starts_with("cvt-"), "{th}");
+    assert_eq!(th["agent"]["id"], json!(card));
+    // Again: the same agent is steered.
+    let v = cv_talk(&s, &fid, "Where is the handler?");
+    assert_eq!((v["started"].as_bool(), v["agent"]["id"].as_str()), (Some(false), Some(card.as_str())), "{v}");
+    assert!(s.events(&card).iter().any(|e| e["kind"] == "steer" && e["summary"].as_str().unwrap_or("").contains("Where is the handler?")), "steered");
+    let f = cv_finding(&s, &fid);
+    assert_eq!((f["finding"]["talk_count"].as_i64(), f["finding"]["chat_agent"].as_str()), (Some(2), Some(card.as_str())), "{f}");
+    let items = cv_activity(&s, &r);
+    assert!(items.iter().any(|i| i["kind"] == "you" && i["summary"].as_str().unwrap().contains("Where is the handler?") && i["agent"] == json!(card)), "{items:?}");
+
+    // Reproduce, with no agent: your hint starts a repro agent that is told it.
+    let gid = cv_new(&s, json!({ "repo": r, "title": "Refunds are missing from the monthly report", "pick": true }));
+    cv_tick(&s, &r);
+    assert!(cv_finding(&s, &gid)["finding"]["needs_you"].as_str().unwrap_or("").starts_with("Needs a repro"));
+    let v = cv_talk(&s, &gid, "Try a month with one refund in it");
+    assert_eq!(v["started"], true, "{v}");
+    let rep = v["agent"]["id"].as_str().unwrap().to_string();
+    let ag = s.agent(&rep);
+    assert!(ag["name"].as_str().unwrap().starts_with("cvr-"), "{ag}");
+    assert!(ag["task"].as_str().unwrap().contains("Try a month with one refund in it"), "{ag}");
+    let g = cv_finding(&s, &gid);
+    assert_eq!((g["finding"]["agent"].as_str(), g["finding"]["needs_you"].as_str()), (Some(rep.as_str()), None), "{g}");
+    s.wait(&rep, "idle");
+    let v = cv_talk(&s, &gid, "And one with none");
+    assert_eq!((v["started"].as_bool(), v["agent"]["id"].as_str()), (Some(false), Some(rep.as_str())), "{v}");
+
+    // Prioritize: a scope agent, told the plan; its revised plan becomes the card's.
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/reproduce"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    cv_tick(&s, &r);
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+    let score = f["finding"]["score"].as_f64().unwrap();
+    let v = cv_talk(&s, &fid, "The exporter needs changing too, so it is bigger");
+    assert_eq!((v["started"].as_bool(), v["agent"]["kind"].as_str()), (Some(true), Some("scope")), "{v}");
+    let sc = v["agent"]["id"].as_str().unwrap().to_string();
+    assert_ne!(sc, card);
+    let ag = s.agent(&sc);
+    assert_eq!((ag["cwd"].as_str().map(PathBuf::from), ag["read_only"].as_bool()), (Some(r.clone()), Some(true)), "{ag}");
+    assert!(ag["task"].as_str().unwrap().contains("The handler is not wired."), "told the plan: {ag}");
+    s.until(&card, "the card agent stops", |a| a["state"] == "exited");
+    s.wait(&sc, "idle");
+    hook_as(&s, &sc, json!({ "hook_event_name": "Stop", "last_assistant_message": "Then it is a large change.\n{\"area\": \"src\", \"files\": [\"src/\", \"tests/\", \"exporter/\"], \"root_cause\": \"The handler and the exporter are not wired.\", \"acceptance\": \"The repro exits 0\", \"size\": \"L\"}" }));
+    let th = cv_thread(&s, &fid);
+    assert!(th["messages"].as_array().unwrap().iter().any(|m| m["agent"] == json!(sc) && m["text"].as_str().unwrap().starts_with("Then it is a large change.")), "{th}");
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["scope"]["size"], "L", "{f}");
+    assert!(f["finding"]["score"].as_f64().unwrap() < score, "scored again: {f}");
+    assert!(f["events"].as_array().unwrap().iter().any(|e| e["gate"] == "scope_talk"), "{f}");
+
+    // Develop: the running fix agent is steered with your words.
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    let f = cv_finding(&s, &fid);
+    let fix = f["finding"]["agent"].as_str().unwrap().to_string();
+    let wt = f["finding"]["worktree"].as_str().unwrap().to_string();
+    s.wait(&fix, "idle");
+    let v = cv_talk(&s, &fid, "Keep the button label as it is");
+    assert_eq!((v["started"].as_bool(), v["agent"]["id"].as_str()), (Some(false), Some(fix.as_str())), "{v}");
+    assert!(s.events(&fix).iter().any(|e| e["kind"] == "steer" && e["summary"].as_str().unwrap_or("").contains("Keep the button label as it is")), "steered");
+    // Exited: started again on its worktree and branch.
+    s.wait(&fix, "idle");
+    let (st, v) = s.post(&format!("/api/agents/{fix}/stop"), json!({}));
+    assert!(st < 300, "{v}");
+    s.until(&fix, "it exits", |a| a["state"] == "exited");
+    let v = cv_talk(&s, &fid, "Carry on and add the test");
+    assert_eq!(v["started"], true, "{v}");
+    let fix2 = v["agent"]["id"].as_str().unwrap().to_string();
+    assert_ne!(fix2, fix);
+    let ag = s.agent(&fix2);
+    assert_eq!(ag["cwd"].as_str(), Some(wt.as_str()), "{ag}");
+    let f = cv_finding(&s, &fid);
+    assert_eq!((f["finding"]["agent"].as_str(), f["finding"]["stage"].as_str(), f["finding"]["talk_count"].as_i64()), (Some(fix2.as_str()), Some("develop"), Some(5)), "{f}");
+    let th = cv_thread(&s, &fid);
+    assert_eq!(th["messages"].as_array().unwrap().iter().filter(|m| m["who"] == "you").count(), 5, "{th}");
+
+    // Bulk: dismiss needs a reason; each id answers on its own.
+    let h1 = cv_new(&s, json!({ "repo": r, "title": "The footer is grey" }));
+    let h2 = cv_new(&s, json!({ "repo": r, "title": "The logo is blurry" }));
+    assert_eq!(call_as(&s, "POST", "/api/converge/findings/bulk", &key, Some(&aid0), Some(json!({ "repo": r, "ids": [h1], "verb": "pin" }))).0, 403);
+    assert_eq!(s.post("/api/converge/findings/bulk", json!({ "repo": r, "ids": [h1, h2], "verb": "dismiss" })).0, 400);
+    assert_eq!(s.post("/api/converge/findings/bulk", json!({ "repo": r, "ids": [h1], "verb": "explode" })).0, 400);
+    let (st, v) = s.post("/api/converge/findings/bulk", json!({ "repo": r, "ids": [h1, "nope"], "verb": "pin" }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["done"], json!([h1]), "{v}");
+    assert_eq!(v["failed"][0]["id"], "nope", "{v}");
+    assert_eq!(cv_finding(&s, &h1)["finding"]["pinned"], true);
+    let (st, v) = s.post("/api/converge/findings/bulk", json!({ "repo": r, "ids": [h1, h2], "verb": "dismiss", "reason": "Not problems" }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["done"], json!([h1, h2]), "{v}");
+    assert_eq!(cv_finding(&s, &h2)["finding"]["state"], "dismissed");
+    let (_, v) = s.post("/api/converge/findings/bulk", json!({ "repo": r, "ids": [fid], "verb": "reproduce" }));
+    assert!(v["failed"][0]["error"].as_str().unwrap().contains("not found"), "{v}");
+}
+
+/// What only a person can do stops the autopilot on a card until you say
+/// it is done: an agent's `.converge/blocked.json`, or a scope that says
+/// so; and a full agent slot queues a card instead of asking you.
+#[test]
+fn converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab_args(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)], "/nonexistent/chloectx", &["--max-agents", "2"]);
+    let (_d, r) = repo();
+    std::fs::create_dir(r.join("src")).unwrap();
+    std::fs::write(r.join("src/app.sh"), "echo export\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "app"]);
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "follow_picks": false, "repro_agents": 2, "repro_runs": 1 } }));
+    assert_eq!(st, 200, "{v}");
+    let fid = cv_new(&s, json!({ "repo": r, "title": "The export button does nothing on the orders page", "repro": "test -f src/FIXED", "pick": true }));
+    let pid = cv_new(&s, json!({ "repo": r, "title": "PUBLISH the client package to PyPI", "repro": "exit 1", "pick": true }));
+    cv_tick(&s, &r);
+    cv_tick(&s, &r);
+
+    // The scope says only you can publish: blocked in scope.
+    let p = cv_finding(&s, &pid);
+    assert_eq!(p["finding"]["stage"], "scope", "{p}");
+    assert_eq!(p["finding"]["blocked"]["kind"], "publish", "{p}");
+    assert_eq!(p["finding"]["blocked"]["you_do"], "Run twine upload dist/* with your token", "{p}");
+    assert_eq!(p["finding"]["scope"]["area"], "packaging", "{p}");
+
+    // A fix agent writes blocked.json: blocked in develop, and ticks leave it alone.
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    let f = cv_finding(&s, &fid);
+    let aid = f["finding"]["agent"].as_str().unwrap().to_string();
+    let wt = PathBuf::from(f["finding"]["worktree"].as_str().unwrap());
+    assert!(s.agent(&aid)["task"].as_str().unwrap().contains(".converge/blocked.json"), "it is told how to say so");
+    s.wait(&aid, "idle");
+    std::fs::create_dir_all(wt.join(".converge")).unwrap();
+    std::fs::write(wt.join(".converge/blocked.json"), r#"{"kind": "credentials", "what": "The export service needs an API key.", "you_do": "Set EXPORT_API_KEY in .env"}"#).unwrap();
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    assert_eq!(f["finding"]["blocked"]["kind"], "credentials", "{f}");
+    assert!(f["finding"]["needs_you"].as_str().unwrap().starts_with("Blocked: Set EXPORT_API_KEY"), "{f}");
+    let events = f["events"].as_array().unwrap().len();
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!((f["finding"]["rounds"].as_i64(), f["events"].as_array().unwrap().len()), (Some(0), events), "the autopilot left it alone: {f}");
+    // The inbox lists what only you can do first; the metrics count it.
+    let (_, needs) = s.get("/api/needs");
+    let cv: Vec<&Value> = needs["items"].as_array().unwrap().iter().filter(|i| i["kind"] == "converge").collect();
+    assert!(cv.len() >= 2 && cv[0]["text"].as_str().unwrap().starts_with("Blocked on you") && cv[1]["text"].as_str().unwrap().starts_with("Blocked on you"), "{needs}");
+    // Each blocked card is its own group, with its step.
+    let steps: Vec<&str> = cv[..2].iter().map(|i| i["findings"][0]["blocked"]["you_do"].as_str().unwrap()).collect();
+    assert!(steps.contains(&"Set EXPORT_API_KEY in .env") && steps.contains(&"Run twine upload dist/* with your token"), "{needs}");
+    assert_eq!(cv[0]["blocked"]["you_do"], cv[0]["findings"][0]["blocked"]["you_do"], "{needs}");
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
+    assert_eq!(m["blocked"]["total"], 2, "{m}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    let building = o["steps"].as_array().unwrap().iter().find(|x| x["step"] == "building").unwrap().clone();
+    assert_eq!((building["count"].as_u64(), building["blocked"].as_u64()), (Some(1), Some(1)), "{o}");
+
+    // A full agent slot: the next card waits in a queue, not for you.
+    let busy = s.spawn(json!({ "repo": r, "task": "hold a slot" }));
+    let qid = cv_new(&s, json!({ "repo": r, "title": "Refunds are missing from the monthly report", "pick": true }));
+    cv_tick(&s, &r);
+    let q = cv_finding(&s, &qid);
+    assert!(q["finding"]["queued"].as_str().unwrap_or("").contains("free agent slot"), "{q}");
+    assert!(q["finding"]["needs_you"].is_null(), "{q}");
+
+    // Done, carry on: the agent is told, and the loop takes the card again.
+    assert_eq!(call_as(&s, "POST", &format!("/api/converge/findings/{fid}/unblock"), &agent_token(&s, &aid), Some(&aid), Some(json!({}))).0, 403);
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/unblock"), json!({ "note": "it is in .env now" }));
+    assert_eq!(st, 200, "{v}");
+    assert!(v["finding"]["blocked"].is_null() && v["finding"]["needs_you"].is_null(), "{v}");
+    assert!(!wt.join(".converge/blocked.json").exists());
+    assert!(s.events(&aid).iter().any(|e| e["kind"] == "steer" && e["summary"].as_str().unwrap_or("").contains("The person did it: Set EXPORT_API_KEY")), "the agent was told");
+    assert_eq!(s.post(&format!("/api/converge/findings/{fid}/unblock"), json!({})).0, 409);
+    let (st, v) = s.post(&format!("/api/converge/findings/{pid}/unblock"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    // A slot frees: the queued card gets its repro agent.
+    let bid = busy["id"].as_str().unwrap().to_string();
+    let (st, _) = s.post(&format!("/api/agents/{bid}/stop"), json!({}));
+    assert!(st < 300);
+    s.until(&bid, "it exits", |a| a["state"] == "exited");
+    cv_tick(&s, &r);
+    let q = cv_finding(&s, &qid);
+    assert!(q["finding"]["queued"].is_null() && q["finding"]["agent"].is_string(), "{q}");
 }

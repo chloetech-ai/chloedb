@@ -49,7 +49,7 @@ use crate::supervisor::{one_line, ApiError, SpawnRequest, Supervisor};
 
 /// The tables (created with the others in `db.rs`). A row's columns are
 /// what the board filters and sorts on; the whole record is `doc` (JSON).
-pub const TABLES: [&str; 8] = [
+pub const TABLES: [&str; 9] = [
     "CREATE TABLE IF NOT EXISTS cv_personas (id KEYWORD PRIMARY KEY, repo KEYWORD, name TEXT, state KEYWORD, origin KEYWORD, created TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_runs (id KEYWORD PRIMARY KEY, repo KEYWORD, persona KEYWORD, purpose KEYWORD, finding KEYWORD, state KEYWORD, outcome KEYWORD, ease FLOAT, cost_usd FLOAT, created TIMESTAMP, ended TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_findings (id KEYWORD PRIMARY KEY, repo KEYWORD, title TEXT, stage KEYWORD, state KEYWORD, severity INT, score FLOAT, persona KEYWORD, created TIMESTAMP, updated TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
@@ -60,6 +60,8 @@ pub const TABLES: [&str; 8] = [
     "CREATE TABLE IF NOT EXISTS cv_log (id KEYWORD PRIMARY KEY, repo KEYWORD, ts TIMESTAMP, kind KEYWORD, doc TEXT OPTIONS(indexed = false))",
     // The part of the project a finding is about (`component_of`).
     "ALTER TABLE cv_findings ADD COLUMN IF NOT EXISTS component KEYWORD",
+    // What you said on a card (`talk`): your words as you wrote them.
+    "CREATE TABLE IF NOT EXISTS cv_talk (id KEYWORD PRIMARY KEY, finding KEYWORD, repo KEYWORD, ts TIMESTAMP, who KEYWORD, text TEXT, agent KEYWORD, doc TEXT OPTIONS(indexed = false))",
 ];
 
 /// The kinds of problem the board groups by.
@@ -486,6 +488,14 @@ pub struct Finding {
     pub queued: Option<String>,
     /// Why the last develop check failed, and what the agent said.
     pub last_check: Option<Json>,
+    /// How many times you talked to this card's agent (`talk`).
+    pub talk_count: i64,
+    /// The read-only agent started to answer you on this card, and its
+    /// kind: `card` (questions) or `scope` (the plan).
+    pub chat_agent: Option<String>,
+    pub chat_kind: Option<String>,
+    /// The time of the scope agent's last answer whose plan was read.
+    pub chat_taken: Option<i64>,
     pub dup_of: Option<String>,
     pub note: Option<String>,
     pub by: String,
@@ -1623,13 +1633,17 @@ fn shared_env(sup: &Supervisor, repo: &str) -> std::collections::BTreeMap<String
 
 /// An agent in its own worktree writes `.converge/repro.sh`, with the fix
 /// agents' allow-list so it does not stop at every command.
-fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &str) -> Result<(), ApiError> {
+/// `note`: what you said on the card (`talk`), told to the agent.
+fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &str, note: Option<&str>) -> Result<(), ApiError> {
     let st = settings(sup, &f.repo);
     let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
-    let task = format!(
+    let mut task = format!(
         "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.\n\n{}",
         f.title, f.detail, BLOCKED_HELP
     );
+    if let Some(n) = note {
+        task.push_str(&format!("\n\nThe person who owns this project says about it: {n}"));
+    }
     let req = SpawnRequest {
         repo: f.repo.clone(),
         task: Some(task),
@@ -1645,9 +1659,16 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
     let aid = a["id"].as_str().unwrap_or("").to_string();
     f.agent = Some(aid.clone());
     f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
+    // A worktree an earlier repro agent of this name left is reused: what
+    // that one wrote is not this one's.
+    if let Some(wt) = f.worktree.as_deref() {
+        for x in [".converge/repro.sh", ".converge/blocked.json"] {
+            let _ = std::fs::remove_file(Path::new(wt).join(x));
+        }
+    }
     f.queued = None;
     f.needs_you = None;
-    failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid }))
+    failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid, "note": note }))
 }
 
 /// The repro agent's `.converge/repro.sh` becomes the finding's repro.
@@ -2459,6 +2480,12 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             did.push(format!("the duplicate check of {}", short(&f.title, 50)));
         }
     }
+    // What you agreed with a scope agent becomes the plan.
+    for f in fs.iter_mut().filter(|f| f.state == "active" && f.chat_kind.as_deref() == Some("scope")) {
+        if busy_what(&f.id).is_none() {
+            take_chat_scope(sup, f)?;
+        }
+    }
     let fs = findings_of(sup, repo);
     let active: Vec<&Finding> = fs.iter().filter(|f| f.state == "active").collect();
     let mut repro_agents = active.iter().filter(|f| f.stage == "reproduce" && f.repro.is_none() && f.agent.is_some()).count();
@@ -2505,7 +2532,7 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                         let _ = gate_reproduce(sup, &id);
                     }
                 } else if let Ok(mut g) = get_finding(sup, &id) {
-                    match start_repro_agent(sup, lv, &mut g, "autopilot") {
+                    match start_repro_agent(sup, lv, &mut g, "autopilot", None) {
                         Ok(()) => {
                             repro_agents += 1;
                             started.push(format!("{id} repro agent"));
@@ -3144,7 +3171,9 @@ pub fn routes() -> Router<App> {
         .route("/api/converge/activity", get(activity_route))
         .route("/api/converge/ask", post(ask_route))
         .route("/api/converge/findings", post(finding_new))
+        .route("/api/converge/findings/bulk", post(bulk_route))
         .route("/api/converge/findings/:id", get(finding_get).put(finding_put).patch(finding_put))
+        .route("/api/converge/findings/:id/talk", get(talk_get).post(talk_post))
         .route("/api/converge/findings/:id/:verb", post(finding_verb))
         .route("/api/converge/personas", get(personas_get).post(persona_new))
         .route("/api/converge/personas/generate", post(generate_route))
@@ -3186,7 +3215,9 @@ async fn overview_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiRe
         let ps: Vec<Json> = personas_of(&sup, &repo).iter().map(|p| persona_json(&sup, p)).collect();
         let runs: Vec<Json> = runs_of(&sup, &repo, 30).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
         let all = findings_of(&sup, &repo);
-        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo) }))
+        let moving = |f: &Finding| busy_what(&f.id).is_some() || f.agent.as_deref().and_then(|a| sup.agent_row(a)).is_some_and(|a| matches!(a.state.as_str(), "starting" | "working"));
+        let steps = steps_of(&all, &moving);
+        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo), "steps": steps, "merged_week": merged_week(&all, now_ms()) }))
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -3209,8 +3240,12 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
         } else {
             continue;
         };
-        // Reasons that differ only in their details group together.
-        let key = format!("{}\u{0}{}", f.repo, why.split([':', '(']).next().unwrap_or(&why).trim());
+        // Reasons that differ only in their details group together; what
+        // only you can do groups only with the same step.
+        let key = match &f.blocked {
+            Some(b) => format!("{}\u{0}blocked\u{0}{}\u{0}{}", f.repo, b.kind, b.you_do.trim()),
+            None => format!("{}\u{0}{}", f.repo, why.split([':', '(']).next().unwrap_or(&why).trim()),
+        };
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.2.push(f),
             None => groups.push((key, why, vec![f])),
@@ -3222,12 +3257,399 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
         .into_iter()
         .map(|(key, why, fs)| {
             let since = fs.iter().map(|f| f.updated).min().unwrap_or(0);
-            let list: Vec<Json> = fs.iter().take(50).map(|f| json!({ "id": f.id, "title": f.title, "stage": f.stage, "severity": f.severity, "severity_name": sev_name(f.severity), "why": f.needs_you })).collect();
+            let list: Vec<Json> = fs.iter().take(50).map(|f| json!({ "id": f.id, "title": f.title, "stage": f.stage, "severity": f.severity, "severity_name": sev_name(f.severity), "why": f.needs_you, "blocked": f.blocked.as_ref().map(|b| json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do })) })).collect();
             let repo = fs[0].repo.clone();
             let hash = format!("cv-{:x}", key.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
-            (since, json!({ "kind": "converge", "id": hash, "repo": repo, "since_ms": since, "text": why, "count": fs.len(), "findings": list, "stage": fs[0].stage }))
+            (since, json!({ "kind": "converge", "id": hash, "repo": repo, "since_ms": since, "text": why, "count": fs.len(), "findings": list, "stage": fs[0].stage, "blocked": fs[0].blocked.as_ref().map(|b| json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do })) }))
         })
         .collect()
+}
+
+// ------------------------------------------------------------------- talk
+
+/// The longest thing you can say on a card at once.
+const TALK_MAX: usize = 8000;
+
+/// A chat agent's permissions: it reads the code and changes nothing.
+fn chat_profile() -> crate::supervisor::PermissionProfile {
+    crate::supervisor::PermissionProfile {
+        allow: ["Read", "Glob", "Grep"].iter().map(|x| x.to_string()).collect(),
+        ask: Vec::new(),
+        deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].iter().map(|x| x.to_string()).collect(),
+    }
+}
+
+/// Who answers you on a card, by its stage: the repro agent, the fix
+/// agent, a scope agent (the plan) or a card agent (questions).
+pub fn talk_kind(state: &str, stage: &str) -> &'static str {
+    match (state, stage) {
+        ("active" | "cant_reproduce", "reproduce") => "repro",
+        ("active", "develop" | "verify" | "review") => "fix",
+        ("active", "scope" | "prioritize") => "scope",
+        _ => "card",
+    }
+}
+
+/// Your words, framed for an agent that works on the card.
+fn told(text: &str) -> String {
+    format!("The person who owns this project says, about this card: {text}")
+}
+
+fn talk_rows(sup: &Supervisor, finding: &str) -> Vec<Json> {
+    docs(sup, "SELECT doc FROM cv_talk WHERE finding = :f ORDER BY id ASC LIMIT 2000", &Params::new().set("f", s(finding)))
+}
+
+fn put_talk(sup: &Supervisor, f: &Finding, who: &str, text: &str, agent: Option<&str>) -> Result<Json, ApiError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 1_000_000;
+    let ts = now_ms();
+    let id = format!("tk{ts:013}{n:06}");
+    let doc = json!({ "id": id, "ts": ts, "who": who, "text": text, "agent": agent });
+    let p = Params::new()
+        .set("id", s(&id))
+        .set("finding", s(&f.id))
+        .set("repo", s(&f.repo))
+        .set("ts", t(ts))
+        .set("who", s(who))
+        .set("text", s(text))
+        .set("agent", agent.map_or(Value::Null, s))
+        .set("doc", s(&doc.to_string()));
+    sup.db().query("INSERT INTO cv_talk (id, finding, repo, ts, who, text, agent, doc) VALUES (:id, :finding, :repo, :ts, :who, :text, :agent, :doc)", &p).map_err(ApiError::internal)?;
+    Ok(doc)
+}
+
+/// The finding, the way a chat agent is told it.
+fn card_context(f: &Finding) -> String {
+    let mut c = format!("Problem: {}\n{}\n\nStage: {}. Component: {}. Severity: {}. Kind: {}.", f.title, f.detail, f.stage, if f.component.is_empty() { "unset" } else { &f.component }, sev_name(f.severity), f.kind);
+    if let Some(st) = f.step.as_deref() {
+        c.push_str(&format!(" The user was trying to: {st}."));
+    }
+    if let Some(r) = f.repro.as_deref().filter(|r| !r.trim().is_empty()) {
+        c.push_str(&format!("\n\nIts repro script (exits 1 while the problem is there):\n{r}"));
+    }
+    c
+}
+
+/// A read-only agent in the main checkout that answers you: `card`
+/// (questions) or `scope` (the plan; its answer may end with a new one).
+fn start_chat(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &Finding, kind: &str, text: &str) -> Result<String, ApiError> {
+    let st = settings(sup, &f.repo);
+    let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
+    let head = format!("Workbench Converge, finding {}. You may read the code (Read, Glob, Grep); you cannot change anything or run commands.", f.id);
+    let task = if kind == "scope" {
+        let plan = f.scope.as_ref().map(|s| serde_json::to_string(s).unwrap()).unwrap_or_else(|| "(none yet)".into());
+        format!(
+            "You talk with the person who owns this project about the plan to fix a problem a user hit ({head})\n\n{}\n\nThe plan now: {plan}\n\nThe person says: {text}\n\nAnswer them in a few sentences. If what they say changes the plan, end your answer with the whole revised plan as one JSON object and nothing after it: {{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed\", \"size\": \"S\" or \"M\" or \"L\"}}. Workbench takes it as the new plan. If the plan stays, end without JSON. Their next messages come as your next prompts.",
+            card_context(f)
+        )
+    } else {
+        format!("You answer the person who owns this project about a problem a user hit ({head})\n\n{}\n\nThe person says: {text}\n\nAnswer in a few sentences, then stop. Their next messages come as your next prompts.", card_context(f))
+    };
+    let req = SpawnRequest {
+        repo: f.repo.clone(),
+        task: Some(task),
+        name: Some(format!("{}-{short}", if kind == "scope" { "cvs" } else { "cvt" })),
+        worktree: Some(false),
+        model: Some(st.model.clone()).filter(|m| !m.trim().is_empty()),
+        read_only: Some(true),
+        permissions: Some(chat_profile()),
+        permission_mode: Some("default".into()),
+        ..Default::default()
+    };
+    let a = crate::goals::spawn(sup, lv, req)?;
+    Ok(a["id"].as_str().unwrap_or("").to_string())
+}
+
+/// The fix agent again, on the finding's worktree and branch, told what
+/// you said: its session continues when it has one.
+fn restart_fix(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &str) -> Result<String, ApiError> {
+    let st = settings(sup, &f.repo);
+    let words = format!("{}\n\nAnswer them. If it asks for a change, make it on this branch, commit it, and stop. {BLOCKED_HELP}", told(text));
+    let profile = crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() };
+    let req = match f.agent.as_deref().filter(|a| sup.agent_row(a).is_some()) {
+        Some(old) => {
+            let mut req = sup.restart_request(old, Some(words.clone()))?;
+            // Nothing to continue: it starts over on its task, with your words.
+            if let Some(r) = req.restart.as_mut().filter(|r| r.resume.is_none()) {
+                r.prompt = Some(format!("{}\n\n{words}", dev_task(f)));
+            }
+            req.permissions = Some(profile);
+            req.env = Some(shared_env(sup, &f.repo));
+            if req.permission_mode.is_none() {
+                req.permission_mode = st.dev_permission_mode.clone().filter(|m| !m.is_empty());
+            }
+            req
+        }
+        None => {
+            let repo = PathBuf::from(&f.repo);
+            let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
+            SpawnRequest {
+                repo: f.repo.clone(),
+                task: Some(format!("{}\n\n{words}", dev_task(f))),
+                name: Some(format!("cv-{short}")),
+                branch: Some(f.branch.clone().unwrap_or_else(|| format!("wb/cv-{short}"))),
+                base: Some(base_of(&repo, &st)),
+                worktree: Some(true),
+                model: st.dev_model.clone(),
+                permissions: Some(profile),
+                permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+                env: Some(shared_env(sup, &f.repo)),
+                ..Default::default()
+            }
+        }
+    };
+    let a = crate::goals::spawn(sup, lv, req)?;
+    let aid = a["id"].as_str().unwrap_or("").to_string();
+    f.agent = Some(aid.clone());
+    if let Some(cwd) = sup.agent_row(&aid).map(|r| r.cwd) {
+        f.branch = f.branch.clone().or_else(|| git(Path::new(&cwd), &["rev-parse", "--abbrev-ref", "HEAD"]).ok());
+        f.worktree = Some(cwd);
+    }
+    Ok(aid)
+}
+
+/// `POST /api/converge/findings/:id/talk {text}`: your words go to the
+/// card's agent, started for them when none runs.
+pub fn talk(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, text: &str) -> Result<Json, ApiError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ApiError::bad("text is empty"));
+    }
+    if text.len() > TALK_MAX {
+        return Err(ApiError::bad(format!("text is longer than {TALK_MAX} bytes")));
+    }
+    let mut f = get_finding(sup, id)?;
+    let kind = talk_kind(&f.state, &f.stage);
+    let running = |a: &Option<String>| a.clone().filter(|a| sup.is_running(a));
+    let (aid, started) = match kind {
+        "repro" | "fix" => match running(&f.agent) {
+            Some(a) => {
+                crate::levels::steer(sup, lv, &a, &told(text))?;
+                (a, false)
+            }
+            None if kind == "repro" => {
+                if busy_what(&f.id).is_some() {
+                    return Err(ApiError::conflict("its repro is running now: say it again when it is done"));
+                }
+                // A hint for a card that could not be reproduced brings it back.
+                if f.state == "cant_reproduce" {
+                    f.state = "active".into();
+                    f.repro_attempts = 0;
+                }
+                f.repro = None;
+                f.repro_hash = None;
+                start_repro_agent(sup, lv, &mut f, "you", Some(text))?;
+                (f.agent.clone().unwrap_or_default(), true)
+            }
+            None => (restart_fix(sup, lv, &mut f, text)?, true),
+        },
+        _ => match running(&f.chat_agent).filter(|_| f.chat_kind.as_deref() == Some(kind)) {
+            Some(a) => {
+                crate::levels::steer(sup, lv, &a, text)?;
+                (a, false)
+            }
+            None => {
+                // The other kind's agent (the card moved on) is not the one to ask.
+                if let Some(old) = running(&f.chat_agent) {
+                    let _ = sup.stop_with(&old, Some(true));
+                }
+                let a = start_chat(sup, lv, &f, kind, text)?;
+                f.chat_agent = Some(a.clone());
+                f.chat_kind = Some(kind.to_string());
+                f.chat_taken = None;
+                (a, true)
+            }
+        },
+    };
+    // Talking to the fix agent is how you take over a stuck round.
+    if kind == "fix" && f.stage == "develop" {
+        f.needs_you = None;
+    }
+    f.queued = None;
+    let message = put_talk(sup, &f, "you", text, Some(&aid))?;
+    f.talk_count += 1;
+    f.updated = now_ms();
+    put_finding(sup, &f)?;
+    let name = who(sup, &aid);
+    log(sup, &f.repo, "you", "you", &format!("{}: you said to {name}: “{}”", short(&f.title, 60), one_line(text, 160)), json!({ "finding": f.id, "agent": aid }), json!({ "text": text, "stage": f.stage, "to": kind, "started": started }));
+    Ok(json!({ "message": message, "agent": talk_agent(sup, &f), "started": started }))
+}
+
+/// The agent your next words go to, if there is one.
+fn talk_agent(sup: &Supervisor, f: &Finding) -> Json {
+    let kind = talk_kind(&f.state, &f.stage);
+    let a = match kind {
+        "repro" | "fix" => f.agent.clone(),
+        _ => f.chat_agent.clone().filter(|_| f.chat_kind.as_deref() == Some(kind)),
+    };
+    let Some(a) = a else { return Json::Null };
+    match sup.agent_row(&a) {
+        Some(r) => json!({ "id": a, "name": r.name, "state": r.state, "doing": sup.agent_json_of(&a).map(|j| j["last_event"].clone()).unwrap_or(Json::Null), "kind": kind }),
+        None => Json::Null,
+    }
+}
+
+/// What an agent said at the end of each of its turns since `since`:
+/// `(event id, ts, text)`.
+fn replies_of(sup: &Supervisor, agent: &str, since: i64) -> Vec<(String, i64, String)> {
+    sup.all_events(agent)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.kind == "Stop" && e.ts >= since)
+        .filter_map(|e| {
+            let d = crate::trail::data_of(e)?;
+            let t = d["last_assistant_message"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+            Some((e.id.clone(), e.ts, t.to_string()))
+        })
+        .collect()
+}
+
+/// `GET /api/converge/findings/:id/talk`: your words and the replies of
+/// the agents they went to (and the card's own), by time.
+pub fn talk_of(sup: &Supervisor, f: &Finding) -> Json {
+    let mine = talk_rows(sup, &f.id);
+    let mut msgs = mine.clone();
+    if let Some(first) = mine.first().and_then(|r| r["ts"].as_i64()) {
+        let mut agents: Vec<String> = Vec::new();
+        for a in mine.iter().filter_map(|r| r["agent"].as_str().map(str::to_string)).chain(f.chat_agent.clone()).chain(f.agent.clone()) {
+            if !agents.contains(&a) {
+                agents.push(a);
+            }
+        }
+        for a in agents {
+            let name = who(sup, &a);
+            for (id, ts, text) in replies_of(sup, &a, first) {
+                msgs.push(json!({ "id": id, "ts": ts, "who": name, "text": text, "agent": a }));
+            }
+        }
+    }
+    msgs.sort_by_key(|m| m["ts"].as_i64().unwrap_or(0));
+    json!({ "messages": msgs, "agent": talk_agent(sup, f) })
+}
+
+/// A plan in a chat answer: its last JSON object, if it is a complete scope.
+pub fn scope_of_reply(text: &str, acceptance: Option<&str>) -> Option<Scope> {
+    let v = extract_json(text)?;
+    v.get("area")?;
+    let mut sc: Scope = serde_json::from_value(v).ok()?;
+    sc.size = sc.size.trim().to_uppercase();
+    if sc.acceptance.trim().is_empty() {
+        sc.acceptance = acceptance.unwrap_or("").to_string();
+    }
+    scope_ok(&sc).ok()?;
+    Some(sc)
+}
+
+/// The scope agent's latest answer: a new plan in it becomes the
+/// finding's scope (scored again). Whether the finding changed.
+fn take_chat_scope(sup: &Supervisor, f: &mut Finding) -> Result<bool, ApiError> {
+    if f.state != "active" || f.chat_kind.as_deref() != Some("scope") || !matches!(f.stage.as_str(), "scope" | "prioritize") {
+        return Ok(false);
+    }
+    let Some(a) = f.chat_agent.clone() else { return Ok(false) };
+    let since = f.chat_taken.map(|t| t + 1).unwrap_or(0);
+    let Some((_, ts, text)) = replies_of(sup, &a, since).pop() else { return Ok(false) };
+    f.chat_taken = Some(ts);
+    let before = f.scope.as_ref().map(|s| s.acceptance.clone());
+    match scope_of_reply(&text, before.as_deref()) {
+        Some(sc) => {
+            let repo = PathBuf::from(&f.repo);
+            f.door = door_of(&repo, &sc);
+            f.scope = Some(sc.clone());
+            f.score = score(f);
+            f.updated = now_ms();
+            put_finding(sup, f)?;
+            let st = f.stage.clone();
+            event(sup, f, &st, &st, "scope_talk", true, &a, &format!("The plan changed after you talked: {} (size {}), score {}", sc.area, sc.size, f.score), json!({ "scope": sc, "agent": a, "door": f.door }));
+        }
+        None => put_finding(sup, f)?,
+    }
+    Ok(true)
+}
+
+// ------------------------------------------------------------------- bulk
+
+/// The verbs `POST /api/converge/findings/bulk` takes.
+pub const BULK_VERBS: [&str; 5] = ["reproduce", "dismiss", "park", "start", "pin"];
+
+/// `POST /api/converge/findings/bulk {repo, ids, verb, reason?}`: the verb on
+/// each, `{done: [ids], failed: [{id, error}]}`.
+fn bulk(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, ids: &[String], verb: &str, v: &Json) -> Result<Json, ApiError> {
+    if !BULK_VERBS.contains(&verb) {
+        return Err(ApiError::bad(format!("verb is one of {}", BULK_VERBS.join(", "))));
+    }
+    if ids.is_empty() || ids.len() > 500 {
+        return Err(ApiError::bad("ids: 1 to 500 finding ids"));
+    }
+    if verb == "dismiss" && v["reason"].as_str().is_none_or(|r| r.trim().is_empty()) {
+        return Err(ApiError::bad("reason is required: why they are not problems (it teaches the personas)"));
+    }
+    let (mut done, mut bad) = (Vec::new(), Vec::new());
+    for id in ids {
+        let r = get_finding(sup, id).and_then(|mut f| {
+            if f.repo != repo {
+                return Err(ApiError::bad(format!("{id} is not a finding of {repo}")));
+            }
+            do_verb(sup, lv, &mut f, verb, v)
+        });
+        match r {
+            Ok(()) => done.push(id.clone()),
+            Err(e) => bad.push(json!({ "id": id, "error": e.message })),
+        }
+    }
+    if !done.is_empty() && matches!(verb, "reproduce" | "start") {
+        kick(sup, lv, repo);
+    }
+    Ok(json!({ "done": done, "failed": bad }))
+}
+
+// ---------------------------------------------------- steps and run summary
+
+/// The five steps of the pipeline you see, by the stages each holds.
+pub const STEPS: [(&str, &[&str]); 5] = [("problems", &["found"]), ("reproducing", &["reproduce"]), ("ready", &["scope", "prioritize"]), ("building", &["develop", "verify"]), ("merge", &["review"])];
+
+/// The overview's `steps`: each step's active findings, how many have work
+/// in flight (a gate, or an agent in its turn), are blocked on you, or queued.
+pub fn steps_of(fs: &[Finding], moving: &dyn Fn(&Finding) -> bool) -> Json {
+    let list: Vec<Json> = STEPS
+        .iter()
+        .map(|(step, stages)| {
+            let mine: Vec<&Finding> = fs.iter().filter(|f| f.state == "active" && stages.contains(&f.stage.as_str())).collect();
+            json!({
+                "step": step, "stages": stages, "count": mine.len(),
+                "moving": mine.iter().filter(|f| f.blocked.is_none() && moving(f)).count(),
+                "blocked": mine.iter().filter(|f| f.blocked.is_some()).count(),
+                "queued": mine.iter().filter(|f| f.queued.is_some()).count(),
+            })
+        })
+        .collect();
+    Json::Array(list)
+}
+
+/// Findings merged in the last seven days.
+pub fn merged_week(fs: &[Finding], now: i64) -> usize {
+    fs.iter().filter(|f| f.stage == "merged" && !matches!(f.state.as_str(), "duplicate" | "dismissed") && f.stage_since >= now - 7 * 86_400_000).count()
+}
+
+/// What a persona's run found, once it ended: `{found, new, known,
+/// findings: [{id, title, new, dup_of}]}`. A finding is known when it was
+/// merged into an open one, or (not checked yet) one says the same.
+pub fn run_summary(run: &Run, fs: &[Finding]) -> Json {
+    let mine: Vec<&Finding> = fs.iter().filter(|f| f.run.as_deref() == Some(run.id.as_str())).collect();
+    let list: Vec<Json> = mine
+        .iter()
+        .map(|f| {
+            let like = || fs.iter().find(|o| o.id != f.id && o.state == "active" && o.created <= f.created && o.run.as_deref() != Some(run.id.as_str()) && similarity(f, o) >= DUP).map(|o| o.id.clone());
+            let dup = match f.state.as_str() {
+                "duplicate" => f.dup_of.clone().or_else(|| Some(String::new())),
+                _ if f.stage == "found" && f.needs_you.is_none() => like(),
+                _ => None,
+            };
+            json!({ "id": f.id, "title": f.title, "new": dup.is_none(), "dup_of": dup.filter(|d| !d.is_empty()) })
+        })
+        .collect();
+    let new = list.iter().filter(|x| x["new"] == true).count();
+    json!({ "found": list.len(), "new": new, "known": list.len() - new, "findings": list })
 }
 
 fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
@@ -3639,15 +4061,29 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let out = blocking(move || {
         let mut f = get_finding(&sup, &id)?;
-        match verb.as_str() {
+        do_verb(&sup, &lv, &mut f, &verb, &v)?;
+        if matches!(verb.as_str(), "reproduce" | "start" | "take-repro" | "repro-agent" | "unpark") {
+            kick(&sup, &lv, &f.repo);
+        }
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
+    })
+    .await?;
+    Ok(AxJson(out).into_response())
+}
+
+/// One of a finding's verbs (`POST /api/converge/findings/:id/<verb>`),
+/// without the kick that follows a pick.
+fn do_verb(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, verb: &str, v: &Json) -> Result<(), ApiError> {
+    {
+        match verb {
             "pin" | "unpin" => {
                 f.pinned = verb == "pin";
                 f.updated = now_ms();
-                put_finding(&sup, &f)?;
+                put_finding(sup, f)?;
             }
             "park" => {
                 f.state = "parked".into();
-                failed(&sup, &mut f, "parked", "you", v["reason"].as_str().unwrap_or("Parked"), Json::Null)?;
+                failed(sup, f, "parked", "you", v["reason"].as_str().unwrap_or("Parked"), Json::Null)?;
             }
             "unblock" => {
                 let Some(b) = f.blocked.take() else { return Err(ApiError::conflict("this finding is not blocked")) };
@@ -3664,54 +4100,54 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                     }
                     _ => {
                         if let Some(a) = f.agent.clone().filter(|a| sup.is_running(a)) {
-                            let _ = crate::levels::steer(&sup, &lv, &a, &said);
+                            let _ = crate::levels::steer(sup, lv, &a, &said);
                         }
                     }
                 }
                 let st = f.stage.clone();
                 f.updated = now_ms();
-                put_finding(&sup, &f)?;
-                event(&sup, &f, &st, &st, "unblocked", true, "you", &format!("You did it: {}{}", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default()), json!({ "blocked": b, "note": note }));
-                kick(&sup, &lv, &f.repo);
+                put_finding(sup, f)?;
+                event(sup, f, &st, &st, "unblocked", true, "you", &format!("You did it: {}{}", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default()), json!({ "blocked": b, "note": note }));
+                kick(sup, lv, &f.repo);
             }
             "unpark" => {
                 f.state = "active".into();
-                failed(&sup, &mut f, "unparked", "you", "Back in the loop", Json::Null)?;
+                failed(sup, f, "unparked", "you", "Back in the loop", Json::Null)?;
             }
             "dismiss" => {
                 let reason = v["reason"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| ApiError::bad("reason is required: why it is not a problem (it teaches the persona)"))?;
                 f.state = "dismissed".into();
                 f.note = Some(reason.to_string());
-                failed(&sup, &mut f, "dismissed", "you", reason, Json::Null)?;
+                failed(sup, f, "dismissed", "you", reason, Json::Null)?;
             }
             "reproduce" => {
                 if f.stage != "found" {
                     return Err(ApiError::conflict(format!("{} is in {}, not found", f.id, f.stage)));
                 }
                 f.needs_you = None;
-                advance_to(&sup, &mut f, "reproduce", "triage", true, "you", "You chose to reproduce it", Json::Null)?;
+                advance_to(sup, f, "reproduce", "triage", true, "you", "You chose to reproduce it", Json::Null)?;
             }
             "start" => {
                 if f.stage != "prioritize" {
                     return Err(ApiError::conflict(format!("{} is in {}, not prioritize", f.id, f.stage)));
                 }
-                start_develop(&sup, &lv, &mut f, "you")?;
+                start_develop(sup, lv, f, "you")?;
             }
             "back" => {
                 if !matches!(f.stage.as_str(), "verify" | "review") {
                     return Err(ApiError::conflict(format!("{} is in {}: only verify and review go back to develop", f.id, f.stage)));
                 }
                 let text = v["text"].as_str().unwrap_or("Your reviewer sent this back.").to_string();
-                steer_back(&sup, &lv, &mut f, &format!("Sent back by your reviewer: {text}"));
+                steer_back(sup, lv, f, &format!("Sent back by your reviewer: {text}"));
                 f.ci = None;
-                advance_to(&sup, &mut f, "develop", "review", false, "you", &text, Json::Null)?;
+                advance_to(sup, f, "develop", "review", false, "you", &text, Json::Null)?;
             }
             "pr" => {
                 let url = v["url"].as_str().map(str::trim).filter(|u| u.starts_with("http")).ok_or_else(|| ApiError::bad("url is required: the pull request's address"))?;
                 f.pr_url = Some(url.to_string());
                 f.ci = Some("pending".into());
                 f.needs_you = None;
-                failed(&sup, &mut f, "pr", "you", &format!("Pull request {url} recorded"), json!({ "url": url }))?;
+                failed(sup, f, "pr", "you", &format!("Pull request {url} recorded"), json!({ "url": url }))?;
             }
             "approve" => {
                 if f.stage != "review" {
@@ -3727,7 +4163,7 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 match gh_api(&wt, &args) {
                     Ok(v) if v["merged"] == true => {
                         f.approved_by = Some("you".into());
-                        advance_to(&sup, &mut f, "merged", "approved", true, "you", &format!("Approved and merged {url}"), json!({ "url": url, "sha": v["sha"] }))?;
+                        advance_to(sup, f, "merged", "approved", true, "you", &format!("Approved and merged {url}"), json!({ "url": url, "sha": v["sha"] }))?;
                     }
                     Ok(v) => return Err(ApiError::new(502, "merge_failed", format!("GitHub did not merge it: {}", one_line(&v.to_string(), 300)))),
                     Err(e) => return Err(ApiError::new(502, "merge_failed", e)),
@@ -3737,15 +4173,56 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 if f.stage != "reproduce" {
                     return Err(ApiError::conflict(format!("{} is in {}, not reproduce", f.id, f.stage)));
                 }
-                start_repro_agent(&sup, &lv, &mut f, "you")?;
+                start_repro_agent(sup, lv, f, "you", None)?;
             }
-            "take-repro" => take_repro(&sup, &mut f, "you")?,
+            "take-repro" => take_repro(sup, f, "you")?,
             _ => return Err(ApiError::not_found(format!("no action {verb}"))),
         }
-        if matches!(verb.as_str(), "reproduce" | "start" | "take-repro" | "repro-agent" | "unpark") {
-            kick(&sup, &lv, &f.repo);
-        }
-        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+struct TalkB {
+    text: Option<String>,
+}
+
+async fn talk_post(State(app): State<App>, headers: HeaderMap, AxPath(id): AxPath<String>, body: Bytes) -> ApiResult {
+    // Only you talk to a card: an agent's key reports, it does not steer.
+    user_only(&app, &headers)?;
+    let b: TalkB = if body.is_empty() { TalkB::default() } else { parse_body(&body)? };
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let v = blocking(move || talk(&sup, &lv, &id, b.text.as_deref().unwrap_or(""))).await?;
+    Ok(AxJson(v).into_response())
+}
+
+async fn talk_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let mut f = get_finding(&sup, &id)?;
+        take_chat_scope(&sup, &mut f)?;
+        Ok(talk_of(&sup, &f))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct BulkB {
+    repo: Option<String>,
+    #[serde(default)]
+    ids: Vec<String>,
+    verb: Option<String>,
+}
+
+async fn bulk_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    user_only(&app, &headers)?;
+    let v: Json = parse_body(&body)?;
+    let b: BulkB = serde_json::from_value(v.clone()).map_err(|e| ApiError::bad(e.to_string()))?;
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let out = blocking(move || {
+        let repo = repo_of(b.repo)?;
+        bulk(&sup, &lv, &repo, &b.ids, b.verb.as_deref().unwrap_or(""), &v)
     })
     .await?;
     Ok(AxJson(out).into_response())
@@ -4049,7 +4526,8 @@ async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResul
             r.at = at;
         }
         let persona = r.persona.as_deref().and_then(|p| get_persona(&sup, p).ok()).map(|p| json!({ "id": p.id, "name": p.name, "journey": p.journey }));
-        Ok(json!({ "run": r, "live": r.state == "running", "persona": persona, "now": now_ms() }))
+        let summary = (r.state != "running" && r.purpose == "explore").then(|| run_summary(&r, &findings_of(&sup, &r.repo)));
+        Ok(json!({ "run": r, "live": r.state == "running", "persona": persona, "now": now_ms(), "summary": summary }))
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -4058,6 +4536,85 @@ async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agents_blocked_file_names_the_step_for_you() {
+        let d = tempfile::tempdir().unwrap();
+        let wt = d.path();
+        assert!(read_blocked(wt, "cv-1").is_none(), "no file");
+        std::fs::create_dir_all(wt.join(".converge")).unwrap();
+        std::fs::write(wt.join(".converge/blocked.json"), "  \n").unwrap();
+        assert!(read_blocked(wt, "cv-1").is_none(), "an empty file");
+        std::fs::write(wt.join(".converge/blocked.json"), r#"Here it is: {"kind": "Publish", "what": "No PyPI token here.", "you_do": "Run twine upload dist/*"}"#).unwrap();
+        let b = read_blocked(wt, "cv-1").unwrap();
+        assert_eq!((b.kind.as_str(), b.what.as_str(), b.you_do.as_str(), b.by.as_str()), ("publish", "No PyPI token here.", "Run twine upload dist/*", "cv-1"));
+        std::fs::write(wt.join(".converge/blocked.json"), r#"{"kind": "magic", "you_do": "Ask the owner"}"#).unwrap();
+        assert_eq!(read_blocked(wt, "x").unwrap().kind, "other");
+        std::fs::write(wt.join(".converge/blocked.json"), "Set the DEPLOY_KEY secret in the repository settings").unwrap();
+        let b = read_blocked(wt, "x").unwrap();
+        assert_eq!((b.kind.as_str(), b.you_do.as_str()), ("other", "Set the DEPLOY_KEY secret in the repository settings"));
+        // A scope's answer names it in its object, or not at all.
+        assert!(blocked_of(&json!({ "kind": "credentials" }), "scope").is_none());
+        assert_eq!(blocked_of(&json!({ "kind": "credentials", "you_do": "Add the token" }), "scope").unwrap().kind, "credentials");
+    }
+
+    #[test]
+    fn talk_goes_to_the_agent_of_the_cards_step() {
+        assert_eq!(talk_kind("active", "found"), "card");
+        assert_eq!(talk_kind("active", "reproduce"), "repro");
+        assert_eq!(talk_kind("cant_reproduce", "reproduce"), "repro");
+        assert_eq!(talk_kind("active", "scope"), "scope");
+        assert_eq!(talk_kind("active", "prioritize"), "scope");
+        for st in ["develop", "verify", "review"] {
+            assert_eq!(talk_kind("active", st), "fix", "{st}");
+        }
+        assert_eq!(talk_kind("active", "merged"), "card");
+        assert_eq!(talk_kind("parked", "develop"), "card");
+    }
+
+    #[test]
+    fn a_scope_agents_answer_can_carry_a_new_plan() {
+        let text = "Yes, the exporter is in it too.\n\n{\"area\": \"src\", \"files\": [\"src/\", \"exporter/\"], \"root_cause\": \"Not wired.\", \"acceptance\": \"\", \"size\": \"l\"}";
+        let sc = scope_of_reply(text, Some("The repro exits 0")).unwrap();
+        assert_eq!((sc.size.as_str(), sc.acceptance.as_str(), sc.files.len()), ("L", "The repro exits 0", 2));
+        assert!(scope_of_reply(text, None).is_none(), "no acceptance at all");
+        assert!(scope_of_reply("The plan stays as it is.", Some("x")).is_none());
+        assert!(scope_of_reply("{\"answer\": 1}", Some("x")).is_none(), "not a plan");
+        assert!(scope_of_reply("{\"area\": \"src\", \"acceptance\": \"a\", \"size\": \"XL\"}", None).is_none(), "a size that is not S, M or L");
+    }
+
+    #[test]
+    fn the_steps_count_their_cards_and_the_merges_of_the_week() {
+        let now = 10 * 86_400_000;
+        let f = |id: &str, stage: &str, state: &str| Finding { id: id.into(), stage: stage.into(), state: state.into(), stage_since: now - 1000, ..Default::default() };
+        let mut fs = vec![f("a", "found", "active"), f("b", "found", "parked"), f("c", "scope", "active"), f("d", "prioritize", "active"), f("e", "develop", "active"), f("g", "verify", "active"), f("h", "review", "active"), f("m", "merged", "active"), f("o", "merged", "active")];
+        fs[4].blocked = Some(Blocked { kind: "publish".into(), you_do: "x".into(), ..Default::default() });
+        fs[5].queued = Some("waiting for a free agent slot".into());
+        fs[8].stage_since = now - 8 * 86_400_000;
+        let st = steps_of(&fs, &|f: &Finding| f.id == "e" || f.id == "g");
+        let by: Vec<(String, u64, u64, u64, u64)> = st.as_array().unwrap().iter().map(|x| (x["step"].as_str().unwrap().to_string(), x["count"].as_u64().unwrap(), x["moving"].as_u64().unwrap(), x["blocked"].as_u64().unwrap(), x["queued"].as_u64().unwrap())).collect();
+        assert_eq!(by, vec![("problems".into(), 1, 0, 0, 0), ("reproducing".into(), 0, 0, 0, 0), ("ready".into(), 2, 0, 0, 0), ("building".into(), 2, 1, 1, 1), ("merge".into(), 1, 0, 0, 0)]);
+        assert_eq!(st[2]["stages"], json!(["scope", "prioritize"]));
+        assert_eq!(merged_week(&fs, now), 1);
+    }
+
+    #[test]
+    fn a_runs_summary_says_what_was_new() {
+        let run = Run { id: "cr1".into(), state: "done".into(), purpose: "explore".into(), ..Default::default() };
+        let mk = |id: &str, title: &str, run: &str, created: i64| Finding { id: id.into(), title: title.into(), run: Some(run.into()), state: "active".into(), stage: "found".into(), created, ..Default::default() };
+        let old = mk("old", "The export button does nothing on the orders page", "cr0", 1);
+        let mut checked = mk("n1", "Totals in the footer are rounded oddly", "cr1", 5);
+        checked.needs_you = Some(TRIAGE.into());
+        let mut merged = mk("d1", "Export button does nothing on orders page", "cr1", 6);
+        merged.state = "duplicate".into();
+        merged.dup_of = Some("old".into());
+        let unchecked = mk("d2", "The export button does nothing on the orders page today", "cr1", 7);
+        let v = run_summary(&run, &[old, checked, merged, unchecked]);
+        assert_eq!((v["found"].as_u64(), v["new"].as_u64(), v["known"].as_u64()), (Some(3), Some(1), Some(2)), "{v}");
+        assert_eq!(v["findings"][0], json!({ "id": "n1", "title": "Totals in the footer are rounded oddly", "new": true, "dup_of": null }));
+        assert_eq!(v["findings"][1]["dup_of"], "old");
+        assert_eq!(v["findings"][2]["dup_of"], "old");
+    }
 
     #[test]
     fn pull_request_addresses_are_read() {

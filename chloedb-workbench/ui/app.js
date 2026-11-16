@@ -3213,13 +3213,16 @@ Shell.initShell({
   projectNames,
   restart: restartAgent,
   openSearch: openQuickSearch,
+  // ⋯ › Notifications (the bell left the top bar).
+  notifications: () => { try { if (NOTIFY) NOTIFY.open(); else toast("Notifications did not load", true); } catch (err) { console.error(err); } },
   toast,
   answered,
   refreshNeeds,
 });
 
 // Agent P's interrupt model (ui/goals/notify.js): started once; its bell
-// sits in the top bar before More (on a phone, More lists Notifications).
+// is not shown in the top bar any more (style.css hides .nt-top): the ⋯
+// menu lists Notifications.
 let NOTIFY = null;
 
 let started = false;
