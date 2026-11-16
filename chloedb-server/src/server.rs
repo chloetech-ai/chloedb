@@ -1154,7 +1154,10 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
     }
     let db = db.ok_or("no files to import")?;
     db.storage().merge(&MergePolicy::default()).map_err(|e| format!("merge: {e}"))?;
-    tracing::info!(db = %path.display(), rows = db.snapshot().n_live_docs(), "imported every file");
+    // The rows of every table, not of the first alone.
+    let snap = db.snapshot();
+    let rows: u64 = snap.schemas().filter_map(|s| snap.table(&s.table)).map(|t| t.n_live_docs()).sum();
+    tracing::info!(db = %path.display(), tables = snap.schemas().count(), rows, "imported every file");
     Ok(())
 }
 

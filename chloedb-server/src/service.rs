@@ -5207,17 +5207,28 @@ impl Service {
     /// and writes nothing; otherwise what was written
     /// ([`chloedb::sqlite::Imported::to_json`]).
     /// Rows need a write key, and an import that creates tables an admin
-    /// key, refused before anything is written.
+    /// key, refused before anything is written. Once it writes, an import
+    /// goes on to its end though the client hangs up (a proxy's timeout, a
+    /// closed tab), rather than stop at a request of rows no one can name,
+    /// and the server's log says how it ended.
     pub async fn import_sqlite(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: chloedb::sqlite::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
         who.may(Scope::Write, "an import")?;
         let catalog = self.catalog();
+        let bytes = body.len();
+        // A file in WAL mode keeps its latest writes in its -wal file until
+        // a checkpoint, and an upload is the main file alone.
+        let wal = body.get(18..20) == Some(&[2, 2]);
         let checked = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
             let dir = tempfile::tempdir().map_err(ApiError::internal)?;
             let path = dir.path().join("import.sqlite");
             std::fs::write(&path, &body).map_err(ApiError::internal)?;
             // The server's temporary path is no business of the client's.
             let shown = path.display().to_string();
-            let src = chloedb::sqlite::Source::open(&path).map_err(|e| ApiError::bad(e.to_string().replace(&shown, "the uploaded file")))?;
+            // A file that is not SQLite, or is damaged, is not a schema's fault.
+            let src = chloedb::sqlite::Source::open(&path).map_err(|e| {
+                let m = e.to_string().replace(&shown, "the uploaded file");
+                ApiError::coded(400, "bad_request", m.strip_prefix("schema error: ").unwrap_or(&m).to_string())
+            })?;
             let plan = src.plan_over(&catalog, &opts)?;
             if !plan_only {
                 for t in &plan.tables {
@@ -5234,8 +5245,13 @@ impl Service {
         .await
         .map_err(ApiError::internal)??;
         let (dir, src, plan) = checked;
+        let wal_note = wal.then(|| "the file is in WAL mode: the writes still in its -wal file are not in an upload of it; checkpoint it first (PRAGMA wal_checkpoint(TRUNCATE)), or send a copy made with VACUUM INTO".to_string());
         if plan_only {
-            return Ok(plan.to_json());
+            let mut j = plan.to_json();
+            if let Some(n) = wal_note {
+                j["notes"] = json!([n]);
+            }
+            return Ok(j);
         }
         if who.limited() {
             for t in &plan.tables {
@@ -5247,6 +5263,52 @@ impl Service {
             who.may(Scope::Admin, &format!("an import that creates tables ({})", creates.join(", ")))?;
             keys::note(format!("SQLite import created tables {}", creates.join(", ")));
         }
+        let svc = self.clone();
+        let write = async move {
+            let t0 = Instant::now();
+            let r = svc.write_sqlite(dir, src, &plan, timeout_ms).await;
+            let (out, failed) = match r {
+                Ok(out) => (out, None),
+                Err((out, e)) => (out, Some(e)),
+            };
+            let rows: u64 = out.tables.iter().map(|t| t.rows).sum();
+            let tables = out.tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>().join(", ");
+            match failed {
+                None => {
+                    tracing::info!(bytes, rows, tables = %tables, secs = t0.elapsed().as_secs_f64(), "imported a SQLite file");
+                    let mut j = out.to_json();
+                    if let Some(n) = wal_note {
+                        j["notes"] = json!([n]);
+                    }
+                    Ok(j)
+                }
+                Some(mut e) => {
+                    tracing::warn!(bytes, rows, tables = %tables, error = %e.message, "a SQLite import stopped partway: the rows it wrote stay written");
+                    if rows > 0 {
+                        e.message = format!("{} (the import stopped there: {rows} rows of {tables} were written before it)", e.message);
+                    }
+                    Err(e)
+                }
+            }
+        };
+        let write = tracing::Instrument::in_current_span(write);
+        let task = match keys::caller() {
+            Some(c) => tokio::spawn(keys::calling(c, write)),
+            None => tokio::spawn(write),
+        };
+        task.await.map_err(ApiError::internal)?
+    }
+
+    /// Creates the tables of `plan` the server lacks and writes the rows of
+    /// `src` ([`Self::import_sqlite`]): what it wrote, and on a failure the
+    /// error with what it wrote before it.
+    async fn write_sqlite(
+        self: &Arc<Self>,
+        dir: tempfile::TempDir,
+        src: chloedb::sqlite::Source,
+        plan: &chloedb::sqlite::Plan,
+        timeout_ms: u64,
+    ) -> Result<chloedb::sqlite::Imported, (chloedb::sqlite::Imported, ApiError)> {
         enum Step {
             Table(usize),
             Ops(Vec<Json>),
@@ -5280,27 +5342,45 @@ impl Service {
             }
         });
         let mut out = chloedb::sqlite::Imported { tables: Vec::new(), skipped: plan.skipped.clone() };
-        while let Some(step) = rx.recv().await {
-            match step? {
-                Step::Table(i) => {
-                    let t = &plan.tables[i];
-                    if !t.exists {
-                        self.create_table(t.schema.clone(), timeout_ms).await?;
+        let r: Result<(), ApiError> = async {
+            while let Some(step) = rx.recv().await {
+                match step? {
+                    Step::Table(i) => {
+                        let t = &plan.tables[i];
+                        let mut created = !t.exists;
+                        if created {
+                            if let Err(e) = self.create_table(t.schema.clone(), timeout_ms).await {
+                                // Another import of the same file made it since
+                                // the plan: its rows go in as into a table that was there.
+                                let same = self.catalog().iter().any(|s| s.table == t.schema.table && s.to_short_json() == t.schema.to_short_json());
+                                if !same {
+                                    return Err(e);
+                                }
+                                created = false;
+                            }
+                        }
+                        out.tables.push(chloedb::sqlite::TableImport { source: t.source.clone(), table: t.schema.table.clone(), rows: 0, created, bulk: false, notes: t.notes.clone() });
                     }
-                    out.tables.push(chloedb::sqlite::TableImport { source: t.source.clone(), table: t.schema.table.clone(), rows: 0, created: !t.exists, bulk: false, notes: t.notes.clone() });
-                }
-                Step::Ops(ops) => {
-                    if !ops.is_empty() {
-                        let n = self.write_ops(ops, None).await?.rows;
-                        if let Some(t) = out.tables.last_mut() {
-                            t.rows += n;
+                    Step::Ops(ops) => {
+                        if !ops.is_empty() {
+                            let n = self.write_ops(ops, None).await?.rows;
+                            if let Some(t) = out.tables.last_mut() {
+                                t.rows += n;
+                            }
                         }
                     }
                 }
             }
+            Ok(())
         }
-        reader.await.map_err(ApiError::internal)?;
-        Ok(out.to_json())
+        .await;
+        // The reader stops once the channel is gone.
+        drop(rx);
+        let read = reader.await.map_err(ApiError::internal);
+        match r.and(read) {
+            Ok(()) => Ok(out),
+            Err(e) => Err((out, e)),
+        }
     }
 
     /// Imports the Parquet file `body` into one table, as

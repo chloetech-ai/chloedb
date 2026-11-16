@@ -283,17 +283,33 @@ fn sqlite_err(e: rusqlite::Error, secs: u64) -> String {
 
 /// The tables of a SQLite database: name, columns and rows; and its views
 /// (`"kind": "view"`), whose rows are not counted, since counting runs
-/// the view's query.
+/// the view's query. Not SQLite's own tables (`sqlite_...`) nor a virtual
+/// table's shadow tables (an FTS index's data, an R-tree's nodes); a table
+/// this SQLite cannot read (a virtual table of a module it lacks, such as
+/// sqlite-vec's `vec0`) is listed with its `error`, and is not brought in.
 pub fn sqlite_tables(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let _deadline = Deadline::new(conn, SQLITE_LIST_SECS);
-    let mut st = conn.prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name").map_err(|e| e.to_string())?;
+    // `_` is a wildcard to LIKE: escaped, so that `sqlite3_dump` or
+    // `SQLiteData` is a table of the file's.
+    let mut st = conn.prepare(r"SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY type, name").map_err(|e| e.to_string())?;
     let names: Vec<(String, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    let shadows: std::collections::HashSet<String> = match conn.prepare("SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'shadow'") {
+        Ok(mut s) => s.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(Result::ok).collect()).unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
     let mut out = Vec::new();
     for (t, kind) in names {
+        if shadows.contains(&t) {
+            continue;
+        }
         let q = crate::strata::ident(&t);
-        let cols: Vec<Value> = match conn.prepare(&format!("PRAGMA table_info({q})")) {
-            Ok(mut s) => s.query_map([], |r| Ok(json!({"name": r.get::<_, String>(1)?, "type": r.get::<_, String>(2).unwrap_or_default()}))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect(),
-            Err(e) => return Err(e.to_string()),
+        let cols: Result<Vec<Value>, rusqlite::Error> = conn.prepare(&format!("PRAGMA table_info({q})")).and_then(|mut s| s.query_map([], |r| Ok(json!({"name": r.get::<_, String>(1)?, "type": r.get::<_, String>(2).unwrap_or_default()})))?.collect());
+        let cols = match cols {
+            Ok(c) => c,
+            Err(e) => {
+                out.push(json!({"name": t, "kind": kind, "columns": [], "rows": null, "error": format!("cannot be read: {e}")}));
+                continue;
+            }
         };
         if kind == "view" {
             out.push(json!({"name": t, "kind": "view", "columns": cols, "rows": null}));
@@ -305,7 +321,8 @@ pub fn sqlite_tables(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> 
     Ok(out)
 }
 
-/// Opens SQLite bytes (written to a temporary file, read only).
+/// Opens SQLite bytes (written to a temporary file, read only), refusing
+/// a damaged file rather than bringing in what can be read of it.
 pub fn open_sqlite(bytes: &[u8]) -> Result<(rusqlite::Connection, tempfile::NamedTempFile), String> {
     let f = tempfile::Builder::new().prefix("strata-sheets-").suffix(".sqlite").tempfile().map_err(|e| e.to_string())?;
     std::fs::write(f.path(), bytes).map_err(|e| e.to_string())?;
@@ -313,6 +330,12 @@ pub fn open_sqlite(bytes: &[u8]) -> Result<(rusqlite::Connection, tempfile::Name
     // The file's schema is not ours: its views and triggers may call only
     // functions without side effects.
     conn.execute_batch("PRAGMA trusted_schema = OFF").map_err(|e| format!("not a SQLite database: {e}"))?;
+    // A copy taken while a program was writing the file (without its
+    // journal, which an upload leaves behind) reads as rows half written.
+    let check: String = conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0)).map_err(|e| format!("not a SQLite database: {e}"))?;
+    if check != "ok" {
+        return Err(format!("the SQLite file is damaged ({check}): a copy taken while a program was writing it, perhaps; copy it again with sqlite3's .backup or VACUUM INTO"));
+    }
     Ok((conn, f))
 }
 
@@ -327,10 +350,18 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
     let mut budget = MAX_IMPORT_CELLS;
     let mut taken: Vec<String> = Vec::new();
     let mut report = Vec::new();
+    let mut skipped = serde_json::Map::new();
     for t in &tables {
         let tname = t["name"].as_str().unwrap_or_default().to_string();
         let named = only.is_some_and(|o| o.iter().any(|x| x == &tname));
         if (only.is_some() && !named) || (t["kind"] == "view" && !named) {
+            continue;
+        }
+        if let Some(e) = t["error"].as_str() {
+            if named {
+                return Err(format!("table {tname} {e}"));
+            }
+            skipped.insert(tname, json!(e));
             continue;
         }
         let sname = sheet_name(&tname, &taken);
@@ -360,6 +391,9 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
                 use rusqlite::types::ValueRef;
                 line.push(match r.get_ref(i).map_err(|e| e.to_string())? {
                     ValueRef::Null => Val::Empty,
+                    // An id of more than 15 digits stays as written, as
+                    // in a CSV file (a double cannot hold it).
+                    ValueRef::Integer(x) if long_integer(&x.to_string()) => Val::Text(x.to_string()),
                     ValueRef::Integer(x) => Val::Num(x as f64),
                     ValueRef::Real(x) => Val::Num(x),
                     ValueRef::Text(t) => Val::Text(String::from_utf8_lossy(t).into_owned()),
@@ -373,7 +407,9 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
         report.push(json!({"table": tname, "sheet": sname, "rows": n, "of": t["rows"], "cells": cells, "truncated": cut || more}));
     }
     if taken.is_empty() {
-        return Err(if tables.is_empty() {
+        return Err(if !skipped.is_empty() {
+            format!("no table could be read: {}", skipped.iter().map(|(t, e)| format!("{t} {}", e.as_str().unwrap_or_default())).collect::<Vec<_>>().join("; "))
+        } else if tables.is_empty() {
             "the database has no tables".into()
         } else if only.is_none() {
             "the database has only views: name the ones to bring in (a view runs its query as it is read)".into()
@@ -384,7 +420,11 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
     let stem = name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name);
     m.workbook.name = stem.to_string();
     m.evaluate();
-    Ok((UserModel::from_model(m), json!({"format": "sqlite", "tables": report})))
+    let mut out = json!({"format": "sqlite", "tables": report});
+    if !skipped.is_empty() {
+        out["skipped"] = Value::Object(skipped);
+    }
+    Ok((UserModel::from_model(m), out))
 }
 
 #[cfg(test)]
@@ -520,6 +560,58 @@ mod tests {
         let back = from_xlsx(&x, "shop").unwrap();
         assert_eq!(back.shown(0, 3, 2).unwrap(), "007");
         assert_eq!(back.shown(0, 2, 3).unwrap(), "3");
+    }
+
+    /// SQLite files as they come: tables named as SQLite's own would be
+    /// (`_` is a wildcard to LIKE), a virtual table's shadow tables, one of
+    /// a module this SQLite lacks (sqlite-vec's), ids past a double's 15
+    /// digits, and a file damaged.
+    #[test]
+    fn sqlite_files_as_they_come() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("odd.db");
+        let c = rusqlite::Connection::open(&p).unwrap();
+        c.execute_batch(
+            "CREATE TABLE sqlite3_dump (a); INSERT INTO sqlite3_dump VALUES (1);
+             CREATE TABLE SQLiteData (a); INSERT INTO SQLiteData VALUES (2);
+             CREATE VIRTUAL TABLE notes USING fts5(body); INSERT INTO notes VALUES ('hello');
+             CREATE TABLE ids (id INTEGER); INSERT INTO ids VALUES (9007199254740993), (-9223372036854775808), (12);
+             PRAGMA writable_schema = ON;
+             INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) VALUES ('table', 'vecs', 'vecs', 0, 'CREATE VIRTUAL TABLE vecs USING vec0(embedding float[4])');",
+        )
+        .unwrap();
+        drop(c);
+        let bytes = std::fs::read(&p).unwrap();
+        let (conn, _f) = open_sqlite(&bytes).unwrap();
+        let list = sqlite_tables(&conn).unwrap();
+        let names: Vec<&str> = list.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["SQLiteData", "ids", "notes", "sqlite3_dump", "vecs"], "no notes_data and the like");
+        assert!(list[4]["error"].as_str().unwrap().contains("vec0"), "{}", list[4]);
+        let (e, r) = from_sqlite(&bytes, "odd.db", None).unwrap();
+        let props = e.get_worksheets_properties();
+        assert_eq!(props.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["SQLiteData", "ids", "notes", "sqlite3_dump"]);
+        assert!(r["skipped"]["vecs"].as_str().unwrap().contains("vec0"), "{r}");
+        assert_eq!(e.shown(1, 2, 1).unwrap(), "9007199254740993");
+        assert_eq!(e.shown(1, 3, 1).unwrap(), "-9223372036854775808");
+        assert_eq!(e.shown(1, 4, 1).unwrap(), "12");
+        let named = from_sqlite(&bytes, "odd.db", Some(&["vecs".to_string()])).err().unwrap();
+        assert!(named.contains("vecs cannot be read"), "{named}");
+        // Bits flipped in a page of a table's rows.
+        let p = dir.path().join("big.db");
+        let c = rusqlite::Connection::open(&p).unwrap();
+        c.execute_batch("PRAGMA page_size = 4096; CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+        let tx = c.unchecked_transaction().unwrap();
+        for i in 0..5000 {
+            tx.execute("INSERT INTO t VALUES (?1, ?2)", rusqlite::params![i, format!("name {i} with some text to fill the pages")]).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(c);
+        let mut bad = std::fs::read(&p).unwrap();
+        for b in &mut bad[4096 * 5 + 50..4096 * 5 + 400] {
+            *b ^= 0xff;
+        }
+        let e = open_sqlite(&bad).err().unwrap();
+        assert!(e.contains("is damaged"), "{e}");
     }
 
     /// A SQLite file whose view never ends: `forever`, over a recursive CTE.

@@ -199,7 +199,20 @@ impl Source {
         }
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         // The first read of a file that is not a SQLite database fails.
-        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)).map_err(|e| Error::Schema(format!("{}: not a SQLite database ({e})", path.display())))?;
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)).map_err(|e| Error::Schema(not_readable(path, e)))?;
+        // A damaged file can read without an error and give wrong rows: a
+        // copy of a database taken while a writer was midway through a
+        // transaction holds pages of before and after it, and its tables
+        // hold fewer rows than they had, in no order. quick_check finds
+        // that, reading the file once (about 2 s a GB).
+        let check: String = conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0)).map_err(|e| Error::Schema(not_readable(path, e)))?;
+        if check != "ok" {
+            let first = check.lines().find(|l| !l.starts_with("***")).unwrap_or(&check).trim().to_string();
+            return Err(Error::Schema(format!(
+                "{}: the SQLite file is damaged ({first}; PRAGMA quick_check): a copy taken while a program was writing it, perhaps; copy it again from the database with sqlite3's .backup or VACUUM INTO",
+                path.display()
+            )));
+        }
         Ok(Source { conn })
     }
 
@@ -224,15 +237,16 @@ impl Source {
             tables.extend(cat.tables.iter());
         } else {
             for name in &opts.tables {
-                let t = cat.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name)).ok_or_else(|| match skipped.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+                let t = cat.tables.iter().chain(&cat.maybe_shadow).find(|t| t.name.eq_ignore_ascii_case(name)).ok_or_else(|| match skipped.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
                     Some((n, why)) => Error::Schema(format!("table {n} cannot be imported: {why}")),
+                    None if cat.shadows.iter().any(|n| n.eq_ignore_ascii_case(name)) => Error::Schema(format!("table {name} is a shadow table, where SQLite keeps a virtual table's index: import the virtual table instead")),
                     None => Error::Schema(format!("the SQLite file has no table {name}")),
                 })?;
                 if !tables.iter().any(|x| std::ptr::eq(*x, t)) {
                     tables.push(t);
                 }
             }
-            skipped.retain(|(n, _)| opts.tables.iter().any(|t| t.eq_ignore_ascii_case(n)));
+            skipped.retain(|(n, _)| opts.tables.iter().any(|t| t.eq_ignore_ascii_case(n)) && !tables.iter().any(|t| t.name.eq_ignore_ascii_case(n)));
         }
         // Strata's names for the tables, distinct in any case.
         let names = idents(&tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>());
@@ -253,8 +267,15 @@ impl Source {
             } else if let Some(s) = cat.meta.get(&t.name.to_ascii_lowercase()) {
                 into_schema(t, &stats, s, false, true, opts)
             } else {
+                let mut p = infer(t, name, &stats, &cat, &tables, opts)?;
+                if p.schema.fields.is_empty() {
+                    // Every column left out (BLOBs, say): no table to make.
+                    skipped.push((t.name.clone(), format!("no column to import: {}", p.notes.join("; "))));
+                    continue;
+                }
+                self.unique_key(t, &stats, &mut p)?;
                 inferred.push(plans.len());
-                infer(t, name, &stats, &cat, &tables, opts)?
+                p
             };
             if p.schema.table != t.name {
                 p.notes.insert(0, format!("table {:?} is {}", t.name, p.schema.table));
@@ -266,11 +287,44 @@ impl Source {
         Ok(Plan { tables: plans, skipped })
     }
 
+    /// Drops the key of `p`, a table made from SQLite's declarations, when
+    /// two of the key's values are one to ChloeDB: SQLite keeps the integer
+    /// 1 and the text '1' apart in a column without a type, and text that is
+    /// not UTF-8 reads with U+FFFD in place of each bad byte. A bulk load
+    /// would refuse the table and an upsert would keep one row of the two.
+    fn unique_key(&self, t: &Table, stats: &[Stats], p: &mut TablePlan) -> Result<()> {
+        let Some(k) = p.schema.primary_key else { return Ok(()) };
+        let Some(&(ref column, _)) = p.columns.iter().find(|&&(_, f)| f == k) else { return Ok(()) };
+        let Some(at) = t.columns.iter().position(|c| c.name == *column) else { return Ok(()) };
+        let st = &stats[at];
+        if p.schema.fields[k].ty != FieldType::Keyword || (st.texts == 0 || st.numbers() == 0) && st.invalid_utf8 == 0 {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare(&format!("SELECT {} FROM {}", quote(column), quote(&t.name)))?;
+        let mut rows = stmt.query([])?;
+        let mut seen = HashSet::new();
+        while let Some(row) = rows.next()? {
+            let key = match row.get_ref(0)? {
+                ValueRef::Integer(i) => i.to_string(),
+                ValueRef::Real(r) => r.to_string(),
+                ValueRef::Text(b) => String::from_utf8_lossy(b).into_owned(),
+                _ => continue,
+            };
+            if !seen.insert(key.clone()) {
+                p.notes.push(format!("primary key {column:?} holds two values that are both {key:?} to ChloeDB (as the integer 1 and the text '1' are), so the table has no key"));
+                let s = &p.schema;
+                p.schema = Schema::new(&s.table, s.fields.clone(), None).map_err(|e| Error::Schema(format!("table {}: {}", t.name, message(e))))?;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     /// A plan for the SQLite table `source` into a table with `schema`,
     /// which exists: the columns go into the fields of their names.
     pub fn plan_into(&self, source: &str, schema: &Schema, opts: &ImportOptions) -> Result<TablePlan> {
         let cat = catalog(&self.conn)?;
-        let t = cat.tables.iter().find(|t| t.name.eq_ignore_ascii_case(source)).ok_or_else(|| Error::Schema(format!("the SQLite file has no table {source}")))?;
+        let t = cat.tables.iter().chain(&cat.maybe_shadow).find(|t| t.name.eq_ignore_ascii_case(source)).ok_or_else(|| Error::Schema(format!("the SQLite file has no table {source}")))?;
         let stats = scan(&self.conn, t)?;
         Ok(into_schema(t, &stats, schema, true, false, opts))
     }
@@ -321,6 +375,7 @@ impl Source {
         let mut rows = stmt.query([])?;
         let schema = &t.schema;
         let start = if schema.has_defaults() { schema.defaults(crate::timestamp::now())? } else { vec![Value::Null; schema.fields.len()] };
+        let check = checked(schema);
         let mut n = 0u64;
         let mut docs = std::iter::from_fn(|| {
             let row = match rows.next() {
@@ -338,10 +393,30 @@ impl Source {
                 }
             }
             schema.fill_generated(&mut doc);
+            // As a write takes it, so that a row it would refuse is found
+            // (with its number) before anything is written. The write
+            // conforms it again, which leaves a stored value as it is.
+            if let Err(e) = crate::value::conform_as(&check, &mut doc, crate::value::Pooling::None) {
+                return Some(Err(Error::Schema(format!("table {} row {n}: {}", t.source, message(e)))));
+            }
             Some(Ok(doc))
         });
         f(&mut docs)
     }
+}
+
+/// `schema` as [`Source::documents`] checks its rows: the values a write
+/// fills in (embedded vectors, a model's derived values, MEDIA resolved
+/// from a URI) may be missing or unresolved yet.
+fn checked(schema: &Schema) -> Schema {
+    let mut s = schema.clone();
+    for f in s.fields.iter_mut() {
+        if f.embed.is_some() || f.derive.is_some() || f.media.is_some() {
+            f.not_null = false;
+            f.media = None;
+        }
+    }
+    s
 }
 
 /// Writes `docs` into a table with rows, [`IMPORT_BATCH`] a transaction.
@@ -375,6 +450,22 @@ fn message(e: Error) -> String {
     }
 }
 
+/// Why SQLite could not read the file at `path` at all.
+fn not_readable(path: &Path, e: rusqlite::Error) -> String {
+    match e.sqlite_error() {
+        // The writer of a database in rollback-journal mode stopped
+        // midway through a transaction: reading it means rolling that back,
+        // which a read-only connection may not.
+        Some(f) if f.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK => format!(
+            "{}: a program stopped while writing this SQLite file, and its journal ({}-journal) holds the transaction to undo: open the file once with sqlite3 (which rolls it back), then import it",
+            path.display(),
+            path.display()
+        ),
+        Some(f) if f.code == rusqlite::ErrorCode::DatabaseCorrupt => format!("{}: the SQLite file is damaged ({e})", path.display()),
+        _ => format!("{}: not a SQLite database ({e})", path.display()),
+    }
+}
+
 // ---------------------------------------------------------------- catalog
 
 /// What a SQLite file holds.
@@ -385,7 +476,16 @@ struct Catalog {
     fts: Vec<Fts>,
     /// Schemas an export kept ([`META_TABLE`]), by table name in lower case.
     meta: HashMap<String, Schema>,
+    /// Tables named as a virtual table's own tables would be, of a module
+    /// SQLite lacks: imported only when named ([`ImportOptions::tables`]).
+    maybe_shadow: Vec<Table>,
+    /// The names of the shadow tables, which are never imported.
+    shadows: Vec<String>,
 }
+
+/// The virtual-table modules whose own tables `PRAGMA table_list` marks
+/// as `shadow`: those built into the SQLite the importer links.
+const SHADOWED_MODULES: [&str; 6] = ["fts3", "fts4", "fts5", "rtree", "rtree_i32", "geopoly"];
 
 struct Table {
     name: String,
@@ -428,13 +528,33 @@ fn catalog(conn: &Connection) -> Result<Catalog> {
     let mut stmt = conn.prepare("SELECT type, name, coalesce(sql, '') FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY rowid")?;
     let entries = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let is_virtual = |sql: &str| sql.trim_start().get(..20).is_some_and(|s| s.eq_ignore_ascii_case("CREATE VIRTUAL TABLE"));
-    let virtuals: Vec<String> = entries.iter().filter(|(_, _, sql)| is_virtual(sql)).map(|(_, n, _)| format!("{}_", n.to_ascii_lowercase())).collect();
-    let mut cat = Catalog { tables: Vec::new(), skipped: Vec::new(), fts: Vec::new(), meta: HashMap::new() };
+    // A virtual table's own tables (an FTS index's data, an R-tree's
+    // nodes) are `shadow` tables to SQLite, for the modules it has.
+    let mut stmt = conn.prepare("SELECT name, type FROM pragma_table_list WHERE schema = 'main'")?;
+    let shadows: HashSet<String> = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.filter_map(|r| r.ok()).filter(|(_, ty)| ty == "shadow").map(|(n, _)| n.to_ascii_lowercase()).collect();
+    // Virtual tables of other modules (sqlite-vec's vec0, say), whose
+    // own tables SQLite cannot tell from the rest: `<name>_...` may be one.
+    let foreign: Vec<(String, String)> = entries
+        .iter()
+        .filter(|(_, _, sql)| is_virtual(sql))
+        .filter_map(|(_, n, sql)| {
+            let (module, _) = virtual_args(sql);
+            (!SHADOWED_MODULES.contains(&module.as_str())).then(|| (format!("{}_", n.to_ascii_lowercase()), format!("{n} (USING {module})")))
+        })
+        .collect();
+    let mut cat = Catalog { tables: Vec::new(), skipped: Vec::new(), fts: Vec::new(), meta: HashMap::new(), maybe_shadow: Vec::new(), shadows: Vec::new() };
+    // The schemas an export kept, in a table of its name with its columns
+    // (a table of that name and other columns is the file's own).
+    let has_meta = entries.iter().any(|(ty, n, _)| ty == "table" && n.eq_ignore_ascii_case(META_TABLE)) && {
+        let mut stmt = conn.prepare("SELECT lower(name) FROM pragma_table_xinfo(?1)")?;
+        let cols = stmt.query_map([META_TABLE], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<_>>>()?;
+        cols.contains("name") && cols.contains("schema")
+    };
     // External-content FTS indexes, by name, with the table they index.
     let mut indexes: Vec<(String, String)> = Vec::new();
     for (ty, name, sql) in &entries {
         let lower = name.to_ascii_lowercase();
-        if lower.starts_with("sqlite_") || lower == META_TABLE {
+        if lower.starts_with("sqlite_") || has_meta && lower == META_TABLE {
             continue;
         }
         if ty == "view" {
@@ -461,8 +581,14 @@ fn catalog(conn: &Connection) -> Result<Catalog> {
             }
             continue;
         }
-        // A virtual table's own tables (an FTS index's data, say).
-        if virtuals.iter().any(|v| lower.starts_with(v)) {
+        if shadows.contains(&lower) {
+            cat.shadows.push(name.clone());
+            continue;
+        }
+        if let Some((_, of)) = foreign.iter().find(|(prefix, _)| lower.starts_with(prefix.as_str())) {
+            // Left out unless named (`tables`), and said so.
+            cat.skipped.push((name.clone(), format!("may hold the data of the virtual table {of}: name it in tables to import it")));
+            cat.maybe_shadow.push(read_table(conn, name, sql)?);
             continue;
         }
         cat.tables.push(read_table(conn, name, sql)?);
@@ -483,7 +609,6 @@ fn catalog(conn: &Connection) -> Result<Catalog> {
         }
         t.triggers = keep;
     }
-    let has_meta = entries.iter().any(|(ty, n, _)| ty == "table" && n.eq_ignore_ascii_case(META_TABLE));
     if has_meta {
         let mut stmt = conn.prepare(&format!("SELECT name, schema FROM {}", quote(META_TABLE)))?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
@@ -755,6 +880,10 @@ struct Stats {
     max_abs: u64,
     /// Reals that are infinite (SQLite keeps no NaN).
     infinite: u64,
+    /// Vectors of the hinted dimension holding NaN or an infinity.
+    nonfinite_vectors: u64,
+    /// Texts that are not UTF-8 (SQLite does not check).
+    invalid_utf8: u64,
     /// An integer or real other than 0 and 1.
     not_bool_number: bool,
     /// The longest text, in bytes, and the words of all of them (runs
@@ -788,6 +917,8 @@ impl Default for Stats {
             blobs: 0,
             max_abs: 0,
             infinite: 0,
+            nonfinite_vectors: 0,
+            invalid_utf8: 0,
             not_bool_number: false,
             text_max: 0,
             words: 0,
@@ -830,6 +961,7 @@ impl Stats {
             ValueRef::Text(b) => {
                 self.texts += 1;
                 let s = String::from_utf8_lossy(b);
+                self.invalid_utf8 += u64::from(matches!(s, std::borrow::Cow::Owned(_)));
                 let t = s.trim();
                 self.text_max = self.text_max.max(b.len());
                 self.words += s.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count() as u64;
@@ -844,7 +976,10 @@ impl Stats {
                 match hint {
                     Hint::Time => self.not_time |= crate::timestamp::parse(t).is_none(),
                     Hint::Bool => self.not_bool |= !matches!(t.to_ascii_lowercase().as_str(), "true" | "false" | "t" | "f" | "1" | "0"),
-                    Hint::Vector(dim) => self.not_vector |= !serde_json::from_str::<Vec<f32>>(t).is_ok_and(|v| v.len() == dim),
+                    Hint::Vector(dim) => match serde_json::from_str::<Vec<f64>>(t) {
+                        Ok(v) if v.len() == dim => self.nonfinite_vectors += u64::from(!finite_f32(&v)),
+                        _ => self.not_vector = true,
+                    },
                     Hint::Json => match serde_json::from_str::<Json>(t) {
                         Ok(Json::Array(xs)) => {
                             for x in xs {
@@ -862,7 +997,9 @@ impl Stats {
             }
             ValueRef::Blob(b) => {
                 self.blobs += 1;
-                self.not_vector_blob |= !matches!(hint, Hint::Vector(dim) if b.len() == 4 * dim);
+                let vector = matches!(hint, Hint::Vector(dim) if b.len() == 4 * dim);
+                self.not_vector_blob |= !vector;
+                self.nonfinite_vectors += u64::from(vector && !f32s(b).all(f32::is_finite));
             }
         }
     }
@@ -1044,6 +1181,12 @@ fn infer(t: &Table, name: &str, stats: &[Stats], cat: &Catalog, tables: &[&Table
         if f.ty == FieldType::Float && f.logical.is_none() && st.ints > 0 && st.max_abs > 1 << 53 {
             notes.push(format!("column {:?} is FLOAT: its integers past 2^53 round to the nearest double (9223372036854775807 reads as 9223372036854775808)", c.name));
         }
+        if matches!(f.ty, FieldType::Vector { .. }) && st.nonfinite_vectors > 0 {
+            notes.push(nonfinite_note(&c.name, st.nonfinite_vectors));
+        }
+        if matches!(f.ty, FieldType::Text { .. } | FieldType::Keyword) && read != Read::Base64 && st.invalid_utf8 > 0 {
+            notes.push(utf8_note(&c.name, st.invalid_utf8));
+        }
         if f.ty == FieldType::Float && st.infinite > 0 {
             let values = if st.infinite == 1 { "value is" } else { "values are" };
             notes.push(format!("column {:?}: {} infinite {values} NULL, as a FLOAT holds finite numbers", c.name, st.infinite));
@@ -1059,7 +1202,7 @@ fn infer(t: &Table, name: &str, stats: &[Stats], cat: &Catalog, tables: &[&Table
         if c.generated {
             notes.push(format!("column {:?} is generated in SQLite: its values are imported", c.name));
         }
-        if c.not_null && !role.key && st.nulls == 0 && st.infinite == 0 {
+        if c.not_null && !role.key && st.nulls == 0 && st.infinite == 0 && st.nonfinite_vectors == 0 {
             f.not_null = true;
         }
         if let Some(d) = &c.default {
@@ -1109,6 +1252,16 @@ fn infer(t: &Table, name: &str, stats: &[Stats], cat: &Catalog, tables: &[&Table
     Ok(TablePlan { source: t.name.clone(), schema, exists: false, columns, notes, reads })
 }
 
+fn nonfinite_note(column: &str, n: u64) -> String {
+    let (values, are) = if n == 1 { ("vector holds", "is") } else { ("vectors hold", "are") };
+    format!("column {column:?}: {n} {values} NaN or an infinity and {are} NULL, as a VECTOR holds finite numbers")
+}
+
+fn utf8_note(column: &str, n: u64) -> String {
+    let texts = if n == 1 { "text is" } else { "texts are" };
+    format!("column {column:?}: {n} {texts} not UTF-8, and each byte that is not reads as U+FFFD")
+}
+
 /// A plan of `t` into a table with `schema`: each column fills the field
 /// of its name (as given or as Strata spells it). `meta`: the schema is the
 /// one an export kept, whose generated fields need no note.
@@ -1133,6 +1286,12 @@ fn into_schema(t: &Table, stats: &[Stats], schema: &Schema, exists: bool, meta: 
             continue;
         }
         let read = if st.blobs > 0 && opts.blobs_base64 && matches!(field.ty, FieldType::Keyword | FieldType::Text { .. }) && field.media.is_none() { Read::Base64 } else { Read::Plain { time_unit: st.time_unit() } };
+        if matches!(field.ty, FieldType::Vector { .. }) && st.nonfinite_vectors > 0 {
+            notes.push(nonfinite_note(&c.name, st.nonfinite_vectors));
+        }
+        if matches!(field.ty, FieldType::Text { .. } | FieldType::Keyword) && st.invalid_utf8 > 0 {
+            notes.push(utf8_note(&c.name, st.invalid_utf8));
+        }
         columns.push((c.name.clone(), f));
         reads.push(read);
     }
@@ -1230,7 +1389,9 @@ fn value(schema: &Schema, f: usize, v: ValueRef<'_>, read: Read) -> Result<Value
     if let (Some(Logical::Timestamp), Read::Plain { time_unit }) = (field.logical, read) {
         match v {
             ValueRef::Integer(i) => return i.checked_mul(time_unit).map(Value::Int).ok_or_else(|| bad(format!("{i} is out of range"))),
-            ValueRef::Real(r) if r.abs() < 1e7 => return Ok(Value::Int(((r - 2_440_587.5) * 86_400_000_000.0).round() as i64)),
+            // To the millisecond, as SQLite's date functions read them: a
+            // double holds a Julian day to about 50 microseconds.
+            ValueRef::Real(r) if r.abs() < 1e7 => return Ok(Value::Int(((r - 2_440_587.5) * 86_400_000.0).round() as i64 * 1_000)),
             ValueRef::Real(r) if (r * time_unit as f64).abs() < 9.2e18 => return Ok(Value::Int((r * time_unit as f64).round() as i64)),
             ValueRef::Real(r) => return Err(bad(format!("{r} is out of range"))),
             _ => {}
@@ -1258,7 +1419,12 @@ fn value(schema: &Schema, f: usize, v: ValueRef<'_>, read: Read) -> Result<Value
             if b.len() != 4 * dim {
                 return Err(bad(format!("a BLOB of {} bytes is not {dim} float32 values", b.len())));
             }
-            Value::Vector(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect::<Vec<f32>>().into())
+            // As the plan notes: NaN or an infinity, which a vector index
+            // cannot place, is no vector.
+            if !f32s(b).all(f32::is_finite) {
+                return Ok(Value::Null);
+            }
+            Value::Vector(f32s(b).collect::<Vec<f32>>().into())
         }
         (_, ValueRef::Blob(b)) => return Err(bad(format!("a BLOB of {} bytes", b.len()))),
         (FieldType::Text { .. } | FieldType::Keyword, ValueRef::Integer(i)) if field.logical.is_none() && field.media.is_none() => Value::Str(i.to_string()),
@@ -1281,12 +1447,28 @@ fn value(schema: &Schema, f: usize, v: ValueRef<'_>, read: Read) -> Result<Value
         }
         (FieldType::Vector { .. }, ValueRef::Text(b)) => {
             let j: Json = serde_json::from_str(&text(b)).map_err(|e| bad(format!("not a JSON array of numbers ({e})")))?;
+            if let Json::Array(xs) = &j {
+                if !finite_f32(&xs.iter().filter_map(Json::as_f64).collect::<Vec<_>>()) {
+                    return Ok(Value::Null);
+                }
+            }
             ingest::field_value(field, key, &j)?
         }
         (_, ValueRef::Text(b)) => ingest::field_value(field, key, &Json::String(text(b)))?,
         (_, ValueRef::Integer(i)) => ingest::field_value(field, key, &json!(i))?,
         (_, ValueRef::Real(r)) => ingest::field_value(field, key, &json!(r))?,
     })
+}
+
+/// The little-endian float32 values of `b`.
+fn f32s(b: &[u8]) -> impl Iterator<Item = f32> + '_ {
+    b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+}
+
+/// Whether every one of `xs` is a finite float32 (past about 3.4e38 one is
+/// infinite).
+fn finite_f32(xs: &[f64]) -> bool {
+    xs.iter().all(|&x| (x as f32).is_finite())
 }
 
 /// Standard base64, with padding.

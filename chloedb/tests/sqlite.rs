@@ -474,3 +474,143 @@ fn names_as_written_and_values_noted() {
     let plan = sqlite::plan(&src, None, &ImportOptions::default()).unwrap();
     assert!(plan.tables[1].notes.iter().all(|n| !n.contains("2^53")), "{:?}", plan.tables[1].notes);
 }
+
+/// Each file's tables, their row counts and the reasons for those left out.
+fn planned(src: &Path, tables: &[&str]) -> chloedb::Result<sqlite::Plan> {
+    sqlite::plan(src, None, &ImportOptions { tables: tables.iter().map(|t| t.to_string()).collect(), ..Default::default() })
+}
+
+/// Tables named as a virtual table's are the file's own unless SQLite
+/// says they are the virtual table's (`shadow`); those of a module this
+/// SQLite lacks may be either, and come in when named.
+#[test]
+fn tables_beside_virtual_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("vt.sqlite");
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch(
+        "CREATE VIRTUAL TABLE notes USING fts5(body);
+         INSERT INTO notes VALUES ('hello'), ('world');
+         CREATE TABLE notes_archive (id INTEGER PRIMARY KEY, subject TEXT);
+         INSERT INTO notes_archive VALUES (1, 'old'), (2, 'older');
+         CREATE VIRTUAL TABLE geo USING rtree(id, x0, x1);
+         CREATE TABLE geo_points (id INTEGER PRIMARY KEY, name TEXT);
+         INSERT INTO geo_points VALUES (1, 'a');
+         CREATE TABLE vecs_chunks (chunk_id INTEGER PRIMARY KEY, size INTEGER);
+         INSERT INTO vecs_chunks VALUES (1, 4);
+         PRAGMA writable_schema = ON;
+         INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) VALUES ('table', 'vecs', 'vecs', 0, 'CREATE VIRTUAL TABLE vecs USING vec0(embedding float[4])');",
+    )
+    .unwrap();
+    drop(c);
+    let plan = planned(&src, &[]).unwrap();
+    let names: Vec<&str> = plan.tables.iter().map(|t| t.source.as_str()).collect();
+    assert_eq!(names, ["notes", "notes_archive", "geo_points"]);
+    let skipped: Vec<&str> = plan.skipped.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(skipped, ["geo", "vecs_chunks", "vecs"], "{:?}", plan.skipped);
+    assert!(plan.skipped[1].1.contains("vecs (USING vec0)") && plan.skipped[1].1.contains("name it"), "{:?}", plan.skipped);
+    let named = planned(&src, &["vecs_chunks"]).unwrap();
+    assert_eq!(named.tables.iter().map(|t| t.source.as_str()).collect::<Vec<_>>(), ["vecs_chunks"]);
+    assert!(named.skipped.is_empty(), "{:?}", named.skipped);
+    let e = planned(&src, &["notes_data"]).unwrap_err().to_string();
+    assert!(e.contains("notes_data is a shadow table"), "{e}");
+    let (db, done) = sqlite::import_new(&src, &dir.path().join("vt.strata"), DbOptions::default(), &ImportOptions::default()).unwrap();
+    assert_eq!(done.tables.iter().map(|t| (t.table.as_str(), t.rows)).collect::<Vec<_>>(), [("notes", 2), ("notes_archive", 2), ("geo_points", 1)]);
+    assert_eq!(sorted(&db, "SELECT subject FROM notes_archive"), [Value::Str("old".into()), Value::Str("older".into())]);
+}
+
+/// What a write would refuse is read as NULL and noted, or refused with
+/// its row before anything is written, never halfway.
+#[test]
+fn values_a_write_would_refuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("v.sqlite");
+    let blob = |xs: &[f32]| xs.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch("CREATE TABLE v (id INTEGER PRIMARY KEY, emb F32_BLOB(2), jv VECTOR(2))").unwrap();
+    let mut ins = c.prepare("INSERT INTO v VALUES (?1, ?2, ?3)").unwrap();
+    ins.execute(rusqlite::params![1, blob(&[1.0, 2.0]), "[0.5, 0.25]"]).unwrap();
+    ins.execute(rusqlite::params![2, blob(&[f32::NAN, 1.0]), "[1e39, 1]"]).unwrap();
+    ins.execute(rusqlite::params![3, blob(&[3.0, f32::INFINITY]), "[1, 2]"]).unwrap();
+    drop(ins);
+    // Keys that are one to ChloeDB: the integer 1 and the text '1'.
+    c.execute_batch(
+        "CREATE TABLE k (k PRIMARY KEY, v INTEGER);
+         INSERT INTO k VALUES (1, 1), ('1', 2), (2, 3);
+         CREATE TABLE b (data BLOB, more BLOB);
+         INSERT INTO b VALUES (x'00', x'01');
+         CREATE TABLE u (id INTEGER PRIMARY KEY, s TEXT);
+         INSERT INTO u VALUES (1, CAST(x'61ff62' AS TEXT)), (2, 'fine');
+         CREATE TABLE d (id INTEGER PRIMARY KEY, at DATETIME);
+         INSERT INTO d VALUES (1, 2440422.345601852), (2, 2451544.5);",
+    )
+    .unwrap();
+    drop(c);
+    let plan = planned(&src, &[]).unwrap();
+    let notes = |t: &str| plan.tables.iter().find(|p| p.source == t).unwrap_or_else(|| panic!("no {t}: {:?}", plan.skipped)).notes.clone();
+    let vn = notes("v");
+    assert!(vn.iter().any(|n| n.contains("\"emb\": 2 vectors hold NaN or an infinity and are NULL")), "{vn:?}");
+    assert!(vn.iter().any(|n| n.contains("\"jv\": 1 vector")), "{vn:?}");
+    let k = plan.tables.iter().find(|p| p.source == "k").unwrap();
+    assert_eq!(k.schema.primary_key, None);
+    assert!(k.notes.iter().any(|n| n.contains("both \"1\" to ChloeDB")), "{:?}", k.notes);
+    assert!(plan.skipped.iter().any(|(n, why)| n == "b" && why.starts_with("no column to import")), "{:?}", plan.skipped);
+    assert!(notes("u").iter().any(|n| n.contains("\"s\": 1 text is not UTF-8")), "{:?}", notes("u"));
+
+    let (db, done) = sqlite::import_new(&src, &dir.path().join("v.strata"), DbOptions::default(), &ImportOptions::default()).unwrap();
+    assert_eq!(done.tables.iter().map(|t| (t.table.as_str(), t.rows)).collect::<Vec<_>>(), [("v", 3), ("k", 3), ("u", 2), ("d", 2)]);
+    let r = db.query("SELECT emb, jv FROM v ORDER BY id", &Params::new()).unwrap();
+    assert!(matches!(&r.rows[0][0], Value::Vector(x) if x[..] == [1.0, 2.0]), "{:?}", r.rows);
+    assert_eq!((&r.rows[1][0], &r.rows[2][0], &r.rows[1][1]), (&Value::Null, &Value::Null, &Value::Null));
+    assert!(matches!(&r.rows[2][1], Value::Vector(x) if x[..] == [1.0, 2.0]), "{:?}", r.rows);
+    assert_eq!(sorted(&db, "SELECT v FROM k"), [Value::Int(1), Value::Int(2), Value::Int(3)]);
+    assert_eq!(ids(&db, "SELECT s FROM u ORDER BY id"), [Value::Str("a\u{fffd}b".into()), Value::Str("fine".into())]);
+    // Julian days to the millisecond, without a float's noise.
+    let at: Vec<i64> = ids(&db, "SELECT at FROM d ORDER BY id").into_iter().map(|v| match v {
+        Value::Int(t) | Value::Timestamp(t) => t,
+        v => panic!("{v:?}"),
+    }).collect();
+    assert_eq!(at, [chloedb::timestamp::parse("1969-07-19T20:17:40Z").unwrap(), chloedb::timestamp::parse("2000-01-01T00:00:00Z").unwrap()]);
+}
+
+/// A file damaged, or copied while a program was writing it, is refused
+/// with what is wrong, not imported as far as it reads.
+#[test]
+fn damaged_files_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("t.sqlite");
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch("PRAGMA page_size = 4096; CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+    let tx = c.unchecked_transaction().unwrap();
+    for i in 0..5000 {
+        tx.execute("INSERT INTO t VALUES (?1, ?2)", rusqlite::params![i, format!("name {i} with some text to fill the pages")]).unwrap();
+    }
+    tx.commit().unwrap();
+    drop(c);
+    let good = std::fs::read(&src).unwrap();
+    // Bits flipped in a page of the table's rows.
+    let mut bad = good.clone();
+    for b in &mut bad[4096 * 5 + 50..4096 * 5 + 400] {
+        *b ^= 0xff;
+    }
+    let flipped = dir.path().join("flipped.sqlite");
+    std::fs::write(&flipped, &bad).unwrap();
+    let e = planned(&flipped, &[]).unwrap_err().to_string();
+    assert!(e.contains("is damaged") && e.contains("quick_check") && e.contains("VACUUM INTO"), "{e}");
+    // A file whose writer stopped mid-transaction, with its journal.
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch("PRAGMA cache_size = 1; BEGIN; UPDATE t SET name = 'half written ' || name;").unwrap();
+    let hot = dir.path().join("hot.sqlite");
+    std::fs::copy(&src, &hot).unwrap();
+    std::fs::copy(dir.path().join("t.sqlite-journal"), dir.path().join("hot.sqlite-journal")).unwrap();
+    drop(c);
+    let e = planned(&hot, &[]).unwrap_err().to_string();
+    assert!(e.contains("journal") && e.contains("open the file once with sqlite3"), "{e}");
+    // A table of the file's own named as the export's schemas are, with
+    // other columns, is a table like the rest.
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch("CREATE TABLE _strata_tables (whatever TEXT); INSERT INTO _strata_tables VALUES ('mine');").unwrap();
+    drop(c);
+    let plan = planned(&src, &[]).unwrap();
+    assert_eq!(plan.tables.iter().map(|t| t.source.as_str()).collect::<Vec<_>>(), ["t", "_strata_tables"]);
+}
