@@ -21,11 +21,19 @@ name: reserve names
 # holds deprecated instead (run it with `npm` once the first release is
 # there). PyPI keeps its placeholder on purpose: pip
 # takes it only where no wheel fits, and it says how to build there.
+#
+# `check` instead publishes nothing: it says whether npm takes the token
+# js-release.yml publishes with (the secret NPM_TOKEN, of the environment
+# `npm` or else the repository), whose it is, and whether the scope
+# @chloedb, which the addons go out under, exists. A run on a branch tries
+# that branch's version:
+#
+#   gh workflow run reserve-names.yml --ref <branch> -f registries=check
 on:
   workflow_dispatch:
     inputs:
       registries:
-        description: "Registries to publish to, any of: pypi npm crates"
+        description: "Registries to publish to, any of: pypi npm crates; or check (npm's token, publishes nothing)"
         default: "pypi npm crates"
 
 permissions:
@@ -80,6 +88,33 @@ jobs:
               exit 0 ;;
           esac
           npm publish --access public --provenance
+
+  check:
+    if: contains(inputs.registries, 'check')
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: What NPM_TOKEN may do (publishes nothing)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo "::error::NPM_TOKEN is not set, in the environment npm or the repository"; exit 1; }
+          user=$(npm whoami) || { echo "::error::npm does not take NPM_TOKEN (expired, revoked or mistyped)"; exit 1; }
+          echo "NPM_TOKEN is $user's"
+          echo "chloedb's maintainers: $(npm view chloedb maintainers --json | tr -d '\n ')"
+          scope=$(curl -sS -o /dev/null -w '%{http_code}' https://registry.npmjs.org/-/org/chloedb/package)
+          if [ "$scope" = 200 ]; then echo "the scope @chloedb exists"; else echo "::error::the scope @chloedb does not exist on npm (HTTP $scope): create the organization chloedb on npmjs.com"; fi
+          echo "$user's role in the organization chloedb:"
+          npm org ls chloedb "$user" || echo "::warning::npm would not list the organization's members with this token (a granular token lists them only with the organizations permission; publishing does not need it)"
+          echo "what the token may write, by package:"
+          npm access list packages "$user" || true
+          test "$scope" = 200
 
   crates:
     if: contains(inputs.registries, 'crates')
