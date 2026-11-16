@@ -398,6 +398,33 @@ a.cv-btn { text-decoration: none; }
   .cv-lg { min-height: 36px; }
   .cv-wr-h .ic { width: 28px; }
 }
+.cv-rank { padding: 12px 0 4px; margin-bottom: 18px; }
+.cv-rank-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 0 14px 8px; }
+.cv-rank-sel { margin-left: auto; }
+.cv-rank-sel select { min-height: 44px; font: inherit; font-size: var(--fs-sm); border: var(--hair) solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--text); padding: 0 8px; }
+.cv-rank .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.cv-rank-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.cv-rank-t { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
+.cv-rank-t th, .cv-rank-t td { padding: 0 8px; height: 48px; border-top: var(--hair) solid var(--line); white-space: nowrap; }
+.cv-rank-t th { height: 40px; border-top: 0; font-weight: var(--w-mid); color: var(--muted); font-size: var(--fs-xs); }
+.cv-rank-t th button { all: unset; cursor: pointer; display: inline-flex; align-items: center; min-height: 40px; min-width: 32px; justify-content: flex-end; }
+.cv-rank-t th.on { color: var(--text); }
+.cv-rank-t .n { text-align: right; font-family: var(--mono); }
+.cv-rank-t td.on { font-weight: var(--w-mid); background: var(--surface-2); }
+.cv-rank-t .nm { position: sticky; left: 0; background: var(--surface); text-align: left; z-index: 1; max-width: 46vw; }
+.cv-rank-t td.nm { display: flex; align-items: center; gap: 8px; }
+.cv-rank-t .rk { width: 18px; color: var(--muted); font-family: var(--mono); text-align: right; flex: none; }
+.cv-rank-t .who { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.cv-rank-t .who b, .cv-rank-t .who .role { overflow: hidden; text-overflow: ellipsis; }
+.cv-rank-t tbody tr { cursor: pointer; }
+.cv-rank-t tbody tr:hover td { background: var(--surface-2); }
+.cv-rank-t tr.never td { color: var(--muted); }
+.cv-rank-t .e-lo { color: var(--cv-s4); }
+.cv-rank-t .e-mid { color: var(--cv-s3); }
+.cv-rank-t .e-hi { color: var(--good); }
+.cv-rank-t .up { color: var(--good); }
+.cv-rank-t .down { color: var(--cv-s4); }
+
 `;
 
 export const THEME_WORDS = { onboarding: "Onboarding", reliability: "Reliability", security: "Security", scalability: "Scalability", trust: "Trust", correctness: "Correctness", usability: "Usability", performance: "Performance", observability: "Observability", docs: "Docs" };
@@ -477,6 +504,8 @@ export function mount(root, ctx) {
     // The board's filters, multi-select: components, kinds (themes) and severities.
     fc: new Set(kept.fc || []), ft: new Set(kept.ft || []), fs: new Set(kept.fs || []),
     fold: new Map(kept.fold || []), hide: new Set(kept.hide || []), act: kept.act || null, actKinds: new Set(kept.actKinds || []),
+    // The Personas tab's ranking: the column it is sorted by ("-" first: highest first).
+    psort: kept.psort || "ease",
   };
   {
     // The hash wins over the cache: a shared link opens with its filters.
@@ -485,8 +514,9 @@ export function mount(root, ctx) {
     if (q.has("component")) S.fc = new Set(list("component"));
     if (q.has("kind")) S.ft = new Set(list("kind"));
     if (q.has("sev")) S.fs = new Set(list("sev").map(Number).filter((x) => x >= 1 && x <= 4));
+    if (q.get("sort")) S.psort = q.get("sort");
   }
-  const keep = () => { if (repo()) KEEP.set(repo(), { d: S.d, sig: S.sig, group: S.group, range: S.range, fc: [...S.fc], ft: [...S.ft], fs: [...S.fs], fold: [...S.fold], hide: [...S.hide], act: S.act, actKinds: [...S.actKinds] }); };
+  const keep = () => { if (repo()) KEEP.set(repo(), { d: S.d, sig: S.sig, group: S.group, range: S.range, fc: [...S.fc], ft: [...S.ft], fs: [...S.fs], fold: [...S.fold], hide: [...S.hide], act: S.act, actKinds: [...S.actKinds], psort: S.psort }); };
   const api = (p, o) => ctx.api(p, o);
   const view = () => (location.hash.split("?")[0].split("/")[2] || "board");
   const fid = () => new URLSearchParams(location.hash.split("?")[1] || "").get("f");
@@ -498,6 +528,7 @@ export function mount(root, ctx) {
     if (S.fc.size) q.set("component", [...S.fc].join(","));
     if (S.ft.size) q.set("kind", [...S.ft].join(","));
     if (S.fs.size) q.set("sev", [...S.fs].join(","));
+    if (v === "personas" && S.psort && S.psort !== "ease") q.set("sort", S.psort);
     for (const [k, x] of Object.entries(extra)) if (x != null && x !== "") q.set(k, x);
     const s = q.toString().replace(/%2C/g, ",");
     return `#/converge${v && v !== "board" ? "/" + v : ""}${s ? "?" + s : ""}`;
@@ -1494,10 +1525,65 @@ export function mount(root, ctx) {
       h("span", { class: "hint", id: `${id}-h` }, "Remembers its own earlier visits (its own ChloeCtx store, separate from yours). Off: comes in fresh like a first-time user."));
   }
 
+  // The ranking: one row per persona, sorted by the column you tap (again:
+  // the other way). Lowest ease first by default; not run yet at the bottom.
+  const RANK_COLS = [
+    { k: "ease", label: "Ease", title: "Ease of its last run, 1 hard to 5 easy", v: (p) => p.ease, fmt: (x) => x == null ? "–" : Number(x).toFixed(1) },
+    { k: "ease_avg", label: "Avg", title: "Average ease over its runs", v: (p) => p.ease_avg, fmt: (x) => x == null ? "–" : Number(x).toFixed(1) },
+    { k: "ease_trend", label: "Δ", title: "Ease of its last run against the one before", v: (p) => p.ease_trend, fmt: (x) => x == null ? "–" : x > 0 ? `+${x}` : String(x) },
+    { k: "found", label: "Found", title: "Problems it reported", v: (p) => p.found ?? p.reported, fmt: String },
+    { k: "reproduced", label: "Repro", title: "Of those, reproduced", v: (p) => p.reproduced, fmt: String },
+    { k: "fixed", label: "Fixed", title: "Its problems merged as fixes", v: (p) => p.fixed, fmt: (x) => x == null ? "–" : String(x) },
+    { k: "blockers", label: "Block", title: "Blockers of its still open", v: (p) => p.blockers, fmt: (x) => x == null ? "–" : String(x) },
+    { k: "runs", label: "Runs", title: "Runs it played", v: (p) => p.runs, fmt: String },
+    { k: "cost_usd", label: "Cost", title: "What its runs cost", v: (p) => p.cost_usd, fmt: (x) => x == null ? "–" : usd(x) },
+    { k: "last_run", label: "Last", title: "When it last played", v: (p) => toMs(p.last_run), fmt: (x) => x == null ? "never" : ago(x) },
+  ];
+  const rankCol = () => RANK_COLS.find((c) => c.k === S.psort.replace(/^-/, "")) || RANK_COLS[0];
+  /** The personas in ranking order: never-run ones last, whatever the sort. */
+  function ranked(ps) {
+    const c = rankCol(), desc = S.psort.startsWith("-");
+    return [...ps].sort((a, b) => {
+      const ra = !a.runs, rb = !b.runs;
+      if (ra !== rb) return ra ? 1 : -1;
+      const x = c.v(a), y = c.v(b);
+      if (x == null && y == null) return (a.name || "").localeCompare(b.name || "");
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (desc ? y - x : x - y) || (a.ease ?? 9) - (b.ease ?? 9) || (b.found ?? 0) - (a.found ?? 0);
+    });
+  }
+  function ranking(ps) {
+    if (!ps.length) return null;
+    const c0 = rankCol(), desc = S.psort.startsWith("-");
+    const setSort = (k) => {
+      S.psort = c0.k === k ? (desc ? k : "-" + k) : k === "ease" || k === "ease_avg" || k === "ease_trend" ? k : "-" + k;
+      keep(); history.replaceState(history.state, "", href("personas")); draw();
+    };
+    const easeColor = (x) => x == null ? "" : x < 2.5 ? "lo" : x < 3.5 ? "mid" : "hi";
+    const rows = ranked(ps);
+    let n = 0;
+    return h("section", { class: "cv-panel cv-rank" },
+      h("div", { class: "cv-rank-h" }, h("strong", {}, "Scores"), h("span", { class: "role" }, `sorted by ${c0.title.toLowerCase()}, ${desc ? "highest" : "lowest"} first`),
+        h("label", { class: "cv-rank-sel" }, h("span", { class: "sr" }, "Sort by"),
+          h("select", { onchange: (e) => { S.psort = e.target.value; keep(); history.replaceState(history.state, "", href("personas")); draw(); } },
+            RANK_COLS.flatMap((c) => [[c.k, `${c.label === "Δ" ? "Trend" : c.title.split(",")[0]} ↑`], ["-" + c.k, `${c.label === "Δ" ? "Trend" : c.title.split(",")[0]} ↓`]]).map(([v, l]) => h("option", { value: v, selected: v === S.psort ? true : null }, l))))),
+      h("div", { class: "cv-rank-wrap" }, h("table", { class: "cv-rank-t" },
+        h("thead", {}, h("tr", {}, h("th", { class: "nm" }, "#  Persona"), RANK_COLS.map((c) => h("th", { class: `n${c.k === c0.k ? " on" : ""}`, title: c.title, "aria-sort": c.k === c0.k ? (desc ? "descending" : "ascending") : null },
+          h("button", { type: "button", onclick: () => setSort(c.k) }, c.label, c.k === c0.k ? (desc ? " ↓" : " ↑") : ""))))),
+        h("tbody", {}, rows.map((p) => {
+          const never = !p.runs;
+          if (!never) n++;
+          return h("tr", { class: never ? "never" : "", tabindex: "0", onclick: () => { const el = document.getElementById(`cv-p-${p.id}`); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("cv-flash"); setTimeout(() => el.classList.remove("cv-flash"), 3600); } } },
+            h("td", { class: "nm" }, h("span", { class: "rk" }, never ? "–" : String(n)), h("span", { class: "who" }, h("b", {}, (p.name || "").split(",")[0]), h("span", { class: "role" }, never ? "not run yet" : (p.role || "").slice(0, 60))), p.live_run ? h("span", { class: "cv-live", title: "Playing now" }) : null),
+            RANK_COLS.map((c) => { const x = c.v(p); return h("td", { class: `n${c.k === c0.k ? " on" : ""}${c.k.startsWith("ease") && c.k !== "ease_trend" ? " e-" + easeColor(x) : ""}${c.k === "ease_trend" && x ? (x > 0 ? " up" : " down") : ""}` }, c.fmt(x)); }));
+        })))));
+  }
+
   function personas() {
     const d = S.d;
     const ps = d.personas || [];
-    const pc = (p) => h("div", { class: `cv-pc ${p.state}${p.live_run ? " live" : ""}`, onclick: p.live_run ? (e) => { if (!e.target.closest("button, a, summary, label, input")) location.hash = href("personas", { run: p.live_run }); } : null },
+    const pc = (p) => h("div", { id: `cv-p-${p.id}`, class: `cv-pc ${p.state}${p.live_run ? " live" : ""}`, onclick: p.live_run ? (e) => { if (!e.target.closest("button, a, summary, label, input")) location.hash = href("personas", { run: p.live_run }); } : null },
       h("div", {}, h("div", { class: "name" }, p.name), h("div", { class: "role" }, p.role)),
       h("div", { class: "cv-meta" }, h("span", { class: "cv-chip" }, p.origin), h("span", { class: `cv-chip ${p.state === "active" ? "ok" : p.state === "probation" ? "run" : ""}` }, p.state), (p.surfaces || []).map((x) => h("span", { class: "cv-chip" }, x)), p.busy ? h("span", { class: "cv-chip run" }, p.busy) : null, p.use_memory ? h("span", { class: "cv-chip mem", title: "Uses past memory" }, "memory") : null),
       p.why ? h("div", { class: "role" }, p.why) : null,
@@ -1525,9 +1611,10 @@ export function mount(root, ctx) {
     return h("div", {},
       h("div", { class: "cv-phead" }, h("p", { class: "cv-intro", style: { margin: 0 } }, "Each persona replays its journey on a schedule and after merges. A generated persona starts on probation and joins once a finding of theirs reproduces."),
         genControl()),
+      ranking(ps.filter((p) => p.state !== "retired")),
       (d.runs || []).filter((r) => r.purpose === "generate" && r.state === "running").map((r) => h("button", { class: "cv-btn live", type: "button", style: { marginBottom: "12px" }, onclick: () => { location.hash = href("personas", { run: r.id }); } }, h("span", { class: "cv-live" }, "Reading the project to write personas: watch"))),
       ["active", "probation", "retired"].map((stt) => {
-        const list = ps.filter((p) => p.state === stt);
+        const list = ranked(ps.filter((p) => p.state === stt));
         return list.length ? h("section", { style: { marginBottom: "20px" } }, h("div", { class: "cv-label", style: { margin: "0 0 8px" } }, stt === "active" ? "Active" : stt === "probation" ? "On probation" : "Retired"), h("div", { class: "cv-grid" }, list.map(pc))) : null;
       }), add);
   }
