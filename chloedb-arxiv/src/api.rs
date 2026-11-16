@@ -129,10 +129,11 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// What a reader without the token may do in public: read, and keep their
-/// own events, library and feeds.
+/// What a reader without the token may do in public: read (What to cite
+/// is a read sent as a POST, a draft being too long for a URL), and keep
+/// their own events, library and feeds.
 fn public_ok(method: &Method, path: &str) -> bool {
-    method == Method::GET || (method == Method::POST && (path == "/v1/event" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue"))))
+    method == Method::GET || (method == Method::POST && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue"))))
 }
 
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
@@ -825,4 +826,18 @@ async fn rss(State(svc): State<Shared>, Path(id): Path<String>, headers: HeaderM
     let proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
     let body = digest::rss(&id, &cfg, &issues, &format!("{proto}://{host}"));
     Ok(([(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")], body).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_public_reader_may_do() {
+        assert!(public_ok(&Method::GET, "/v1/gaps"));
+        assert!(public_ok(&Method::POST, "/v1/cite"));
+        assert!(public_ok(&Method::POST, "/v1/feeds/f1/issue"));
+        assert!(!public_ok(&Method::POST, "/v1/sql"));
+        assert!(!public_ok(&Method::DELETE, "/v1/feeds/f1"));
+    }
 }
