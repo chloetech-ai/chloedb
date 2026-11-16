@@ -121,7 +121,7 @@ first to the coordinator's view of A's primary (refreshed by the change's
 sync, `StaleView = FALSE`) and the source, then to every other server.
 
 1. **A lost write when the source fails over during the flip (`MoveNow`,
-   open).** The move holds writes on a1 and exports the last changes; the
+   fixed).** The move holds writes on a1 and exports the last changes; the
    change's sync finds a1 primary; a1 crashes and starts again as a
    replica, and a2 is elected; a client's write to a moving slot reaches
    a2, which holds no hold, and commits; the flip is given to a1 first,
@@ -129,7 +129,7 @@ sync, `StaleView = FALSE`) and the source, then to every other server.
    lacks the write, and coordinators route the slots to B. The same
    happens when a1 takes the flip and fails over before a2 is given it.
    The cluster simulator cannot find it: its shards have one server each.
-2. **The new primary refuses the flip for good (`MoveStuck`).** In the
+2. **The new primary refuses the flip for good (`MoveStuck`, fixed).** In the
    same trace, a2 is a writer with no hold, so it refuses the flip in the
    rest of the change and every time it is given again: shard A's primary
    keeps the map before the flip while the cluster routes by the one after.
@@ -141,6 +141,24 @@ sync, `StaleView = FALSE`) and the source, then to every other server.
    refuses writes to the slots and takes the flip, and a server forgets
    its hold and export when it stops being the writer. TLC finds neither
    bug, with stale views too (27,010 states).
+
+   The code does this since (`Service::set_slots`, `mark_flip`,
+   `feed::FLIP`, `pass_gate`):
+   - the writer, its hold covering its last export or its log holding a
+     mark, writes `_strata/move flip` (twice the flip's epoch) through the
+     log, waits for it as for a write (`Primary::acknowledged`, which a
+     replaced primary fails), writes it again acknowledged (plus one), and
+     takes the map;
+   - a replica, or a primary another replaced, takes the flip only once it
+     applied the acknowledged mark, which a primary writes only after its
+     copies hold the first, so a mark a primary wrote and failed before its
+     copies held it (it started again as a replica, its log keeping it)
+     counts for nothing: the model's `sawMark` is that acknowledged mark;
+   - a primary whose log holds a mark of a flip newer than its map, either
+     one, refuses writes to the moving slots (503), which only takes
+     behaviours away;
+   - a hold and an export count only in the term they were made in, so a
+     primary that stepped down and was elected again starts both again.
 
 ### Changes of the cluster map (`clustermap/`)
 
@@ -421,8 +439,8 @@ The open findings above, by what they cost and how likely they are, each
 with the fix its specification checks:
 
 1. **A slot move loses a write when its source fails over during the
-   flip** (`slots/`, `MoveNow`): the mark committed through the source's
-   log.
+   flip** (`slots/`, `MoveNow`): fixed, the mark committed through the
+   source's log.
 2. **The cluster map forks under the Lease, and on a restart with
    replicated shards** (`clustermap/`, `LeaseRacing`, `SurveyAny`): fixed
    under the Lease, which keeps the newest map made (`Keeps`); without the
