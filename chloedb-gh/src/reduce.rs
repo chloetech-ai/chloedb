@@ -572,7 +572,6 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
         }
     }
     flush(month, &mut cur, &mut people)?;
-    drop(flush);
     eprintln!(
         "reduce s{sh}: months from {rows} events ({:.0} s)",
         t0.elapsed().as_secs_f64()
