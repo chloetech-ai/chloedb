@@ -321,5 +321,27 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.equal(connection().ok, true);
 }
 
+// An operator older than the servers it runs (views/rollout.js): the
+// upgrader moves the servers, never the operator, and a 0.3.5 server
+// refuses the copies an older operator adds (audit CLU-3).
+{
+  const { cmpRelease, operatorBehind } = await import(new URL("views/rollout.js", app));
+  assert.deepEqual(["0.3.5", "0.10.1", "v0.3.10", "0.3.4"].sort(cmpRelease), ["0.3.4", "0.3.5", "v0.3.10", "0.10.1"]);
+  assert.equal(cmpRelease("v0.3.5", "0.3.5"), 0);
+  const v = (release, digest) => ({ release, digest });
+  assert.equal(operatorBehind({ version: "0.3.5" }, [v("0.3.5"), v("0.3.5")], ""), null);
+  assert.equal(operatorBehind({ version: "0.3.6" }, [v("0.3.5"), null], ""), null, "an operator newer than its servers is fine");
+  assert.equal(operatorBehind({ version: "0.3.6" }, [v("0.3.6"), v("0.3.7")], ""), "The operator runs 0.3.6 and the servers 0.3.7");
+  // Builds of main between two releases say one version: by when they were built.
+  const built = (d) => ({ "sha256:old": Date.UTC(2026, 10, 15, 10), "sha256:new": Date.UTC(2026, 10, 15, 20) })[d] ?? null;
+  assert.match(operatorBehind({ version: "0.3.5", digest: "sha256:old" }, [v("0.3.5", "sha256:new")], "", built), /older build than the servers/);
+  assert.equal(operatorBehind({ version: "0.3.5", digest: "sha256:new" }, [v("0.3.5", "sha256:old")], "", built), null);
+  assert.equal(operatorBehind({ version: "0.3.5", digest: "sha256:else" }, [v("0.3.5", "sha256:new")], "", built), null, "a build the registry does not date is not judged");
+  const refused = "POST /v1/admin/shards/0/replicas: 403 Forbidden: adding s0-2 to the cluster takes the cluster's token: the coordinator sends it to the server it adds";
+  assert.match(operatorBehind(undefined, [v("0.3.5")], refused), /older than 0\.3\.5/);
+  assert.equal(operatorBehind(undefined, [v("0.3.5")], "Ready"), null, "an operator that says no version may be 0.3.5");
+  assert.match(operatorBehind(undefined, [v("0.3.6")], "Ready"), /older than 0\.3\.6/);
+}
+
 console.log("ok");
 process.exit(0);

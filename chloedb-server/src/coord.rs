@@ -1086,7 +1086,7 @@ tokio::task_local! {
 /// Why a server is not added for the request being served: adding one
 /// sends it the cluster's token (audit CLU-3).
 pub fn admit_refused(what: &str) -> ApiError {
-    ApiError::coded(403, "cluster_token_required", format!("{what} takes the cluster's token: the coordinator sends it to the server it adds, so a key or the admin token may not name one (on Kubernetes the operator adds them with the clusterTokenSecret)"))
+    ApiError::coded(403, "cluster_token_required", format!("{what} takes the cluster's token: the coordinator sends it to the server it adds, so a key or the admin token may not name one (on Kubernetes the operator adds them with the clusterTokenSecret; an operator older than 0.3.5 sends the admin token instead, and adds servers again once it is upgraded to the image the servers run: kubectl -n strata-system set image deployment/strata-operator operator=IMAGE)"))
 }
 
 /// Runs `f`, and answers with it what a write through a coordinator did
