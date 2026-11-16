@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, gaps, pages, schema, understand};
+use crate::{answer, ask, born, gaps, spread, pages, schema, understand};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -54,6 +54,10 @@ pub struct Service {
     pub jobs: Mutex<HashMap<String, Value>>,
     /// The gap finder's list and when it was made (made again after 12 hours).
     pub gaps: tokio::sync::Mutex<Option<(Instant, Value)>>,
+    /// Topics born lately, made once and kept 12 hours.
+    pub born: tokio::sync::Mutex<Option<(Instant, Value)>>,
+    /// Techniques' spread over categories, made once and kept 12 hours.
+    pub spread: tokio::sync::Mutex<Option<(Instant, Value)>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -106,6 +110,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/hot", get(hot))
         .route("/v1/gaps", get(gaps_list))
         .route("/v1/gap", get(gap_one))
+        .route("/v1/born", get(born_list))
+        .route("/v1/spread", get(spread_list))
+        .route("/v1/spread/:id", get(spread_one))
         .route("/v1/cite", post(cite))
         .route("/v1/summary", get(summary))
         .route("/v1/foryou", get(for_you))
@@ -547,6 +554,79 @@ pub async fn gaps_cached(svc: &Service) -> (Value, f64, bool) {
         *g = Some((Instant::now(), v.clone()));
     }
     (v, 0.0, false)
+}
+
+/// Topics born lately, made once and kept 12 hours.
+pub async fn born_cached(svc: &Service) -> (Value, f64, bool) {
+    let mut g = svc.born.lock().await;
+    if let Some((at, v)) = g.as_ref() {
+        if at.elapsed() < Duration::from_secs(12 * 3600) {
+            return (v.clone(), at.elapsed().as_secs_f64(), true);
+        }
+    }
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let t0 = Instant::now();
+    let mut v = born::find(&c).await;
+    v["made_ms"] = json!((t0.elapsed().as_secs_f64() * 1000.0).round());
+    v["made_queries"] = json!(trace.take().len());
+    if v["topics"].as_array().is_some_and(|a| !a.is_empty()) {
+        *g = Some((Instant::now(), v.clone()));
+    }
+    (v, 0.0, false)
+}
+
+/// Techniques' spread over categories, made once and kept 12 hours.
+pub async fn spread_cached(svc: &Service) -> (Value, f64, bool) {
+    let mut g = svc.spread.lock().await;
+    if let Some((at, v)) = g.as_ref() {
+        if at.elapsed() < Duration::from_secs(12 * 3600) {
+            return (v.clone(), at.elapsed().as_secs_f64(), true);
+        }
+    }
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let t0 = Instant::now();
+    let mut v = spread::find(&c).await;
+    v["made_ms"] = json!((t0.elapsed().as_secs_f64() * 1000.0).round());
+    v["made_queries"] = json!(trace.take().len());
+    if v["techniques"].as_array().is_some_and(|a| !a.is_empty()) {
+        *g = Some((Instant::now(), v.clone()));
+    }
+    (v, 0.0, false)
+}
+
+async fn spread_list(State(svc): State<Shared>) -> Answer {
+    let t0 = Instant::now();
+    let (mut v, age, kept) = spread_cached(&svc).await;
+    v["age_s"] = json!(age.round());
+    v["kept"] = json!(kept);
+    v["took_ms"] = json!((t0.elapsed().as_secs_f64() * 10000.0).round() / 10.0);
+    Ok(Json(v))
+}
+
+/// One technique's first papers in each category it reached.
+async fn spread_one(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    let (list, _, _) = spread_cached(&svc).await;
+    let Some(t) = list["techniques"].as_array().and_then(|a| a.iter().find(|t| t["id"] == id.as_str()).cloned()) else {
+        return Err(ApiError(StatusCode::NOT_FOUND, format!("no technique {id:?} with a spread")));
+    };
+    let mut stops: Vec<(String, i64)> = vec![(t["home"]["cat"].as_str().unwrap_or_default().to_string(), t["home"]["year"].as_i64().unwrap_or(0))];
+    stops.extend(t["hops"].as_array().into_iter().flatten().map(|h| (h["cat"].as_str().unwrap_or_default().to_string(), h["year"].as_i64().unwrap_or(0))));
+    ctx!(svc, trace, c);
+    let mut v = spread::firsts(&c, &id, &stops).await;
+    v["technique"] = t;
+    done(&trace, v, t0)
+}
+
+async fn born_list(State(svc): State<Shared>) -> Answer {
+    let t0 = Instant::now();
+    let (mut v, age, kept) = born_cached(&svc).await;
+    v["age_s"] = json!(age.round());
+    v["kept"] = json!(kept);
+    v["took_ms"] = json!((t0.elapsed().as_secs_f64() * 10000.0).round() / 10.0);
+    Ok(Json(v))
 }
 
 async fn gaps_list(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {

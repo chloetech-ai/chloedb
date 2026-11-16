@@ -326,8 +326,8 @@ async fn two_servers_every_page() {
     assert!(more.iter().take(3).all(|id| rec.contains(id)), "{more:?}");
     assert!(!more.contains(&rec_id(3)) && !more.contains(&rec_id(4)), "{more:?}");
 
-    // The pages of trends, rising, gaps and home answer too.
-    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/gaps", "/v1/feeds/example", "/app.json"] {
+    // The pages of trends, rising, gaps, new topics, spread and home answer too.
+    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;
     }
     drop(app);

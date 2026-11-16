@@ -166,6 +166,40 @@ const CSS = `
 .ax-gpick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 16px; }
 .ax-gpick select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); max-width: 100%; }
 .ax-gpick .s { font-size: 12.5px; color: var(--muted); }
+.ax-born { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ax-born .bt { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; background: var(--surface); min-width: 0; }
+.ax-born .hd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.ax-born .hd a.t { font-weight: 650; font-size: 15px; color: var(--text); text-decoration: none; }
+.ax-born .hd a.t:hover { color: var(--accent); }
+.ax-born .meta { font-size: 12.5px; color: var(--muted); margin: 3px 0 2px; }
+.ax-born .st { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.ax-born .st.rising { background: var(--good-soft); color: var(--good-ink); }
+.ax-born .st.fading { background: var(--crit-soft); color: var(--crit-ink); }
+.ax-born .st.peak { background: var(--accent-soft); color: var(--accent); }
+.ax-born .st.steady, .ax-born .st.new { background: var(--warn-soft); color: color-mix(in srgb, var(--warn) 50%, var(--text)); }
+.ax-born .ab { font-size: 13px; color: var(--text-2); line-height: 1.45; margin: 4px 0 6px; }
+.ax-born svg { display: block; width: 100%; height: 54px; margin: 4px 0 6px; overflow: visible; }
+.ax-born .by { font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+.ax-born .ax-list { margin: 0; }
+@media (max-width: 780px) { .ax-born { grid-template-columns: minmax(0, 1fr); } }
+.ax-spread-t { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface); }
+.ax-spread-t .hd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.ax-spread-t .hd a.t { font-weight: 650; font-size: 15px; color: var(--text); text-decoration: none; }
+.ax-spread-t .hd a.t:hover { color: var(--accent); }
+.ax-spread-t .hd .n { font-size: 12.5px; color: var(--muted); }
+.ax-spread-t .hd button { margin-left: auto; padding: 3px 10px; font-size: 12.5px; }
+.ax-yrs { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 10px; margin-top: 8px; font-size: 12.5px; }
+.ax-yrs .y { color: var(--muted); font-variant-numeric: tabular-nums; padding-top: 2px; }
+.ax-yrs .cs { display: flex; flex-wrap: wrap; gap: 4px; }
+.ax-yrs .c { border: 1px solid var(--line-2); border-radius: 12px; padding: 1px 8px; color: var(--text-2); cursor: default; max-width: 100%; overflow-wrap: anywhere; }
+.ax-yrs .c.home { border-color: var(--accent); color: var(--accent); }
+.ax-yrs .c.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.ax-yrs .c .k { color: var(--muted); margin-left: 4px; }
+.ax-firsts { margin-top: 10px; }
+.ax-firsts .f { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 2px 12px; padding: 6px 0; border-top: 1px solid var(--line-2); font-size: 13px; }
+.ax-firsts .f .w { color: var(--muted); }
+.ax-firsts .f .w b { color: var(--text); font-weight: 600; display: block; }
+@media (max-width: 780px) { .ax-firsts .f { grid-template-columns: minmax(0, 1fr); } .ax-spread-t .hd button { margin-left: 0; } }
 .ax-gap { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface); }
 .ax-gap .hd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; font-weight: 600; font-size: 15px; }
 .ax-gap .hd .ar { color: var(--muted); }
@@ -174,7 +208,7 @@ const CSS = `
 .ax-gap .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); margin: 8px 0; overflow: hidden; }
 .ax-gap .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .ax-gap .s { font-size: 13px; color: var(--muted); line-height: 1.45; }
-.ax-gdet.hide { display: none; }
+.ax-gdet.hide, .ax-firsts.hide { display: none; }
 .ax-citebox { width: 100%; box-sizing: border-box; font: 13.5px/1.5 var(--sans); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); resize: vertical; margin-top: 10px; }
 .ax-citerefs summary { cursor: pointer; color: var(--text-2); font-size: 13.5px; margin-bottom: 6px; }
 .ax-gdet .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 22px; }
@@ -567,7 +601,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["gaps", "Gaps"], ["trends", "Trends"], ["atlas", "Atlas"], ["foryou", "For you"], ["feeds", "Feeds"], ["library", "Library"], ["cite", "What to cite"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["foryou", "For you"], ["feeds", "Feeds"], ["library", "Library"], ["cite", "What to cite"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -639,6 +673,8 @@ function render(el, ctx) {
         case "trends": return await trendsPage(app, main, arg, alive);
         case "hot": return await hotPage(app, main, arg, alive);
         case "gaps": return await gapsPage(app, main, arg, alive);
+        case "born": return await bornPage(app, main, arg, alive);
+        case "spread": return await spreadPage(app, main, arg, alive);
         case "atlas": return await atlasPage(app, main, alive);
         case "foryou": return await forYouPage(app, main, alive);
         case "library": return await libraryPage(app, main, alive);
@@ -1101,6 +1137,130 @@ async function citePage(app, main, alive) {
   fill(main, h("div", {},
     h("div", { class: "ax-ph" }, h("h1", {}, "What to cite"), h("div", { class: "au" }, "Paste a draft's abstract and references. You get the papers other authors cite with them and the papers closest to them, minus what you already cite.")),
     box, h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "8px 0 16px" } }, go, ex), out));
+}
+
+// ------------------------------------------------------------------ born
+
+const BORN_SPANS = [[12, "12 months"], [24, "2 years"], [36, "3 years"]];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const monthName = (m) => { const [y, mo] = String(m || "").split("-"); return mo ? `${MONTH_NAMES[Number(mo) - 1]} ${y}` : ""; };
+const addMonths = (m, k) => { const [y, mo] = String(m).split("-").map(Number); const n = y * 12 + (mo - 1) + k; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, "0")}`; };
+
+// A topic's share of arXiv by month, with the month it was born marked.
+function bornSpark(months, born) {
+  const NS = "http://www.w3.org/2000/svg";
+  const W = 300, H = 54, vals = months.map((x) => x[2]), max = Math.max(...vals, 1e-9);
+  const X = (i) => (months.length < 2 ? 0 : (i / (months.length - 1)) * W), Y = (v) => H - 4 - (v / max) * (H - 10);
+  const pts = vals.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Share of arXiv's papers by month, ${monthName(months[0]?.[0])} to ${monthName(months[months.length - 1]?.[0])}`);
+  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+  svg.appendChild(el("polygon", { points: `0,${H - 4} ${pts} ${W},${H - 4}`, fill: "color-mix(in srgb, var(--accent) 12%, transparent)" }));
+  svg.appendChild(el("polyline", { points: pts, fill: "none", stroke: "var(--accent)", "stroke-width": "1.6", "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
+  const bi = months.findIndex((x) => x[0] === born);
+  if (bi >= 0) svg.appendChild(el("line", { x1: X(bi), x2: X(bi), y1: 0, y2: H - 4, stroke: "var(--muted)", "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }));
+  svg.appendChild(el("line", { x1: 0, x2: W, y1: H - 4, y2: H - 4, stroke: "var(--line-2)", "vector-effect": "non-scaling-stroke" }));
+  const tip = document.createElementNS(NS, "title");
+  tip.textContent = months.map((x) => `${monthName(x[0])}: ${x[1]} papers`).join("\n");
+  svg.appendChild(tip);
+  return svg;
+}
+
+async function bornPage(app, main, arg, alive) {
+  // "#/born/<months>".
+  const span = BORN_SPANS.some(([m]) => String(m) === arg) ? Number(arg) : 12;
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
+  const out = h("div", {}, skel(8));
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" }, h("h1", {}, "New topics"), h("div", { class: "au" }, "Topics that barely existed and now hold hundreds of papers: when each was born, the paper that started it, and whether it is still rising.")),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 14px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Born in the last"), BORN_SPANS.map(([m, t]) => h("a", { href: app.href("born", m), style: m === span ? on : {} }, t))),
+    out));
+  const j = await app.api("/v1/born");
+  if (!alive()) return;
+  const since = addMonths(j.last_month, -(span - 1));
+  const shown = (j.topics || []).filter((t) => t.born >= since);
+  const STATE = { rising: ["rising", "Rising"], fading: ["fading", "Fading"], "at its peak": ["peak", "At its peak"], steady: ["steady", "Steady"], new: ["new", "Too new to tell"] };
+  const card = (t) => {
+    const [cls, word] = STATE[t.state] || ["steady", t.state];
+    const how = t.state === "new" ? "" : ` · share of arXiv ${t.ratio >= 1 ? "up" : "down"} ${Math.abs(Math.round((t.ratio - 1) * 100))}% lately`;
+    const s = t.started || [];
+    return h("div", { class: "bt" },
+      h("div", { class: "hd" }, h("a", { class: "t", href: app.href("topic", t.id) }, t.label), h("span", { class: `st ${cls}` }, word)),
+      h("div", { class: "meta" }, `Born ${monthName(t.born)} · ${fmt(t.last12)} papers in the last 12 months · ${t.field}${how}`),
+      t.about ? h("div", { class: "ab" }, t.about) : null,
+      bornSpark(t.months || [], t.born),
+      s.length ? [h("div", { class: "by" }, "Started by"), h("ul", { class: "ax-list" }, s.slice(0, 1).map((p) => paperItem(app, p, { compact: true })))] : null);
+  };
+  fill(out,
+    shown.length ? h("div", { class: "ax-born" }, shown.map(card)) : h("div", { class: "ax-empty" }, "No topic was born in this span; try a longer one."),
+    h("p", { class: "s", style: { marginTop: "18px", color: "var(--muted)", fontSize: "12.5px" } }, `How it works: each topic whose papers are mostly from the last three years is counted by month in one GROUP BY. It was born in the first month its three-month average reached a fifth of its peak, if the year before held an eighth of the peak or less, so an old topic that merely grew is not new. The paper that started it is the most cited of its papers from six months before that to two after; citations are counted to July 2026, so the youngest topics' are few. Rising or fading compares its share of arXiv's papers over its last six months with the six before. The line is that share by month; the dashed mark is its birth. Made from ${fmt(j.made_queries)} queries in ${((j.made_ms || 0) / 1000).toFixed(1)} s, kept 12 hours.`));
+}
+
+// ---------------------------------------------------------------- spread
+
+async function spreadPage(app, main, arg, alive) {
+  // "#/spread", "#/spread/into/<category>" filters, "#/spread/<technique>" opens one.
+  const [a0, a1] = (arg || "").split("/").map((x) => decodeURIComponent(x || ""));
+  const into = a0 === "into" ? a1 : "";
+  const open = a0 && a0 !== "into" ? a0 : "";
+  const out = h("div", {}, skel(8));
+  const picks = h("div", { class: "ax-gpick" });
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" }, h("h1", {}, "How techniques spread"), h("div", { class: "au" }, "When each method left the field it grew up in and reached the next, year by year, with the first papers in each. Pick a field to see what reached it and when.")),
+    picks, out));
+  const j = await app.api("/v1/spread");
+  if (!alive()) return;
+  const all = j.techniques || [];
+  const names = new Map();
+  for (const t of all) for (const x of [t.home, ...t.hops]) names.set(x.cat, x.name || x.cat);
+  // Two categories can share a name (cs.LG and stat.ML are both "Machine Learning").
+  const twice = new Set([...names.values()].filter((n, i, a) => a.indexOf(n) !== i));
+  const label = (cat) => { const n = names.get(cat) || cat; return twice.has(n) ? `${n} (${cat})` : n; };
+  const sel = h("select", { "aria-label": "Into a field" }, h("option", { value: "" }, "Into any field"), [...names.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([k, n]) => h("option", { value: k, selected: into === k ? "" : null }, `${n} (${k})`)));
+  sel.addEventListener("change", () => { location.hash = sel.value ? app.href("spread", "into", sel.value) : app.href("spread"); });
+  let shown = all;
+  if (into) {
+    const when = (t) => (t.home.cat === into ? t.home.year : (t.hops.find((x) => x.cat === into) || {}).year);
+    shown = all.filter((t) => when(t)).sort((a, b) => when(b) - when(a));
+  }
+  fill(picks, sel, h("span", { class: "s" }, into ? `${shown.length} techniques reached ${label(into)}, the latest first` : `${all.length} techniques, those reaching most fields lately first`));
+  const card = (t) => {
+    const stops = [{ ...t.home, home: true }, ...t.hops];
+    const byYear = new Map();
+    for (const x of stops.slice(0, 25)) { if (!byYear.has(x.year)) byYear.set(x.year, []); byYear.get(x.year).push(x); }
+    const more = Math.max(0, stops.length - 25);
+    const firsts = h("div", { class: "ax-firsts" });
+    const btn = h("button", { class: "ax-btn" }, "First papers in each field");
+    let loaded = false;
+    const load = async () => {
+      if (loaded) { firsts.classList.toggle("hide"); return; }
+      loaded = true;
+      fill(firsts, h("div", { class: "ax-prog" }, h("div")));
+      try {
+        const x = await app.api(`/v1/spread/${enc(t.id)}`);
+        const at = new Map(stops.map((s) => [s.cat, s]));
+        fill(firsts, (x.firsts || []).map((f) => {
+          const s = at.get(f.cat) || {};
+          return h("div", { class: "f" },
+            h("div", { class: "w" }, h("b", {}, label(f.cat)), `${s.home ? "Grew up here" : `Reached in ${s.year}, ${s.delay} ${s.delay === 1 ? "year" : "years"} on`}`),
+            h("ul", { class: "ax-list", style: { margin: 0 } }, paperItem(app, f.paper, { compact: true })));
+        }));
+      } catch (e) { fill(firsts, h("div", { class: "ax-err" }, String(e.message || e))); }
+    };
+    btn.addEventListener("click", load);
+    const el = h("div", { class: "ax-spread-t" },
+      h("div", { class: "hd" }, h("a", { class: "t", href: app.href("concept", t.id) }, t.name), h("span", { class: "n" }, `grew up in ${label(t.home.cat)}, ${t.home.year} · reached ${t.hops.length} more ${t.hops.length === 1 ? "field" : "fields"}`), btn),
+      h("div", { class: "ax-yrs" }, [...byYear.entries()].map(([y, xs]) => [h("div", { class: "y" }, String(y)), h("div", { class: "cs" }, xs.map((x) => h("span", { class: `c${x.home ? " home" : ""}${x.cat === into ? " sel" : ""}`, title: `${label(x.cat)}: ${fmt(x.papers)} papers with ${t.name}` }, label(x.cat), h("span", { class: "k" }, short(x.papers)))))]),
+        more ? [h("div", { class: "y" }, ""), h("div", { class: "s", style: { color: "var(--muted)" } }, `and ${more} more`)] : null),
+      firsts);
+    if (open === t.id) { load(); setTimeout(() => el.scrollIntoView({ block: "start" }), 50); }
+    return el;
+  };
+  fill(out, shown.length ? shown.slice(0, 40).map(card) : h("div", { class: "ax-empty" }, "Nothing reached this field."),
+    h("p", { class: "s", style: { marginTop: "18px", color: "var(--muted)", fontSize: "12.5px" } }, `How it works: each technique's papers are counted by primary category and year in SQL. It reached a category in the first year with five or more of its papers there and a twentieth of its best year there, two years running. It grew up in the earliest of the categories that hold a twentieth of its papers; earlier uses of the same words in small categories, often another meaning, are left out. The first papers are its most cited in a category in the year it arrived and the next. Made from ${fmt(j.made_queries)} queries in ${((j.made_ms || 0) / 1000).toFixed(1)} s, kept 12 hours.`));
 }
 
 // ------------------------------------------------------------------ gaps

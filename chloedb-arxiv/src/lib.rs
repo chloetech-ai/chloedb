@@ -3,6 +3,7 @@
 //! citations, recommendations and digests are SQL over them.
 
 pub mod answer;
+pub mod born;
 pub mod cite;
 pub mod api;
 pub mod ask;
@@ -18,5 +19,6 @@ pub mod prepare;
 pub mod raw;
 pub mod schema;
 pub mod search;
+pub mod spread;
 pub mod strata;
 pub mod understand;
