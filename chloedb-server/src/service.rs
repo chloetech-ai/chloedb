@@ -2956,6 +2956,24 @@ impl Service {
         Ok(u)
     }
 
+    /// What a search `query` of `table.field` marks in a text: as the
+    /// field's analyzer reads it, with the table's synonyms on one server
+    /// (a coordinator reads the field's analyzer from the schema).
+    pub async fn highlight_marks(self: &Arc<Self>, table: &str, field: &str, query: &str) -> Result<chloedb::text::highlight::Marks, ApiError> {
+        if let Backend::Local(db) = &self.backend {
+            let (db, table, field, query) = (db.clone(), table.to_string(), field.to_string(), query.to_string());
+            return Ok(tokio::task::spawn_blocking(move || db.highlight_marks(&table, &field, &query)).await.map_err(ApiError::internal)??);
+        }
+        let schema = self.table(table).await?;
+        let f = schema.field(field).ok_or_else(|| ApiError::bad(format!("{table} has no field {field}")))?;
+        if !matches!(f.ty, chloedb::schema::FieldType::Text { .. }) {
+            return Err(ApiError::bad(format!("{table}.{field} is not a TEXT field: only text is highlighted")));
+        }
+        let analyzer = f.text_analyzer();
+        let syn = self.synonyms();
+        Ok(chloedb::text::highlight::Marks::new(query, analyzer, syn.as_ref().map(|s| s.of(analyzer))))
+    }
+
     /// "Did you mean" ([`chloedb::db::Db::correct`]): the words of `text`
     /// in no document of TEXT field `field` of `table`, each replaced by
     /// the indexed term it most likely meant. A coordinator counts the
