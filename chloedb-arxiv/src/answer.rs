@@ -144,12 +144,11 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
         }
         Ask::People { by } => {
             let n = p.limit.unwrap_or(15).min(50);
-            let sql = if by == "cites" {
-                format!("SELECT people, SUM(cites) AS s, COUNT(*) AS n FROM ax_papers {wh} GROUP BY people ORDER BY s DESC LIMIT {n}")
+            let rows = if by == "cites" {
+                c.soft("who is cited most on it", &format!("SELECT people, SUM(cites) AS s, COUNT(*) AS n FROM ax_papers {wh} GROUP BY people ORDER BY s DESC LIMIT {n}"), Value::Object(params.clone())).await
             } else {
-                format!("SELECT people, COUNT(*) AS n, SUM(cites) AS s FROM ax_papers {wh} GROUP BY people ORDER BY n DESC LIMIT {n}")
+                people_by_count(c, "who writes most on it", &wh, &params, n).await
             };
-            let rows = c.soft(if by == "cites" { "who is cited most on it" } else { "who writes most on it" }, &sql, Value::Object(params.clone())).await;
             let keys: Vec<String> = rows.iter().map(|r| r.s("people")).filter(|k| !k.is_empty()).collect();
             let names = search::names(c, &keys).await;
             let people: Vec<Value> = rows.iter().filter(|r| !r.s("people").is_empty()).map(|r| {
@@ -336,4 +335,27 @@ pub fn first_author(r: &Row) -> String {
     } else {
         first
     }
+}
+
+
+/// Who writes most where `wh` holds (`WHERE ...`, or nothing), with the
+/// citations of their papers there (`s`). Grouping by people and summing
+/// citations in one statement takes about 0.7 s over a topic's papers, each
+/// with many people; counting alone is answered from the postings in under
+/// 0.1 s, and one person's sum in a few milliseconds, so the sums follow,
+/// side by side, for the few counted.
+pub async fn people_by_count(c: &Ctx<'_>, what: &str, wh: &str, params: &Map<String, Value>, n: usize) -> Vec<Row> {
+    let mut rows = c.soft(what, &format!("SELECT people, COUNT(*) AS n FROM ax_papers {wh} GROUP BY people ORDER BY n DESC LIMIT {n}"), Value::Object(params.clone())).await;
+    let and = if wh.trim().is_empty() { "WHERE" } else { "AND" };
+    let sql = format!("SELECT SUM(cites) AS s FROM ax_papers {wh} {and} people = :who_");
+    let sums = futures_util::future::join_all(rows.iter().map(|r| {
+        let mut p = params.clone();
+        p.insert("who_".into(), json!(r.s("people")));
+        c.soft("their citations there, one person at a time", &sql, Value::Object(p))
+    }))
+    .await;
+    for (r, s) in rows.iter_mut().zip(sums) {
+        r.insert("s".into(), json!(s.first().map(|x| x.i("s")).unwrap_or(0)));
+    }
+    rows
 }

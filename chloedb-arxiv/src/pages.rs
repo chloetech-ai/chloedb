@@ -225,7 +225,7 @@ async fn scope(c: &Ctx<'_>, cond: &str, params: Value, skip_concept: Option<&str
         c.soft("the most cited papers", &format!("SELECT {COLS} FROM ax_papers {wh} ORDER BY cites DESC LIMIT 15"), params.clone()),
         c.soft("the newest papers", &format!("SELECT {COLS} FROM ax_papers {wh} ORDER BY created DESC LIMIT 15"), params.clone()),
         c.soft("the most cited of the last twelve months", &format!("SELECT {COLS} FROM ax_papers {recent} ORDER BY cites DESC LIMIT 10"), params.clone()),
-        c.soft("who writes most on it", &format!("SELECT people, COUNT(*) AS n, SUM(cites) AS s FROM ax_papers {wh} GROUP BY people ORDER BY n DESC LIMIT 15"), params.clone()),
+        answer::people_by_count(c, "who writes most on it", &wh, &pmap, 15),
         c.soft("its techniques", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {wh} GROUP BY techniques ORDER BY n DESC LIMIT 16"), params.clone()),
         c.soft("its domains", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {wh} GROUP BY domains ORDER BY n DESC LIMIT 16"), params.clone()),
         c.soft("its categories", &format!("SELECT cats, COUNT(*) AS n FROM ax_papers {wh} GROUP BY cats ORDER BY n DESC LIMIT 10"), params.clone()),
