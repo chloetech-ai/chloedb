@@ -248,6 +248,11 @@ async fn searches_questions_and_completions() {
     let s = get(&http, &app, "/v1/suggest", &[("q", "which post has")]).await;
     let qs: Vec<&str> = s["questions"].as_array().unwrap().iter().filter_map(|x| x.as_str()).collect();
     assert!(qs.iter().any(|q| q.starts_with("which post has")), "{s}");
+    // A question's topic is completed where the question wants it.
+    let s = get(&http, &app, "/v1/suggest", &[("q", "which post about ru")]).await;
+    assert!(s["questions"].as_array().unwrap().iter().any(|q| q == "which post about rust has the most comments"), "{s}");
+    let s = get(&http, &app, "/v1/suggest", &[("q", "how many st")]).await;
+    assert!(s["questions"].as_array().unwrap().iter().any(|q| q == "how many stories mention "), "an open question for the topic to come: {s}");
     let s = get(&http, &app, "/v1/suggest", &[("q", "rus")]).await;
     assert!(s["phrases"].as_array().unwrap().iter().any(|p| p["text"] == "rust"), "{s}");
     let s = get(&http, &app, "/v1/suggest", &[("q", "postgres")]).await;

@@ -556,6 +556,8 @@ pub const TEMPLATES: &[&str] = &[
     "how many comments mention {t}",
     "who posted the most stories",
     "who posted the most stories about {t}",
+    "who posted the most about {t}",
+    "who commented the most about {t}",
     "who comments the most about {t}",
     "who knows the most about {t}",
     "who has the most karma",
@@ -564,6 +566,26 @@ pub const TEMPLATES: &[&str] = &[
     "when was {t} most discussed",
     "what does HN think about {t}",
 ];
+
+/// The words a question starts with.
+pub const LEADS: &[&str] = &["which", "what", "who", "how", "when", "where", "most", "top", "first", "oldest", "newest", "latest", "highest", "biggest", "fewest", "least"];
+
+/// Whether typed words begin a question rather than a search of titles'
+/// words: "which post ha", "how many", "top 5 sto", but not "how to learn"
+/// or "first contact". `partial`: the last word may be unfinished.
+pub fn starts_question(words: &[&str], partial: bool) -> bool {
+    let Some(w0) = words.first().map(|w| w.to_lowercase()) else { return false };
+    let w1 = words.get(1).map(|w| w.to_lowercase());
+    let last1 = words.len() == 2 && partial;
+    let is = |w: &str, list: &[&str]| list.contains(&w) || (last1 && w.len() >= 2 && list.iter().any(|x| x.starts_with(w)));
+    const THINGS: &[&str] = &["story", "stories", "post", "posts", "submission", "submissions", "article", "articles", "comment", "comments", "thread", "threads", "upvoted", "voted", "commented", "discussed", "popular", "show", "ask", "about", "link", "links"];
+    match w0.as_str() {
+        "which" | "who" | "when" | "where" | "fewest" | "least" | "what" => words.len() > 1 || !partial,
+        "how" => w1.is_some_and(|w| is(&w, &["many", "much", "often"])),
+        "most" | "top" | "first" | "oldest" | "newest" | "latest" | "highest" | "biggest" => w1.is_some_and(|w| w.chars().all(|c| c.is_ascii_digit()) || is(&w, THINGS)),
+        _ => false,
+    }
+}
 
 /// Templates offered for a topic that was typed on its own ("postgres").
 const FOR_TOPIC: &[&str] = &["most upvoted stories about {t}", "who knows the most about {t}", "when was {t} most discussed", "what does HN think about {t}", "first story about {t}", "how many stories mention {t}"];
@@ -614,7 +636,12 @@ fn fit(typed: &[String], partial: bool, tpl: &str, topic_hint: Option<&str>) -> 
             // The rest of the template finishes the question.
             for w in &tp[i..] {
                 if *w == "{t}" {
-                    out.push(topic_hint?.to_string());
+                    match topic_hint {
+                        Some(t) => out.push(t.to_string()),
+                        // No topic to offer: the question up to it, left
+                        // open (a trailing space) for the topic to be typed.
+                        None => return (matched >= 2).then(|| (format!("{} ", out.join(" ")), matched)),
+                    }
                 } else {
                     out.push(w.to_string());
                 }
@@ -686,8 +713,11 @@ pub fn complete(typed: &str, topic: Option<&str>, max: usize) -> Vec<String> {
         }
     }
     // A typed topic, on its own: questions about it.
-    let starts_question = words.len() == 1 && partial && ["which", "what", "who", "how", "when", "most", "top", "first", "oldest", "newest", "latest", "highest", "biggest"].iter().any(|w| w.starts_with(&words[0].to_lowercase()));
-    if got.is_empty() && !starts_question && typed.trim().len() >= 3 && read(typed).is_none() && !typed.contains(':') {
+    let starts_question = words.len() == 1 && partial && LEADS.iter().any(|w| w.starts_with(&words[0].to_lowercase()));
+    // Not "how to learn" or "the rust book": a topic is not a sentence's start.
+    let sentence = ["how", "why", "what", "the", "a", "an", "to", "is", "i", "my", "we", "you", "do", "does", "can", "should"].contains(&words[0].to_lowercase().as_str()) && words.len() > 1;
+    let ws: Vec<&str> = words.iter().map(String::as_str).collect();
+    if got.is_empty() && !starts_question && !sentence && !self::starts_question(&ws, partial) && typed.trim().len() >= 3 && read(typed).is_none() && !typed.contains(':') {
         let t = if partial { topic.map(str::to_string).or_else(|| Some(typed.trim().to_string())) } else { Some(typed.trim().to_string()) };
         if let Some(t) = t.filter(|t| !t.is_empty()) {
             for (k, tpl) in FOR_TOPIC.iter().enumerate() {
@@ -709,6 +739,29 @@ mod tests {
         match f.ask {
             Ask::Top { by, one } => (by, one, f.only, f.rest),
             other => panic!("{q:?} read as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_questions_wait_for_their_topic() {
+        let q = complete("how many st", None, 4);
+        assert!(q.contains(&"how many stories mention ".to_string()), "{q:?}");
+        let q = complete("which post", None, 6);
+        assert!(q.contains(&"which post has the most comments".to_string()), "{q:?}");
+        assert!(q.iter().any(|x| x == "which post about "), "{q:?}");
+        assert!(complete("how to learn", Some("how to learning"), 4).is_empty());
+        assert!(complete("which post haskell ", None, 4).is_empty(), "a question's start is not a topic");
+    }
+
+    #[test]
+    fn questions_being_typed() {
+        for q in ["which post ha", "who posted the most about ru", "how many sto", "top 5 stories", "most upvoted", "first story about", "what does hn"] {
+            let w: Vec<&str> = q.split(' ').collect();
+            assert!(starts_question(&w, true), "{q}");
+        }
+        for q in ["how to learn rust", "first contact", "top gun", "rust async", "most"] {
+            let w: Vec<&str> = q.split(' ').collect();
+            assert!(!starts_question(&w, true), "{q}");
         }
     }
 

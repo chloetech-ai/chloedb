@@ -435,13 +435,17 @@ function render(el, ctx) {
       const t = String(text);
       return t.toLowerCase().startsWith(typed) ? [t.slice(0, typed.length), h("b", {}, t.slice(typed.length))] : t;
     };
-    const go = (text) => () => { input.value = text; sugg.classList.remove("on"); search(text, true); };
+    // A question left open for its topic ("how many stories mention ") goes in the box to be finished.
+    const go = (text) => () => {
+      if (text.endsWith(" ")) { input.value = text; input.focus(); suggest(text); return; }
+      input.value = text; sugg.classList.remove("on"); search(text, true);
+    };
     const head = (t) => rows.push(h("div", { class: "hd" }, t));
     const qs = j.questions || [];
     if (qs.length) head("Ask");
     for (const t of qs) {
       suggs.push(go(t));
-      rows.push(h("div", { class: "it", onmousedown: go(t) }, h("span", { class: "q" }, "?"), h("span", { class: "t" }, done(t))));
+      rows.push(h("div", { class: "it", onmousedown: (e) => { e.preventDefault(); go(t)(); } }, h("span", { class: "q" }, "?"), h("span", { class: "t" }, done(t.endsWith(" ") ? `${t}…` : t))));
     }
     const ph = (j.phrases || []).slice(0, 5);
     if (ph.length) head(ph[0].fixed ? "Did you mean" : "Search");
