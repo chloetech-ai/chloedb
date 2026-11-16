@@ -37,6 +37,173 @@ data:
       echo "copied off the node to $D in $(( $(date +%s) - t0 )) s: $(du -sh "$D/latest" | cut -f1)"
     fi
     ls -1 /local/backup | grep '^n-' | sort -r | tail -n +3 | while read -r old; do rm -rf "/local/backup/$old"; done
+    # The copies went through the node's memory and pushed the database out
+    # of it (the search database is bigger than the node's memory): drop the
+    # copies' pages, then read the database's hot parts back in.
+    apk add --no-cache coreutils >/dev/null
+    find "/local/backup/$NAME" /vol 2>/dev/null -type f -exec dd if={} iflag=nocache count=0 status=none \;
+    if [ -n "${WARM_FILE:-}" ]; then cat "$WARM_FILE" > /dev/null; echo "read $WARM_FILE into memory"; fi
+    if [ -n "${WARM_URL:-}" ]; then
+      t1=$(date +%s); n=0
+      while IFS= read -r q; do
+        [ -n "$q" ] && curl -s -o /dev/null -m 60 -G "$WARM_URL/v1/search" --data-urlencode "q=$q" && n=$((n + 1))
+      done < /script/warm.txt
+      echo "warmed with $n searches in $(( $(date +%s) - t1 )) s"
+    fi
+  warm.txt: |
+    who writes most about graph neural networks
+    most cited papers on diffusion models
+    is mamba growing
+    LoRA vs QLoRA vs DoRA
+    surveys of LLM agents since 2024
+    how many papers on RLHF per year
+    what's hot in cs.IR
+    who introduced the transformer
+    reading list for recommender systems
+    sequential recommendation with code
+    black hole information paradox by Hawking
+    datasets for medical image segmentation
+    what's hot in sociology
+    what's hot
+    retrieval augmented generation for question answering
+    graph neural networks for molecular property prediction
+    sequential recommendation with transformers
+    speculative decoding to speed up LLM inference
+    LoRA parameter efficient fine-tuning
+    diffusion models for image super-resolution
+    reinforcement learning from human feedback reward models
+    mixture of experts routing
+    long context attention efficiency
+    vision language models hallucination
+    federated learning with differential privacy
+    neural radiance fields for dynamic scenes
+    gaussian splatting
+    contrastive learning of sentence embeddings
+    LLM agents that use tools
+    code generation benchmarks for large language models
+    state space models for sequence modeling
+    knowledge distillation for model compression
+    adversarial robustness of image classifiers
+    causal inference with machine learning
+    anomaly detection in time series
+    protein structure prediction with deep learning
+    dark matter direct detection with liquid xenon
+    gravitational wave parameter estimation
+    exoplanet atmospheres with JWST
+    topological insulators
+    quantum error correction surface code
+    variational quantum eigensolver
+    black hole information paradox
+    neutrino oscillations
+    superconductivity in twisted bilayer graphene
+    optimal transport in machine learning
+    stochastic gradient descent convergence for nonconvex problems
+    random matrix theory
+    sparse autoencoders for interpretability of language models
+    click-through rate prediction
+    cold start in recommender systems
+    speech recognition with self-supervised learning
+    autonomous driving motion planning
+    medical image segmentation with U-Net
+    open-source smaller comparison dialogue
+    c-means detection evidential community
+    brauer category categorification representations
+    active stereo multi-scale pattern
+    modelling limit surfaces dynamics
+    also learners few-shot bidirectional
+    applied double-well approximation modified
+    inaccessibility quantum probes schwarzschild
+    multiquark states spectrum hadronic
+    pairing fluctuations $\varepsilon$-iron magnetic
+    stochastic automata stability positive-utility
+    monotonic effects functions plant
+    emergence usmeg-eft gravity verlinde's
+    entropy geometry bulk cft
+    observations 160 gamma-ray host
+    system adaptive autonomous mental
+    uncertainty coronavirus bayesian daily
+    generation diversify degenerative model
+    delivery detection cardiac monitoring
+    matheuristic merge maximising net
+    gpt-generated responses empathy responsiveness
+    playing pandora learning policy
+    tasks robotic making assembly
+    matters unmixing solver machine
+    gradient-based integrating codegrad refinement
+    review technology development study
+    blowup time-depending 3-d smooth
+    problem $\mathbb{p}^1\times\mathbb{p}^1$ seshadri symplectic
+    moment closure approximations equation
+    outflows ubiquitous absorption quasar
+    localizing microparticles fast flash{\mu}
+    1/2 diamond mixed spins
+    fine-tuning manufacturing models retrieval-augmented
+    evaluation contrastive metric automated
+    convergence coverage learning time
+    computational framework autovarp inducibility
+    improved whisper verbatim miscue
+    data fast burst uncertainty
+    chain equilibrium fluctuation anharmonic
+    commercial decentralized version alternative
+    angular vacuum critical momenta
+    grid-connected storageless photovoltaic power
+    exception practices revisiting exception
+    vpn center interconnect enhanced
+    posture privacy-preserving synthetic pipeline
+    $z$--decays hadronic corrections $\alpha_s^4$
+    evaluation experimental extrinsic calibration
+    simulations star galaxy model
+    underactuated design system through
+    bursts fast gas radio
+    shannon source quantum theory
+    thermoelasticity two-scale phase known
+    social-climate climate opinion action
+    inverse scattering compton region-of-interest
+    charge axial multiplicative noether
+    rubin-lsst gaia candles period
+    fields tolerant filtering driven
+    lightning seamless learning deep
+    classes pseudodifferential operators bilinear
+    universe ultraviolet faint unveiling
+    behind anomalies s\mu\bar\mu$ nonleptonic
+    old afterlife age covid-19
+    detection derivative gaussian blob
+    platforms live migration science
+    detector neutron measuring gravitational
+    uncertainty seismic quantification bayesian
+    robustness models margin pathology
+    16.1 resonance partial 12c
+    learning mitigating supervision minimal
+    discs independent spanning completely
+    path weyl fermions integral
+    prediction aware model recourse
+    trace wrought benefits al-mg
+    adversarial point shape-invariant clouds
+    screen phase realistic multiple-scattering
+    incremental train deep models
+    practical inference version type
+    group metaplectic method applications
+    modules structured s2rms recurrent
+    trajectory passive reflections joint
+    topic multi-turn topicrefine joint
+    reinforcement learning comes practice
+    ac-network-informed electricity power markets
+    turning heat `oumuamua
+    vectorial enabled lasing momentum-space
+    detection approaches radiographic artificial
+    video diffusion synthesis video
+    element nanowire operated nanowire
+    mirror intrinsic categorical crepant
+    effects exoplanets extreme habitability
+    order perovskites cubic double
+    feature long-horizon learning goal-conditioned
+    object model support testing
+    graphical design error structures
+    segmentation image mask-free sketches
+    fast folded multiplicity list-decoding
+    media equations varying direction
+    stationary gases light cold
+    model migration development prediction
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -62,6 +229,7 @@ spec:
             env:
             - {name: SERVER, value: "http://arxiv-search.strata.svc:7700"}
             - {name: WHO, value: "search"}
+            - {name: WARM_URL, value: "http://arxiv-app.strata.svc:7860"}
             - {name: KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
             volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
           volumes:
@@ -93,6 +261,7 @@ spec:
             env:
             - {name: SERVER, value: "http://arxiv-graph.strata.svc:7700"}
             - {name: WHO, value: "graph"}
+            - {name: WARM_FILE, value: "/local/arxiv-graph.chloedb"}
             - {name: KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
             volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
           volumes:

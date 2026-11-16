@@ -18,7 +18,7 @@ spec:
       containers:
       - name: app
         image: ubuntu:24.04
-        command: ["/work/bin/chloedb-arxiv", "serve", "--strata", "http://arxiv-search.strata.svc:7700", "--graph", "http://arxiv-graph.strata.svc:7700", "--listen", "0.0.0.0:7860", "--live", "--public", "--per-minute", "600", "--llm-per-day", "300"]
+        command: ["/work/bin/chloedb-arxiv", "serve", "--strata", "http://arxiv-search.strata.svc:7700", "--graph", "http://arxiv-graph.strata.svc:7700", "--listen", "0.0.0.0:7860", "--live", "--live-every-hours", "2", "--public", "--per-minute", "600", "--llm-per-day", "300"]
         env:
         - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
         - {name: CHLOEDB_ARXIV_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}

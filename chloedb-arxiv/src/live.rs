@@ -105,7 +105,12 @@ pub async fn write(db: &Strata, graph: &Strata, records: &[Raw]) -> Result<(usiz
 pub async fn round(db: &Strata, graph: &Strata, live: &Live, from: Option<&str>) -> Result<usize, String> {
     let http = reqwest::Client::builder().user_agent("chloedb-arxiv/0.3 (OAI-PMH harvester; 3 s between requests)").timeout(Duration::from_secs(180)).build().map_err(|e| e.to_string())?;
     let kept = graph.query("SELECT val FROM ax_state WHERE id = 'oai'", Value::Null).await.ok().and_then(|r| r.first().map(|r| r.s("val")));
-    let since = from.map(str::to_string).or(kept).unwrap_or_else(|| (chrono::Utc::now() - chrono::Duration::days(3)).format("%Y-%m-%d").to_string());
+    // Two days before the last round's: a record can be dated the day before
+    // it shows (arXiv dates an announcement by its day in New York, and a
+    // round can run before that day's records are out), and writing a
+    // paper again changes nothing.
+    let back = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok().map(|d| (d - chrono::Duration::days(2)).format("%Y-%m-%d").to_string());
+    let since = from.map(str::to_string).or(kept.as_deref().and_then(back)).unwrap_or_else(|| (chrono::Utc::now() - chrono::Duration::days(3)).format("%Y-%m-%d").to_string());
     live.set("since", json!(since));
     live.set("running", json!(true));
     let mut url = format!("{OAI}?verb=ListRecords&metadataPrefix=arXivRaw&from={since}");
