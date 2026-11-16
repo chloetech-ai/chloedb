@@ -97,7 +97,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from Python</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/python.md">docs/chloedb/python.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.7, unreleased). The latest release is 0.3.6 (<a href="v0.3.6/index.html">its docs</a>); what is newer is marked "since 0.3.7".</p>
+      <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install">Install</a></li><li><a href="#a-database-in-your-process">A database in your process</a></li><li><a href="#writing">Writing</a></li><li><a href="#querying">Querying</a></li><li><a href="#queries-built-in-python">Queries built in Python</a></li><li><a href="#the-rank-log">The rank log</a></li><li><a href="#semantic-id-codebooks">Semantic-ID codebooks</a></li><li><a href="#next-items">Next items</a></li><li><a href="#sequence-models">Sequence models</a></li><li><a href="#a-server-from-python">A server from Python</a></li><li><a href="#search-on-the-device">Search on the device</a></li></ol></details>
     <div class="doc-body">
@@ -112,7 +112,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <pre data-lang="sh">pip install chloedb</pre>
 <p>If <code>import chloedb</code> raises an <code>ImportError</code> that calls it a placeholder, pip installed <code>chloedb</code> 0.0.x, which only held the name before 0.3.0 was published: <code>pip install --upgrade chloedb</code> replaces it. pip also falls back to it when no release has a wheel for your machine (an older glibc, say): <code>chloedb-server doctor</code> says which you have.</p>
 <p>The old name, <code>import strata</code>, still works for a release, with a <code>DeprecationWarning</code>; release 0.1.0 was published as <code>strata-db</code> and imports as <code>strata</code> only.</p>
-<p><span class="since unreleased">since 0.3.7 (unreleased)</span> <code>pip install "chloedb[server]"</code> also installs <a href="server.html#run-it"><code>chloedb-server</code></a>, the prebuilt server of the same release, which <a href="#a-server-started-from-python"><code>chloedb.serve()</code></a> starts.</p>
+<p><span class="since">since 0.3.7</span> <code>pip install "chloedb[server]"</code> also installs <a href="server.html#run-it"><code>chloedb-server</code></a>, the prebuilt server of the same release, which <a href="#a-server-started-from-python"><code>chloedb.serve()</code></a> starts.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -532,7 +532,7 @@ except chloedb.ChloeDBError as e:
         raise
     client.write(ops, idempotency_key=e.answer[&quot;idempotency_key&quot;])   # the rest, once</pre>
 <h3 id="a-server-started-from-python">A server started from Python<a class="anchor" href="#a-server-started-from-python" aria-label="Link to this section">#</a></h3>
-<p><span class="since unreleased">since 0.3.7 (unreleased)</span> <code>chloedb.serve(db=None, listen=None, token=None, args=(), binary=None, wait=60)</code> starts a chloedb-server on this machine and returns a <code>Client</code> of it, which stops the server when it is closed or its <code>with</code> block ends (and this Python process stops any it started when it ends). It is for a script, a notebook or a test that wants the server's API (the command center at the client's <code>url</code>, several processes on one database, a cluster's API before there is a cluster) without starting the program by hand:</p>
+<p><span class="since">since 0.3.7</span> <code>chloedb.serve(db=None, listen=None, token=None, args=(), binary=None, wait=60)</code> starts a chloedb-server on this machine and returns a <code>Client</code> of it, which stops the server when it is closed or its <code>with</code> block ends (and this Python process stops any it started when it ends). It is for a script, a notebook or a test that wants the server's API (the command center at the client's <code>url</code>, several processes on one database, a cluster's API before there is a cluster) without starting the program by hand:</p>
 <pre data-lang="python">import chloedb
 
 with chloedb.serve(&quot;books.chloedb&quot;) as db:      # the database is made if it does not exist
