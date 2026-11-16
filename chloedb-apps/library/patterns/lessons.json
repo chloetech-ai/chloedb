@@ -51,6 +51,20 @@
   "noun": {
    "about": "what one lesson is called",
    "default": "lesson"
+  },
+  "needs": {
+   "about": "an SQL query that gives a row when the person may open the lessons (a paid enrolment: SELECT id FROM enrolments WHERE owner_id = :user_id AND status = 'paid'); left out, the lessons are open"
+  },
+  "locked": {
+   "about": "what a person who may not open them yet is told",
+   "default": "The lessons open once you are enrolled."
+  },
+  "unlock": {
+   "about": "the view that unlocks them (enrolling, paying), opened from the locked note"
+  },
+  "unlockLabel": {
+   "about": "the label of the button to that view",
+   "default": "Enrol"
   }
  },
  "example": {
@@ -70,7 +84,11 @@
     "sql": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 200",
     "params": "{{params}}"
    },
-   "{{key}}_done": "=app.me() ? app.sql('SELECT {{lesson}} AS lesson FROM {{progress}} LIMIT 2000') : []"
+   "{{key}}_done": "=app.me().then(m => m ? app.sql('SELECT {{lesson}} AS lesson FROM {{progress}} LIMIT 2000') : [])",
+   "{{key}}_ok": {
+    "$when": "needs",
+    "$value": "=app.me().then(m => m ? app.sql({{needs|json}}) : [])"
+   }
   },
   "let": {
    "{{key}}_ids": "=new Set(({{key}}_done || []).map(d => String(d.lesson)))",
@@ -79,11 +97,34 @@
    "{{key}}_next": "={{key}}.find(l => !{{key}}_is(l)) || null",
    "{{key}}_num": "=l => {{key}}.indexOf(l) + 1",
    "{{key}}_word": "={{noun|json}}.charAt(0).toUpperCase() + {{noun|json}}.slice(1)",
-   "{{key}}_go": "=l => {{open|json}} ? app.open({{open|json}}, {id: l.id}) : app.insert({{progress|json}}, {{{lesson}}: l.id})"
+   "{{key}}_go": "=l => ({{needs|json}} && !(({{key}}_ok || []).length > 0)) ? app.toast({{locked|json}}) : {{open|json}} ? app.open({{open|json}}, {id: l.id}) : app.insert({{progress|json}}, {{{lesson}}: l.id})",
+   "{{key}}_open": {
+    "$when": "needs",
+    "$value": "=({{key}}_ok || []).length > 0"
+   }
   },
   "body": [
    {
     "h": "{{title}}"
+   },
+   {
+    "$when": "needs",
+    "if": "=!{{key}}_open",
+    "then": [
+     {
+      "card": [
+       {
+        "text": "{{locked}}"
+       },
+       {
+        "$when": "unlock",
+        "button": "{{unlockLabel}}",
+        "class": "primary",
+        "do": "=() => app.open({{unlock|json}})"
+       }
+      ]
+     }
+    ]
    },
    {
     "if": "={{key}}.length > 0",

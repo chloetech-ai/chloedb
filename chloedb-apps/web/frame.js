@@ -9,7 +9,7 @@
   const post = (msg) => parent.postMessage({ __sa: 1, ...msg }, '*');
   const rpc = (method, args) => new Promise((resolve, reject) => {
     const id = ++seq;
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve, reject, method });
     post({ kind: 'rpc', id, method, args });
   });
 
@@ -47,9 +47,27 @@
   };
   window.__sa_report = report;
   window.__sa_ready = () => post({ kind: 'ready' });
+  // Whether the screen shows its sign-in (a visitor signed out of a screen
+  // kept to signed-in people): the app's own page then shows no tabs.
+  let gatedNow = null;
+  window.__sa_gated = (on) => { if (gatedNow === !!on) return; gatedNow = !!on; post({ kind: 'gate', on: gatedNow }); };
+  // Where the screen's content runs across the frame (its #root, centred
+  // and narrower than a wide window): the app's bar and tabs line up with it.
+  let boundsNow = '';
+  window.__sa_bounds = () => {
+    const r = document.getElementById('root')?.getBoundingClientRect();
+    if (!r || !r.width) return;
+    const b = `${Math.round(r.left)},${Math.round(window.innerWidth - r.right)}`;
+    if (b === boundsNow) return;
+    boundsNow = b;
+    post({ kind: 'bounds', left: Math.round(r.left), right: Math.round(window.innerWidth - r.right) });
+  };
+  window.addEventListener('resize', () => window.__sa_bounds());
+  // A pick (below) is the builder's click, not a tap.
+  let pickingNow = false;
   // Every tap in the app is counted (the studio sends the count with the
   // next write): how many taps it takes to do something is a measure of use.
-  document.addEventListener('click', (e) => { if (e.isTrusted && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
+  document.addEventListener('click', (e) => { if (e.isTrusted && !pickingNow && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
   window.addEventListener('error', (e) => report(e.error || e.message));
   // A refusal no code caught is still said to the person, quietly.
   window.addEventListener('unhandledrejection', (e) => { if (e.reason && e.reason.refused && e.reason.message) app.toast(e.reason.message); report(e.reason); });
@@ -75,7 +93,16 @@
       const p = pending.get(m.id);
       if (!p) return;
       pending.delete(m.id);
-      if (m.error !== undefined) p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.transient ? { transient: true } : {}));
+      if (m.error !== undefined) {
+        // a rule's refusal ("Sorry, only 6 left") is kept for the button whose tap caused it (screen.js)
+        if (m.refused) window.__sa_refusal = m.error;
+        // An action (a call or a write) refused until someone signs in offers
+        // the sign-in sheet even when the screen's own code catches the
+        // refusal and only says it ("Could not book: Sign in first"). Reads
+        // never do: a page that reads what it may not shows what it can.
+        if (m.auth && ['call', 'insert', 'update', 'remove', 'pay'].includes(p.method) && typeof window.__sa_askSignIn === 'function') window.__sa_askSignIn();
+        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.auth ? { auth: true } : {}, m.transient ? { transient: true } : {}));
+      }
       else p.resolve(m.value);
     } else if (m.kind === 'design') {
       // A design is a block of CSS variables: swapping it redraws nothing.
@@ -98,6 +125,153 @@
     }
   });
 
+  // Picking an element (for a builder that edits a screen by clicking it):
+  // the page around the frame asks with {kind: 'pick', on}; while on, the
+  // frame outlines what is under the pointer, a click is a pick and not a
+  // tap, and the pick is posted as {kind: 'picked', el} with what the
+  // element is, shows and where it sits in the frame. {kind: 'pick-edit'}
+  // lets the words of the picked element be typed in place, posted back as
+  // {kind: 'pick-edited', ok, oldText, newText}; the frame always puts the
+  // element back as it was, since the screen's statement is what changes.
+  (() => {
+    let on = false, hover = null, lock = null, editing = null, box = null, lockBox = null, purpose = '';
+    const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+    const outline = (color) => {
+      const d = document.createElement('div');
+      d.setAttribute('data-sa-pick', '');
+      d.style.cssText = `position:fixed;pointer-events:none;z-index:2147483647;border:2px solid ${color};border-radius:3px;display:none;box-sizing:border-box`;
+      document.documentElement.append(d);
+      return d;
+    };
+    const place = (d, el) => {
+      if (!d) return;
+      if (!el || !el.isConnected) { d.style.display = 'none'; return; }
+      const r = el.getBoundingClientRect();
+      Object.assign(d.style, { display: 'block', left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+    };
+    const pickable = (el) => el && el.nodeType === 1 && !el.closest('[data-sa-pick]') && !['HTML', 'BODY', 'SCRIPT', 'STYLE'].includes(el.tagName);
+    const selector = (el) => {
+      const parts = [];
+      for (let n = el; n && n.nodeType === 1 && n !== document.body && parts.length < 8; n = n.parentElement) {
+        if (n.id && /^[A-Za-z][\w-]*$/.test(n.id)) { parts.unshift(`#${n.id}`); break; }
+        const sib = n.parentElement ? [...n.parentElement.children].filter((c) => c.tagName === n.tagName) : [];
+        parts.unshift(`${n.tagName.toLowerCase()}${sib.length > 1 ? `:nth-of-type(${sib.indexOf(n) + 1})` : ''}`);
+      }
+      return parts.join(' > ');
+    };
+    const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; };
+    const about = (el) => {
+      const leaf = el.children.length === 0 ? norm(el.textContent).slice(0, 4000) : '';
+      let occurrences = 0;
+      if (leaf) for (const n of document.querySelectorAll(el.tagName)) { if (!n.children.length && norm(n.textContent) === leaf) occurrences++; if (occurrences > 1) break; }
+      const cs = getComputedStyle(el);
+      const attrs = {};
+      for (const k of ['id', 'class', 'href', 'src', 'alt', 'aria-label', 'title', 'placeholder', 'role', 'type', 'name']) { const v = el.getAttribute(k); if (v) attrs[k] = v.slice(0, 500); }
+      return { tag: el.tagName.toLowerCase(), selector: selector(el), text: norm(el.innerText || el.textContent).slice(0, 240), leafText: leaf, textOccurrences: occurrences,
+        attrs, rect: rectOf(el), styles: { color: cs.color, backgroundColor: cs.backgroundColor, fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '') },
+        tokens: tokensOf(el) };
+    };
+    // Which of the design's color tokens the element's text and background
+    // are drawn with, so a builder changes the token, not the element.
+    // Text on the accent is told before white cards: the same white is both.
+    const TOKENS = ['accent', 'accent-fg', 'fg', 'bg', 'card'];
+    const tokensOf = (picked) => {
+      // Read from a copy beside it: the picked element is under the pointer,
+      // and its hover colors are not its tokens.
+      const el = picked.cloneNode(true);
+      el.style.cssText += ';position:absolute;visibility:hidden;pointer-events:none;left:-9999px';
+      picked.after(el);
+      const cs = getComputedStyle(el);
+      const probe = document.createElement('i');
+      probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+      document.documentElement.append(probe);
+      const value = {};
+      for (const k of TOKENS) { probe.style.color = `var(--${k})`; value[k] = getComputedStyle(probe).color; }
+      probe.remove();
+      const match = (c) => (c && !/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(c) ? TOKENS.find((k) => value[k] === c) || null : null);
+      // The background seen behind the element: its own, else the nearest one under it.
+      let back = null;
+      for (let n = el; n && n.nodeType === 1 && !back; n = n.parentElement) back = match(getComputedStyle(n).backgroundColor) || (/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(getComputedStyle(n).backgroundColor) ? null : 'other');
+      const out = { text: match(cs.color), background: back === 'other' ? null : back };
+      el.remove();
+      return out;
+    };
+    const moved = () => { place(box, null); place(lockBox, lock); if (lock) post({ kind: 'pick-rect', rect: lock.isConnected ? rectOf(lock) : null }); };
+    const onMove = (e) => { if (!editing && pickable(e.target) && e.target !== hover) { hover = e.target; place(box, hover); } };
+    const onClick = (e) => {
+      if (editing) { if (editing.el.contains(e.target)) return; e.preventDefault(); e.stopPropagation(); commit(); return; }
+      e.preventDefault(); e.stopPropagation();
+      if (!pickable(e.target)) return;
+      // A pick for a note is a spot, not a selection: nothing stays outlined.
+      if (purpose === 'note') { const r = e.target.getBoundingClientRect(); post({ kind: 'picked', purpose, el: about(e.target), point: { x: Math.round(e.clientX), y: Math.round(e.clientY) }, at: { nx: r.width ? (e.clientX - r.left) / r.width : 0.5, ny: r.height ? (e.clientY - r.top) / r.height : 0.5 } }); return; }
+      lock = e.target; place(lockBox, lock); place(box, null);
+      post({ kind: 'picked', el: about(lock) });
+    };
+    const onKey = (e) => {
+      if (editing && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (editing) cancel(); else post({ kind: 'pick-exit' }); }
+    };
+    const finish = () => { const { el, before, editable } = editing; editable == null ? el.removeAttribute('contenteditable') : el.setAttribute('contenteditable', editable); el.textContent = before; el.blur(); editing = null; moved(); };
+    const commit = () => {
+      if (!editing) return;
+      const { el, before, editId } = editing;
+      const next = norm(el.textContent);
+      finish();
+      post(next === norm(before) ? { kind: 'pick-edited', editId, ok: false, reason: 'unchanged' } : { kind: 'pick-edited', editId, ok: true, oldText: norm(before), newText: next });
+    };
+    const cancel = () => { if (!editing) return; const { editId } = editing; finish(); post({ kind: 'pick-edited', editId, ok: false, reason: 'cancelled' }); };
+    const start = () => {
+      if (on) return;
+      on = true; pickingNow = true; box = outline('rgba(0,113,227,.55)'); lockBox = outline('#0071e3');
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('click', onClick, true);
+      document.addEventListener('keydown', onKey, true);
+      window.addEventListener('scroll', moved, true);
+      window.addEventListener('resize', moved);
+    };
+    const stop = () => {
+      if (!on) return;
+      if (editing) finish();
+      on = false; pickingNow = false; hover = lock = null; box?.remove(); lockBox?.remove(); box = lockBox = null;
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', moved, true);
+      window.removeEventListener('resize', moved);
+    };
+    window.addEventListener('message', (e) => {
+      if (e.source !== parent) return;
+      const m = e.data;
+      if (!m || !m.__sa) return;
+      if (m.kind === 'pick') { if (m.on) { purpose = m.purpose === 'note' ? 'note' : ''; start(); } else stop(); }
+      // Where elements are now, by selector: for notes pinned to them.
+      else if (m.kind === 'locate') {
+        const rects = [];
+        for (const it of (Array.isArray(m.items) ? m.items : []).slice(0, 200)) {
+          let el = null;
+          try { el = document.querySelector(String(it.selector || '')); } catch { el = null; }
+          if (el && it.text && norm(el.textContent).slice(0, 200) !== String(it.text) && !norm(el.textContent).startsWith(String(it.text).slice(0, 40))) el = null;
+          rects.push({ id: String(it.id || ''), rect: el ? rectOf(el) : null });
+        }
+        post({ kind: 'located', rects });
+      }
+      else if (m.kind === 'pick-clear') { if (editing) finish(); lock = null; place(lockBox, null); }
+      else if (m.kind === 'pick-edit') {
+        const editId = m.editId;
+        if (!on || !lock || editing || lock.children.length) { post({ kind: 'pick-edited', editId, ok: false, reason: 'not-found' }); return; }
+        editing = { el: lock, before: lock.textContent, editId, editable: lock.getAttribute('contenteditable') };
+        lock.setAttribute('contenteditable', 'plaintext-only');
+        lock.focus({ preventScroll: true });
+        const range = document.createRange(); range.selectNodeContents(lock); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        lock.addEventListener('input', moved);
+      } else if (m.kind === 'pick-commit') commit();
+      else if (m.kind === 'pick-cancel') cancel();
+      else if (m.kind === 'pick-applied' && lock && !editing && norm(lock.textContent) === norm(m.oldText)) { lock.textContent = String(m.newText || ''); moved(); }
+    });
+    // A frame drawn again while picking (a new screen) asks to be told.
+    post({ kind: 'pick-ready' });
+  })();
+
   // A form never navigates the frame: views handle submit themselves.
   document.addEventListener('submit', (e) => e.preventDefault(), true);
 
@@ -110,8 +284,35 @@
   });
   // The frame may open no window; window.open asks the studio, which opens
   // it only while a click is fresh.
-  window.open = (url) => { try { post({ kind: 'link', href: new URL(String(url)).href }); } catch { /* not a full address */ } return null; };
+  // A payment's page (the address app.pay gives) opened when the click is no
+  // longer fresh (after a handler's awaits) is offered as the payment sheet,
+  // whose button is the tap the browser wants.
+  const payments = new Map();
+  window.open = (url) => {
+    const p = payments.get(String(url));
+    const fresh = !navigator.userActivation || navigator.userActivation.isActive;
+    if (p && !p.offered && !fresh && window.__sa_paySheet) { p.offered = true; window.__sa_paySheet(p); return null; }
+    try { post({ kind: 'link', href: new URL(String(url), SA.origin || location.href).href }); } catch { /* not an address */ }
+    return null;
+  };
 
+  // The app's locale (its plan's "locale": "es-ES"): every number, price and
+  // date drawn in the frame reads as there, the kit's and the app's own code
+  // alike, so one asking for the browser's locale (undefined) gets the app's.
+  const LOCALE = (() => { try { return SA.locale ? new Intl.NumberFormat(SA.locale).resolvedOptions().locale : undefined; } catch { return undefined; } })();
+  if (LOCALE) {
+    const wrap = (proto, name) => { const f = proto[name]; proto[name] = function (loc, opts) { return f.call(this, loc === undefined ? LOCALE : loc, opts); }; };
+    wrap(Number.prototype, 'toLocaleString');
+    for (const n of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) wrap(Date.prototype, n);
+    for (const n of ['NumberFormat', 'DateTimeFormat', 'PluralRules', 'RelativeTimeFormat', 'ListFormat']) {
+      const C = Intl[n];
+      if (typeof C !== 'function') continue;
+      const W = function (loc, opts) { return new C(loc === undefined ? LOCALE : loc, opts); };
+      W.prototype = C.prototype;
+      W.supportedLocalesOf = C.supportedLocalesOf;
+      Intl[n] = W;
+    }
+  }
   const pad = (n) => String(n).padStart(2, '0');
   // A calendar day ("2026-11-07") is that day where the person is, not UTC
   // midnight (which is the day before anywhere west of UTC).
@@ -131,7 +332,10 @@
     time(v) { return v ? asDate(v).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; },
     datetime(v) { return v ? `${fmt.date(v)}, ${fmt.time(v)}` : ''; },
     number(n) { return n === null || n === undefined ? '' : Number(n).toLocaleString(); },
-    money(n, currency = 'USD') { return n === null || n === undefined ? '' : Number(n).toLocaleString(undefined, { style: 'currency', currency }); },
+    // a count with its word, the word agreeing: count(1, 'flag') -> "1 flag", count(3, 'flag') -> "3 flags",
+    // count(2, 'person', 'people'); a word that does not take an s gives its plural
+    count(n, one, many) { const v = Number(n) || 0; const w = v === 1 ? String(one) : String(many || (/(s|x|z|ch|sh)$/.test(String(one)) ? `${one}es` : /[^aeiou]y$/.test(String(one)) ? `${String(one).slice(0, -1)}ies` : `${one}s`)); return `${v.toLocaleString()} ${w}`; },
+    money(n, currency = SA.currency || 'USD') { if (n === null || n === undefined || n === '') return ''; const v = Number(n); try { return v.toLocaleString(LOCALE, { style: 'currency', currency }); } catch { return v.toLocaleString(LOCALE); } },
   };
 
   // Files and map tiles come from the engine itself, by URL: the frame's
@@ -173,6 +377,8 @@
   };
   const app = Object.freeze({
     params: Object.freeze({ ...(SA.params || {}) }),
+    // the app's locale ("es-ES"), or undefined for the browser's
+    locale: LOCALE,
     view: SA.slug,
     // What this person may do with the app's data: null for its owner (all
     // of it), else a published app's choice for visitors: 'look' (read
@@ -180,9 +386,17 @@
     access: SA.access || null,
     // people: one account for every app on this engine
     me: () => rpc('me', []),
-    signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]),
-    signUp: (fields) => rpc('signUp', [fields || {}]),
-    signOut: () => rpc('signOut', []),
+    // (a sign-in or out is told to the page: 'sa-signed' on window, its user)
+    signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]).then((u) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: u })); return u; }),
+    // pay({table, id, description, email} | {amount, description}): a card
+    // payment on a hosted page; resolves to {url, mode, amount, currency}.
+    // Open the url from a tap (window.open(url)); the app never sees a card.
+    pay: (opts) => rpc('pay', [opts || {}]).then((r) => { const p = r && (r.payment || r); if (p && p.url) payments.set(String(p.url), p); return r; }),
+    // payNow(payment, note): a sheet with the payment's amount and a "Pay
+    // by card" button that opens its hosted page (the tap the browser wants)
+    payNow: (p, note) => (window.__sa_paySheet ? window.__sa_paySheet(p, note) : (p && p.url ? window.open(p.url) : null)),
+    signUp: (fields) => rpc('signUp', [fields || {}]).then((u) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: u })); return u; }),
+    signOut: () => rpc('signOut', []).then((r) => { window.dispatchEvent(new CustomEvent('sa-signed', { detail: null })); return r; }),
     people: () => rpc('people', []),
     // companies (workspaces) the engine keeps: rows scoped by :company_id are the current one's
     companies: () => rpc('companies', []),
@@ -201,7 +415,8 @@
     ask: (prompt, opts) => rpc('ask', [prompt, opts || {}]),
     fetch: (url, opts) => rpc('fetch', [String(url || ''), opts || {}]),
     tiles: `${origin}/api/tiles/{z}/{x}/{y}.png`,
-    sql: (sql, params) => rpc('sql', [sql, params || {}]),
+    // :today is this browser's day unless given (the engine fills it in too)
+    sql: (sql, params) => rpc('sql', [sql, /:today\b/.test(String(sql || '')) && (!params || params.today === undefined) ? { ...(params || {}), today: app.today() } : params || {}]),
     insert: (table, row) => rpc('insert', [table, row || {}]),
     update: (table, id, fields) => rpc('update', [table, id, fields || {}]),
     // remove(table, id, {undo: false}) for a remove the person undoes by
@@ -360,6 +575,103 @@
     });
   };
   window.lib = lib;
+
+  // A reference shows the row's name, never its id: where a page shows a
+  // text that is the id of a row of the app (a kid's "kid-1" on a chore, a
+  // company's "c2" on a deal), alone or between separators ("c2 · 9500"),
+  // the row's name (its table's naming column, SA.labels) shows instead.
+  // What the person types is left alone.
+  // And emphasis written as *words* (or **words**) anywhere a page draws
+  // text is drawn as emphasis, never as its asterisks.
+  (() => {
+    if (typeof MutationObserver === 'undefined') return;
+    const EM = /(^|[\s(\[“"'¿¡])\*{1,2}(?=\S)([^*\n]{1,80}?)(?<=\S)\*{1,2}(?=$|[\s.,;:!?)\]”"'])/;
+    const skip = (el) => !el || !!el.closest('input, textarea, select, script, style, [contenteditable], code, pre, .md');
+    const fix = (t) => {
+      if (!t.nodeValue || t.nodeValue.indexOf('*') < 0 || skip(t.parentElement)) return;
+      const m = t.nodeValue.match(EM);
+      if (!m) return;
+      const at = m.index + m[1].length;
+      const rest = t.splitText(at);
+      const after = rest.splitText(m[0].length - m[1].length);
+      const em = document.createElement('em');
+      em.className = 'sa-em';
+      em.textContent = m[2];
+      rest.replaceWith(em);
+      fix(after);
+    };
+    const sweep = (root) => {
+      if (!root) return;
+      if (root.nodeType === 3) { fix(root); return; }
+      if (root.nodeType !== 1 || root.textContent.indexOf('*') < 0) return;
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const all = [];
+      for (let n = w.nextNode(); n; n = w.nextNode()) all.push(n);
+      all.forEach(fix);
+    };
+    new MutationObserver((ms) => { for (const m of ms) { if (m.type === 'characterData') fix(m.target); else m.addedNodes.forEach(sweep); } })
+      .observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    document.addEventListener('DOMContentLoaded', () => sweep(document.body));
+  })();
+
+  (() => {
+    const specs = Array.isArray(SA.labels) ? SA.labels : [];
+    if (typeof MutationObserver === 'undefined') return;
+    let names = new Map();
+    let fetched = 0;
+    let fetching = null;
+    // (the app's people too: a column that keeps someone's account shows their name)
+    const load = () => fetching || (fetching = Promise.all([...specs.map((x) => rpc('sql', [`SELECT id, ${x.col} AS sa_name FROM ${x.table} LIMIT 2000`, {}]).catch(() => [])),
+      rpc('people', []).then((ps) => (Array.isArray(ps) ? ps.map((p) => ({ id: p.id, sa_name: p.name || p.email })) : [])).catch(() => [])])
+      .then((all) => {
+        const m = new Map();
+        // (every row id the page could show, for the drawn page's check)
+        const ids = new Set();
+        for (const rows of all) for (const r of Array.isArray(rows) ? rows : []) {
+          const id = r && r.id != null ? String(r.id) : '';
+          if (id.length >= 2 && !/^\d+$/.test(id)) ids.add(id);
+          const nm = r && r.sa_name != null ? String(r.sa_name).trim() : '';
+          // a number alone or one letter is never taken for an id
+          if (id.length >= 2 && !/^\d+$/.test(id) && nm && nm !== id) m.set(id, nm);
+        }
+        names = m; fetched = Date.now(); fetching = null;
+        window.__sa_rowIds = ids;
+        sweep(document.body);
+      }));
+    const SEP = /(\s+[·•|\/—–]\s+|,\s+)/;
+    const IDISH = /^[A-Za-z0-9][A-Za-z0-9_-]{1,40}$/;
+    let unknown = false;
+    const fix = (node) => {
+      const t = node.nodeValue;
+      if (!t || t.length > 400) return;
+      const parts = t.split(SEP);
+      let changed = false;
+      for (let i = 0; i < parts.length; i += 2) {
+        const core = parts[i].trim();
+        if (!core) continue;
+        const nm = names.get(core);
+        if (nm) { parts[i] = parts[i].replace(core, nm); changed = true; } else if (IDISH.test(core) && /\d/.test(core) && /[a-z]/i.test(core)) unknown = true;
+      }
+      if (changed) node.nodeValue = parts.join('');
+    };
+    const skip = (el) => !!el && !!el.closest && !!el.closest('input, textarea, select, script, style, [contenteditable], code, pre');
+    const sweep = (root) => {
+      if (!root || !names.size) return;
+      if (root.nodeType === 3) { if (!skip(root.parentElement)) fix(root); return; }
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (!skip(n.parentElement)) fix(n);
+    };
+    new MutationObserver((ms) => {
+      unknown = false;
+      for (const m of ms) {
+        if (m.type === 'characterData') sweep(m.target);
+        else for (const n of m.addedNodes) sweep(n);
+      }
+      // a row added since the names were read: read them again, now and then
+      if (unknown && Date.now() - fetched > 4000) load();
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    load();
+  })();
   // css(name, text): a component's stylesheet, added once.
   const styled = new Set();
   window.css = (name, text) => {

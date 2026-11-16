@@ -13,7 +13,7 @@ body.front #root { max-width: none; gap: 0; }
 /* sections */
 .fp-sec { padding-block: clamp(64px, 9vw, 128px); }
 .fp-sec:not(.tint) + .fp-sec:not(.tint) { padding-top: 0; }
-.fp-sec.tint { background: color-mix(in srgb, var(--fg) 3.5%, var(--bg)); }
+.fp-sec.tint { background: var(--band, color-mix(in srgb, var(--fg) 3.5%, var(--bg))); }
 .fp-sec > .fp-wrap { display: flex; flex-direction: column; gap: calc(var(--space) * 1.25); }
 .fp-head { display: flex; flex-direction: column; gap: 14px; align-items: center; text-align: center; margin-bottom: clamp(16px, 3vw, 40px); }
 .fp-head.left { align-items: flex-start; text-align: left; }
@@ -39,11 +39,17 @@ body.front #root { max-width: none; gap: 0; }
 }
 .fp-btn.primary { background: var(--accent); color: var(--accent-fg); box-shadow: 0 10px 28px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
 .fp-btn.primary:hover { background: color-mix(in srgb, var(--accent) 90%, var(--fg)); transform: translateY(-1px); box-shadow: 0 16px 36px -12px color-mix(in srgb, var(--accent) 75%, transparent); }
-.fp-btn.secondary { background: var(--fill); color: var(--fg); }
-.fp-btn.secondary:hover { background: color-mix(in srgb, var(--fg) 12%, var(--card)); }
+/* a secondary button is quieter than the main one, never faint: a clear
+   outline and its words in the page's own ink */
+.fp-btn.secondary { background: var(--btn2, color-mix(in srgb, var(--fg) 6%, var(--card))); color: var(--fg); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--fg) 28%, transparent); }
+.fp-btn.secondary:hover { background: var(--btn2-hover, color-mix(in srgb, var(--fg) 12%, var(--card))); }
 .fp-btn.link, .fp-btn.navlink { background: transparent; padding: .3em 0; box-shadow: none; color: var(--accent); font-weight: 500; border-radius: 4px; }
 .fp-btn.navlink { color: var(--fg); font-size: 15px; }
 .fp-btn.navlink:hover { background: transparent; text-decoration: underline !important; text-underline-offset: 3px; }
+/* a link drawn as a button element (an open or do action) stays a link: the
+   kit's button fill (a pale chip under each nav link) is not its look */
+:root .fp-btn:is(.navlink, .link) { background: transparent; box-shadow: none; border-color: transparent; }
+:root .fp-btn.navlink { padding-inline: 0; color: var(--fg); }
 .fp-btn.link:hover { background: transparent; text-decoration: underline !important; text-underline-offset: 3px; }
 .fp-chev { font-size: 1.25em; line-height: 0; transition: transform .25s var(--ease); }
 .fp-btn.link:hover .fp-chev { transform: translateX(3px); }
@@ -60,11 +66,16 @@ body.front #root { max-width: none; gap: 0; }
 }
 .fp-dark .fp-btn.primary { background: #fff; color: #0b0b0f; box-shadow: 0 10px 30px -10px rgba(0,0,0,.45); }
 .fp-dark .fp-btn.primary:hover { background: rgba(255,255,255,.9); }
-.fp-dark .fp-btn.secondary { background: rgba(255,255,255,.16); color: #fff; -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%); }
+.fp-dark .fp-btn.secondary { background: rgba(255,255,255,.16); color: #fff; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); -webkit-backdrop-filter: blur(14px) saturate(160%); backdrop-filter: blur(14px) saturate(160%); }
+/* over a photo a second button is filled solid enough to read on any photo, with an edge */
+.fp-hero.look-photo .fp-btn.secondary, .fp-band.look-photo .fp-btn.secondary { background: rgba(12, 12, 16, .62); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.72); }
+.fp-hero.look-photo .fp-btn.secondary:hover, .fp-band.look-photo .fp-btn.secondary:hover { background: rgba(12, 12, 16, .78); }
 .fp-dark .fp-btn.secondary:hover { background: rgba(255,255,255,.26); }
 .fp-dark .fp-btn.link { color: #fff; }
 .fp-dark .fp-eyebrow { color: rgba(255,255,255,.88); }
-.fp-dark .fp-em { background-image: linear-gradient(100deg, #fff, color-mix(in srgb, var(--g1) 45%, #fff) 50%, color-mix(in srgb, var(--g3) 45%, #fff)); }
+/* over a dark band or a photo the emphasised words stay near white: a tint,
+   never a mid tone the photo behind them swallows */
+.fp-dark .fp-em { background-image: linear-gradient(100deg, #fff, color-mix(in srgb, var(--g1) 22%, #fff) 50%, color-mix(in srgb, var(--g3) 22%, #fff)); }
 
 /* gradient: three soft lights drifting over the page, with a little grain */
 .fp-blobs { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
@@ -86,7 +97,7 @@ body.front #root { max-width: none; gap: 0; }
 .fp-mark { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, var(--g1), var(--g2) 55%, var(--g3)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); flex: none; }
 .fp-links { display: flex; gap: 22px; margin-left: auto; align-items: center; }
 .fp-nav-in > .fp-btn { padding: .55em 1.15em; font-size: 14.5px; }
-.fp-nav.solid { background: color-mix(in srgb, var(--bg) 76%, transparent); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); box-shadow: 0 1px 0 var(--line); }
+.fp-nav.solid { background: var(--nav-bg, color-mix(in srgb, var(--bg) 76%, transparent)); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); box-shadow: 0 1px 0 var(--line); }
 .fp-nav.over { margin-bottom: -64px; }
 .fp-nav.over.on-dark:not(.solid) { --fg: #fff; color: #fff; }
 .fp-nav.over.on-dark:not(.solid) .fp-btn.primary { background: #fff; color: #0b0b0f; box-shadow: none; }
@@ -106,6 +117,15 @@ body.front #root { max-width: none; gap: 0; }
   .fp-nav.open .fp-links { display: flex; position: absolute; top: 64px; left: 0; right: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 20px 18px;
     background: var(--bg); box-shadow: 0 18px 30px -18px rgba(0,0,0,.25); }
   .fp-nav.open .fp-links .fp-btn { font-size: 18px; padding: 10px 0; }
+}
+.fp-links .fp-menu-act { display: none; }
+/* a button the request asked to be big */
+.fp-btn.big { font-size: clamp(18px, 2.4vw, 22px); padding: .9em 1.9em; font-weight: 700; letter-spacing: -.01em; }
+@media (max-width: 760px) { .fp-actions .fp-btn.big { flex-basis: 100%; justify-content: center; } }
+@media (max-width: 430px) {
+  .fp-nav.tight .fp-nav-in > .fp-btn { display: none; }
+  .fp-nav.tight .fp-menu { margin-left: auto; }
+  .fp-nav.tight.open .fp-links .fp-menu-act { display: inline-flex; font-weight: 700; color: var(--accent); }
 }
 
 /* hero */
@@ -134,6 +154,13 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-hero.look-photo .fp-display { text-shadow: 0 2px 30px rgba(0,0,0,.3); }
 .fp-hero.look-photo .fp-display .fp-em { filter: drop-shadow(0 2px 18px rgba(0,0,0,.3)); }
 .fp-hero.look-photo .fp-lead, .fp-hero.look-photo .fp-eyebrow { color: rgba(255,255,255,.94); text-shadow: 0 1px 14px rgba(0,0,0,.45); }
+/* on a phone the words cover most of the photo, so the whole photo is
+   veiled evenly: a light or busy photo otherwise shows through the lead
+   and the second button */
+@media (max-width: 760px) {
+  .fp-hero.look-photo .fp-scrim, .fp-hero.look-photo .fp-scrim.left { background: linear-gradient(180deg, rgba(0,0,0,.7) 0%, rgba(0,0,0,.62) 38%, rgba(0,0,0,.64) 70%, rgba(0,0,0,.76) 100%); }
+  .fp-hero.look-photo .fp-lead { text-shadow: 0 1px 3px rgba(0,0,0,.5), 0 1px 14px rgba(0,0,0,.45); }
+}
 .fp-hero.look-plain > .fp-wrap, .fp-hero.look-gradient > .fp-wrap { padding-block: 140px 96px; }
 .fp-hero-shot { margin: 56px auto 0; max-width: 1080px; width: 100%; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) * 1.25); overflow: hidden; position: relative;
   box-shadow: 0 40px 100px -30px rgba(0,0,0,.45), 0 0 0 1px var(--line); animation: fp-shot 1.5s var(--ease) .45s both; }
@@ -166,9 +193,15 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-band-body .fp-head { margin-bottom: 4px; }
 .fp-band.left .fp-band-in, .fp-band.left .fp-band-body { align-items: flex-start; text-align: left; }
 .fp-band-body > .col { align-items: inherit; }
+/* A form in a band is a card of its own a hand's width: a centred band does
+   not shrink it to its labels, and its fields stand out of the band's tint. */
+.fp-band-body > .col:has(form) { align-self: stretch; }
+.fp-band-body form.wide { width: min(640px, 100%); margin-inline: auto; text-align: left; color: var(--fg); padding: clamp(20px, 3vw, 32px);
+  background: var(--card); border: 1px solid var(--card-border, var(--line)); border-radius: 18px; box-shadow: 0 24px 48px -28px rgba(16, 24, 40, .28); }
+.fp-band.left .fp-band-body form.wide { margin-inline: 0; }
 .fp-band.look-accent { background: linear-gradient(125deg, var(--accent), color-mix(in srgb, var(--g2) 85%, var(--accent)) 55%, color-mix(in srgb, var(--g3) 80%, var(--accent))); }
 .fp-band.look-dark { background: #08080b; }
-.fp-band.look-tint { background: color-mix(in srgb, var(--fg) 3.5%, var(--bg)); }
+.fp-band.look-tint { background: var(--band, color-mix(in srgb, var(--fg) 3.5%, var(--bg))); }
 .fp-band.look-photo .fp-scrim { background: linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.48)); }
 .fp-glow { position: absolute; left: 50%; top: 50%; width: 70vmax; height: 70vmax; translate: -50% -50%; z-index: -1; pointer-events: none;
   background: radial-gradient(circle, color-mix(in srgb, var(--g2) 46%, transparent), color-mix(in srgb, var(--g1) 18%, transparent) 38%, transparent 62%); filter: blur(30px);
@@ -214,6 +247,20 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-track > * { scroll-snap-align: start; }
 .fp-ctrl { display: flex; gap: 10px; justify-content: flex-end; }
 @media (max-width: 760px) { .fp-track { grid-auto-columns: 84%; gap: 14px; } }
+/* a short shelf on a phone: the cards stacked, every price and action in
+   view (two to a row left a card's quantity and button no room) */
+@media (max-width: 760px) {
+  .fp-carousel.cards.short .fp-track { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); overflow: visible; scroll-snap-type: none; gap: 14px; -webkit-mask-image: none; mask-image: none; }
+  .fp-carousel.cards.short .fp-ctrl { display: none; }
+}
+/* a short shelf on a wide screen: every card in view, wrapping on a narrow
+   computer screen; a long shelf fades at the edge it scrolls toward instead
+   of cutting a card off there */
+@media (min-width: 761px) {
+  .fp-carousel.cards.fit .fp-track { grid-auto-flow: row; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); overflow: visible; scroll-snap-type: none; }
+  .fp-carousel.cards.fit .fp-ctrl { display: none; }
+  .fp-carousel.cards:not(.fit) .fp-track { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); }
+}
 
 /* cards */
 .fp-card { background: var(--card); border-radius: calc(var(--radius) * 1.1); overflow: hidden; border: 1px solid var(--card-border); display: flex; flex-direction: column;
@@ -226,6 +273,7 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 .fp-card-pic img, .fp-card-pic .fp-ph { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 1s var(--ease); }
 .fp-card-pic .fp-ph { display: grid; place-items: center; }
 /* initials where a photo is missing: on a dark chip, so they read on any part of the gradient */
+.fp-card-pic .fp-ph.fp-ph-pattern { background-color: color-mix(in srgb, var(--accent) 10%, var(--card)); background-image: radial-gradient(color-mix(in srgb, var(--accent) 30%, transparent) 1.2px, transparent 1.6px), linear-gradient(135deg, transparent 0 60%, color-mix(in srgb, var(--accent) 14%, transparent) 60% 100%); background-size: 14px 14px, 100% 100%; }
 .fp-ph-init { font-size: clamp(2rem, 4vw, 3rem); font-weight: 600; letter-spacing: .02em; color: #fff; background: rgba(0,0,0,.58); padding: .12em .45em; border-radius: 14px; }
 .fp-card:hover .fp-card-pic img { transform: scale(1.06); }
 .fp-card-foot { margin-top: auto; padding-top: 8px; display: flex; align-items: center; gap: 12px; justify-content: space-between; }
@@ -360,9 +408,9 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
 @media (min-width: 761px) { .fp-step:not(:last-child)::after { content: ""; position: absolute; top: 22px; left: 58px; right: -20px; height: 2px; background: linear-gradient(90deg, var(--line), transparent); } }
 
 /* footer */
-.fp-footer { background: color-mix(in srgb, var(--fg) 3.5%, var(--bg)); border-top: 1px solid var(--line); padding-block: 64px 30px;
+.fp-footer { background: var(--band, color-mix(in srgb, var(--fg) 3.5%, var(--bg))); border-top: 1px solid var(--line); padding-block: 64px 30px;
   /* the footer's tint is darker than the page: its quiet words darker too, so they still read at 4.5:1 */
-  --muted: color-mix(in srgb, var(--fg) 74%, var(--bg)); }
+  --muted: var(--muted-band, color-mix(in srgb, var(--fg) 74%, var(--bg))); }
 .fp-foot-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr); gap: 48px; }
 .fp-foot-brand { display: flex; flex-direction: column; gap: 14px; max-width: 360px; }
 .fp-foot-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 28px; }
@@ -396,3 +444,76 @@ img.kb { animation: fp-kb calc(30s * var(--slow)) ease-in-out infinite alternate
   .fp-menu, .fp-round { min-width: 44px; }
   .fp-btn.link, .fp-btn.navlink, .fp-foot-col .fp-btn { padding-block: 10px; }
 }
+
+/* an event's card: its day as a calendar block, the next one in the accent */
+.fp-card.dated { flex-direction: row; align-items: stretch; }
+.fp-card.dated .fp-date { flex: none; width: 86px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 14px 6px;
+  background: var(--accent-tint, color-mix(in srgb, var(--accent) 10%, var(--card))); color: var(--accent-ink, var(--accent)); border-right: 1px solid var(--card-border); }
+.fp-date-m { font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.fp-date-d { font-family: var(--font-title); font-size: 40px; line-height: 1; font-weight: 800; letter-spacing: -.03em; color: var(--fg); }
+.fp-date-w { font-size: 12px; color: var(--muted); }
+.fp-track > .fp-card.dated:first-child .fp-date { background: var(--accent); color: var(--accent-fg, #fff); }
+.fp-track > .fp-card.dated:first-child :is(.fp-date-d, .fp-date-w) { color: inherit; }
+.fp-card.dated .fp-card-body { justify-content: center; }
+.fp-chip { align-self: flex-start; font-size: 12.5px; font-weight: 700; padding: .25em .7em; border-radius: 999px; background: var(--fill, color-mix(in srgb, var(--fg) 7%, var(--card))); color: var(--fg); }
+/* on a phone a shelf of events is a list down the page, the next one first */
+@media (max-width: 760px) {
+  .fp-carousel.cards:has(> .fp-track > .fp-card.dated) .fp-track { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); overflow: visible; scroll-snap-type: none; gap: 12px; }
+  .fp-carousel.cards:has(> .fp-track > .fp-card.dated) .fp-ctrl { display: none; }
+  .fp-card.dated .fp-date { width: 74px; }
+  .fp-date-d { font-size: 34px; }
+}
+
+/* what is no longer on offer says so: the chip in the danger tone, the card quieter */
+.fp-chip.out { background: var(--bad-tint, color-mix(in srgb, #c0352b 12%, var(--card))); color: #a52a21; }
+.fp-card.out .fp-price, .fp-card.out h3 { opacity: .6; }
+
+/* a type-led hero: the headline is the picture */
+.fp-hero.look-type > .fp-wrap { padding-block: 120px 72px; }
+.fp-hero.look-type .fp-display { font-size: clamp(48px, 9vw, 112px); line-height: .95; letter-spacing: -.04em; font-weight: 800; color: var(--fg); max-width: 14ch; }
+.fp-hero.look-type .fp-display .fp-em { background: none; -webkit-text-fill-color: currentColor; color: var(--accent); }
+.fp-hero.look-type .fp-lead { font-size: clamp(18px, 2.2vw, 22px); }
+@media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 88px 40px; } }
+
+/* a card's quantity beside its action (OFFERS QTY) */
+/* the foot wraps: on a narrow card the quantity and action go under the price */
+.fp-card-foot:has(.fp-qty) { flex-wrap: wrap; }
+.fp-card-act { display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
+.fp-card-act .fp-btn { white-space: nowrap; }
+.fp-qty { width: 4.2em; height: 40px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line, color-mix(in srgb, var(--fg) 18%, transparent)); background: var(--card); color: var(--fg); font: inherit; text-align: center; }
+
+/* The screen's own parts on a front page (a list, a table, a map, a section
+   of the kit) read at the page's scale, not the app's: their titles as the
+   page's section titles, their text and tables at reading size. */
+.screen.front .fp-sec :is(.section, .card) > h3, .screen.front .fp-sec .fp-wrap > :is(h2, h3) {
+  font-family: var(--font-title); font-size: clamp(26px, 3vw, 40px); line-height: 1.1; letter-spacing: -.025em; font-weight: 700;
+  text-transform: none; color: var(--fg); padding: 0; margin: 0 0 8px; text-align: center; text-wrap: balance; }
+.screen.front .fp-sec table { font-size: 16px; }
+.screen.front .fp-sec :is(td, th) { padding-block: 14px; }
+.screen.front .fp-sec td { color: var(--fg); }
+.screen.front .fp-sec th { font-size: 12.5px; }
+.screen.front .fp-sec .muted, .screen.front .fp-sec td.muted { color: color-mix(in srgb, var(--fg) 72%, var(--bg)); }
+/* a part that reveals as the page scrolls never stays faint for long, and
+   a window as tall as the page (a full-page capture) shows it all at once */
+.rv { opacity: .9; transform: translate3d(0, calc(var(--rv) * 14px), 0); transition-duration: .5s; }
+.rv-now .rv { transition: none !important; opacity: 1 !important; transform: none !important; }
+
+/* A hero never fills the first screen: the first part after it starts
+   above the fold (on a 1280 x 800 computer and a phone alike), so people
+   see there is more. Its height leaves a strip of the window below it, and
+   a type-led headline is sized by the window's height too. */
+.fp-hero.h-full { min-height: max(440px, calc(100svh - 150px)); }
+.fp-hero.h-tall { min-height: min(max(440px, 70vh), calc(100svh - 170px)); }
+.screen.front.layout-gallery .fp-hero.h-full, .screen.front.layout-gallery .fp-hero.h-tall { min-height: min(max(420px, 62vh), calc(100svh - 170px)); }
+.screen.front:is(.layout-split, .layout-tool, .layout-dashboard) .fp-hero.h-full { min-height: min(max(460px, 76vh), calc(100svh - 150px)); }
+.fp-hero > .fp-wrap { padding-block: clamp(88px, 13vh, 120px) clamp(48px, 8vh, 80px); }
+.fp-hero.look-type > .fp-wrap, .fp-hero.look-plain > .fp-wrap, .fp-hero.look-gradient > .fp-wrap { padding-block: clamp(84px, 12vh, 112px) clamp(40px, 7vh, 64px); }
+.fp-hero.look-type .fp-display { font-size: clamp(40px, min(8.5vw, 11vh), 104px); max-width: 16ch; }
+/* a type-led hero set to the left on a wide window keeps to a column, not
+   a strip of words beside an empty half */
+@media (min-width: 1100px) { .fp-hero.look-type > .fp-wrap:has(.fp-hero-text.left) { max-width: 1040px; } }
+@media (max-width: 760px) { .fp-hero.look-type > .fp-wrap { padding-block: 84px 36px; } .fp-hero.look-type .fp-display { font-size: clamp(36px, min(11vw, 7.5vh), 56px); } }
+
+/* What the app refused when a button was pressed, said under it. */
+.fp-said { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.fp-refused { font-size: 13px; line-height: 1.3; color: var(--bad, #b42318); max-width: 22ch; text-align: right; }

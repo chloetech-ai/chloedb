@@ -5,10 +5,117 @@
 // state changes. Values that start with "=" are expressions; the studio
 // compiles each one into a function before the frame loads (window.__SA_EXPR,
 // window.__SA_CODE), so the frame needs no eval.
+// How a table's numbers read, as plain functions (no page needed, so the
+// tests run them as they are): which columns are figures, which say a
+// change (coloured by sign), which add up to a total row, and which one
+// gets an inline bar.
+window.__sa_numbers = (() => {
+  // A figure from a value as data or as shown: 1200, "1,200", "$1,200.50",
+  // "-5.6%", "(300)", "−42 €".
+  const parseNum = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v !== 'string') return null;
+    let t = v.trim().replace(/−/g, '-');
+    if (!t || t.length > 24) return null;
+    let neg = false;
+    if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1); }
+    t = t.replace(/^[+]/, '');
+    if (t.startsWith('-')) { neg = !neg; t = t.slice(1); }
+    t = t.replace(/^(?:[$€£¥]|[A-Z]{3}\s?)/, '').replace(/(?:\s?(?:[$€£¥%]|[A-Z]{3}))$/, '').trim();
+    if (t.startsWith('-')) { neg = !neg; t = t.slice(1); }
+    if (!/^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(t)) return null;
+    const n = Number(t.replace(/,/g, ''));
+    return neg ? -n : n;
+  };
+  const NOT_FIGURE = /(^id$|_id$|\byear\b|phone|zip|postcode|sku|\bcode\b|^no$|#|invoice number|order number)/i;
+  const CHANGE = /(change|variance|\bvar\b|delta|diff|growth|\bvs\.?\b|versus|gain|swing|mom\b|yoy\b|±|trend|over budget|under budget)/i;
+  // Amounts that add up down a column; rates, prices and averages do not.
+  const ADDS = /(revenue|sales|cost|amount|total|spend|spent|expense|paid|owed|owing|due|invoiced|billed|balance|outstanding|income|profit|hours|fee|budget|actual|current|\d+\s*[-–]\s*\d+|over \d+|overdue|receivable|payable|tax|net|gross|value|subtotal|refund|collected|earned)/i;
+  const NOT_ADDS = /(price|rate|avg|average|mean|median|percent|pct|%|margin|ratio|score|rating|\bage\b|share|per |each|unit cost|unit price|days|min|max)/i;
+  const NUMERIC_FORMATS = ['money', 'number', 'percent', 'pct', 'hours', 'duration'];
+  // What each column is: {numeric, change, adds, money}. A column is a
+  // figure when its format says so or four in five of its values are
+  // numbers; a change when its name says so; it adds up when it is an
+  // amount (money or hours) named as one.
+  function kinds(cols, values) {
+    return cols.map((c, i) => {
+      const name = `${c.key || ''} ${c.label || ''}`;
+      const vs = (values[i] || []).filter((v) => v != null && v !== '');
+      const nums = vs.map(parseNum).filter((n) => n !== null);
+      const looksMoney = c.format === 'money' || (vs.length > 0 && vs.filter((v) => typeof v === 'string' && /[$€£¥]/.test(v)).length >= vs.length * 0.8);
+      const numeric = !NOT_FIGURE.test(name) && !c.badge && (NUMERIC_FORMATS.includes(c.format) || c.format === 'change' || (vs.length > 0 && nums.length >= vs.length * 0.8));
+      const pct = c.format === 'percent' || c.format === 'pct' || (vs.length > 0 && vs.every((v) => typeof v === 'string' && /%\s*$/.test(v)));
+      // a change is said by the column ("change": true, or "format": "change"), or by its name
+      const change = numeric && (c.change === true || c.format === 'change' || CHANGE.test(name));
+      const adds = numeric && !change && !pct && (looksMoney || c.format === 'hours') && ADDS.test(name) && !NOT_ADDS.test(name);
+      return { numeric, change, adds, money: numeric && looksMoney, pct, max: nums.length ? Math.max(...nums.map(Math.abs)) : 0, negative: nums.some((n) => n < 0) };
+    });
+  }
+  // The tone of a figure: a change up is good, down is bad; any other
+  // figure is only marked when it is below zero.
+  function tone(kind, v) {
+    const n = parseNum(v);
+    if (!kind || !kind.numeric || n === null || n === 0) return '';
+    if (kind.change) return n > 0 ? 'up' : 'down';
+    return n < 0 ? 'down' : '';
+  }
+  // The column that gets an inline bar: a change column (bars both ways),
+  // else the first amount that adds up, when the table has 3 to 40 rows.
+  function barColumn(ks, rows) {
+    if (rows < 3 || rows > 40) return -1;
+    const ch = ks.findIndex((k) => k.change && k.max > 0 && !k.pct);
+    if (ch >= 0) return ch;
+    const pc = ks.findIndex((k) => k.change && k.max > 0);
+    if (pc >= 0) return pc;
+    return ks.findIndex((k) => k.adds && k.max > 0 && !k.negative);
+  }
+  // The total of each column that adds up (null for the others), or null
+  // when no column does. given: true/false from the screen, or a list of keys.
+  function totals(cols, ks, values, given) {
+    if (given === false) return null;
+    const keys = Array.isArray(given) ? given : null;
+    const out = cols.map((c, i) => {
+      const take = keys ? keys.includes(c.key) : ks[i].adds;
+      if (!take) return null;
+      const nums = (values[i] || []).map(parseNum).filter((n) => n !== null);
+      return nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+    });
+    if (!out.some((v) => v !== null)) return null;
+    // Two rows are not worth adding up unless the screen asks.
+    if (given !== true && !keys && (values[0] || []).length < 3) return null;
+    return out;
+  }
+  // A number written short, for a chart's labels: 42150 -> 42.2K.
+  function short(n) {
+    const a = Math.abs(n);
+    const f = (x, u) => `${n < 0 ? '-' : ''}${x >= 100 ? Math.round(x) : Math.round(x * 10) / 10}${u}`;
+    return a >= 1e9 ? f(a / 1e9, 'B') : a >= 1e6 ? f(a / 1e6, 'M') : a >= 1e4 ? f(a / 1e3, 'K') : String(Math.round(n * 100) / 100);
+  }
+  // A row's name that is a month ("January 2026", "2026-01", "Jan 2026"):
+  // {mon, year}, for the leaf a phone list draws beside it.
+  const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  function monthOf(t) {
+    const x = String(t || '').trim();
+    let m = /^(\d{4})-(\d{2})$/.exec(x);
+    if (m && +m[2] >= 1 && +m[2] <= 12) return { mon: MONTHS[+m[2] - 1], year: m[1] };
+    m = /^([A-Za-z]{3})[a-z]*\.?,?\s+(\d{4})$/.exec(x);
+    if (m && MONTHS.includes(m[1].toLowerCase())) return { mon: m[1].toLowerCase(), year: m[2] };
+    // a month named alone ("Jan", "March")
+    m = /^([A-Za-z]{3})([a-z]*)\.?$/.exec(x);
+    const full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    if (m && MONTHS.includes(m[1].toLowerCase()) && (!m[2] || full.includes(x.toLowerCase().replace('.', '')))) return { mon: m[1].toLowerCase(), year: '' };
+    return null;
+  }
+  return { parseNum, kinds, tone, barColumn, totals, short, monthOf };
+})();
+
 (() => {
   const isExpr = (v) => v && typeof v === 'object' && !Array.isArray(v) && typeof v.$e === 'number' && Object.keys(v).length === 1;
   const OPT = (o) => (o && typeof o === 'object' ? { value: o.value ?? o.id ?? o.label, label: o.label ?? o.name ?? String(o.value) } : { value: o, label: String(o) });
   const human = (k) => String(k).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  // The app's people, asked once a page (a "person" field picks from them).
+  let peopleP = null;
+  const peopleOf = () => (peopleP ||= Promise.resolve(typeof app !== 'undefined' && app.people ? app.people() : []).then((x) => (Array.isArray(x) ? x : [])).catch(() => { peopleP = null; return []; }));
   // What a row is called: its name or title, else its first short text. A
   // button repeated on every row says which row it acts on ("Delete: Basil").
   const NAMES = ['name', 'title', 'label', 'subject', 'item', 'task', 'what', 'text'];
@@ -20,14 +127,54 @@
     return '';
   };
 
+  // A visitor's entry to a screen whose data is kept to signed-in people
+  // (spec.gate, set by the forge from the app's access): what the app is,
+  // what signing in gives, and the sign-in form. Returns the element.
+  const gateView = (app, gate) => {
+    const g = gate || {};
+    return h('div', { class: 'col screen gate' },
+      h('div', { class: 'gate-about' },
+        h('h1', null, String(g.title || 'Sign in')),
+        g.text ? h('p', { class: 'gate-text' }, String(g.text)) : null,
+        Array.isArray(g.points) && g.points.length ? h('ul', { class: 'gate-points' }, g.points.map((p) => h('li', null, String(p)))) : null),
+      h('div', { class: 'gate-form' }, typeof ui !== 'undefined' && ui.signIn ? ui.signIn({ title: 'Sign in', note: g.note || '' }) : null));
+  };
+  window.__sa_gateView = gateView;
+
   window.__sa_screen = async (root, app, spec) => {
+    // A members' screen a visitor opens: its sign-in entry, or, when the
+    // build kept example rows for it (gate.sample), the screen itself drawn
+    // with those rows, marked as examples, with the sign-in a tap away.
+    let sample = null;
+    if (spec && spec.gate && !spec.preview) {
+      const me = await Promise.resolve(app.me ? app.me() : null).catch(() => null);
+      if (!me) {
+        // (example rows that hold nothing are no preview: an empty page under a
+        // banner promising examples reads as broken, so the sign-in shows instead)
+        const rows = spec.gate.sample && typeof spec.gate.sample === 'object' && !Array.isArray(spec.gate.sample) ? spec.gate.sample : null;
+        if (rows && Object.values(rows).some((v) => Array.isArray(v) && v.length)) sample = rows;
+        else { root.replaceChildren(gateView(app, spec.gate)); window.__sa_gated?.(true); return; }
+      }
+    }
     const E = window.__SA_EXPR || [];
     const SRC = window.__SA_EXPR_SRC || [];
     const CODE = window.__SA_CODE || [];
     let state = {};
     let data = {};
     let lets = {};
+    // The signed-in person ({id, name, email, role}) or null, known before
+    // the screen is worked out: expressions read it as "me". app.me() is a
+    // promise, so in an expression (which cannot wait) it also carries the
+    // person's fields once they are known: app.me().name reads right.
+    // (Once a load has asked, app.me() in an expression answers from it.)
+    let me = null;
+    let meAsked = false;
+    const meOf = () => Promise.resolve(app.me ? app.me() : null).catch(() => null);
+    // (app is frozen, so a Proxy may not answer for it: a frozen copy instead)
+    const appS = Object.freeze({ ...app, me: () => (meAsked ? Object.assign(Promise.resolve(me), me || {}) : meOf()) });
     let drawing = false;
+    let refused = false;
+    let gated = false;
     let again = false;
     const forms = new Map();
     const reported = new Set();
@@ -52,6 +199,7 @@
       return out;
     };
     const mentions = (v, res) => exprIds(v).some((i) => res.some((re) => re.test(String(SRC[i] || ''))));
+    const dataReadsMe = mentions(spec.data || {}, [/(^|[^.\w$])me\b/]);
     const resultsFor = (key) => {
       const k = String(key).replace(/[^A-Za-z0-9_$]/g, '');
       if (!k) return undefined;
@@ -102,17 +250,68 @@
       if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = val(x, s, `${where}.${k}`); return o; }
       return v;
     };
-    const scope = (extra) => ({ ...data, ...lets, data, state, set, refresh, app, ui, lib, h, svg, fmt: app.fmt, params: app.params, today: app.today(), ...(extra || {}) });
+    const scope = (extra) => ({ ...data, ...lets, data, state, set, refresh, app: appS, me, ui, lib, h, svg, fmt: app.fmt, params: app.params, today: app.today(), ...(extra || {}) });
 
     // A handler: run it, then fetch the data again (writes show at once).
-    const run = async (fn, args, where) => {
+    // What a tap was refused, by the handler's path: said under its button
+    // until the next tap, not only in a toast that is gone in seconds (a
+    // handler that catches the refusal itself still gets it said).
+    const refusals = new Map();
+    // Sign-in on demand: an action the engine refuses until someone signs in
+    // (401) opens a sign-in sheet over the screen at that moment, and once
+    // they are in, the action runs again, so no screen needs a sign-in form
+    // up front. Closing the sheet leaves things as they were.
+    let signing = null;
+    const askSignIn = () => signing || (signing = new Promise((resolve) => {
+      let up = false;
+      const close = (ok) => { sheet.remove(); signing = null; resolve(ok); };
+      const box = h('div', { class: 'sa-sheet-box card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Sign in' });
+      const sheet = h('div', { class: 'sa-sheet', onclick: (e) => { if (e.target === sheet) close(false); } }, box);
+      const paint = () => {
+        const email = h('input', { type: 'email', autocomplete: 'email', required: true, placeholder: 'you@example.com', 'aria-label': 'Email' });
+        const name = up ? h('input', { autocomplete: 'name', placeholder: 'Your name', 'aria-label': 'Name' }) : null;
+        const pass = h('input', { type: 'password', required: true, autocomplete: up ? 'new-password' : 'current-password', 'aria-label': 'Password', placeholder: up ? 'At least 8 characters' : '' });
+        const err = h('p', { class: 'err', role: 'alert' });
+        const go = h('button', { class: 'primary', type: 'submit' }, up ? 'Create account and go on' : 'Sign in and go on');
+        box.replaceChildren(h('h3', null, up ? 'Create an account' : 'Sign in to go on'), h('p', { class: 'muted small' }, 'This needs an account. Sign in, and what you started carries on.'),
+          h('form', { class: 'col', onsubmit: async (e) => {
+            e.preventDefault(); err.textContent = ''; go.disabled = true;
+            try { if (up) await app.signUp({ email: email.value, name: name.value, password: pass.value, keep: true }); else await app.signIn({ email: email.value, password: pass.value, keep: true }); close(true); } catch (x) { err.textContent = x.message; go.disabled = false; }
+          } }, h('label', null, 'Email', email), name ? h('label', null, 'Name', name) : null, h('label', null, 'Password', pass), err, go),
+          h('p', { class: 'small muted' }, up ? 'Have an account? ' : 'New here? ', h('button', { type: 'button', class: 'link inline', onclick: () => { up = !up; paint(); } }, up ? 'Sign in' : 'Create an account')),
+          h('button', { type: 'button', class: 'ghost small', onclick: () => close(false) }, 'Not now'));
+        setTimeout(() => email.focus(), 0);
+      };
+      paint();
+      document.body.append(sheet);
+    }));
+    window.__sa_askSignIn = askSignIn;
+    // A payment to make now (app.payNow, after app.pay): its amount, what is
+    // done so far, and a button that opens its hosted page from a tap.
+    window.__sa_paySheet = (p, note) => {
+      if (!p || !p.url) return;
+      let amount = `${p.amount} ${p.currency || ''}`.trim();
+      try { amount = Number(p.amount).toLocaleString(undefined, { style: 'currency', currency: p.currency || 'USD' }); } catch { /* as it is */ }
+      const box = h('div', { class: 'sa-sheet-box card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pay' });
+      const sheet = h('div', { class: 'sa-sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, box);
+      box.replaceChildren(h('h3', null, note ? String(note) : 'One step left'), h('p', { class: 'muted small' }, `Pay ${amount} by card on a secure page.${p.mode === 'test' ? ' Test mode: no card is charged.' : ''}`),
+        h('button', { class: 'primary', type: 'button', onclick: () => { window.open(p.url); sheet.remove(); } }, `Pay ${amount} by card`),
+        h('button', { type: 'button', class: 'ghost small', onclick: () => sheet.remove() }, 'Later'));
+      document.body.append(sheet);
+    };
+    const run = async (fn, args, where, again = true) => {
+      refusals.delete(where);
+      window.__sa_refusal = null;
       try {
         const r = typeof fn === 'function' ? fn(...args) : fn;
         if (r && typeof r.then === 'function') await r;
       } catch (e) {
+        if (e && e.auth && again && await askSignIn()) return run(fn, args, where, false);
         if (e && e.transient) app.toast('No answer from the app just now. Try again in a moment.');
-        else { if (!(e && e.refused)) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); }
+        else { if (!(e && (e.refused || e.auth))) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message; }
       }
+      if (window.__sa_refusal) refusals.set(where, String(window.__sa_refusal));
+      window.__sa_refusal = null;
       await refresh();
     };
     const handler = (v, s, where) => {
@@ -149,10 +348,15 @@
     }
 
     async function load() {
+      // Asked beside the data, waited for first only when a data entry reads it.
+      const mine = preview ? Promise.resolve(null) : meOf();
+      if (dataReadsMe) { me = await mine; meAsked = !preview; }
       const s = scope();
       const entries = Object.entries(spec.data || {});
       // A preview has no app to ask yet: its data is empty.
       if (preview) { data = Object.fromEntries(entries.map(([name]) => [name, []])); return; }
+      // Example rows for a visitor: nothing is asked of the app.
+      if (sample) { data = Object.fromEntries(entries.map(([name]) => [name, Array.isArray(sample[name]) ? sample[name] : []])); me = null; meAsked = true; return; }
       const out = await Promise.all(entries.map(async ([name, q]) => {
         const where = `data.${name}`;
         try {
@@ -172,11 +376,16 @@
           // Nobody answered (the network, the engine restarting): what was
           // shown stays, and the data is asked for again shortly.
           if (e && e.transient) { missed = true; return data[name]; }
-          report(fail(where, e));
-          return [];
+          // Rows only a signed-in person may read: the screen asks them to sign in.
+          if (/^Sign in first/.test(String(e && e.message))) { refused = true; return []; }
+          report(fail(where, e)); return [];
         }
       }));
       data = Object.fromEntries(entries.map(([name], i) => [name, out[i] ?? []]));
+      me = await mine; meAsked = !preview;
+      // A front page stays public: what a visitor may not read stays out of it, and no wall hides the storefront.
+      gated = refused && !isFront && !me;
+      refused = false;
       retryLoad(missed);
     }
     // After a read nobody answered: again in 2 s, then 4, 8... up to 30 s,
@@ -209,7 +418,17 @@
 
     // ---- blocks
     const blocks = (list, s, path) => (Array.isArray(list) ? list : list == null ? [] : [list]).map((b, i) => block(b, s, `${path}[${i}]`));
-    const T = (v, s, where) => { const x = val(v, s, where); return x == null ? '' : String(x); };
+    // A text an expression works out from data that is not there (signed
+    // out, a call refused, a row missing) says nothing rather than "NaN
+    // lessons left" or "undefined": what is missing is never shown as words.
+    const T = (v, s, where) => {
+      const x = val(v, s, where);
+      if (x == null) return '';
+      if (typeof x === 'number' && !Number.isFinite(x)) return '';
+      const str = String(x);
+      if (str !== v && /\bNaN\b|\bundefined\b|\[object Object\]/.test(str)) return '';
+      return str;
+    };
 
     function block(b, s, path) {
       try {
@@ -236,11 +455,26 @@
             let v = k.of !== undefined ? (() => { const r = (data[k.of] || [])[0]; return r ? (r.v !== undefined ? r.v : Object.values(r)[0]) : null; })() : k.value;
             if (k.of !== undefined && v == null) v = 0;
             const raw = v;
-            if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
-            return { ...k, raw, shown: v == null ? '–' : String(v) };
+            if (k.format === 'money' && v != null) v = moneyOf(v, Number.isInteger(num(v)));
+            else if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
+            // "$980.00" reads as "$980": cents only when there are some.
+            return { ...k, raw, shown: v == null ? '–' : String(v).replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') };
           });
-          if (lookIs() !== 'plain' && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return bold() ? hero(ks, s, path) : summary(ks); }
-          return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: zero(k) ? 'kpi zero' : 'kpi', 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
+          if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
+          // Summary cards: the screen's first numbers lead it, the first of
+          // them the largest; a number that needs doing (overdue, owed...)
+          // in the bad tone, a change coloured by its sign.
+          const first = heroAt === null || heroAt === path;
+          if (first) heroAt = path;
+          // one number in the alarm color: the first that needs doing
+          let alarmed = false;
+          const kpiTone = (k) => {
+            if (zero(k)) return '';
+            if (URGENT.test(String(k.label || ''))) { if (alarmed) return ''; alarmed = true; return ' attn'; }
+            const t = NUM.tone(NUM.kinds([{ key: '', label: String(k.label || ''), change: k.change === true }], [[k.raw]])[0], k.raw);
+            return t ? ` ${t}` : '';
+          };
+          return h('div', { class: `kpis${lookIs() !== 'plain' ? ' sumcards' : ''}${first ? ' first' : ''}`, 'data-n': String(ks.length) }, ks.map((k) => h('div', { class: `kpi${zero(k) ? ' zero' : ''}${kpiTone(k)}`, 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted hint' }, k.hint) : null)));
         }
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
@@ -273,7 +507,11 @@
 
     function chips(b, s, path) {
       const key = b.chips;
-      return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(OPT).map((o) =>
+      // a yes/no option (true, false) says what it means by its column ("Paid",
+      // "Not paid"), and is kept as a word, so "no" is a choice, not "all"
+      const col = typeof b.column === 'string' && b.column ? human(b.column).replace(/^is /i, '') : null;
+      const yesNo = (o) => (typeof o === 'boolean' ? { value: String(o), label: col ? (o ? cap(col) : `Not ${col.toLowerCase()}`) : (o ? 'Yes' : 'No') } : o);
+      return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(yesNo).map(OPT).map((o) =>
         h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; const changed = !off && state[key] !== o.value; set({ [key]: off ? null : o.value }); if (changed) trackFilter(key, o.value); } }, cap(o.label))));
     }
 
@@ -283,7 +521,21 @@
       const label = b.label ? T(b.label, s, path) : null;
       let el;
       if (type === 'select') {
-        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) trackFilter(key, e.target.value); } }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
+        // What the choice shows is what it holds: with nothing chosen it
+        // starts on the row the screen was opened for (a value of its params
+        // among the options), or shows a blank, never an option it does not hold.
+        const opts = (val(b.options, s, path) || []).map(OPT);
+        const cur = String(state[key] ?? '');
+        let blank = false;
+        if (!opts.some((o) => String(o.value) === cur)) {
+          const given = Object.values(app.params || {}).map(String);
+          const pick = cur === '' ? opts.find((o) => given.includes(String(o.value))) : null;
+          if (pick) queueMicrotask(() => { if (String(state[key] ?? '') === '') set({ [key]: pick.value }); });
+          else blank = !opts.some((o) => String(o.value) === '');
+        }
+        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) trackFilter(key, e.target.value); } },
+          blank ? h('option', { value: '', selected: true }, b.placeholder ? T(b.placeholder, s, path) : '—') : null,
+          opts.map((o) => h('option', { value: o.value, selected: cur === String(o.value) }, o.label)));
       } else if (type === 'checkbox') {
         el = h('input', { type: 'checkbox', checked: !!state[key], onchange: (e) => set({ [key]: e.target.checked }) });
       } else {
@@ -309,7 +561,8 @@
       } }, T(b.button, s, path));
       const who = rowName(s.__row);
       if (who && btn.textContent.trim().length <= 24) btn.setAttribute('aria-label', `${btn.textContent.trim() || 'Open'}: ${who}`);
-      return btn;
+      const said = refusals.get(`${path}.do`);
+      return said ? h('div', { class: 'col btn-said' }, btn, h('p', { class: 'refused', role: 'alert' }, said)) : btn;
     }
 
     // A form keeps its element (and what is typed) across redraws; it is made
@@ -327,7 +580,10 @@
       const editing = b.edit !== undefined ? val(b.edit, s, `${path}.edit`) : null;
       const open = !!state[key] || !!(editing && editing.id);
       const label = b.submit !== undefined ? T(b.submit, s, path) : `Add ${human(b.form || '').replace(/s$/, '')}`;
-      return h('div', { class: `fold${b.fold === true ? '' : ' phone'}${open ? ' open' : ''}` },
+      // A form of four fields or more over a list folds on a computer too:
+      // the list is the screen, adding is a button over it.
+      const everywhere = b.fold === true || (b.fold === undefined && listing && n >= 4);
+      return h('div', { class: `fold${everywhere ? '' : ' phone'}${open ? ' open' : ''}` },
         h('button', { class: 'primary fold-open', type: 'button', 'aria-expanded': String(open), onclick: () => set({ [key]: true }) }, label),
         el,
         open && !(editing && editing.id) ? h('button', { class: 'ghost fold-close', type: 'button', onclick: () => set({ [key]: false }) }, 'Cancel') : null);
@@ -351,6 +607,7 @@
         if (t === 'checkbox') return el.checked;
         if (t === 'number' || t === 'rating') return el.value === '' ? null : Number(el.value);
         if (t === 'tags') return el.value.split(',').map((x) => x.trim()).filter(Boolean);
+        if (t === 'people') return [...el.selectedOptions].map((o) => o.value).filter(Boolean);
         if (t === 'datetime') return el.value ? new Date(el.value).toISOString() : null;
         if (t === 'file') return el.__fileId || (editing ? editing[f.name] : null) || null;
         return el.value === '' ? null : el.value;
@@ -377,7 +634,7 @@
       const wide = inCol ? fields.length > 1 || fields.some((f) => f.type === 'textarea' || f.type === 'file') : fields.length > 3 || fields.some((f) => f.type === 'textarea' || f.type === 'file');
       // A control a placeholder cannot name (a date, a select...) gets a
       // label; in a one-line form, then, every field does, so they line up.
-      const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select'].includes(f.type || 'text');
+      const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select', 'person', 'people'].includes(f.type || 'text');
       const labelAll = !inCol && !wide && fields.length > 1 && fields.some(named);
       const make = (f) => {
         const t = f.type || 'text';
@@ -386,6 +643,28 @@
         let el;
         if (t === 'textarea') el = h('textarea', { name: f.name, placeholder: ph, required: !!f.required, rows: f.rows || 3 }, v ?? '');
         else if (t === 'select') { el = h('select', { name: f.name, required: !!f.required }); fillSelect(el, f, s, v); }
+        // One of the app's people (who signed up to it), kept by id: the
+        // column that ties a row to a person's account.
+        else if (t === 'person' || t === 'people') {
+          // "people": several of them, kept as a list of ids (a keyword[] column)
+          const many = t === 'people';
+          const had0 = many ? new Set((Array.isArray(v) ? v : v ? [v] : []).map(String)) : null;
+          el = many ? h('select', { name: f.name, multiple: true, size: 4 }) : h('select', { name: f.name, required: !!f.required }, h('option', { value: v ?? '' }, v ? '…' : f.placeholder || '—'));
+          const box = el;
+          peopleOf().then((ps) => {
+            const opts = ps.map((p) => ({ value: String(p.id), label: p.name && p.email && p.name !== p.email ? `${p.name} (${p.email})` : p.name || p.email || String(p.id) }));
+            if (many) {
+              const keep = box.__touched ? new Set([...box.selectedOptions].map((o) => o.value)) : had0;
+              box.replaceChildren(...opts.map((o) => h('option', { value: o.value, selected: keep.has(o.value) }, o.label)));
+              box.size = Math.min(6, Math.max(2, opts.length));
+              return;
+            }
+            const had = box.value || v;
+            box.replaceChildren(...(f.required ? [] : [h('option', { value: '' }, f.placeholder || '—')]), ...opts.map((o) => h('option', { value: o.value }, o.label)));
+            if (had != null && opts.some((o) => o.value === String(had))) box.value = String(had);
+          });
+          if (many) box.addEventListener('change', () => { box.__touched = true; });
+        }
         else if (t === 'checkbox') el = h('input', { type: 'checkbox', name: f.name, checked: !!v });
         else if (t === 'tags') el = h('input', { name: f.name, placeholder: ph || 'tags, comma separated', value: Array.isArray(v) ? v.join(', ') : v ?? '' });
         else if (t === 'rating') el = h('select', { name: f.name }, h('option', { value: '' }, '—'), [1, 2, 3, 4, 5].map((n) => h('option', { value: n, selected: Number(v) === n }, '★'.repeat(n))));
@@ -421,6 +700,7 @@
         Object.assign(row, val(b.set || {}, cur, `${path}.set`));
         for (const f of fields) if (f.required && (row[f.name] === null || row[f.name] === '')) { app.toast(`${f.label || human(f.name)} is needed`); return; }
         saveBtn.disabled = true;
+        el.querySelector(':scope > .refused')?.remove();
         try {
           const stored = editing && editing.id ? await app.update(tableName, editing.id, row) : await app.insert(tableName, row);
           entry.touched = 0;
@@ -429,7 +709,14 @@
           if (state[`__fold:${path}`]) set({ [`__fold:${path}`]: false });
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
           await run(typeof after === 'function' ? after : null, [stored], `${path}.after`);
-        } catch (err) { app.toast(err.message); report(fail(`${path} (${tableName})`, err)); } finally { saveBtn.disabled = false; }
+        } catch (err) {
+          // an add that needs a member: sign in now, then the form sends again (what was typed stays)
+          if (err && err.auth && !el.__signedIn && await askSignIn()) { el.__signedIn = true; saveBtn.disabled = false; el.requestSubmit(); return; }
+          app.toast(err.message);
+          // said in the form too, which keeps what was typed, so it can be put right
+          el.append(h('p', { class: 'refused', role: 'alert' }, String(err.message || err)));
+          if (!(err && err.refused)) report(fail(`${path} (${tableName})`, err));
+        } finally { saveBtn.disabled = false; }
       } }, wide ? [] : fields.map(make));
       if (wide) {
         // Each section (the fields after a {"section"} heading, or all of
@@ -470,11 +757,22 @@
     const dayOf = (v) => (v == null || v === '' ? null : Date.parse(`${String(v).slice(0, 10)}T00:00:00Z`));
     const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
     const two = (n) => String(n).padStart(2, '0');
+    const NUM = window.__sa_numbers;
+    // "$5,300.00" reads as "$5,300" (an amount of whole units).
+    const noCents = (t) => (typeof t === 'string' && /[$€£¥]/.test(t) ? t.replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1') : t);
+    // Money as a person writes it: no cents on whole amounts ($42,150).
+    const moneyOf = (v, whole) => {
+      const n = num(v);
+      if (n == null) return v == null ? '' : String(v);
+      if (!whole || !Number.isInteger(n)) return app.fmt.money(n);
+      try { return n.toLocaleString((window.__SA && window.__SA.locale) || undefined, { style: 'currency', currency: (window.__SA && window.__SA.currency) || 'USD', maximumFractionDigits: 0, minimumFractionDigits: 0 }); } catch { return app.fmt.money(n); }
+    };
     const FORMAT = {
       date: (v) => app.fmt.date(v), datetime: (v) => app.fmt.datetime(v), time: (v) => app.fmt.time(v), ago: (v) => app.fmt.ago(v),
       money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(num(v) == null ? v : Math.round(num(v) * 100) / 100),
       percent: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 100)}%`), pct: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10}%`),
       hours: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10} h`),
+      change: (v) => (num(v) == null ? '' : `${num(v) > 0 ? '+' : ''}${app.fmt.number(Math.round(num(v) * 100) / 100)}`),
       duration: (v) => { const m = num(v); if (m == null) return ''; const t = Math.round(m); return t < 60 ? `${t} min` : `${Math.floor(t / 60)} h ${two(t % 60)}`; },
       clock: (v) => { const x = num(v); if (x == null) return ''; const t = Math.round(x); const h = Math.floor(t / 3600); return h ? `${h}:${two(Math.floor(t / 60) % 60)}:${two(t % 60)}` : `${Math.floor(t / 60)}:${two(t % 60)}`; },
       days: (v) => {
@@ -490,8 +788,8 @@
     // A badge's color from what its word means (paid, late, waiting, new...);
     // a column may name them itself: "badge": {"shipped": "ok", "lost": "bad"}.
     const TONES = {
-      ok: /^(paid|done|complete[d]?|yes|active|ok|okay|approved|accepted|delivered|ready|confirmed|present|won|live|published|available|resolved|success|passed|good|in stock|healthy|on track|finished|kept|enabled|true|✓|returned|received|fulfilled|signed)$/,
-      bad: /^(late|overdue|no|failed|fail|cancell?ed|rejected|out|out of stock|lost|absent|declined|blocked|error|urgent|expired|unpaid|critical|missing|broken|disabled|false|off track|bounced|damaged|needs repair|lost|refunded)$/,
+      ok: /^(up|rising|growing|ahead|paid|done|complete[d]?|yes|active|ok|okay|approved|accepted|delivered|ready|confirmed|present|won|live|published|available|resolved|success|passed|good|in stock|healthy|on track|finished|kept|enabled|true|✓|returned|received|fulfilled|signed)$/,
+      bad: /^(down|falling|late|overdue|no|failed|fail|cancell?ed|rejected|out|out of stock|lost|absent|declined|blocked|error|urgent|expired|unpaid|critical|missing|broken|disabled|false|off track|bounced|damaged|needs repair|lost|refunded)$/,
       warn: /^(due|waiting|pending|low|low stock|maybe|partial|partly paid|in progress|doing|preparing|review|in review|tentative|soon|on hold|hold|reorder|draft|stale|warning|busy|sent|fair|worn|out now|rented|on loan)$/,
       info: /^(new|planned|scheduled|todo|to do|open|booked|invited|queued|next|info)$/,
     };
@@ -520,27 +818,66 @@
       };
       // More than three columns is a list of cards on a phone (kit.css).
       const heads = cols.map((c) => c.label ?? human(c.key || ''));
-      if (phone.matches && lookIs() !== 'plain') return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cell, s, path);
-      return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
-        h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
+      // (a column of whole amounts reads the same on a phone as on a computer:
+      // "28 €", never "28,00 €" on one and "28 €" on the other)
+      if (phone.matches && lookIs() !== 'plain') {
+        const wholeMoney = cols.map((c, i) => c.format === 'money' && typeof fns[i] !== 'function' && rows.every((r) => r[c.key] == null || r[c.key] === '' || Number.isInteger(Number(r[c.key]))));
+        const cellP = (c, fn, r) => { const i = cols.indexOf(c); return i >= 0 && wholeMoney[i] && r[c.key] != null && r[c.key] !== '' && !c.badge ? moneyOf(r[c.key], true) : cell(c, fn, r); };
+        return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cellP, s, path);
+      }
+      // The figures: right aligned, a change coloured by its sign, one
+      // column with an inline bar, and a total row for the amounts.
+      const rawOf = (c, i, r) => { const fn = fns[i]; const v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key]; return v instanceof Node ? null : v; };
+      const values = cols.map((c, i) => rows.map((r) => { try { return rawOf(c, i, r); } catch { return null; } }));
+      const ks = NUM.kinds(cols.map((c, i) => ({ ...c, label: heads[i] })), values);
+      const barAt = b.bars === false ? -1 : NUM.barColumn(ks, rows.length);
+      // (total: true, false or the keys to add up; an expression may say which)
+      const asked = b.total !== undefined ? val(b.total, s, `${path}.total`) : b.totals !== undefined ? val(b.totals, s, `${path}.totals`) : undefined;
+      const sums = NUM.totals(cols, ks, values, asked === null ? undefined : asked);
+      const whole = cols.map((c, i) => c.format === 'money' && values[i].every((v) => v == null || v === '' || Number.isInteger(Number(v))));
+      const shown = (c, i, r) => (whole[i] && (typeof fns[i] !== 'function') && r[c.key] != null && r[c.key] !== '' ? moneyOf(r[c.key], true) : cell(c, fns[i], r));
+      const figure = (i, v, raw) => {
+        const k = ks[i];
+        if (!k.numeric || v instanceof Node) return v;
+        const t = NUM.tone(k, raw);
+        let text = t === 'up' && k.change && typeof v === 'string' && !/^[+]/.test(v) ? `+${v}` : v;
+        if (cents0[i] && typeof text === 'string') text = text.replace(/^([^\d]*[\d,]+)\.00(?=\D*$)/, '$1');
+        if (i !== barAt) return t ? h('span', { class: `fig ${t}` }, text) : text;
+        const n = NUM.parseNum(raw);
+        const pct = n === null || !k.max ? 0 : Math.min(100, (Math.abs(n) / k.max) * 100);
+        const two = k.change || k.negative;
+        return h('span', { class: `figbar${two ? ' two' : ''}` },
+          h('span', { class: 'nbar', 'aria-hidden': 'true' }, h('i', { class: n < 0 ? 'neg' : 'pos', style: `width:${two ? pct / 2 : pct}%` })),
+          h('span', { class: t ? `fig ${t}` : 'fig' }, text));
+      };
+      const titleAt = cols.findIndex((c, i) => !ks[i].numeric);
+      // a column of whole amounts written with cents ("$4,500.00") drops them
+      const cents0 = cols.map((c, i) => ks[i].numeric && values[i].every((v) => v == null || v === '' || (typeof v === 'string' ? !/\.\d*[1-9]\d*\D*$/.test(v) : Number.isInteger(Number(v)))));
+      const foot = sums ? h('tfoot', null, h('tr', { class: 'total' }, cols.map((c, i) => {
+        if (sums[i] !== null) return h('td', { class: 'num', 'data-label': heads[i] }, c.format === 'money' || ks[i].money ? moneyOf(sums[i], whole[i] || Number.isInteger(sums[i])) : app.fmt.number(sums[i]));
+        return h('td', { 'data-label': heads[i] }, i === (titleAt >= 0 ? titleAt : 0) ? (b.totalLabel ? T(b.totalLabel, s, path) : 'Total') : '');
+      }), acts.length ? h('td') : null)) : null;
+      return h('div', { class: 'tablewrap', style: 'overflow-x:auto' }, h('table', { class: [cols.length > 3 ? 'stack' : '', sums ? 'has-total' : ''].filter(Boolean).join(' ') || null },
+        h('thead', null, h('tr', null, heads.map((x, i) => h('th', { class: ks[i].numeric ? 'num' : null }, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
           cols.map((c, i) => {
-            const v = cell(c, fns[i], r);
+            const v = shown(c, i, r);
             // A tick in a row is a 44 px target named by its row (kit.css).
             if (v instanceof HTMLInputElement && v.type === 'checkbox') {
               if (!v.getAttribute('aria-label')) v.setAttribute('aria-label', `${heads[i] || 'Done'}: ${rowName(r) || ''}`.replace(/: $/, ''));
               return h('td', { class: 'tick', 'data-label': heads[i] }, h('label', { class: 'tap' }, v));
             }
-            return h('td', { 'data-label': heads[i], class: v === '' ? 'blank' : null }, v);
+            return h('td', { 'data-label': heads[i], class: [v === '' ? 'blank' : '', ks[i].numeric ? 'num' : '', i === titleAt ? 'lead-cell' : ''].filter(Boolean).join(' ') || null }, v === '' ? (ks[i].change ? h('span', { class: 'muted', title: 'Nothing before it to compare with' }, 'n/a') : v) : figure(i, v, rawOf(c, i, r)));
           }),
           // More than two steps: the row's next step as a button, the rest
           // in its menu (as on a phone), not a line of words on every row.
           acts.length > 2 ? h('td', { class: 'right acts' }, (() => { const { main, more } = rowActions(acts, r, rowName(r), s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`); return h('span', { class: 'rc-end' }, main, more); })())
-          : acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
+          : acts.length ? h('td', { class: 'nowrap right' }, acts.filter((a) => applies(a, r, s, path)).map((a) => {
             const label = T(a.label, s, path);
             const who = rowName(r);
             return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
-          })) : null)))));
+          })) : null))),
+        foot));
     }
 
     // ---- the bold look
@@ -591,13 +928,15 @@
       const badge = cols.findIndex((c) => c.badge);
       const numeric = cols.map((c, i) => {
         if (i === tick || i === badge || NOT_FIGURE.test(name(c, i))) return false;
-        if (['money', 'number', 'percent', 'pct', 'hours', 'duration'].includes(c.format)) return true;
+        if (['money', 'number', 'percent', 'pct', 'hours', 'duration', 'change'].includes(c.format)) return true;
         const vs = rows.map((r) => raw(c, i, r)).filter((v) => v != null && v !== '');
-        return vs.length > 0 && vs.filter(isNum).length >= vs.length * 0.8;
+        return vs.length > 0 && vs.filter((v) => isNum(v) || NUM.parseNum(v) !== null).length >= vs.length * 0.8;
       });
       const title = cols.findIndex((c, i) => i !== tick && i !== badge && !numeric[i]);
       const ref = cols.findIndex((c, i) => numeric[i] && (HALF.test(name(c, i)) || FULL.test(name(c, i))));
-      const fig = cols.findIndex((c, i) => numeric[i] && i !== ref);
+      // the number that matters: an amount of money before a count
+      const money = cols.findIndex((c, i) => numeric[i] && i !== ref && (c.format === 'money' || rows.every((r) => { const v = raw(c, i, r); return v == null || v === '' || (typeof v === 'string' && /[$€£¥]/.test(v)); })));
+      const fig = money >= 0 ? money : cols.findIndex((c, i) => numeric[i] && i !== ref);
       const half = ref >= 0 && HALF.test(name(cols[ref], ref));
       return { raw, tick, badge, numeric, title, ref, fig, half };
     }
@@ -612,15 +951,17 @@
     // short: names as they are, numbers and dates with their column's name
     // ("Reorder at 200").
     function rowParts(R, r, cols, fns, heads, cell) {
-      const text = (i) => { const v = cell(cols[i], fns[i], r); return v instanceof Node ? v.textContent : String(v ?? ''); };
+      const text = (i) => { const v = cell(cols[i], fns[i], r); return noCents(v instanceof Node ? v.textContent : String(v ?? '')); };
       const state = R.badge >= 0 ? cell(cols[R.badge], fns[R.badge], r) : null;
       const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
       const sub = cols.map((c, i) => {
         if (i === R.tick || i === R.badge || i === R.title || i === R.fig) return null;
-        const t = text(i).trim();
+        let t = text(i).trim();
         if (!t) return null;
+        // a change says its sign, as the table's column does ("+$5,400")
+        if (R.numeric[i] && (c.change === true || c.format === 'change') && (NUM.parseNum(R.raw(c, i, r)) || 0) > 0 && !/^\+/.test(t)) t = `+${t}`;
         return R.numeric[i] || c.format ? figPhrase(heads[i], t) : t;
-      }).filter(Boolean).slice(0, 4);
+      }).filter(Boolean).slice(0, phone.matches ? 2 : 4);
       return { text, state, tone, sub };
     }
     // A row's actions: the next step (the first action that does not
@@ -648,7 +989,28 @@
         window.addEventListener('scroll', () => { for (const o of document.querySelectorAll('details.rc-more[open]')) o.open = false; }, { passive: true, capture: true });
       }
     }
+    // A row's actions that apply to it: one that sets columns ("sets", from
+    // ACTION ... SET) is left off a row that has those values already (no
+    // Mark paid on a paid row), and one with "when" only where it holds.
+    const sameVal = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean' ? String(a) === String(b) : String(a ?? '') === String(b ?? ''));
+    // what an action sets, said ("sets") or, for screens compiled before it
+    // was, read from its code when that is app.update(table, row.id, {...})
+    const setsOf = (a) => {
+      if (a.sets && typeof a.sets === 'object') return a.sets;
+      // the expression's source: "=..." as written, or {"$e": n} once compiled
+      const src = typeof a.do === 'string' ? a.do.replace(/^=/, '') : a.do && a.do.$e !== undefined ? String(SRC[a.do.$e] || '') : '';
+      const m = /^\s*row\s*=>\s*app\.update\("[^"]+",\s*row\.id,\s*(\{[^{}]*\})\)\s*$/.exec(src);
+      if (!m) return null;
+      try { return JSON.parse(m[1]); } catch { return null; }
+    };
+    function applies(a, r, s, path) {
+      const sets = setsOf(a);
+      if (sets && Object.keys(sets).length && Object.entries(sets).every(([k, v]) => sameVal(r[k], v === '@today' ? app.today() : v))) return false;
+      if (a.when !== undefined) { try { const w = val(a.when, s, `${path}.when`); return typeof w === 'function' ? !!w(r) : !!w; } catch { return true; } }
+      return true;
+    }
     function rowActions(acts, r, who, s, path, mainClass, editByTap = false) {
+      acts = acts.filter((a) => applies(a, r, s, path));
       const label = (a) => T(a.label, s, path);
       const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
       const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
@@ -695,7 +1057,7 @@
         groups.splice(0, groups.length, { key: '', tone: '', items });
         for (const it of items) { const st = it.text(R.badge).trim().replace(/^[-–—]+$/, ''); if (st && !it.sub.some((x) => x.toLowerCase() === st.toLowerCase())) it.sub = [cap(st), ...it.sub].slice(0, 4); }
       }
-      const initials = (t) => t.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+      const initials = (t) => t.split(/\s+/).filter((w) => /^\p{L}/u.test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
       // a row named by its day ("Nov 8, 2026", "2026-11-08") gets a calendar
       // leaf, the month over the day, rather than initials like "N8"
       const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -727,11 +1089,19 @@
           const open = onRow ? () => run(onRow, [r], `${path}.onRow`) : tap;
           const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
           const day = needs ? null : dayOf(name);
+          // a row named by its month alone ("Jan") is not shown its month again as a leaf
+          const month = needs || day || /^\p{L}{3,9}\.?$/u.test(name.trim()) ? null : NUM.monthOf(name);
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
+            : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, month.year ? h('small', null, `’${month.year.slice(2)}`) : null, h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
-            : h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, initials(name) || GLYPH[tone] || '•');
+            // a row named by a proper name ("Fern", "Bramble & Co") keeps its
+            // initials, its state the cell's color; never "1D" for "1-30 days":
+            // a row named otherwise shows its state's glyph, or nothing
+            : /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))*$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, initials(name) || GLYPH[tone] || '•')
+            : tone ? h('span', { class: `rc-icon t-${tone}`, 'aria-hidden': 'true' }, GLYPH[tone] || '•')
+            : null;
           const end = main || (figText && pointed && !lead ? h('span', { class: 'rc-val' }, figText) : null);
-          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}`,
+          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}${icon ? '' : ' noicon'}`,
             onclick: open ? (e) => { if (!e.target.closest('button, summary, input, label, a')) open(); } : null },
             icon,
             h('div', { class: 'rc-name' }, h('div', { class: 'rc-title' }, name), lead || sub.length ? h('div', { class: 'rc-sub' }, lead, lead && sub.length ? ' · ' : null, sub.join(' · ')) : null),
@@ -854,42 +1224,95 @@
       if (typeof make !== 'function') throw new Error('the code block does not parse');
       const render = make();
       if (typeof render !== 'function') throw new Error('the code block defines no render(root, ctx)');
-      const box = h('div');
-      const ctx = { state, set, refresh, data: { ...data, ...lets }, app, ...data, ...lets };
+      const box = h('div', { class: 'code-box' });
+      const ctx = { state, set, refresh, params: app.params, today: app.today(), data: { ...data, ...lets }, app, ...data, ...lets };
       Promise.resolve().then(() => render(box, ctx)).catch((e) => { report(fail(path, e)); box.replaceChildren(h('div', { class: 'small', style: 'color: var(--bad)' }, `This part of the screen failed: ${e.message}`)); });
       return box;
     }
 
     // A front page (spec.page "front") is drawn edge to edge, its parts in
     // sections; its blocks work in any screen.
-    const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope }) : null;
-    const isFront = spec.page === 'front' && !!front;
+    const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope, refused: (where) => refusals.get(where) || null }) : null;
+    const isFront = (spec.page === 'front' || (!spec.page && Array.isArray(spec.body) && spec.body.some((b) => b && typeof b === 'object' && b.nav !== undefined))) && !!front;
     if (isFront) document.body.classList.add('front');
     // The screen's page structure (engine/quality.mjs LAYOUTS): a class the
     // kit draws (kit.css, front.css), and for a working screen its parts
     // arranged: the title and numbers as its head, then the screen's groups
     // (each starts at a heading or a row of numbers) placed as the layout says.
-    const LAYOUTS = ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool'];
+    const LAYOUTS = ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool', 'report'];
     const layout = LAYOUTS.includes(spec.layout) ? spec.layout : null;
     if (layout) { document.body.classList.add(`layout-${layout}`); document.documentElement.dataset.layout = layout; }
     const flatNodes = (x) => (Array.isArray(x) ? x.flatMap(flatNodes) : x instanceof Node ? [x] : []);
-    const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
+    const headLike = (el) => el.nodeType === 1 && (el.matches('h1, h2, .say, .kpis, .hero-band, .page-head') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2')));
     function arrange(els) {
-      const list = flatNodes(els);
-      if (!layout || list.length < 2) return list;
+      // Numbers given as several rows of one or two, one after another, are
+      // one row of summary cards.
+      const list = [];
+      // a block that only adds a stylesheet is no part of the page's structure
+      const quiet = [];
+      for (const el of flatNodes(els)) {
+        if (el.nodeType === 1 && ((el.children.length && [...el.children].every((c) => c.tagName === 'STYLE')) || (!list.length && el.matches('.code-box') && !el.childNodes.length))) { quiet.push(el); continue; }
+        const prev = list[list.length - 1];
+        if (prev && prev.nodeType === 1 && el.nodeType === 1 && prev.matches('.kpis.sumcards') && el.matches('.kpis.sumcards') && prev.children.length + el.children.length <= 4) {
+          prev.append(...el.children);
+          prev.dataset.n = String(prev.children.length);
+        } else list.push(el);
+      }
+      if (!layout || list.length < 2) return [...quiet, ...list];
+      // a report: its title and the day it was prepared, then a numbered
+      // section at each heading after it (kit.css numbers them)
+      if (layout === 'report') {
+        const isHeading = (el) => el.nodeType === 1 && (el.matches('h1, h2, h3') || (el.matches('.row') && !!el.querySelector(':scope > h1, :scope > h2, :scope > h3')));
+        let i = 0;
+        const head = [];
+        if (isHeading(list[0])) head.push(list[i++]);
+        while (i < list.length && list[i].nodeType === 1 && list[i].matches('p')) head.push(list[i++]);
+        head.push(h('p', { class: 'report-date' }, `Prepared ${new Date(app.today() + 'T12:00:00Z').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}`));
+        const secs = [];
+        for (; i < list.length; i++) {
+          if (!secs.length || (isHeading(list[i]) && secs.at(-1).length)) secs.push([]);
+          secs.at(-1).push(list[i]);
+        }
+        // (a heading that numbers itself, "1. Revenue", keeps its own number)
+        const ownNum = (el) => el.nodeType === 1 && /^\s*\d+[.)]\s/.test(el.textContent || '');
+        return [...quiet, h('div', { class: 'lay-head' }, head), ...secs.map((g) => h('div', { class: `lay-group report-sec${isHeading(g[0]) ? '' : ' unnamed'}${isHeading(g[0]) && ownNum(g[0]) ? ' own-num' : ''}` }, g))];
+      }
       const head = [];
       let i = 0;
       while (i < list.length && (headLike(list[i]) || (list[i].nodeType === 1 && list[i].matches('p') && head.length))) head.push(list[i++]);
       const groups = [];
       for (; i < list.length; i++) {
-        if (!groups.length || (headLike(list[i]) && groups.at(-1).length)) groups.push([]);
+        // a group starts at a heading, a row of numbers, or a titled section
+        // (its heading inside it: what it titles never leaves it)
+        // (an ask panel is a part of its own: it heads the column beside)
+        const own = (el) => el.nodeType === 1 && (el.matches('section.section, .sa-ask') || !!el.querySelector(':scope > .sa-ask'));
+        if (!groups.length || ((headLike(list[i]) || own(list[i])) && groups.at(-1).length)) groups.push([]);
         groups.at(-1).push(list[i]);
       }
+      // A group of controls alone (a heading over a week's arrows, a filter
+      // row) leads the part after it: as a column of its own it would be a
+      // strip beside an empty column.
+      const MAIN = 'table, form, .card, .code-box, ul, ol, .list, .kpis, canvas, svg, img, [class*="sa-"]';
+      for (let k = 0; k < groups.length - 1; k++) {
+        const g = groups[k];
+        if (g.every((el) => el.nodeType !== 1 || (!el.matches(MAIN) && !el.querySelector(MAIN)))) { groups[k + 1].unshift(...g); groups.splice(k, 1); k--; }
+      }
       const box = (cls, kids) => h('div', { class: cls }, kids);
-      const top = head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [];
+      const top = [...quiet, ...(head.length ? [box(`lay-head${layout === 'hero' ? ' lay-hero' : ''}`, head)] : [])];
       if (!groups.length) return top;
       const cells = groups.map((g, k) => box(`lay-group lay-g${k}`, g));
-      if (layout === 'split' && cells.length > 1) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
+      // A wide table (four columns or more) or a board never shares a row: in a column
+      // beside another part it is cut off at its right while the other
+      // leaves a hole under it. It takes the page's width, the narrower
+      // parts the split above it.
+      // (a board of columns is as wide: its columns scroll out of a half page)
+      const wide = (c) => [...c.querySelectorAll('table')].some((t) => ((t.tHead && t.tHead.rows[0]) || t.rows[0])?.cells.length >= 4) || !!c.querySelector('.sa-kb, .board');
+      if (layout === 'split' && cells.length > 1) {
+        const narrow = cells.filter((c) => !wide(c));
+        if (narrow.length === cells.length) return [...top, box('lay-split', [box('lay-main', [cells[0]]), box('lay-aside', cells.slice(1))])];
+        const rest = cells.filter((c) => wide(c));
+        return [...top, ...(narrow.length > 1 ? [box('lay-split', [box('lay-main', [narrow[0]]), box('lay-aside', narrow.slice(1))])] : narrow), ...rest];
+      }
       if (layout === 'tool') return [...top, box('lay-main lay-panel', [cells[0]]), ...cells.slice(1)];
       if (layout === 'dashboard') return [...top, box('lay-grid', cells)];
       return [...top, ...cells];
@@ -912,7 +1335,11 @@
         try { if (f.start != null) n.setSelectionRange(f.start, f.end); } catch { /* not a text field */ }
       }
     }
+    // Nothing is drawn before the first data is in (a design arriving
+    // meanwhile redraws, and would draw a screen with none of its data).
+    let ready = false;
     function draw() {
+      if (!ready) return;
       if (drawing) { again = true; return; }
       drawing = true;
       try {
@@ -920,22 +1347,114 @@
           again = false;
           const f = focusPath();
           heroAt = null;
-          if (isFront) {
+          if (gated) {
+            const named = (spec.body || []).map((b) => (b && typeof b === 'object' && typeof b.h === 'string' ? b.h : null)).find(Boolean);
+            const views = (window.__SA && window.__SA.views) || [];
+            const gate = spec.gate || { title: (window.__SA && window.__SA.name) || named || 'Sign in',
+              text: views.length > 1 ? `Sign in to open ${views.slice(0, -1).join(', ')} and ${views.at(-1)}.` : `Sign in to open ${named || views[0] || 'this app'}.`,
+              note: 'One account works in every app here: create one in a moment if you are new.' };
+            root.replaceChildren(typeof gateView === 'function' ? gateView(app, gate) : signInPage(app, gate));
+          } else if (isFront) {
             root.replaceChildren(h('div', { class: `screen front${layout ? ` layout-${layout}` : ''}` }, front.page(spec.body, scope(), layout)));
-          } else root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, arrange(blocks(spec.body, scope(), 'body'))));
+          } else {
+            // An app of one screen shown on its own has no app bar: a data
+            // screen (not a tool, not a front page) whose body opens with no
+            // heading of its own says its title as the page's heading.
+            const lone = window.__SA && window.__SA.lone;
+            const first = Array.isArray(spec.body) ? spec.body.find((b) => b && typeof b === 'object') : null;
+            const titled = first && (first.h !== undefined || first.hero !== undefined || first.nav !== undefined);
+            const title = lone && !isFront && layout !== 'tool' && !titled ? h('h1', null, String(lone)) : null;
+            const shown = arrange([title, blocks(spec.body, scope(), 'body')]);
+            root.replaceChildren(h('div', { class: `col screen${layout ? ` layout-${layout}` : ''}` }, sample ? [sampleBar(), h('div', { class: 'sa-sampled', inert: '' }, shown)] : shown));
+          }
           if (front) front.after(root);
+          window.__sa_gated?.(gated);
+          window.__sa_bounds?.();
+          // A table wider than its page's column (a narrow reading page, a
+          // card) widens past it, up to the window, before it scrolls: its
+          // last columns are never cut off at the right.
+          requestAnimationFrame(() => {
+            for (const w of root.querySelectorAll('.tablewrap')) {
+              w.classList.remove('bleed');
+              if (w.scrollWidth > w.clientWidth + 4 && innerWidth > 860 && !w.closest('.lay-split, .lay-grid, .sa-sheet, .card .card')) {
+                w.classList.add('bleed');
+                w.style.setProperty('--want', `${w.scrollWidth}px`);
+              }
+            }
+          });
           restore(f);
+          tidy();
         } while (again);
       } finally { drawing = false; }
       // A form this draw no longer shows was closed.
       for (const [p, f] of forms) if (!f.el || !f.el.isConnected) { abandon(f); forms.delete(p); }
     }
 
+    // After a draw (and once code blocks have drawn): a group of a layout
+    // that shows nothing is left out, and one of buttons only is a row of
+    // actions, not a card around a button.
+    function tidy() {
+      const pass = () => {
+        for (const g of root.querySelectorAll('.lay-group')) {
+          const media = g.querySelector('img, svg, canvas, video, iframe, input, select, textarea, table');
+          const buttons = [...g.querySelectorAll('button')];
+          // what shows: a style a code block adds, or a folded form, is no words
+          const words = (g.innerText || '').replace(/\s+/g, '');
+          const btnWords = buttons.map((b) => b.innerText || '').join('').replace(/\s+/g, '');
+          g.classList.toggle('lay-empty', !media && !buttons.length && !words);
+          g.classList.toggle('lay-actions', !media && buttons.length > 0 && words === btnWords);
+        }
+      };
+      pass();
+      setTimeout(pass, 0);
+    }
     window.__sa_relook = () => draw();
+    // What a visitor sees above a members' screen drawn with example rows.
+    function sampleBar() {
+      const open = () => {
+        const sheet = h('div', { class: 'sa-gate-sheet', role: 'dialog', 'aria-modal': 'true', onclick: (e) => { if (e.target === sheet) sheet.remove(); } },
+          h('div', { class: 'box' }, h('button', { type: 'button', class: 'ghost small close', 'aria-label': 'Close', onclick: () => sheet.remove() }, '×'), gateView(app, spec.gate)));
+        document.body.append(sheet);
+        setTimeout(() => sheet.querySelector('input')?.focus(), 0);
+      };
+      return h('div', { class: 'sa-sample-bar', role: 'note' },
+        h('div', { class: 't' }, h('b', null, spec.gate.title || 'Sign in'),
+          h('span', null, spec.gate.sampleNote || 'This is what it shows, with example rows. Sign in to see your own.')),
+        h('button', { type: 'button', class: 'primary', onclick: open }, 'Sign in'));
+    }
+    // A screen whose rows need someone signed in: what the app is, and the
+    // sign-in beside it (ui.signIn when the app has it, else a form here).
+    function signInPage(app, gate) {
+      let form;
+      if (typeof ui.signIn === 'function') form = ui.signIn({ title: 'Sign in', note: gate.note, onDone: () => refresh() });
+      else {
+        let up = false;
+        form = h('div', { class: 'card sa-signin' });
+        const paint = () => {
+          const email = h('input', { type: 'email', autocomplete: 'email', required: true, placeholder: 'you@example.com', 'aria-label': 'Email' });
+          const name = up ? h('input', { autocomplete: 'name', placeholder: 'Your name', 'aria-label': 'Name' }) : null;
+          const pass = h('input', { type: 'password', required: true, autocomplete: up ? 'new-password' : 'current-password', 'aria-label': 'Password', placeholder: up ? 'At least 8 characters' : '' });
+          const err = h('p', { class: 'err', role: 'alert' });
+          const go = h('button', { class: 'primary', type: 'submit' }, up ? 'Create account' : 'Sign in');
+          form.replaceChildren(h('h3', null, up ? 'Create an account' : 'Sign in'), gate.note ? h('p', { class: 'muted small' }, gate.note) : null,
+            h('form', { class: 'col', onsubmit: async (e) => {
+              e.preventDefault(); err.textContent = ''; go.disabled = true;
+              try { if (up) await app.signUp({ email: email.value, name: name.value, password: pass.value }); else await app.signIn(email.value, pass.value); await refresh(); } catch (x) { err.textContent = x.message; go.disabled = false; }
+            } }, h('label', null, 'Email', email), name ? h('label', null, 'Name', name) : null, h('label', null, 'Password', pass), err, go),
+            h('p', { class: 'small muted' }, up ? 'Have an account? ' : 'New here? ', h('button', { type: 'button', class: 'link inline', onclick: () => { up = !up; paint(); } }, up ? 'Sign in' : 'Create an account')));
+        };
+        paint();
+      }
+      return h('div', { class: 'col screen gate' },
+        h('div', { class: 'gate-about' }, h('h1', null, gate.title), gate.text ? h('p', { class: 'gate-text' }, gate.text) : null,
+          Array.isArray(gate.points) && gate.points.length ? h('ul', { class: 'gate-points' }, gate.points.map((p) => h('li', null, p))) : null),
+        h('div', { class: 'gate-form' }, form));
+    }
     phone.addEventListener('change', () => { if (lookIs() !== 'plain') draw(); });
     state = { ...(val(spec.state || {}, scope(), 'state') || {}) };
     await load();
     compute();
+    ready = true;
     draw();
     app.onChange('*', () => refresh());
   };

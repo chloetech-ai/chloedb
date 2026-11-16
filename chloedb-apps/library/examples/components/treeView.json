@@ -19,8 +19,8 @@
          "icon": "📄"
         },
         {
-         "id": "northwind",
-         "label": "Northwind contract",
+         "id": "fairview",
+         "label": "Fairview contract",
          "icon": "📄",
          "badge": "new"
         }
@@ -85,8 +85,8 @@
          "icon": "📄"
         },
         {
-         "id": "northwind",
-         "label": "Northwind contract",
+         "id": "fairview",
+         "label": "Fairview contract",
          "icon": "📄"
         }
        ]

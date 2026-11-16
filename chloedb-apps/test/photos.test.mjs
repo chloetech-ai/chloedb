@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { queryOf, commonsQueries, commonsCandidate, findPhoto, placePhotos, matchBuiltin, drawnPicture, accentHue, photoCache } from '../engine/photos.mjs';
+import { queryOf, commonsQueries, commonsCandidate, findPhoto, placePhotos, placeScreenPhotos, matchBuiltin, drawnPicture, accentHue, photoCache } from '../engine/photos.mjs';
+import { imageSize, fullBleedProblems } from '../engine/photoqc.mjs';
 
 const page = (pageid, title, { w = 3000, h = 2000, license = 'CC BY-SA 4.0', artist = '<a href="x">Ana Ruiz</a>', desc = '', mime = 'image/jpeg', index = 1 } = {}) => ({
   pageid, index, title: `File:${title}.jpg`,
@@ -158,4 +159,80 @@ test('the footer keeps one credits line across versions', async () => {
     await placePhotos(plan, {}, {});
     assert.equal(plan.views[0].screen.body[0].note, 'Open daily · Photos: Old one by B, CC BY 2.0; Suadero tacos by Ana Ruiz, CC BY-SA 4.0 (Wikimedia Commons)');
   } finally { web.restore(); }
+});
+
+test('a photo for a full-width place: its size from its header, its light and sharpness measured, a poor one replaced', async () => {
+  // a PNG's header: 640 x 480
+  const png = Buffer.alloc(32); png[0] = 0x89; png.write('PNG', 1, 'latin1'); png.writeUInt32BE(640, 16); png.writeUInt32BE(480, 20);
+  assert.deepEqual(imageSize(png), { width: 640, height: 480, type: 'png' });
+  // a JPEG's start of frame: 2400 x 1600
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x06, 0x40, 0x09, 0x60, 0x03, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(imageSize(jpg), { width: 2400, height: 1600, type: 'jpeg' });
+  assert.deepEqual(await fullBleedProblems(png, { stats: async () => null }), ['only 640 px wide']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.19, contrast: 0.12, sharp: 2.5 }) }), ['blurred']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.05, contrast: 0.03, sharp: 30 }) }), ['too dark', 'flat']);
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ mean: 0.45, contrast: 0.25, sharp: 30 }) }), []);
+  // placing a hero: the web's first photo fails, the next one is used; a card is not judged
+  const results = [{ id: 'w1', src: 'https://x/1.jpg', remote: true, source: 'commons' }, { id: 'w2', src: 'https://x/2.jpg', remote: true, source: 'commons' }];
+  const find = async (q, { used }) => results.find((r) => !used.has(r.id)) || null;
+  const judge = async (bytes) => (String(bytes) === 'https://x/1.jpg' ? ['blurred'] : []);
+  const screen = { page: 'front', body: [{ hero: 'Hi', photo: 'harbour at dawn' }] };
+  await placeScreenPhotos(screen, { find, judge, fetchBytes: async (u) => Buffer.from(u), drawn: false });
+  assert.equal(screen.body[0].src, 'https://x/2.jpg');
+  // every web photo poor: the built-in set's, never a poor one full-width
+  const poor = { page: 'front', body: [{ band: ['x'], photo: 'harbour at dawn' }] };
+  await placeScreenPhotos(poor, { find, judge: async () => ['too dark'], fetchBytes: async (u) => Buffer.from(u), drawn: false });
+  assert.ok(!/https:\/\/x\//.test(String(poor.body[0].src || '')), String(poor.body[0].src));
+});
+
+test('a hero photo: too busy to carry words, or loud colours far from the design, is refused; the owner\'s own photo comes first', async () => {
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x06, 0x40, 0x09, 0x60, 0x03, 0, 0, 0, 0, 0, 0]);
+  const calm = { mean: 0.45, contrast: 0.25, sharp: 30 };
+  assert.deepEqual(await fullBleedProblems(jpg, { stats: async () => ({ ...calm, sharp: 150 }) }), ['too busy to carry words']);
+  // a loud blue photo against a clay design clashes; a quiet one, or one near the design's hue, does not
+  const clay = accentHue('deep clay brown');
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 70, hue: 215, agree: 0.8 }) }), ["its loud colours clash with the design's"]);
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 20, hue: 215, agree: 0.8 }) }), []);
+  assert.deepEqual(await fullBleedProblems(jpg, { hue: clay, stats: async () => ({ ...calm, colorful: 70, hue: 30, agree: 0.8 }) }), []);
+  assert.equal(accentHue('#2f5bd3'), 224);
+  // the owner's uploaded photo takes the hero before any search
+  let searched = 0;
+  const screen = { page: 'front', body: [{ hero: 'Hi', photo: 'pottery studio' }, { band: ['x'], photo: 'kiln' }] };
+  await placeScreenPhotos(screen, { find: async () => { searched++; return null; }, own: ['f1'], drawn: false, judge: null });
+  assert.equal(screen.body[0].src, 'f1');
+  assert.equal(searched, 1);
+});
+
+test('an owner\'s photo takes the hero only when it looks right, and not when the plan placed the owner\'s photos itself', async () => {
+  const find = async () => null;
+  const flat = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }] };
+  await placeScreenPhotos(flat, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => ['flat'], drawn: false });
+  assert.notEqual(flat.body[0].src, 'f1');
+  const good = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }] };
+  await placeScreenPhotos(good, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.equal(good.body[0].src, 'f1');
+  const gallery = { page: 'front', body: [{ hero: 'Hi', photo: 'studio' }, { gallery: [{ src: 'f2' }] }] };
+  await placeScreenPhotos(gallery, { find, own: ['f1', 'f2'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.notEqual(gallery.body[0].src, 'f1');
+});
+
+test('an owner\'s photo the screen itself put in its hero leaves the hero when it has no picture in it, and stays in the gallery', async () => {
+  const find = async () => null;
+  const s = { page: 'front', body: [{ hero: 'Hi', src: 'f1', look: 'photo' }, { gallery: [{ src: 'f1' }, { src: 'f2' }] }] };
+  const placed = await placeScreenPhotos(s, { find, own: ['f1', 'f2'], ownBytes: async () => Buffer.from('x'), judge: async () => ['no picture in it: a texture or a plain gradient'], drawn: false });
+  assert.equal(s.body[0].src, undefined);
+  assert.equal(s.body[0].look, 'type');
+  assert.deepEqual(s.body[1].gallery.map((g) => g.src), ['f1', 'f2']);
+  assert.ok(placed.some((p) => p.source === 'own refused'));
+  const ok = { page: 'front', body: [{ hero: 'Hi', src: 'f1', look: 'photo' }] };
+  await placeScreenPhotos(ok, { find, own: ['f1'], ownBytes: async () => Buffer.from('x'), judge: async () => [], drawn: false });
+  assert.equal(ok.body[0].src, 'f1');
+});
+
+test('a texture or a plain gradient has no picture in it: refused for a full-width place', async () => {
+  const stats = async () => ({ mean: 0.5, contrast: 0.15, sharp: 12, structure: 0.02, colorful: 10, hue: null, agree: 0 });
+  const png = Buffer.alloc(32); png.write('\x89PNG\r\n\x1a\n', 0, 'binary'); png.writeUInt32BE(1600, 16); png.writeUInt32BE(900, 20);
+  const { fullBleedProblems } = await import('../engine/photoqc.mjs');
+  assert.ok((await fullBleedProblems(png, { stats })).some((p) => /no picture in it/.test(p)));
+  assert.ok(!(await fullBleedProblems(png, { stats: async () => ({ ...(await stats()), structure: 40 }) })).some((p) => /no picture/.test(p)));
 });

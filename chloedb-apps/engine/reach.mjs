@@ -482,14 +482,17 @@ export class Reach {
     const system = typeof opts.system === 'string' ? opts.system.slice(0, 4000) : '';
     if (test) return json ? null : '';
     const on = await this.switches(appId);
-    if (!on.ask) throw err('app.ask is switched off for this app: its owner can switch on "A model" in the studio', 403, { off: 'ask', refused: true });
-    if (web && !on.web) throw err('web search is switched off for this app: its owner can switch on "Web search" in the studio', 403, { off: 'web', refused: true });
+    if (!on.ask) throw err('app.ask is switched off for this app: its owner can switch on "A model" under Model and web in the app\'s settings', 403, { off: 'ask', refused: true });
+    if (web && !on.web) throw err('web search is switched off for this app: its owner can switch on "Web search" under Model and web in the app\'s settings', 403, { off: 'web', refused: true });
     const key = createHash('sha256').update(JSON.stringify([this.model, system, prompt, json, web])).digest('hex').slice(0, 40);
     const c = await this.count(appId);
     if (!opts.fresh) {
       const kept = await this.kept(appId, key, web);
       if (kept !== null) { c.cached++; this.saveCount(appId, c); return json ? this.parse(kept) : kept; }
     }
+    // kept: only an answer kept for this very question, or null (a page
+    // showing what was answered before, without asking anew)
+    if (opts.kept) return null;
     if (this.pending.has(key)) return this.pending.get(key);
     if (c.usd >= ASK_USD_PER_DAY) throw err(`app.ask: this app's model calls cost $${c.usd.toFixed(2)} today, its limit ($${ASK_USD_PER_DAY}); it can ask again tomorrow`, 429, { refused: true });
     if (c.asks >= on.perDay) throw err(`app.ask: this app has asked the model ${c.asks} times today, its limit (${on.perDay}); it can ask again tomorrow, or its owner can raise the limit`, 429, { refused: true });

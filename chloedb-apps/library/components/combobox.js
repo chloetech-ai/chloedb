@@ -5,7 +5,12 @@
 //   placeholder (default 'Choose or type to search'); label: accessible name (default the placeholder);
 //   allowNew: true to offer adding what was typed when no choice has that label (default false), with onCreate(text) to save it
 //   (may return, or resolve to, the new value or {value, label}, which then shows as chosen);
-//   clearable: true to show a button that clears the choice (default false)
+//   clearable: true to show a button that clears the choice (default false);
+//   onSearch(text): a slower lookup beyond the options (a function that asks the web or the model), returning or resolving to
+//   more choices in the same shape: the options' matches show at once as the person types, and onSearch is asked only once
+//   typing pauses (searchDelay ms, default 400) with at least searchMin characters (default 2); its answers join the list
+//   below the instant ones when they arrive (a "searching" row shows meanwhile, searchingLabel, default 'Searching further…'),
+//   an answer for older text is dropped, and each text is asked once
 function component(props) {
   css('sa-combobox', `
 .sa-combobox{position:relative;display:block;width:100%;max-width:100%}
@@ -26,6 +31,9 @@ function component(props) {
 .sa-combobox .sa-cb-hint{color:var(--muted);font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
 .sa-combobox .sa-cb-new{color:var(--accent)}
 .sa-combobox .sa-cb-empty{padding:.5em .6em;color:var(--muted)}
+.sa-combobox .sa-cb-searching{font-style:italic}
+.sa-combobox .sa-cb-searching::before{content:'';display:inline-block;width:.7em;height:.7em;margin-right:.5em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-.05em;animation:sa-cb-spin .8s linear infinite}
+@keyframes sa-cb-spin{to{transform:rotate(360deg)}}
 `);
   const LIMIT = 100;
   const norm = (o) => o !== null && typeof o === 'object'
@@ -45,6 +53,27 @@ function component(props) {
 
   let current = props.value ?? null;
   let open = false, typed = false, busy = false, active = -1, items = [];
+  // the slower lookup: debounced, one at a time, its answers kept per text
+  const onSearch = typeof props.onSearch === 'function' ? props.onSearch : null;
+  const searchDelay = Number.isFinite(props.searchDelay) ? props.searchDelay : 400;
+  const searchMin = Number.isFinite(props.searchMin) ? props.searchMin : 2;
+  const found = new Map(); // text -> [{value, label, hint}]
+  let searching = null, timer = null, asked = 0;
+  function lookFurther(q) {
+    clearTimeout(timer);
+    searching = null;
+    if (!onSearch || q.length < searchMin || found.has(q.toLowerCase())) return;
+    searching = q;
+    timer = setTimeout(async () => {
+      const mine = ++asked;
+      let got = [];
+      try { got = await onSearch(q); } catch (e) { got = []; }
+      found.set(q.toLowerCase(), (Array.isArray(got) ? got : []).filter((o) => o != null).map(norm));
+      if (mine !== asked) return; // the person typed on: a newer one is asked
+      if (searching === q) searching = null;
+      if (open && input.value.trim() === q) { const was = items[active]; build(); active = Math.max(0, items.indexOf(was)); draw(); }
+    }, searchDelay);
+  }
 
   const labelOf = (v) => {
     if (v == null) return '';
@@ -56,7 +85,7 @@ function component(props) {
     type: 'text', role: 'combobox', autocomplete: 'off', spellcheck: 'false',
     'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': uid + '-list',
     'aria-label': props.label || placeholder, placeholder, value: labelOf(current),
-    oninput: () => { typed = true; if (!open) openList(); else { build(); active = items.length ? 0 : -1; draw(); } },
+    oninput: () => { typed = true; lookFurther(input.value.trim()); if (!open) openList(); else { build(); active = items.length ? 0 : -1; draw(); } },
     onkeydown: onKey,
     onclick: () => { if (!open) openList(); },
     onfocus: () => input.select(),
@@ -103,15 +132,20 @@ function component(props) {
         .sort((a, b) => b.s - a.s || a.i - b.i)
         .slice(0, LIMIT)
         .map((x) => ({ o: x.o }));
-      if (canCreate && !options.some((o) => o.label.toLowerCase() === q.toLowerCase())) items.push({ text: q });
+      // what the slower lookup found for this text, after the instant ones
+      const more = found.get(q.toLowerCase()) || [];
+      const seen = new Set(items.map((x) => x.o.label.toLowerCase()));
+      for (const o of more) if (!seen.has(o.label.toLowerCase()) && items.length < LIMIT) { seen.add(o.label.toLowerCase()); items.push({ o, more: true }); }
+      if (canCreate && !options.some((o) => o.label.toLowerCase() === q.toLowerCase()) && !more.some((o) => o.label.toLowerCase() === q.toLowerCase())) items.push({ text: q });
     }
   }
 
   function draw() {
     if (active >= items.length) active = items.length - 1;
     list.replaceChildren();
+    const looking = !!searching && typed && searching === input.value.trim();
     if (busy) list.append(h('li', { class: 'sa-cb-empty', role: 'presentation' }, 'Adding…'));
-    else if (!items.length) list.append(h('li', { class: 'sa-cb-empty', role: 'presentation' }, options.length ? 'No matches' : 'Nothing to choose yet'));
+    else if (!items.length && !looking) list.append(h('li', { class: 'sa-cb-empty', role: 'presentation' }, options.length ? 'No matches' : 'Nothing to choose yet'));
     items.forEach((it, i) => {
       const chosen = it.o && same(it.o.value, current);
       const cls = ['sa-cb-opt', i === active ? 'active' : '', chosen ? 'chosen' : '', it.text != null ? 'sa-cb-new' : ''].filter(Boolean).join(' ');
@@ -123,6 +157,8 @@ function component(props) {
         ? [h('span', { class: 'sa-cb-label' }, it.o.label), it.o.hint ? h('span', { class: 'sa-cb-hint' }, it.o.hint) : null]
         : h('span', { class: 'sa-cb-label' }, `Add “${it.text}”`)));
     });
+    // the slower lookup at work: a row of its own, below what is there
+    if (looking && !busy) list.append(h('li', { class: 'sa-cb-empty sa-cb-searching', role: 'status', 'aria-live': 'polite' }, props.searchingLabel || 'Searching further…'));
     mark();
   }
 
@@ -161,6 +197,7 @@ function component(props) {
   async function choose(it) {
     if (busy || !it) return;
     if (it.o) {
+      if (it.more && !options.some((x) => same(x.value, it.o.value))) options.push(it.o);
       const prev = current;
       current = it.o.value;
       input.value = it.o.label;

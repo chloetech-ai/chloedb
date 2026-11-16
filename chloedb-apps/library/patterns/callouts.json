@@ -1,0 +1,95 @@
+{
+ "title": "Rows that ask for attention as callout cards: a severity label, a title, the rows it is about as chips, the explanation and a highlighted tip",
+ "about": "Clashes, risks, warnings, findings, advice: each row a card that says how much it matters ('Act on this', 'Worth knowing', 'Helpful'), what it is, which things it is about (chips joined by a sign), why, and what to do. TONE and LABEL are SQL expressions over the row (a CASE on its severity column). Choose it over a table whenever the person is meant to act on each row.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "sub": {
+   "about": "a line under the heading"
+  },
+  "head": {
+   "about": "the column with each card's title",
+   "need": true
+  },
+  "chips": {
+   "about": "columns naming the things it is about, shown as chips (a list)"
+  },
+  "join": {
+   "about": "the sign between the chips",
+   "default": "↔"
+  },
+  "text": {
+   "about": "the column with the explanation"
+  },
+  "tip": {
+   "about": "the column with what to do"
+  },
+  "tone": {
+   "about": "an SQL expression giving bad, warn, ok or info for the row",
+   "default": "'info'"
+  },
+  "label": {
+   "about": "an SQL expression giving the severity words (default by tone: Act on this, Worth knowing, Helpful, Note)"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "order": {
+   "about": "SQL ORDER BY: most pressing first",
+   "default": "created DESC"
+  },
+  "empty": {
+   "about": "words when there is nothing",
+   "default": "Nothing to flag."
+  }
+ },
+ "example": {
+  "use": "callouts",
+  "table": "risks",
+  "title": "Risks",
+  "head": "title",
+  "chips": [
+   "a",
+   "b"
+  ],
+  "text": "effect",
+  "tip": "advice",
+  "tone": "CASE severity WHEN 'high' THEN 'bad' WHEN 'medium' THEN 'warn' ELSE 'info' END",
+  "order": "severity"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": "SELECT *, {{tone}} AS sa_tone{{label|wrap:, ~ AS sa_label}} FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 100"
+  },
+  "let": {
+   "{{key}}_items": "={{key}}.map(r => ({tone: r.sa_tone, label: r.sa_label || null, title: r.{{head}}, chips: ({{chips|json}} || []).map(c => r[c]).filter(x => x != null && x !== ''), join: {{join|json}}, text: {{text|json}} ? r[{{text|json}}] : null, tip: {{tip|json}} ? r[{{tip|json}}] : null}))"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "$when": "sub",
+    "text": "{{sub}}",
+    "muted": true
+   },
+   {
+    "ui": "callouts",
+    "props": {
+     "items": "={{key}}_items",
+     "empty": "{{empty}}"
+    }
+   }
+  ]
+ }
+}
