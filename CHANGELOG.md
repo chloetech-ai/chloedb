@@ -11,6 +11,24 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.6
+
+What you say again becoming a ChloeCtx rule, Kafka topics read by the server
+itself, SQLite imports fixed by a stress test of every way a file comes in,
+a slot move whose flip no failover can lose a write in, `npm install
+chloedb`, thirteen new screen parts and two access statements in the app
+engine, Workbench's Converge, and a network operations demo whose network
+is read back from what it reports: `chloedb-server-v0.3.6`,
+`chloedb-py-v0.3.6` and `chloedb-js-v0.3.6`, which is on npm too (the Java
+package is built from source; `chloedb-crawl`, `chloedb-sheets` and
+`chloectx` are attached prebuilt to the server's release). The file format
+stays 3 and the shard protocol stays 21, with no new field or plan feature,
+so servers of 0.3.5 and 0.3.6 mix in a cluster in either order, with one
+ordered step (Replication, below). ChloeCtx makes one more small-model call
+after a turn that is like something said before. **Finish an upgrade before
+moving slots: a 0.3.6 replica under a 0.3.5 primary refuses a slot move's
+flip.**
+
 ### What changes by default
 
 - **ChloeCtx: what you have to say again becomes a rule, for one more
@@ -32,6 +50,21 @@ changes collect under "Unreleased".
   no longer one of the user's rules.
 - Workbench's Fix the harness lists what you said again and the rules
   broken though the session was shown them, when ChloeCtx is on.
+- Workbench opens on Converge (below); its sessions are at `#/workbench`.
+
+### JavaScript on npm
+
+- **`npm install chloedb` installs ChloeDB.** Until now npm had only the
+  name-holding placeholder, 0.0.1, which still pointed at Strata and threw
+  on import; the JavaScript releases were on GitHub only. 0.3.5 is
+  published there as `chloedb` with the addon of each platform as
+  `@chloedb/<platform>` (darwin-arm64, darwin-x64, linux-x64-gnu,
+  linux-arm64-gnu), which npm picks by itself. An app that got the
+  placeholder takes the release with `npm install chloedb@latest` (a plain
+  `npm install chloedb` keeps its `^0.0.x` range). The
+  JavaScript guide installs from npm first and keeps the release tarballs
+  for machines that cannot reach it, and reserve-names.yml marks the 0.0.x
+  placeholders deprecated once the real package is there.
 
 ### SQLite imports (stress test of 15 November)
 
@@ -115,9 +148,95 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   first, while the new primary took writes to the slots that no copy
   reached, and the new primary then refused the flip for good (TLC,
   `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.5 or earlier
-  writes no mark, so a replica of this release under one refuses the flips
+  writes no mark, so a 0.3.6 replica under one refuses the flips
   it takes, and the maps after them, until a later flip from that shard is
   marked or the replica is replaced: finish an upgrade before moving slots.
+
+### Kafka
+
+- **The server reads Kafka topics itself.** A connector of kind `kafka`
+  keeps a consumer of its topics while it is on, started and stopped from
+  the command center's Connectors page or with `POST
+  /v1/admin/connectors/NAME/start` and `/stop`, which last across restarts.
+  Its events go through the path `/v1/stream` takes, each partition a
+  stream source whose offset is written in the transaction of its rows, so
+  a stop, a restart, a `kill -9`, a broker restart or a coordinator taking
+  over writes no event twice and misses none. JSON or text values, a map
+  over the whole event (`$.value.x`, `$.key`, `$.offset`, `$.ts`,
+  `$.headers`), tombstones skipped or deleting their key's row, TLS, and
+  SASL PLAIN or SCRAM with the password kept as a secret; the brokers pass
+  the reach check a pull's URL does. There is no consumer group: the page
+  shows the lag of each partition. Until now Kafka came in only through a
+  consumer of your own (the Python package's `chloedb.ingest.kafka`).
+- **A test broker** in the server's process, to try a connector without
+  Kafka: the page's Test Kafka broker card, `/v1/admin/kafka/test-broker`
+  (loopback only), or `chloedb-server kafka-test-broker` on its own. It
+  keeps topics in memory and makes up click events at a rate.
+- A connector's map can name a column's type (`{"path": "$.action",
+  "type": "KEYWORD"}`) for the table `create_target` makes, since a plain
+  path makes a `TEXT` column, which `GROUP BY` refuses.
+- New dependencies of chloedb-server: `rskafka` (and `lz4` through it) and
+  `crc32c`.
+
+### App engine
+
+- **Thirteen new screen parts**, written as clauses of `CREATE SCREEN`:
+  NEXT, DUE, LEND, PLAN, REPORT, TEAM, PRICES, TIMETABLE, SLOTS, INBOX,
+  STANDINGS, DOCUMENT and GALLERY; SQL functions for ranges (`band_of`,
+  `band_rank`, `bands()`, `days_overlap`, `times_overlap`); `:today`
+  filled in by itself in any app SQL that names it.
+- **Access.** `ALLOW CALL ON <function> TO everyone | members | admins`
+  lets those people call one of the app's functions, which then runs with
+  the app's rights, as a `SECURITY DEFINER` procedure does; a function
+  without it runs as its caller, as before. `ALLOW ... WHERE <col> IN
+  (SELECT <col> FROM <link table> WHERE <person col> = :user_id)` keeps
+  people to the rows of what they are on, read when the call is made. A
+  screen that visitors or members use and that writes a table only the
+  owner may write is a build problem, with the fix named. Nothing changes
+  for an existing app until it uses the new statements.
+- A visitor who opens a members' screen sees it drawn with the example rows
+  of the app's first version, marked and inert, under a sign-in bar.
+- On an 11-app benchmark against the builder before it, blind judge, on an
+  Apple M2 laptop: whole-app score 7.46 against 6.00, and 55 of 65
+  functional jobs against 38 of 59.
+- An app's list of builders keeps the order people were invited in, on a
+  cluster of shards too (invitations of one call tied).
+
+### Workbench
+
+- **Converge** (`#/converge`): personas play the product, and each problem
+  they hit becomes a finding that walks gated stages (found, reproduce,
+  scope, prioritize, develop, verify, review, merged) to a pull request,
+  with each gate's evidence kept. Three steps are yours: moving a finding
+  out of Found, starting development, and approving the merge. Its
+  autopilot is off by default and keeps to a daily model budget.
+- **`serve --lan`** opens Workbench to the local network: it answers only
+  private and link-local addresses and `.local` names, and the token is
+  still required. It is plain HTTP, so the token travels in the clear on
+  that network: use it only on a trusted one. Without it nothing changes.
+
+### Network operations (demo)
+
+- NetOps builds a second network only from what the simulated one reports
+  (SNMP, LLDP, BGP-LS, BMP and the OLTs' ONT tables) and serves it beside
+  the listed one, with an Inventory | Discovered switch (`--topology both`,
+  the default; `inventory` or `discovered` serve one). The discovered one
+  has tables of its own (`netops_disc_*`) and a Discovery page that says
+  how each site, device and link was found.
+- When the root-cause agent names a cause, the incident's room says what
+  happened, why this is probably the cause (each claim with the query
+  behind it, run again through `GET /v1/evidence/:id`) and what it is not.
+
+### Releases, site and operations
+
+- The benchmark harness sends ChloeDB's beam (`ef => N`) in every vector
+  statement: the default run's row said 64 candidates and searched at 200.
+  Postgres's candidates sweep now moves `hnsw.ef_search`, Qdrant's wait
+  fails after 4 hours rather than never, and `image.yml` publishes a
+  `<sha>-bench` image for `fanout.sh`.
+- The website and its docs load Google Tag Manager, so visits show in
+  Google Analytics.
+- Dependencies: crc32fast 1.5.5, flate2 1.1.11, ureq 3.5.1.
 
 ## 0.3.5
 

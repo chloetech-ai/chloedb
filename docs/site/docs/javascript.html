@@ -95,7 +95,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from JavaScript</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/javascript.md">docs/chloedb/javascript.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.5.</p>
+      <p class="doc-version">These docs follow main (0.3.6, unreleased). The latest release is 0.3.5 (<a href="v0.3.5/index.html">its docs</a>); what is newer is marked "since 0.3.6".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install">Install</a></li><li><a href="#a-database-in-the-process">A database in the process</a></li><li><a href="#a-server-from-javascript">A server from JavaScript</a></li><li><a href="#search-on-the-device">Search on the device</a></li><li><a href="#bun-and-deno">Bun and Deno</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -104,37 +104,43 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-js"><code>chloedb-js/</code></a>: a Node-API addon written in Rust (<a href="https://napi.rs">napi-rs</a>) and the JavaScript around it, an ES module, for Node 18 or later, Bun and Deno.</p>
 <h3 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h3>
-<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler. Install the tarball for your platform:</p>
-<pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.5/chloedb-0.3.5-darwin-arm64.tgz</pre>
-<p>It imports as <code>"chloedb"</code>. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as <code>strata-db</code> and imports as <code>"strata-db"</code>.</p>
+<pre data-lang="sh">npm install chloedb</pre>
+<p><code>bun add chloedb</code>, <code>pnpm add chloedb</code> and <code>yarn add chloedb</code> work the same way. npm installs the JavaScript and, as an optional dependency, the addon built for your machine (<code>@chloedb/darwin-arm64</code>, <code>@chloedb/linux-x64-gnu</code>, ...), so nothing is compiled: no Rust, no C compiler. It imports as <code>"chloedb"</code>. Windows and Alpine (musl) have no prebuilt addon: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as <code>strata-db</code> and imports as <code>"strata-db"</code>.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
 <th>platform</th>
-<th>tarball</th>
+<th>addon package</th>
+<th>release tarball</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>macOS 11+ on Apple silicon</td>
+<td><code>@chloedb/darwin-arm64</code></td>
 <td><code>chloedb-&lt;version&gt;-darwin-arm64.tgz</code></td>
 </tr>
 <tr>
 <td>macOS 11+ on Intel</td>
+<td><code>@chloedb/darwin-x64</code></td>
 <td><code>chloedb-&lt;version&gt;-darwin-x64.tgz</code></td>
 </tr>
 <tr>
 <td>Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later)</td>
+<td><code>@chloedb/linux-x64-gnu</code></td>
 <td><code>chloedb-&lt;version&gt;-linux-x64-gnu.tgz</code></td>
 </tr>
 <tr>
 <td>Linux arm64, glibc 2.35+</td>
+<td><code>@chloedb/linux-arm64-gnu</code></td>
 <td><code>chloedb-&lt;version&gt;-linux-arm64-gnu.tgz</code></td>
 </tr>
 </tbody>
 </table></div>
-<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml"><code>js-release.yml</code></a> builds the tarballs on a <code>chloedb-js-v&lt;version&gt;</code> tag and runs each one in an empty app before attaching it to the release; <code>node scripts/pack.mjs &lt;platform&gt;</code> packs one by hand.</p>
-<p><code>chloedb</code> on npm is a placeholder (0.0.x) that holds the name until the releases are published there: a bare <code>npm install chloedb</code> installs it, and importing it throws an error that says how to install ChloeDB. The same workflow builds what npm will get, the way napi-rs packages are laid out: <code>chloedb</code>, the JavaScript, with a package per platform holding its addon (<code>@chloedb/linux-x64-gnu</code>, <code>@chloedb/darwin-arm64</code>, ...) as optional dependencies, of which npm installs the one of your machine. A maintainer publishes them with a run started by hand on the release's tag (<code>gh workflow run js-release.yml --ref chloedb-js-v&lt;version&gt; -f npm=true</code>; the workflow's header says what it needs first). Once a release is there, <code>npm install chloedb</code> is all it takes, and this page will say so. <code>node scripts/pack.mjs --npm &lt;platform&gt;</code> and <code>--npm-main</code> pack those packages by hand.</p>
+<p>If importing <code>chloedb</code> throws an error that calls it a placeholder, npm installed <code>chloedb</code> 0.0.x, which only held the name until ChloeDB's releases were published there (the first one, 0.0.1, still says Strata, ChloeDB's name before the rename). <code>npm install chloedb@latest</code> in that app replaces it and rewrites the range in <code>package.json</code> (a plain <code>npm install chloedb</code> keeps the <code>^0.0.x</code> range already there, and the placeholder with it).</p>
+<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:</p>
+<pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.6/chloedb-0.3.6-darwin-arm64.tgz</pre>
+<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml"><code>js-release.yml</code></a> builds both on a <code>chloedb-js-v&lt;version&gt;</code> tag, the way napi-rs packages are laid out (<code>chloedb</code> names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). <code>node scripts/pack.mjs &lt;platform&gt;</code> packs a tarball by hand, and <code>--npm &lt;platform&gt;</code> and <code>--npm-main</code> the packages npm gets.</p>
 <h3 id="from-source">From source<a class="anchor" href="#from-source" aria-label="Link to this section">#</a></h3>
 <p>It needs Rust (stable) and a C compiler.</p>
 <pre data-lang="sh">cd chloedb-js
