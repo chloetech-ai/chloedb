@@ -675,7 +675,7 @@ function render(el, ctx) {
     concept: (s) => app.concepts[s] || s,
     api: async (path, opts) => {
       const j = await ctx.api(path, opts);
-      if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
+      if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; app.cached = !!j.cached; drawSql(); }
       return j;
     },
     href: (...parts) => ctx.href(...parts),
@@ -700,9 +700,9 @@ function render(el, ctx) {
 
   function drawSql() {
     const ms = app.queries.reduce((a, q) => a + (q.ms || 0), 0);
-    fill(sqlBtn, "SQL · ", h("b", {}, String(app.queries.length)), ` ${app.queries.length === 1 ? "query" : "queries"} · ${Math.round(app.took || ms)} ms`);
+    fill(sqlBtn, "SQL · ", h("b", {}, String(app.queries.length)), ` ${app.queries.length === 1 ? "query" : "queries"} · ${Math.round(app.took || ms)} ms${app.cached ? " · kept" : ""}`);
     fill(sqlPanel, h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
-      h("b", {}, "The SQL behind this page"), h("button", { class: "ax-btn ghost", onclick: () => sqlPanel.classList.remove("on") }, "Close")),
+      h("b", {}, app.cached ? "The SQL behind this page, made earlier and kept for 12 hours" : "The SQL behind this page"), h("button", { class: "ax-btn ghost", onclick: () => sqlPanel.classList.remove("on") }, "Close")),
       app.queries.map((q) => h("div", { class: "q" },
         h("div", { class: "w" }, q.what, h("span", {}, `${fmt(q.rows)} rows · ${(q.ms ?? 0).toFixed(1)} ms`)),
         q.note ? h("div", { class: "bad" }, q.note) : null,

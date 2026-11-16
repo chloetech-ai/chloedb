@@ -488,15 +488,7 @@ async fn collaborators(State(svc): State<Shared>, Path(id): Path<String>) -> Ans
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let key = format!("collab:{id}");
-    let v = match memo_get(&svc, &key, 12 * 3600) {
-        Some(v) => v,
-        None => {
-            let v = collab::find(&c, &id).await.ok_or_else(|| not_found(&format!("person {id}")))?;
-            memo_put(&svc, &key, &v);
-            v
-        }
-    };
-    done(&trace, v, t0)
+    memo(&svc, key, &trace, t0, async { collab::find(&c, &id).await.ok_or_else(|| not_found(&format!("person {id}"))) }).await
 }
 
 async fn reviewers_for_paper(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
@@ -602,6 +594,24 @@ async fn hot(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     done(&trace, v, t0)
 }
 
+/// An answer made by `make`, kept 12 hours under `key` with the queries and
+/// the time it took when it was made; a kept one comes back with `cached`.
+async fn memo(
+    svc: &Service,
+    key: String,
+    trace: &Trace,
+    t0: Instant,
+    make: impl std::future::Future<Output = Result<Value, ApiError>>,
+) -> Answer {
+    if let Some(mut v) = memo_get(svc, &key, 12 * 3600) {
+        v["cached"] = json!(true);
+        return Ok(Json(v));
+    }
+    let Json(v) = done(trace, make.await?, t0)?;
+    memo_put(svc, &key, &v);
+    Ok(Json(v))
+}
+
 /// An answer kept for `secs` under `key`; at most 2,000 are kept.
 fn memo_get(svc: &Service, key: &str, secs: u64) -> Option<Value> {
     let m = svc.memo.lock().unwrap();
@@ -623,15 +633,7 @@ async fn labs_index(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let key = format!("labs:{}:{}", a.area, a.t);
-    let v = match memo_get(&svc, &key, 12 * 3600) {
-        Some(v) => v,
-        None => {
-            let v = labs::index(&c, &a.area, &a.t).await;
-            memo_put(&svc, &key, &v);
-            v
-        }
-    };
-    done(&trace, v, t0)
+    memo(&svc, key, &trace, t0, async { Ok(labs::index(&c, &a.area, &a.t).await) }).await
 }
 
 async fn labs_find(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
@@ -650,15 +652,7 @@ async fn lab_page(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     ctx!(svc, trace, c);
     let id = id.to_lowercase();
     let key = format!("lab:{id}");
-    let v = match memo_get(&svc, &key, 12 * 3600) {
-        Some(v) => v,
-        None => {
-            let v = labs::lab(&c, &id).await.ok_or_else(|| not_found(&format!("lab {id}")))?;
-            memo_put(&svc, &key, &v);
-            v
-        }
-    };
-    done(&trace, v, t0)
+    memo(&svc, key, &trace, t0, async { labs::lab(&c, &id).await.ok_or_else(|| not_found(&format!("lab {id}"))) }).await
 }
 
 async fn paper_labs(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
@@ -672,15 +666,7 @@ async fn code_page(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let key = format!("code:{}", a.area);
-    let v = match memo_get(&svc, &key, 12 * 3600) {
-        Some(v) => v,
-        None => {
-            let v = code::page(&c, &a.area).await;
-            memo_put(&svc, &key, &v);
-            v
-        }
-    };
-    done(&trace, v, t0)
+    memo(&svc, key, &trace, t0, async { Ok(code::page(&c, &a.area).await) }).await
 }
 
 async fn hot_people(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
@@ -688,15 +674,7 @@ async fn hot_people(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     ctx!(svc, trace, c);
     let days = a.days.unwrap_or(730).clamp(365, 1460);
     let key = format!("rising:{}:{days}", a.area);
-    let v = match memo_get(&svc, &key, 12 * 3600) {
-        Some(v) => v,
-        None => {
-            let v = collab::rising(&c, &a.area, days).await;
-            memo_put(&svc, &key, &v);
-            v
-        }
-    };
-    done(&trace, v, t0)
+    memo(&svc, key, &trace, t0, async { Ok(collab::rising(&c, &a.area, days).await) }).await
 }
 
 /// The gap finder's list, made once and kept 12 hours.
