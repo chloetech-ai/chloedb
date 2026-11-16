@@ -1,0 +1,547 @@
+{
+ "about": "The six personas of ChloeDB's first persona evaluation (0.3.4, 2026-11-15) and the problems their reports named. POST /api/converge/seed loads them as a starting board: every finding starts in Found, without a repro.",
+ "personas": [
+  {
+   "key": "maya",
+   "name": "Maya, tech lead",
+   "role": "A tech lead who runs several Claude Code agents on one repository and wants rules and decisions to carry across agents and branches",
+   "traits": [
+    "Reviews every merge herself.",
+    "Expects 'never' to become a rule."
+   ],
+   "journey": "Install ChloeCtx and Workbench, start three agents on a small repo, tell one a rule and a decision, start another later and check it knew them, then review and merge all three in Ship and tune the harness.",
+   "surfaces": [
+    "chloedb-workbench",
+    "chloectx"
+   ],
+   "ease": 4
+  },
+  {
+   "key": "dev",
+   "name": "Dev, platform lead",
+   "role": "A platform lead sharing his team's agent memory for one repository through ChloeCtx sync to a ChloeDB cluster",
+   "traits": [
+    "Cares that a leaked laptop key is safe.",
+    "Checks that a delete really deletes."
+   ],
+   "journey": "Start a cluster with the ChloeCtx app, give four machines per-project keys, sync memory between them, accept a teammate's rules, then forget a secret everywhere and check it is gone.",
+   "surfaces": [
+    "chloectx",
+    "chloedb-server"
+   ],
+   "ease": 3
+  },
+  {
+   "key": "priya",
+   "name": "Priya, SRE",
+   "role": "The on-call SRE for a 3-shard cluster who works only in the Command Center",
+   "traits": [
+    "Never reads the code.",
+    "Trusts the page only when the numbers agree."
+   ],
+   "journey": "Ship logs into a 3-shard cluster, set alerts, live through a dead primary, chaos faults and a slow-query storm and fix each from the UI, then move a slot, replay autoscaling and run the Simulator.",
+   "surfaces": [
+    "chloedb-server",
+    "command center"
+   ],
+   "ease": 4
+  },
+  {
+   "key": "leo",
+   "name": "Leo, search engineer",
+   "role": "A search engineer building a support knowledge base with crawling, hybrid search, RAG and an MCP tool",
+   "traits": [
+    "Measures relevance before and after.",
+    "Reads error codes literally."
+   ],
+   "journey": "Crawl a docs site into a server, build hybrid search over its passages, answer questions with RAG, tune relevance with the autopilot, and expose a saved search to an agent over MCP.",
+   "surfaces": [
+    "chloedb-crawl",
+    "chloedb",
+    "chloedb-server"
+   ],
+   "ease": 4
+  },
+  {
+   "key": "nina",
+   "name": "Nina, ops analyst",
+   "role": "An operations analyst who does not use a terminal, SQL or JSON, building a stock-room tool",
+   "traits": [
+    "Clicks the biggest button.",
+    "Gives up when a page talks in SQL."
+   ],
+   "journey": "Bring inventory and orders in from a feed, a push and a CSV, get daily totals per item, open live sheets with a pivot and a chart, and build an app with a reorder button, all from the Command Center, Sheets and Apps.",
+   "surfaces": [
+    "chloedb-sheets",
+    "chloedb-apps",
+    "command center"
+   ],
+   "ease": 2
+  },
+  {
+   "key": "sam",
+   "name": "Sam, startup CTO",
+   "role": "The CTO of a 3-person marketplace taking ChloeDB from an embedded file to a cluster on Kubernetes",
+   "traits": [
+    "Wants no query rewritten on the way.",
+    "Watches the cloud bill."
+   ],
+   "journey": "Build a marketplace's search and recommendations on an embedded file, follow Postgres with a single server, move to a local cluster, then to a DOKS cluster with the operator, and grow it under load.",
+   "surfaces": [
+    "chloedb",
+    "chloedb-server",
+    "operator"
+   ],
+   "ease": 3
+  },
+  {
+   "key": "ines",
+   "name": "Ines, Python developer",
+   "role": "A Python developer evaluating ChloeDB for a side project, who reads the docs carefully and expects them to be right",
+   "traits": [
+    "Follows the quickstart word for word.",
+    "Checks claims against the files with ls and grep before building anything.",
+    "Has no Rust toolchain."
+   ],
+   "journey": "Read README.md and docs/quickstart.md as a newcomer who wants ChloeDB from Python: install the package, open a file, create a table, load rows, run a search and a SQL query, and check that every command, flag, link and example matches this checkout.",
+   "surfaces": [
+    "docs",
+    "chloedb-py",
+    "onboarding"
+   ]
+  },
+  {
+   "key": "kenji",
+   "name": "Kenji, Node developer",
+   "role": "A full-stack JavaScript developer adding search to a Next.js app with the chloedb npm package",
+   "traits": [
+    "Copies examples into a fresh project and runs them.",
+    "Wants TypeScript types and clear errors."
+   ],
+   "journey": "Install chloedb from npm in a new Node project, open a local database, index product rows, run keyword and vector search from a route handler, then switch the same code to the fetch client against a chloedb-server.",
+   "surfaces": [
+    "chloedb-js",
+    "chloedb-server"
+   ]
+  },
+  {
+   "key": "olga",
+   "name": "Olga, Java backend engineer",
+   "role": "A Java engineer at a bank who must plug ChloeDB into a Spring service through JDBC",
+   "traits": [
+    "Reads the JDBC spec, not the blog post.",
+    "Expects connection pools and prepared statements to just work."
+   ],
+   "journey": "Build chloedb-java with Maven, connect with jdbc:chloedb:, create a table with a prepared statement, insert in batches inside a transaction, query with parameters, and use it through HikariCP from a small Spring Boot app.",
+   "surfaces": [
+    "chloedb-java",
+    "jdbc"
+   ]
+  },
+  {
+   "key": "raj",
+   "name": "Raj, ML engineer",
+   "role": "An ML engineer building a retrieval-augmented chatbot over company docs",
+   "traits": [
+    "Uses LangChain and LlamaIndex daily.",
+    "Judges a vector store by recall and by how little glue it needs."
+   ],
+   "journey": "Load a few hundred Markdown docs through chloedb.langchain and chloedb.llama_index, embed them, ask hybrid keyword and vector questions, filter by metadata, and compare the answers' sources with a plain BM25 search.",
+   "surfaces": [
+    "chloedb-py",
+    "frameworks",
+    "vectors"
+   ]
+  },
+  {
+   "key": "tomas",
+   "name": "Tomas, data engineer",
+   "role": "A data engineer moving a nightly analytics job from Postgres to ChloeDB",
+   "traits": [
+    "Loads millions of rows and watches memory.",
+    "Wants SQL that behaves like the SQL he knows."
+   ],
+   "journey": "Bulk-load a large CSV of orders into a chloedb-server, build a rollup grouped by day and sku, write an ASOF JOIN against a prices table, export the results, and rerun the load to check it is idempotent.",
+   "surfaces": [
+    "chloedb-server",
+    "sql",
+    "load"
+   ]
+  },
+  {
+   "key": "amara",
+   "name": "Amara, security auditor",
+   "role": "A security engineer asked to sign off on deploying chloedb-server inside the company network",
+   "traits": [
+    "Assumes every default is wrong until proven otherwise.",
+    "Tries the API with a low-privilege key first."
+   ],
+   "journey": "Start chloedb-server with tokens and scoped keys, try each scope against the HTTP and gRPC APIs and the UI, check TLS, CORS and what is logged, and look for any path that reads or writes past its scope.",
+   "surfaces": [
+    "chloedb-server",
+    "auth",
+    "security"
+   ]
+  },
+  {
+   "key": "wei",
+   "name": "Wei, performance engineer",
+   "role": "A performance engineer deciding whether ChloeDB can serve search at 2,000 queries a second",
+   "traits": [
+    "Measures before believing.",
+    "Reads p99, not averages."
+   ],
+   "journey": "Load a BEIR collection into a single server and then into a two-shard coordinator, run chloedb-server-bench and a hand-written load, record p50 and p99 latency and throughput, and check the numbers the docs claim against what this machine gets.",
+   "surfaces": [
+    "chloedb-server",
+    "coordinator",
+    "benchmarks"
+   ]
+  },
+  {
+   "key": "lucia",
+   "name": "Lucia, documentation lead",
+   "role": "A documentation lead who wants her product's docs site searchable with ChloeDB's crawler",
+   "traits": [
+    "Not a programmer; follows the guide.",
+    "Expects the crawler to respect robots.txt and to say what it skipped."
+   ],
+   "journey": "Crawl a small public docs site with chloedb-crawl into a local cluster, watch progress in the command center, search the pages it stored, recrawl after a change, and find out why a page is missing.",
+   "surfaces": [
+    "chloedb-crawl",
+    "command center"
+   ]
+  },
+  {
+   "key": "hamid",
+   "name": "Hamid, network on-call engineer",
+   "role": "An on-call engineer at a regional carrier trying chloedb-netops for the night shift",
+   "traits": [
+    "Works from a phone at 3 AM.",
+    "Needs to know what is broken and who to call in under a minute."
+   ],
+   "journey": "Start chloedb-netops with the simulated network, open the shift's worklist, follow an incident from an alert to the topology map, ask in a sentence which customers are affected, and hand the shift over with notes.",
+   "surfaces": [
+    "chloedb-netops",
+    "command center"
+   ]
+  },
+  {
+   "key": "grace",
+   "name": "Grace, solo founder",
+   "role": "A solo founder who codes with Claude Code across five projects and wants it to remember her decisions",
+   "traits": [
+    "Installs things as plugins, never from source.",
+    "Gives up if setup takes more than ten minutes."
+   ],
+   "journey": "Install ChloeCtx as a Claude Code plugin, work in two projects, state a rule and a decision in one session, check a new session recalls them, open chloectx ui to see what was stored, and remove one memory she does not want kept.",
+   "surfaces": [
+    "chloectx",
+    "plugin",
+    "onboarding"
+   ]
+  }
+ ],
+ "findings": [
+  {
+   "persona": "priya",
+   "severity": "blocker",
+   "kind": "bug",
+   "title": "Plan the repair leaves a 2-copy shard with no reads",
+   "detail": "On a shard with a primary and one replica, applying Plan the repair after the primary died left the shard answering no reads for about 52 s, while Home said searches still answer.",
+   "step": "Incident 1: dead primary",
+   "source": "p3-priya/REPORT.md bug 1",
+   "theme": "reliability"
+  },
+  {
+   "persona": "sam",
+   "severity": "blocker",
+   "kind": "bug",
+   "title": "Operator rollout verification reads the demo products table and rolls back every change",
+   "detail": "On a ChloeDB cluster run by the Kubernetes operator (resource kind StrataCluster) without schema or demo, rollout verification queries the demo table (operator first_table() -> demo::schema), fails, and rolls back each spec change.",
+   "step": "Stage 4: DOKS cluster",
+   "source": "p6-sam/REPORT.md bug 1",
+   "theme": "reliability"
+  },
+  {
+   "persona": "sam",
+   "severity": "blocker",
+   "kind": "bug",
+   "title": "A new shard or replica answers reads before it holds the tables",
+   "detail": "Adding shards under load gave 1,091 'no such table: listings' errors in about 2 s; adding replicas gave 566 more over 20 s.",
+   "step": "Grow the cluster under load",
+   "source": "p6-sam/REPORT.md bug 2",
+   "theme": "scalability"
+  },
+  {
+   "persona": "dev",
+   "severity": "blocker",
+   "kind": "bug",
+   "title": "origin is client-asserted, so a teammate's key can forge accepted rules",
+   "detail": "A write-scoped key inserted a row of kind decision with a forged origin, and other machines treated it as accepted.",
+   "step": "Accept a teammate's rules",
+   "source": "p2-dev/REPORT.md bug 1",
+   "theme": "security"
+  },
+  {
+   "persona": "dev",
+   "severity": "blocker",
+   "kind": "bug",
+   "title": "Ops-scope keys read session transcripts through /v1/sql",
+   "detail": "A key of scope ops gets 403 on /v1/memory/* but POST /v1/sql SELECT content FROM chloectx_mem_* returns the rows.",
+   "step": "Give machines keys",
+   "source": "p2-dev/REPORT.md bug 3",
+   "theme": "security"
+  },
+  {
+   "persona": "dev",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Rules not yet accepted leak through episode summaries",
+   "detail": "On a machine that accepted nothing, a session answered a teammate's rules from 'where the last session left off'.",
+   "step": "Accept a teammate's rules",
+   "source": "p2-dev/REPORT.md bug 2",
+   "theme": "trust"
+  },
+  {
+   "persona": "dev",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Forget leaves the forgotten text in state files and segments",
+   "detail": "After forget --everywhere, the prompt was still in state.json and the deleted text in a segment file.",
+   "step": "Forget a secret everywhere",
+   "source": "p2-dev/REPORT.md bug 5",
+   "theme": "trust"
+  },
+  {
+   "persona": "dev",
+   "severity": "minor",
+   "kind": "bug",
+   "title": "remember ids collide across machines",
+   "detail": "Two machines each got manual:1 for different records.",
+   "step": "Sync memory",
+   "source": "p2-dev/REPORT.md bug 4",
+   "theme": "correctness"
+  },
+  {
+   "persona": "maya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "A steer queued behind a prompt is not recorded as a decision",
+   "detail": "A steer delivered 'queued' while the agent showed a permission prompt reached the agent but ChloeCtx stored no decision or preference; typed at an idle prompt the same text was stored.",
+   "step": "Tell an agent a rule",
+   "source": "p1-maya/REPORT.md bug 1",
+   "theme": "trust"
+  },
+  {
+   "persona": "maya",
+   "severity": "major",
+   "kind": "gap",
+   "title": "Rules ChloeCtx learned never become Workbench rules",
+   "detail": "After 'Never touch money.py', /api/rules stayed empty, Start a change said no guarded paths, and Ship said no rule names the branch's files although it edited money.py.",
+   "step": "Review in Ship",
+   "source": "p1-maya/REPORT.md bug 2",
+   "theme": "trust"
+  },
+  {
+   "persona": "maya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Needs you misses an agent that ended its turn with a question",
+   "detail": "The agent's last message offered options 1 and 2 and asked to decide; GET /api/needs returned count 0.",
+   "step": "Answer agents",
+   "source": "p1-maya/REPORT.md bug 3",
+   "theme": "usability"
+  },
+  {
+   "persona": "maya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "First-run onboarding prompts are not shown in Needs you",
+   "detail": "In a fresh home the theme picker, the API-key confirmation (default No) and the security note wait in the terminal while Needs you shows nothing.",
+   "step": "Start the first agent",
+   "source": "p1-maya/REPORT.md bug 5",
+   "theme": "onboarding"
+  },
+  {
+   "persona": "maya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Harness permissions take the full rule set and drop additions silently",
+   "detail": "The permissions part is the full effective set, its own shape with remove is refused by lint, and an added allow rule came back dropped with no message.",
+   "step": "Optimize the harness",
+   "source": "p1-maya/REPORT.md bug 4",
+   "theme": "usability"
+  },
+  {
+   "persona": "priya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Slot moves are blocked by the OTLP log table and preflight misses it",
+   "detail": "A slot move failed on the log table that guide/logs.md creates, while preflight said it was fine.",
+   "step": "Move a slot",
+   "source": "p3-priya/REPORT.md bug 2",
+   "theme": "scalability"
+  },
+  {
+   "persona": "priya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "The keyless log table from guide/logs.md fails through a coordinator",
+   "detail": "Creating the documented keyless log table through the coordinator is refused.",
+   "step": "Ship logs",
+   "source": "p3-priya/REPORT.md bug 3",
+   "theme": "onboarding"
+  },
+  {
+   "persona": "priya",
+   "severity": "major",
+   "kind": "bug",
+   "title": "The server's model client ignores the system CA and SSL_CERT_FILE",
+   "detail": "Behind a proxy with its own CA, the on-call agent's calls fail TLS; the workaround is to keep api.anthropic.com out of the proxy.",
+   "step": "Ask the on-call agent",
+   "source": "p3-priya/REPORT.md bug 4, p4-leo/REPORT.md bug 1",
+   "theme": "onboarding"
+  },
+  {
+   "persona": "priya",
+   "severity": "minor",
+   "kind": "ux",
+   "title": "Home says searches are failing past the SLO while the same card shows 0.63% of 1%",
+   "detail": "Contradictory headline and number on Home during the storm.",
+   "step": "Slow-query storm",
+   "source": "p3-priya/REPORT.md bug 7",
+   "theme": "observability"
+  },
+  {
+   "persona": "priya",
+   "severity": "minor",
+   "kind": "ux",
+   "title": "The timeline names a returned primary's role wrongly",
+   "detail": "'is back after 52 s down, role primary' for a node that came back as a replica.",
+   "step": "Incident 1: dead primary",
+   "source": "p3-priya/REPORT.md bug 6",
+   "theme": "observability"
+  },
+  {
+   "persona": "leo",
+   "severity": "major",
+   "kind": "bug",
+   "title": "A stored function body cannot use a text-embedded vector",
+   "detail": "A function whose body embeds text into a vector is refused, though the same SQL runs outside a function.",
+   "step": "Saved search over MCP",
+   "source": "p4-leo/REPORT.md bug 2",
+   "theme": "correctness"
+  },
+  {
+   "persona": "leo",
+   "severity": "minor",
+   "kind": "bug",
+   "title": "The relevance apply gate answers query_invalid instead of a gate error",
+   "detail": "POST /v1/relevance/proposals/<id>/apply on a not-significant proposal answers error_code query_invalid with a hint about the statement.",
+   "step": "Tune relevance",
+   "source": "p4-leo/REPORT.md bug 3",
+   "theme": "usability"
+  },
+  {
+   "persona": "leo",
+   "severity": "minor",
+   "kind": "docs",
+   "title": "rank_profile with MAX k PER gets a misleading refusal",
+   "detail": "ORDER BY rank_profile(...) MAX 2 PER page is refused as if rank_profile were not the whole ORDER BY.",
+   "step": "Hybrid search",
+   "source": "p4-leo/REPORT.md bug 4",
+   "theme": "docs"
+  },
+  {
+   "persona": "nina",
+   "severity": "major",
+   "kind": "bug",
+   "title": "The connector dry run and Add disagree about creating the target",
+   "detail": "Dry run says the target table does not exist and would not be created; Add creates it anyway (or the reverse), so the preview cannot be trusted.",
+   "step": "Bring in the feed",
+   "source": "p5-nina/REPORT.md bug 1",
+   "theme": "trust"
+  },
+  {
+   "persona": "nina",
+   "severity": "major",
+   "kind": "bug",
+   "title": "create_target cannot make KEYWORD columns, so rollups fail",
+   "detail": "A mapped field without 'as' becomes TEXT, and CREATE ROLLUP ... GROUP BY sku fails because sku is not KEYWORD.",
+   "step": "Daily totals per item",
+   "source": "p5-nina/REPORT.md bug 2",
+   "theme": "onboarding"
+  },
+  {
+   "persona": "nina",
+   "severity": "major",
+   "kind": "bug",
+   "title": "The auto-started Sheets cannot read cluster tables into workbooks",
+   "detail": "With chloedb-sheets beside the server, opening a cluster table as a workbook fails.",
+   "step": "Live sheets",
+   "source": "p5-nina/REPORT.md bug 3",
+   "theme": "onboarding"
+  },
+  {
+   "persona": "nina",
+   "severity": "major",
+   "kind": "bug",
+   "title": "Ask does not see the database's tables",
+   "detail": "With inventory, orders and suppliers in the database, Ask answers as if there were no tables.",
+   "step": "Ask a question",
+   "source": "p5-nina/REPORT.md bug 4",
+   "theme": "usability"
+  },
+  {
+   "persona": "nina",
+   "severity": "minor",
+   "kind": "bug",
+   "title": "The Sheets Summarize default range stops at row 64",
+   "detail": "On a 90-row table, Summarize proposes A1:E64.",
+   "step": "Pivot and chart",
+   "source": "p5-nina/REPORT.md bug 5",
+   "theme": "correctness"
+  },
+  {
+   "persona": "sam",
+   "severity": "major",
+   "kind": "gap",
+   "title": "recommend() and ppr() are refused on a sharded cluster",
+   "detail": "The same recommendation queries that work on a file and a single server are refused by the coordinator.",
+   "step": "Stage 3: local cluster",
+   "source": "chloedb-personas summary",
+   "theme": "scalability"
+  },
+  {
+   "persona": "sam",
+   "severity": "major",
+   "kind": "bug",
+   "title": "A rollout deadlocks when a pending copy waits on copies whose requests block it",
+   "detail": "On one node, lowering CPU requests never finished: the operator waited for a pending copy that the old copies' requests blocked.",
+   "step": "Stage 4: DOKS cluster",
+   "source": "p6-sam/REPORT.md bug 3",
+   "theme": "reliability"
+  },
+  {
+   "persona": "sam",
+   "severity": "minor",
+   "kind": "bug",
+   "title": "/v1/sql/check gives the wrong reason for statements a coordinator refuses",
+   "detail": "The check says the statement is fine or gives another reason, then the coordinator refuses it.",
+   "step": "Stage 3: local cluster",
+   "source": "p6-sam/REPORT.md bug 4",
+   "theme": "usability"
+  },
+  {
+   "persona": "sam",
+   "severity": "minor",
+   "kind": "docs",
+   "title": "Building a vector slice replaces a table's geo slice without a word",
+   "detail": "After adding a vector slice, near-me search stopped using the geo slice; nothing said so.",
+   "step": "Near-me search",
+   "source": "p6-sam/REPORT.md bug 5",
+   "theme": "docs"
+  }
+ ]
+}

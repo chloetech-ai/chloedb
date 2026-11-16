@@ -1,10 +1,11 @@
-// More (JOURNEYS.md, "More"): everything that is not one of the four goals.
-// #/more is the list (the phone's More tab); #/more/<item> is one of them.
+// More (JOURNEYS.md, "More"): Workbench's tools, everything that is not
+// one of its four goals. #/more is the list (Workbench's home lists them
+// too); #/more/<item> is one of them.
 // All terminals and the Decisions timeline are app.js's own views; the
 // others mount here: Where the time went (flow), Library, Rules and grants,
 // Guide, Keys, Setup check and Settings.
 import { h, useStyle, page, btn, label, kc, pane, icon, stateDot } from "/levels/common.js";
-import { MORE, KEYS } from "/goals/shell.js";
+import { MORE, KEYS, WB } from "/goals/shell.js";
 
 const enc = encodeURIComponent;
 const TITLES = Object.fromEntries(MORE.map(([k, , t]) => [k, t]));
@@ -16,7 +17,7 @@ export function mount(root, ctx) {
   root.append(el);
   const views = [];
   let alive = true;
-  ctx.crumbs([{ label: "Start", href: "#/" }, { label: "More", href: "#/more" }, ...(item ? [{ label: TITLES[item] || item, href: `#/more/${item}` }] : [])]);
+  ctx.crumbs([...WB, { label: "More", href: "#/more" }, ...(item ? [{ label: TITLES[item] || item, href: `#/more/${item}` }] : [])]);
 
   const level = (name, extra) => {
     const host = h("div", { class: "g-lv" });
@@ -26,7 +27,7 @@ export function mount(root, ctx) {
   };
 
   if (!item) {
-    el.append(page({ kicker: "More", title: "Everything else", sub: "The four goals are on Start. These are the tools around them." },
+    el.append(page({ kicker: "More", title: "Everything else", sub: "Workbench's four goals are on its home. These are the tools around them." },
       h("nav", { class: "g-mlist" }, MORE.map(([k, ic, t, sub]) =>
         h("a", { class: "more-row", href: `#/more/${k}` }, icon(ic), h("span", {}, t, h("small", {}, sub)), icon("chev", "i sm"))),
         // On a phone the top bar has no room for the bell: Notifications is here.
@@ -51,7 +52,7 @@ export function mount(root, ctx) {
     import("/goals/rules-suggest.js").then((m) => {
       if (!alive) return;
       views.push(m.mount(top, ctx));
-      ctx.crumbs([{ label: "Start", href: "#/" }, { label: "More", href: "#/more" }, { label: TITLES.rules, href: "#/more/rules" }]);
+      ctx.crumbs([...WB, { label: "More", href: "#/more" }, { label: TITLES.rules, href: "#/more/rules" }]);
     }).catch((e) => top.replaceChildren(h("p", { class: "g-bad" }, `This did not load: ${e.message}`)));
     if (!p) return;
     let panel = null;
@@ -108,7 +109,7 @@ export function mount(root, ctx) {
       h("span", {}, h("b", {}, title), text));
     el.append(page({ kicker: "More", title: "Settings", sub: "Kept in this browser." },
       h("div", { class: "gp-sec" }, pane("This browser", null, h("div", { class: "bd g-sets" },
-        tick("openOnInbox", "Open on the inbox", " Workbench opens on Needs you, every project's, instead of Start."),
+        tick("openOnInbox", "Open on the inbox", " Converge opens on Needs you, every project's, instead of the board."),
         tick("compact", "Compact rows", h("span", {}, " One line per agent on Continue and Start a change. ", kc("z"), " turns it on or off.")))))));
   }
 

@@ -3287,3 +3287,148 @@ From the simulated users' second run (Priya, Maya, Dev, Lee):
   `review_names_the_fix_before_its_check_search_the_definition_and_trace_the_conflict`,
   `a_replaced_decision_that_was_yours_says_yours`, and unit tests in
   goals, preview, blast, trail, review, search, trace and flow.
+
+## Seventh build: Converge, the main app
+
+Converge (`src/converge.rs`) is the entry point: personas play the
+project, what they hit becomes a card, and each card walks eight gated
+stages (found, reproduce, scope, prioritize, develop, verify, review,
+merged) to a pull request you merge. You make three picks: Found →
+Reproduce, Start development, and the merge. This round adds asks, cards
+by hand that are already picked, personas made from the codebase,
+components, a persona's memory, ChloeCtx for scoping, and an activity feed
+of everything the loop does. Every write below takes only your token.
+
+### Asks: your words become a card
+
+`POST /api/converge/ask {repo, text}` → `201 {finding, run}`. The runner's
+role `card` (read-only tools, in the main checkout, `settings.model`)
+answers `{title, detail, kind: bug|gap|docs|ux|opportunity|feature, theme,
+component, severity, acceptance}`. The card is yours (`by: "you"`, the
+acceptance kept as its scope's, which scoping keeps), so it goes straight
+to Reproduce (events `reported` then `asked`, by `you`) and the loop is
+kicked. The call waits (up to five minutes); its run (`purpose: "ask"`)
+counts toward the day's budget. A runner failure answers 502 with the
+error and creates nothing (the feed says so).
+
+`POST /api/converge/findings` takes `pick: true` (your token only): the
+new card goes to Reproduce the same way. Both it and `PUT`/`PATCH
+/api/converge/findings/:id` take `component`.
+
+### Components
+
+Each finding has a `component` (stored, a column of `cv_findings`), one of
+the project's parts (`components_of`): each top-level folder holding a
+Cargo.toml, package.json, pyproject.toml, pom.xml or go.mod, the language
+packages (`*-py`, `*-js`, `*-java`, …) as `sdks`, then `docs`,
+`packaging` (an installer or `packaging/`) and `other`. On ChloeDB:
+chloectx, chloedb, chloedb-apps, chloedb-crawl, chloedb-netops,
+chloedb-server, chloedb-sheets, chloedb-swarm, chloedb-workbench, sdks,
+docs, packaging, other. It is set when the finding is made: the one the
+runner gave (play, card) when the project has it, else the part its
+words or paths name, else its persona's first surface that names one,
+else the part its words point at most (`COMPONENT_WORDS`), else `docs`
+for a docs finding, else `other`. Scoping corrects it from the files the
+scope touches (an event `component`, in the feed); you set it by `PUT` or
+`PATCH`. Findings from before are filled in at startup; the seed's at
+load. The overview gives `components: [{name, open}]`;
+`GET /api/converge/metrics` and `/timeline` take `component=`.
+
+### The timeline
+
+Each bucket also has `spend_usd` (the runs started in it) and `agents
+{repro, fix, persona, generate}` (repro and fix agents started, from the
+gates' events; persona runs; generator runs). `merged: [{id, title,
+component, found_ts, merged_ts}]` lists the findings merged in the range.
+With `component=`, only its findings and the work on them count (persona
+explore runs and the generator are the project's, so they drop out).
+
+### Personas from the codebase
+
+`POST /api/converge/personas/generate {repo, from: "codebase", count:
+1..6}` (default 3) answers `202 {run}` at once. In the background the
+runner's role `personas` (Read, Glob, Grep) reads the README, the docs and
+the code and answers `{personas: [{name, role, traits[], journey,
+surfaces[], component, why}]}`; each new one (a name not taken, with a
+journey) is a persona on probation, `origin: "codebase"`, its component
+first among its surfaces. The run (`purpose: "generate"`, `persona:
+null`) streams its steps like a persona run (`GET
+/api/converge/runs/:id`: `live`, `steps`), and lists what it made in
+`findings` (`{persona, name}`) or its `error`. One at a time per project
+(409). Without `from`, the old single persona aimed at the least-played
+part stays.
+
+### A persona's memory
+
+A persona has `use_memory` (default false), set by `PUT` or `PATCH
+/api/converge/personas/:id {use_memory}` (also name, role, traits,
+journey, surfaces); `POST /api/converge/personas/:id/play {use_memory}`
+overrides it for one run, and the run keeps `use_memory` (whether it
+really had it). With it, the `play` call does not set `CHLOECTX_DISABLE`:
+it gets `CHLOECTX_HOME=<data>/converge/memory/<persona id>` (its own
+store, not yours), `CHLOECTX_MODELS` (yours: `$CHLOECTX_MODELS`, else
+`chloectx/models` under `$XDG_DATA_HOME` or `~/.local/share`, else
+`engram/models` when only that one is there), ChloeCtx's hooks and server
+in `--settings` and `--mcp-config` files of the run (`chloectx wiring`),
+`mcp__chloectx__*` in its tools, ChloeCtx's `Who` with source
+`workbench` (its prompt is not your words), and a line in its prompt that
+it remembers its earlier visits. When ChloeCtx cannot be wired it plays
+without, and a `decide` item says why. Every other call runs with
+ChloeCtx off, except scoping. Eases compare only between runs of the same mode: a persona keeps `ease`/`ease_hist` of runs without memory and `ease_memory`/`ease_hist_memory` of runs with it, Verify replays in the mode of the run that found the problem (and skips the ease check, `ease_compared: false`, if the modes still differ), and the timeline's ease is of runs without memory. Separation is only through `CHLOECTX_HOME` and ChloeCtx's own options: no store's files are copied or written.
+
+### Scoping asks the project's memory
+
+The `scope` call runs with ChloeCtx and the project's usual store (no
+`CHLOECTX_HOME` of its own), wired the same way in the main checkout, with
+only its read tools (`memory_search`, `memory_ask`, `memory_timeline`) and
+source `workbench`; its prompt asks memory for earlier decisions and rules
+about the files first. Without a ChloeCtx it scopes without (a `decide`
+item, at most every ten minutes); the setting `scope_memory` (default true) turns it off. The installed ChloeCtx's `--version` is
+compared with the checkout's `chloectx/Cargo.toml`, every ten minutes at
+most: the overview's `chloectx: {bin, bin_version, repo_version, stale,
+why}`, and a `decide` item when they differ or it is missing. Nothing is
+upgraded.
+
+### The activity feed
+
+`GET /api/converge/activity?repo=&since=<ms>&limit=<n≤500>` (default 100)
+→ `{items, now}`, newest first, from `cv_log`. An item is `{id, ts, kind,
+actor, summary, finding?, persona?, run?, agent?, detail}`; `kind` is
+`tick`, `decide`, `gate`, `persona`, `agent`, `pr`, `generate`, `ask` or
+`you`; `actor` is `autopilot`, `you`, a persona's or an agent's name.
+
+- Each gate's event is mirrored (`log_kind`): your picks as `you`, the
+  repro agent's start and taken script and a fix agent's start as `agent`,
+  the pull request, CI and the merge as `pr`, the rest as `gate`
+  (`detail {gate, passed, from, to, title, component, evidence}`). A
+  finding's creation is logged by what made it, not as a gate.
+- A tick is logged only when it started something or its decisions
+  changed since the last logged one (kept in memory per project): `tick`
+  with `detail {started[], decisions[], keys[], budget {spent, per_day,
+  left}, wip {in_development, limit, auto}, runs {playing, at_once},
+  repro_agents {running, limit}, by_stage, autopilot, personas_play}`,
+  then one `decide` per decision that was not in the last one. A decision
+  has a key that stays while its numbers move (the money spent), so it is
+  not repeated: budget spent, autopilot off, WIP full, repro agents busy,
+  a persona due (plays now, or waits for a run slot), the next one due,
+  what waits for you (Reproduce or Dismiss, Start development, the merge,
+  a one-way door, anything else that needs you), verify yours, a new
+  persona made.
+- A persona run's start and end (outcome, ease, problems, cost,
+  minutes), a fix agent's turn ending, a repro agent ending without a
+  script, generation's start and end, asks, cards by hand, your edits of
+  a persona, your settings (the autopilot turned on or off).
+
+`GET /api/converge?repo=` adds `last_tick: {ts, summary, started,
+decisions}` (the last logged tick), `components` and `chloectx`.
+
+### Tests
+
+`converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
+`converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions`,
+`converge_a_persona_plays_with_its_own_memory_only_when_asked`, and the
+timeline's checks in `converge_takes_a_finding_from_a_persona_to_a_merged_fix`;
+the fake runner has `card` and `personas` cases and notes each call's
+ChloeCtx environment. Unit tests in converge: components, log kinds, when
+a tick is logged, asks, generated personas, the runner's arguments with
+and without memory, and the version check.

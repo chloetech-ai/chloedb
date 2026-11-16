@@ -43,6 +43,9 @@ pub struct Config {
     pub chloectx_required: bool,
     /// The most a session's terminal recording grows to.
     pub record_max: u64,
+    /// `--lan`: also answers to the machine's LAN addresses and `.local`
+    /// names, for a phone on the same network (the token still guards it).
+    pub lan: bool,
 }
 
 /// An error the API answers with.
@@ -171,6 +174,10 @@ pub struct SpawnRequest {
     /// has and a worktree does not (its `.claude/settings.local.json`, its
     /// local MCP servers): carried by default, `false` leaves them out.
     pub own_permissions: Option<bool>,
+    /// Environment for the session's commands (Claude Code's settings
+    /// `env`), e.g. a shared `CARGO_TARGET_DIR` so agents do not each build
+    /// from nothing.
+    pub env: Option<std::collections::BTreeMap<String, String>>,
     /// Set by the harness's replays (src/harness/replay.rs): this agent
     /// plays a case in a sandbox, under a version of another repository's
     /// harness.
@@ -701,10 +708,17 @@ impl Supervisor {
                 } else {
                     s
                 };
-                match &req.permissions {
+                let mut s = match &req.permissions {
                     Some(p) => p.apply(s, read_only),
                     None => s,
+                };
+                for (k, v) in req.env.iter().flatten() {
+                    if !s["env"].is_object() {
+                        s["env"] = json!({});
+                    }
+                    s["env"][k] = json!(v);
                 }
+                s
             },
             mcp_json(&exe, &self.cfg.url, &token, &id),
             &who,

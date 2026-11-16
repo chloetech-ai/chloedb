@@ -3,6 +3,12 @@
 // gives `{ redirect }` or `{ page, ...params, query }`. `project` is the
 // short name of the project in focus (the last one opened, or the most
 // active), for the old routes that had none.
+//
+// The app is Converge: `#/` opens its board (`#/converge?project=<the
+// project in focus>`, or its project picker with none). Workbench is its
+// section: Workbench's home, the old Start page, is `#/workbench`, and
+// Workbench's pages (`#/p/…`, `#/a/…`, `#/needs`, `#/more/…`, `#/debug/…`)
+// stay where they were.
 
 function split(hash) {
   const h = (hash || "").replace(/^#/, "");
@@ -14,13 +20,18 @@ function split(hash) {
 
 const MORE = ["terminals", "time", "decisions", "library", "rules", "guide", "keys", "setup", "settings"];
 
+/** Converge's board for a project, or its project picker with none. */
+export function home(project) {
+  return project ? `#/converge?project=${encodeURIComponent(project)}` : "#/converge";
+}
+
 export function resolve(hash, { project = null, agentIds = [] } = {}) {
   const { parts, query, raw } = split(hash);
   const q = raw ? `?${raw}` : "";
   const p = project;
   const P = (rest = "") => (p ? `#/p/${encodeURIComponent(p)}${rest}` : "#/p");
   // #<agent id> (the old zoom)
-  if (!hash || hash === "#" || hash === "#/") return { page: "start", query };
+  if (!hash || hash === "#" || hash === "#/") return { redirect: home(p) };
   if (!hash.startsWith("#/")) {
     const id = hash.slice(1);
     if (id === "decisions") return { redirect: "#/more/decisions" };
@@ -29,6 +40,7 @@ export function resolve(hash, { project = null, agentIds = [] } = {}) {
   }
   const [a, b, c, d] = parts;
   switch (a) {
+    case "workbench": return { page: "start", query };
     case "new": return { page: "new", step: b || "folder", query };
     case "needs": return { page: "needs", query };
     // The Simple view (goals/simple/): the board, a request, the box.
@@ -47,8 +59,14 @@ export function resolve(hash, { project = null, agentIds = [] } = {}) {
     case "debug": return { page: "debug", rest: parts.slice(1), query };
     // Optimize the harness (HARNESS.md): its pages follow their own hash.
     case "harness": return { page: "harness", rest: parts.slice(1), project: query.get("project") || p, query };
+    // Converge (SPEC.md, "Seventh build"): its views follow their own hash.
+    // The project is the hash's own: with none, Converge shows its project
+    // picker (the routing contract), so the project in focus is not taken,
+    // except for an old link to one finding (`?f=`), which needs a board.
+    case "converge": return { page: "converge", rest: parts.slice(1), project: query.get("project") || (query.has("f") ? p : null), query };
     case "more":
       if (b === "harness") return { redirect: "#/harness" };
+      if (b === "converge") return { redirect: home(p) };
       if (b === "tests") return { redirect: "#/debug/failing?tab=tests" };
       if (MORE.includes(b)) return { page: "more", item: b, query };
       return { page: "more", item: null, query };

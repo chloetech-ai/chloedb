@@ -184,7 +184,7 @@ export function mount(root, ctx) {
         working ? `${working} working` : null, by.review.length ? `${by.review.length} to review` : null, by.done.length ? `${by.done.length} done` : null].filter(Boolean).flatMap((x, i) => (i ? [" · ", x] : [x]))),
       h("span", { class: "sp" }),
       ps.length > 1 ? sel : null,
-      h("a", { class: "lv-link sv-adv", href: "#/", "data-view-switch": "advanced", title: "Today's Workbench: projects, Review, Debug, every agent's page" }, "Advanced view")].filter(Boolean));
+      h("a", { class: "lv-link sv-adv", href: "#/workbench", "data-view-switch": "advanced", title: "Today's Workbench: projects, Review, Debug, every agent's page" }, "Advanced view")].filter(Boolean));
 
     // A phone shows one stage at a time, Needs you first when anything does.
     const ph = phone();

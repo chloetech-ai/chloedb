@@ -166,6 +166,10 @@ kbd, .kc {
 .brand { display: flex; align-items: center; gap: var(--s-2); font-weight: var(--w-title); font-size: var(--fs-body); letter-spacing: var(--track-md); color: var(--text); text-decoration: none; flex: none; }
 .brand .mk { width: 16px; height: 16px; border-radius: var(--r-xs); border: 1.5px solid var(--text); position: relative; flex: none; }
 .brand .mk::after { content: ""; position: absolute; inset: 2px 7px 2px 2px; background: var(--text); border-radius: 1px; }
+/* Converge's parts on a desktop (the phone has them in its tab bar) */
+.tb-nav { display: flex; align-items: center; gap: 2px; flex: none; }
+.tb-nav a { color: var(--text-2); }
+.tb-nav a[aria-current="page"] { color: var(--text); background: var(--line); }
 .crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; font: var(--w-text) var(--fs-sm) var(--mono); color: var(--text-2); overflow: hidden; }
 .crumbs a, .crumbs b { padding: var(--s-1) 6px; border-radius: var(--r-xs); color: var(--text-2); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
 .crumbs a:hover { background: var(--line); color: var(--text); }
@@ -864,7 +868,7 @@ button.flag.warn:hover { border-color: var(--warn-line); }
 /* -------------------------------------------------------- narrow screens
    (JOURNEYS.md, "Phone"): 1024px folds the side panels under the page; at
    640px the top bar keeps the page's name, Back and Needs you, and the tab
-   bar takes Start, Needs you, Projects and More. */
+   bar takes Board, Needs you, Projects and Workbench. */
 @media (max-width: 1024px) {
   .search { width: 180px; }
   .crumbs a, .crumbs b { max-width: 140px; }
@@ -875,7 +879,7 @@ button.flag.warn:hover { border-color: var(--warn-line); }
   :root { --top: 52px; }
   body { font-size: var(--fs-body); line-height: var(--lh-body); }
   .top { gap: var(--s-1); padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
-  .brand .bn, .crumbs, .search, #agents-btn, #more-btn, .nt-top, .top .conn, .wide-only, .ag-tabs .hint { display: none !important; }
+  .brand .bn, .tb-nav, .crumbs, .search, #agents-btn, #more-btn, .nt-top, .top .conn, .wide-only, .ag-tabs .hint { display: none !important; }
   .tb-back { display: inline-flex; }
   .tb-back[hidden] { display: none; }
   .tb-title { display: block; flex: 1; min-width: 0; font: var(--w-title) var(--fs-md)/var(--lh-md) var(--sans); letter-spacing: var(--track-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 var(--s-1); }

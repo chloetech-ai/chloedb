@@ -1,11 +1,13 @@
 // The shell (JOURNEYS.md, "Global elements" and "Phone"): the top bar
-// (brand, breadcrumb, Search, Needs you, Agents, More), the phone's tab bar,
+// (brand, Board, Projects, Workbench, breadcrumb, Search, Needs you, Agents,
+// More), the phone's tab bar (Board, Needs you, Projects, Workbench),
 // the Needs-you drawer, the agent switcher, the More menu, and the sheets
 // every page shares: the grant sheet (a wide "don't ask again" answer,
 // agent P's), the batch answer, the keys. One count of what needs you, one count of
 // agents and one set of words for their groups, used on every page.
 import { h, useStyle, avatar, icon, kc, label, btn, stateDot, since, questionCard, optionsOf, parseJSON, GROUP_WORDS, toMs, isWide } from "/levels/common.js";
 import * as rules from "/goals/rules-suggest.js";
+import { home } from "/goals/router.js";
 
 const $ = (id) => document.getElementById(id);
 const enc = encodeURIComponent;
@@ -78,8 +80,28 @@ export function initShell(app) {
   update();
 }
 
+/** The app is Converge; Workbench is its section. A page of the section
+ *  starts its crumbs with these two. `#/` is Converge's board of the project
+ *  in focus (setCrumbs writes the project in). */
+export const WB = [{ label: "Converge", href: "#/" }, { label: "Workbench", href: "#/workbench" }];
+const homeHref = () => { const p = A && A.project(); return home(p ? p.project : null); };
+
+/** Crumbs that still start at the old Start page (`Start`, `#/`) start at
+ *  Converge: Converge's own pages at their board, Needs you under Converge,
+ *  every other page under Converge › Workbench. */
+function normal(list) {
+  let l = list || [];
+  if (l[0] && l[0].label === "Start" && l[0].href === "#/") {
+    const rest = l.slice(1);
+    if (rest[0] && /^#\/converge\b/.test(rest[0].href || "")) l = rest;
+    else if (/^#\/needs\b/.test(location.hash)) l = [WB[0], ...rest];
+    else l = [...WB, ...rest];
+  }
+  return l.map((c) => (c.href === "#/" ? { ...c, href: homeHref() } : c));
+}
+
 export function setCrumbs(list) {
-  O.crumbs = list || [];
+  O.crumbs = normal(list);
   const nav = $("crumbs");
   nav.replaceChildren(...O.crumbs.flatMap((c, i) => [
     i ? h("span", { class: "sl" }, "/") : null,
@@ -87,11 +109,11 @@ export function setCrumbs(list) {
   ]).filter(Boolean));
   const last = O.crumbs[O.crumbs.length - 1];
   const parent = O.crumbs[O.crumbs.length - 2];
-  $("tb-title").textContent = last ? last.label : "Workbench";
+  $("tb-title").textContent = last ? last.label : "Converge";
   const back = $("tb-back");
   back.hidden = !parent;
   if (parent) { back.href = parent.href; back.setAttribute("aria-label", `Back to ${parent.label}`); }
-  document.title = `${A && A.needs().count ? `(${A.needs().count}) ` : ""}${last && O.crumbs.length > 1 ? last.label + " · " : ""}Workbench`;
+  document.title = `${A && A.needs().count ? `(${A.needs().count}) ` : ""}${last && O.crumbs.length > 1 ? last.label + " · " : ""}Converge`;
 }
 export function crumbs() { return O.crumbs; }
 
@@ -125,10 +147,27 @@ export function update() {
     if (O.open === "needs") drawDrawer();
     else if (O.open === "agents") drawSwitcher();
   }
-  // the tab bar: which goal the page is under
+  // The tab bar and the top bar's links: which part of Converge the page
+  // is under. Board is the project in focus's board; Projects is the
+  // project picker (Converge's, or Workbench's Open a project); Workbench
+  // holds the rest.
   const hsh = location.hash || "#/";
-  const tab = /^#\/s\/new\b/.test(hsh) ? "new" : /^#\/s(\/|$|\?)/.test(hsh) ? "board" : /^#\/needs/.test(hsh) ? "needs" : /^#\/(p|a|debug|new)\b/.test(hsh) ? "projects" : /^#\/more/.test(hsh) ? "more" : "start";
-  for (const a of document.querySelectorAll("#tabbar a")) { if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
+  const tab = tabOf(hsh);
+  for (const a of document.querySelectorAll("#tabbar a, #tb-nav a")) {
+    if (a.dataset.tab === "board") a.href = homeHref();
+    if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+}
+
+/** Which tab a hash is under: board, needs, projects or workbench. */
+export function tabOf(hsh) {
+  if (/^#\/s\/new\b/.test(hsh)) return "new";
+  if (/^#\/s(\/|$|\?)/.test(hsh)) return "simple";
+  if (/^#\/needs\b/.test(hsh)) return "needs";
+  if (/^#\/converge\b/.test(hsh)) return /[?&]project=/.test(hsh) ? "board" : "projects";
+  if (/^#\/(p|new)\/?(\?|$)/.test(hsh) || /^#\/new\b/.test(hsh)) return "projects";
+  if (hsh === "#/" || hsh === "#" || hsh === "") return "board";
+  return "workbench";
 }
 
 // ---------------------------------------------------------------- overlays
@@ -224,8 +263,10 @@ export const MORE = [
 function drawMore() {
   $("ov").replaceChildren(
     h("div", { class: "ov-scrim clear" }),
-    h("nav", { class: "pop", "aria-label": "More" }, MORE.map(([k, ic, t, sub]) =>
-      h("a", { class: "more-row", href: `#/more/${k}`, onclick: close }, icon(ic), h("span", {}, t, h("small", {}, sub)), k === "terminals" ? kc("g t") : k === "keys" ? kc("?") : h("span")))));
+    h("nav", { class: "pop", "aria-label": "More" },
+      h("a", { class: "more-row", href: "#/workbench", onclick: close }, icon("grid"), h("span", {}, "Workbench", h("small", {}, "Its home: your projects, agents and what needs you")), kc("g w")),
+      MORE.map(([k, ic, t, sub]) =>
+        h("a", { class: "more-row", href: `#/more/${k}`, onclick: close }, icon(ic), h("span", {}, t, h("small", {}, sub)), k === "terminals" ? kc("g t") : k === "keys" ? kc("?") : h("span")))));
 }
 
 // ---------------------------------------------------------------- cards
@@ -234,6 +275,7 @@ function drawMore() {
  *  prompt, an agent waiting with no question read yet, or an alert. */
 export function needCard(it, { big = false } = {}) {
   if (it.kind === "alert") return alertCard(it);
+  if (it.kind === "converge") return convergeCard(it);
   if (it.kind === "waiting" && it.asked) {
     // Its turn ended with a question to you: answered in words, with Tell.
     return h("div", { class: "wait-card", tabindex: "0", "data-need": it.id },
@@ -258,6 +300,24 @@ export function needCard(it, { big = false } = {}) {
   if (O.sel.has(it.id)) card.classList.add("picked");
   if (it.kind === "trust") card.prepend(h("div", { class: "qc-trust" }, "Claude Code asks whether to trust this folder. Workbench answers it for its own worktrees and for projects you trusted when you opened them."));
   return card;
+}
+
+/** Converge's findings that wait for you, one card per reason. */
+function convergeCard(it) {
+  const fs = it.findings || [];
+  const pn = (A.projectNames() || {})[it.repo] || (A.project() || {}).project || null;
+  const board = home(pn);
+  const one1 = (f) => `${board}${board.includes("?") ? "&" : "?"}f=${enc(f.id)}`;
+  const n = it.count || fs.length;
+  const one = n === 1 && fs[0];
+  const triage = it.stage === "found" && /^New finding/.test(it.text || "");
+  const title = triage ? `${n} new finding${n === 1 ? "" : "s"} to triage` : one ? one.title : `${n} findings: ${(it.text || "").split(/[:(]/)[0]}`;
+  return h("div", { class: "alert-card", tabindex: "0", "data-need": it.id },
+    h("div", { class: "hd" }, icon("bug", "i sm"), h("b", {}, `Converge · ${fs[0] ? fs[0].stage : ""}`), h("span", { class: "t" }, since(it.since_ms))),
+    h("div", { class: "ti" }, title),
+    h("p", { class: "qc-what" }, triage ? "Choose Reproduce to chase one (an agent writes its repro), or Dismiss it." : it.text),
+    n > 1 ? h("ul", { class: "qc-what", style: { margin: 0, paddingLeft: "18px" } }, fs.slice(0, 5).map((f) => h("li", {}, h("a", { href: one1(f) }, f.title))), n > 5 ? h("li", {}, `and ${n - 5} more`) : null) : null,
+    h("div", { class: "act" }, btn(one ? "Open it" : "Open the board", { sm: true, href: one ? one1(one) : board })));
 }
 
 function alertCard(it) {
@@ -389,7 +449,7 @@ export function toggleSelect(card) {
 export const KEYS = [
   ["Anywhere outside a text box or a terminal", [
     ["/", "Search (⇧↵ on a line: why is this line like this)"], [".", "Needs you"], ["a", "Agents, then 1…9 to open one"],
-    ["g s", "Start"], ["g c", "Continue the project"], ["g r", "Review and ship"], ["g d", "Debug"], ["g t", "All terminals"], ["g n", "The inbox"],
+    ["g s", "Converge: the board of the project in focus"], ["g w", "Workbench"], ["g c", "Continue the project"], ["g r", "Review and ship"], ["g d", "Debug"], ["g t", "All terminals"], ["g n", "The inbox"],
     ["n", "In a project: Start a change"], ["z", "Compact rows on or off"], ["?", "This list"], ["Esc", "Close the drawer or a sheet; else up one level"],
   ]],
   ["Cards that need you", [
