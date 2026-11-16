@@ -1,0 +1,952 @@
+// Hacker News on ChloeDB: the page, in ChloeDB's command center
+// (#/app/hn, loaded through chloedb-server from this app) and on its own
+// (the app's / with --public, through ui/index.html). It imports nothing
+// and builds its own elements, so the same file serves both.
+//
+//   (home)              the box, what it understands, the front page now
+//   search/<query>      stories and comments, facets, the query understood
+//   item/<id>           a discussion, the comment found opened in its thread,
+//                       and what is around it: the same link discussed
+//                       again, links between discussions, nearest by meaning
+//   user/<name>         a person: their best, their sites, their orbit in
+//                       the reply graph
+//   people/<topic>      who knows a topic, and how they talk to each other
+//   trends/<terms>      how much HN talked about things, year by year
+//   ask/<question>      what HN thinks, summed up with every claim cited
+//   front               the front page as the tables rank it, live
+//
+// Every answer of the API carries the SQL it ran: the "SQL" button at the
+// bottom shows the queries behind the page in view.
+
+export default { render };
+
+const CSS = `
+.hn { --hn-w: 1180px; color: var(--text); font: 14px/1.5 var(--sans); max-width: var(--hn-w); margin: 0 auto; }
+.hn * { box-sizing: border-box; }
+.hn a { color: inherit; text-decoration: none; }
+.hn a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.hn mark { background: color-mix(in srgb, var(--warn) 34%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.hn-top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); padding: 12px 0 8px; }
+.hn-bar { display: flex; align-items: center; gap: 14px; }
+.hn-brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; font-size: 15px; }
+.hn-brand svg { width: 26px; height: 26px; color: var(--accent); }
+.hn-brand small { font-weight: 500; color: var(--muted); font-size: 12px; }
+.hn-box { position: relative; flex: 1; min-width: 0; }
+.hn-box input { width: 100%; font: 15px var(--sans); padding: 10px 14px 10px 38px; border-radius: 11px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); outline: none; box-shadow: var(--shadow-1); }
+.hn-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.hn-box > svg { position: absolute; left: 12px; top: 50%; width: 17px; height: 17px; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.hn-box .kbd { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; }
+.hn-sugg { position: absolute; left: 0; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line-2); border-radius: 11px; box-shadow: var(--shadow-2); padding: 6px; display: none; z-index: 9; }
+.hn-sugg.on { display: block; }
+.hn-sugg .it { display: flex; gap: 10px; align-items: baseline; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
+.hn-sugg .it.sel, .hn-sugg .it:hover { background: var(--accent-soft); }
+.hn-sugg .it .k { font-size: 11px; color: var(--muted); width: 54px; flex: none; text-transform: uppercase; letter-spacing: .04em; }
+.hn-sugg .it .m { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.hn-nav { display: flex; gap: 2px; margin-top: 8px; overflow-x: auto; scrollbar-width: none; }
+.hn-nav a { padding: 5px 11px; border-radius: 8px; color: var(--text-2); font-size: 13px; white-space: nowrap; }
+.hn-nav a:hover { background: var(--surface-2); text-decoration: none; }
+.hn-nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.hn-nav .sp { flex: 1; }
+.hn-nav .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; padding: 5px 4px; white-space: nowrap; }
+.hn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); animation: hnpulse 2s infinite; }
+@keyframes hnpulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 55%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.hn-main { padding: 6px 0 70px; min-height: 60vh; }
+.hn-und { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 12px; font-size: 12.5px; color: var(--muted); }
+.hn-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line-2); color: var(--text-2); font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.hn-chip:hover { border-color: var(--accent); color: var(--accent); text-decoration: none !important; }
+.hn-chip.f { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.hn-chip .x { opacity: .6; font-size: 13px; line-height: 1; }
+.hn-chip .from { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.hn-grid { display: grid; grid-template-columns: 216px minmax(0, 1fr) 268px; gap: 26px; align-items: start; }
+.hn-grid.two { grid-template-columns: minmax(0, 1fr) 300px; }
+@media (max-width: 1100px) { .hn-grid { grid-template-columns: 200px minmax(0, 1fr); } .hn-grid > .hn-right { display: none; } }
+@media (max-width: 760px) { .hn-grid, .hn-grid.two { grid-template-columns: minmax(0, 1fr); } .hn-grid > .hn-left { display: none; } .hn-brand small { display: none; } }
+.hn-left { position: sticky; top: 108px; max-height: calc(100vh - 120px); overflow: auto; scrollbar-width: thin; padding-right: 4px; }
+.hn-facet { margin-bottom: 18px; }
+.hn-facet h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.hn-facet .r { display: flex; align-items: center; gap: 8px; padding: 3px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-2); }
+.hn-facet .r:hover { background: var(--surface-2); color: var(--text); }
+.hn-facet .r.on { color: var(--accent); font-weight: 600; }
+.hn-facet .r .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.hn-facet .r .bar { position: relative; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hn-years { display: flex; align-items: flex-end; gap: 2px; height: 54px; margin: 4px 0 2px; }
+.hn-years div { flex: 1; background: color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 2px 2px 0 0; min-height: 2px; cursor: pointer; position: relative; }
+.hn-years div:hover { background: var(--accent); }
+.hn-years div.on { background: var(--accent); }
+.hn-yl { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); }
+.hn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.hn-head .t { font-size: 13px; color: var(--muted); }
+.hn-head .t b { color: var(--text); font-weight: 600; }
+.hn-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.hn-seg button { font: 12.5px var(--sans); border: 0; background: none; color: var(--text-2); padding: 4px 10px; cursor: pointer; }
+.hn-seg button + button { border-left: 1px solid var(--line); }
+.hn-seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.hn-head .sp { flex: 1; }
+.hn-dym { font-size: 14px; margin: 2px 0 10px; color: var(--text-2); }
+.hn-dym a { color: var(--accent); font-weight: 600; font-style: italic; }
+.hn-res { list-style: none; margin: 0; padding: 0; }
+.hn-s { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.hn-s:last-child { border-bottom: 0; }
+.hn-pts { text-align: center; padding-top: 2px; }
+.hn-pts b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.hn-pts span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.hn-ttl { font-size: 15.5px; font-weight: 560; line-height: 1.35; letter-spacing: -.005em; }
+.hn-ttl a { color: var(--text); }
+.hn-ttl .site { font-size: 12.5px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+.hn-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; color: var(--muted); margin-top: 3px; align-items: center; }
+.hn-meta a:hover { color: var(--accent); }
+.hn-meta .k { font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); text-transform: uppercase; letter-spacing: .03em; }
+.hn-meta .k.show { background: var(--good-soft); color: var(--good-ink); }
+.hn-meta .k.ask { background: var(--accent-soft); color: var(--accent); }
+.hn-meta .k.launch { background: var(--serious-soft); color: var(--s2); }
+.hn-meta .tp { color: var(--text-2); }
+.hn-meta .tp:before { content: "#"; opacity: .5; }
+.hn-snip { font-size: 13.5px; color: var(--text-2); margin-top: 5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hn-again { font-size: 12.5px; margin-top: 5px; color: var(--muted); }
+.hn-again a { color: var(--accent); }
+.hn-c { padding: 12px 0 12px 14px; border-left: 2px solid var(--line-2); margin: 10px 0; }
+.hn-c:hover { border-left-color: var(--accent); }
+.hn-c .on { font-size: 12.5px; color: var(--muted); }
+.hn-c .on a { color: var(--text); font-weight: 560; }
+.hn-c .txt { font-size: 14px; margin-top: 5px; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.hn-c .txt.open { display: block; }
+.hn-sec { display: flex; align-items: baseline; justify-content: space-between; margin: 22px 0 4px; }
+.hn-sec h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.hn-sec a { font-size: 13px; color: var(--accent); }
+.hn-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow-1); }
+.hn-card h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+.hn-card h4 a { text-transform: none; letter-spacing: 0; color: var(--accent); font-weight: 500; }
+.hn-mini { list-style: none; margin: 0; padding: 0; }
+.hn-mini li { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.35; }
+.hn-mini li:first-child { border-top: 0; padding-top: 0; }
+.hn-mini .m { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.hn-ppl { display: flex; flex-wrap: wrap; gap: 6px; }
+.hn-ppl a { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 8px 3px 3px; border-radius: 999px; background: var(--surface-2); }
+.hn-ava { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; text-transform: uppercase; }
+.hn-ask { display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: var(--r); background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--s7) 14%, var(--surface))); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); cursor: pointer; margin-bottom: 14px; }
+.hn-ask:hover { border-color: var(--accent); text-decoration: none !important; }
+.hn-ask svg { width: 22px; height: 22px; color: var(--accent); flex: none; }
+.hn-ask b { display: block; font-size: 13.5px; }
+.hn-ask span { font-size: 12px; color: var(--text-2); }
+.hn-empty { padding: 40px 0; text-align: center; color: var(--muted); }
+.hn-skel { height: 64px; border-radius: 8px; margin: 10px 0; background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: hnsk 1.2s infinite; }
+@keyframes hnsk { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+.hn-more { display: block; width: 100%; margin: 14px 0; padding: 9px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); font: 13px var(--sans); cursor: pointer; }
+.hn-more:hover { border-color: var(--accent); color: var(--accent); }
+.hn-hero { text-align: center; padding: 56px 0 26px; }
+.hn-hero h1 { font-size: 38px; line-height: 1.12; letter-spacing: -.03em; margin: 0 0 10px; font-weight: 700; }
+.hn-hero h1 em { font-style: normal; background: linear-gradient(90deg, var(--accent), var(--s7)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hn-hero p { color: var(--text-2); font-size: 15.5px; margin: 0 auto 22px; max-width: 640px; }
+.hn-try { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 860px; margin: 0 auto; }
+.hn-try a { display: inline-flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 1px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); font-size: 13.5px; box-shadow: var(--shadow-1); }
+.hn-try a:hover { border-color: var(--accent); text-decoration: none; }
+.hn-try a small { font-size: 11px; color: var(--muted); }
+.hn-try a code { font: 12.5px var(--mono); color: var(--text); }
+.hn-stats { display: flex; justify-content: center; gap: 34px; margin: 30px 0 8px; flex-wrap: wrap; }
+.hn-stats div { text-align: center; }
+.hn-stats b { display: block; font-size: 22px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.hn-stats span { font-size: 12px; color: var(--muted); }
+.hn-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 26px; }
+.hn-story { margin-bottom: 12px; }
+.hn-story h1 { font-size: 22px; letter-spacing: -.015em; line-height: 1.25; margin: 0 0 6px; }
+.hn-story .body { font-size: 14.5px; white-space: pre-wrap; margin-top: 10px; overflow-wrap: anywhere; }
+.hn-tree { margin-top: 14px; }
+.hn-cm { position: relative; padding: 8px 0 2px; }
+.hn-cm .hd { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.hn-cm .hd a.u { color: var(--text-2); font-weight: 600; }
+.hn-cm .hd .tg { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--muted); user-select: none; }
+.hn-cm .bd { font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 3px 0 2px; }
+.hn-cm .kids { margin-left: 18px; padding-left: 12px; border-left: 1px solid var(--line); }
+.hn-cm.shut > .bd, .hn-cm.shut > .kids { display: none; }
+.hn-cm.focus > .bd { background: color-mix(in srgb, var(--warn) 16%, transparent); border-radius: 6px; padding: 6px 8px; margin-left: -8px; box-shadow: inset 3px 0 0 var(--warn); }
+.hn-cm.path > .hd a.u { color: var(--accent); }
+.hn-pf { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; }
+.hn-pf .hn-ava { width: 56px; height: 56px; font-size: 22px; }
+.hn-pf h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
+.hn-kpis { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.hn-kpis b { color: var(--text); font-size: 15px; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.hn-graph { width: 100%; height: 380px; display: block; }
+.hn-graph text { font: 11.5px var(--sans); fill: var(--text-2); pointer-events: none; }
+.hn-graph .nd { cursor: pointer; }
+.hn-graph .nd:hover circle { stroke: var(--accent); stroke-width: 2.5; }
+.hn-graph line { stroke: var(--line-2); }
+.hn-chart { width: 100%; height: 300px; display: block; }
+.hn-chart text { font: 11px var(--sans); fill: var(--muted); }
+.hn-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; margin: 6px 0 12px; }
+.hn-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.hn-legend i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+.hn-ans { font-size: 15px; line-height: 1.6; }
+.hn-ans p { margin: 0 0 10px; }
+.hn-ans ul { margin: 0 0 6px; padding-left: 20px; }
+.hn-ans li { margin: 6px 0; }
+.hn-ans sup a { display: inline-block; min-width: 17px; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 0 3px; margin: 0 1px; line-height: 15px; }
+.hn-src { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.hn-src > div { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; font-size: 12.5px; background: var(--surface); }
+.hn-src > div.hot { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.hn-src .n { font-weight: 700; color: var(--accent); margin-right: 6px; }
+.hn-src .x { color: var(--text-2); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.hn-receipt { font-size: 12px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 14px; }
+.hn-input { display: flex; gap: 8px; margin: 6px 0 14px; }
+.hn-input input { flex: 1; font: 15px var(--sans); padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); outline: none; }
+.hn-input input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.hn-btn { font: 600 13px var(--sans); padding: 8px 14px; border-radius: 9px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; white-space: nowrap; }
+.hn-btn.ghost { background: var(--surface); color: var(--text-2); border: 1px solid var(--line-2); font-weight: 500; }
+.hn-sql { position: fixed; right: 18px; bottom: 16px; z-index: 20; }
+.hn-sql > button { font: 12px var(--mono); padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); cursor: pointer; box-shadow: var(--shadow-2); }
+.hn-sql > button b { color: var(--accent); }
+.hn-sqlp { position: fixed; right: 18px; bottom: 56px; width: min(720px, calc(100vw - 36px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-3); padding: 12px 14px; z-index: 21; display: none; }
+.hn-sqlp.on { display: block; }
+.hn-sqlp .q { border-top: 1px solid var(--line); padding: 9px 0; }
+.hn-sqlp .q:first-of-type { border-top: 0; }
+.hn-sqlp .w { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600; }
+.hn-sqlp .w span { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.hn-sqlp pre { margin: 5px 0 0; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; background: var(--code); border-radius: 7px; padding: 7px 9px; color: var(--text-2); }
+.hn-sqlp .bad { color: var(--crit-ink); font-size: 12px; }
+.hn-foot { font-size: 12px; color: var(--muted); text-align: center; padding: 26px 0 6px; border-top: 1px solid var(--line); margin-top: 30px; }
+.hn-foot a { color: var(--text-2); }
+.hn-err { padding: 12px 14px; border-radius: 9px; background: var(--crit-soft); color: var(--crit-ink); font-size: 13.5px; margin: 10px 0; }
+`;
+
+const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4h0A2.5 2.5 0 0 1 4 13.5z"/><circle cx="11.5" cy="9.3" r="2.8"/><path d="M13.6 11.4 15.6 13.4"/></svg>`;
+const SEARCH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
+const SPARK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+// ---- small helpers ---------------------------------------------------------
+
+function h(tag, attrs, ...kids) {
+  const el = tag === "svg" || tag === "g" || tag === "line" || tag === "circle" || tag === "path" || tag === "text" || tag === "rect" || tag === "polyline"
+    ? document.createElementNS("http://www.w3.org/2000/svg", tag) : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.setAttribute("class", v);
+    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    else if (k === "html") el.innerHTML = v;
+    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  add(el, kids);
+  return el;
+}
+// Replaces an element's children, leaving out nulls and flattening lists.
+function fill(el, ...kids) {
+  el.replaceChildren();
+  return add(el, kids);
+}
+function add(el, kids) {
+  for (const k of kids.flat(9)) {
+    if (k == null || k === false) continue;
+    el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  }
+  return el;
+}
+const fmt = (n) => (n == null || isNaN(n) ? "–" : Number(n).toLocaleString("en-US"));
+const compact = (n) => (n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "k" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n ?? 0));
+function ago(iso) {
+  const t = Date.parse(iso);
+  if (!t) return "";
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  if (s < 86400 * 30) return `${Math.round(s / 86400)} days ago`;
+  if (s < 86400 * 365) return `${Math.round(s / 86400 / 30.4)} months ago`;
+  const y = s / 86400 / 365.25;
+  return y < 1.5 ? "a year ago" : `${Math.round(y)} years ago`;
+}
+const day = (iso) => { const t = new Date(iso); return isNaN(t) ? "" : t.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }); };
+const COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#c98500", "#d55181", "#6250d6", "#0f8a8a", "#e34948"];
+function hue(name) { let x = 0; for (const c of String(name)) x = (x * 31 + c.charCodeAt(0)) >>> 0; return COLORS[x % COLORS.length]; }
+const ava = (name, size) => h("span", { class: "hn-ava", style: { background: hue(name), ...(size ? { width: size + "px", height: size + "px" } : {}) } }, String(name || "?").slice(0, 1));
+const enc = encodeURIComponent;
+const ESC = /[.*+?^${}()|[\]\\]/g;
+
+// The words to mark in a result: the query's words and phrases, each as
+// its stem (so "databases" marks "database"), at the start of a word.
+function markers(und) {
+  const words = [];
+  for (const p of und?.phrases || []) words.push(p);
+  for (const w of String(und?.text || "").split(/\s+/)) {
+    const x = w.replace(/^[-"'(]+|["'),.:;!?]+$/g, "");
+    if (x.length < 2 || /^(the|and|for|with|how|what|why|are|you|does|about|of|in|on|to|is|a|an|vs)$/i.test(x)) continue;
+    words.push(x);
+  }
+  if (!words.length) return null;
+  const parts = words.map((w) => {
+    let s = w.toLowerCase();
+    if (/\s/.test(s)) return s.replace(ESC, "\\$&").replace(/\s+/g, "\\s+");
+    if (s.length > 5) s = s.replace(/(ing|ed|es|s|ly|er)$/, "");
+    return s.replace(ESC, "\\$&") + (/\w$/.test(s) ? "\\w*" : "");
+  });
+  try { return new RegExp(`(^|[^\\p{L}\\p{N}])(${parts.join("|")})`, "giu"); } catch { return null; }
+}
+function marked(text, re) {
+  text = String(text ?? "");
+  if (!re) return text;
+  const out = [];
+  let last = 0;
+  re.lastIndex = 0;
+  for (const m of text.matchAll(re)) {
+    const at = m.index + m[1].length;
+    if (at > last) out.push(text.slice(last, at));
+    out.push(h("mark", {}, m[2]));
+    last = at + m[2].length;
+  }
+  out.push(text.slice(last));
+  return out;
+}
+// The stretch of a long text where the marked words are thickest.
+function excerpt(text, re, n = 320) {
+  text = String(text || "").replace(/\s+/g, " ").trim();
+  if (text.length <= n || !re) return text.length <= n ? text : text.slice(0, n) + "…";
+  re.lastIndex = 0;
+  const hits = [...text.matchAll(re)].map((m) => m.index);
+  if (!hits.length) return text.slice(0, n) + "…";
+  let best = 0, bestN = 0;
+  for (let i = 0; i < hits.length; i++) {
+    let j = i; while (j < hits.length && hits[j] - hits[i] < n * 0.8) j++;
+    if (j - i > bestN) { bestN = j - i; best = hits[i]; }
+  }
+  const from = Math.max(0, best - 60);
+  const cut = text.slice(from, from + n);
+  return (from > 0 ? "…" : "") + cut.replace(/^\S*\s/, from > 0 ? "" : "$&") + (from + n < text.length ? "…" : "");
+}
+
+// ---- the page --------------------------------------------------------------
+
+function render(el, ctx) {
+  if (!document.getElementById("hn-css")) document.head.append(h("style", { id: "hn-css" }, CSS));
+  const app = {
+    ctx,
+    queries: [],
+    took: 0,
+    seq: 0,
+    status: null,
+    api: async (path, opts) => {
+      const j = await ctx.api(path, opts);
+      if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
+      return j;
+    },
+    href: (...parts) => ctx.href(...parts),
+    go: (...parts) => { location.hash = ctx.href(...parts); },
+  };
+  const root = h("div", { class: "hn" });
+  fill(el, root);
+
+  // The bar: the box, with completions, and the pages.
+  const input = h("input", { type: "search", placeholder: "Search stories and comments: try  rust by:steveklabnik  or  postgres vs mysql after:2020", autocomplete: "off", spellcheck: "false", "aria-label": "Search Hacker News" });
+  const sugg = h("div", { class: "hn-sugg" });
+  const nav = h("nav", { class: "hn-nav" });
+  const live = h("span", { class: "live" });
+  const top = h("div", { class: "hn-top" },
+    h("div", { class: "hn-bar" },
+      h("a", { class: "hn-brand", href: app.href(""), html: `${ICON}<span>HN Search <small>on ChloeDB</small></span>` }),
+      h("div", { class: "hn-box" }, h("span", { html: SEARCH, style: { display: "contents" } }), input, h("span", { class: "kbd" }, "/"), sugg)),
+    nav);
+  const main = h("main", { class: "hn-main" });
+  const sqlBtn = h("button", { onclick: () => sqlPanel.classList.toggle("on"), title: "The SQL behind this page" });
+  const sqlPanel = h("div", { class: "hn-sqlp" });
+  root.append(top, main, h("div", { class: "hn-sql" }, sqlBtn), sqlPanel,
+    h("div", { class: "hn-foot" }, "Hacker News stories and comments from the public archive (open-index/hacker-news, ODC-By) and the official HN API, kept in ChloeDB tables. Not affiliated with Y Combinator. ",
+      h("a", { href: app.href("about") }, "How this works")));
+  [...top.querySelectorAll(".hn-box > span:first-child")].forEach((s) => { s.firstChild && s.replaceWith(s.firstChild); });
+
+  function drawSql() {
+    const ms = app.queries.reduce((a, q) => a + (q.ms || 0), 0);
+    fill(sqlBtn, "SQL · ", h("b", {}, String(app.queries.length)), ` ${app.queries.length === 1 ? "query" : "queries"} · ${Math.round(app.took || ms)} ms`);
+    fill(sqlPanel, h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
+      h("b", {}, "The SQL behind this page"), h("button", { class: "hn-btn ghost", style: { padding: "3px 9px" }, onclick: () => sqlPanel.classList.remove("on") }, "Close")),
+      app.queries.map((q) => h("div", { class: "q" },
+        h("div", { class: "w" }, q.what, h("span", {}, `${fmt(q.rows)} rows · ${(q.ms ?? 0).toFixed(1)} ms`)),
+        q.note ? h("div", { class: "bad" }, q.note) : null,
+        h("pre", {}, q.sql, q.params && Object.keys(q.params).length ? `\n-- ${JSON.stringify(q.params)}` : ""))));
+  }
+  drawSql();
+
+  const PAGES = [["", "Search"], ["front", "Front page"], ["trends", "Trends"], ["people", "People"], ["ask", "What HN thinks"], ["about", "How it works"]];
+  function drawNav(page) {
+    fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && (page === "search" || page === "item"))) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
+  }
+
+  // Typing searches at once; Enter or a completion commits it to history.
+  let typed = 0, suggs = [], sel = -1;
+  function search(q, push) {
+    const path = q.trim() ? ["search", q.trim()] : [""];
+    if (push) app.go(...path);
+    else { history.replaceState(null, "", app.href(...path)); show(path); }
+  }
+  input.addEventListener("input", () => {
+    clearTimeout(typed);
+    typed = setTimeout(() => search(input.value, false), 140);
+    suggest(input.value);
+  });
+  input.addEventListener("keydown", (e) => {
+    const items = [...sugg.querySelectorAll(".it")];
+    if (e.key === "ArrowDown" && items.length) { sel = (sel + 1) % items.length; items.forEach((x, i) => x.classList.toggle("sel", i === sel)); e.preventDefault(); }
+    else if (e.key === "ArrowUp" && items.length) { sel = (sel - 1 + items.length) % items.length; items.forEach((x, i) => x.classList.toggle("sel", i === sel)); e.preventDefault(); }
+    else if (e.key === "Enter") { clearTimeout(typed); sugg.classList.remove("on"); if (sel >= 0 && suggs[sel]) suggs[sel](); else search(input.value, true); }
+    else if (e.key === "Escape") { sugg.classList.remove("on"); }
+  });
+  input.addEventListener("blur", () => setTimeout(() => sugg.classList.remove("on"), 150));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && document.activeElement !== input && !/input|textarea/i.test(document.activeElement?.tagName || "")) { e.preventDefault(); input.focus(); input.select(); }
+  });
+  let sq = 0;
+  async function suggest(q) {
+    const my = ++sq;
+    sel = -1;
+    if (q.trim().length < 2) { sugg.classList.remove("on"); return; }
+    let j;
+    try { j = await ctx.api(`/v1/suggest?q=${enc(q)}`); } catch { return; }
+    if (my !== sq || document.activeElement !== input) return;
+    suggs = [];
+    const rows = [];
+    for (const s of (j.stories || []).slice(0, 5)) {
+      suggs.push(() => app.go("item", s.id));
+      rows.push(h("div", { class: "it", onmousedown: () => app.go("item", s.id) }, h("span", { class: "k" }, "story"), h("span", {}, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${new Date(s.created).getFullYear()}`)));
+    }
+    for (const p of (j.people || []).slice(0, 3)) {
+      suggs.push(() => app.go("user", p.id));
+      rows.push(h("div", { class: "it", onmousedown: () => app.go("user", p.id) }, h("span", { class: "k" }, "person"), h("span", {}, ava(p.id), " ", p.id), h("span", { class: "m" }, `${fmt(p.comments)} comments`)));
+    }
+    fill(sugg, ...rows);
+    sugg.classList.toggle("on", rows.length > 0);
+  }
+
+  // Pages by path.
+  let current = null;
+  async function show(path) {
+    path = path || ctx.path() || [];
+    const [page = "", ...rest] = path;
+    current = path;
+    drawNav(page);
+    const my = ++app.seq;
+    const alive = () => my === app.seq;
+    if (page !== "search" && page !== "") input.value = page === "item" || page === "user" ? input.value : "";
+    if (page === "search" && document.activeElement !== input) input.value = (rest[0] || "");
+    try {
+      if (page === "" || page === "search") {
+        const q = page === "search" ? (rest[0] || "") : input.value;
+        if (!q.trim()) return home(main, app, alive);
+        return await results(main, app, q, rest.slice(1), alive);
+      }
+      if (page === "item") return await thread(main, app, Number(rest[0]), alive);
+      if (page === "user") return await person(main, app, (rest[0] || ""), alive);
+      if (page === "people") return await experts(main, app, (rest[0] || ""), alive);
+      if (page === "trends") return await trends(main, app, (rest[0] || ""), alive);
+      if (page === "ask") return await ask(main, app, (rest[0] || ""), alive);
+      if (page === "front") return await front(main, app, alive);
+      if (page === "about") return about(main, app);
+      fill(main, h("div", { class: "hn-empty" }, "No such page."));
+    } catch (e) {
+      if (alive()) fill(main, h("div", { class: "hn-err" }, String(e.message || e)));
+    }
+  }
+  app.show = show;
+  app.input = input;
+  ctx.onPath((p) => { if (JSON.stringify(p) !== JSON.stringify(current)) show(p); });
+  show(ctx.path());
+
+  // The feed's state, by the bar.
+  const tick = async () => {
+    try {
+      const s = await ctx.api("/v1/status");
+      app.status = s;
+      const f = s.feed;
+      const n = (s.tables?.hn_stories || 0) + (s.tables?.hn_comments || 0);
+      fill(live, f?.running ? h("span", { class: "hn-dot" }) : null, f?.running ? `live · ${compact(n)} items` : `${compact(n)} items`);
+      live.title = f?.running ? `The HN API is read every half minute: ${fmt(f.written)} items written, ${fmt(f.refreshed)} stories refreshed${f.behind ? `, ${fmt(f.behind)} behind` : ""}` : "Loaded from the archive";
+    } catch { /* the bar stays as it is */ }
+  };
+  tick();
+  const timer = setInterval(tick, 30000);
+  return () => clearInterval(timer);
+}
+
+// ---- results ---------------------------------------------------------------
+
+function storyItem(app, s, re, extra) {
+  const k = s.kind && s.kind !== "story" ? h("span", { class: `k ${s.kind}` }, s.kind === "show" ? "Show HN" : s.kind === "ask" ? "Ask HN" : s.kind === "launch" ? "Launch HN" : s.kind === "tell" ? "Tell HN" : s.kind) : null;
+  const title = String(s.title || "").replace(/^(Show|Ask|Launch|Tell) HN:\s*/i, "");
+  const topics = (Array.isArray(s.topics) ? s.topics : []).slice(0, 3);
+  return h("li", { class: "hn-s" },
+    h("div", { class: "hn-pts" }, h("b", {}, compact(s.points)), h("span", {}, "points")),
+    h("div", {},
+      h("div", { class: "hn-ttl" }, s.title_hl ? h("a", { href: app.href("item", s.id), html: s.title_hl }) : h("a", { href: app.href("item", s.id) }, marked(title, re)), s.site ? h("a", { class: "site", href: app.href("search", `site:${s.site}`) }, s.site) : null),
+      h("div", { class: "hn-meta" }, k,
+        h("a", { href: app.href("item", s.id) }, `${fmt(s.comments)} comments`),
+        h("a", { href: app.href("user", s.author) }, s.author),
+        h("span", { title: day(s.created) }, ago(s.created)),
+        topics.map((t) => h("a", { class: "tp", href: app.href("search", `topic:${t.replace(/\s+/g, "-")}`) }, t)),
+        s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", title: s.url }, "link ↗") : null),
+      s.body_hl ? h("div", { class: "hn-snip", html: s.body_hl }) : s.body ? h("div", { class: "hn-snip" }, marked(excerpt(s.body, re, 240), re)) : null,
+      extra));
+}
+
+function commentItem(app, c, re) {
+  // The server's highlight (the field's stems, synonyms and typos), else marked here.
+  const txt = c.body_hl ? h("div", { class: "txt", html: c.body_hl }) : h("div", { class: "txt" }, marked(excerpt(c.body, re, 700), re));
+  return h("li", { class: "hn-c" },
+    h("div", { class: "on" }, "on ", h("a", { href: app.href("item", c.story) }, c.story_title || `story ${c.story}`)),
+    h("div", { class: "hn-meta" },
+      h("a", { href: app.href("user", c.author), style: { color: "var(--text-2)", fontWeight: 600 } }, c.author),
+      h("span", { title: day(c.created) }, ago(c.created)),
+      c.parent_author && c.depth > 0 ? h("span", {}, `↳ replying to ${c.parent_author}`) : h("span", {}, "top-level"),
+      c.thread > 0 ? h("span", {}, `${fmt(c.thread)} ${c.thread === 1 ? "reply" : "replies"} under it`) : null,
+      h("a", { href: app.href("item", c.id), style: { color: "var(--accent)" } }, "in context →")),
+    txt);
+}
+
+const skel = (n) => Array.from({ length: n }, () => h("div", { class: "hn-skel" }));
+
+function facetBox(app, title, rows, opts) {
+  if (!rows?.length) return null;
+  const max = Math.max(...rows.map((r) => r.n));
+  return h("div", { class: "hn-facet" }, h("h4", {}, title),
+    rows.slice(0, opts.limit || 8).map((r) => h("div", { class: `r ${opts.on?.(r.value) ? "on" : ""}`, onclick: () => opts.pick(r.value) },
+      h("span", { class: "bar" }, opts.label ? opts.label(r.value) : String(r.value)),
+      h("span", { class: "n" }, compact(r.n)),
+    )).map((x, i) => { x.style.background = `linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent) ${Math.max(2, (rows[i].n / max) * 100)}%, transparent 0)`; return x; }));
+}
+
+function years(app, rows, q) {
+  if (!rows?.length) return null;
+  const ys = rows.filter((r) => r.value >= 2006);
+  if (!ys.length) return null;
+  const first = ys[0].value, last = new Date().getFullYear();
+  const by = new Map(ys.map((r) => [r.value, r.n]));
+  const max = Math.max(...ys.map((r) => r.n));
+  const bars = [];
+  for (let y = first; y <= last; y++) {
+    const n = by.get(y) || 0;
+    bars.push(h("div", { style: { height: `${Math.max(3, (n / max) * 100)}%`, opacity: n ? 1 : 0.25 }, title: `${y}: ${fmt(n)}`, onclick: () => app.go("search", addOp(q, `year:${y}`, /\b(year|in|after|before|since):\S+/i)) }));
+  }
+  return h("div", { class: "hn-facet" }, h("h4", {}, "When"), h("div", { class: "hn-years" }, bars), h("div", { class: "hn-yl" }, h("span", {}, first), h("span", {}, last)));
+}
+
+function addOp(q, op, replace) {
+  let s = q;
+  if (replace) s = s.replace(replace, "").replace(/\s+/g, " ").trim();
+  return `${s} ${op}`.trim();
+}
+
+async function results(main, app, q, opts, alive) {
+  const [only = "", sort = "", mode = ""] = opts;
+  const head = h("div", { class: "hn-head" });
+  const body = h("div", {}, skel(5));
+  const left = h("aside", { class: "hn-left" });
+  const right = h("aside", { class: "hn-right" });
+  const und = h("div", { class: "hn-und" });
+  fill(main, und, h("div", { class: "hn-grid" }, left, h("section", {}, head, body), right));
+  const qs = `q=${enc(q)}${only ? `&only=${only}` : ""}${sort ? `&sort=${sort}` : ""}${mode ? `&mode=${mode}` : ""}`;
+  const j = await app.api(`/v1/search?${qs}`);
+  if (!alive()) return;
+  const u = j.understood || {};
+  const re = markers(u);
+  // What the box understood, each part removable.
+  const chips = [];
+  for (const n of u.notes || []) chips.push(h("a", { class: "hn-chip f", title: `from “${n.from}”: remove`, onclick: () => app.go("search", q.replace(n.from, "").replace(/\s+/g, " ").trim() || " ") }, n.what, h("span", { class: "x" }, "×")));
+  if (u.text) chips.unshift(h("span", { class: "hn-chip", style: { cursor: "default" } }, h("span", { class: "from" }, "words"), u.text));
+  for (const p of u.phrases || []) chips.push(h("span", { class: "hn-chip", style: { cursor: "default" } }, h("span", { class: "from" }, "phrase"), `“${p}”`));
+  for (const x of u.exclude || []) chips.push(h("span", { class: "hn-chip", style: { cursor: "default" } }, h("span", { class: "from" }, "without"), x));
+  fill(und, chips.length ? h("span", {}, "Understood as") : null, chips);
+
+  const set = (o, s, m) => app.go("search", q, o ?? only, s ?? sort, m ?? mode);
+  const seg = (items, cur, pick) => h("div", { class: "hn-seg" }, items.map(([v, t]) => h("button", { class: (cur || items[0][0]) === v ? "on" : "", onclick: () => pick(v) }, t)));
+  const ts = j.total_stories || 0, tc = j.total_comments || 0;
+  fill(head,
+    seg([["all", "All"], ["story", `Stories ${ts ? compact(ts) : ""}`], ["comment", `Comments ${tc ? compact(tc) : ""}`]], j.only, (v) => set(v === "all" ? "" : v)),
+    h("span", { class: "sp" }),
+    seg([["best", "Best"], ["points", "Points"], ["date", "Newest"], ["comments", "Discussed"]], j.sort, (v) => set(null, v === "best" ? "" : v)),
+  );
+  const list = [];
+  if (j.did_you_mean) list.push(h("div", { class: "hn-dym" }, "Did you mean ", h("a", { href: app.href("search", j.did_you_mean) }, j.did_you_mean), "?"));
+  list.push(h("div", { class: "hn-head", style: { margin: "8px 0 2px" } }, h("span", { class: "t" }, h("b", {}, fmt(ts)), " stories", tc ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`), h("span", { class: "sp" }),
+    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
+  // The same link submitted again folds under its best discussion.
+  const seen = new Map();
+  const stories = [];
+  for (const s of j.stories || []) {
+    const key = s.url ? s.url.replace(/^https?:\/\/(www\.)?/, "").replace(/[#?].*$/, "").replace(/\/$/, "") : `#${s.id}`;
+    if (seen.has(key)) { seen.get(key).again.push(s); continue; }
+    const e = { s, again: [] };
+    seen.set(key, e);
+    stories.push(e);
+  }
+  if (stories.length) {
+    list.push(h("ul", { class: "hn-res" }, stories.map(({ s, again }) => storyItem(app, s, re, again.length ? h("div", { class: "hn-again" }, `Also discussed ${again.length === 1 ? "once more" : `${again.length} more times`}: `, again.map((a, i) => [i ? ", " : "", h("a", { href: app.href("item", a.id) }, `${new Date(a.created).getFullYear()} (${fmt(a.comments)} comments)`)])) : null))));
+  }
+  if ((j.comments || []).length) {
+    if (j.only === "all") list.push(h("div", { class: "hn-sec" }, h("h3", {}, "From the comments"), h("a", { href: app.href("search", q, "comment") }, `All ${fmt(tc)} comments →`)));
+    list.push(h("ul", { class: "hn-res" }, j.comments.map((c) => commentItem(app, c, re))));
+  }
+  if (!stories.length && !(j.comments || []).length) list.push(h("div", { class: "hn-empty" }, "Nothing matched. ", j.did_you_mean ? "" : "Try fewer words, or Meaning above."));
+  else {
+    let page = 0;
+    const more = h("button", { class: "hn-more", onclick: async () => {
+      page++;
+      more.textContent = "Loading…";
+      const k = await app.api(`/v1/search?${qs}&page=${page}&facets=0`);
+      const add2 = [...(k.stories || []).map((s) => storyItem(app, s, re)), ...(k.comments || []).map((c) => commentItem(app, c, re))];
+      more.before(h("ul", { class: "hn-res" }, add2));
+      more.textContent = "More results";
+      if (!add2.length) more.remove();
+    } }, "More results");
+    list.push(more);
+  }
+  fill(body, ...list);
+
+  // Facets: each a click that narrows the query, by its operator.
+  const f = j.facets || {};
+  const KIND = { story: "Story", show: "Show HN", ask: "Ask HN", launch: "Launch HN", tell: "Tell HN", job: "Job", poll: "Poll" };
+  fill(left, 
+    years(app, f.year, q),
+    facetBox(app, "Type", f.kind, { label: (v) => KIND[v] || v, on: (v) => (u.kinds || []).includes(v), pick: (v) => app.go("search", addOp(q, `type:${v}`, /\btype:\S+/i)) }),
+    facetBox(app, "Points", (f.points || []).sort((a, b) => parseInt(b.value) - parseInt(a.value) || (a.value.startsWith("<") ? 1 : -1)), { pick: (v) => app.go("search", addOp(q, v.startsWith("<") ? "points<20" : `points>${parseInt(v) - 1}`, /\bpoints[<>:]\S+/i)) }),
+    facetBox(app, "Topics", (f.topic || []).filter((r) => r.value), { on: (v) => u.topic === v, pick: (v) => app.go("search", addOp(q, `topic:${String(v).replace(/\s+/g, "-")}`, /\btopic:\S+/i)) }),
+    facetBox(app, "Sites", f.site, { on: (v) => u.site === v, pick: (v) => app.go("search", addOp(q, `site:${v}`, /\bsite:\S+/i)) }),
+    facetBox(app, "Posted by", f.author, { on: (v) => u.author === v, pick: (v) => app.go("search", addOp(q, `by:${v}`, /\bby:\S+/i)) }),
+  );
+  if (!left.children.length) left.append(h("div", { class: "hn-facet" }, h("h4", {}, "Filters"), h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "Type by:name, site:example.com, after:2020, points>100, type:show, or say it: “Show HN posts about databases since 2021”.")));
+
+  // Beside the results: a question for "What HN thinks", the people who
+  // know the topic, the trend.
+  const words = (u.text || "").trim();
+  fill(right, 
+    words ? h("a", { class: "hn-ask", href: app.href("ask", `What does HN think about ${words}?`) }, h("span", { html: SPARK, style: { display: "contents" } }), h("div", {}, h("b", {}, `What does HN think about ${words}?`), h("span", {}, "A short answer from the comments, every claim cited"))) : null,
+    words ? h("div", { class: "hn-card" }, h("h4", {}, "Talked about, year by year", h("a", { href: app.href("trends", words) }, "Trends →")), sparkYears(f.year)) : null,
+    words ? peopleCard(app, words) : null,
+  );
+}
+
+function sparkYears(rows) {
+  const ys = (rows || []).filter((r) => r.value >= 2006);
+  if (ys.length < 2) return h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "Not enough years yet.");
+  const W = 236, H = 60, max = Math.max(...ys.map((r) => r.n));
+  const x0 = ys[0].value, x1 = ys[ys.length - 1].value;
+  const pts = ys.map((r) => [((r.value - x0) / Math.max(1, x1 - x0)) * (W - 4) + 2, H - 4 - (r.n / max) * (H - 12)]);
+  const peak = ys.reduce((a, b) => (b.n > a.n ? b : a));
+  return h("div", {}, h("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: "60px" } },
+    h("path", { d: `M${pts.map((p) => p.join(",")).join("L")}L${W - 2},${H}L2,${H}Z`, fill: "color-mix(in srgb, var(--accent) 14%, transparent)" }),
+    h("polyline", { points: pts.map((p) => p.join(",")).join(" "), fill: "none", stroke: "var(--accent)", "stroke-width": 2, "stroke-linejoin": "round" })),
+    h("div", { class: "hn-yl" }, h("span", {}, x0), h("span", {}, `peak ${peak.value}`), h("span", {}, x1)));
+}
+
+function peopleCard(app, words) {
+  const card = h("div", { class: "hn-card" }, h("h4", {}, "Who knows about it", h("a", { href: app.href("people", words) }, "People →")), h("div", { class: "hn-skel", style: { height: "40px" } }));
+  app.ctx.api(`/v1/experts?q=${enc(words)}`).then((j) => {
+    const ex = (j.experts || []).slice(0, 8);
+    card.lastChild.replaceWith(ex.length ? h("div", { class: "hn-ppl" }, ex.map((e) => h("a", { href: app.href("user", e.id), title: `${e.comments_on_topic} comments on it, in ${e.threads} threads` }, ava(e.id), e.id))) : h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "No one stands out yet."));
+  }).catch(() => card.remove());
+  return card;
+}
+
+// ---- home ------------------------------------------------------------------
+
+const TRY = [
+  ["rust by:steveklabnik", "a person's words"],
+  ["postgres vs mysql after:2020", "words, and a date"],
+  ["Show HN databases with over 300 points", "said as a sentence"],
+  ["kubernets", "a typo"],
+  ["most discussed stories about remote work", "sorted by what you say"],
+  ["\"memory safety\" site:github.com", "a phrase, on a site"],
+];
+
+function home(main, app, alive) {
+  const s = app.status;
+  const stats = h("div", { class: "hn-stats" });
+  const drawStats = (st) => fill(stats, 
+    h("div", {}, h("b", {}, compact(st?.tables?.hn_stories || 0)), h("span", {}, "stories")),
+    h("div", {}, h("b", {}, compact(st?.tables?.hn_comments || 0)), h("span", {}, "comments")),
+    h("div", {}, h("b", {}, compact(st?.tables?.hn_users || 0)), h("span", {}, "people")),
+    h("div", {}, h("b", {}, compact(st?.tables?.hn_replies || 0)), h("span", {}, "reply edges")),
+    h("div", {}, h("b", {}, st?.stories?.first ? new Date(st.stories.first).getFullYear() : "2006"), h("span", {}, "since")));
+  drawStats(s);
+  const frontCol = h("div", { class: "hn-card" }, h("h4", {}, "On the front page now", h("a", { href: app.href("front") }, "All →")), skel(3));
+  const askCol = h("div", { class: "hn-card" }, h("h4", {}, "Ask the archive"),
+    h("ul", { class: "hn-mini" }, ["What does HN think about SQLite in production?", "Is Rust worth it for a small team?", "What do people regret about microservices?", "How do founders find their first customers?"].map((t) =>
+      h("li", {}, h("a", { href: app.href("ask", t) }, t), h("span", { class: "m" }, "an answer from the comments, cited")))));
+  const trendCol = h("div", { class: "hn-card" }, h("h4", {}, "Trends", h("a", { href: app.href("trends", "rust, go, zig") }, "Open →")),
+    h("ul", { class: "hn-mini" }, [["rust, go, zig", "languages"], ["kubernetes, docker, serverless", "infrastructure"], ["gpt, llm, copilot", "AI"], ["remote, office, layoffs", "work"]].map(([t, w]) =>
+      h("li", {}, h("a", { href: app.href("trends", t) }, t), h("span", { class: "m" }, w)))));
+  fill(main, 
+    h("div", { class: "hn-hero" },
+      h("h1", {}, "Search every ", h("em", {}, "Hacker News"), " discussion"),
+      h("p", {}, "Every story and comment since 2006, by words and by meaning, in their threads. Ask what HN thinks, see who knows a topic, and watch topics rise and fall."),
+      h("div", { class: "hn-try" }, TRY.map(([q, w]) => h("a", { href: app.href("search", q) }, h("small", {}, w), h("code", {}, q))))),
+    stats,
+    h("div", { class: "hn-cols" }, frontCol, askCol, trendCol));
+  app.input.focus();
+  app.ctx.api("/v1/status").then((st) => { if (alive()) drawStats(st); }).catch(() => {});
+  app.api("/v1/front").then((j) => {
+    if (!alive()) return;
+    frontCol.lastChild.replaceWith(h("ul", { class: "hn-mini" }, (j.stories || []).slice(0, 6).map((s) =>
+      h("li", {}, h("a", { href: app.href("item", s.id) }, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${fmt(s.comments)} comments · ${ago(s.created)}`)))));
+  }).catch(() => frontCol.lastChild.remove());
+}
+
+// ---- a discussion ----------------------------------------------------------
+
+async function thread(main, app, id, alive) {
+  fill(main, h("div", { class: "hn-grid two" }, h("section", {}, skel(6)), h("aside", {})));
+  const j = await app.api(`/v1/item/${id}`);
+  if (!alive()) return;
+  const s = j.story;
+  const re = markers({ text: app.input.value.replace(/\b\w+:\S+/g, "") });
+  const tree = h("div", { class: "hn-tree" });
+  const kids = new Map();
+  for (const c of j.comments || []) {
+    const p = c.parent === j.story_id ? 0 : c.parent;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(c);
+  }
+  for (const list of kids.values()) list.sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0) || a.id - b.id);
+  const path = new Set(j.path || []);
+  let focusEl = null;
+  const node = (c) => {
+    const k = kids.get(c.id) || [];
+    const tg = h("span", { class: "tg", title: "Fold" }, "[–]");
+    const el = h("div", { class: `hn-cm${c.id === j.focus ? " focus" : ""}${path.has(c.id) ? " path" : ""}`, id: `c${c.id}` },
+      h("div", { class: "hd" }, ava(c.author), h("a", { class: "u", href: app.href("user", c.author) }, c.author), h("a", { href: app.href("item", c.id), title: day(c.created) }, ago(c.created)), k.length ? tg : null, c.thread > 3 ? h("span", {}, `${fmt(c.thread)} below`) : null),
+      h("div", { class: "bd" }, marked(c.body, re)),
+      k.length ? h("div", { class: "kids" }, k.map(node)) : null);
+    tg.onclick = () => { el.classList.toggle("shut"); tg.textContent = el.classList.contains("shut") ? `[+${c.thread || k.length}]` : "[–]"; };
+    if (c.id === j.focus) focusEl = el;
+    return el;
+  };
+  add(tree, (kids.get(0) || []).map(node));
+  const k = s?.kind;
+  const side = h("aside", { class: "hn-right", style: { display: "block" } }, h("div", { class: "hn-skel", style: { height: "120px" } }));
+  fill(main, h("div", { class: "hn-grid two" },
+    h("section", {},
+      s ? h("div", { class: "hn-story" },
+        h("h1", {}, s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title) : s.title, s.site ? h("a", { class: "site", href: app.href("search", `site:${s.site}`), style: { fontSize: "14px", color: "var(--muted)", fontWeight: 400, marginLeft: "8px" } }, s.site) : null),
+        h("div", { class: "hn-meta" }, k && k !== "story" ? h("span", { class: `k ${k}` }, k) : null, h("span", {}, `${fmt(s.points)} points`), h("a", { href: app.href("user", s.author) }, s.author), h("span", { title: day(s.created) }, `${day(s.created)} · ${ago(s.created)}`), h("span", {}, `${fmt(s.comments)} comments`),
+          h("a", { href: `https://news.ycombinator.com/item?id=${s.id}`, target: "_blank", rel: "noopener noreferrer" }, "on HN ↗")),
+        s.body ? h("div", { class: "body" }, marked(s.body, re)) : null)
+        : h("div", { class: "hn-err" }, "This story is older than the months loaded; its comments are below."),
+      (j.comments || []).length ? tree : h("div", { class: "hn-empty" }, s?.comments ? "This discussion's comments are not loaded yet." : "No comments.")),
+    side));
+  if (focusEl) setTimeout(() => focusEl.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+  const a = await app.ctx.api(`/v1/item/${j.story_id}/around`).catch(() => ({}));
+  if (!alive()) return;
+  const mini = (title, rows, more) => rows?.length ? h("div", { class: "hn-card" }, h("h4", {}, title, more || null), h("ul", { class: "hn-mini" }, rows.slice(0, 6).map((r) =>
+    h("li", {}, h("a", { href: app.href("item", r.id) }, r.title), h("span", { class: "m" }, `${fmt(r.points)} points · ${fmt(r.comments)} comments · ${new Date(r.created).getFullYear()}`))))) : null;
+  fill(side, 
+    a.site?.site ? h("div", { class: "hn-card" }, h("h4", {}, a.site.site, h("a", { href: app.href("search", `site:${a.site.site}`) }, "All →")), h("div", { class: "hn-kpis", style: { marginTop: 0 } }, h("span", {}, h("b", {}, fmt(a.site.stories)), "stories"), h("span", {}, h("b", {}, compact(a.site.points)), "points"), a.site.first ? h("span", {}, "since ", h("b", {}, new Date(a.site.first).getFullYear())) : null)) : null,
+    mini(`The same link, discussed again`, a.same_link),
+    mini("Discussions this one links to", a.links_to),
+    mini("Discussions that link here", a.linked_from),
+    mini("Nearest by meaning", a.similar));
+}
+
+// ---- a person --------------------------------------------------------------
+
+async function person(main, app, who, alive) {
+  fill(main, skel(5));
+  const j = await app.api(`/v1/user/${enc(who)}`);
+  if (!alive()) return;
+  const u = j.user || {};
+  const yrs = (j.years || []).map((r) => ({ value: r.year, n: r.n }));
+  fill(main, 
+    h("div", { class: "hn-pf" }, ava(who, 56), h("div", {}, h("h1", {}, who),
+      h("div", { class: "hn-kpis" }, h("span", {}, h("b", {}, fmt(u.comments)), "comments"), h("span", {}, h("b", {}, fmt(u.stories)), "stories"), h("span", {}, h("b", {}, compact(u.points)), "points on stories"), u.first ? h("span", {}, "since ", h("b", {}, new Date(u.first).getFullYear())) : null, h("span", {}, h("b", {}, fmt(u.talked_to)), "people talked to")))),
+    h("div", { class: "hn-grid two" },
+      h("section", {},
+        h("div", { class: "hn-card" }, h("h4", {}, "Their orbit, from the reply graph", h("span", { style: { textTransform: "none", letterSpacing: 0, fontWeight: 400 } }, "personalized PageRank from them")), orbit(app, who, j)),
+        j.top?.length ? [h("div", { class: "hn-sec" }, h("h3", {}, "Their best stories"), h("a", { href: app.href("search", `by:${who}`) }, "All →")), h("ul", { class: "hn-res" }, j.top.slice(0, 6).map((s) => storyItem(app, s, null)))] : null,
+        j.recent?.length ? [h("div", { class: "hn-sec" }, h("h3", {}, "Latest comments"), h("a", { href: app.href("search", `by:${who}`, "comment", "date") }, "All →")), h("ul", { class: "hn-res" }, j.recent.map((c) => commentItem(app, { ...c, author: who }, null)))] : null),
+      h("aside", {},
+        yrs.length > 1 ? h("div", { class: "hn-card" }, h("h4", {}, "Comments a year"), sparkYears(yrs)) : null,
+        j.replies_to?.length ? h("div", { class: "hn-card" }, h("h4", {}, "Answers most"), h("div", { class: "hn-ppl" }, j.replies_to.map((r) => h("a", { href: app.href("user", r.who), title: `${r.w} replies` }, ava(r.who), r.who)))) : null,
+        j.replied_by?.length ? h("div", { class: "hn-card" }, h("h4", {}, "Answered most by"), h("div", { class: "hn-ppl" }, j.replied_by.map((r) => h("a", { href: app.href("user", r.who), title: `${r.w} replies` }, ava(r.who), r.who)))) : null,
+        j.sites?.length ? h("div", { class: "hn-card" }, h("h4", {}, "Sites they post"), h("ul", { class: "hn-mini" }, j.sites.map((r) => h("li", {}, h("a", { href: app.href("search", `by:${who} site:${r.site}`) }, r.site), h("span", { class: "m" }, `${r.n} stories · ${compact(r.points)} points`))))) : null)));
+}
+
+// A radial picture of someone's orbit: them in the middle, the people the
+// PageRank from them ranks highest around, closer the higher, and the
+// replies between them as lines.
+function orbit(app, who, j) {
+  const W = 640, H = 380, cx = W / 2, cy = H / 2;
+  const ring = (j.orbit || []).slice(0, 12);
+  if (!ring.length) return h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "Nobody in their orbit yet: the reply graph is built from the comments loaded.");
+  const w = new Map();
+  for (const r of j.replies_to || []) w.set(r.who, (w.get(r.who) || 0) + r.w);
+  for (const r of j.replied_by || []) w.set(r.who, (w.get(r.who) || 0) + r.w);
+  const max = Math.max(...ring.map((r) => r.score || 0), 1e-9);
+  const svg = h("svg", { class: "hn-graph", viewBox: `0 0 ${W} ${H}` });
+  const pos = ring.map((r, i) => {
+    const a = (i / ring.length) * Math.PI * 2 - Math.PI / 2;
+    const d = 90 + (1 - (r.score || 0) / max) * 80;
+    return [cx + Math.cos(a) * d * 1.45, cy + Math.sin(a) * d];
+  });
+  ring.forEach((r, i) => svg.append(h("line", { x1: cx, y1: cy, x2: pos[i][0], y2: pos[i][1], "stroke-width": 1 + Math.min(5, (w.get(r.id) || 0) / 2), opacity: w.get(r.id) ? 0.9 : 0.35 })));
+  svg.append(h("g", {}, h("circle", { cx, cy, r: 26, fill: hue(who), stroke: "var(--surface)", "stroke-width": 3 }), h("text", { x: cx, y: cy + 4, "text-anchor": "middle", style: { fill: "#fff", fontWeight: 700, fontSize: "13px" } }, who.slice(0, 10))));
+  ring.forEach((r, i) => {
+    const rad = 9 + Math.min(14, Math.sqrt(r.comments || 1) / 6);
+    const g = h("g", { class: "nd", onclick: () => app.go("user", r.id) }, h("circle", { cx: pos[i][0], cy: pos[i][1], r: rad, fill: hue(r.id), stroke: "var(--surface)", "stroke-width": 2 }),
+      h("text", { x: pos[i][0], y: pos[i][1] + rad + 13, "text-anchor": "middle" }, r.id));
+    g.append(h("title", {}, `${r.id}: ${fmt(r.comments)} comments${w.get(r.id) ? `, ${w.get(r.id)} replies with ${who}` : ""}`));
+    svg.append(g);
+  });
+  return svg;
+}
+
+// ---- who knows a topic -----------------------------------------------------
+
+async function experts(main, app, topic, alive) {
+  const box = h("input", { value: topic, placeholder: "A topic: kubernetes, sqlite, compilers, fundraising…" });
+  const go = () => app.go("people", box.value.trim());
+  box.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const out = h("div", {}, topic ? skel(4) : h("div", { class: "hn-empty" }, "Name a topic to see who writes the comments people come back to, and how they talk to each other."));
+  fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "Who knows about it"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Find people")), out);
+  if (!topic) return;
+  const j = await app.api(`/v1/experts?q=${enc(topic)}`);
+  if (!alive()) return;
+  const ex = j.experts || [];
+  if (!ex.length) { fill(out, h("div", { class: "hn-empty" }, "No one stands out on this yet.")); return; }
+  fill(out, h("div", { class: "hn-grid two" },
+    h("section", {}, h("div", { class: "hn-card" }, h("h4", {}, "How they reply to each other", h("span", { style: { textTransform: "none", letterSpacing: 0, fontWeight: 400 } }, `${fmt(j.read)} comments read`)), network(app, ex, j.edges || [])),
+      h("ul", { class: "hn-res" }, ex.slice(0, 14).map((e, i) => h("li", { class: "hn-s" },
+        h("div", { class: "hn-pts" }, h("b", {}, i + 1)),
+        h("div", {}, h("div", { class: "hn-ttl" }, h("a", { href: app.href("user", e.id) }, ava(e.id), " ", e.id)),
+          h("div", { class: "hn-meta" }, h("span", {}, `${e.comments_on_topic} comments on it`), h("span", {}, `in ${e.threads} threads`), e.profile?.first ? h("span", {}, `on HN since ${new Date(e.profile.first).getFullYear()}`) : null, h("a", { href: app.href("search", `${topic} by:${e.id}`, "comment") }, "their comments →")),
+          h("div", { class: "hn-again" }, "Best in: ", e.best.map((b, k) => [k ? " · " : "", h("a", { href: app.href("item", b.id) }, b.story_title)]))))))),
+    h("aside", {}, j.community?.length ? h("div", { class: "hn-card" }, h("h4", {}, "The community around them"), h("div", { class: "hn-ppl" }, j.community.map((r) => h("a", { href: app.href("user", r.id) }, ava(r.id), r.id))),
+      h("div", { style: { fontSize: "12px", color: "var(--muted)", marginTop: "8px" } }, "PageRank over the reply graph, from the people above.")) : null)));
+}
+
+// A small force layout of who replies to whom among the people found.
+function network(app, people, edges) {
+  const W = 680, H = 360;
+  const ids = people.slice(0, 18).map((p) => p.id);
+  const idx = new Map(ids.map((id, i) => [id, i]));
+  const es = edges.filter((e) => idx.has(e.src) && idx.has(e.dst) && e.src !== e.dst);
+  const n = ids.map((id, i) => ({ id, x: W / 2 + Math.cos(i * 2.4) * 120 * Math.sqrt(i / ids.length + 0.1), y: H / 2 + Math.sin(i * 2.4) * 100 * Math.sqrt(i / ids.length + 0.1), vx: 0, vy: 0, r: 8 + Math.max(0, 12 - i * 0.6) }));
+  for (let it = 0; it < 260; it++) {
+    for (let a = 0; a < n.length; a++) for (let b = a + 1; b < n.length; b++) {
+      const dx = n[b].x - n[a].x, dy = n[b].y - n[a].y, d2 = Math.max(80, dx * dx + dy * dy), f = 2600 / d2;
+      n[a].vx -= dx * f / 60; n[a].vy -= dy * f / 60; n[b].vx += dx * f / 60; n[b].vy += dy * f / 60;
+    }
+    for (const e of es) {
+      const a = n[idx.get(e.src)], b = n[idx.get(e.dst)], dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - 90) * 0.004 * Math.min(4, 1 + Math.log(1 + e.w));
+      a.vx += dx / d * f * d / 10; a.vy += dy / d * f * d / 10; b.vx -= dx / d * f * d / 10; b.vy -= dy / d * f * d / 10;
+    }
+    for (const p of n) { p.vx += (W / 2 - p.x) * 0.004; p.vy += (H / 2 - p.y) * 0.006; p.x += p.vx; p.y += p.vy; p.vx *= 0.6; p.vy *= 0.6; p.x = Math.max(30, Math.min(W - 30, p.x)); p.y = Math.max(24, Math.min(H - 28, p.y)); }
+  }
+  const svg = h("svg", { class: "hn-graph", viewBox: `0 0 ${W} ${H}`, style: { height: "360px" } });
+  for (const e of es) { const a = n[idx.get(e.src)], b = n[idx.get(e.dst)]; svg.append(h("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, "stroke-width": Math.min(5, 0.8 + Math.log(1 + e.w)), opacity: 0.75 })); }
+  for (const p of n) {
+    const g = h("g", { class: "nd", onclick: () => app.go("user", p.id) }, h("circle", { cx: p.x, cy: p.y, r: p.r, fill: hue(p.id), stroke: "var(--surface)", "stroke-width": 2 }), h("text", { x: p.x, y: p.y + p.r + 12, "text-anchor": "middle" }, p.id));
+    svg.append(g);
+  }
+  if (!es.length) svg.append(h("text", { x: W / 2, y: H - 8, "text-anchor": "middle" }, "They have not replied to each other in the comments loaded."));
+  return svg;
+}
+
+// ---- trends ----------------------------------------------------------------
+
+async function trends(main, app, terms, alive) {
+  const box = h("input", { value: terms, placeholder: "Terms, separated by commas: rust, go, zig" });
+  const go = () => app.go("trends", box.value.trim());
+  box.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const out = h("div", {}, terms ? skel(3) : h("div", { class: "hn-empty" }, "Compare how much HN talked about things, as a share of all its stories each year."));
+  fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "Trends"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Compare")), out);
+  if (!terms) return;
+  const j = await app.api(`/v1/trends?q=${enc(terms)}&in=stories`);
+  if (!alive()) return;
+  const S = (j.series || []).filter((s) => s.points.length);
+  if (!S.length) { fill(out, h("div", { class: "hn-empty" }, "Nothing matched these terms.")); return; }
+  const W = 860, H = 300, L = 44, B = 26;
+  const ys = S.flatMap((s) => s.points.map((p) => Number(p.p))).filter((y) => y >= 2006);
+  const x0 = Math.min(...ys), x1 = Math.max(...ys, x0 + 1);
+  const max = Math.max(...S.flatMap((s) => s.points.filter((p) => Number(p.p) >= 2006).map((p) => p.per10k)), 1e-9);
+  const X = (y) => L + ((y - x0) / (x1 - x0)) * (W - L - 12), Y = (v) => H - B - (v / max) * (H - B - 14);
+  const svg = h("svg", { class: "hn-chart", viewBox: `0 0 ${W} ${H}` });
+  for (let k = 0; k <= 4; k++) { const v = (max * k) / 4; svg.append(h("line", { x1: L, x2: W - 12, y1: Y(v), y2: Y(v), stroke: "var(--grid)" }), h("text", { x: L - 6, y: Y(v) + 4, "text-anchor": "end" }, v >= 10 ? Math.round(v) : v.toFixed(1))); }
+  for (let y = x0; y <= x1; y += Math.max(1, Math.round((x1 - x0) / 10))) svg.append(h("text", { x: X(y), y: H - 8, "text-anchor": "middle" }, y));
+  S.forEach((s, i) => {
+    const pts = s.points.filter((p) => Number(p.p) >= 2006).map((p) => [X(Number(p.p)), Y(p.per10k)]);
+    svg.append(h("polyline", { points: pts.map((p) => p.join(",")).join(" "), fill: "none", stroke: COLORS[i], "stroke-width": 2.4, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    for (const p of pts) svg.append(h("circle", { cx: p[0], cy: p[1], r: 2.6, fill: COLORS[i] }));
+  });
+  fill(out, 
+    h("div", { class: "hn-card" }, h("h4", {}, "Stories per 10,000, by year"), h("div", { class: "hn-legend" }, S.map((s, i) => h("span", {}, h("i", { style: { background: COLORS[i] } }), s.term, h("small", { style: { color: "var(--muted)" } }, ` ${fmt(s.total)}`)))), svg),
+    h("div", { class: "hn-cols" }, S.map((s, i) => h("div", { class: "hn-card" }, h("h4", {}, h("span", { style: { color: COLORS[i] } }, s.term), h("a", { href: app.href("search", s.term, "story", "points") }, "Top stories →")),
+      h("ul", { class: "hn-mini" }, (s.top || []).slice(0, 5).map((r) => h("li", {}, h("a", { href: app.href("item", r.id) }, r.title), h("span", { class: "m" }, `${fmt(r.points)} points · ${new Date(r.created).getFullYear()}`))))))));
+}
+
+// ---- what HN thinks --------------------------------------------------------
+
+async function ask(main, app, question, alive) {
+  const box = h("input", { value: question, placeholder: "What does HN think about…" });
+  const go = () => app.go("ask", box.value.trim());
+  box.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const out = h("div", {}, question ? [h("div", { style: { color: "var(--muted)", fontSize: "13px", margin: "6px 0" } }, "Reading the comments that speak to it, packed into the model's budget by the database, then summing them up…"), skel(4)] : h("div", { class: "hn-empty" }, "Ask a question; the answer comes from HN's comments, each claim cited to the comment it came from."));
+  fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "What HN thinks"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Ask")), out);
+  if (!question) return;
+  const j = await app.api(`/v1/ask?q=${enc(question)}`, { timeout: 120000 });
+  if (!alive()) return;
+  if (!j.answer) { fill(out, h("div", { class: "hn-empty" }, j.note || "No answer.")); return; }
+  const src = new Map((j.sources || []).map((s) => [s.n, s]));
+  const cards = new Map();
+  const cite = (text) => {
+    const parts = [];
+    let last = 0;
+    for (const m of text.matchAll(/\[(\d+)\]/g)) {
+      parts.push(text.slice(last, m.index));
+      const n = Number(m[1]);
+      parts.push(src.has(n) ? h("sup", {}, h("a", { href: app.href("item", src.get(n).id), onmouseenter: () => cards.get(n)?.classList.add("hot"), onmouseleave: () => cards.get(n)?.classList.remove("hot"), title: `${src.get(n).author}, ${src.get(n).year}` }, n)) : `[${n}]`);
+      last = m.index + m[0].length;
+    }
+    parts.push(text.slice(last));
+    return parts;
+  };
+  const blocks = [];
+  let ul = null;
+  for (const line of j.answer.split("\n")) {
+    const t = line.trim();
+    if (!t) { ul = null; continue; }
+    const b = t.match(/^[-*•]\s+(.*)/);
+    if (b) { if (!ul) { ul = h("ul", {}); blocks.push(ul); } ul.append(h("li", {}, cite(b[1].replace(/\*\*(.+?)\*\*/g, "$1")))); }
+    else { ul = null; blocks.push(h("p", {}, cite(t.replace(/\*\*(.+?)\*\*/g, "$1")))); }
+  }
+  const r = j.receipt;
+  fill(out, 
+    h("div", { class: "hn-card" }, h("div", { class: "hn-ans" }, blocks),
+      h("div", { class: "hn-receipt" },
+        h("span", {}, `${(j.sources || []).length} comments cited`),
+        r ? h("span", {}, `${r.skipped} more left out by the pack (near duplicates, over budget)`) : null,
+        h("span", {}, j.kept ? `kept answer from ${day(j.at)}` : `${(j.ms / 1000).toFixed(1)} s`),
+        h("span", {}, j.model),
+        j.kept ? h("a", { href: "#", style: { color: "var(--accent)" }, onclick: async (e) => { e.preventDefault(); fill(out, skel(4)); await app.api(`/v1/ask?q=${enc(question)}&fresh=1`, { timeout: 120000 }); show2(); } }, "Ask again") : null)),
+    h("div", { class: "hn-sec" }, h("h3", {}, "The comments it read"), h("a", { href: app.href("search", question.replace(/^what (does|do) (hn|people) think (about|of)\s*/i, "").replace(/\?$/, ""), "comment") }, "Search them →")),
+    h("div", { class: "hn-src" }, (j.sources || []).map((s) => { const c = h("div", { id: `s${s.n}` }, h("div", {}, h("span", { class: "n" }, s.n), h("a", { href: app.href("user", s.author), style: { fontWeight: 600 } }, s.author), ` · ${s.year} · `, h("a", { href: app.href("item", s.id), style: { color: "var(--muted)" } }, s.story_title)), h("div", { class: "x" }, s.text)); cards.set(s.n, c); return c; })));
+  function show2() { app.show(["ask", question]); }
+}
+
+// ---- the front page --------------------------------------------------------
+
+async function front(main, app, alive) {
+  fill(main, skel(6));
+  const j = await app.api("/v1/front");
+  if (!alive()) return;
+  const f = j.feed;
+  fill(main, 
+    h("div", { class: "hn-head", style: { margin: "10px 0" } }, h("h2", { style: { margin: 0, letterSpacing: "-.02em" } }, "The front page, from the tables"),
+      h("span", { class: "t" }, f?.running ? ["read from the HN API every half minute · ", fmt(f.written), " items written"] : "the newest stories loaded, ranked as HN ranks them: points over age")),
+    (j.stories || []).length ? h("ul", { class: "hn-res" }, j.stories.map((s) => storyItem(app, s, null))) : h("div", { class: "hn-empty" }, "No stories from the last two days are loaded: start the app with --feed to keep it live."));
+}
+
+// ---- how it works ----------------------------------------------------------
+
+function about(main, app) {
+  const p = (t) => h("p", { style: { color: "var(--text-2)", maxWidth: "760px" } }, t);
+  fill(main, h("div", { style: { maxWidth: "820px" } },
+    h("h2", { style: { letterSpacing: "-.02em" } }, "How this works"),
+    p("Every Hacker News story and comment is a row of a ChloeDB table, with its text indexed for words (BM25, with typo tolerance and HN's synonyms: k8s, postgres, LLM…) and for meaning (an embedding of each title and comment, made by the database as the rows were written). People are rows; who replied to whom is an edge table, and so is which discussion links to which."),
+    p("A search is understood first: by:, site:, after:, type:, points> and quoted phrases, or the same said as a sentence (“Show HN posts about databases since 2021 with over 300 points”). Stories are found by their words and by meaning, the two lists fused and ranked by relevance, points and age; a comment is shown in its story, with the way to it opened in the thread. The facets beside the results are GROUP BY queries over the same match."),
+    p("What HN thinks: the comments that speak to a question are found by words and by meaning, packed into a language model's budget by the database (near duplicates skipped, long comments cut to their best stretch), and summed up by the model through ChloeDB's llm(), each claim cited to a numbered comment."),
+    p("Who knows a topic ranks the people whose comments on it rank best, across many threads; their orbit is a personalized PageRank over the reply graph. Trends count the matches per year as a share of everything posted that year."),
+    p("The SQL button at the bottom right shows every query a page ran, with its rows and time."),
+    h("p", { style: { color: "var(--muted)", fontSize: "13px" } }, "Data: the open-index/hacker-news archive on Hugging Face (ODC-By), kept up to date from the official HN API. Not affiliated with Y Combinator or Hacker News.")));
+}
