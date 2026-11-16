@@ -20,16 +20,18 @@ fn node_line(line: &[u8]) -> Option<Vec<u8>> {
 }
 
 async fn import(db: &Strata, t: &str, body: Vec<u8>, progress: &mut impl FnMut(&str)) -> Result<(), String> {
-    // A server behind on its writes (429) is waited for as long as it takes
-    // to catch up, up to 20 minutes; other failures are tried five times.
+    // A server behind on its writes (429) is asked again two seconds later,
+    // for up to 20 minutes; other failures are tried five times.
     let (mut tries, mut busy) = (0, 0);
     loop {
         match db.import_lines(t, body.clone()).await {
             Ok(_) => return Ok(()),
-            Err(e) if e.status == 429 && busy < 40 => {
+            Err(e) if e.status == 429 && busy < 600 => {
                 busy += 1;
-                progress(&format!("{t}: {e}; waiting for it"));
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                if busy % 30 == 1 {
+                    progress(&format!("{t}: {e}; waiting for it"));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(e) if tries < 5 && (e.status == 0 || e.status >= 500) => {
                 tries += 1;
@@ -47,7 +49,9 @@ const SMALL: [&str; 4] = ["ax_topics", "ax_concepts", "ax_cats", "ax_venues"];
 /// Loads `dir/<table>.jsonl` for each table in `only` (all when empty),
 /// each into its server (the papers' and people's keys into the graph
 /// server's nodes too), after its first `skip` lines (to go on with a load
-/// that stopped: the rows a table has are the file's first lines, in order);
+/// that stopped: the rows a table has are the file's first lines, in order;
+/// a request the server refuses part way is sent whole again, so keep them
+/// small, `--chunk-mb 1`, where the server is slow to take them);
 /// `progress` hears each request.
 pub async fn load(search: &Strata, graph: &Strata, dir: &Path, only: &[String], chunk_mb: usize, skip: u64, mut progress: impl FnMut(&str)) -> Result<u64, String> {
     let mut total = 0u64;
