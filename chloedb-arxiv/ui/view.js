@@ -218,6 +218,45 @@ const CSS = `
 .ax-wq { font-size: 22px; font-weight: 650; line-height: 1.3; margin: 0 0 6px; letter-spacing: -0.01em; }
 .ax-wacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
 .ax-p .why { font-size: 13px; color: var(--text-2); margin-top: 4px; }
+.ax-co { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 10px 0; background: var(--surface); }
+.ax-co .top { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.ax-co .nm { font-size: 16px; font-weight: 650; color: var(--text); text-decoration: none; }
+.ax-co .nm:hover { color: var(--accent); }
+.ax-co .st { font-size: 12.5px; color: var(--muted); }
+.ax-co .path { font-size: 13px; color: var(--text-2); margin: 6px 0 2px; overflow-wrap: anywhere; }
+.ax-co .path a { color: var(--text-2); }
+.ax-co .path .ar { color: var(--muted); margin: 0 4px; }
+.ax-co .bring { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); margin: 6px 0 2px; }
+.ax-co .ax-p { margin-top: 6px; }
+.ax-orgs { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 2px; }
+.ax-orgs .ax-chip { font-size: 12px; }
+.ax-labs { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 14px; font-size: 13.5px; align-items: baseline; }
+.ax-labs a { color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.ax-labs a:hover { color: var(--accent); }
+.ax-labs .n { color: var(--muted); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.ax-labs .g { color: var(--good-ink); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.ax-labs .g.dn { color: var(--crit-ink); }
+.ax-labfind { position: relative; margin: 12px 0 4px; max-width: 520px; }
+.ax-labfind input { width: 100%; box-sizing: border-box; font: 14px/1.4 var(--sans); padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-labfind input:focus { outline: none; border-color: var(--accent); }
+.ax-labfind .res { display: grid; gap: 2px; margin-top: 6px; }
+.ax-labfind .res a { display: flex; justify-content: space-between; gap: 10px; padding: 5px 8px; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 13.5px; }
+.ax-labfind .res a:hover { background: var(--line); }
+.ax-labfind .res span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ax-rps { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.ax-rp { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--surface); min-width: 0; }
+.ax-rp .nm { font-weight: 650; font-size: 15px; color: var(--text); text-decoration: none; }
+.ax-rp .nm:hover { color: var(--accent); }
+.ax-rp .st { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.ax-rp .g { font-size: 13px; color: var(--good-ink); margin-top: 6px; font-weight: 550; }
+.ax-rp .bt { display: block; font-size: 13px; color: var(--text-2); margin: 4px 0 6px; line-height: 1.4; overflow-wrap: anywhere; }
+.ax-rp .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.ax-rform { display: grid; gap: 8px; margin: 14px 0 6px; }
+.ax-rform input, .ax-rform textarea { font: 14px/1.45 var(--sans); padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); width: 100%; box-sizing: border-box; }
+.ax-rform textarea { min-height: 150px; resize: vertical; }
+.ax-rform input:focus, .ax-rform textarea:focus { outline: none; border-color: var(--accent); }
+.ax-rform .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ax-co .lvl { font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; padding: 1px 7px; border-radius: 6px; background: var(--chip, var(--line)); color: var(--text-2); }
 @media (max-width: 780px) { .ax-wform { flex-direction: column; } .ax-wq { font-size: 19px; } }
 .ax-citebox { width: 100%; box-sizing: border-box; font: 13.5px/1.5 var(--sans); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); resize: vertical; margin-top: 10px; }
 .ax-citerefs summary { cursor: pointer; color: var(--text-2); font-size: 13.5px; margin-bottom: 6px; }
@@ -263,6 +302,15 @@ const CSS = `
 .ax-chart .grid { stroke: var(--grid); stroke-width: 1; }
 .ax-chart .ln { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
 .ax-chart .ar { opacity: .12; }
+.ax-river path.l { opacity: .88; transition: opacity .15s; }
+.ax-river.dim path.l { opacity: .25; }
+.ax-river.dim path.l.on { opacity: .95; }
+.ax-river .hov { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.ax-rleg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 2px; font-size: 12.5px; }
+.ax-rleg a, .ax-rleg span { color: var(--text-2); text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+.ax-rleg a:hover { color: var(--accent); }
+.ax-rleg i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+.ax-rinfo { font-size: 12.5px; color: var(--muted); min-height: 18px; margin-top: 2px; }
 .ax-chart .hov { stroke: var(--axis); stroke-dasharray: 3 3; }
 .ax-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--text-2); margin: 6px 0; }
 .ax-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
@@ -427,6 +475,57 @@ function showTip(ev, html) {
 function hideTip() { if (tip) tip.style.display = "none"; }
 
 // Lines over years: series = [{name, color, points: [[x, y]]}], y formatted by fy.
+// A stream of an author's techniques, year by year: each band is one of
+// their most used, its width their papers using it that year.
+function riverChart(app, river) {
+  const T = (river && river.topics) || [], got = (river && river.years) || [];
+  if (got.length < 3 || !T.length) return null;
+  const k = T.length, y0 = got[0].year, y1 = got[got.length - 1].year;
+  const rows = [];
+  for (let y = y0; y <= y1; y++) { const r = got.find((q) => q.year === y); rows.push({ year: y, n: r ? r.n : new Array(k).fill(0) }); }
+  const tot = rows.map((r) => r.n.reduce((a, b) => a + b, 0));
+  const W = 640, H = 210, L = 8, R = 8, Tp = 6, B = 22;
+  const sc = (H - Tp - B) / Math.max(1, ...tot), mid = Tp + (H - Tp - B) / 2;
+  const X = (i) => L + (i / Math.max(1, rows.length - 1)) * (W - L - R);
+  const names = T.map((t) => t.label);
+  const colors = T.map((_, i) => PALETTE[i % PALETTE.length]);
+  const g = svg("svg", { class: "ax-chart ax-river", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", style: `height:${H}px` });
+  const curve = (pts, first) => pts.map((p, i) => (i ? `C${((pts[i - 1][0] + p[0]) / 2).toFixed(1)},${pts[i - 1][1].toFixed(1)} ${((pts[i - 1][0] + p[0]) / 2).toFixed(1)},${p[1].toFixed(1)} ${p[0].toFixed(1)},${p[1].toFixed(1)}` : `${first}${p[0].toFixed(1)},${p[1].toFixed(1)}`)).join("");
+  const layers = [];
+  for (let j = 0; j < k; j++) {
+    if (!rows.some((r) => r.n[j] > 0)) { layers.push(null); continue; }
+    const bot = [], top = [];
+    rows.forEach((r, i) => {
+      const base = mid - (tot[i] * sc) / 2, below = r.n.slice(0, j).reduce((a, b) => a + b, 0);
+      bot.push([X(i), base + below * sc]); top.push([X(i), base + (below + r.n[j]) * sc]);
+    });
+    const p = svg("path", { class: "l", d: curve(bot, "M") + curve(top.slice().reverse(), "L") + "Z", fill: colors[j] }, svg("title", {}, names[j]));
+    layers.push(p); g.append(p);
+  }
+  const step = Math.max(1, Math.ceil(rows.length / 8));
+  rows.forEach((r, i) => { if ((i % step === 0 && rows.length - 1 - i >= step / 2) || i === rows.length - 1) g.append(svg("text", { x: X(i), y: H - 6, "text-anchor": i === 0 ? "start" : i === rows.length - 1 ? "end" : "middle" }, String(r.year))); });
+  const hov = svg("line", { class: "hov", y1: Tp, y2: H - B, x1: -10, x2: -10 });
+  g.append(hov);
+  const info = h("div", { class: "ax-rinfo" }, `Their papers a year using each of their most used techniques, ${y0}–${y1}; hover a year.`);
+  g.addEventListener("mousemove", (ev) => {
+    const b = g.getBoundingClientRect();
+    const i = Math.max(0, Math.min(rows.length - 1, Math.round((((ev.clientX - b.left) / b.width) * W - L) / ((W - L - R) / Math.max(1, rows.length - 1)))));
+    hov.setAttribute("x1", X(i)); hov.setAttribute("x2", X(i));
+    const r = rows[i];
+    const parts = r.n.map((n, j) => [n, names[j]]).filter((x) => x[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([n, t]) => `${t} ${n}`);
+    fill(info, `${r.year}: ${parts.length ? parts.join(" · ") : "none of these"}`);
+  });
+  const legend = h("div", { class: "ax-rleg" }, names.map((t, j) => {
+    if (!layers[j]) return null;
+    const sw = h("i", { style: { background: colors[j] } });
+    const el = h("a", { href: app.href("concept", T[j].id) }, sw, t);
+    el.addEventListener("mouseenter", () => { g.classList.add("dim"); layers[j].classList.add("on"); });
+    el.addEventListener("mouseleave", () => { g.classList.remove("dim"); layers[j].classList.remove("on"); });
+    return el;
+  }));
+  return h("div", {}, g, info, legend);
+}
+
 function lineChart(series, { height = 190, fy = short, ylabel = "", area = false } = {}) {
   const W = 640, H = height, L = 44, R = 12, T = 10, B = 24;
   const xs = series.flatMap((s) => s.points.map((p) => p[0]));
@@ -611,7 +710,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["library", "Library"], ["cite", "What to cite"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["library", "Library"], ["cite", "What to cite"], ["reviewers", "Reviewers"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -676,6 +775,11 @@ function render(el, ctx) {
         case "search": input.value = arg; lastQ = arg; return await searchPage(app, main, arg, alive, search);
         case "paper": return await paperPage(app, main, arg, alive);
         case "author": return await authorPage(app, main, arg, alive);
+        case "collab": return await collabPage(app, main, arg, alive);
+        case "reviewers": return await reviewersPage(app, main, arg, alive);
+        case "code": return await codePage(app, main, arg, alive);
+        case "labs": return await labsPage(app, main, arg, alive);
+        case "lab": return await labPage(app, main, arg, alive);
         case "topic": return await scopePage(app, main, "topic", arg, alive);
         case "concept": return await scopePage(app, main, "concept", arg, alive);
         case "category": return await scopePage(app, main, "category", arg, alive);
@@ -896,6 +1000,10 @@ async function paperPage(app, main, id, alive) {
   const authors = j.paper.authors_list || [];
   let showAll = authors.length <= 12;
   const auLine = h("div", { class: "au" });
+  const labLine = h("div", { class: "ax-orgs" });
+  app.api(`/v1/labs/of/${id}`).then((r) => {
+    if ((r.labs || []).length) fill(labLine, r.labs.slice(0, 12).map((l) => h("a", { class: "ax-chip", href: app.href("lab", l.id), title: l.country || "" }, flag(l.country), l.name)), r.labs.length > 12 ? h("span", { class: "more" }, ` and ${r.labs.length - 12} more`) : null);
+  }).catch(() => {});
   const drawAu = () => fill(auLine, (showAll ? authors : authors.slice(0, 12)).map((a, i) => [i ? ", " : "", h("a", { href: app.href("author", a.id), title: `${a.papers} papers · h-index ${a.h}` }, a.name)]), !showAll ? h("span", { class: "more", onclick: () => { showAll = true; drawAu(); } }, ` and ${authors.length - 12} more`) : null, p.nauthors > authors.length ? ` (${p.nauthors} authors)` : "");
   drawAu();
   const tldr = h("div");
@@ -951,14 +1059,15 @@ async function paperPage(app, main, id, alive) {
           h("span", {}, `${day(p.created)}${p.versions > 1 ? ` · v${p.versions}, ${day(p.updated)}` : ""}`),
           kinds.map((k) => h("span", { class: `ax-badge ${k}` }, k))),
         h("h1", {}, p.title),
-        auLine,
+        auLine, labLine,
         h("div", { class: "acts" },
           h("a", { class: "ax-btn pri", href: j.links.pdf, target: "_blank", rel: "noopener", onclick: () => event(app, id, "pdf") }, "PDF"),
           h("a", { class: "ax-btn", href: j.links.html, target: "_blank", rel: "noopener" }, "HTML"),
           h("a", { class: "ax-btn", href: j.links.abs, target: "_blank", rel: "noopener" }, "arXiv"),
           p.code ? h("a", { class: "ax-btn", href: p.code, target: "_blank", rel: "noopener" }, "Code") : null,
           p.hf ? h("a", { class: "ax-btn", href: p.hf, target: "_blank", rel: "noopener" }, "🤗 Hugging Face") : null,
-          tldrBtn, novelBtn, saveBtn),
+          tldrBtn, novelBtn, saveBtn,
+          h("a", { class: "ax-btn", href: app.href("reviewers", id) }, "Who could review it")),
         tldr, novel,
         h("div", { class: "abs" }, p.abstract),
         h("div", { class: "tags" }, (j.techniques || []).map((x) => conceptChip(app, x.id, x.name, "technique")), (j.domains || []).map((x) => conceptChip(app, x.id, x.name, "domain")))),
@@ -998,8 +1107,11 @@ async function authorPage(app, main, id, alive) {
           h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(a.cites)), h("div", { class: "l" }, "citations")),
           h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(a.h)), h("div", { class: "l" }, "h-index")),
           h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(a.recent)), h("div", { class: "l" }, "last 12 months")),
-          h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(a.coauthors)), h("div", { class: "l" }, "coauthors")))),
+          h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(a.coauthors)), h("div", { class: "l" }, "coauthors"))),
+        h("div", { class: "acts" },
+          h("a", { class: "ax-btn pri", href: app.href("collab", id) }, "People to work with"))),
       years.length > 1 ? [sec("Papers a year"), lineChart([{ name: "papers", points: years.map((y) => [y.year, y.n]), extra: (p) => { const y = years.find((q) => q.year === p[0]); return y ? `${fmt(y.cites)} cites` : ""; } }], { fy: (v) => String(Math.round(v)) })] : null,
+      (() => { const r = riverChart(app, j.river); return r ? [sec("Where their work went"), r] : null; })(),
       sec("Most cited"), paperList(app, j.top, { compact: false }),
       sec("Newest"), paperList(app, j.newest, { compact: true })),
     h("aside", {},
@@ -1007,6 +1119,118 @@ async function authorPage(app, main, id, alive) {
       h("div", { class: "ax-card" }, h("h4", {}, "Nearest in the coauthor graph"), h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "4px" } }, "PageRank from them over who writes with whom"), peopleList(app, (j.orbit || []).slice(0, 10), { n: "papers", label: "papers" })),
       j.topics && j.topics.length ? h("div", { class: "ax-card" }, h("h4", {}, "Topics"), h("div", { class: "ax-people" }, j.topics.map((t) => [h("a", { href: app.href("topic", t.id) }, t.label), h("span", { class: "n" }, String(t.n))]))) : null,
       j.techniques && j.techniques.length ? h("div", { class: "ax-card" }, h("h4", {}, "Techniques"), conceptList(app, j.techniques)) : null)));
+}
+
+// People who write on what someone writes on and have never written with
+// them or their coauthors: the ones to meet, with the shortest way in.
+async function collabPage(app, main, id, alive) {
+  fill(main, skel(8));
+  const t0 = performance.now();
+  const j = await app.api(`/v1/collab/${enc(id)}`);
+  if (!alive()) return;
+  const me = j.person || {};
+  const ms = j.took_ms != null ? j.took_ms : performance.now() - t0;
+  const r = j.read || {};
+  const person = (p) => h("a", { href: app.href("author", p.id) }, p.name || p.id);
+  const card = (p) => h("div", { class: "ax-co" },
+    h("div", { class: "top" },
+      h("a", { class: "nm", href: app.href("author", p.id) }, p.name),
+      h("span", { class: "st" }, `${fmt(p.papers)} papers · ${fmt(p.cites)} citations · h ${fmt(p.h)}`),
+      (p.cats || []).slice(0, 3).map((c) => catChip(app, c))),
+    p.via && p.via.length === 2
+      ? h("div", { class: "path" }, "Three steps away: ", h("b", {}, me.name), h("span", { class: "ar" }, "→"), person(p.via[0]), h("span", { class: "ar" }, "→"), person(p.via[1]), h("span", { class: "ar" }, "→"), h("b", {}, p.name),
+        h("span", { class: "st" }, ` (${p.via[0].name} writes with ${me.name}; ${p.via[1].name} writes with both)`))
+      : h("div", { class: "path" }, "No one between you yet: nobody who writes with ", me.name, "'s coauthors writes with them."),
+    p.bring && p.bring.length ? h("div", { class: "bring" }, "Would bring", p.bring.map((t) => h("a", { class: "ax-chip", href: app.href("concept", t.id) }, t.name))) : null,
+    (p.close || []).length ? [h("div", { class: "st", style: { marginTop: "8px" } }, `Their papers nearest to ${me.name}'s work`), paperList(app, p.close, { compact: true })] : null);
+  fill(main, h("div", { class: "ax-grid two" },
+    h("section", {},
+      h("div", { class: "ax-ph" },
+        h("div", { class: "ey" }, "People to work with"),
+        h("h1", {}, `Who ${me.name || id} could work with`),
+        h("div", { class: "au" }, `People who write on what ${me.name || id} writes on, have never written with them or with their coauthors, and published in the last two years. Read ${fmt(r.papers)} papers nearest to their work and ${fmt(r.coauthors)} coauthors in ${(ms / 1000).toFixed(1)} s.`),
+        h("div", { class: "acts" }, h("a", { class: "ax-btn", href: app.href("author", id) }, `Back to ${me.name || id}`))),
+      (j.people || []).length ? (j.people || []).map(card) : h("div", { class: "ax-empty" }, "No one found: their nearest papers are all written by people they already work with.")),
+    h("aside", {},
+      h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+        h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+          h("p", {}, `Their eight newest and eight most cited papers of the last six years make one text, and the 500 papers nearest to it by meaning in the last four years are read.`),
+          h("p", {}, "Everyone on two of those papers or more counts, more for papers nearer the top and for a higher h-index. Anyone who has written with them, or with someone they write with, is left out: those they could already meet."),
+          h("p", {}, "The path is the shortest one in the coauthor graph through people with the fewest papers, since a name with thousands of papers is many people sharing it."))),
+      (j.mine || []).length ? h("div", { class: "ax-card" }, h("h4", {}, `What ${me.name} works on`), h("div", { class: "tags" }, j.mine.map((t) => h("a", { class: "ax-chip", href: app.href("concept", t.id) }, t.name)))) : null)));
+}
+
+// Reviewers for a paper on arXiv, or for a title and abstract pasted in:
+// people who know its subject, with no one who wrote with its authors.
+async function reviewersPage(app, main, id, alive) {
+  const level = (p) => (p.h >= 20 ? "Senior" : p.h >= 8 ? "Established" : "Early career");
+  const show = (j, into) => {
+    const r = j.read || {};
+    const card = (p) => h("div", { class: "ax-co" },
+      h("div", { class: "top" },
+        h("a", { class: "nm", href: app.href("author", p.id) }, p.name),
+        h("span", { class: "lvl" }, level(p)),
+        h("span", { class: "st" }, `${fmt(p.papers)} papers · ${fmt(p.cites)} citations · h ${fmt(p.h)} · last on arXiv ${day(p.last)}`),
+        (p.cats || []).slice(0, 3).map((c) => catChip(app, c))),
+      h("div", { class: "path" }, `${p.near} of their papers are among the ${fmt(r.papers)} nearest to it.`),
+      p.knows && p.knows.length ? h("div", { class: "bring" }, "Knows", p.knows.map((t) => h("a", { class: "ax-chip", href: app.href("concept", t.id) }, t.name))) : null,
+      (p.close || []).length ? [h("div", { class: "st", style: { marginTop: "8px" } }, "Their nearest papers"), paperList(app, p.close, { compact: true })] : null);
+    const left = (j.left_out || []).filter((l) => !l.author);
+    fill(into,
+      h("div", { class: "s", style: { fontSize: "13px", color: "var(--muted)", margin: "4px 0 8px" } }, `Read the ${fmt(r.papers)} papers nearest to it in the last six years and left out ${fmt(r.conflicts)} people who wrote with its authors in the last four · ${((j.took_ms || 0) / 1000).toFixed(1)} s`),
+      (j.subject || []).length ? h("div", { class: "bring", style: { margin: "0 0 6px" } }, "Its subject", j.subject.map((t) => h("a", { class: "ax-chip", href: app.href("concept", t.id) }, t.name))) : null,
+      (j.people || []).length ? j.people.map(card) : h("div", { class: "ax-empty" }, "No one found: the people nearest to it all wrote with its authors."),
+      left.length ? h("div", { class: "ax-card", style: { marginTop: "14px" } }, h("h4", {}, "Left out for a conflict"),
+        h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.6" } }, left.map((l, i) => [i ? " · " : "", h("a", { href: app.href("author", l.id) }, l.name), ` wrote with ${l.with.name}`]))) : null);
+  };
+  const aside = h("aside", {},
+    h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+      h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+        h("p", {}, "The 500 papers nearest to its title and abstract by meaning in the last six years are read, and everyone on two of them or more counts, more for papers nearer the top and a little more for a higher h-index."),
+        h("p", {}, "Its authors and everyone who wrote with one of them in the last four years are left out, and so is anyone with fewer than eight papers or none in the last three years."),
+        h("p", {}, "A name with more than 600 papers is left out too: that is many people who share it, and no one to write to."))));
+  if (id) {
+    fill(main, skel(8));
+    const j = await app.api(`/v1/reviewers/${enc(id)}`);
+    if (!alive()) return;
+    const body = h("div", {});
+    fill(main, h("div", { class: "ax-grid two" },
+      h("section", {},
+        h("div", { class: "ax-ph" },
+          h("div", { class: "ey" }, "Reviewers"),
+          h("h1", {}, "Who could review it"),
+          h("div", { class: "au" }, h("a", { href: app.href("paper", id) }, j.paper.title)),
+          h("div", { class: "acts" }, h("a", { class: "ax-btn", href: app.href("reviewers") }, "Paste another paper"))),
+        body),
+      aside));
+    show(j, body);
+    return;
+  }
+  const ti = h("input", { type: "text", maxlength: 400, placeholder: "Title", "aria-label": "Title" });
+  const ab = h("textarea", { maxlength: 5600, placeholder: "Abstract", "aria-label": "Abstract" });
+  const au = h("input", { type: "text", maxlength: 1000, placeholder: "Authors, separated by commas (their coauthors are left out)", "aria-label": "Authors" });
+  const btn = h("button", { class: "ax-btn pri" }, "Find reviewers");
+  const msg = h("span", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)" } });
+  const body = h("div", {});
+  btn.onclick = async () => {
+    btn.disabled = true;
+    fill(msg, "Reading the nearest papers…");
+    try {
+      const j = await app.api("/v1/reviewers", { body: { title: ti.value, abstract: ab.value, authors: au.value } });
+      fill(msg, "");
+      show(j, body);
+    } catch (e) { fill(msg, h("span", { class: "ax-err" }, String(e.message || e))); }
+    btn.disabled = false;
+  };
+  fill(main, h("div", { class: "ax-grid two" },
+    h("section", {},
+      h("div", { class: "ax-ph" },
+        h("div", { class: "ey" }, "Reviewers"),
+        h("h1", {}, "Who could review a paper"),
+        h("div", { class: "au" }, "Paste a title and abstract, and the authors to leave out with everyone they wrote with. For a paper on arXiv, open it and press “Who could review it”."),
+        h("div", { class: "ax-rform" }, ti, ab, au, h("div", { class: "row" }, btn, msg))),
+      body),
+    aside));
 }
 
 // -------------------------------------------- topic, concept, category, venue
@@ -1045,7 +1269,8 @@ async function scopePage(app, main, kind, id, alive) {
           h("a", { class: "ax-btn pri", href: app.href("search", `summarize ${kind === "topic" ? j.topic.label : title}`) }, "✦ Summarize the research"),
           h("a", { class: "ax-btn", href: app.href("search", query) }, "Search in it"),
           h("a", { class: "ax-btn", href: app.href("search", `reading list for ${kind === "topic" ? j.topic.label : title}`) }, "Reading list"),
-          h("a", { class: "ax-btn", href: app.href("feed", "new", kind === "topic" ? j.topic.label : title) }, "Weekly feed"))),
+          h("a", { class: "ax-btn", href: app.href("feed", "new", kind === "topic" ? j.topic.label : title) }, "Weekly feed"),
+          kind === "concept" ? h("a", { class: "ax-btn", href: app.href("labs", "all", id) }, "Labs moving into it") : null)),
       sec("Share of arXiv, year by year"), sharesChart(b.years),
       sec("Most cited of the last twelve months"), paperList(app, b.rising, { compact: true }),
       sec("Most cited ever"), paperList(app, b.top, { compact: true }),
@@ -1095,14 +1320,151 @@ async function hotPage(app, main, arg, alive) {
   const out = h("div", {}, skel(8));
   const on = { borderColor: "var(--accent)", color: "var(--accent)" };
   fill(main, h("div", {},
-    h("div", { class: "ax-ph" }, h("h1", {}, "What's rising"), h("div", { class: "au" }, `Techniques, domains and topics whose share of papers grew most in the last ${label} against the ${label} before.`)),
+    h("div", { class: "ax-ph" }, h("h1", {}, "What's rising"), h("div", { class: "au" }, `Techniques, domains and topics whose share of papers grew most in the last ${label} against the ${label} before, and the people early in their careers whose new work is cited most.`)),
     h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 2px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Compare the last"), SPANS.map(([d, t]) => h("a", { href: app.href("hot", area || "all", d), style: d === days ? on : {} }, t))),
     h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "6px 0 14px" } }, AREAS.map(([k, t]) => h("a", { href: app.href("hot", k || "all", days), style: area === k ? on : {} }, t))),
     out));
   const j = await app.api(`/v1/hot?area=${enc(area)}&days=${days}`);
   if (!alive()) return;
   const col = (title, rows, kind) => h("div", { class: "ax-card" }, h("h4", {}, title), h("div", { class: "ax-rise" }, (rows || []).length ? (rows || []).map((t) => [h("a", { href: kind === "topic" ? app.href("topic", t.id) : app.href("concept", t.id) }, t.name || t.label), h("span", { class: "g" }, `${Number(t.growth).toFixed(2)}×`), h("div", { class: "s" }, kind === "topic" && t.about && t.before === undefined ? t.about : `${fmt(t.recent)} papers, from ${fmt(t.before)}${kind === "topic" && t.about ? ` · ${t.about}` : ""}`)]) : h("div", { class: "s" }, "Nothing rose clearly beyond chance in this span.")));
-  fill(out, h("div", { class: "ax-cols" }, col("Techniques", j.techniques, "c"), col("Domains", j.domains, "c"), col("Topics", j.topics, "topic")));
+  const people = h("div", {}, skel(4));
+  const pdays = Math.max(days, 365);
+  fill(out, h("div", { class: "ax-cols" }, col("Techniques", j.techniques, "c"), col("Domains", j.domains, "c"), col("Topics", j.topics, "topic")),
+    sec(`Rising people of the last ${pdays >= 730 ? "2 years" : "year"}`), people);
+  const pj = await app.api(`/v1/hot/people?area=${enc(area)}&days=${pdays}`);
+  if (!alive()) return;
+  const card = (p) => h("div", { class: "ax-rp" },
+    h("a", { class: "nm", href: app.href("author", p.id) }, p.name),
+    h("div", { class: "st" }, `On arXiv since ${day(p.first).slice(0, 4)} · ${fmt(p.papers)} papers · h ${fmt(p.h)}`),
+    h("div", { class: "g" }, `${fmt(p.span_cites)} citations to ${fmt(p.span_papers)} ${p.span_papers === 1 ? "paper" : "papers"} of the span`),
+    p.best ? h("a", { class: "bt", href: app.href("paper", p.best.id) }, p.best.title) : null,
+    (p.techniques || []).length ? h("div", { class: "tags" }, p.techniques.map((t) => h("a", { class: "ax-chip", href: app.href("concept", t.id) }, t.name))) : null);
+  fill(people,
+    h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", margin: "-4px 0 10px" } }, `People whose first paper on arXiv is at most five years old, by the citations to their papers of the span (two cited papers or more, of 20 authors or fewer)${days < 365 ? "; citations take a year to gather, so this looks back a year" : ""}.`),
+    (pj.people || []).length ? h("div", { class: "ax-rps" }, pj.people.map(card)) : h("div", { class: "ax-empty" }, "No one stands out in this span yet."));
+}
+
+// ------------------------------------------------------------------ labs
+
+function flag(cc) {
+  if (!cc || cc.length !== 2) return "";
+  return String.fromCodePoint(...[...cc.toUpperCase()].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65)) + " ";
+}
+
+const LAB_KIND = { education: "University", company: "Company", government: "Government", facility: "Facility", nonprofit: "Nonprofit", healthcare: "Healthcare", archive: "Archive", funder: "Funder", other: "Other" };
+
+function labRows(app, rows, { growth = true } = {}) {
+  if (!rows || !rows.length) return h("div", { class: "ax-empty" }, "No lab stands out here yet.");
+  return h("div", { class: "ax-labs" }, rows.map((l) => [
+    h("a", { href: app.href("lab", l.id) }, flag(l.country), l.name),
+    h("span", { class: "n" }, `${fmt(l.recent)} papers`),
+    growth ? h("span", { class: `g${l.change != null && l.change < 1 ? " dn" : ""}`, title: "Change in its share of the papers with an organisation" }, l.change != null ? `${l.change >= 1 ? "+" : ""}${Math.round((l.change - 1) * 100)}%` : "new") : h("span"),
+  ]));
+}
+
+async function labsPage(app, main, arg, alive) {
+  // "#/labs/<area>/<technique>", "all" for all of arXiv.
+  const [a0, t0] = (arg || "").split("/");
+  const area = a0 && a0 !== "all" ? a0 : "", tech = t0 || "";
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
+  const inp = h("input", { type: "search", placeholder: "Find a lab: “DeepMind”, “ETH Zurich”, “Max Planck”…", "aria-label": "Find a lab" });
+  const res = h("div", { class: "res" });
+  let timer = null;
+  inp.addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = inp.value.trim();
+    if (q.length < 2) { fill(res); return; }
+    timer = setTimeout(async () => {
+      try {
+        const r = await app.api(`/v1/labs/find?q=${enc(q)}`);
+        if (inp.value.trim() !== q) return;
+        fill(res, (r.labs || []).map((l) => h("a", { href: app.href("lab", l.id) }, h("b", { style: { fontWeight: 550 } }, flag(l.country), l.name), h("span", {}, `${fmt(l.papers)} papers · ${fmt(l.recent)} last year`))));
+      } catch (e) { /* keep typing */ }
+    }, 200);
+  });
+  const out = h("div", {}, skel(8));
+  const tname = tech ? (app.concepts[tech] || tech) : "";
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" },
+      h("h1", {}, tech ? `Labs moving into ${tname}` : "Labs"),
+      h("div", { class: "au" }, tech
+        ? `The organisations with the most papers using ${tname} in the last twelve months, and those whose papers on it grew most against the twelve months before.`
+        : "The organisations behind arXiv's papers, read from the authors' affiliations in OpenAlex: those with the most papers of the last twelve months, and those growing fastest. Pick a technique's page and press “Labs moving into it” to see who is moving into a field."),
+      h("div", { class: "ax-labfind" }, inp, res)),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "6px 0 14px" } }, AREAS.map(([k, t]) => h("a", { href: app.href(...["labs", k || "all"].concat(tech ? [tech] : [])), style: area === k ? on : {} }, t)),
+      tech ? h("a", { href: app.href("labs", area || "all") }, `✕ ${tname}`) : null),
+    out));
+  const j = await app.api(`/v1/labs?area=${enc(area)}&t=${enc(tech)}`);
+  if (!alive()) return;
+  if (tech && j.technique_name && j.technique_name !== tname) { app.concepts[tech] = j.technique_name; return labsPage(app, main, arg, alive); }
+  fill(out, h("div", { class: "ax-cols", style: { gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" } },
+    h("div", { class: "ax-card" }, h("h4", {}, "Most papers, last twelve months"), h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "6px" } }, "With the change in its share against the twelve months before"), labRows(app, j.top)),
+    h("div", { class: "ax-card" }, h("h4", {}, tech ? "Moving into it fastest" : "Growing fastest"), h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "6px" } }, tech ? "Labs with 8 papers or more on it in the last twelve months" : "Labs with 40 papers or more in the last twelve months and 20 the year before"), labRows(app, j.moving))),
+    h("div", { class: "s", style: { fontSize: "12px", color: "var(--muted)", marginTop: "10px" } }, `${j.labs >= 3000 ? "More than 3,000" : fmt(j.labs)} labs wrote ${tech ? "on it " : ""}in the last twelve months. Affiliations come from OpenAlex's public snapshot of October 2026, which names an organisation for 78% of arXiv's papers and for fewer of the newest, so growth is a lab's share of the papers with an organisation, not its count.`));
+}
+
+async function labPage(app, main, id, alive) {
+  fill(main, skel(10));
+  const j = await app.api(`/v1/lab/${enc(id)}`);
+  if (!alive()) return;
+  const l = j.lab;
+  const g = l.share_change != null ? l.share_change : null;
+  const ys = (j.years || []).filter((y) => y.year >= 2000);
+  fill(main, h("div", { class: "ax-grid two" },
+    h("section", {},
+      h("div", { class: "ax-ph" },
+        h("div", { class: "ey" }, "Lab", h("span", {}, LAB_KIND[l.kind] || l.kind || ""), l.country ? h("span", {}, flag(l.country), l.country) : null),
+        h("h1", {}, l.name),
+        h("div", { class: "ax-kpis" },
+          h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(l.papers)), h("div", { class: "l" }, "papers on arXiv")),
+          h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(l.recent)), h("div", { class: "l" }, "last 12 months")),
+          g != null ? h("div", { class: "ax-kpi" }, h("div", { class: "v", style: { color: g >= 1 ? "var(--good-ink)" : "var(--crit-ink)" } }, `${g >= 1 ? "+" : ""}${Math.round((g - 1) * 100)}%`), h("div", { class: "l" }, "share vs the year before")) : null),
+        h("div", { class: "acts" }, h("a", { class: "ax-btn", href: app.href("labs") }, "All labs"))),
+      ys.length > 1 ? [sec("Papers a year", h("span", { style: { fontSize: "12px", color: "var(--muted)" } }, "OpenAlex names organisations for fewer of the newest papers")), lineChart([{ name: "papers", points: ys.map((y) => [y.year, y.n]) }], { fy: (v) => String(Math.round(v)) })] : null,
+      (j.moving || []).length ? [sec("Moving into"), h("div", { style: { fontSize: "12.5px", color: "var(--muted)", margin: "-4px 0 8px" } }, "Techniques its papers use far more in the last two years than in the two before"),
+        h("div", { class: "ax-people" }, j.moving.map((t) => [h("a", { href: app.href("concept", t.id) }, t.name), h("span", { class: "n" }, `${fmt(t.n)} papers, from ${fmt(t.before)}`)]))] : null,
+      sec("Newest"), paperList(app, j.newest, { compact: true }),
+      sec("Most cited"), paperList(app, j.cited, { compact: true })),
+    h("aside", {},
+      (j.known || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "Known for (last two years)"), conceptList(app, j.known)) : null,
+      (j.people || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "Who writes its papers"), h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "4px" } }, "Most papers with it in the last three years, coauthors from elsewhere included"), peopleList(app, j.people)) : null,
+      (j.partners || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "Labs it writes with"), h("div", { class: "ax-people" }, j.partners.map((p) => [h("a", { href: app.href("lab", p.id) }, flag(p.country), p.name), h("span", { class: "n" }, `${fmt(p.n)} papers`)]))) : null,
+      (j.countries || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "Countries of its papers"), h("div", { class: "ax-people" }, j.countries.map((c) => [h("span", {}, flag(c.id), c.id), h("span", { class: "n" }, `${fmt(c.n)} papers`)]))) : null)));
+}
+
+// ------------------------------------------------------------------ code
+
+async function codePage(app, main, arg, alive) {
+  const area = arg && arg !== "all" ? arg : "";
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
+  const out = h("div", {}, skel(8));
+  const aname = (AREAS.find(([k]) => k === area) || ["", "All of arXiv"])[1];
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" }, h("h1", {}, "Code and data behind the papers"),
+      h("div", { class: "au" }, "How many papers share their code, the repositories behind the most papers, which techniques share code most and least, and the newest papers with code, models or data. Links are read from each paper's abstract and comments; search with ", h("a", { href: app.href("search", "has:code") }, "has:code"), " to keep only papers with code.")),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 14px" } }, AREAS.map(([k, t]) => h("a", { href: app.href("code", k || "all"), style: area === k ? on : {} }, t))),
+    out));
+  const j = await app.api(`/v1/code?area=${enc(area)}`);
+  if (!alive()) return;
+  const ys = (j.years || []).filter((y) => y.n >= 50);
+  const last = ys.filter((y) => y.year < new Date().getFullYear() + 1).slice(-1)[0];
+  const repoName = (u) => u.replace(/^https:\/\/(www\.)?/, "");
+  const share = (rows) => h("div", { class: "ax-people" }, (rows || []).map((t) => [h("a", { href: app.href("search", `technique:${t.id} has:code`) }, t.name), h("span", { class: "n" }, `${Math.round(t.share * 100)}% of ${short(t.n)}`)]));
+  fill(out, h("div", { class: "ax-grid two" },
+    h("section", {},
+      last ? h("div", { class: "ax-kpis" },
+        h("div", { class: "ax-kpi" }, h("div", { class: "v" }, `${Math.round(last.share * 100)}%`), h("div", { class: "l" }, `of ${last.year}'s papers share code`)),
+        h("div", { class: "ax-kpi" }, h("div", { class: "v" }, fmt(last.code)), h("div", { class: "l" }, `papers with code in ${last.year}`))) : null,
+      sec(`Share of papers with code, ${aname}`),
+      ys.length > 1 ? lineChart([{ name: "with code", points: ys.map((y) => [y.year, y.share * 100]), extra: (p) => { const y = ys.find((q) => q.year === p[0]); return y ? `${fmt(y.code)} of ${fmt(y.n)}` : ""; } }], { fy: (v) => `${v.toFixed(v < 10 ? 1 : 0)}%` }) : h("div", { class: "ax-empty" }, "Too few papers."),
+      sec("Newest with code", h("a", { href: app.href("search", `${area ? `area:${area} ` : ""}has:code sort:date`) }, "All")), paperList(app, j.newest, { compact: true }),
+      sec("Most cited with code, last twelve months"), paperList(app, j.cited, { compact: true }),
+      (j.hf || []).length ? [sec("Newest with models or data on Hugging Face"), paperList(app, j.hf, { compact: true })] : null),
+    h("aside", {},
+      h("div", { class: "ax-card" }, h("h4", {}, "Repositories behind the most papers"),
+        h("div", { class: "ax-people" }, (j.repos || []).map((r) => [h("a", { href: r.url, target: "_blank", rel: "noopener", style: { overflowWrap: "anywhere" } }, repoName(r.url)), h("span", { class: "n" }, `${fmt(r.n)} papers`)]))),
+      (j.most || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "Techniques that share code most"), h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "4px" } }, "Papers of the last two years, techniques with 300 or more"), share(j.most)) : null,
+      (j.least || []).length ? h("div", { class: "ax-card" }, h("h4", {}, "And least"), share(j.least)) : null)));
 }
 
 // ------------------------------------------------------------------ cite

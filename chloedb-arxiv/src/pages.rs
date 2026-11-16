@@ -167,7 +167,7 @@ pub async fn paper(c: &Ctx<'_>, id: &str) -> Option<Value> {
 /// people nearest them in the coauthor graph.
 pub async fn author(c: &Ctx<'_>, id: &str) -> Option<Value> {
     let p = json!({"a": id});
-    let (row, top, newest, years, co, topics, techs, cats, first) = tokio::join!(
+    let (row, top, newest, years, co, topics, techs, cats, first, by_year) = tokio::join!(
         c.soft("the person", "SELECT * FROM ax_authors WHERE id = :a", p.clone()),
         c.soft("their most cited papers", &format!("SELECT {COLS} FROM ax_papers WHERE people = :a ORDER BY cites DESC LIMIT 20"), p.clone()),
         c.soft("their newest papers", &format!("SELECT {COLS} FROM ax_papers WHERE people = :a ORDER BY created DESC LIMIT 12"), p.clone()),
@@ -177,6 +177,7 @@ pub async fn author(c: &Ctx<'_>, id: &str) -> Option<Value> {
         c.soft("their techniques", "SELECT techniques, COUNT(*) AS n FROM ax_papers WHERE people = :a GROUP BY techniques ORDER BY n DESC LIMIT 10", p.clone()),
         c.soft("their categories", "SELECT cats, COUNT(*) AS n FROM ax_papers WHERE people = :a GROUP BY cats ORDER BY n DESC LIMIT 8", p.clone()),
         c.soft("their papers as first author", "SELECT COUNT(*) AS n FROM ax_papers WHERE first_author = :a", p.clone()),
+        c.soft("their techniques year by year", "SELECT year, techniques, COUNT(*) AS n FROM ax_papers WHERE people = :a GROUP BY year, techniques LIMIT 10000", p.clone()),
     );
     let row = row.into_iter().next()?;
     let others: Vec<(String, i64)> = co.iter().map(|r| (if r.s("src") == id { r.s("dst") } else { r.s("src") }, r.f("w") as i64)).collect();
@@ -198,8 +199,31 @@ pub async fn author(c: &Ctx<'_>, id: &str) -> Option<Value> {
     let tname: HashMap<i64, Row> = topic_rows.into_iter().map(|r| (r.i("id"), r)).collect();
     let coauthors: Vec<Value> = others.iter().map(|(k, w)| json!({"id": k, "name": names.get(k).map(|r| r.s("name")).unwrap_or(k.clone()), "n": w, "papers": names.get(k).map(|r| r.i("papers")).unwrap_or(0)})).collect();
     let dict = concepts::dict();
+    // Where their work went: their papers a year using each of their seven
+    // most used techniques (a paper counts once in each it uses).
+    let river_ids: Vec<String> = techs.iter().map(|r| r.s("techniques")).filter(|k| !k.is_empty()).take(7).collect();
+    let mut ys: Vec<i64> = by_year.iter().map(|r| r.i("year")).filter(|y| *y > 1990).collect();
+    ys.sort();
+    ys.dedup();
+    let river_years: Vec<Value> = ys
+        .iter()
+        .map(|y| {
+            let mut n = vec![0i64; river_ids.len()];
+            for r in by_year.iter().filter(|r| r.i("year") == *y) {
+                if let Some(at) = river_ids.iter().position(|t| *t == r.s("techniques")) {
+                    n[at] += r.i("n");
+                }
+            }
+            json!({"year": y, "n": n})
+        })
+        .collect();
+    let river = json!({
+        "topics": river_ids.iter().map(|t| json!({"id": t, "label": dict.by_slug(t).map(|c| c.name.clone()).unwrap_or(t.clone())})).collect::<Vec<_>>(),
+        "years": river_years,
+    });
     Some(json!({
         "author": row,
+        "river": river,
         "top": top, "newest": newest,
         "years": years.iter().map(|r| json!({"year": r.i("year"), "n": r.i("n"), "cites": r.i("s")})).collect::<Vec<_>>(),
         "coauthors": coauthors,

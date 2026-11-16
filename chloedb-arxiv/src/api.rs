@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, gaps, spread, pages, schema, understand, watch};
+use crate::{answer, ask, born, code, collab, gaps, labs, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -58,6 +58,8 @@ pub struct Service {
     pub born: tokio::sync::Mutex<Option<(Instant, Value)>>,
     /// Techniques' spread over categories, made once and kept 12 hours.
     pub spread: tokio::sync::Mutex<Option<(Instant, Value)>>,
+    /// Answers kept for a while by their key (rising people, people to work with).
+    pub memo: Mutex<HashMap<String, (Instant, Value)>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -101,6 +103,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/tldr/*id", get(tldr))
         .route("/v1/new/*id", get(novelty))
         .route("/v1/author/:id", get(author))
+        .route("/v1/collab/:id", get(collaborators))
+        .route("/v1/reviewers", post(reviewers_for_text))
+        .route("/v1/reviewers/*id", get(reviewers_for_paper))
         .route("/v1/topic/:id", get(topic))
         .route("/v1/concept/:slug", get(concept))
         .route("/v1/category/:code", get(category))
@@ -108,6 +113,12 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/atlas", get(atlas))
         .route("/v1/trends", get(trends))
         .route("/v1/hot", get(hot))
+        .route("/v1/hot/people", get(hot_people))
+        .route("/v1/code", get(code_page))
+        .route("/v1/labs", get(labs_index))
+        .route("/v1/labs/find", get(labs_find))
+        .route("/v1/lab/:id", get(lab_page))
+        .route("/v1/labs/of/*id", get(paper_labs))
         .route("/v1/gaps", get(gaps_list))
         .route("/v1/gap", get(gap_one))
         .route("/v1/born", get(born_list))
@@ -146,7 +157,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 fn public_ok(method: &Method, path: &str) -> bool {
     method == Method::GET
         || (method == Method::POST
-            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
+            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || path == "/v1/reviewers" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
 }
 
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
@@ -473,6 +484,55 @@ async fn author(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     done(&trace, v, t0)
 }
 
+async fn collaborators(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let key = format!("collab:{id}");
+    let v = match memo_get(&svc, &key, 12 * 3600) {
+        Some(v) => v,
+        None => {
+            let v = collab::find(&c, &id).await.ok_or_else(|| not_found(&format!("person {id}")))?;
+            memo_put(&svc, &key, &v);
+            v
+        }
+    };
+    done(&trace, v, t0)
+}
+
+async fn reviewers_for_paper(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let id = understand::clean_id(&id);
+    let r = c.soft("the paper", "SELECT id, title, abstract, people, pcat FROM ax_papers WHERE id = :id", json!({"id": id})).await.into_iter().next().ok_or_else(|| not_found(&format!("paper {id}")))?;
+    let authors: Vec<String> = r.get("people").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let mut v = collab::reviewers(&c, &r.s("title"), &r.s("abstract"), &crate::concepts::group_of(&r.s("pcat")), &authors, Some(&id)).await;
+    v["paper"] = json!({"id": id, "title": r.s("title")});
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ReviewBody {
+    #[serde(default)]
+    title: String,
+    #[serde(default, rename = "abstract")]
+    abstract_: String,
+    #[serde(default)]
+    authors: String,
+}
+
+async fn reviewers_for_text(State(svc): State<Shared>, Json(b): Json<ReviewBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let n = b.title.chars().count() + b.abstract_.chars().count();
+    if n < 40 || n > 6000 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "give a title and abstract, 40 to 6,000 characters".into()));
+    }
+    let authors: Vec<String> = b.authors.split([',', ';', '\n']).flat_map(|a| a.split(" and ")).map(|a| crate::concepts::person_key("", a.trim())).filter(|a| !a.is_empty()).take(50).collect();
+    let mut v = collab::reviewers(&c, b.title.trim(), b.abstract_.trim(), "cs", &authors, None).await;
+    v["authors"] = json!(authors);
+    done(&trace, v, t0)
+}
+
 async fn topic(State(svc): State<Shared>, Path(id): Path<i64>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
@@ -539,6 +599,103 @@ async fn hot(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     p.ask = Some(understand::Ask::Hot);
     p.window = a.days;
     let v = answer::answer(&c, &p, &[], 0).await.unwrap_or(Value::Null);
+    done(&trace, v, t0)
+}
+
+/// An answer kept for `secs` under `key`; at most 2,000 are kept.
+fn memo_get(svc: &Service, key: &str, secs: u64) -> Option<Value> {
+    let m = svc.memo.lock().unwrap();
+    m.get(key).filter(|(at, _)| at.elapsed() < Duration::from_secs(secs)).map(|(_, v)| v.clone())
+}
+
+fn memo_put(svc: &Service, key: &str, v: &Value) {
+    let mut m = svc.memo.lock().unwrap();
+    if m.len() >= 2000 {
+        m.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(3600));
+        if m.len() >= 2000 {
+            m.clear();
+        }
+    }
+    m.insert(key.to_string(), (Instant::now(), v.clone()));
+}
+
+async fn labs_index(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let key = format!("labs:{}:{}", a.area, a.t);
+    let v = match memo_get(&svc, &key, 12 * 3600) {
+        Some(v) => v,
+        None => {
+            let v = labs::index(&c, &a.area, &a.t).await;
+            memo_put(&svc, &key, &v);
+            v
+        }
+    };
+    done(&trace, v, t0)
+}
+
+async fn labs_find(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let q: String = a.q.chars().take(100).collect();
+    if q.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "name a lab: q=".into()));
+    }
+    let v = labs::find(&c, q.trim()).await;
+    done(&trace, v, t0)
+}
+
+async fn lab_page(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let id = id.to_lowercase();
+    let key = format!("lab:{id}");
+    let v = match memo_get(&svc, &key, 12 * 3600) {
+        Some(v) => v,
+        None => {
+            let v = labs::lab(&c, &id).await.ok_or_else(|| not_found(&format!("lab {id}")))?;
+            memo_put(&svc, &key, &v);
+            v
+        }
+    };
+    done(&trace, v, t0)
+}
+
+async fn paper_labs(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = labs::of_paper(&c, &understand::clean_id(&id)).await;
+    done(&trace, v, t0)
+}
+
+async fn code_page(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let key = format!("code:{}", a.area);
+    let v = match memo_get(&svc, &key, 12 * 3600) {
+        Some(v) => v,
+        None => {
+            let v = code::page(&c, &a.area).await;
+            memo_put(&svc, &key, &v);
+            v
+        }
+    };
+    done(&trace, v, t0)
+}
+
+async fn hot_people(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let days = a.days.unwrap_or(730).clamp(365, 1460);
+    let key = format!("rising:{}:{days}", a.area);
+    let v = match memo_get(&svc, &key, 12 * 3600) {
+        Some(v) => v,
+        None => {
+            let v = collab::rising(&c, &a.area, days).await;
+            memo_put(&svc, &key, &v);
+            v
+        }
+    };
     done(&trace, v, t0)
 }
 

@@ -357,6 +357,7 @@ async fn serve(a: ServeArgs) {
         gaps: Default::default(),
         born: Default::default(),
         spread: Default::default(),
+        memo: Default::default(),
     });
     // Standing questions are checked each hour.
     tokio::spawn(api::watch_rounds(svc.clone()));

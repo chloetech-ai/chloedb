@@ -340,8 +340,19 @@ async fn two_servers_every_page() {
     post(&http, &app, &format!("/v1/watches/{wid}/delete"), json!({"user": "reader-one"})).await;
     assert!(ids(&get(&http, &app, "/v1/watches?user=reader-one").await["watches"]).is_empty());
 
-    // The pages of trends, rising, gaps, new topics, spread and home answer too.
-    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/feeds/example", "/app.json"] {
+    // People to work with, reviewers for a paper and for a pasted abstract
+    // (its authors left out), and the lab pages (no labs loaded: empty).
+    let co = get(&http, &app, "/v1/collab/ada%20recsys").await;
+    assert_eq!(co["person"]["id"], "ada recsys", "{co}");
+    let rv = get(&http, &app, &format!("/v1/reviewers/{}", rec_id(7))).await;
+    assert!(rv["people"].as_array().unwrap().iter().all(|p| p["id"] != "ada recsys"), "{rv}");
+    let rv = post(&http, &app, "/v1/reviewers", json!({"title": "Transformers for sequential recommendation", "abstract": "We model what a user does next with a transformer over the items they saw.", "authors": "Ada Recsys"})).await;
+    assert_eq!(rv["authors"][0], "ada recsys", "{rv}");
+    assert!(rv["people"].as_array().unwrap().iter().all(|p| p["id"] != "ada recsys"), "{rv}");
+    assert!(get(&http, &app, "/v1/labs/of/2401.00001").await["labs"].as_array().unwrap().is_empty());
+
+    // The pages of trends, rising, gaps, new topics, spread, code, labs and home answer too.
+    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/hot/people", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/code", "/v1/labs", "/v1/labs/find?q=university", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;
     }
     drop(app);

@@ -5,12 +5,15 @@
 pub mod answer;
 pub mod born;
 pub mod cite;
+pub mod code;
+pub mod collab;
 pub mod api;
 pub mod ask;
 pub mod concepts;
 pub mod digest;
 pub mod fulltext;
 pub mod gaps;
+pub mod labs;
 pub mod live;
 pub mod load;
 pub mod pages;

@@ -87,6 +87,18 @@ pub fn tables(model: &str) -> Vec<(&'static str, String)> {
         ("ax_venues", "CREATE TABLE IF NOT EXISTS ax_venues (
             id KEYWORD PRIMARY KEY, papers INT, cites INT, recent INT, by_year TEXT OPTIONS(indexed = false)
         )".to_string()),
+        // Labs: the organisations of each paper's authors, from OpenAlex's
+        // snapshot, with the paper's columns a lab page counts by; and
+        // each organisation with its papers in all, in the last twelve
+        // months and in the twelve before.
+        ("ax_labs", "CREATE TABLE IF NOT EXISTS ax_labs (
+            id KEYWORD PRIMARY KEY, name TEXT, country KEYWORD, kind KEYWORD,
+            papers INT, recent INT, before INT, first INT
+        )".to_string()),
+        ("ax_lab_papers", "CREATE TABLE IF NOT EXISTS ax_lab_papers (
+            id KEYWORD PRIMARY KEY, orgs KEYWORD[], countries KEYWORD[], created TIMESTAMP, year INT,
+            techniques KEYWORD[], domains KEYWORD[], pcat KEYWORD, areas KEYWORD[], people KEYWORD[], cites INT
+        )".to_string()),
         // Autocomplete: phrases of titles, techniques, categories and
         // people, keyed `p:`, `t:`, `c:`, `a:` and their text, completed by
         // a prefix of the key.
@@ -228,7 +240,7 @@ dl, deep learning";
 
 /// The tables of the search server; the others are the graph server's
 /// (one server may be both).
-pub const SEARCH: [&str; 7] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete"];
+pub const SEARCH: [&str; 9] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete", "ax_labs", "ax_lab_papers"];
 
 pub fn on_search(table: &str) -> bool {
     SEARCH.contains(&table)
