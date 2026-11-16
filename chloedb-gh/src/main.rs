@@ -85,7 +85,7 @@ enum Command {
         /// Give repos with at least this many stars the text their vector
         /// is made of (`etext`); the others have no vector, which keeps a
         /// shard's vectors and graph within an 8 GB machine.
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 10)]
         vec_min_stars: i64,
         #[arg(long, default_value_t = 4)]
         shards: usize,

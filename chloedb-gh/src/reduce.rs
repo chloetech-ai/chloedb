@@ -352,7 +352,7 @@ pub fn run(o: Opts) -> Result<()> {
                 ("forks_api", n(&|r| r.forks_api)),
                 ("api_t", n(&|r| r.api_t)),
                 // What the vector embeds: name, description and topics, one
-                // a line, for the repos searched by meaning (`stars >= 5`).
+                // a line, for the repos searched by meaning (`stars >= 10`).
                 (
                     "etext",
                     s(&|r| {

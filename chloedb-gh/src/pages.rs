@@ -167,7 +167,7 @@ pub async fn search(c: &Ctx<'_>, s: &Search, latest: i64) -> Result<Value> {
     let limit = 30;
     let (words, meaning, langs, total) = tokio::join!(
         c.soft("repos with the words", format!("SELECT repo FROM gh_repos WHERE {MATCHED}{cond} ORDER BY {TEXT_RANK} * pow(stars + 1, 0.35) DESC LIMIT 200"), params.clone()),
-        c.soft("repos by meaning", format!("SELECT repo FROM gh_repos WHERE stars >= 5{cond} ORDER BY similarity(emb, :v) * pow(stars + 1, 0.12) DESC LIMIT 120"), params.clone()),
+        c.soft("repos by meaning", format!("SELECT repo FROM gh_repos WHERE stars >= 10{cond} ORDER BY similarity(emb, :v) * pow(stars + 1, 0.12) DESC LIMIT 120"), params.clone()),
         c.soft("the languages of the matches", format!("SELECT language, COUNT(*) AS n FROM gh_repos WHERE {MATCHED} GROUP BY language ORDER BY n DESC LIMIT 14"), params.clone()),
         c.soft("how many repos have the words", format!("SELECT COUNT(*) AS n FROM gh_repos WHERE {MATCHED}{cond}"), params.clone()),
     );
