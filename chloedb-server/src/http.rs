@@ -44,6 +44,7 @@
 //! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
+//! | `POST /v1/highlight` | `{table, field, query, texts, size?, pre?, post?}` | `{texts, took_ms}`: each text with the words `query` matches marked as the field's analyzer and synonyms read them (stems, synonyms, typos, prefixes, phrases, and code such as `C++` where its characters are), the stretch of about `size` characters with the most (160; 0 the whole text), HTML-escaped between `<mark>` tags, or as given between `pre` and `post` |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/relevance/autopilot` | the autopilot's options, `judge?`, `keep?` | `{report, proposal, judged}`: logged queries replayed on one snapshot with the rank profile and with the numbers the search finds, measured on held-out queries ([`crate::autopilot`]) |
@@ -320,6 +321,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/synonyms/mine", post(mine_synonyms))
         .route("/v1/term_stats", post(term_stats))
         .route("/v1/correct", post(correct))
+        .route("/v1/highlight", post(highlight))
         .route("/v1/understand", post(understand))
         .route("/v1/classify", post(classify))
         .route("/v1/classifiers", get(classifiers))
@@ -3569,6 +3571,28 @@ async fn correct(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let (table, field, text) = (body_str(&b, "table")?.to_string(), body_str(&b, "field")?.to_string(), body_str(&b, "text")?.to_string());
     let c = app.svc.correct(&table, &field, &text, body_u64(&b, "timeout_ms")?).await?;
     Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
+}
+
+/// `{table, field, query, texts, size?, pre?, post?}`: the texts with
+/// what the query matches marked, each cut to its best stretch.
+async fn highlight(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let t0 = std::time::Instant::now();
+    let (table, field, query) = (body_str(&b, "table")?, body_str(&b, "field")?, body_str(&b, "query")?);
+    let texts: Vec<String> = match b.get("texts") {
+        Some(Json::Array(a)) => a.iter().map(|t| t.as_str().unwrap_or("").to_string()).collect(),
+        _ => return Err(ApiError::bad("texts: a list of the texts to highlight")),
+    };
+    if texts.len() > 10_000 {
+        return Err(ApiError::bad("texts: at most 10,000 a request"));
+    }
+    let size = b.get("size").and_then(Json::as_u64).unwrap_or(160).min(100_000) as usize;
+    let tags = match (b.get("pre").and_then(Json::as_str), b.get("post").and_then(Json::as_str)) {
+        (None, None) => chloedb::text::highlight::Tags::default(),
+        (pre, post) => chloedb::text::highlight::Tags { pre: pre.unwrap_or("").to_string(), post: post.unwrap_or("").to_string(), html: b.get("html").and_then(Json::as_bool).unwrap_or(false) },
+    };
+    let marks = app.svc.highlight_marks(table, field, query).await?;
+    let out: Vec<String> = texts.iter().map(|t| chloedb::text::highlight::snippet(t, &marks, size, &tags)).collect();
+    Ok(AxJson(json!({"texts": out, "took_ms": t0.elapsed().as_secs_f64() * 1000.0})))
 }
 
 /// `{table, field, text, mode?, fields?, weight?}`: what the words say for
@@ -6868,7 +6892,7 @@ mod tests {
     fn mining_synonyms_takes_an_admin_key() {
         let post = axum::http::Method::POST;
         assert_eq!(route_scope(&post, "/v1/synonyms/mine"), Scope::Admin);
-        for r in ["/v1/correct", "/v1/understand", "/v1/classify", "/v1/derive/preview"] {
+        for r in ["/v1/correct", "/v1/highlight", "/v1/understand", "/v1/classify", "/v1/derive/preview"] {
             assert_eq!(route_scope(&post, r), Scope::Read, "{r}");
         }
     }

@@ -2929,6 +2929,23 @@ impl Db {
         Ok(Corrected { text: crate::query::exec::corrected_text(text, &words), changed: !words.is_empty(), words })
     }
 
+    /// The marks of a search `query` of `table`'s TEXT field `field`, as
+    /// its analyzer reads the words, with the server's synonyms and the
+    /// table's own ([`crate::text::highlight`]), to highlight many texts
+    /// with.
+    pub fn highlight_marks(&self, table: &str, field: &str, query: &str) -> Result<crate::text::highlight::Marks> {
+        let all = self.snapshot();
+        let snap = all.table(table).ok_or_else(|| Error::Query(format!("no table {table}")))?;
+        let schema = snap.shared_schema().clone();
+        let f = schema.field_index(field).ok_or_else(|| Error::Query(format!("{table} has no field {field}")))?;
+        if !matches!(schema.fields[f].ty, FieldType::Text { .. }) {
+            return Err(Error::Query(format!("{table}.{field} is not a TEXT field: only text is highlighted")));
+        }
+        let analyzer = schema.fields[f].text_analyzer();
+        let opts = self.table_options(&snap, &self.exec)?;
+        Ok(crate::text::highlight::Marks::new(query, analyzer, opts.synonyms.as_ref().map(|s| s.of(analyzer))))
+    }
+
     /// The loosest level of `select`'s guard (`min_rows`, `max_rows`) and
     /// each level's rows on snapshot `snap`, from it to the strictest
     /// ([`Executor::guard_counts`]): what a coordinator sums over its
