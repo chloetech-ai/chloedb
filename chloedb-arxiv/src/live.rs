@@ -39,6 +39,24 @@ pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// How much a topic's mix of categories counts against nearness when a
+/// paper is placed: `tools/topics.py --prior`, so a new paper lands where
+/// the clustering would have put it. Nearness alone let topics of one
+/// field gather papers of others that only wrote alike.
+pub const PRIOR: f64 = 0.01;
+
+/// The topic for a new paper among the nearest by meaning (`s`, the
+/// similarity): nearness plus PRIOR times the log share of the paper's
+/// primary category among the topic's papers (`shares`, a JSON object of
+/// shares, `papers` its count), smoothed as the clustering smooths it.
+pub fn place(near: &[crate::strata::Row], pcat: &str) -> Option<i64> {
+    near.iter().map(|t| {
+        let n = t.i("papers").max(0) as f64;
+        let share = serde_json::from_str::<Value>(&t.s("shares")).ok().and_then(|v| v.get(pcat).and_then(|x| x.as_f64())).unwrap_or(0.0);
+        (t.i("id"), t.f("s") + PRIOR * ((share * n + 0.5) / (n + 50.0)).ln())
+    }).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|x| x.0)
+}
+
 /// Writes the rows of `records`, keeping what is known of papers already
 /// here. Returns how many were new.
 pub async fn write(db: &Strata, graph: &Strata, records: &[Raw]) -> Result<(usize, usize), String> {
@@ -60,7 +78,8 @@ pub async fn write(db: &Strata, graph: &Strata, records: &[Raw]) -> Result<(usiz
             Some(t) => Some(t),
             None => {
                 let text = format!("{}\n{}", crate::concepts::one_line(&r.title), crate::concepts::one_line(&r.abstract_));
-                db.query("SELECT id FROM ax_topics ORDER BY similarity(centroid, :v) DESC LIMIT 1", json!({"v": {"embed": text, "field": "emb", "table": "ax_papers"}})).await.ok().and_then(|x| x.first().map(|r| r.i("id")))
+                let near = db.query("SELECT id, papers, shares, score() AS s FROM ax_topics ORDER BY similarity(centroid, :v) DESC LIMIT 10", json!({"v": {"embed": text, "field": "emb", "table": "ax_papers"}})).await.unwrap_or_default();
+                place(&near, r.cats.first().map(|c| c.as_str()).unwrap_or(""))
             }
         };
         let b = paper::build(r, cites, topic);

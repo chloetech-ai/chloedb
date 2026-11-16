@@ -71,7 +71,7 @@ pub fn tables(model: &str) -> Vec<(&'static str, String)> {
             label TEXT, about TEXT, terms KEYWORD[], field INT, field_label KEYWORD,
             papers INT, recent INT, growth FLOAT, cites INT, first INT, peak INT,
             by_year TEXT OPTIONS(indexed = false), cats KEYWORD[], techniques KEYWORD[], domains KEYWORD[],
-            x FLOAT, y FLOAT, centroid VECTOR(512)
+            x FLOAT, y FLOAT, centroid VECTOR(512), shares TEXT OPTIONS(indexed = false)
         )".to_string()),
         ("ax_concepts", "CREATE TABLE IF NOT EXISTS ax_concepts (
             id KEYWORD PRIMARY KEY,

@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, pages, schema, understand};
+use crate::{answer, ask, gaps, pages, schema, understand};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -52,6 +52,8 @@ pub struct Service {
     pub live: Option<Arc<Live>>,
     pub pages: Pages,
     pub jobs: Mutex<HashMap<String, Value>>,
+    /// The gap finder's list and when it was made (made again after 12 hours).
+    pub gaps: tokio::sync::Mutex<Option<(Instant, Value)>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -93,6 +95,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/suggest", get(suggest))
         .route("/v1/paper/*id", get(paper))
         .route("/v1/tldr/*id", get(tldr))
+        .route("/v1/new/*id", get(novelty))
         .route("/v1/author/:id", get(author))
         .route("/v1/topic/:id", get(topic))
         .route("/v1/concept/:slug", get(concept))
@@ -101,6 +104,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/atlas", get(atlas))
         .route("/v1/trends", get(trends))
         .route("/v1/hot", get(hot))
+        .route("/v1/gaps", get(gaps_list))
+        .route("/v1/gap", get(gap_one))
+        .route("/v1/cite", post(cite))
         .route("/v1/summary", get(summary))
         .route("/v1/foryou", get(for_you))
         .route("/v1/event", post(event))
@@ -333,6 +339,11 @@ struct Q {
     /// What is rising: the days of each span compared.
     #[serde(default)]
     days: Option<i64>,
+    /// The gap finder: a technique and a domain.
+    #[serde(default)]
+    t: String,
+    #[serde(default)]
+    d: String,
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -429,6 +440,18 @@ async fn tldr(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     done(&trace, v, t0)
 }
 
+/// What a paper adds to the earlier papers closest to it.
+async fn novelty(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let kept = c.gsoft("a kept comparison?", "SELECT id FROM ax_notes WHERE id = :k", json!({"k": format!("new:{}", understand::clean_id(&id))})).await;
+    if kept.is_empty() {
+        svc.spend(1)?;
+    }
+    let v = ask::novelty(&c, &id, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
 async fn author(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
@@ -502,6 +525,82 @@ async fn hot(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     p.ask = Some(understand::Ask::Hot);
     p.window = a.days;
     let v = answer::answer(&c, &p, &[], 0).await.unwrap_or(Value::Null);
+    done(&trace, v, t0)
+}
+
+/// The gap finder's list, made once and kept 12 hours.
+pub async fn gaps_cached(svc: &Service) -> (Value, f64, bool) {
+    let mut g = svc.gaps.lock().await;
+    if let Some((at, v)) = g.as_ref() {
+        if at.elapsed() < Duration::from_secs(12 * 3600) {
+            return (v.clone(), at.elapsed().as_secs_f64(), true);
+        }
+    }
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let t0 = Instant::now();
+    let mut v = gaps::find(&c).await;
+    v["made_ms"] = json!((t0.elapsed().as_secs_f64() * 1000.0).round());
+    v["made_queries"] = json!(trace.take().len());
+    if v["gaps"].as_array().is_some_and(|a| !a.is_empty()) {
+        *g = Some((Instant::now(), v.clone()));
+    }
+    (v, 0.0, false)
+}
+
+async fn gaps_list(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    let (mut v, age, kept) = gaps_cached(&svc).await;
+    let (t, d) = (a.t.trim(), a.d.trim());
+    if !t.is_empty() || !d.is_empty() {
+        let keep: Vec<Value> = v["gaps"].as_array().cloned().unwrap_or_default().into_iter().filter(|g| (t.is_empty() || g["t"] == t) && (d.is_empty() || g["d"] == d)).collect();
+        v["gaps"] = json!(keep);
+    }
+    v["age_s"] = json!(age.round());
+    v["kept"] = json!(kept);
+    v["took_ms"] = json!((t0.elapsed().as_secs_f64() * 10000.0).round() / 10.0);
+    Ok(Json(v))
+}
+
+async fn gap_one(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    let (t, d) = (a.t.trim().to_string(), a.d.trim().to_string());
+    if t.is_empty() || d.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "name a technique (t) and a domain (d)".into()));
+    }
+    let (list, _, _) = gaps_cached(&svc).await;
+    let gap = list["gaps"].as_array().and_then(|a| a.iter().find(|g| g["t"] == t.as_str() && g["d"] == d.as_str()).cloned()).unwrap_or(Value::Null);
+    let likes: Vec<String> = gap["like"].as_array().map(|a| a.iter().filter_map(|x| x["id"].as_str().map(String::from)).collect()).unwrap_or_default();
+    ctx!(svc, trace, c);
+    let mut v = gaps::one(&c, &t, &d, &likes).await;
+    v["gap"] = gap;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize)]
+struct CiteBody {
+    #[serde(default)]
+    text: String,
+    /// Only papers posted before this time (a draft from the past, or a test).
+    #[serde(default)]
+    before: Option<String>,
+    /// Which lists to fuse: "all" (the default), or one of "meaning" (the
+    /// abstract), "cited_with", "near_refs", to compare them.
+    #[serde(default)]
+    only: Option<String>,
+}
+
+/// Missing citations: an abstract and references in, what to cite out.
+async fn cite(State(svc): State<Shared>, Json(b): Json<CiteBody>) -> Answer {
+    let t0 = Instant::now();
+    if b.text.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "paste an abstract or references".into()));
+    }
+    if b.text.len() > 60_000 {
+        return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "paste at most 60,000 characters".into()));
+    }
+    ctx!(svc, trace, c);
+    let v = crate::cite::suggest(&c, &b.text, b.before.as_deref(), b.only.as_deref(), 30).await;
     done(&trace, v, t0)
 }
 

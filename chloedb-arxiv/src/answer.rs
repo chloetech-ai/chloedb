@@ -121,6 +121,133 @@ fn peak(years: &[(i64, i64)], totals: &HashMap<i64, i64>) -> Option<(i64, f64)> 
     years.iter().filter(|(y, _)| *y < now).map(|(y, n)| (*y, per10k(*n, *totals.get(y).unwrap_or(&0)))).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+/// Who coined it. The words alone mislead: "chain of thought" is in a
+/// 1996 paper on the Sun. So the term's sense is read from what its most
+/// cited papers are about (their titles, embedded), and each paper that
+/// uses the words is kept in that sense when its meaning is at least as
+/// close as the 20th percentile of those 200 most cited. From that:
+/// the earliest of its most cited papers (the one the field credits),
+/// the words' literal first use (flagged when it is in another sense),
+/// the year it took off, and the year each area picked it up (the first
+/// year with three papers in the sense, or one in a small area).
+async fn origin(c: &Ctx<'_>, p: &Parsed, subj: &str, wh: &str, params: &Map<String, Value>) -> Option<Value> {
+    let mut pp = Map::new();
+    let conds = search::filters(p, &mut pp);
+    let has = search::word_params(p, &mut pp);
+    let multi = p.words().split_whitespace().count() >= 2;
+    let phrase = "(MATCH(title, :phrase) OR MATCH(abstract, :phrase))";
+    let mut whp = search::where_of(&conds, if has && multi { phrase } else if has { search::MATCHED } else { "" });
+    let mut exact = has && multi;
+    if exact && c.soft("the phrase used at all?", &format!("SELECT id FROM ax_papers {whp} LIMIT 1"), Value::Object(pp.clone())).await.is_empty() {
+        // Never written as a phrase: the words anywhere, as searched.
+        whp = wh.to_string();
+        pp = params.clone();
+        exact = false;
+    }
+    let and = |extra: &str| if whp.is_empty() { format!("WHERE {extra}") } else { format!("{whp} AND {extra}") };
+    // The sense: the titles of its 20 most cited papers.
+    let top = c.soft("its most cited papers, for its sense", &format!("SELECT title FROM ax_papers {whp} ORDER BY cites DESC LIMIT 20"), Value::Object(pp.clone())).await;
+    if top.is_empty() {
+        return None;
+    }
+    let sense: String = top.iter().map(|r| r.s("title")).collect::<Vec<_>>().join(" ");
+    pp.insert("v".into(), json!({"embed": sense, "field": "emb", "table": "ax_papers"}));
+    let prm = Value::Object(pp.clone());
+    let cols = format!("{}, similarity(emb, :v) AS s", search::COLS);
+    let tot = totals(c).await;
+    let (famous, first, areas, years) = tokio::join!(
+        c.soft("its 200 most cited papers, how close each is to the sense", &format!("SELECT {cols} FROM ax_papers {whp} ORDER BY cites DESC LIMIT 200"), prm.clone()),
+        c.soft("the first papers to use the words", &format!("SELECT {cols} FROM ax_papers {whp} ORDER BY created ASC LIMIT 6"), prm.clone()),
+        c.soft("the areas that use it", &format!("SELECT area, COUNT(*) AS n FROM ax_papers {whp} GROUP BY area ORDER BY n DESC LIMIT 8"), prm.clone()),
+        by_year(c, "papers using it by year", &whp, &pp),
+    );
+    let mut sims: Vec<f64> = famous.iter().map(|r| r.f("s")).collect();
+    sims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let thr = sims.get(sims.len() / 5).copied().unwrap_or(0.0);
+    let in_sense = |r: &Row| r.f("s") >= thr;
+    // The earliest of its most cited: among the 30 most cited, those with
+    // a quarter of the top count or more and in the sense, by date.
+    let peak = famous.first().map(|r| r.i("cites")).unwrap_or(0);
+    let mut credited: Vec<Row> = famous.iter().take(30).filter(|r| in_sense(r) && r.i("cites") * 4 >= peak && r.i("cites") >= 20).cloned().collect();
+    credited.sort_by_key(|r| r.s("created"));
+    credited.truncate(5);
+    // The year each area picked it up.
+    let areas: Vec<(String, i64)> = areas.iter().map(|r| (r.s("area"), r.i("n"))).filter(|(a, n)| !a.is_empty() && *n >= 3).collect();
+    let early = futures_util::future::join_all(areas.iter().map(|(a, _)| {
+        let mut m = pp.clone();
+        m.insert("area_x".into(), json!(a));
+        c.soft("its first papers in that area", &format!("SELECT id, title, year, created, similarity(emb, :v) AS s FROM ax_papers {} ORDER BY created ASC LIMIT 200", and("area = :area_x")), Value::Object(m))
+    })).await;
+    let groups: HashMap<String, String> = crate::concepts::groups().iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+    let mut spread: Vec<Value> = Vec::new();
+    for ((a, n), rows) in areas.iter().zip(early.iter()) {
+        let need = if *n < 20 { 2 } else { 3 };
+        let mut by: std::collections::BTreeMap<i64, Vec<&Row>> = Default::default();
+        for r in rows.iter().filter(|r| in_sense(r)) {
+            by.entry(r.i("year")).or_default().push(r);
+        }
+        if let Some((y, rs)) = by.iter().find(|(_, rs)| rs.len() >= need) {
+            spread.push(json!({"area": a, "name": groups.get(a).cloned().unwrap_or(a.clone()), "n": n, "year": y, "first": {"id": rs[0].s("id"), "title": rs[0].s("title")}}));
+        }
+    }
+    spread.sort_by_key(|x| (x["year"].as_i64().unwrap_or(0), -x["n"].as_i64().unwrap_or(0)));
+    // When it took off: the first year it at least doubled, to a tenth of its peak year (and 30 papers) or more.
+    let top_year = years.iter().filter(|(y, _)| *y < this_year()).map(|(_, n)| *n).max().unwrap_or(0);
+    let took = years.windows(2).find(|w| w[1].0 < this_year() && w[1].1 >= 2 * w[0].1.max(1) && w[1].1 >= (top_year / 10).max(30)).map(|w| (w[1].0, w[0].1, w[1].1));
+    let what = if exact { format!("“{}”", p.words()) } else { subj.to_string() };
+    let f = first.first()?;
+    let mut text = String::new();
+    let old = f.i("year") <= 1993 && years.iter().filter(|(y, _)| *y <= 1993).map(|(_, n)| n).sum::<i64>() >= 5;
+    if !old {
+        // Uses in an area before the paper the field credits are noise.
+        if let Some(y) = credited.first().map(|x| x.i("year")) {
+            spread.retain(|x| x["year"].as_i64().unwrap_or(0) >= y);
+        }
+    }
+    if old {
+        text.push_str(&format!("{} was in use before arXiv began: it is in its first papers, from {}, starting with “{}” ({}).", capital(&what), f.i("year"), f.s("title"), first_author(f)));
+        if let Some(x) = famous.first() {
+            text.push_str(&format!(" Its most cited paper here is “{}” ({}, {}, {} citations).", x.s("title"), x.i("year"), first_author(x), fmt(x.i("cites"))));
+        }
+        credited.clear();
+    } else if let Some(x) = credited.first() {
+        text.push_str(&format!("The earliest of its most cited papers is “{}” ({}, {}, {} citations).", x.s("title"), x.i("year"), first_author(x), fmt(x.i("cites"))));
+        if f.s("id") == x.s("id") {
+            text.push_str(" It is also the first paper on arXiv to use the words.");
+        } else if !in_sense(f) {
+            text.push_str(&format!(" The words appear earlier, first in {} ({}), probably in another sense.", groups.get(&f.s("area")).cloned().unwrap_or(f.s("area")).to_lowercase(), f.i("year")));
+        } else {
+            text.push_str(&format!(" The words appear earlier, first in “{}” ({}, {}).", f.s("title"), f.i("year"), first_author(f)));
+        }
+    } else {
+        text.push_str(&format!("The first paper on arXiv to use {what} is “{}” ({}, {}).", f.s("title"), f.i("year"), first_author(f)));
+    }
+    if let Some((y, a, b)) = took {
+        text.push_str(&format!(" It took off in {y}, from {} papers to {}.", fmt(a), fmt(b)));
+    }
+    if spread.len() > 1 {
+        let path: Vec<String> = spread.iter().take(4).map(|x| format!("{} ({})", x["name"].as_str().unwrap_or(""), x["year"])).collect();
+        text.push_str(&format!(" It spread {}.", path.join(" → ")));
+    }
+    let mark = |rows: &[Row]| -> Value { json!(rows.iter().map(|r| { let mut v = json!(r); v["other_sense"] = json!(!in_sense(r)); v }).collect::<Vec<_>>()) };
+    Some(json!({"kind": "origin", "text": text, "exact": exact, "term": p.words(), "credited": list(&credited), "first": mark(&first), "spread": spread, "years": series(&years, &tot), "sense_cut": thr}))
+}
+
+/// The text with its first letter in capitals (quotes kept: “dark matter” → “Dark matter”).
+fn capital(t: &str) -> String {
+    let mut out = String::new();
+    let mut done = false;
+    for ch in t.chars() {
+        if !done && ch.is_alphabetic() {
+            out.extend(ch.to_uppercase());
+            done = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn list(rows: &[Row]) -> Value {
     json!(rows)
 }
@@ -311,20 +438,7 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
             };
             Some(json!({"kind": "hot", "text": text, "days": days, "span": span, "techniques": techs, "domains": doms, "topics": topics}))
         }
-        Ask::Origin => {
-            let pr = Value::Object(params.clone());
-            let cited = if wh.is_empty() { "WHERE cites >= 100".to_string() } else { format!("{wh} AND cites >= 100") };
-            let (first, famous) = tokio::join!(
-                c.soft("the earliest papers on it", &format!("SELECT {} FROM ax_papers {wh} ORDER BY created ASC LIMIT 6", search::COLS), pr.clone()),
-                c.soft("the earliest cited 100 times or more", &format!("SELECT {} FROM ax_papers {cited} ORDER BY created ASC LIMIT 6", search::COLS), pr.clone()),
-            );
-            let f = first.first()?;
-            let mut text = format!("The earliest paper on {subj} on arXiv is “{}” ({}, {}).", f.s("title"), f.i("year"), first_author(f));
-            if let Some(x) = famous.first() {
-                text.push_str(&format!(" The first to be cited 100 times or more is “{}” ({}, {}, {} citations).", x.s("title"), x.i("year"), first_author(x), fmt(x.i("cites"))));
-            }
-            Some(json!({"kind": "origin", "text": text, "first": list(&first), "famous": list(&famous)}))
-        }
+        Ask::Origin => origin(c, p, &subj, &wh, &params).await,
         Ask::Survey => {
             let n = papers.len();
             let text = if n == 0 { format!("No surveys of {subj} were found.") } else { format!("{} surveys and reviews of {subj}; the most cited is “{}” ({}).", fmt(total), papers[0].s("title"), papers[0].i("year")) };

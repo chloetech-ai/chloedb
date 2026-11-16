@@ -19,6 +19,12 @@ pub const TLDR: &str = "You write a TL;DR of an arXiv paper from its title and a
 Answer with JSON only: {\"tldr\": \"one sentence of at most 30 words: what it does and its main result, with a number if the abstract gives one\", \
 \"why\": \"one sentence of at most 25 words on why it matters or who should read it\", \"method\": \"at most 8 words naming the method\", \"results\": [\"up to 3 short results with their numbers\"]}";
 
+pub const NOVELTY: &str = "You tell a reviewer what an arXiv paper adds to the earlier papers closest to it. You get the paper's abstract and the numbered abstracts of up to three earlier papers. \
+Answer with JSON only: {\"adds\": \"two sentences, at most 60 words: what this paper does that [1], [2] and [3] did not, naming them by number\", \
+\"shares\": \"one sentence, at most 30 words: what it takes from or shares with them, by number\", \
+\"kind\": \"one of: new problem, new method, better results, new setting, analysis or survey, close to earlier work\"}. \
+Use only what the abstracts say. If an earlier paper does the same thing, say so plainly and choose close to earlier work.";
+
 pub fn key(q: &str) -> String {
     let words: Vec<String> = q.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect();
     format!("summary:{}", words.join(" "))
@@ -116,6 +122,65 @@ pub async fn tldr(c: &Ctx<'_>, id: &str, model: &str) -> Result<Value, String> {
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": "tldr", "text": v.to_string(), "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": ms})]).await;
     Ok(json!({"id": id, "note": v, "model": model, "kept": false, "ms": ms}))
+}
+
+/// The three earlier papers closest to one: the nearest by meaning that
+/// were posted before it, the ones it cites first.
+pub async fn earlier(c: &Ctx<'_>, id: &str) -> (Option<Row>, Vec<Row>) {
+    let p = json!({"id": id});
+    let (row, refs) = tokio::join!(
+        c.soft("the paper", "SELECT id, title, abstract, created, year FROM ax_papers WHERE id = :id", p.clone()),
+        c.gsoft("what it cites (on arXiv)", "SELECT dst FROM ax_cites WHERE src = :id LIMIT 10000", p.clone()),
+    );
+    let Some(row) = row.into_iter().next() else { return (None, Vec::new()) };
+    let near = c.soft("the closest earlier papers by meaning", "SELECT id, title, abstract, authors, nauthors, year, cites, created, score() AS s FROM ax_papers WHERE created < :c AND id != :id ORDER BY similarity(emb, :v) DESC LIMIT 40", json!({"id": id, "c": row.s("created"), "v": {"vector_of": id, "table": "ax_papers", "field": "emb"}})).await;
+    // Among the 40 closest, the much cited first: Llama 2 is set against
+    // LLaMA rather than a small paper that tuned LLaMA for one task.
+    let mut near = near;
+    let weight = |r: &Row| r.f("s") + 0.03 * (1.0 + r.f("cites").max(0.0)).ln();
+    near.sort_by(|a, b| weight(b).partial_cmp(&weight(a)).unwrap_or(std::cmp::Ordering::Equal));
+    let cites: std::collections::HashSet<String> = refs.iter().map(|r| r.s("dst")).collect();
+    let title = row.s("title").to_lowercase();
+    let mut picked: Vec<Row> = near.iter().filter(|r| cites.contains(&r.s("id"))).take(2).cloned().collect();
+    for r in near.iter() {
+        if picked.len() >= 3 {
+            break;
+        }
+        // Not a copy of it under another id.
+        if r.s("title").to_lowercase() != title && !picked.iter().any(|x| x.s("id") == r.s("id")) {
+            picked.push(r.clone());
+        }
+    }
+    for r in picked.iter_mut() {
+        let k = r.s("id");
+        r.insert("cited".into(), json!(cites.contains(&k)));
+    }
+    (Some(row), picked)
+}
+
+/// What a paper adds to the earlier papers closest to it, kept or written now.
+pub async fn novelty(c: &Ctx<'_>, id: &str, model: &str) -> Result<Value, String> {
+    let id = understand::clean_id(id);
+    let k = format!("new:{id}");
+    let (row, picked) = earlier(c, &id).await;
+    let row = row.ok_or("no such paper")?;
+    let shown: Vec<Value> = picked.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.s("id"), "title": r.s("title"), "authors": crate::answer::first_author(r), "year": r.i("year"), "cites": r.i("cites"), "cited": r.get("cited"), "close": (r.f("s") * 100.0).round() / 100.0})).collect();
+    let kept = c.gsoft("a kept comparison", "SELECT text, model, at FROM ax_notes WHERE id = :k", json!({"k": k})).await;
+    if let Some(r) = kept.first().filter(|r| !r.s("text").trim().is_empty()) {
+        let v: Value = serde_json::from_str(&r.s("text")).unwrap_or(json!({"adds": r.s("text")}));
+        return Ok(json!({"id": id, "note": v["note"], "earlier": v["earlier"], "model": r.s("model"), "kept": true}));
+    }
+    if picked.is_empty() {
+        return Ok(json!({"id": id, "note": {"adds": "Nothing earlier on arXiv is close to it.", "kind": "new problem"}, "earlier": [], "kept": false}));
+    }
+    let t0 = std::time::Instant::now();
+    let ctx = format!("Earlier papers:\n\n{}", context(&picked));
+    let text = llm(c, "what it adds (llm() on the server)", model, NOVELTY, &format!("The paper: “{}” ({})\nAbstract: {}", row.s("title"), row.i("year"), row.s("abstract")), &ctx, 1200).await?;
+    let note = json_in(&text).unwrap_or(json!({"adds": text.trim()}));
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let keep = json!({"note": note, "earlier": shown});
+    let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": "new", "text": keep.to_string(), "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": ms})]).await;
+    Ok(json!({"id": id, "note": note, "earlier": shown, "model": model, "kept": false, "ms": ms}))
 }
 
 /// The first JSON object in a model's answer.

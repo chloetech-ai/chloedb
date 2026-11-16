@@ -3,11 +3,13 @@
 //! citations, recommendations and digests are SQL over them.
 
 pub mod answer;
+pub mod cite;
 pub mod api;
 pub mod ask;
 pub mod concepts;
 pub mod digest;
 pub mod fulltext;
+pub mod gaps;
 pub mod live;
 pub mod load;
 pub mod pages;

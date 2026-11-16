@@ -354,7 +354,17 @@ async fn serve(a: ServeArgs) {
         live,
         pages: Default::default(),
         jobs: Mutex::new(Default::default()),
+        gaps: Default::default(),
     });
+    {
+        // Make the gap finder's list before anyone asks.
+        let svc = svc.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let (v, _, _) = chloedb_arxiv::api::gaps_cached(&svc).await;
+            eprintln!("chloedb-arxiv: {} gaps found in {} ms", v["gaps"].as_array().map(|a| a.len()).unwrap_or(0), v["made_ms"]);
+        });
+    }
     eprintln!("chloedb-arxiv: the API answers at {me}{}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" }, if a.public { ", and the page at / to anyone" } else { "" });
     if local.is_none() {
         eprintln!("chloedb-arxiv: to see it in the command center, start chloedb-server with --app arxiv={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to this token" } else { "" });

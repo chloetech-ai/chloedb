@@ -875,6 +875,14 @@ fn frame(p: &mut Parsed, t: &mut Vec<Tok>) {
         // "who introduced X", "who invented X"
         if l.get(1).is_some_and(|w| matches!(*w, "introduced" | "invented" | "proposed" | "coined" | "created" | "discovered" | "started" | "pioneered")) {
             take(p, t, 0, 2, Ask::Origin, "where it began");
+            strip_phrases(t, &["the term", "the phrase", "the word", "the name", "the idea of", "the concept of"]);
+            return;
+        }
+        // "who first used X", "who came up with X"
+        let came = l.get(1) == Some(&"came") && l.get(2) == Some(&"up") && l.get(3) == Some(&"with");
+        if came || l.get(1) == Some(&"first") && n > 2 {
+            take(p, t, 0, if came { 4 } else { 3 }, Ask::Origin, "where it began");
+            strip_phrases(t, &["the term", "the phrase", "the word", "the name", "the idea of", "the concept of"]);
             return;
         }
         let by = if has("cited") || has("influential") { "cites" } else { "papers" };
@@ -925,10 +933,21 @@ fn frame(p: &mut Parsed, t: &mut Vec<Tok>) {
         || joined.starts_with("history of")
         || joined.starts_with("which paper introduced")
         || joined.starts_with("what paper introduced")
+        || joined.starts_with("first use of")
+        || joined.starts_with("first mention of")
+        || joined.starts_with("first mentions of")
     {
         let stop = l.iter().position(|w| matches!(*w, "on" | "about" | "of" | "did" | "introduced" | "was" | "is")).map(|i| i + 1).unwrap_or(1);
         take(p, t, 0, stop, Ask::Origin, "where it began");
         strip_words(t, &["start", "begin", "began", "started", "appear", "appeared", "first", "become", "became", "popular", "get", "introduced"]);
+        strip_phrases(t, &["the term", "the phrase", "the word", "the name", "the idea of", "the concept of"]);
+        return;
+    }
+    // "where did X come from"
+    if l[0] == "where" && matches!(l.get(1), Some(&"did") | Some(&"does") | Some(&"do")) && n > 4 && l[n - 2] == "come" && l[n - 1] == "from" {
+        t.truncate(t.len() - 2);
+        take(p, t, 0, 2, Ask::Origin, "where it began");
+        strip_phrases(t, &["the term", "the phrase", "the word", "the name", "the idea of", "the concept of"]);
         return;
     }
     // Trends.
@@ -1194,6 +1213,11 @@ mod tests {
         let p = parse("who introduced the transformer", NOW);
         assert_eq!(p.ask, Some(Ask::Origin));
         assert_eq!(p.text, "transformer");
+        for (q, want) in [("who coined the term foundation model", "foundation model"), ("who first used chain of thought", "chain of thought"), ("where did retrieval augmented generation come from", "retrieval augmented generation"), ("who came up with dropout", "dropout"), ("first use of the phrase attention is all you need", "attention is all you need")] {
+            let p = parse(q, NOW);
+            assert_eq!(p.ask, Some(Ask::Origin), "{q}");
+            assert_eq!(p.text, want, "{q}");
+        }
         let p = parse("summarize speculative decoding", NOW);
         assert_eq!(p.ask, Some(Ask::Summary));
         assert_eq!(p.text, "speculative decoding");

@@ -315,8 +315,19 @@ async fn two_servers_every_page() {
     assert!(!chosen.is_empty(), "{pv}");
     assert!(chosen.iter().all(|id| rec.contains(id)), "{chosen:?}");
 
-    // The pages of trends, rising and home answer too.
-    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/feeds/example", "/app.json"] {
+    // What to cite: a draft citing two papers of a field gets more of
+    // that field (cited with them, or close in meaning), not what it cites.
+    let draft = format!("We study sequential recommendation with transformers.\n\nReferences\n[1] arXiv:{}\n[2] https://arxiv.org/abs/{}\n", rec_id(3), rec_id(4));
+    let cite = post(&http, &app, "/v1/cite", json!({"text": draft})).await;
+    assert_eq!(cite["found"]["ids"], 2, "{cite}");
+    assert_eq!(ids(&cite["refs"]).len(), 2, "{cite}");
+    let more = ids(&cite["papers"]);
+    assert!(!more.is_empty(), "{cite}");
+    assert!(more.iter().take(3).all(|id| rec.contains(id)), "{more:?}");
+    assert!(!more.contains(&rec_id(3)) && !more.contains(&rec_id(4)), "{more:?}");
+
+    // The pages of trends, rising, gaps and home answer too.
+    for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/gaps", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;
     }
     drop(app);
