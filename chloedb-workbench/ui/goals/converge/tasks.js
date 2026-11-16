@@ -13,8 +13,13 @@ const CSS = `
 .cv-iv-msg .bub .ts { display: block; margin-top: 4px; font-size: var(--fs-xs); color: var(--muted); }
 .cv-iv-msg.think .bub { background: none; border: var(--hair) dashed var(--line-2); color: var(--text-2); font-style: italic; }
 .cv-iv-msg .bub .lbl { display: block; font-style: normal; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 2px; }
-.cv-iv-acts { margin-left: 36px; display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 8px; }
-.cv-iv-act { font-size: var(--fs-xs); color: var(--text-2); overflow-wrap: anywhere; }
+.cv-iv-acts { margin-left: 36px; border-left: 2px solid var(--line); padding-left: 8px; }
+.cv-iv-acts summary { min-height: 32px; display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--muted); cursor: pointer; list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-iv-acts summary::-webkit-details-marker { display: none; }
+.cv-iv-acts summary::before { content: "▸"; font-size: 10px; }
+.cv-iv-acts[open] summary::before { content: "▾"; }
+.cv-iv-list { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; }
+.cv-iv-act { font-size: var(--fs-xs); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cv-iv-act .w { text-transform: uppercase; letter-spacing: .04em; }
 .cv-iv-act code { font-family: var(--mono); }
 .cv-iv-step { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--accent-text); text-transform: uppercase; letter-spacing: .05em; margin: 6px 0; }
@@ -43,6 +48,22 @@ const CSS = `
 .cv-iv-msg .bub { font-size: var(--fs-body); }
 `;
 export const TOOL_WORDS = { Bash: "ran", Read: "read", Write: "wrote", Edit: "edited", MultiEdit: "edited", Glob: "looked for", Grep: "searched for", WebFetch: "opened", WebSearch: "searched the web for", TodoWrite: "planned" };
+const NOUN = { Bash: ["ran", "command"], Read: ["read", "file"], Write: ["wrote", "file"], Edit: ["edited", "file"], MultiEdit: ["edited", "file"], Glob: ["looked for files", "time"], Grep: ["searched", "time"], WebFetch: ["opened", "page"], WebSearch: ["searched the web", "time"], TodoWrite: ["planned", "time"] };
+/** One line for a run of actions: "Read 9 files · ran 2 commands". */
+export function actsSummary(n) {
+  const merged = {};
+  for (const [tool, c] of Object.entries(n)) {
+    const [verb, noun] = NOUN[tool] || [`used ${tool}`, "time"];
+    const k = `${verb}|${noun}`;
+    merged[k] = (merged[k] || 0) + c;
+  }
+  const parts = Object.entries(merged).sort((a, b) => b[1] - a[1]).map(([k, c]) => {
+    const [verb, noun] = k.split("|");
+    return noun === "time" ? (c > 1 ? `${verb} ${c} times` : verb) : `${verb} ${c} ${noun}${c > 1 ? "s" : ""}`;
+  });
+  const t = parts.join(" · ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
 export function taskStyles() { useStyle("converge-tasks", CSS); }
 
 export function groupTasks(steps) {
@@ -112,9 +133,17 @@ export function taskList(openMap, initial) {
 export function renderItems(box, items, initial) {
   for (const x of items) {
     if (x.kind === "tool") {
-      const last = box.lastElementChild;
-      const line = h("div", { class: "cv-iv-act" }, h("span", { class: "w" }, TOOL_WORDS[x.tool] || x.tool), " ", h("code", {}, x.text || ""));
-      if (last && last.classList.contains("cv-iv-acts")) last.append(line); else box.append(h("div", { class: "cv-iv-acts" }, line));
+      // Consecutive actions fold into one line ("Read 9 files · ran 2
+      // commands"); tap to see each, one line apiece.
+      let g = box.lastElementChild;
+      if (!g || !g.classList.contains("cv-iv-acts")) {
+        g = h("details", { class: "cv-iv-acts" }, h("summary", {}), h("div", { class: "cv-iv-list" }));
+        g._n = {};
+        box.append(g);
+      }
+      g._n[x.tool] = (g._n[x.tool] || 0) + 1;
+      g.querySelector("summary").textContent = actsSummary(g._n);
+      g.lastElementChild.append(h("div", { class: "cv-iv-act", title: x.text || "" }, h("span", { class: "w" }, TOOL_WORDS[x.tool] || x.tool), " ", h("code", {}, x.text || "")));
     } else {
       const t = toMs(x.ts);
       box.append(h("div", { class: `cv-iv-msg${x.kind === "think" ? " think" : ""}` },
