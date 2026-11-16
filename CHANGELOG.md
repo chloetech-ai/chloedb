@@ -70,6 +70,26 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   of refusing the whole file, keeps ids of more than 15 digits as text as
   its CSV import does, and refuses a damaged file.
 
+### Google Cloud in the Cloud view (experimental)
+
+- The command center's **Cloud setup** plans, makes, resizes and deletes a
+  cluster on **Google Kubernetes Engine**, beside EKS and DOKS
+  (`/v1/admin/gcp/*`, `"provider": "gcp"`). It takes **no key**: its calls
+  use gcloud's application default credentials where the server runs,
+  best signed in as a service account through impersonation
+  (`gcloud auth application-default login --impersonate-service-account
+  ...`), or the metadata server on a VM or in GKE; key files are refused.
+  Only the project is kept (`<db>.gcp.json`, `--gcp-file`).
+- Plans read the machine types, Google's list prices (on demand and Spot),
+  GKE's versions, the project's quotas and networks; **Check with Google
+  Cloud** also says which permissions the credentials hold. A cluster may
+  be zonal or regional, on Spot nodes and with GKE's autoscaler, and
+  **Nodes…** resizes a made one (`POST /v1/admin/gcp/nodes`).
+- The operator's `coordinatorAccountAnnotations` annotates the
+  coordinators' service account; a cluster planned on GKE uses it for
+  Workload Identity, so its own command center can act as the deployer's
+  service account once the plan's one binding is made.
+
 ## 0.3.5
 
 The audit of 15 November's first lanes (security, wrong answers, apps that
