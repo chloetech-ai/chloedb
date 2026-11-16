@@ -95,6 +95,13 @@ pub fn tables(model: &str) -> Vec<(&'static str, String)> {
             id KEYWORD PRIMARY KEY, name TEXT, country KEYWORD, kind KEYWORD,
             papers INT, recent INT, before INT, first INT
         )".to_string()),
+        // Likely classics: recent papers judged by `tools/classics.py`, their
+        // chance of the top 1% of their year and area, the window of early
+        // citations they were judged on, and the reasons that weighed most.
+        ("ax_classics", "CREATE TABLE IF NOT EXISTS ax_classics (
+            id KEYWORD PRIMARY KEY, p FLOAT, lift FLOAT, win INT, early INT, record_cites INT,
+            area KEYWORD, pcat KEYWORD, created TIMESTAMP, why KEYWORD[]
+        )".to_string()),
         ("ax_lab_papers", "CREATE TABLE IF NOT EXISTS ax_lab_papers (
             id KEYWORD PRIMARY KEY, orgs KEYWORD[], countries KEYWORD[], created TIMESTAMP, year INT,
             techniques KEYWORD[], domains KEYWORD[], pcat KEYWORD, areas KEYWORD[], people KEYWORD[], cites INT
@@ -240,7 +247,7 @@ dl, deep learning";
 
 /// The tables of the search server; the others are the graph server's
 /// (one server may be both).
-pub const SEARCH: [&str; 9] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete", "ax_labs", "ax_lab_papers"];
+pub const SEARCH: [&str; 10] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete", "ax_labs", "ax_lab_papers", "ax_classics"];
 
 pub fn on_search(table: &str) -> bool {
     SEARCH.contains(&table)

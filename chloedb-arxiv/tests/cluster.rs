@@ -372,6 +372,18 @@ async fn two_servers_every_page() {
     let e = get(&http, &app, &format!("/v1/explain/{}?level=wizard", rec_id(2))).await;
     assert_eq!((e["kept"].clone(), e["level"].clone(), e["note"]["explain"].clone()), (json!(true), json!("practitioner"), json!("Kept for a student.")), "{e}");
 
+    // Likely classics: a judged paper is listed with its judgement and the
+    // paper's row, under the models' card.
+    let row = json!({"id": rec_id(4), "p": 0.2, "lift": 18.5, "win": 182, "early": 7, "record_cites": 900, "area": "cs", "pcat": "cs.IR", "created": chrono::Utc::now().to_rfc3339(), "why": ["cited in its first 182 days", "code"]});
+    let w = http.post(format!("http://127.0.0.1:{search}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_classics", "doc": row}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let card = json!({"id": "classics:model", "paper": "", "style": "model", "text": json!({"horizon": "2026-03-01", "models": {}}).to_string(), "model": "", "at": "2026-11-16T00:00:00Z", "ms": 0.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": card}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let lc = get(&http, &app, "/v1/classics?area=cs&days=91").await;
+    assert_eq!((lc["papers"][0]["id"].clone(), lc["papers"][0]["classic"]["lift"].clone(), lc["model"]["horizon"].clone()), (json!(rec_id(4)), json!(18.5), json!("2026-03-01")), "{lc}");
+    assert_eq!(get(&http, &app, "/v1/classics?area=math").await["papers"].as_array().unwrap().len(), 0);
+
     // Related work: a list's BibTeX with no model, keyed by surname, year and
     // title word; a list of one paper is refused.
     let b = get(&http, &app, &format!("/v1/related/bib?ids={},{},nope", rec_id(1), rec_id(2))).await;

@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, claims, code, collab, related, gaps, labs, spread, pages, schema, understand, watch};
+use crate::{answer, ask, born, claims, classics, code, collab, related, gaps, labs, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -104,6 +104,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/explain/*id", get(explain))
         .route("/v1/new/*id", get(novelty))
         .route("/v1/claim", get(claim_sides))
+        .route("/v1/classics", get(likely_classics))
         .route("/v1/related", post(related_write))
         .route("/v1/related/bib", get(related_bib))
         .route("/v1/author/:id", get(author))
@@ -361,6 +362,9 @@ struct Q {
     cat: String,
     #[serde(default)]
     area: String,
+    /// An order of a list: likely classics by chance (`p`), by early citations or newest.
+    #[serde(default)]
+    sort: String,
     #[serde(default)]
     user: String,
     #[serde(default)]
@@ -508,6 +512,15 @@ async fn explain(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Qu
         svc.spend(1)?;
     }
     let v = ask::explain(&c, &id, level, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// Likely classics: recent papers judged like the most cited of their year
+/// and area were in their first months (`?area=&days=&sort=p|early|new`).
+async fn likely_classics(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = classics::list(&c, &a.area, a.days.unwrap_or(548), &a.sort, 60).await;
     done(&trace, v, t0)
 }
 

@@ -324,6 +324,12 @@ const CSS = `
 .ax-kpi .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .ax-tldr { border-left: 3px solid var(--accent); padding: 8px 14px; background: var(--accent-soft); border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 14.5px; max-width: 820px; }
 .ax-tldr b { color: var(--accent); }
+.ax-lc { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; font-size: 12.5px; color: var(--text-2); }
+.ax-lc .lift { font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 7px; }
+.ax-hib table { border-collapse: collapse; font-size: 13px; margin: 6px 0; }
+.ax-hib th, .ax-hib td { text-align: left; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ax-hib th { font-weight: 600; color: var(--muted); font-size: 12px; }
+.ax-hib .wrap { overflow-x: auto; }
 .ax-lvl { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; vertical-align: middle; }
 .ax-lvl button { border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer; }
 .ax-lvl button + button { border-left: 1px solid var(--line); }
@@ -757,7 +763,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["related", "Related work"], ["reviewers", "Reviewers"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["classics", "Likely classics"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["related", "Related work"], ["reviewers", "Reviewers"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -835,6 +841,7 @@ function render(el, ctx) {
         case "venue": return await scopePage(app, main, "venue", arg, alive);
         case "trends": return await trendsPage(app, main, arg, alive);
         case "hot": return await hotPage(app, main, arg, alive);
+        case "classics": return await classicsPage(app, main, arg, alive);
         case "gaps": return await gapsPage(app, main, arg, alive);
         case "born": return await bornPage(app, main, arg, alive);
         case "spread": return await spreadPage(app, main, arg, alive);
@@ -1601,6 +1608,62 @@ async function hotPage(app, main, arg, alive) {
   fill(people,
     h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", margin: "-4px 0 10px" } }, `People whose first paper on arXiv is at most five years old, by the citations to their papers of the span (two cited papers or more, of 20 authors or fewer)${days < 365 ? "; citations take a year to gather, so this looks back a year" : ""}.`),
     (pj.people || []).length ? h("div", { class: "ax-rps" }, pj.people.map(card)) : h("div", { class: "ax-empty" }, "No one stands out in this span yet."));
+}
+
+// -------------------------------------------------------------- classics
+
+const CLASSIC_SPANS = [[91, "3 months"], [182, "6 months"], [365, "1 year"], [548, "18 months"]];
+const CLASSIC_SORTS = [["p", "Most likely"], ["early", "Most cited early"], ["new", "Newest"]];
+const REASON = (n) => {
+  if (n.startsWith("cited in its first")) return "cited early";
+  return ({ "authors' best record": "its authors' earlier papers are well cited", "authors' earlier papers": "its authors have published a lot", "first author's record": "its first author's record", "last author's record": "its last author's record", "team size": "its team size", code: "code released", survey: "a survey", dataset: "a dataset", benchmark: "a benchmark", tool: "a tool", "category growth": "its category was growing", "technique growth": "its techniques were growing fast", "has a named technique": "uses a named technique" })[n] || n;
+};
+const WINDOW_NAME = { 0: "no citations yet", 90: "its first 3 months", 182: "its first 6 months", 365: "its first year" };
+
+async function classicsPage(app, main, arg, alive) {
+  // "#/classics/<area>/<days>/<sort>", "all" for all of arXiv.
+  const [a0, d0, s0] = (arg || "").split("/");
+  const area = a0 && a0 !== "all" ? a0 : "";
+  const days = CLASSIC_SPANS.some(([d]) => String(d) === d0) ? Number(d0) : 548;
+  const sort = CLASSIC_SORTS.some(([k]) => k === s0) ? s0 : "p";
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
+  const out = h("div", {}, skel(8));
+  const areaRow = h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "6px 0 4px" } });
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" }, h("h1", {}, "Likely classics"), h("div", { class: "au" }, "Recent papers that look, in their first months, like the papers that went on to be the most cited 1% of their year and area. Each is judged only on what was known then: who cited it early, its authors' earlier work, how fast its field was growing, and whether it shares code.")),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 2px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Posted in the last"), CLASSIC_SPANS.map(([d, t]) => h("a", { href: app.href("classics", area || "all", d, sort), style: d === days ? on : {} }, t))),
+    areaRow,
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "4px 0 12px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Order"), CLASSIC_SORTS.map(([k, t]) => h("a", { href: app.href("classics", area || "all", days, k), style: k === sort ? on : {} }, t))),
+    out));
+  const j = await app.api(`/v1/classics?area=${enc(area)}&days=${days}&sort=${sort}`);
+  if (!alive()) return;
+  const counts = Object.fromEntries((j.areas || []).map((x) => [x.area, x.n]));
+  const total = (j.areas || []).reduce((s, x) => s + x.n, 0);
+  fill(areaRow, AREAS.filter(([k]) => !k || counts[k]).map(([k, t]) => h("a", { href: app.href("classics", k || "all", days, sort), style: area === k ? on : {} }, t, h("span", { style: { color: "var(--muted)", marginLeft: "5px" } }, fmt(k ? counts[k] : total)))));
+  const m = j.model || {};
+  const item = (r) => {
+    const li = paperItem(app, r, {});
+    const c = r.classic || {};
+    li.append(h("div", { class: "ax-lc" },
+      h("span", { class: "lift", title: `A ${(c.p * 100).toFixed(1)}% chance of ending among the most cited 1% of its year and area, against 1% for any paper` }, `${c.lift >= 10 ? Math.round(c.lift) : Number(c.lift).toFixed(1)}× the usual chance`),
+      c.win ? h("span", {}, `cited ${fmt(c.early)} ${c.early === 1 ? "time" : "times"} on arXiv in ${WINDOW_NAME[c.win]}`) : h("span", {}, "judged before citations count"),
+      (c.why || []).length ? h("span", {}, "Weighed most: ", c.why.map(REASON).join(", ")) : null));
+    return li;
+  };
+  const rows = j.papers || [];
+  const ev = (w) => ((m.models || {})[w] || {}).eval || {};
+  const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+  fill(out,
+    rows.length ? h("ul", { class: "ax-list" }, rows.map(item)) : h("div", { class: "ax-empty" }, "No likely classics here yet."),
+    m.models ? h("details", { class: "ax-hib", style: { marginTop: "18px" } },
+      h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "How it's built"),
+      h("div", { style: { fontSize: "13.5px", color: "var(--text-2)", maxWidth: "820px" } },
+        h("p", {}, `A logistic regression for each window of early citations, trained on the papers posted ${m.train[0]} to ${m.train[1]} and checked on ${m.test}. A chance is how often the ${m.test} papers it scored the same did end in the most cited 1% of their year and area (Crossref's count now). A citing paper is dated by its arXiv posting. The authors' records count their earlier papers on arXiv, with those papers' citations as counted now, so a record can include citations that came after.`),
+        h("p", {}, `Crossref's citations run to about ${day(m.horizon + "T00:00:00Z")}, so a paper is judged by the longest window that ends by then; one posted less than three months before that, or after, is judged without citations. ${fmt(m.judged)} papers posted since ${day(m.since + "T00:00:00Z")} were judged, and ${fmt(m.kept)} have three times the usual chance or more.`),
+        h("div", { class: "wrap" }, h("table", {},
+          h("tr", {}, ["Judged on", `${m.test} papers checked`, "Of its top 1%, in the real top 1%", "The same for a simple ranking", "AUC"].map((t) => h("th", {}, t))),
+          ["0", "90", "182", "365"].filter((w) => (m.models || {})[w]).map((w) => h("tr", {}, h("td", {}, w === "0" ? "No citations" : `Citations in ${WINDOW_NAME[w].replace("its ", "the ")}`), h("td", {}, fmt(ev(w).papers)), h("td", {}, pct(ev(w).p_at_1)), h("td", { title: `Ranked by ${m.models[w].simple}` }, pct(ev(w).simple_p_at_1)), h("td", {}, Number(ev(w).auc || 0).toFixed(3)))))),
+        h("p", { style: { fontSize: "12.5px", color: "var(--muted)" } }, `Any paper has a 1% chance. The simple ranking orders by ${(m.models["90"] || m.models["0"]).simple}. Made ${day(m.made)} by tools/classics.py from the rows ChloeDB holds.`))) : null);
 }
 
 // ------------------------------------------------------------------ labs
