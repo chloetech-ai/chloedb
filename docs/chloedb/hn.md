@@ -1,0 +1,84 @@
+# chloedb-hn: Hacker News on ChloeDB
+
+> **A demo.** chloedb-hn shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the `Demos` workflow, `.github/workflows/demos.yml`), outside CI's required check, and the command center marks it as a demo ([compatibility](../compatibility.md#demos)).
+
+`chloedb-hn` keeps every public Hacker News item in ChloeDB, about 49 million stories, comments, jobs and polls from October 2006 on, and searches them the way people look for things on HN: a story they half remember, what HN said about a tool, who knows a subject, when something was talked about, or a question asked in a sentence.
+
+- **Questions in a sentence, answered by SQL, no model.** "which post has received the most comments", "who posted the most stories about rust", "how many Show HN posts about postgres in 2023", "when was HN most into bitcoin", "what was the first story about docker". A small grammar ([`src/nl.rs`](../../chloedb-hn/src/nl.rs)) reads the question into what it asks (the top item by a measure, a count, people, sites or years), the topic and the filters, and the answer above the results is one query, shown with it. Anything the grammar does not read is searched as words.
+- **Autocomplete of questions, phrases and people.** As a search is typed the box offers whole questions the grammar reads (`which post` → "which post has received the most comments"), the phrases HN's titles use most (`kubernetes o` → "kubernetes operator"), people and sites. The phrases are a table, `hn_complete`, keyed by kind and text, so completing is a prefix of its sorted key: one run of the dictionary, read from a few blocks (`PREFIX(id, 'p:kubernetes o')`).
+- **Words and meaning together.** Titles, texts and the words of each link are ranked by BM25 with typos, stems and synonyms, fused with a static embedding model's similarity on the server, and weighed by points (`pow(points + 1, 0.35)`) and a gentle decay for age. Every word must be there for searches of up to three words, and most of them for longer ones, so the counts and facets match the results.
+- **Exact text, punctuation and all.** `` `C++` ``, `` `std::move` ``, `` `k8s.io/api` `` in backticks, or *Match by → exact text*, are matched where their characters are, by `ILIKE` answered from each segment's FM-index (`OPTIONS(substring = true)`), which tokenized search cannot do.
+- **Highlights the way the index reads.** A server of 0.3.6 or later marks each result with `POST /v1/highlight`: stems, synonyms, typos and code as the field's analyzer reads them, cut to the stretch with the most matches.
+- **Filters in the words.** `by:pg`, `site:github.com`, `points>500`, `comments>100`, `2019..2021`, `before 2015`, `-crypto`, `show hn`, `ask hn`, `"exact phrase"`; each is shown as a removable chip of what was understood.
+- **Threads, people and the graph.** A story opens as its whole thread; a comment opens in place with the path to it. People pages show what someone writes about, when, and who they talk to (the reply graph, `hn_replies`). *Who knows* ranks the people who comment most on a subject, weighed by the discussion they start. Similar stories by meaning, and the same link discussed again.
+- **What HN thinks.** A question about opinions gathers the comments that speak to it, packed into a model's budget by the database (`PACK n TOKENS ... DEDUPE ... WITH RECEIPT`), and a model behind the server's `llm()` sums them up with every claim cited to a numbered comment. Answers are kept, so a question asked again costs nothing. It is the only part that calls a model.
+- **Live.** With `--feed` the app follows the HN API: new items as they are posted, and the points and comments of the stories that change.
+
+Like [the crawler](crawler.md) and [network operations](netops.md), it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (**Apps → Hacker News**).
+
+## Run it
+
+Build both programs, then prepare the archive and start the app with a server of its own:
+
+```bash
+(cd chloedb-server && cargo build --release)
+cd chloedb-hn && cargo build --release
+target/release/chloedb-hn prepare --parquet ./hn-parquet --out ./hn-rows --download
+target/release/chloedb-hn complete --rows ./hn-rows
+target/release/chloedb-hn serve --local ./hn-data --rows ./hn-rows --server-bin ../chloedb-server/target/release/chloedb-server
+```
+
+`prepare --download` fetches the archive's monthly Parquet files (about 12 GB, from [open-index/hacker-news](https://huggingface.co/datasets/open-index/hacker-news)) and writes the app's rows: stories, comments (each with its story's title, depth, place among its siblings and the discussion under it), people, the reply graph and the links between stories. `--from 2024-01` and `--to` take part of it; `--comments-since` keeps every story and only the newer comments. `complete` writes autocomplete's rows from them. `serve --local DIR` starts a chloedb-server with its database in `DIR`, makes the tables, loads the rows when they are empty, and lists the app as `hn`; open `http://127.0.0.1:7700` and go to **Apps → Hacker News**.
+
+Against a server or a cluster that runs elsewhere, load into it and give the server the app:
+
+```bash
+chloedb-hn load --rows ./hn-rows --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --comment-model none
+chloedb-hn serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$HN_TOKEN" --listen 0.0.0.0:7850 --feed --comment-model none
+chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN_TOKEN
+```
+
+`--comment-model none` keeps the comments without vectors: they take a third of the bytes, and are found by their words and their story's title. The people and sites questions group by author or site; a server whose `--max-groups` (65,536 by default) is below HN's 1.1 million authors answers them for a topic but not over the whole archive, so give it `--max-groups 2000000`.
+
+## The questions it reads
+
+| asked | answered by |
+|---|---|
+| which post has received the most comments / the most upvoted story about X / the top 5 Show HN posts in 2023 | the top stories by comments, points or date, with the question's filters (`ORDER BY comments DESC`) |
+| the first / oldest / newest story about X | `ORDER BY created` |
+| how many stories mention X / number of comments about X in 2020 | `COUNT(*)` with the same match as the results, and its years |
+| who posted the most about X / who commented the most / who has the most karma | `GROUP BY author`; HN's archive carries no karma, so karma is the points a person's stories earned, and the answer says so |
+| who knows the most about X | the people who comment most on it, weighed by the discussion they start |
+| which sites are posted the most about X | `GROUP BY site` |
+| when was HN most into X / which year did X peak | the years' counts, each as a share of that year's stories (HN grew; raw counts favour late years) |
+| what does HN think about X | the cited summary above, the one answer a model writes |
+
+Each answer shows its SQL (**see the SQL**). The grammar's templates are also autocomplete's questions, so what the box offers it can answer.
+
+## Tables
+
+| table | what |
+|---|---|
+| `hn_stories` | stories, Ask and Show HN, jobs and polls: title, text, link (its site and words), author, time, points, comments, kind, topics, a vector of the title and text |
+| `hn_comments` | comments: text, author, time, parent and its author, story and its title, depth, place among siblings, replies, the discussion under it (and a vector, unless `--comment-model none`) |
+| `hn_users` | people: stories, comments, points earned, first and last item, replies received, people talked to |
+| `hn_replies` | the reply graph: who replied to whom, how often |
+| `hn_links` | which discussion links to which: a story or one of its comments naming another's `item?id=` |
+| `hn_complete` | autocomplete: phrases of titles (`p:`), sites (`s:`), topics (`t:`) and people (`u:`), each with how many stories hold it and their points |
+| `hn_answers`, `hn_searches`, `hn_state` | kept answers, the searches people ran (their words and counts only) and the feed's place |
+
+## The API
+
+| route | what |
+|---|---|
+| `GET /v1/search?q=&only=all\|story\|comment&sort=best\|date\|points\|comments&mode=hybrid\|words\|meaning\|exact&page=` | results, what was understood, the answer when it is a question, facets, "did you mean", and every query run with its time |
+| `GET /v1/suggest?q=` | completions: questions, phrases, people, sites, stories |
+| `GET /v1/item/:id`, `/v1/item/:id/around` | a thread; similar stories and the same link again |
+| `GET /v1/user/:id`, `/v1/experts?q=` | a person; who knows a subject |
+| `GET /v1/trends?q=a,b&by=year\|month` | how often each was talked about |
+| `GET /v1/ask?q=` | what HN thinks, cited |
+| `GET /v1/front` | the front page as SQL: points over age, as HN ranks it |
+
+## Measured against hn.algolia.com
+
+`eval/compare.py` asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in [`chloedb-hn/eval/results`](../../chloedb-hn/eval/results/), with the machine and the date they were measured on.

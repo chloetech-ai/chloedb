@@ -17,7 +17,8 @@ and both end to end from this machine.
 
 Algolia's public API allows 10,000 requests an hour from one address; this
 asks a few hundred. The model calls go through the ChloeDB server's llm(),
-which holds the provider's key.
+which holds the provider's key. Against a cluster, CHLOEDB_HN_TOKEN is the
+app's token and CHLOEDB_KEY the server's key.
 
     python3 eval/compare.py --app http://127.0.0.1:7851 --strata http://127.0.0.1:7701 --out eval/results
 """
@@ -25,14 +26,24 @@ import argparse, json, math, os, random, re, statistics, sys, time, urllib.parse
 
 ALGOLIA = "https://hn.algolia.com/api/v1/search"
 
-def get(url, timeout=60):
+# The app's token and the server's key (a cluster asks for both); from the
+# environment, so that neither is on a command line.
+AUTH = {"app": os.environ.get("CHLOEDB_HN_TOKEN", ""), "strata": os.environ.get("CHLOEDB_KEY", "")}
+
+def headers(token=""):
+    h = {"user-agent": "chloedb-hn-eval", "content-type": "application/json"}
+    if token:
+        h["authorization"] = f"Bearer {token}"
+    return h
+
+def get(url, timeout=60, token=""):
     t0 = time.perf_counter()
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "chloedb-hn-eval"}), timeout=timeout) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers(token)), timeout=timeout) as r:
         body = json.load(r)
     return body, (time.perf_counter() - t0) * 1000
 
 def post(url, body, timeout=120):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers(AUTH["strata"]))
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
@@ -61,7 +72,7 @@ def llm(strata, model, instructions, text, max_tokens=300):
     return (rows[0]["a"] if rows else "") or ""
 
 def ours(app, q, only="story"):
-    j, e2e = get(f"{app}/v1/search?q={urllib.parse.quote(q)}&only={only}&facets=0")
+    j, e2e = get(f"{app}/v1/search?q={urllib.parse.quote(q)}&only={only}&facets=0", token=AUTH["app"])
     return [int(s["id"]) for s in j.get("stories", [])], j.get("took_ms"), e2e, j
 
 def theirs(q):
