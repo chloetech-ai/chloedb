@@ -1,4 +1,12 @@
-# ChloeDB Workbench
+# ChloeDB Workbench: Converge
+
+The app opens on **Converge** (`#/`): per project, personas play the
+product, and what they hit is reproduced, fixed, verified and sent to you as
+a pull request, on a board you steer from a phone ([SPEC.md](SPEC.md),
+"Seventh build"). **Workbench** is its section (`#/workbench`, the
+Workbench tab): the agents, terminals, projects, review, debug, harness and
+rules described below. The crate, the binary (`chloedb-workbench`) and its
+output keep their names.
 
 Workbench is a local app that runs many Claude Code sessions side by side.
 Each one gets a real terminal (a pseudo-terminal), and most get their own git

@@ -3700,6 +3700,11 @@ fn libraries_come_from_manifests_and_a_crawl_is_searched_and_cited() {
 
 /// A server with extra environment (the persona runner's, here).
 fn start_lab(envs: &[(&str, &str)]) -> Server {
+    start_lab_ctx(envs, "/nonexistent/chloectx")
+}
+
+/// `start_lab` with this ChloeCtx program (still not required of agents).
+fn start_lab_ctx(envs: &[(&str, &str)], chloectx: &str) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let fake = write_fake(dir.path());
@@ -3709,7 +3714,7 @@ fn start_lab(envs: &[(&str, &str)]) -> Server {
         .arg(&data)
         .arg("--claude-bin")
         .arg(&fake)
-        .args(["--chloectx-bin", "/nonexistent/chloectx", "--no-chloectx"])
+        .args(["--chloectx-bin", chloectx, "--no-chloectx"])
         .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -6492,6 +6497,7 @@ D="__DIR__"
 role="$1"
 job=$(cat)
 printf '%s\n' "$job" >> "$D/jobs-$role"
+printf 'home=%s disable=%s source=%s\n' "$CHLOECTX_HOME" "$CHLOECTX_DISABLE" "$CHLOECTX_PROMPT_SOURCE" >> "$D/env-$role"
 case "$role" in
   play)
     if printf '%s' "$job" | grep -q '"purpose":"verify"'; then
@@ -6511,6 +6517,13 @@ case "$role" in
     fi;;
   scope) echo '{"area":"src","files":["src/","tests/"],"root_cause":"The handler is not wired.","acceptance":"The repro exits 0","size":"S","cost_usd":0.01}';;
   generate) echo '{"name":"Omar, data engineer","role":"Loads data nightly","traits":["impatient"],"journey":"Load a CSV and query it.","surfaces":["load"],"why":"Nobody played loading","cost_usd":0.01}';;
+  card)
+    if printf '%s' "$job" | grep -q 'BREAK THE RUNNER'; then echo "no card today"; exit 3; fi
+    echo '{"title":"Export orders as CSV from the orders page","detail":"The orders page has no CSV export; owners copy rows by hand.","kind":"feature","theme":"usability","component":"web","severity":"major","acceptance":"An Export button downloads the orders as CSV","cost_usd":0.03}';;
+  personas)
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the README first."},{"type":"tool_use","name":"Read","input":{"file_path":"README.md"}}]}}'
+    sleep 1
+    echo '{"personas":[{"name":"Lena, bookkeeper","role":"Closes the month","traits":["careful"],"journey":"Export the month and reconcile it.","surfaces":["web","exports"],"component":"web","why":"The README is about exports"},{"name":"Maya, shop owner","role":"duplicate","journey":"x"},{"name":"Tom, support","role":"Answers customers","traits":["busy"],"journey":"Find an order and refund it.","surfaces":["orders"],"why":"Support is in the docs"}],"cost_usd":0.04}';;
 esac
 "#;
 
@@ -6748,6 +6761,19 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     assert_eq!(m["funnel"]["merged"], 1, "{m}");
     assert_eq!(m["by_theme"]["usability"]["merged"], 1, "{m}");
     assert!(m["spent_today"].as_f64().unwrap() > 0.0, "{m}");
+    // The timeline: what was spent and started per bucket, and found → merged times.
+    let (_, tl) = s.get(&format!("/api/converge/timeline?repo={}", r.display()));
+    let b = tl["buckets"].as_array().unwrap();
+    let sum = |k: &str| b.iter().map(|x| x["agents"][k].as_u64().unwrap()).sum::<u64>();
+    assert_eq!(sum("fix"), 1, "{tl}");
+    assert!(sum("persona") >= 2, "{tl}");
+    assert!(b.iter().map(|x| x["spend_usd"].as_f64().unwrap()).sum::<f64>() > 0.0, "{tl}");
+    let mg = &tl["merged"][0];
+    assert_eq!(mg["id"], json!(fid), "{tl}");
+    assert!(mg["merged_ts"].as_i64().unwrap() >= mg["found_ts"].as_i64().unwrap(), "{tl}");
+    // Scoping asked for the project's memory: without a ChloeCtx here, it said why, and ran with it off.
+    let scope_env = std::fs::read_to_string(fd.join("env-scope")).unwrap();
+    assert!(scope_env.contains("disable=1"), "{scope_env}");
 
     // The page is served.
     let mut res = http().get(format!("{}/goals/converge.js", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap();
@@ -6773,4 +6799,275 @@ fn converge_seed_loads_the_personas_and_their_findings_once() {
     assert!(st == 201 || st == 409, "{st} {v}");
     let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
     assert_eq!(o["findings"].as_array().unwrap().len(), 30);
+}
+
+/// A project with a part of its own (web/, with a package.json), its
+/// personas' runner, and a server.
+fn cv_project() -> (tempfile::TempDir, PathBuf, Server, tempfile::TempDir, PathBuf) {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (d, r) = repo();
+    std::fs::create_dir(r.join("web")).unwrap();
+    std::fs::write(r.join("web/package.json"), "{}\n").unwrap();
+    std::fs::write(r.join("README.md"), "# Shop\nExport your orders.\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "web"]);
+    (d, r, s, fakes, fd)
+}
+
+fn cv_activity(s: &Server, r: &Path) -> Vec<Value> {
+    let (st, v) = s.get(&format!("/api/converge/activity?repo={}&limit=500", r.display()));
+    assert_eq!(st, 200, "{v}");
+    assert!(v["now"].is_i64(), "{v}");
+    v["items"].as_array().unwrap().clone()
+}
+
+#[test]
+fn converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked() {
+    let (_d, r, s, _f, fd) = cv_project();
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "follow_picks": false, "repro_agents": 0 } }));
+    assert_eq!(st, 200, "{v}");
+
+    // Your words become a card: yours, picked, in Reproduce.
+    let (st, v) = s.post("/api/converge/ask", json!({ "repo": r, "text": "I want to export the orders page to CSV" }));
+    assert_eq!(st, 201, "{v}");
+    let f = &v["finding"];
+    assert_eq!(f["stage"], "reproduce", "{v}");
+    assert_eq!(f["by"], "you");
+    assert_eq!(f["kind"], "feature");
+    assert_eq!(f["severity"], 3);
+    assert_eq!(f["component"], "web", "{v}");
+    assert_eq!(f["scope"]["acceptance"], "An Export button downloads the orders as CSV");
+    assert_eq!(v["run"]["purpose"], "ask");
+    assert_eq!(v["run"]["state"], "done");
+    let job = std::fs::read_to_string(fd.join("jobs-card")).unwrap();
+    assert!(job.contains("export the orders page to CSV") && job.contains("\"components\":[\"web\",\"other\"]"), "{job}");
+    let fid = f["id"].as_str().unwrap().to_string();
+    let ev = cv_finding(&s, &fid);
+    let gates: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["gate"].as_str().unwrap()).collect();
+    assert_eq!(gates, ["reported", "asked"], "{ev}");
+    // Only your key asks; empty words are refused; a runner failure creates nothing.
+    let a = s.spawn(json!({ "repo": r, "task": "look around" }));
+    let aid = a["id"].as_str().unwrap().to_string();
+    let key = agent_token(&s, &aid);
+    assert_eq!(call_as(&s, "POST", "/api/converge/ask", &key, Some(&aid), Some(json!({ "repo": r, "text": "x" }))).0, 403);
+    assert_eq!(s.post("/api/converge/ask", json!({ "repo": r, "text": "  " })).0, 400);
+    let (st, e) = s.post("/api/converge/ask", json!({ "repo": r, "text": "BREAK THE RUNNER" }));
+    assert_eq!(st, 502, "{e}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    assert_eq!(o["findings"].as_array().unwrap().len(), 1, "{o}");
+    // The overview counts open findings by component.
+    assert_eq!(o["components"], json!([{ "name": "web", "open": 1 }, { "name": "other", "open": 0 }]), "{o}");
+
+    // By hand with pick: straight to Reproduce, and only yours.
+    assert_eq!(call_as(&s, "POST", "/api/converge/findings", &key, Some(&aid), Some(json!({ "repo": r, "title": "t", "pick": true }))).0, 403);
+    let (st, v) = s.post("/api/converge/findings", json!({ "repo": r, "title": "Refunds are not in the export", "pick": true }));
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["finding"]["stage"], "reproduce", "{v}");
+    let hid = v["finding"]["id"].as_str().unwrap().to_string();
+    // Without pick it waits in Found, as before; a component it does not have is refused.
+    let (_, v) = s.post("/api/converge/findings", json!({ "repo": r, "title": "The footer is grey" }));
+    assert_eq!(v["finding"]["stage"], "found", "{v}");
+    assert_eq!(v["finding"]["component"], "other", "{v}");
+    assert_eq!(s.post("/api/converge/findings", json!({ "repo": r, "title": "x", "component": "nope" })).0, 400);
+    // You set its component; the change is an event and in the feed.
+    let oid = v["finding"]["id"].as_str().unwrap().to_string();
+    let (st, v) = s.patch(&format!("/api/converge/findings/{oid}"), json!({ "component": "web" }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["component"], "web");
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}&component=web", r.display()));
+    assert_eq!(m["open"], 2, "{m}");
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}&component=other", r.display()));
+    assert_eq!(m["open"], 1, "{m}");
+    let (_, tl) = s.get(&format!("/api/converge/timeline?repo={}&component=web", r.display()));
+    assert_eq!(tl["buckets"].as_array().unwrap().last().unwrap()["open_total"], 2, "{tl}");
+
+    let items = cv_activity(&s, &r);
+    let said: Vec<String> = items.iter().map(|i| format!("{} {}", i["kind"].as_str().unwrap(), i["summary"].as_str().unwrap())).collect();
+    assert!(said.iter().any(|x| x.starts_with("ask You asked: “I want to export") && x.contains("in Reproduce")), "{said:?}");
+    assert!(said.iter().any(|x| x.starts_with("ask Your ask could not become a card")), "{said:?}");
+    assert!(said.iter().any(|x| x.starts_with("you You added “Refunds are not in the export” by hand and sent it to Reproduce")), "{said:?}");
+    assert!(said.iter().any(|x| x.starts_with("you “The footer is grey”: Component other → web")), "{said:?}");
+    let ask = items.iter().find(|i| i["kind"] == "ask" && i["finding"] == json!(fid)).unwrap();
+    assert_eq!(ask["actor"], "you");
+    assert_eq!(ask["detail"]["component"], "web");
+    // Newest first, and since= cuts.
+    let ts: Vec<i64> = items.iter().map(|i| i["ts"].as_i64().unwrap()).collect();
+    assert!(ts.windows(2).all(|w| w[0] >= w[1]), "{ts:?}");
+    let (_, later) = s.get(&format!("/api/converge/activity?repo={}&since={}", r.display(), ts[0] + 1));
+    assert_eq!(later["items"].as_array().unwrap().len(), 0, "{later}");
+    let _ = hid;
+}
+
+#[test]
+fn converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions() {
+    let (_d, r, s, _f, fd) = cv_project();
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "follow_picks": false, "repro_runs": 1, "repro_agents": 0, "runs_at_once": 1 } }));
+    assert_eq!(st, 200, "{v}");
+    let (st, _) = s.post("/api/converge/personas", json!({ "repo": r, "name": "Maya, shop owner", "journey": "Export last month's orders." }));
+    assert_eq!(st, 201);
+    assert_eq!(s.post("/api/converge/personas/generate", json!({ "repo": r, "from": "codebase", "count": 9 })).0, 400);
+    assert_eq!(s.post("/api/converge/personas/generate", json!({ "repo": r, "from": "the moon" })).0, 400);
+
+    // It answers at once; the run streams its steps, then lists who it made.
+    let (st, v) = s.post("/api/converge/personas/generate", json!({ "repo": r, "from": "codebase", "count": 2 }));
+    assert_eq!(st, 202, "{v}");
+    let run = v["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["run"]["purpose"], "generate");
+    assert_eq!(v["run"]["state"], "running");
+    let end = Instant::now() + Duration::from_secs(30);
+    let mut saw_live = false;
+    let g = loop {
+        let (st, g) = s.get(&format!("/api/converge/runs/{run}"));
+        assert_eq!(st, 200, "{g}");
+        if g["live"] == true && g["run"]["steps"].as_array().is_some_and(|x| !x.is_empty()) {
+            saw_live = true;
+        }
+        if g["run"]["state"] != "running" || Instant::now() > end {
+            break g;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(saw_live, "no live steps: {g}");
+    assert_eq!(g["run"]["state"], "done", "{g}");
+    assert_eq!(g["persona"], Value::Null);
+    let steps = g["run"]["steps"].to_string();
+    assert!(steps.contains("Reading the README first.") && steps.contains("README.md"), "{steps}");
+    let made = g["run"]["findings"].as_array().unwrap();
+    // The duplicate of Maya (and the one with no journey) is skipped.
+    assert_eq!(made.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(), ["Lena, bookkeeper", "Tom, support"], "{g}");
+    let job = std::fs::read_to_string(fd.join("jobs-personas")).unwrap();
+    assert!(job.contains("\"count\":2") && job.contains("Maya, shop owner"), "{job}");
+    let (_, ps) = s.get(&format!("/api/converge/personas?repo={}", r.display()));
+    let lena = ps["personas"].as_array().unwrap().iter().find(|p| p["name"] == "Lena, bookkeeper").unwrap().clone();
+    assert_eq!(lena["state"], "probation");
+    assert_eq!(lena["origin"], "codebase");
+    assert_eq!(lena["surfaces"], json!(["web", "exports"]));
+
+    // A tick: who plays and why, what waits for the budget or for you.
+    let t = cv_tick(&s, &r);
+    assert!(t["started"].to_string().contains("plays"), "{t}");
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    let lt = &o["last_tick"];
+    assert!(lt["ts"].is_i64(), "{o}");
+    assert!(lt["started"].to_string().contains("Maya, shop owner plays"), "{lt}");
+    assert!(lt["decisions"].to_string().contains("Maya, shop owner is due (never played): plays now"), "{lt}");
+    assert!(lt["decisions"].to_string().contains("Lena, bookkeeper is due, but 1 of 1 persona runs are going: waits"), "{lt}");
+    // Once the others have played and nothing changes, a tick is not logged again.
+    let ticks = |s: &Server| cv_activity(s, &r).iter().filter(|i| i["kind"] == "tick").count();
+    for _ in 0..8 {
+        let n = ticks(&s);
+        cv_tick(&s, &r);
+        if ticks(&s) == n {
+            break;
+        }
+    }
+    let m = ticks(&s);
+    cv_tick(&s, &r);
+    assert_eq!(ticks(&s), m, "an unchanged tick was logged again");
+
+    // Its finding: you pick it, and the reproduce gate shows in the feed.
+    let fid = o["findings"].as_array().unwrap().iter().find(|f| f["stage"] == "found").map(|f| f["id"].as_str().unwrap().to_string());
+    let fid = fid.unwrap_or_else(|| {
+        let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+        o["findings"][0]["id"].as_str().unwrap().to_string()
+    });
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/reproduce"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    cv_tick(&s, &r);
+    // Out of budget: the tick says so, once.
+    let (st, _) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "budget_usd_day": 0.0 } }));
+    assert_eq!(st, 200);
+    cv_tick(&s, &r);
+    cv_tick(&s, &r);
+
+    let items = cv_activity(&s, &r);
+    let said: Vec<String> = items.iter().map(|i| format!("{}|{}|{}", i["kind"].as_str().unwrap(), i["actor"].as_str().unwrap(), i["summary"].as_str().unwrap())).collect();
+    let has = |p: &str| said.iter().any(|x| x.starts_with(p));
+    assert!(has("generate|you|Reading the project to make 2 personas"), "{said:?}");
+    assert!(has("generate|autopilot|Made 2 personas on probation: Lena, bookkeeper; Tom, support"), "{said:?}");
+    assert!(has("persona|Maya, shop owner|Maya, shop owner starts playing"), "{said:?}");
+    assert!(has("persona|Maya, shop owner|Maya, shop owner finished: done, ease 2, 1 problem, $0.02"), "{said:?}");
+    assert!(has("decide|autopilot|Maya, shop owner is due (never played): plays now"), "{said:?}");
+    assert!(has("you|you|“The export button does nothing on the orders page”: You chose to reproduce it"), "{said:?}");
+    assert!(said.iter().any(|x| x.starts_with("gate|autopilot|“The export button does nothing on the orders page”: repro.sh failed 1 of 1")), "{said:?}");
+    assert_eq!(said.iter().filter(|x| x.starts_with("decide|autopilot|Budget spent")).count(), 1, "{said:?}");
+    assert!(has("you|you|You changed the settings: budget_usd_day"), "{said:?}");
+    let gate = items.iter().find(|i| i["kind"] == "gate" && i["detail"]["gate"] == "repro_fails").unwrap();
+    assert_eq!(gate["finding"], json!(fid));
+    assert_eq!(gate["detail"]["passed"], true);
+    assert!(gate["detail"]["evidence"]["runs"].is_array(), "{gate}");
+    let tick = items.iter().find(|i| i["kind"] == "tick" && i["detail"]["budget"]["per_day"] == 0.0).unwrap();
+    assert!(tick["summary"].as_str().unwrap().starts_with("Nothing to start: Budget spent"), "{tick}");
+    assert!(tick["detail"]["wip"]["limit"].is_u64() && tick["detail"]["by_stage"]["scope"].is_u64(), "{tick}");
+    // limit caps the list.
+    let (_, two) = s.get(&format!("/api/converge/activity?repo={}&limit=2", r.display()));
+    assert_eq!(two["items"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
+    use std::os::unix::fs::PermissionsExt;
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    // A ChloeCtx that answers `wiring` with a hook and its MCP server.
+    let ctx = fd.join("fake-chloectx");
+    std::fs::write(&ctx, "#!/bin/sh\ncase \"$1\" in\n  wiring) echo '{\"wired\":false,\"settings\":{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"chloectx hook stop\"}]}]}},\"mcp\":{\"chloectx\":{\"command\":\"chloectx\",\"args\":[\"mcp\"]}},\"model\":{\"ok\":true}}';;\n  --version) echo 'chloectx 0.0.0';;\nesac\n").unwrap();
+    std::fs::set_permissions(&ctx, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let s = start_lab_ctx(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)], &ctx.display().to_string());
+    let (_d, r) = repo();
+    let (_, p) = s.post("/api/converge/personas", json!({ "repo": r, "name": "Maya, shop owner", "journey": "Export last month's orders." }));
+    let pid = p["persona"]["id"].as_str().unwrap().to_string();
+    assert_eq!(p["persona"]["use_memory"], false, "{p}");
+    let play = |body: Value| {
+        let (st, v) = s.post(&format!("/api/converge/personas/{pid}/play"), body);
+        assert_eq!(st, 200, "{v}");
+        v
+    };
+    let envs = || std::fs::read_to_string(fd.join("env-play")).unwrap();
+
+    // Off by default: ChloeCtx is off for the run.
+    let v = play(json!({ "wait": true }));
+    assert_eq!(v["run"]["use_memory"], false, "{v}");
+    assert!(envs().lines().last().unwrap().contains("home= disable=1"), "{}", envs());
+
+    // On for the persona (PUT or PATCH): its own store, ChloeCtx on, the prompt Workbench's.
+    let (st, v) = s.put(&format!("/api/converge/personas/{pid}"), json!({ "use_memory": true }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["persona"]["use_memory"], true);
+    let v = play(json!({ "wait": true }));
+    assert_eq!(v["run"]["use_memory"], true, "{v}");
+    let last = envs().lines().last().unwrap().to_string();
+    let store = s.data.join("converge").join("memory").join(&pid);
+    assert!(last.contains(&format!("home={} disable= source=workbench", store.display())), "{last}");
+    assert!(store.is_dir());
+    let job = std::fs::read_to_string(fd.join("jobs-play")).unwrap();
+    assert!(job.lines().last().unwrap().contains("\"memory\":true"), "{job}");
+    // Its eases with memory are kept apart from those without.
+    let (_, ps) = s.get(&format!("/api/converge/personas?repo={}", r.display()));
+    let pe = &ps["personas"][0];
+    assert_eq!((pe["ease"].as_f64(), pe["ease_memory"].as_f64()), (Some(2.0), Some(4.0)), "{pe}");
+    assert_eq!(pe["ease_hist"], json!([2.0]), "{pe}");
+
+    // One run's override: off this time.
+    let v = play(json!({ "wait": true, "use_memory": false }));
+    assert_eq!(v["run"]["use_memory"], false, "{v}");
+    assert!(envs().lines().last().unwrap().contains("disable=1"));
+
+    // The feed says so; without a ChloeCtx it plays without memory and says why.
+    let items = cv_activity(&s, &r);
+    assert!(items.iter().any(|i| i["summary"] == "You let Maya, shop owner remember its earlier visits"), "{items:?}");
+    assert!(items.iter().any(|i| i["kind"] == "persona" && i["summary"].as_str().unwrap().contains("remembers its earlier visits")), "{items:?}");
+    drop(s);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_, p) = s.post("/api/converge/personas", json!({ "repo": r, "name": "Omar, engineer", "journey": "Load a CSV." }));
+    let oid = p["persona"]["id"].as_str().unwrap().to_string();
+    let (st, v) = s.post(&format!("/api/converge/personas/{oid}/play"), json!({ "wait": true, "use_memory": true }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["run"]["use_memory"], false, "{v}");
+    let items = cv_activity(&s, &r);
+    assert!(items.iter().any(|i| i["kind"] == "decide" && i["summary"].as_str().unwrap().starts_with("Omar, engineer plays without memory: ChloeCtx is not installed")), "{items:?}");
 }

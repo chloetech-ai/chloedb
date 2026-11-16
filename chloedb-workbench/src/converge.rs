@@ -49,13 +49,17 @@ use crate::supervisor::{one_line, ApiError, SpawnRequest, Supervisor};
 
 /// The tables (created with the others in `db.rs`). A row's columns are
 /// what the board filters and sorts on; the whole record is `doc` (JSON).
-pub const TABLES: [&str; 6] = [
+pub const TABLES: [&str; 8] = [
     "CREATE TABLE IF NOT EXISTS cv_personas (id KEYWORD PRIMARY KEY, repo KEYWORD, name TEXT, state KEYWORD, origin KEYWORD, created TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_runs (id KEYWORD PRIMARY KEY, repo KEYWORD, persona KEYWORD, purpose KEYWORD, finding KEYWORD, state KEYWORD, outcome KEYWORD, ease FLOAT, cost_usd FLOAT, created TIMESTAMP, ended TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_findings (id KEYWORD PRIMARY KEY, repo KEYWORD, title TEXT, stage KEYWORD, state KEYWORD, severity INT, score FLOAT, persona KEYWORD, created TIMESTAMP, updated TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_events (id KEYWORD PRIMARY KEY, finding KEYWORD, repo KEYWORD, ts TIMESTAMP, from_stage KEYWORD, to_stage KEYWORD, gate KEYWORD, passed BOOL, by_who KEYWORD, summary TEXT, evidence TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_metrics (id KEYWORD PRIMARY KEY, repo KEYWORD, day KEYWORD, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_settings (repo KEYWORD PRIMARY KEY, doc TEXT OPTIONS(indexed = false), updated TIMESTAMP)",
+    // What the autopilot, the personas, the agents and you did, newest last (`log`).
+    "CREATE TABLE IF NOT EXISTS cv_log (id KEYWORD PRIMARY KEY, repo KEYWORD, ts TIMESTAMP, kind KEYWORD, doc TEXT OPTIONS(indexed = false))",
+    // The part of the project a finding is about (`component_of`).
+    "ALTER TABLE cv_findings ADD COLUMN IF NOT EXISTS component KEYWORD",
 ];
 
 /// The kinds of problem the board groups by.
@@ -86,7 +90,160 @@ pub fn theme_of(given: Option<&str>, title: &str, detail: &str) -> String {
     "usability".into()
 }
 
-pub const STAGES: [&str; 8] = ["found", "reproduce", "scope", "prioritize", "develop", "verify", "review", "merged"];
+/// The parts of a project its findings are filed under: each top-level
+/// folder that builds on its own (a Cargo.toml, package.json,
+/// pyproject.toml, pom.xml or go.mod), the language packages (`*-py`,
+/// `*-js`, `*-java`, …) together as `sdks`, then `docs`, `packaging` (an
+/// installer or a packaging folder) and `other`. On ChloeDB: chloedb,
+/// chloedb-server, chloectx, chloedb-apps, …, sdks, docs, packaging, other.
+pub fn components_of(repo: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = std::fs::read_dir(repo)
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir() && BUILD_FILES.iter().any(|b| e.path().join(b).is_file()))
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .filter(|n| !n.starts_with('.') && !matches!(n.as_str(), "docs" | "packaging" | "target" | "node_modules"))
+                .collect()
+        })
+        .unwrap_or_default();
+    dirs.sort();
+    let mut out: Vec<String> = dirs.iter().filter(|d| sdk_dir(d).is_none()).cloned().collect();
+    if dirs.iter().any(|d| sdk_dir(d).is_some()) {
+        out.push("sdks".into());
+    }
+    if repo.join("docs").is_dir() {
+        out.push("docs".into());
+    }
+    if repo.join("packaging").is_dir() || repo.join("install.sh").is_file() {
+        out.push("packaging".into());
+    }
+    out.push("other".into());
+    out
+}
+
+const BUILD_FILES: [&str; 5] = ["Cargo.toml", "package.json", "pyproject.toml", "pom.xml", "go.mod"];
+
+/// A language package's folder (`chloedb-py`), as `sdks`.
+fn sdk_dir(name: &str) -> Option<&'static str> {
+    const ENDS: [&str; 9] = ["-py", "-python", "-js", "-node", "-java", "-go", "-ruby", "-sdk", "-dotnet"];
+    (ENDS.iter().any(|e| name.ends_with(e)) || matches!(name, "sdk" | "sdks" | "bindings")).then_some("sdks")
+}
+
+/// Words that point at a part of a project, by the end of its folder's name
+/// (`server` is chloedb-server's, `sheets` chloedb-sheets'): they count
+/// only when the project has such a part.
+const COMPONENT_WORDS: [(&str, &[&str]); 12] = [
+    ("server", &["server", "operator", "command center", "kubernetes", "k8s", "helm", "coordinator", "shard", "replica", "grpc", "http api", "auth", "api key", "cluster", "failover", "primary"]),
+    ("chloectx", &["chloectx", "engram", "memory", "recall", "distill", "hooks", "mcp server", "inspector"]),
+    ("apps", &["app engine", "apps", "quickjs", "sandboxed"]),
+    ("workbench", &["workbench", "converge", "worktree", "spawn_agent"]),
+    ("sheets", &["sheets", "spreadsheet", "workbook", "xlsx", "formula", "cell"]),
+    ("crawl", &["crawl", "crawler", "robots.txt"]),
+    ("netops", &["netops", "incident", "topology", "carrier", "alert rule"]),
+    ("swarm", &["swarm", "simulated users", "playwright"]),
+    ("sdks", &["python", "pip", "pypi", "langchain", "llama_index", "dbapi", "javascript", "node", "npm", "bun", "deno", "java", "jdbc", "maven", "sdk"]),
+    ("docs", &["docs", "documentation", "guide", "readme", "quickstart", "tutorial"]),
+    ("packaging", &["install.sh", "installer", "install", "homebrew", "brew", "release", "prebuilt", "crates.io", "packag"]),
+    ("chloedb", &["sql", "bm25", "posting", "index", "query", "ranking", "analyzer", "embedded", "on-disk", "compaction"]),
+];
+
+fn tok(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_'
+}
+
+/// Whether `w` starts a word of `text` (both lower case); a word of six
+/// letters or more is a stem (`packag`, `distill`), a shorter one whole.
+fn has_word(text: &str, w: &str) -> bool {
+    text.match_indices(w).any(|(i, _)| text[..i].chars().next_back().is_none_or(|c| !tok(c)) && (w.len() >= 6 || text[i + w.len()..].chars().next().is_none_or(|c| !tok(c))))
+}
+
+/// Whether `w` is a whole word (or a path's part) of `text`.
+fn whole(text: &str, w: &str) -> bool {
+    text.match_indices(w).any(|(i, _)| text[..i].chars().next_back().is_none_or(|c| !tok(c)) && text[i + w.len()..].chars().next().is_none_or(|c| !tok(c)))
+}
+
+/// The component that names itself in `text`: its folder's name or path
+/// (the longest first, so chloedb-server before chloedb), a language
+/// package's folder (sdks), a path under docs/.
+fn named_in(comps: &[String], text: &str) -> Option<String> {
+    let mut by_len: Vec<&String> = comps.iter().filter(|c| !matches!(c.as_str(), "other" | "sdks" | "docs" | "packaging")).collect();
+    by_len.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    let exact = |w: &str| whole(text, w);
+    if let Some(c) = by_len.iter().find(|c| exact(c)) {
+        return Some(c.to_string());
+    }
+    if comps.iter().any(|c| c == "sdks") {
+        for w in text.split(|c: char| !tok(c)) {
+            if sdk_dir(w).is_some() && w.contains('-') {
+                return Some("sdks".into());
+            }
+        }
+    }
+    if comps.iter().any(|c| c == "docs") && (text.starts_with("docs/") || text.contains(" docs/") || text.contains("\"docs/") || text.contains("/docs/")) {
+        return Some("docs".into());
+    }
+    if comps.iter().any(|c| c == "packaging") && (exact("install.sh") || text.contains("packaging/")) {
+        return Some("packaging".into());
+    }
+    None
+}
+
+/// The component of the words a finding (or a persona's surface) uses.
+fn guessed_in(comps: &[String], text: &str) -> Option<String> {
+    let mut best: Option<(usize, &String)> = None;
+    for c in comps.iter().filter(|c| c.as_str() != "other") {
+        let n: usize = COMPONENT_WORDS.iter().filter(|(end, _)| c == end || c.ends_with(&format!("-{end}"))).flat_map(|(_, ws)| ws.iter()).filter(|w| has_word(text, w)).count();
+        // The part's own short name (`sheets` for chloedb-sheets).
+        let short = c.rsplit('-').next().unwrap_or(c);
+        let n = n + usize::from(short != c && has_word(text, short)) * 2;
+        if n > 0 && best.is_none_or(|(b, _)| n > b) {
+            best = Some((n, c));
+        }
+    }
+    best.map(|(_, c)| c.clone())
+}
+
+/// A finding's component: the one given (when the project has it), else
+/// the one its words or paths name, else its persona's first surface that
+/// names one, else the one its words point at most, else docs for a docs
+/// finding, else other.
+pub fn component_of(comps: &[String], given: Option<&str>, text: &str, surfaces: &[String], theme: &str) -> String {
+    if let Some(g) = given.map(|g| g.trim().to_lowercase()).filter(|g| comps.contains(g)) {
+        return g;
+    }
+    let text = text.to_lowercase();
+    if let Some(c) = named_in(comps, &text) {
+        return c;
+    }
+    for x in surfaces {
+        let x = x.to_lowercase();
+        if let Some(c) = named_in(comps, &x).or_else(|| comps.contains(&x).then(|| x.clone())) {
+            return c;
+        }
+    }
+    if let Some(c) = guessed_in(comps, &text) {
+        return c;
+    }
+    if theme == "docs" && comps.iter().any(|c| c == "docs") {
+        return "docs".into();
+    }
+    "other".into()
+}
+
+/// What a finding says about itself, for [`component_of`].
+fn finding_text(f: &Finding) -> String {
+    let files = f.scope.as_ref().map(|s| format!("{} {}", s.area, s.files.join(" "))).unwrap_or_default();
+    format!("{} {} {} {}", f.title, f.detail, f.step.clone().unwrap_or_default(), files)
+}
+
+/// A finding's component from its own words and its persona's surfaces.
+fn infer_component(sup: &Supervisor, f: &Finding, given: Option<&str>) -> String {
+    let comps = components_of(Path::new(&f.repo));
+    let surfaces = f.persona.as_deref().and_then(|p| get_persona(sup, p).ok()).map(|p| p.surfaces).unwrap_or_default();
+    component_of(&comps, given, &finding_text(f), &surfaces, &f.theme)
+}
+
+pub const STAGES: [&str; 8] =["found", "reproduce", "scope", "prioritize", "develop", "verify", "review", "merged"];
 
 /// What each stage's gate checks, for the board's column headers.
 pub fn gates() -> Json {
@@ -156,6 +313,9 @@ pub struct Settings {
     /// What you pick (Reproduce, Start development) carries on to your next
     /// decision even while the autopilot is off; personas play only when on.
     pub follow_picks: bool,
+    /// Scoping asks the project's ChloeCtx memory (read only) for earlier
+    /// decisions and rules (off: scoping runs with ChloeCtx off).
+    pub scope_memory: bool,
 }
 
 /// A fix agent's default allow-list: reading, editing, building and testing
@@ -201,6 +361,7 @@ impl Default for Settings {
             found_auto: false,
             develop_auto: false,
             follow_picks: true,
+            scope_memory: true,
         }
     }
 }
@@ -227,6 +388,8 @@ pub struct Finding {
     pub kind: String,
     /// The kind of problem, for grouping: one of [`THEMES`].
     pub theme: String,
+    /// The part of the project it is about: one of [`components_of`] the repository.
+    pub component: String,
     /// 4 blocker, 3 major, 2 minor, 1 papercut
     pub severity: i64,
     pub stage: String,
@@ -285,10 +448,17 @@ pub struct Persona {
     pub reported: i64,
     pub reproduced: i64,
     pub stale_runs: i64,
+    /// Its ease in runs without memory (each visit its first), and its history.
     pub ease: Option<f64>,
     pub ease_hist: Vec<f64>,
+    /// The same, of runs with its memory: the two are never compared.
+    pub ease_memory: Option<f64>,
+    pub ease_hist_memory: Vec<f64>,
     pub last_run: Option<i64>,
     pub created: i64,
+    /// Plays with a ChloeCtx memory of its own earlier visits (off: each
+    /// visit is its first).
+    pub use_memory: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -316,6 +486,8 @@ pub struct Run {
     pub steps: Vec<Json>,
     /// The journey step it said it was on: `{n, of, name}`.
     pub at: Option<Json>,
+    /// The persona played with its memory (ChloeCtx wired in).
+    pub use_memory: bool,
 }
 
 fn s(v: &str) -> Value {
@@ -344,11 +516,12 @@ fn put_finding(sup: &Supervisor, f: &Finding) -> Result<(), ApiError> {
         .set("severity", Value::Int(f.severity))
         .set("score", Value::Float(f.score))
         .set("persona", os(&f.persona))
+        .set("component", s(&f.component))
         .set("created", t(f.created))
         .set("updated", t(f.updated))
         .set("doc", s(&serde_json::to_string(f).unwrap()));
     sup.db()
-        .query("INSERT OR REPLACE INTO cv_findings (id, repo, title, stage, state, severity, score, persona, created, updated, doc) VALUES (:id, :repo, :title, :stage, :state, :severity, :score, :persona, :created, :updated, :doc)", &p)
+        .query("INSERT OR REPLACE INTO cv_findings (id, repo, title, stage, state, severity, score, persona, component, created, updated, doc) VALUES (:id, :repo, :title, :stage, :state, :severity, :score, :persona, :component, :created, :updated, :doc)", &p)
         .map(|_| ())
         .map_err(ApiError::internal)
 }
@@ -445,6 +618,135 @@ fn event(sup: &Supervisor, f: &Finding, from: &str, to: &str, gate: &str, passed
         .set("summary", s(&one_line(summary, 500)))
         .set("evidence", s(&evidence.to_string()));
     let _ = sup.db().query("INSERT INTO cv_events (id, finding, repo, ts, from_stage, to_stage, gate, passed, by_who, summary, evidence) VALUES (:id, :finding, :repo, :ts, :from_stage, :to_stage, :gate, :passed, :by_who, :summary, :evidence)", &p);
+    // The activity feed mirrors it, but for what is logged where it starts
+    // (a finding reported, asked for), and a merge's notice on the target.
+    let notice = gate == "dedup" && passed && from == to;
+    if let Some(kind) = log_kind(gate, by).filter(|_| !notice) {
+        let agent = evidence["agent"].as_str().map(str::to_string).or_else(|| (kind == "agent").then(|| f.agent.clone()).flatten());
+        let refs = json!({ "finding": f.id, "persona": f.persona, "run": evidence["run"].as_str(), "agent": agent });
+        let detail = json!({ "gate": gate, "passed": passed, "from": from, "to": to, "title": f.title, "component": f.component, "evidence": evidence });
+        log(sup, &f.repo, kind, &who(sup, by), &format!("{}: {}", short(&f.title, 70), summary), refs, detail);
+    }
+}
+
+// ------------------------------------------------------------ the activity log
+
+/// The kind of activity a gate's event is: `you` for your picks, `agent`
+/// for a repro or fix agent, `pr` for the pull request, `gate` otherwise;
+/// none for a finding's creation (logged by what made it).
+pub fn log_kind(gate: &str, by: &str) -> Option<&'static str> {
+    match gate {
+        "reported" | "asked" => None,
+        _ if by == "you" => Some("you"),
+        "repro_agent" | "slot" => Some("agent"),
+        "pr" | "ci" | "approved" => Some("pr"),
+        _ => Some("gate"),
+    }
+}
+
+/// A title cut to `max` characters, for a phone's line.
+fn short(text: &str, max: usize) -> String {
+    format!("“{}”", one_line(text, max))
+}
+
+/// Who did it, by name: a persona's, an agent's, or as given (autopilot, you).
+fn who(sup: &Supervisor, by: &str) -> String {
+    if by.starts_with("cp") {
+        if let Ok(p) = get_persona(sup, by) {
+            return p.name;
+        }
+    }
+    sup.agent_row(by).map(|a| a.name).filter(|n| !n.is_empty()).unwrap_or_else(|| by.to_string())
+}
+
+/// One line of the activity feed (`cv_log`): `refs` names the finding,
+/// persona, run or agent it is about; `detail` holds the evidence.
+pub fn log(sup: &Supervisor, repo: &str, kind: &str, actor: &str, summary: &str, refs: Json, detail: Json) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 1_000_000;
+    let ts = now_ms();
+    let id = format!("lg{ts:013}{n:06}");
+    let mut doc = json!({ "id": id, "ts": ts, "kind": kind, "actor": actor, "summary": one_line(summary, 400), "detail": detail });
+    for (k, v) in refs.as_object().into_iter().flatten() {
+        if !v.is_null() {
+            doc[k] = v.clone();
+        }
+    }
+    let p = Params::new().set("id", s(&id)).set("repo", s(repo)).set("ts", t(ts)).set("kind", s(kind)).set("doc", s(&doc.to_string()));
+    let _ = sup.db().query("INSERT INTO cv_log (id, repo, ts, kind, doc) VALUES (:id, :repo, :ts, :kind, :doc)", &p);
+}
+
+/// The feed, newest first: items since `since` (ms), at most `limit`.
+pub fn activity(sup: &Supervisor, repo: &str, since: i64, limit: usize) -> Vec<Json> {
+    let limit = limit.clamp(1, 500);
+    docs(sup, &format!("SELECT doc FROM cv_log WHERE repo = :repo AND ts >= :since ORDER BY id DESC LIMIT {limit}"), &Params::new().set("repo", s(repo)).set("since", t(since)))
+}
+
+/// The last logged tick: `{ts, started, decisions}`.
+fn last_tick(sup: &Supervisor, repo: &str) -> Json {
+    let v: Option<Json> = docs::<Json>(sup, "SELECT doc FROM cv_log WHERE repo = :repo AND kind = 'tick' ORDER BY id DESC LIMIT 1", &Params::new().set("repo", s(repo))).into_iter().next();
+    match v {
+        Some(v) => json!({ "ts": v["ts"], "summary": v["summary"], "started": v["detail"]["started"], "decisions": v["detail"]["decisions"] }),
+        None => Json::Null,
+    }
+}
+
+/// One thing the autopilot decided in a tick. `key` says what it is about
+/// (the same decision on the same thing keeps its key while numbers like
+/// the money spent move), `text` says it to you.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decision {
+    pub key: String,
+    pub text: String,
+}
+
+fn decide(out: &mut Vec<Decision>, key: impl Into<String>, text: impl Into<String>) {
+    let key = key.into();
+    if !out.iter().any(|d| d.key == key) {
+        out.push(Decision { key, text: text.into() });
+    }
+}
+
+/// The decisions of the last logged tick, by repository: a tick is logged
+/// only when it started something or its decisions changed.
+static LAST_DECISIONS: Mutex<Option<HashMap<String, Vec<String>>>> = Mutex::new(None);
+
+/// What of a tick goes in the feed: whether the tick itself does, and the
+/// decisions that were not in the last logged one.
+pub fn tick_news<'a>(prev: Option<&[String]>, started: &[String], now: &'a [Decision]) -> (bool, Vec<&'a Decision>) {
+    let prev = prev.unwrap_or(&[]);
+    let fresh: Vec<&Decision> = now.iter().filter(|d| !prev.contains(&d.key)).collect();
+    let gone = prev.iter().any(|k| !now.iter().any(|d| &d.key == k));
+    (!started.is_empty() || !fresh.is_empty() || gone, fresh)
+}
+
+/// The tick's line: what it started, else why nothing.
+pub fn tick_summary(started: &[String], decisions: &[Decision]) -> String {
+    match (started.len(), decisions.first()) {
+        (0, Some(d)) => format!("Nothing to start: {}", d.text),
+        (0, None) => "Nothing to do".into(),
+        (1, _) => format!("Started {}", started[0]),
+        (n, _) => format!("Started {n}: {}", started.join("; ")),
+    }
+}
+
+fn log_tick(sup: &Supervisor, repo: &str, started: &[String], decisions: &[Decision], detail: Json) {
+    let mut g = LAST_DECISIONS.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    let (log_it, fresh) = tick_news(m.get(repo).map(Vec::as_slice), started, decisions);
+    if !log_it {
+        return;
+    }
+    m.insert(repo.to_string(), decisions.iter().map(|d| d.key.clone()).collect());
+    drop(g);
+    let mut detail = detail;
+    detail["started"] = json!(started);
+    detail["decisions"] = json!(decisions.iter().map(|d| d.text.clone()).collect::<Vec<_>>());
+    detail["keys"] = json!(decisions.iter().map(|d| d.key.clone()).collect::<Vec<_>>());
+    log(sup, repo, "tick", "autopilot", &tick_summary(started, decisions), Json::Null, detail);
+    for d in fresh {
+        log(sup, repo, "decide", "autopilot", &d.text, Json::Null, json!({ "key": d.key }));
+    }
 }
 
 fn events_of(sup: &Supervisor, finding: &str) -> Vec<Json> {
@@ -906,6 +1208,183 @@ fn runner(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, tim
 
 /// `runner`, keeping each step of a persona's run under `run` as it plays.
 fn runner_live(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, timeout: u64, run: Option<&str>) -> Result<Json, String> {
+    runner_with(sup, role, job, cwd, model, timeout, run, None)
+}
+
+/// A persona's memory for one run: its own ChloeCtx store (`home`), the
+/// user's models (not downloaded again), and the run's `--settings` and
+/// `--mcp-config` files with ChloeCtx's hooks and server.
+#[derive(Clone, Debug)]
+pub struct Memory {
+    /// A store of its own (a persona's); none: the project's usual one (scope).
+    pub home: Option<PathBuf>,
+    pub models: Option<PathBuf>,
+    pub settings: PathBuf,
+    pub mcp: PathBuf,
+    /// Where the run notes that its prompt is Workbench's, not the user's.
+    pub prompt_log: PathBuf,
+    /// `CHLOECTX_AGENT_NAME`, `CHLOECTX_PROMPT_SOURCE`, `CHLOECTX_PROMPT_LOG`.
+    pub who: Json,
+}
+
+/// ChloeCtx's models folder: `$CHLOECTX_MODELS`, else `chloectx/models`
+/// under `$XDG_DATA_HOME` (or `~/.local/share`), else the `engram/models`
+/// of before the rename when only that one is there.
+pub fn models_dir(env_models: Option<String>, xdg: Option<String>, home: Option<String>, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    if let Some(m) = env_models.filter(|m| !m.is_empty()) {
+        return PathBuf::from(m);
+    }
+    let base = xdg.filter(|x| !x.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(home.unwrap_or_default()).join(".local/share"));
+    let new = base.join("chloectx/models");
+    let old = base.join("engram/models");
+    if !exists(&new) && exists(&old) {
+        old
+    } else {
+        new
+    }
+}
+
+/// ChloeCtx's tools that only read: what scoping may ask the project's memory.
+pub const MEMORY_READ_TOOLS: [&str; 3] = ["mcp__chloectx__memory_search", "mcp__chloectx__memory_ask", "mcp__chloectx__memory_timeline"];
+
+/// The `claude -p` arguments and environment of a runner call: a persona
+/// that plays with its memory gets ChloeCtx's hooks, server and tools, its
+/// own store and the user's models; scoping gets the project's own store
+/// and only its read tools; every other call runs with ChloeCtx off. Both
+/// tell ChloeCtx the prompt is Workbench's, not the user's.
+pub fn claude_call(role: &str, model: &str, stream: bool, mem: Option<&Memory>) -> (Vec<String>, Vec<(String, String)>) {
+    let mem = mem.filter(|_| matches!(role, "play" | "scope"));
+    let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), if stream { "stream-json" } else { "json" }.into(), "--model".into(), model.to_string()];
+    if stream {
+        args.push("--verbose".into());
+    }
+    let mut envs: Vec<(String, String)> = Vec::new();
+    match mem {
+        Some(m) => {
+            args.extend(["--settings".into(), m.settings.to_string_lossy().to_string(), "--mcp-config".into(), m.mcp.to_string_lossy().to_string()]);
+            if let Some(h) = &m.home {
+                envs.push(("CHLOECTX_HOME".into(), h.to_string_lossy().to_string()));
+            }
+            if let Some(x) = &m.models {
+                envs.push(("CHLOECTX_MODELS".into(), x.to_string_lossy().to_string()));
+            }
+            for (k, v) in m.who.as_object().into_iter().flatten() {
+                envs.push((k.clone(), v.as_str().unwrap_or("").to_string()));
+            }
+        }
+        None => envs.push(("CHLOECTX_DISABLE".into(), "1".into())),
+    }
+    // Last: --allowedTools takes every word after it (the prompt is on stdin).
+    let tools = match (role, mem) {
+        ("play", Some(_)) => "Bash Read Write Edit Glob Grep WebFetch mcp__chloectx__*".to_string(),
+        ("play", None) => "Bash Read Write Edit Glob Grep WebFetch".to_string(),
+        ("scope", Some(_)) => format!("Read Glob Grep {}", MEMORY_READ_TOOLS.join(" ")),
+        _ => "Read Glob Grep".to_string(),
+    };
+    args.extend(["--allowedTools".into(), tools]);
+    (args, envs)
+}
+
+/// Wires ChloeCtx into a persona's run (`dir`, the run's own folder), or says why it cannot.
+fn memory_for(sup: &Supervisor, pe: &Persona, dir: &Path, cwd: &Path) -> Result<Memory, String> {
+    let home = sup.cfg.data_dir.join("converge").join("memory").join(&pe.id);
+    std::fs::create_dir_all(&home).map_err(|e| format!("cannot make {}: {e}", home.display()))?;
+    let models = models_dir(std::env::var("CHLOECTX_MODELS").ok(), std::env::var("XDG_DATA_HOME").ok(), std::env::var("HOME").ok(), |p| p.is_dir());
+    wire_memory(sup, &pe.name, dir, cwd, Some(home), Some(models))
+}
+
+/// ChloeCtx's hooks and server for a runner call in `cwd`, in files under
+/// `dir`: a store of its own (`home`) or the project's usual one. Its
+/// prompt is Workbench's words, so ChloeCtx does not take them for the user's.
+fn wire_memory(sup: &Supervisor, name: &str, dir: &Path, cwd: &Path, home: Option<PathBuf>, models: Option<PathBuf>) -> Result<Memory, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let who = crate::ctxwire::Who::new(name, dir, None, true, None);
+    let base = match &home {
+        Some(h) => json!({ "env": { "CHLOECTX_HOME": h.to_string_lossy() } }),
+        None => json!({}),
+    };
+    let (settings, mcp) = crate::ctxwire::wire_as(&sup.cfg.chloectx_bin, true, cwd, base, json!({ "mcpServers": {} }), &who).map_err(|e| e.message)?;
+    let (sf, mf) = (dir.join("settings.json"), dir.join("mcp.json"));
+    std::fs::write(&sf, serde_json::to_string_pretty(&settings).unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&mf, serde_json::to_string_pretty(&mcp).unwrap()).map_err(|e| e.to_string())?;
+    Ok(Memory { home, models, settings: sf, mcp: mf, prompt_log: who.log.clone(), who: who.env() })
+}
+
+/// The version a `--version` line names (`chloectx 0.3.4` → `0.3.4`).
+pub fn version_in(text: &str) -> Option<String> {
+    text.split_whitespace().map(|w| w.trim_start_matches('v')).find(|w| w.split('.').count() >= 2 && w.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())))
+        .map(str::to_string)
+}
+
+/// The `[package]` version of a Cargo.toml.
+pub fn cargo_version(toml: &str) -> Option<String> {
+    let mut in_pkg = false;
+    for l in toml.lines().map(str::trim) {
+        if l.starts_with('[') {
+            in_pkg = l == "[package]";
+            continue;
+        }
+        if let Some(v) = l.strip_prefix("version").map(str::trim).and_then(|r| r.strip_prefix('=')).filter(|_| in_pkg) {
+            return Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// Whether the installed ChloeCtx is not this checkout's (`bin` none: it is
+/// missing), and how to say so; nothing to say when the checkout has none.
+pub fn chloectx_stale(bin: Option<&str>, repo: Option<&str>) -> Option<String> {
+    let repo = repo?;
+    let n = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    match bin {
+        None => Some(format!("ChloeCtx is not installed (this checkout has {repo}): scope runs without the project's memory; run ./install.sh")),
+        Some(b) if b == repo => None,
+        Some(b) => {
+            let side = if n(b) < n(repo) { "older" } else { "newer" };
+            Some(format!("ChloeCtx {b} is {side} than this checkout's {repo}: scope runs with it anyway; run `chloectx upgrade`"))
+        }
+    }
+}
+
+/// The installed ChloeCtx against the checkout's, checked every ten minutes
+/// at most: `{bin, bin_version, repo_version, stale, why}`. Never upgrades.
+fn chloectx_check(sup: &Supervisor, repo: &str) -> Json {
+    static CACHE: Mutex<Option<HashMap<String, (Instant, Json)>>> = Mutex::new(None);
+    if let Some((at, v)) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(repo).cloned()) {
+        if at.elapsed() < Duration::from_secs(600) {
+            return v;
+        }
+    }
+    let bin = &sup.cfg.chloectx_bin;
+    let bin_version = match crate::trail::run_raw(bin, Path::new(repo), &["--version"], Duration::from_secs(10)) {
+        crate::trail::Ran::Out(Json::String(v)) => version_in(&v),
+        _ => None,
+    };
+    let repo_version = std::fs::read_to_string(Path::new(repo).join("chloectx/Cargo.toml")).ok().and_then(|t| cargo_version(&t));
+    let why = chloectx_stale(bin_version.as_deref(), repo_version.as_deref());
+    let v = json!({ "bin": bin, "bin_version": bin_version, "repo_version": repo_version, "stale": why.is_some(), "why": why });
+    if let Some(w) = &why {
+        log(sup, repo, "decide", "autopilot", w, Json::Null, v.clone());
+    }
+    CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(repo.to_string(), (Instant::now(), v.clone()));
+    v
+}
+
+/// Whether `key` was said in the last `secs`; else it is now.
+fn said_lately(key: &str, secs: u64) -> bool {
+    static SAID: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    let mut g = SAID.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    if m.get(key).is_some_and(|t| t.elapsed() < Duration::from_secs(secs)) {
+        return true;
+    }
+    m.insert(key.to_string(), Instant::now());
+    false
+}
+
+/// `runner_live`, with a persona's memory when it plays with one.
+#[allow(clippy::too_many_arguments)]
+fn runner_with(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, timeout: u64, run: Option<&str>, mem: Option<&Memory>) -> Result<Json, String> {
     let on_line = |l: &str| {
         if let Some(r) = run {
             for (step, at) in steps_of_line(l) {
@@ -913,8 +1392,11 @@ fn runner_live(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str
             }
         }
     };
+    // A persona's run streams its steps; the other roles answer once.
+    let (args, call_env) = claude_call(role, model, run.is_some(), mem);
+    let call_env: Vec<(&str, String)> = call_env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     if let Some(cmd) = std::env::var_os("CHLOEDB_WORKBENCH_CONVERGE_CMD").filter(|c| !c.is_empty()) {
-        let (code, out, err) = run_cmd_lines(&cmd.to_string_lossy(), &[role.to_string()], cwd, Some(&job.to_string()), &[], Duration::from_secs(timeout), on_line)?;
+        let (code, out, err) = run_cmd_lines(&cmd.to_string_lossy(), &[role.to_string()], cwd, Some(&job.to_string()), &call_env, Duration::from_secs(timeout), on_line)?;
         let last = out.lines().rev().find_map(|l| serde_json::from_str::<Json>(l.trim()).ok().filter(Json::is_object));
         return match last {
             Some(v) => Ok(v),
@@ -922,20 +1404,12 @@ fn runner_live(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str
         };
     }
     let prompt = prompt_for(role, job);
-    // A persona's run streams its steps; the other roles answer once.
-    let stream = run.is_some();
-    let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), if stream { "stream-json" } else { "json" }.into(), "--model".into(), model.to_string()];
-    if stream {
-        args.push("--verbose".into());
+    if let Some(m) = mem {
+        crate::ctxwire::note_prompt(&m.prompt_log, &prompt, "workbench");
     }
-    match role {
-        "play" => args.extend(["--allowedTools".into(), "Bash Read Write Edit Glob Grep WebFetch".into()]),
-        _ => args.extend(["--allowedTools".into(), "Read Glob Grep".into()]),
-    }
-    // The prompt on stdin: --allowedTools takes every word after it.
     // Its builds share the repository's target directory (see shared_env).
     let target = job["repo"].as_str().map(|r| shared_env(sup, r).remove("CARGO_TARGET_DIR").unwrap_or_default()).unwrap_or_default();
-    let mut envs = vec![("CHLOECTX_DISABLE", "1".to_string())];
+    let mut envs = call_env;
     if !target.is_empty() {
         envs.push(("CARGO_TARGET_DIR", target));
     }
@@ -973,6 +1447,7 @@ fn extract_json(text: &str) -> Option<Json> {
 
 fn prompt_for(role: &str, job: &Json) -> String {
     let p = &job["persona"];
+    let comps = job["components"].as_array().map(|a| a.iter().filter_map(Json::as_str).collect::<Vec<_>>().join(", ")).filter(|c| !c.is_empty()).unwrap_or_else(|| "other".into());
     match role {
         "play" => {
             let verify = match job["finding"].as_object() {
@@ -984,18 +1459,31 @@ fn prompt_for(role: &str, job: &Json) -> String {
                 None => String::new(),
             };
             format!(
-                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nThink aloud in the first person as you go, as in a user interview: before each thing you try, say in a sentence or two what you expect and why, and after it, what you saw and how it felt. As you start each step of your journey, say so on a line of its own, as \"Step N of M: <the step, in a few words>\". Do it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits 1 while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
+                "You are {name}, {role}. {traits}\n\nYou are a user of the software in the current directory (a checkout of its repository). Your journey: {journey}{verify}\n\nThink aloud in the first person as you go, as in a user interview: before each thing you try, say in a sentence or two what you expect and why, and after it, what you saw and how it felt. As you start each step of your journey, say so on a line of its own, as \"Step N of M: <the step, in a few words>\". Do it the way this person would: read the README and the docs, build or run what you need, try things. You are a user, not a developer of it: do not change its source to make things work; work around problems as a user would and remember each one.\n\nWhen you are done, or stuck, end your answer with one JSON object and nothing after it:\n{{\"outcome\": \"done\" or \"gave_up\", \"ease\": 1 to 5 (how easy it was for you, 5 easiest), \"answer\": \"what you achieved, in two sentences\", \"fixed\": true or false (only when replaying a problem), \"findings\": [{{\"title\": \"one line\", \"detail\": \"what you expected, what happened\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\", \"theme\": \"onboarding\" or \"reliability\" or \"security\" or \"scalability\" or \"trust\" or \"correctness\" or \"usability\" or \"performance\" or \"observability\" or \"docs\", \"component\": \"the part of the product it is in, one of: {components}\", \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"step\": \"where in the journey\", \"repro\": \"a POSIX sh script, run from the checkout's root, that exits 1 while this problem is there and 0 once it is fixed (empty when you cannot write one)\"}}]}}",
                 name = p["name"].as_str().unwrap_or("a user"),
                 role = p["role"].as_str().unwrap_or(""),
                 traits = p["traits"].as_array().map(|a| a.iter().filter_map(Json::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default(),
                 journey = p["journey"].as_str().unwrap_or("try the product's main use case"),
-            )
+                components = comps,
+            ) + if job["memory"] == true { "\n\nYou have memory of your earlier visits (memory_* tools); use it like a returning user would." } else { "" }
         }
         "scope" => format!(
             "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes, including where its test goes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}",
             job["finding"]["title"].as_str().unwrap_or(""),
             job["finding"]["detail"].as_str().unwrap_or(""),
             job["finding"]["repro"].as_str().unwrap_or("(none)")
+        ) + if job["memory"] == true { "\n\nBefore planning, ask the project's memory (memory_ask) for earlier decisions and rules about these files." } else { "" },
+        "card" => format!(
+            "You keep the board of work on the software in the current directory. Its owner asked for this, in their words:\n\n{}\n\nRead what you need of the code and docs to understand it (change nothing), then write it as one card. End your answer with one JSON object and nothing after it:\n{{\"title\": \"one line, what is wrong or wanted\", \"detail\": \"what is expected, what happens now, where (two to four sentences)\", \"kind\": \"bug\" or \"gap\" or \"docs\" or \"ux\" or \"opportunity\" or \"feature\", \"theme\": one of {}, \"component\": the part of the product it is in, one of {}, \"severity\": \"blocker\" or \"major\" or \"minor\" or \"papercut\", \"acceptance\": \"what must be true when it is done\"}}",
+            job["text"].as_str().unwrap_or(""),
+            THEMES.join(", "),
+            comps
+        ),
+        "personas" => format!(
+            "You design test personas for the software in the current directory: people who would really use it, each trying one task end to end. These personas exist already:\n{}\n\nRead the project (the README, the docs, the code's entry points; change nothing) to learn who it is for and what they do with it. Say briefly what you read and what you learn as you go. Then make {} new personas, different from the ones that exist and from each other, covering the parts of the product real users touch most. End your answer with one JSON object and nothing after it:\n{{\"personas\": [{{\"name\": \"first name and role, e.g. Omar, data engineer\", \"role\": \"who they are and what they want, one sentence\", \"traits\": [\"two or three short traits\"], \"journey\": \"the task they try, end to end, in three sentences\", \"surfaces\": [\"the parts of the product it touches\"], \"component\": \"the part it touches most, one of {}\", \"why\": \"why this persona, from what you read\"}}]}}",
+            job["personas"],
+            job["count"].as_u64().unwrap_or(3),
+            comps
         ),
         _ => format!(
             "You design test personas for the software in the current directory. These personas exist:\n{}\n\nHow often each part of the product was played lately (runs in 7 days):\n{}\n\nRead the README and docs (change nothing), then make ONE new persona aimed at the least-played part that real users would use. End your answer with one JSON object and nothing after it:\n{{\"name\": \"first name and role, e.g. Omar, data engineer\", \"role\": \"who they are and what they want, one sentence\", \"traits\": [\"two or three short traits\"], \"journey\": \"the task they try, end to end, in three sentences\", \"surfaces\": [\"the parts of the product it touches\"], \"why\": \"why this persona, from the coverage\"}}",
@@ -1208,15 +1696,36 @@ fn gate_scope(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
         }
         let mut run = Run { id: crate::levels::new_id("cr"), repo: f.repo.clone(), purpose: "scope".into(), finding: Some(f.id.clone()), state: "running".into(), created: now_ms(), ..Default::default() };
         put_run(sup, &run)?;
-        let job = json!({ "finding": { "id": f.id, "title": f.title, "detail": f.detail, "repro": f.repro } });
-        match runner(sup, "scope", &job, &repo, &st.model, 900) {
+        // The project's memory (its own store, read only): earlier decisions and rules.
+        if st.scope_memory {
+            let _ = chloectx_check(sup, &f.repo);
+        }
+        let dir = sup.cfg.data_dir.join("converge").join("runs").join(&run.id);
+        let wired = st.scope_memory.then(|| wire_memory(sup, "Converge scope", &dir, &repo, None, None));
+        let mem = match wired {
+            None => None,
+            Some(Ok(m)) => Some(m),
+            Some(Err(why)) => {
+                if !said_lately(&format!("scope-memory:{}", f.repo), 600) {
+                    log(sup, &f.repo, "decide", "autopilot", &format!("Scoping runs without the project's memory: {}", one_line(&why, 200)), json!({ "finding": f.id, "run": run.id }), json!({ "why": why }));
+                }
+                None
+            }
+        };
+        run.use_memory = mem.is_some();
+        let job = json!({ "finding": { "id": f.id, "title": f.title, "detail": f.detail, "repro": f.repro, "acceptance": f.scope.as_ref().map(|s| s.acceptance.clone()) }, "memory": mem.is_some() });
+        let answer = runner_with(sup, "scope", &job, &repo, &st.model, 900, None, mem.as_ref());
+        let _ = std::fs::remove_dir_all(&dir);
+        match answer {
             Ok(v) => {
                 run.cost_usd = v["cost_usd"].as_f64().unwrap_or(0.0);
                 run.state = "done".into();
                 let mut sc: Scope = serde_json::from_value(v.clone()).unwrap_or_default();
                 sc.size = sc.size.trim().to_uppercase();
+                // What you asked for keeps the acceptance you were given.
+                let before = f.scope.as_ref().map(|s| s.acceptance.clone()).filter(|a| !a.trim().is_empty());
                 if sc.acceptance.trim().is_empty() {
-                    sc.acceptance = "The locked repro exits 0".into();
+                    sc.acceptance = before.unwrap_or_else(|| "The locked repro exits 0".into());
                 }
                 f.scope = Some(sc);
             }
@@ -1235,6 +1744,14 @@ fn gate_scope(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
     if let Err(e) = scope_ok(&sc) {
         f.needs_you = Some(format!("Scope incomplete: {e}"));
         return failed(sup, &mut f, "scope", "autopilot", &e, json!({ "scope": sc }));
+    }
+    // The files the scope touches say where it is better than its words.
+    let comps = components_of(&repo);
+    let paths = format!("{} {}", sc.area, sc.files.join(" ")).to_lowercase();
+    if let Some(c) = named_in(&comps, &paths).filter(|c| *c != f.component) {
+        let was = std::mem::replace(&mut f.component, c.clone());
+        let st = f.stage.clone();
+        event(sup, &f, &st, &st, "component", true, "autopilot", &format!("Component {} → {c}, from the files the scope touches", if was.is_empty() { "unset" } else { &was }), json!({ "from": was, "to": c, "files": sc.files, "area": sc.area }));
     }
     f.door = door_of(&repo, &sc);
     f.needs_you = None;
@@ -1402,7 +1919,8 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
 }
 
 /// Plays one persona: explore at the base branch, or verify a finding on its branch.
-fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Option<&str>) -> Result<Run, ApiError> {
+/// `memory` overrides the persona's `use_memory` for this run.
+fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Option<&str>, memory: Option<bool>) -> Result<Run, ApiError> {
     let mut pe = get_persona(sup, persona_id)?;
     let st = settings(sup, &pe.repo);
     let repo = PathBuf::from(&pe.repo);
@@ -1426,16 +1944,46 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
         ..Default::default()
     };
     put_run(sup, &run)?;
-    let scratch = Scratch::new(sup, &repo, &rev, &run.id).map_err(ApiError::internal)?;
+    let refs = json!({ "persona": pe.id, "run": run.id, "finding": run.finding });
+    let what = match f.as_ref() {
+        Some(f) => format!("{} replays {} on the fix branch", pe.name, short(&f.title, 60)),
+        None => format!("{} starts playing: {}", pe.name, one_line(&pe.journey, 100)),
+    };
+    log(sup, &pe.repo, "persona", &pe.name, &what, refs.clone(), json!({ "purpose": run.purpose, "commit": rev, "journey": pe.journey }));
+    let scratch = match Scratch::new(sup, &repo, &rev, &run.id) {
+        Ok(x) => x,
+        Err(e) => {
+            log(sup, &pe.repo, "persona", &pe.name, &format!("{}'s run could not start: {}", pe.name, one_line(&e, 200)), refs, json!({ "error": e }));
+            return Err(ApiError::internal(e));
+        }
+    };
+    // Its memory of earlier visits, when it plays with one; else none, and why.
+    let run_dir = sup.cfg.data_dir.join("converge").join("runs").join(&run.id);
+    let mem = match memory.unwrap_or(pe.use_memory) {
+        false => None,
+        true => match memory_for(sup, &pe, &run_dir, &scratch.path) {
+            Ok(m) => Some(m),
+            Err(why) => {
+                log(sup, &pe.repo, "decide", "autopilot", &format!("{} plays without memory: {}", pe.name, one_line(&why, 200)), refs.clone(), json!({ "why": why, "chloectx": sup.cfg.chloectx_bin }));
+                None
+            }
+        },
+    };
+    run.use_memory = mem.is_some();
+    if run.use_memory {
+        put_run(sup, &run)?;
+        log(sup, &pe.repo, "persona", &pe.name, &format!("{} remembers its earlier visits (its own memory)", pe.name), refs.clone(), json!({ "use_memory": true, "store": mem.as_ref().and_then(|m| m.home.as_ref()).map(|h| h.to_string_lossy().to_string()) }));
+    }
     let job = json!({
         "persona": { "id": pe.id, "name": pe.name, "role": pe.role, "traits": pe.traits, "journey": pe.journey, "surfaces": pe.surfaces },
-        "purpose": run.purpose, "commit": rev, "repo": pe.repo,
+        "purpose": run.purpose, "commit": rev, "repo": pe.repo, "components": components_of(&repo), "memory": mem.is_some(),
         "finding": f.as_ref().map(|f| json!({ "id": f.id, "title": f.title, "detail": f.detail, "step": f.step })),
     });
     PLAYING.lock().unwrap().get_or_insert_with(HashMap::new).insert(pe.id.clone(), run.id.clone());
     live_push(&run.id, Json::Null, None);
-    let answer = runner_live(sup, "play", &job, &scratch.path, &st.model, st.run_timeout_s, Some(&run.id));
+    let answer = runner_with(sup, "play", &job, &scratch.path, &st.model, st.run_timeout_s, Some(&run.id), mem.as_ref());
     drop(scratch);
+    let _ = std::fs::remove_dir_all(&run_dir);
     if let Some(m) = PLAYING.lock().unwrap().as_mut() {
         m.remove(&pe.id);
     }
@@ -1447,6 +1995,7 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
     pe.last_run = Some(now_ms());
     match answer {
         Err(e) => {
+            log(sup, &pe.repo, "persona", &pe.name, &format!("{}'s run failed: {}", pe.name, one_line(&e, 200)), refs, json!({ "error": e, "secs": (now_ms() - run.created) / 1000 }));
             run.state = "failed".into();
             run.error = Some(e);
             put_run(sup, &run)?;
@@ -1464,12 +2013,24 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
         }
     }
     put_run(sup, &run)?;
+    let mut end = format!("{} finished: {}", pe.name, match run.outcome.as_deref() { Some("done") => "done", Some("gave_up") => "gave up", Some(o) => o, None => "no outcome" });
+    if let Some(e) = run.ease {
+        end.push_str(&format!(", ease {e}"));
+    }
+    if run.purpose == "verify" {
+        end.push_str(if run.fixed == Some(true) { ", says it is fixed" } else { ", says it is not fixed" });
+    } else {
+        end.push_str(&format!(", {} problem{}", run.findings.len(), if run.findings.len() == 1 { "" } else { "s" }));
+    }
+    end.push_str(&format!(", ${:.2}, {} min", run.cost_usd, (now_ms() - run.created) / 60_000));
+    log(sup, &pe.repo, "persona", &pe.name, &end, refs, json!({ "use_memory": run.use_memory, "outcome": run.outcome, "ease": run.ease, "fixed": run.fixed, "findings": run.findings.iter().map(|x| x["title"].clone()).collect::<Vec<_>>(), "cost_usd": run.cost_usd, "answer": run.answer, "secs": (now_ms() - run.created) / 1000 }));
     pe.runs += 1;
     if let Some(e) = run.ease {
-        pe.ease = Some(e);
-        pe.ease_hist.push(e);
-        if pe.ease_hist.len() > 60 {
-            pe.ease_hist.remove(0);
+        let (last, hist) = if run.use_memory { (&mut pe.ease_memory, &mut pe.ease_hist_memory) } else { (&mut pe.ease, &mut pe.ease_hist) };
+        *last = Some(e);
+        hist.push(e);
+        if hist.len() > 60 {
+            hist.remove(0);
         }
     }
     if run.purpose == "explore" {
@@ -1504,6 +2065,7 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
                 ..Default::default()
             };
             nf.score = score(&nf);
+            nf.component = component_of(&components_of(&repo), x["component"].as_str(), &finding_text(&nf), &pe.surfaces, &nf.theme);
             put_finding(sup, &nf)?;
             event(sup, &nf, "", "found", "reported", true, &pe.id, &format!("Found by {} in run {}", pe.name, run.id), json!({ "run": run.id, "step": nf.step }));
             let dup = findings_of(sup, &pe.repo).iter().any(|o| o.id != nf.id && o.state == "active" && similarity(&nf, o) >= DUP);
@@ -1538,6 +2100,11 @@ fn review_persona(sup: &Supervisor, st: &Settings, pe: &mut Persona) {
     }
 }
 
+/// Whether the run that found a finding played with memory (none: it did not).
+fn found_with_memory(sup: &Supervisor, f: &Finding) -> bool {
+    f.run.as_deref().and_then(|r| get_run(sup, r).ok()).is_some_and(|r| r.purpose == "explore" && r.use_memory)
+}
+
 /// Verify's gate, on the persona's replay.
 fn finish_verify(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, run: &Run) -> Result<(), ApiError> {
     *f = get_finding(sup, &f.id)?;
@@ -1554,7 +2121,9 @@ fn finish_verify(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, run: 
     if run.fixed != Some(true) {
         problems.push("the persona says the problem is still there".into());
     }
-    if let (Some(b), Some(a)) = (f.ease_before, run.ease) {
+    // Eases compare only between runs of the same mode (with memory or without).
+    let same_mode = found_with_memory(sup, f) == run.use_memory;
+    if let (Some(b), Some(a), true) = (f.ease_before, run.ease, same_mode) {
         if a < b {
             problems.push(format!("its ease dropped from {b} to {a}"));
         }
@@ -1564,7 +2133,7 @@ fn finish_verify(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, run: 
         problems.push(format!("new problems of severity major or worse: {}", serious.join("; ")));
     }
     f.ease_after = run.ease;
-    let evidence = json!({ "run": run.id, "outcome": run.outcome, "fixed": run.fixed, "ease_before": f.ease_before, "ease_after": run.ease, "answer": run.answer, "new_findings": run.findings });
+    let evidence = json!({ "run": run.id, "outcome": run.outcome, "fixed": run.fixed, "ease_before": f.ease_before, "ease_after": run.ease, "use_memory": run.use_memory, "ease_compared": same_mode, "answer": run.answer, "new_findings": run.findings });
     if problems.is_empty() {
         f.needs_you = None;
         return advance_to(sup, f, "review", "verify", true, run.persona.as_deref().unwrap_or("persona"), &format!("The persona succeeded on the branch; ease {} → {}", f.ease_before.map(|e| e.to_string()).unwrap_or("?".into()), run.ease.map(|e| e.to_string()).unwrap_or("?".into())), evidence);
@@ -1785,13 +2354,24 @@ pub fn tick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool) -> 
 fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, personas: bool) -> Result<Json, ApiError> {
     let st = settings(sup, repo);
     let mut started: Vec<String> = Vec::new();
+    // The same, in words, for the activity feed; and what it decided.
+    let mut did: Vec<String> = Vec::new();
+    let mut dec: Vec<Decision> = Vec::new();
     let mut handles = Vec::new();
-    let budget_left = st.budget_usd_day - spent_today(sup, repo);
+    let spent = spent_today(sup, repo);
+    let budget_left = st.budget_usd_day - spent;
+    if budget_left <= 0.0 {
+        decide(&mut dec, "budget", format!("Budget spent (${spent:.2} of ${:.2} today): personas, scoping and new fixes wait", st.budget_usd_day));
+    }
+    if !personas {
+        decide(&mut dec, "off", "Autopilot is off: only what you picked moves; personas do not play");
+    }
     let mut fs = findings_of(sup, repo);
     for f in fs.iter_mut().filter(|f| f.state == "active" && f.stage == "found") {
         if busy_what(&f.id).is_none() && f.needs_you.as_deref() != Some(TRIAGE) {
             gate_found(sup, &st, f)?;
             started.push(format!("{} dedup", f.id));
+            did.push(format!("the duplicate check of {}", short(&f.title, 50)));
         }
     }
     let fs = findings_of(sup, repo);
@@ -1811,23 +2391,33 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             "reproduce" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) => {
                 if let Ok(mut g) = get_finding(sup, &id) {
                     if take_repro(sup, &mut g, "autopilot").is_err() {
-                        g.agent = None;
+                        let aid = g.agent.take();
                         g.needs_you = Some("The repro agent finished without writing .converge/repro.sh: paste a repro, ask again, or park it.".into());
                         g.repro_attempts += 1;
                         g.updated = now_ms();
                         let _ = put_finding(sup, &g);
+                        let name = aid.as_deref().map(|a| who(sup, a)).unwrap_or_else(|| "The repro agent".into());
+                        log(sup, repo, "agent", &name, &format!("{}: finished without writing a repro; it waits for you", short(&g.title, 70)), json!({ "finding": g.id, "agent": aid }), json!({ "worktree": g.worktree }));
                     }
                 }
                 None
             }
             "reproduce" if f.agent.is_some() => None,
             // No repro yet: an agent writes one before you are asked (once per finding).
-            "reproduce" if f.repro_attempts < 2 && repro_agents < st.repro_agents && !f.needs_you.as_deref().is_some_and(|n| n.contains("repro agent")) => {
-                if let Ok(mut g) = get_finding(sup, &id) {
+            "reproduce" if f.repro_attempts < 2 && !f.needs_you.as_deref().is_some_and(|n| n.contains("repro agent")) => {
+                if repro_agents >= st.repro_agents {
+                    if st.repro_agents > 0 {
+                        decide(&mut dec, format!("repro_full:{repro_agents}"), format!("Repro agents busy ({repro_agents} of {}): {} waits for one", st.repro_agents, short(&f.title, 50)));
+                    }
+                    if f.needs_you.is_none() {
+                        let _ = gate_reproduce(sup, &id);
+                    }
+                } else if let Ok(mut g) = get_finding(sup, &id) {
                     match start_repro_agent(sup, lv, &mut g, "autopilot") {
                         Ok(()) => {
                             repro_agents += 1;
                             started.push(format!("{id} repro agent"));
+                            did.push(format!("a repro agent for {}", short(&f.title, 50)));
                         }
                         Err(e) => {
                             g.needs_you = Some(format!("Could not start a repro agent: {}", e.message));
@@ -1847,21 +2437,33 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                     let _ = gate_scope(&s2, &id);
                 }
             }),
-            "develop" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) && f.needs_you.is_none() => in_background(&id, "checking the branch", {
-                let id = id.clone();
-                move || {
-                    let _ = gate_develop(&s2, &l2, &id);
-                }
-            }),
-            "verify" if budget_left > 0.0 => match f.persona.clone() {
-                Some(p) => in_background(&id, "replaying", {
+            "develop" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) && f.needs_you.is_none() => {
+                let h = in_background(&id, "checking the branch", {
                     let id = id.clone();
                     move || {
-                        let _ = play(&s2, &l2, &p, Some(&id));
+                        let _ = gate_develop(&s2, &l2, &id);
+                    }
+                });
+                if h.is_some() {
+                    let aid = f.agent.clone().unwrap_or_default();
+                    log(sup, repo, "agent", &who(sup, &aid), &format!("{}: the fix agent finished its turn; checking its branch", short(&f.title, 70)), json!({ "finding": id, "agent": aid }), json!({ "branch": f.branch, "round": f.rounds + 1 }));
+                }
+                h
+            }
+            "verify" if budget_left > 0.0 => match f.persona.clone() {
+                // The replay plays in the mode of the run that found it, so their eases compare.
+                Some(p) => in_background(&id, "replaying", {
+                    let id = id.clone();
+                    let memory = Some(found_with_memory(sup, f));
+                    move || {
+                        let _ = play(&s2, &l2, &p, Some(&id), memory);
                     }
                 }),
                 // A finding of yours: no persona to replay it, so verify is yours.
-                None => None,
+                None => {
+                    decide(&mut dec, format!("verify_yours:{id}"), format!("Waits for you: {} has no persona to replay it, so Verify is yours", short(&f.title, 50)));
+                    None
+                }
             },
             "review" if f.pr_url.is_none() && st.open_pr && f.needs_you.is_none() => in_background(&id, "opening the pull request", {
                 let id = id.clone();
@@ -1884,7 +2486,9 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             _ => None,
         };
         if let Some(h) = h {
-            started.push(format!("{} {}", id, busy_what(&id).unwrap_or_default()));
+            let what = busy_what(&id).unwrap_or_default();
+            did.push(format!("{what} {}", short(&f.title, 50)));
+            started.push(format!("{id} {what}"));
             handles.push(h);
         }
     }
@@ -1902,14 +2506,20 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
     let mut in_dev = fs.iter().filter(|f| f.state == "active" && f.stage == "develop").count();
     let mut queue: Vec<Finding> = fs.iter().filter(|f| st.develop_auto && f.state == "active" && f.stage == "prioritize" && f.door.is_none()).cloned().collect();
     queue.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
-    for mut f in queue {
-        if in_dev >= st.wip || budget_left <= 0.0 {
+    for (i, mut f) in queue.clone().into_iter().enumerate() {
+        if in_dev >= st.wip {
+            let more = queue.len() - i - 1;
+            decide(&mut dec, format!("wip:{}", f.id), format!("WIP full ({in_dev} of {}): {} waits{}", st.wip, short(&f.title, 50), if more > 0 { format!(", and {more} more") } else { String::new() }));
+            break;
+        }
+        if budget_left <= 0.0 {
             break;
         }
         match start_develop(sup, lv, &mut f, "autopilot") {
             Ok(()) => {
                 in_dev += 1;
                 started.push(format!("{} develop", f.id));
+                did.push(format!("development of {}", short(&f.title, 50)));
             }
             Err(e) => {
                 f.needs_you = Some(format!("Could not start an agent: {}", e.message));
@@ -1917,25 +2527,64 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             }
         }
     }
+    // What waits for you, by the kind of pick.
+    let fs = findings_of(sup, repo);
+    let open: Vec<&Finding> = fs.iter().filter(|f| f.state == "active").collect();
+    let waits = |pick: &str, list: Vec<&&Finding>, dec: &mut Vec<Decision>| {
+        if let Some(first) = list.first() {
+            let text = match list.len() {
+                1 => format!("Waits for you: {pick} on {}", short(&first.title, 50)),
+                n => format!("Waits for you: {pick} on {n} cards (first {})", short(&first.title, 40)),
+            };
+            decide(dec, format!("wait:{pick}:{}", list.len()), text);
+        }
+    };
+    waits("Reproduce or Dismiss", open.iter().filter(|f| f.stage == "found" && f.needs_you.as_deref() == Some(TRIAGE)).collect(), &mut dec);
+    waits("Start development", open.iter().filter(|f| f.stage == "prioritize" && (f.needs_you.as_deref() == Some(READY) || (st.develop_auto && f.door.is_some()))).collect(), &mut dec);
+    waits("the merge", open.iter().filter(|f| f.stage == "review" && f.ci.as_deref() == Some("pass")).collect(), &mut dec);
+    for f in open.iter().filter(|f| f.stage == "prioritize" && f.door.is_some()) {
+        decide(&mut dec, format!("door:{}", f.id), format!("One-way door ({}): {} waits for your Start", f.door.clone().unwrap_or_default(), short(&f.title, 50)));
+    }
+    let other: Vec<&&Finding> = open.iter().filter(|f| f.needs_you.as_deref().is_some_and(|n| n != TRIAGE && n != READY)).collect();
+    if let Some(f) = other.first() {
+        decide(&mut dec, format!("wait:other:{}", other.len()), format!("Needs you: {} ({}){}", short(&f.title, 40), one_line(f.needs_you.as_deref().unwrap_or(""), 80), if other.len() > 1 { format!(", and {} more", other.len() - 1) } else { String::new() }));
+    }
     // Personas due to replay (not in a tick that only follows your picks).
     let budget_left = if personas { budget_left } else { 0.0 };
     let due_ms = (st.replay_every_h * 3_600_000.0) as i64;
     let mut playing = busy_count("playing");
+    let mut next_due: Option<(i64, String, String)> = None;
     for p in personas_of(sup, repo).into_iter().filter(|p| p.state != "retired") {
-        if playing >= st.runs_at_once || budget_left <= 0.0 {
+        if !personas || budget_left <= 0.0 {
             break;
         }
-        if p.last_run.is_some_and(|l| now_ms() - l < due_ms) {
+        if busy_what(&format!("persona:{}", p.id)).is_some() {
+            continue;
+        }
+        if let Some(l) = p.last_run.filter(|l| now_ms() - l < due_ms) {
+            let at = l + due_ms;
+            if next_due.as_ref().is_none_or(|(n, _, _)| at < *n) {
+                next_due = Some((at, p.id.clone(), p.name.clone()));
+            }
+            continue;
+        }
+        if playing >= st.runs_at_once {
+            decide(&mut dec, format!("full:{}", p.id), format!("{} is due, but {playing} of {} persona runs are going: waits", p.name, st.runs_at_once));
             continue;
         }
         let (s2, l2, pid) = (sup.clone(), lv.clone(), p.id.clone());
         if let Some(h) = in_background(&format!("persona:{}", p.id), "playing", move || {
-            let _ = play(&s2, &l2, &pid, None);
+            let _ = play(&s2, &l2, &pid, None, None);
         }) {
             playing += 1;
             started.push(format!("{} plays", p.id));
+            did.push(format!("{} plays", p.name));
+            decide(&mut dec, format!("due:{}", p.id), format!("{} is due{}: plays now", p.name, p.last_run.map(|l| format!(" (last played {} h ago)", (now_ms() - l) / 3_600_000)).unwrap_or_else(|| " (never played)".into())));
             handles.push(h);
         }
+    }
+    if let Some((at, pid, name)) = next_due.filter(|_| playing == 0) {
+        decide(&mut dec, format!("next:{pid}"), format!("No persona is due: {name} plays next, in {} min", ((at - now_ms()) / 60_000).max(1)));
     }
     // A new persona when the loop saturates: none on probation, and the last
     // six explore runs brought fewer than three serious findings.
@@ -1950,10 +2599,24 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                 let _ = generate(&s2, &r2);
             }) {
                 started.push("a new persona".into());
+                did.push("a new persona".into());
+                decide(&mut dec, "generate", format!("The last 6 runs found {serious} serious problems: a new persona is made"));
                 handles.push(h);
             }
         }
     }
+    let mut by_stage = serde_json::Map::new();
+    for x in STAGES {
+        by_stage.insert(x.into(), json!(open.iter().filter(|f| f.stage == x).count()));
+    }
+    let detail = json!({
+        "budget": { "spent": spent, "per_day": st.budget_usd_day, "left": (st.budget_usd_day - spent).max(0.0) },
+        "wip": { "in_development": in_dev, "limit": st.wip, "auto": st.develop_auto },
+        "runs": { "playing": playing, "at_once": st.runs_at_once },
+        "repro_agents": { "running": repro_agents, "limit": st.repro_agents },
+        "by_stage": by_stage, "autopilot": st.enabled, "personas_play": personas,
+    });
+    log_tick(sup, repo, &did, &dec, detail);
     snapshot(sup, repo);
     if wait {
         for h in handles {
@@ -1961,7 +2624,7 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
         }
         snapshot(sup, repo);
     }
-    Ok(json!({ "started": started, "spent_today": spent_today(sup, repo), "budget_usd_day": st.budget_usd_day }))
+    Ok(json!({ "started": started, "decisions": dec.iter().map(|d| d.text.clone()).collect::<Vec<_>>(), "spent_today": spent_today(sup, repo), "budget_usd_day": st.budget_usd_day }))
 }
 
 /// Whether a finding can move now: an agent's turn ended, a repro waits to
@@ -1995,6 +2658,7 @@ fn kick(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str) {
 pub fn start(sup: &Arc<Supervisor>, lv: &Arc<Levels>) {
     let (sup, lv) = (sup.clone(), lv.clone());
     std::thread::spawn(move || {
+        backfill_components(&sup);
         let mut last: HashMap<String, Instant> = HashMap::new();
         loop {
             std::thread::sleep(Duration::from_secs(5));
@@ -2016,6 +2680,15 @@ pub fn start(sup: &Arc<Supervisor>, lv: &Arc<Levels>) {
             }
         }
     });
+}
+
+/// Findings from before components (none set) get theirs, once.
+fn backfill_components(sup: &Supervisor) {
+    let all: Vec<Finding> = docs(sup, "SELECT doc FROM cv_findings LIMIT 20000", &Params::new());
+    for mut f in all.into_iter().filter(|f| f.component.is_empty()) {
+        f.component = infer_component(sup, &f, None);
+        let _ = put_finding(sup, &f);
+    }
 }
 
 /// Surfaces: the repository's top folders with a README, and the personas' own.
@@ -2053,6 +2726,8 @@ pub fn generate(sup: &Arc<Supervisor>, repo: &str) -> Result<Persona, ApiError> 
     cov.sort_by_key(|c| c["runs_7d"].as_i64().unwrap_or(0));
     let mut run = Run { id: crate::levels::new_id("cr"), repo: repo.to_string(), purpose: "generate".into(), state: "running".into(), created: now_ms(), ..Default::default() };
     put_run(sup, &run)?;
+    let least = cov.first().and_then(|c| c["surface"].as_str()).map(str::to_string);
+    log(sup, repo, "generate", "autopilot", &format!("Making a new persona{}", least.as_ref().map(|l| format!(" for the least-played part, {l}")).unwrap_or_default()), json!({ "run": run.id }), json!({ "coverage": cov }));
     let v = runner(sup, "generate", &json!({ "personas": ps, "coverage": cov }), Path::new(repo), &st.model, 900);
     run.ended = Some(now_ms());
     let v = match v {
@@ -2061,6 +2736,7 @@ pub fn generate(sup: &Arc<Supervisor>, repo: &str) -> Result<Persona, ApiError> 
             run.state = "failed".into();
             run.error = Some(e.clone());
             put_run(sup, &run)?;
+            log(sup, repo, "generate", "autopilot", &format!("Making a persona failed: {}", one_line(&e, 200)), json!({ "run": run.id }), json!({ "error": e }));
             return Err(ApiError::new(502, "runner_failed", e));
         }
     };
@@ -2086,13 +2762,125 @@ pub fn generate(sup: &Arc<Supervisor>, repo: &str) -> Result<Persona, ApiError> 
         ..Default::default()
     };
     put_persona(sup, &p)?;
+    log(sup, repo, "generate", "autopilot", &format!("New persona on probation: {}", p.name), json!({ "run": run.id, "persona": p.id }), json!({ "why": p.why, "surfaces": p.surfaces, "cost_usd": run.cost_usd }));
     Ok(p)
+}
+
+/// A persona of the generator's answer, on probation; none without a name.
+fn persona_of_answer(repo: &str, comps: &[String], v: &Json, origin: &str) -> Option<Persona> {
+    let name = v["name"].as_str().map(str::trim).filter(|n| !n.is_empty())?;
+    let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(Json::as_str).map(|x| one_line(x, 80)).filter(|x| !x.is_empty()).take(8).collect::<Vec<_>>()).unwrap_or_default();
+    let mut surfaces = list("surfaces");
+    // The component it touches most leads its surfaces, when the project has it.
+    if let Some(c) = v["component"].as_str().map(|c| c.trim().to_lowercase()).filter(|c| comps.contains(c) && c != "other") {
+        surfaces.retain(|x| x.to_lowercase() != c);
+        surfaces.insert(0, c);
+    }
+    Some(Persona {
+        id: crate::levels::new_id("cp"),
+        repo: repo.to_string(),
+        name: one_line(name, 80),
+        role: one_line(v["role"].as_str().unwrap_or(""), 300),
+        traits: list("traits"),
+        journey: v["journey"].as_str().unwrap_or("").trim().to_string(),
+        surfaces,
+        origin: origin.into(),
+        state: "probation".into(),
+        why: v["why"].as_str().map(|w| one_line(w, 400)),
+        created: now_ms(),
+        ..Default::default()
+    })
+}
+
+/// Reads the project and makes `count` personas from it, on probation
+/// (`origin: codebase`), as run `run_id`: its steps stream like a persona
+/// run's, and its record lists the personas made (`findings`: `{persona, name}`).
+fn generate_from_codebase(sup: &Arc<Supervisor>, repo: &str, run_id: &str, count: usize) {
+    let st = settings(sup, repo);
+    let Ok(mut run) = get_run(sup, run_id) else { return };
+    let existing = personas_of(sup, repo);
+    let ps: Vec<Json> = existing.iter().map(|p| json!({ "name": p.name, "role": p.role, "surfaces": p.surfaces, "state": p.state })).collect();
+    let comps = components_of(Path::new(repo));
+    log(sup, repo, "generate", "you", &format!("Reading the project to make {count} persona{}", if count == 1 { "" } else { "s" }), json!({ "run": run.id }), json!({ "count": count, "existing": existing.len(), "components": comps }));
+    live_push(&run.id, json!({ "ts": now_ms(), "kind": "step", "text": "Reading the project: README, docs and code" }), None);
+    let job = json!({ "repo": repo, "count": count, "personas": ps, "components": comps });
+    let answer = runner_live(sup, "personas", &job, Path::new(repo), &st.model, 1200, Some(&run.id));
+    if let Some((steps, at)) = live_end(&run.id) {
+        run.steps = steps;
+        run.at = at;
+    }
+    run.ended = Some(now_ms());
+    let v = match answer {
+        Ok(v) => v,
+        Err(e) => {
+            run.state = "failed".into();
+            run.error = Some(e.clone());
+            let _ = put_run(sup, &run);
+            log(sup, repo, "generate", "autopilot", &format!("Reading the project failed: {}", one_line(&e, 200)), json!({ "run": run.id }), json!({ "error": e }));
+            return;
+        }
+    };
+    run.cost_usd = v["cost_usd"].as_f64().unwrap_or(0.0);
+    let mut names: Vec<String> = existing.iter().map(|p| p.name.to_lowercase()).collect();
+    let mut made: Vec<Persona> = Vec::new();
+    for x in v["personas"].as_array().cloned().unwrap_or_default() {
+        if made.len() >= count {
+            break;
+        }
+        let Some(p) = persona_of_answer(repo, &comps, &x, "codebase") else { continue };
+        if names.contains(&p.name.to_lowercase()) || p.journey.is_empty() {
+            continue;
+        }
+        names.push(p.name.to_lowercase());
+        if put_persona(sup, &p).is_ok() {
+            made.push(p);
+        }
+    }
+    run.findings = made.iter().map(|p| json!({ "persona": p.id, "name": p.name })).collect();
+    if made.is_empty() {
+        run.state = "failed".into();
+        run.error = Some(format!("the answer held no new persona: {}", one_line(&v.to_string(), 300)));
+    } else {
+        run.state = "done".into();
+        run.answer = Some(format!("Made {}", made.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ")));
+    }
+    let _ = put_run(sup, &run);
+    let summary = match made.len() {
+        0 => "Reading the project made no new persona".to_string(),
+        n => format!("Made {n} persona{} on probation: {} (${:.2})", if n == 1 { "" } else { "s" }, made.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join("; "), run.cost_usd),
+    };
+    log(sup, repo, "generate", "autopilot", &summary, json!({ "run": run.id }), json!({ "personas": run.findings, "error": run.error, "cost_usd": run.cost_usd, "secs": (now_ms() - run.created) / 1000 }));
 }
 
 // ------------------------------------------------------------------ metrics
 
+/// Findings of one component, or all of them.
+fn of_component(fs: Vec<Finding>, component: Option<&str>) -> Vec<Finding> {
+    match component.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) => fs.into_iter().filter(|f| f.component.eq_ignore_ascii_case(c)).collect(),
+        None => fs,
+    }
+}
+
+/// Open findings by component: every part of the project, with the ones a
+/// finding names that the project no longer has.
+fn components_open(repo: &str, fs: &[Finding]) -> Vec<Json> {
+    let mut names = components_of(Path::new(repo));
+    for f in fs {
+        if !f.component.is_empty() && !names.contains(&f.component) {
+            names.push(f.component.clone());
+        }
+    }
+    names.iter().map(|n| json!({ "name": n, "open": fs.iter().filter(|f| f.state == "active" && f.stage != "merged" && &f.component == n).count() })).collect()
+}
+
 pub fn metrics(sup: &Supervisor, repo: &str) -> Json {
-    let fs = findings_of(sup, repo);
+    metrics_of(sup, repo, None)
+}
+
+/// The metrics; with a component, its findings' only (the persona runs' are the project's).
+pub fn metrics_of(sup: &Supervisor, repo: &str, component: Option<&str>) -> Json {
+    let fs = of_component(findings_of(sup, repo), component);
     let ps = personas_of(sup, repo);
     let runs = runs_of(sup, repo, 5000);
     let now = now_ms();
@@ -2221,6 +3009,7 @@ pub fn seed(sup: &Supervisor, repo: &str) -> Result<Json, ApiError> {
             ..Default::default()
         };
         f.score = score(&f);
+        f.component = infer_component(sup, &f, x["component"].as_str());
         put_finding(sup, &f)?;
         event(sup, &f, "", "found", "reported", true, "seed", &format!("From the persona reports of 2026-11-15 ({})", x["source"].as_str().unwrap_or("")), json!({ "source": x["source"] }));
         nf += 1;
@@ -2238,11 +3027,14 @@ pub fn routes() -> Router<App> {
         .route("/api/converge/seed", post(seed_route))
         .route("/api/converge/metrics", get(metrics_route))
         .route("/api/converge/timeline", get(timeline_route))
+        .route("/api/converge/activity", get(activity_route))
+        .route("/api/converge/ask", post(ask_route))
         .route("/api/converge/findings", post(finding_new))
-        .route("/api/converge/findings/:id", get(finding_get).put(finding_put))
+        .route("/api/converge/findings/:id", get(finding_get).put(finding_put).patch(finding_put))
         .route("/api/converge/findings/:id/:verb", post(finding_verb))
         .route("/api/converge/personas", get(personas_get).post(persona_new))
         .route("/api/converge/personas/generate", post(generate_route))
+        .route("/api/converge/personas/:id", axum::routing::patch(persona_patch).put(persona_patch))
         .route("/api/converge/personas/:id/:verb", post(persona_verb))
         .route("/api/converge/runs/:id", get(run_get))
 }
@@ -2279,7 +3071,8 @@ async fn overview_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiRe
         let fs: Vec<Json> = findings_of(&sup, &repo).iter().filter(|f| matches!(f.state.as_str(), "active" | "parked")).map(|f| f.to_json(&sup)).collect();
         let ps: Vec<Json> = personas_of(&sup, &repo).iter().map(|p| persona_json(&sup, p)).collect();
         let runs: Vec<Json> = runs_of(&sup, &repo, 30).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
-        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default() }))
+        let all = findings_of(&sup, &repo);
+        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo) }))
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -2365,7 +3158,18 @@ async fn settings_put(State(app): State<App>, headers: HeaderMap, body: Bytes) -
         if st.budget_usd_day < 0.0 || st.wip > 20 || st.runs_at_once > 20 || st.repro_runs > 20 {
             return Err(ApiError::bad("settings out of range: budget ≥ 0, wip and runs_at_once ≤ 20, repro_runs ≤ 20"));
         }
+        let before = serde_json::to_value(settings(&sup, &repo)).unwrap();
         put_settings(&sup, &repo, &st)?;
+        let after = serde_json::to_value(&st).unwrap();
+        let changed: Vec<String> = after.as_object().into_iter().flatten().filter(|(k, x)| before.get(k.as_str()) != Some(x)).map(|(k, _)| k.clone()).collect();
+        if !changed.is_empty() {
+            let what = match (before["enabled"] != after["enabled"], st.enabled) {
+                (true, true) => "You turned the autopilot on".to_string(),
+                (true, false) => "You turned the autopilot off".to_string(),
+                _ => format!("You changed the settings: {}", changed.join(", ")),
+            };
+            log(&sup, &repo, "you", "you", &what, Json::Null, json!({ "changed": changed.iter().map(|k| json!({ "name": k, "from": before[k], "to": after[k] })).collect::<Vec<_>>() }));
+        }
         Ok(json!({ "repo": repo, "settings": st }))
     })
     .await?;
@@ -2413,6 +3217,7 @@ struct TimelineQ {
     repo: Option<String>,
     /// 24h, 7d or 30d
     range: Option<String>,
+    component: Option<String>,
 }
 
 /// When a finding left the open set: merged, or out of the loop (a
@@ -2430,7 +3235,7 @@ fn closed_at(f: &Finding) -> Option<(i64, bool)> {
 /// Open findings over time, by severity, with what was found and merged in
 /// each bucket and the persona runs' mean ease: rebuilt from the findings'
 /// own times, so it reaches back to the first one.
-pub fn timeline(sup: &Supervisor, repo: &str, range: &str, now: i64) -> Json {
+pub fn timeline(sup: &Supervisor, repo: &str, range: &str, now: i64, component: Option<&str>) -> Json {
     let (span, n) = match range {
         "7d" => (7 * 86_400_000i64, 28i64),
         "30d" => (30 * 86_400_000i64, 30i64),
@@ -2439,8 +3244,32 @@ pub fn timeline(sup: &Supervisor, repo: &str, range: &str, now: i64) -> Json {
     let step = span / n;
     let end = now - now % step + step;
     let start = end - span;
-    let fs = findings_of(sup, repo);
+    let fs = of_component(findings_of(sup, repo), component);
     let runs: Vec<Run> = docs(sup, "SELECT doc FROM cv_runs WHERE repo = :repo AND created >= :since ORDER BY created ASC LIMIT 5000", &Params::new().set("repo", s(repo)).set("since", t(start)));
+    // With a component, only the work on its findings counts.
+    let ids: HashSet<&str> = fs.iter().map(|f| f.id.as_str()).collect();
+    let mine = |finding: Option<&str>| component.is_none_or(|c| c.trim().is_empty()) || finding.is_some_and(|f| ids.contains(f));
+    let runs: Vec<Run> = runs.into_iter().filter(|r| mine(r.finding.as_deref())).collect();
+    // The agents started: repro agents and fix agents, from the gates' events.
+    let agent_starts: Vec<(i64, &'static str)> = sup
+        .db()
+        .query("SELECT ts, gate, finding, summary FROM cv_events WHERE repo = :repo AND ts >= :since LIMIT 20000", &Params::new().set("repo", s(repo)).set("since", t(start)))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            let ts = r.first().and_then(crate::db::get_ms)?;
+            let gate = r.get(1).and_then(get_str)?;
+            let finding = r.get(2).and_then(get_str);
+            if !mine(finding.as_deref()) {
+                return None;
+            }
+            match gate.as_str() {
+                "repro_agent" if r.get(3).and_then(get_str).is_some_and(|x| x.contains("is writing")) => Some((ts, "repro")),
+                "slot" => Some((ts, "fix")),
+                _ => None,
+            }
+        })
+        .collect();
     let buckets: Vec<Json> = (0..n)
         .map(|i| {
             let (b0, b1) = (start + i * step, start + (i + 1) * step);
@@ -2466,29 +3295,49 @@ pub fn timeline(sup: &Supervisor, repo: &str, range: &str, now: i64) -> Json {
                     }
                 }
             }
-            let eases: Vec<f64> = runs.iter().filter(|r| r.created >= b0 && r.created < b1 && r.purpose == "explore").filter_map(|r| r.ease).collect();
+            // The trend of ease is of runs without memory (each visit a first one).
+            let eases: Vec<f64> = runs.iter().filter(|r| r.created >= b0 && r.created < b1 && r.purpose == "explore" && !r.use_memory).filter_map(|r| r.ease).collect();
             let ease = (!eases.is_empty()).then(|| eases.iter().sum::<f64>() / eases.len() as f64);
-            json!({ "t": b0, "end": b1, "open": { "blocker": open[0], "major": open[1], "minor": open[2], "papercut": open[3] }, "open_total": open.iter().sum::<i64>(), "found": found, "merged": merged, "dropped": dropped, "ease": ease, "runs": eases.len() })
+            let inside: Vec<&Run> = runs.iter().filter(|r| r.created >= b0 && r.created < b1).collect();
+            let spend: f64 = inside.iter().map(|r| r.cost_usd).sum();
+            let starts = |k: &str| agent_starts.iter().filter(|(ts, x)| *ts >= b0 && *ts < b1 && *x == k).count();
+            let agents = json!({
+                "repro": starts("repro"),
+                "fix": starts("fix"),
+                "persona": inside.iter().filter(|r| matches!(r.purpose.as_str(), "explore" | "verify")).count(),
+                "generate": inside.iter().filter(|r| r.purpose == "generate").count(),
+            });
+            json!({ "t": b0, "end": b1, "open": { "blocker": open[0], "major": open[1], "minor": open[2], "papercut": open[3] }, "open_total": open.iter().sum::<i64>(), "found": found, "merged": merged, "dropped": dropped, "ease": ease, "runs": eases.len(), "spend_usd": (spend * 10000.0).round() / 10000.0, "agents": agents })
         })
         .collect();
-    json!({ "repo": repo, "range": range, "step_ms": step, "start": start, "end": end, "now": now, "buckets": buckets })
+    // The findings merged in the range: found and merged times, for the median.
+    let merged: Vec<Json> = fs.iter().filter(|f| f.stage == "merged").filter_map(|f| closed_at(f).map(|(ts, _)| (f, ts))).filter(|(_, ts)| *ts >= start && *ts < end).map(|(f, ts)| json!({ "id": f.id, "title": f.title, "component": f.component, "found_ts": f.created, "merged_ts": ts })).collect();
+    json!({ "repo": repo, "range": range, "component": component, "step_ms": step, "start": start, "end": end, "now": now, "buckets": buckets, "merged": merged })
 }
 
 async fn timeline_route(State(app): State<App>, Query(q): Query<TimelineQ>) -> ApiResult {
     let sup = app.sup.clone();
     let v = blocking(move || {
         let repo = repo_of(q.repo)?;
-        Ok(timeline(&sup, &repo, q.range.as_deref().unwrap_or("24h"), now_ms()))
+        Ok(timeline(&sup, &repo, q.range.as_deref().unwrap_or("24h"), now_ms(), q.component.as_deref()))
     })
     .await?;
     Ok(AxJson(v).into_response())
 }
 
-async fn metrics_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult {
+#[derive(Deserialize, Default)]
+struct MetricsQ {
+    repo: Option<String>,
+    component: Option<String>,
+}
+
+async fn metrics_route(State(app): State<App>, Query(q): Query<MetricsQ>) -> ApiResult {
     let sup = app.sup.clone();
     let v = blocking(move || {
         let repo = repo_of(q.repo)?;
-        Ok(metrics(&sup, &repo))
+        let mut m = metrics_of(&sup, &repo, q.component.as_deref());
+        m["component"] = json!(q.component);
+        Ok(m)
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -2505,12 +3354,38 @@ struct NewFinding {
     repro: Option<String>,
     persona: Option<String>,
     step: Option<String>,
+    component: Option<String>,
+    /// Yours, picked at once: straight to Reproduce.
+    pick: Option<bool>,
+}
+
+/// A settings row for a repository the board has not seen.
+fn ensure_settings(sup: &Supervisor, repo: &str) -> Result<(), ApiError> {
+    if docs::<Settings>(sup, "SELECT doc FROM cv_settings WHERE repo = :repo LIMIT 1", &Params::new().set("repo", s(repo))).is_empty() {
+        put_settings(sup, repo, &Settings::default())?;
+    }
+    Ok(())
+}
+
+/// A component you gave, checked against the project's.
+fn component_given(repo: &str, c: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(c) = c.map(|c| c.trim().to_lowercase()).filter(|c| !c.is_empty()) else { return Ok(None) };
+    let comps = components_of(Path::new(repo));
+    if comps.contains(&c) {
+        Ok(Some(c))
+    } else {
+        Err(ApiError::bad(format!("component is one of {}, not {c:?}", comps.join(", "))))
+    }
 }
 
 async fn finding_new(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
     let b: NewFinding = parse_body(&body)?;
+    let pick = b.pick == Some(true);
+    if pick {
+        user_only(&app, &headers)?;
+    }
     let by = caller(&headers);
-    let sup = app.sup.clone();
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || {
         let repo = repo_of(b.repo)?;
         let title = b.title.as_deref().map(str::trim).filter(|x| !x.is_empty() && x.len() <= 200).ok_or_else(|| ApiError::bad("title is required, at most 200 bytes"))?.to_string();
@@ -2539,12 +3414,22 @@ async fn finding_new(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
             ..Default::default()
         };
         f.score = score(&f);
+        let given = component_given(&repo, b.component.as_deref())?;
+        f.component = infer_component(&sup, &f, given.as_deref());
         put_finding(&sup, &f)?;
         event(&sup, &f, "", "found", "reported", true, &by, &format!("Reported by {by}"), Json::Null);
-        if docs::<Settings>(&sup, "SELECT doc FROM cv_settings WHERE repo = :repo LIMIT 1", &Params::new().set("repo", s(&repo))).is_empty() {
-            put_settings(&sup, &repo, &Settings::default())?;
+        ensure_settings(&sup, &repo)?;
+        let refs = json!({ "finding": f.id, "persona": f.persona });
+        if pick {
+            advance_to(&sup, &mut f, "reproduce", "asked", true, "you", "You added it and picked it: on to Reproduce", Json::Null)?;
+            log(&sup, &repo, "you", "you", &format!("You added {} by hand and sent it to Reproduce", short(&f.title, 70)), refs, json!({ "component": f.component, "severity": sev_name(f.severity) }));
+            kick(&sup, &lv, &repo);
+        } else if by == "you" {
+            log(&sup, &repo, "you", "you", &format!("You added {}", short(&f.title, 70)), refs, json!({ "component": f.component, "severity": sev_name(f.severity) }));
+        } else {
+            log(&sup, &repo, "agent", &who(&sup, &by), &format!("Reported {}", short(&f.title, 70)), json!({ "finding": f.id, "agent": by }), json!({ "component": f.component, "severity": sev_name(f.severity) }));
         }
-        Ok(json!({ "finding": f.to_json(&sup) }))
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
     })
     .await?;
     Ok((StatusCode::CREATED, AxJson(v)).into_response())
@@ -2586,6 +3471,14 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
                 return Err(ApiError::bad(format!("theme is one of {}", THEMES.join(", "))));
             }
             f.theme = th.to_string();
+        }
+        if let Some(c) = v["component"].as_str() {
+            let c = component_given(&f.repo, Some(c))?.ok_or_else(|| ApiError::bad("component is empty"))?;
+            if c != f.component {
+                let was = std::mem::replace(&mut f.component, c.clone());
+                let st = f.stage.clone();
+                event(&sup, &f, &st, &st, "component", true, &by, &format!("Component {} → {c}", if was.is_empty() { "unset" } else { &was }), json!({ "from": was, "to": c }));
+            }
         }
         if let Some(sc) = v.get("scope").filter(|x| x.is_object()) {
             let mut sc: Scope = serde_json::from_value(sc.clone()).map_err(|e| ApiError::bad(format!("scope: {e}")))?;
@@ -2757,17 +3650,211 @@ async fn persona_new(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
     Ok((StatusCode::CREATED, AxJson(out)).into_response())
 }
 
+#[derive(Deserialize, Default)]
+struct GenerateB {
+    repo: Option<String>,
+    /// `codebase`: read the project and make `count` personas, in the background.
+    from: Option<String>,
+    count: Option<i64>,
+}
+
 async fn generate_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
     user_only(&app, &headers)?;
-    let b: RepoQ = parse_body(&body)?;
+    let b: GenerateB = parse_body(&body)?;
     let sup = app.sup.clone();
+    match b.from.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+        None => {
+            let v = blocking(move || {
+                let repo = repo_of(b.repo)?;
+                let p = generate(&sup, &repo)?;
+                Ok(json!({ "persona": persona_json(&sup, &p) }))
+            })
+            .await?;
+            Ok((StatusCode::CREATED, AxJson(v)).into_response())
+        }
+        Some("codebase") => {
+            let count = b.count.unwrap_or(3);
+            if !(1..=6).contains(&count) {
+                return Err(ApiError::bad("count is 1 to 6"));
+            }
+            let v = blocking(move || {
+                let repo = repo_of(b.repo)?;
+                ensure_settings(&sup, &repo)?;
+                let key = format!("generate:{repo}");
+                if busy_what(&key).is_some() {
+                    return Err(ApiError::conflict("personas are being made for this project already: wait for that run"));
+                }
+                let run = Run { id: crate::levels::new_id("cr"), repo: repo.clone(), purpose: "generate".into(), state: "running".into(), created: now_ms(), ..Default::default() };
+                put_run(&sup, &run)?;
+                live_push(&run.id, Json::Null, None);
+                let (s2, r2, id) = (sup.clone(), repo.clone(), run.id.clone());
+                if in_background(&key, "generating", move || generate_from_codebase(&s2, &r2, &id, count as usize)).is_none() {
+                    let mut run = run;
+                    live_end(&run.id);
+                    run.state = "failed".into();
+                    run.error = Some("another generator started first".into());
+                    run.ended = Some(now_ms());
+                    put_run(&sup, &run)?;
+                    return Err(ApiError::conflict("personas are being made for this project already: wait for that run"));
+                }
+                Ok(json!({ "run": run }))
+            })
+            .await?;
+            Ok((StatusCode::ACCEPTED, AxJson(v)).into_response())
+        }
+        Some(x) => Err(ApiError::bad(format!("from is \"codebase\" (or left out for one persona aimed at the least-played part), not {x:?}"))),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct AskB {
+    repo: Option<String>,
+    text: Option<String>,
+}
+
+const KINDS: [&str; 6] = ["bug", "gap", "docs", "ux", "opportunity", "feature"];
+
+/// A card of the runner's answer to your words: yours, so already picked.
+pub fn card_of(repo: &str, comps: &[String], text: &str, v: &Json) -> Option<Finding> {
+    let title = v["title"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+    let title = one_line(title, 200);
+    let detail = v["detail"].as_str().map(str::trim).filter(|d| !d.is_empty()).map(str::to_string).unwrap_or_else(|| text.trim().to_string());
+    let kind = v["kind"].as_str().map(|k| k.trim().to_lowercase()).filter(|k| KINDS.contains(&k.as_str())).unwrap_or_else(|| "feature".into());
+    let theme = theme_of(v["theme"].as_str(), &title, &detail);
+    let acceptance = v["acceptance"].as_str().map(str::trim).unwrap_or("").to_string();
+    let mut f = Finding {
+        id: crate::levels::new_id("cv"),
+        repo: repo.to_string(),
+        component: component_of(comps, v["component"].as_str(), &format!("{title} {detail} {text}"), &[], &theme),
+        title,
+        detail,
+        kind,
+        theme,
+        severity: sev_of(v.get("severity").unwrap_or(&json!("major"))),
+        stage: "found".into(),
+        state: "active".into(),
+        occurrences: 1,
+        scope: (!acceptance.is_empty()).then(|| Scope { acceptance, ..Default::default() }),
+        note: Some(format!("You asked: {}", one_line(text, 300))),
+        by: "you".into(),
+        created: now_ms(),
+        updated: now_ms(),
+        stage_since: now_ms(),
+        ..Default::default()
+    };
+    f.score = score(&f);
+    Some(f)
+}
+
+/// Your words become a card in Reproduce: the runner (`card`) writes it.
+async fn ask_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    user_only(&app, &headers)?;
+    let b: AskB = parse_body(&body)?;
+    let text = b.text.as_deref().map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| ApiError::bad("text is required: what you want, in your words"))?.to_string();
+    if text.len() > 8000 {
+        return Err(ApiError::bad("text is at most 8000 bytes"));
+    }
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || {
         let repo = repo_of(b.repo)?;
-        let p = generate(&sup, &repo)?;
-        Ok(json!({ "persona": persona_json(&sup, &p) }))
+        ensure_settings(&sup, &repo)?;
+        let st = settings(&sup, &repo);
+        let comps = components_of(Path::new(&repo));
+        let mut run = Run { id: crate::levels::new_id("cr"), repo: repo.clone(), purpose: "ask".into(), state: "running".into(), created: now_ms(), ..Default::default() };
+        let job = json!({ "repo": repo, "text": text, "themes": THEMES, "components": comps });
+        let answer = runner(&sup, "card", &job, Path::new(&repo), &st.model, 300);
+        let card = answer.as_ref().ok().and_then(|v| card_of(&repo, &comps, &text, v));
+        let (Ok(v), Some(mut f)) = (answer.clone(), card) else {
+            let e = match answer {
+                Err(e) => e,
+                Ok(v) => format!("the answer held no card with a title: {}", one_line(&v.to_string(), 300)),
+            };
+            log(&sup, &repo, "ask", "you", &format!("Your ask could not become a card: {}", one_line(&e, 200)), Json::Null, json!({ "text": text, "error": e }));
+            return Err(ApiError::new(502, "runner_failed", e));
+        };
+        run.state = "done".into();
+        run.ended = Some(now_ms());
+        run.cost_usd = v["cost_usd"].as_f64().unwrap_or(0.0);
+        run.finding = Some(f.id.clone());
+        run.answer = Some(f.title.clone());
+        put_run(&sup, &run)?;
+        f.run = Some(run.id.clone());
+        put_finding(&sup, &f)?;
+        event(&sup, &f, "", "found", "reported", true, "you", &format!("You asked: {}", one_line(&text, 300)), json!({ "run": run.id, "text": text }));
+        advance_to(&sup, &mut f, "reproduce", "asked", true, "you", "Yours, so already picked: on to Reproduce", json!({ "run": run.id }))?;
+        log(&sup, &repo, "ask", "you", &format!("You asked: {} → card {} in Reproduce", short(&text, 60), short(&f.title, 60)), json!({ "finding": f.id, "run": run.id }), json!({ "text": text, "kind": f.kind, "theme": f.theme, "component": f.component, "severity": sev_name(f.severity), "acceptance": f.scope.as_ref().map(|s| s.acceptance.clone()), "cost_usd": run.cost_usd }));
+        kick(&sup, &lv, &repo);
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup), "run": run }))
     })
     .await?;
     Ok((StatusCode::CREATED, AxJson(v)).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct ActivityQ {
+    repo: Option<String>,
+    since: Option<i64>,
+    limit: Option<usize>,
+}
+
+async fn activity_route(State(app): State<App>, Query(q): Query<ActivityQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let repo = repo_of(q.repo)?;
+        Ok(json!({ "items": activity(&sup, &repo, q.since.unwrap_or(0), q.limit.unwrap_or(100)), "now": now_ms() }))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
+}
+
+/// Edits a persona: `use_memory`, and its name, role, traits, journey, surfaces.
+async fn persona_patch(State(app): State<App>, headers: HeaderMap, AxPath(id): AxPath<String>, body: Bytes) -> ApiResult {
+    user_only(&app, &headers)?;
+    let v: Json = parse_body(&body)?;
+    let sup = app.sup.clone();
+    let out = blocking(move || {
+        let mut p = get_persona(&sup, &id)?;
+        let mut changed: Vec<&str> = Vec::new();
+        if let Some(m) = v.get("use_memory").filter(|x| !x.is_null()) {
+            let m = m.as_bool().ok_or_else(|| ApiError::bad("use_memory is true or false"))?;
+            if m != p.use_memory {
+                p.use_memory = m;
+                changed.push("use_memory");
+            }
+        }
+        for (k, field) in [("name", &mut p.name), ("role", &mut p.role), ("journey", &mut p.journey)] {
+            if let Some(x) = v[k].as_str().map(str::trim) {
+                if x.is_empty() && k != "role" {
+                    return Err(ApiError::bad(format!("{k} cannot be empty")));
+                }
+                if x != field.as_str() {
+                    *field = if k == "name" { one_line(x, 80) } else { x.to_string() };
+                    changed.push(k);
+                }
+            }
+        }
+        for (k, field) in [("traits", &mut p.traits), ("surfaces", &mut p.surfaces)] {
+            if !v[k].is_null() {
+                let list: Vec<String> = serde_json::from_value(v[k].clone()).map_err(|_| ApiError::bad(format!("{k} is a list of strings")))?;
+                if &list != field {
+                    *field = list;
+                    changed.push(k);
+                }
+            }
+        }
+        put_persona(&sup, &p)?;
+        if !changed.is_empty() {
+            let what = match (changed.as_slice(), p.use_memory) {
+                (["use_memory"], true) => format!("You let {} remember its earlier visits", p.name),
+                (["use_memory"], false) => format!("{} now plays each visit as its first", p.name),
+                _ => format!("You changed {}: {}", p.name, changed.join(", ")),
+            };
+            log(&sup, &p.repo, "you", "you", &what, json!({ "persona": p.id }), json!({ "changed": changed }));
+        }
+        Ok(json!({ "persona": persona_json(&sup, &p) }))
+    })
+    .await?;
+    Ok(AxJson(out).into_response())
 }
 
 async fn persona_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
@@ -2780,10 +3867,12 @@ async fn persona_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
             "play" => {
                 let (s2, l2, pid) = (sup.clone(), lv.clone(), p.id.clone());
                 let wait = v["wait"].as_bool().unwrap_or(false);
+                let memory = v["use_memory"].as_bool();
                 let h = in_background(&format!("persona:{}", p.id), "playing", move || {
-                    let _ = play(&s2, &l2, &pid, None);
+                    let _ = play(&s2, &l2, &pid, None, memory);
                 })
                 .ok_or_else(|| ApiError::conflict(format!("{} is already playing", p.name)))?;
+                log(&sup, &p.repo, "you", "you", &format!("You asked {} to play now", p.name), json!({ "persona": p.id }), Json::Null);
                 if wait {
                     let _ = h.join();
                 }
@@ -2793,8 +3882,12 @@ async fn persona_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
             "retire" => {
                 p.state = "retired".into();
                 p.why = Some(v["reason"].as_str().unwrap_or("Retired by you").to_string());
+                log(&sup, &p.repo, "you", "you", &format!("You retired {}", p.name), json!({ "persona": p.id }), json!({ "reason": p.why }));
             }
-            "activate" => p.state = "active".into(),
+            "activate" => {
+                p.state = "active".into();
+                log(&sup, &p.repo, "you", "you", &format!("You brought {} back", p.name), json!({ "persona": p.id }), Json::Null);
+            }
             _ => return Err(ApiError::not_found(format!("no action {verb}"))),
         }
         put_persona(&sup, &p)?;
@@ -2921,6 +4014,161 @@ mod tests {
         assert_eq!(th[0].0["kind"], "think");
         assert!(steps_of_line("not json").is_empty());
         assert_eq!(journey_step("**Step 3 of 6: Accept a teammate's rules**"), Some(json!({ "n": 3, "of": 6, "name": "Accept a teammate's rules" })));
+    }
+
+    /// A project laid out like ChloeDB's top level.
+    fn chloedb_like() -> PathBuf {
+        let d = tempfile_dir();
+        for (dir, file) in [("chloedb", "Cargo.toml"), ("chloedb-server", "Cargo.toml"), ("chloectx", "Cargo.toml"), ("chloedb-sheets", "Cargo.toml"), ("chloedb-apps", "package.json"), ("chloedb-workbench", "Cargo.toml"), ("chloedb-py", "pyproject.toml"), ("chloedb-js", "package.json"), ("chloedb-java", "pom.xml"), ("docs", "index.html"), ("scripts", "x.sh"), ("packaging", "README.md")] {
+            std::fs::create_dir_all(d.join(dir)).unwrap();
+            std::fs::write(d.join(dir).join(file), "").unwrap();
+        }
+        std::fs::write(d.join("install.sh"), "").unwrap();
+        d
+    }
+
+    #[test]
+    fn components_come_from_the_projects_folders() {
+        let d = chloedb_like();
+        let comps = components_of(&d);
+        assert_eq!(comps, ["chloectx", "chloedb", "chloedb-apps", "chloedb-server", "chloedb-sheets", "chloedb-workbench", "sdks", "docs", "packaging", "other"]);
+        let c = |text: &str| component_of(&comps, None, text, &[], "usability");
+        // Its name or path, the longest first.
+        assert_eq!(c("chloedb-server/src/auth/keys.rs leaks a key"), "chloedb-server");
+        assert_eq!(c("A crash in chloedb when the index is merged"), "chloedb");
+        assert_eq!(c("chloedb-py's client drops the token"), "sdks");
+        assert_eq!(c("docs/guide/quickstart.md names an old flag"), "docs");
+        assert_eq!(c("install.sh stops behind a proxy"), "packaging");
+        // Else the words that point at one.
+        assert_eq!(c("The operator's StrataCluster loses a replica on failover"), "chloedb-server");
+        assert_eq!(c("Recall forgets the decision the distiller wrote"), "chloectx");
+        assert_eq!(c("Summarize in a workbook stops at row 64"), "chloedb-sheets");
+        assert_eq!(c("The JDBC driver reports the wrong column type"), "sdks");
+        assert_eq!(c("BM25 ranking puts the exact match second"), "chloedb");
+        // Given (when the project has it), else the persona's surfaces, else other.
+        assert_eq!(component_of(&comps, Some("ChloeCtx"), "anything", &[], "usability"), "chloectx");
+        assert_eq!(component_of(&comps, Some("nonsense"), "sheets look odd", &[], "usability"), "chloedb-sheets");
+        assert_eq!(component_of(&comps, None, "The button is hard to find", &["chloedb-workbench".into(), "chloectx".into()], "usability"), "chloedb-workbench");
+        assert_eq!(component_of(&comps, None, "The button is hard to find", &[], "docs"), "docs");
+        assert_eq!(c("The button is hard to find"), "other");
+        let _ = std::fs::remove_dir_all(&d);
+        // Another project has its own list.
+        let e = tempfile_dir();
+        std::fs::create_dir_all(e.join("web")).unwrap();
+        std::fs::write(e.join("web/package.json"), "{}").unwrap();
+        assert_eq!(components_of(&e), ["web", "other"]);
+        assert_eq!(component_of(&components_of(&e), None, "web/src/cart.js rounds the total", &[], "correctness"), "web");
+        let _ = std::fs::remove_dir_all(&e);
+    }
+
+    #[test]
+    fn gates_log_as_the_kind_of_activity_they_are() {
+        assert_eq!(log_kind("triage", "you"), Some("you"));
+        assert_eq!(log_kind("repro_agent", "autopilot"), Some("agent"));
+        assert_eq!(log_kind("slot", "autopilot"), Some("agent"));
+        assert_eq!(log_kind("ci", "autopilot"), Some("pr"));
+        assert_eq!(log_kind("repro_fails", "autopilot"), Some("gate"));
+        assert_eq!(log_kind("reported", "cp1"), None);
+        assert_eq!(log_kind("asked", "you"), None);
+    }
+
+    #[test]
+    fn a_tick_is_logged_when_it_starts_something_or_its_decisions_change() {
+        let d = |k: &str, t: &str| Decision { key: k.into(), text: t.into() };
+        let now = vec![d("budget", "Budget spent ($20.10 of $20.00 today)"), d("wait:Start development:1", "Waits for you: Start development on “x”")];
+        // The first: logged, with every decision.
+        let (log_it, fresh) = tick_news(None, &[], &now);
+        assert!(log_it);
+        assert_eq!(fresh.len(), 2);
+        let keys: Vec<String> = now.iter().map(|x| x.key.clone()).collect();
+        // The same decisions (the money moved, the key did not): not logged.
+        let again = vec![d("budget", "Budget spent ($20.30 of $20.00 today)"), now[1].clone()];
+        assert_eq!(tick_news(Some(&keys), &[], &again), (false, vec![]));
+        // It started something: logged, with no decision repeated.
+        let (log_it, fresh) = tick_news(Some(&keys), &["Maya plays".into()], &again);
+        assert!(log_it && fresh.is_empty());
+        // One went away: logged.
+        assert!(tick_news(Some(&keys), &[], &again[..1]).0);
+        assert_eq!(tick_summary(&[], &again), "Nothing to start: Budget spent ($20.30 of $20.00 today)");
+        assert_eq!(tick_summary(&["Maya plays".into()], &[]), "Started Maya plays");
+        assert_eq!(tick_summary(&["a".into(), "b".into()], &[]), "Started 2: a; b");
+        assert_eq!(tick_summary(&[], &[]), "Nothing to do");
+        let mut v = Vec::new();
+        decide(&mut v, "k", "one");
+        decide(&mut v, "k", "two");
+        assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn an_ask_becomes_a_card_of_yours() {
+        let comps: Vec<String> = ["chloedb", "chloedb-sheets", "docs", "other"].iter().map(|x| x.to_string()).collect();
+        let v = json!({ "title": "Sheets: freeze the first row", "detail": "Scrolling hides the header.", "kind": "Feature", "theme": "usability", "component": "chloedb-sheets", "severity": "minor", "acceptance": "The first row stays on screen" });
+        let f = card_of("/r", &comps, "freeze the header row in sheets please", &v).unwrap();
+        assert_eq!((f.kind.as_str(), f.theme.as_str(), f.component.as_str(), f.severity, f.by.as_str(), f.stage.as_str()), ("feature", "usability", "chloedb-sheets", 2, "you", "found"));
+        assert_eq!(f.scope.unwrap().acceptance, "The first row stays on screen");
+        // A kind or component it does not know falls back; no title, no card.
+        let f = card_of("/r", &comps, "x", &json!({ "title": "Docs: the guide is stale", "kind": "chore", "component": "web" })).unwrap();
+        assert_eq!((f.kind.as_str(), f.component.as_str()), ("feature", "docs"));
+        assert!(card_of("/r", &comps, "x", &json!({ "detail": "no title" })).is_none());
+    }
+
+    #[test]
+    fn a_generated_persona_leads_with_its_component() {
+        let comps: Vec<String> = ["chloedb", "chloectx", "other"].iter().map(|x| x.to_string()).collect();
+        let p = persona_of_answer("/r", &comps, &json!({ "name": "Ana, ML engineer", "role": "r", "traits": ["calm"], "journey": "j", "surfaces": ["recall", "chloectx"], "component": "chloectx", "why": "w" }), "codebase").unwrap();
+        assert_eq!((p.state.as_str(), p.origin.as_str()), ("probation", "codebase"));
+        assert_eq!(p.surfaces, ["chloectx", "recall"]);
+        assert!(persona_of_answer("/r", &comps, &json!({ "name": " " }), "codebase").is_none());
+    }
+
+    #[test]
+    fn a_persona_with_memory_gets_chloectx_and_others_do_not() {
+        let m = Memory { home: Some("/d/converge/memory/cp1".into()), models: Some("/h/.local/share/chloectx/models".into()), settings: "/d/run/settings.json".into(), mcp: "/d/run/mcp.json".into(), prompt_log: "/d/run/p.jsonl".into(), who: json!({ "CHLOECTX_AGENT_NAME": "Maya", "CHLOECTX_PROMPT_SOURCE": "workbench" }) };
+        let env = |e: &[(String, String)], k: &str| e.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        // Off (the default), and every role but play: ChloeCtx is off.
+        for (role, mem) in [("play", None), ("scope", None), ("card", Some(&m)), ("personas", Some(&m))] {
+            let (args, e) = claude_call(role, "haiku", role == "play", mem);
+            assert_eq!(env(&e, "CHLOECTX_DISABLE").as_deref(), Some("1"), "{role}");
+            assert!(env(&e, "CHLOECTX_HOME").is_none() && !args.contains(&"--settings".to_string()) && !args.join(" ").contains("mcp__chloectx"), "{role} {args:?}");
+        }
+        let (args, e) = claude_call("play", "haiku", true, Some(&m));
+        assert!(env(&e, "CHLOECTX_DISABLE").is_none(), "{e:?}");
+        assert_eq!(env(&e, "CHLOECTX_HOME").as_deref(), Some("/d/converge/memory/cp1"));
+        assert_eq!(env(&e, "CHLOECTX_MODELS").as_deref(), Some("/h/.local/share/chloectx/models"));
+        assert_eq!(env(&e, "CHLOECTX_PROMPT_SOURCE").as_deref(), Some("workbench"));
+        let a = args.join(" ");
+        assert!(a.contains("--settings /d/run/settings.json --mcp-config /d/run/mcp.json"), "{a}");
+        // --allowedTools is last: it takes every word after it.
+        assert_eq!(args[args.len() - 2], "--allowedTools");
+        assert!(args.last().unwrap().ends_with("WebFetch mcp__chloectx__*"), "{a}");
+        // The models: the variable, else XDG's or ~/.local/share's, else engram's when only that is there.
+        assert_eq!(models_dir(Some("/m".into()), None, Some("/h".into()), |_| false), PathBuf::from("/m"));
+        assert_eq!(models_dir(None, Some("/x".into()), Some("/h".into()), |_| false), PathBuf::from("/x/chloectx/models"));
+        assert_eq!(models_dir(None, None, Some("/h".into()), |p| p.ends_with("engram/models")), PathBuf::from("/h/.local/share/engram/models"));
+        assert_eq!(models_dir(None, None, Some("/h".into()), |_| true), PathBuf::from("/h/.local/share/chloectx/models"));
+        // Scoping: the project's own store (no home, no models of its own), and only the read tools.
+        let sm = Memory { home: None, models: None, ..m.clone() };
+        let (args, e) = claude_call("scope", "haiku", false, Some(&sm));
+        assert!(env(&e, "CHLOECTX_DISABLE").is_none() && env(&e, "CHLOECTX_HOME").is_none() && env(&e, "CHLOECTX_MODELS").is_none(), "{e:?}");
+        assert_eq!(env(&e, "CHLOECTX_PROMPT_SOURCE").as_deref(), Some("workbench"));
+        assert!(args.join(" ").contains("--settings /d/run/settings.json --mcp-config /d/run/mcp.json"));
+        let tools = args.last().unwrap();
+        assert_eq!(tools, "Read Glob Grep mcp__chloectx__memory_search mcp__chloectx__memory_ask mcp__chloectx__memory_timeline");
+        assert!(!tools.contains("remember") && !tools.contains("forget") && !tools.contains("chloectx__*"));
+    }
+
+    #[test]
+    fn chloectx_is_checked_against_the_checkout() {
+        assert_eq!(version_in("chloectx 0.3.4\n").as_deref(), Some("0.3.4"));
+        assert_eq!(version_in("chloectx v1.2"), Some("1.2".into()));
+        assert_eq!(version_in("no version here"), None);
+        assert_eq!(cargo_version("[package]\nname = \"chloectx\"\nversion = \"0.3.5\"\n\n[dependencies]\nversion = \"9\"\n").as_deref(), Some("0.3.5"));
+        assert_eq!(cargo_version("[dependencies]\nversion = \"9\"\n"), None);
+        assert_eq!(chloectx_stale(Some("0.3.5"), Some("0.3.5")), None);
+        assert_eq!(chloectx_stale(Some("0.3.3"), None), None);
+        assert_eq!(chloectx_stale(Some("0.3.3"), Some("0.3.5")).unwrap(), "ChloeCtx 0.3.3 is older than this checkout's 0.3.5: scope runs with it anyway; run `chloectx upgrade`");
+        assert!(chloectx_stale(Some("0.10.0"), Some("0.9.1")).unwrap().contains("is newer than"));
+        assert!(chloectx_stale(None, Some("0.3.5")).unwrap().starts_with("ChloeCtx is not installed"));
     }
 
     #[test]

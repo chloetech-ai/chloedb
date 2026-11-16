@@ -1,5 +1,11 @@
 # Workbench, rebuilt around what you came to do
 
+> **Since 2026-11-15 the app is Converge, and Workbench is its section.**
+> `#/` opens Converge's board of the project in focus; the page this file
+> calls Start (Home) is Workbench's home at `#/workbench`, and the phone's
+> tabs are Board, Needs you, Projects and Workbench. See "URL routes". The
+> rest of this file describes Workbench's pages, which keep their routes.
+
 This is the information architecture for the next Workbench UI: the pages,
 the steps on each page, the one thing to press on each step, and where
 every screen of today's build goes. It also covers how the dense views read
@@ -182,7 +188,7 @@ bar (see "Phone").
 
 ## Start (Home)
 
-`#/` · CLI: `chloedb-workbench serve` (prints the URL, as today)
+`#/workbench` (was `#/`; it is Workbench's home now) · CLI: `chloedb-workbench serve` (prints the URL, as today)
 
 ```
 What do you want to do?
@@ -796,8 +802,9 @@ The phone rules:
    agents" on step 4). The inline primary buttons are hidden, so each
    step still has one primary. Review and Debug use the same compact
    indicator.
-3. **Top navigation becomes a bottom tab bar**: **Start**, **Needs you**
-   (with the count as a badge), **Projects** and **More**.
+3. **Top navigation becomes a bottom tab bar**: **Board** (Converge),
+   **Needs you** (with the count as a badge), **Projects** and
+   **Workbench** (its home lists what Start, More and Agents had).
    - The top bar keeps a back link to the parent crumb and the page's
      name, plus Agents (a count) and a Search icon.
    - Needs you opens full screen between the two bars.
@@ -911,7 +918,11 @@ In short:
 
 | route | page |
 |---|---|
-| `#/` | Start (the first run when no project is known) |
+| `#/` | Converge: redirects to `#/converge?project=<the project in focus>`, or `#/converge` with none |
+| `#/converge` | Converge's project picker (a card per project, and Open a project, `#/p`) |
+| `#/converge[/<view>]?project=<project>` | that project's Converge (its board, activity, agents, personas…); `?f=<finding>` opens one finding |
+| `#/workbench` | Workbench's home, the old Start: its four goals, your projects, agents, tools (More's list), what needs you; the first run when no project is known |
+| `#/needs` | Needs you, every project's |
 | `#/new`, `#/new/what`, `#/new/plan` | A. Start a new project |
 | `#/p` | open a folder |
 | `#/p/<project>` | B1 Since you left |
@@ -922,12 +933,20 @@ In short:
 | `#/a/<agent>`, `/changes`, `/preview`, `/terminal` | the agent page and its tabs |
 | `#/debug`, `#/debug/<agent>/<turn>`, `…/wrong` | D, steps 1 to 4 |
 | `#/debug/code[?q=]`, `#/debug/failing`, `#/debug/records` | D's other ways in |
-| `#/more/terminals`, `/time`, `/decisions`, `/library`, `/rules`, `/guide`, `/keys`, `/setup` | More |
+| `#/more`, `#/more/terminals`, `/time`, `/decisions`, `/library`, `/rules`, `/guide`, `/keys`, `/setup`, `/settings` | Workbench's tools (More); `#/more/converge` redirects to `#/` |
 | `#/harness`, `/edit/permissions`, `/edit/memory`, `/sees/<agent>[?turn=]`, `/versions` | Optimize the harness ([HARNESS.md](HARNESS.md)); `#/more/harness` redirects there |
 
 `<project>` is a short name the server gives each repository: its
 folder's name, made unique (`shop`, `shop-2`). A route never carries an
-absolute path.
+absolute path. A page opened by its address waits for the projects list
+before it says a project is unknown, and mounts again if the project comes
+later (a slow `/api/repos` on a fresh load said "No project named …").
+
+Crumbs start at Converge: Converge's pages at its board, Needs you under
+Converge, every Workbench page under Converge › Workbench (`shell.js`
+rewrites an old first crumb "Start" this way). The top bar on a desktop has
+Board, Projects and Workbench after the brand; the phone's tab bar has
+Board, Needs you, Projects (`#/converge`, the picker) and Workbench.
 
 Today's routes redirect for a release:
 
@@ -958,7 +977,8 @@ Inside the Terminal tab every key goes to the agent, and a bar says so.
 | `.` | Needs you |
 | `a` | Agents (then `1`…`9` to open one) |
 | `n` | in a project: Start a change (focus the composer) |
-| `g s`, `g c`, `g r`, `g d` | go to Start, Continue, Review, Debug |
+| `g s`, `g w` | go to Converge (the board of the project in focus), Workbench |
+| `g c`, `g r`, `g d`, `g t`, `g n` | go to Continue, Review, Debug, All terminals, Needs you |
 | `1`…`9` | in a question card: Claude Code's option with that number |
 | `y` | in a diff: Why? for the line under the cursor |
 | `j` `k`, `Enter` | move through the items of a page, open one |
@@ -1160,8 +1180,8 @@ On a phone, Back and Next sit in a bar at the bottom.
   Workbench. A sheet of P's or R2's has every key while it is open.
 
 **Phone.** Breakpoints are at 640 and 1024 px.
-- The tab bar has Start, Needs you (with the count), Projects and More,
-  above the safe-area inset.
+- The tab bar has Board, Needs you (with the count), Projects and
+  Workbench, above the safe-area inset.
 - With a coarse pointer, targets are at least 44 px and inputs 16 px.
 - Nothing is hover-only.
 - No page scrolls sideways at 390 px (the screenshot run checks this).

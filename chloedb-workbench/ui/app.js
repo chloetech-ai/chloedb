@@ -2731,7 +2731,7 @@ function goalKey(e) {
   if (GP.g) {
     GP.g = false;
     const p = currentProject();
-    const to = { s: "#/", c: p ? `#/p/${p.project}` : "#/p", r: p ? `#/p/${p.project}/ship` : "#/p", d: "#/debug", t: "#/more/terminals", n: "#/needs" }[k];
+    const to = { s: "#/", w: "#/workbench", c: p ? `#/p/${p.project}` : "#/p", r: p ? `#/p/${p.project}/ship` : "#/p", d: "#/debug", t: "#/more/terminals", n: "#/needs" }[k];
     if (to) { go(to); return true; }
     return false;
   }
@@ -2904,7 +2904,13 @@ function refreshProjects() {
   if (!S.token) return Promise.resolve();
   if (P.busy) return P.busy;
   P.busy = api("/api/repos").then((j) => { P.list = j.repos || []; P.at = Date.now(); Z.headKey = ""; }, () => {})
-    .finally(() => { P.busy = null; gotProjects(); schedule(); });
+    .finally(() => {
+      P.busy = null; gotProjects(); schedule();
+      // A page opened by its address before the projects came (a slow
+      // /api/repos on a fresh load said "No project named …") mounts
+      // again once its project is known.
+      if (G.unknown && G.r && G.r.project === G.unknown && projectByName(G.unknown)) { G.unknown = null; G.key = ""; route(location.hash); }
+    });
   return P.busy;
 }
 function projectsSoon() { clearTimeout(P.timer); P.timer = setTimeout(refreshProjects, 1500); }
@@ -2980,7 +2986,7 @@ function answered(id, { quiet = false } = {}) {
 
 // ---------------------------------------------------------------- router
 
-const G = { r: null, view: null, req: 0, key: "", ukey: "" };
+const G = { r: null, view: null, req: 0, key: "", ukey: "", unknown: null };
 const GOAL = {
   start: "/goals/start.js", new: "/goals/newproject.js", needs: "/goals/needs.js",
   open: "/goals/continue.js", continue: "/goals/continue.js", understand: "/goals/continue.js", change: "/goals/continue.js", main: "/goals/continue.js",
@@ -3028,6 +3034,12 @@ function goalUpdate() {
 
 async function route(hash) {
   hash = hash || "#/";
+  // `#/` opens Converge on the project in focus: wait for the projects
+  // (briefly) so the redirect can name it.
+  if (hash === "#/" || hash === "#") {
+    await Promise.race([firstProjects, new Promise((ok) => setTimeout(ok, 3000))]);
+    if ((location.hash || "#/") !== hash) return;
+  }
   const r = resolve(hash, { project: currentProject()?.project || null, agentIds: [...S.agents.keys()] });
   if (r.redirect) { replaceHash(r.redirect); return; }
   Shell.close();
@@ -3048,15 +3060,15 @@ async function route(hash) {
     if (!S.agents.has(r.agent)) {
       unzoom();
       showView("goal-view");
-      Shell.setCrumbs([{ label: "Start", href: "#/" }, { label: r.agent, href: hash }]);
-      $("goal-view").replaceChildren(h("div", { class: "gp" }, h("div", { class: "gp-main" }, h("h1", { class: "gp-title", text: "No such agent" }), h("p", { class: "gp-sub", text: `Workbench knows no agent ${r.agent}.` }), h("a", { class: "btn", href: "#/" }, "Start"))));
+      Shell.setCrumbs([...Shell.WB, { label: r.agent, href: hash }]);
+      $("goal-view").replaceChildren(h("div", { class: "gp" }, h("div", { class: "gp-main" }, h("h1", { class: "gp-title", text: "No such agent" }), h("p", { class: "gp-sub", text: `Workbench knows no agent ${r.agent}.` }), h("a", { class: "btn", href: "#/workbench" }, "Workbench"))));
       return;
     }
     showView("zoom-view");
     const a = S.agents.get(r.agent);
     const p = projectOf(a.repo);
     zoom(r.agent, { tab: r.tab === "terminal" ? "term" : r.tab });
-    Shell.setCrumbs([{ label: "Start", href: "#/" }, ...(p ? [{ label: p.project, href: `#/p/${p.project}` }] : []), { label: nameOf(a), href: `#/a/${a.id}` }]);
+    Shell.setCrumbs([...Shell.WB, ...(p ? [{ label: p.project, href: `#/p/${p.project}` }] : []), { label: nameOf(a), href: `#/a/${a.id}` }]);
     return;
   }
   unzoom();
@@ -3064,7 +3076,7 @@ async function route(hash) {
     unmountGoal();
     closeDecisions();
     showView("grid-view");
-    Shell.setCrumbs([{ label: "Start", href: "#/" }, { label: "More", href: "#/more" }, { label: "All terminals", href: hash }]);
+    Shell.setCrumbs([...Shell.WB, { label: "More", href: "#/more" }, { label: "All terminals", href: hash }]);
     render();
     requestAnimationFrame(() => { for (const t of S.tiles.values()) t.preview?.scale(); });
     return;
@@ -3073,7 +3085,7 @@ async function route(hash) {
     unmountGoal();
     showView("dec-view");
     showDecisions();
-    Shell.setCrumbs([{ label: "Start", href: "#/" }, { label: "More", href: "#/more" }, { label: "Decisions timeline", href: hash }]);
+    Shell.setCrumbs([...Shell.WB, { label: "More", href: "#/more" }, { label: "Decisions timeline", href: hash }]);
     return;
   }
   closeDecisions();
@@ -3094,6 +3106,14 @@ async function route(hash) {
   // The agents and the projects first, so a page opened by its address knows them.
   await Promise.race([Promise.all([firstSnapshot, firstProjects]), new Promise((ok) => setTimeout(ok, 3000))]);
   if (req !== G.req) { clearTimeout(slow); return; }
+  // A project named by the address and not in the list yet: read the list
+  // again (it may have been slow, or opened since) before saying there is
+  // no such project; refreshProjects mounts the page again if it comes later.
+  if (r.project && !projectByName(r.project)) {
+    await Promise.race([refreshProjects(), new Promise((ok) => setTimeout(ok, 8000))]);
+    if (req !== G.req) { clearTimeout(slow); return; }
+  }
+  G.unknown = r.project && !projectByName(r.project) ? r.project : null;
   const ctx = goalCtx(r);
   let m = null;
   try { m = await import(GOAL[r.page]); } catch (err) {
@@ -3117,10 +3137,13 @@ async function route(hash) {
  *  project, the crumbs, the needs, the projects and the shell's cards. */
 function goalCtx(r) {
   const p = r.project ? projectByName(r.project) : null;
+  // Converge is project based: with no project in its hash it shows its
+  // project picker, so it gets no repo of the project in focus.
+  const own = r.page === "converge";
   const ctx = levelCtx(r.agent || null, { repo: p ? p.path : undefined });
-  Object.defineProperty(ctx, "params", { value: { ...r, agent: r.agent || null, repo: p ? p.path : pickRepo(), page: r.page, project: r.project || null, query: r.query }, enumerable: true });
+  Object.defineProperty(ctx, "params", { value: { ...r, agent: r.agent || null, repo: p ? p.path : own ? null : pickRepo(), page: r.page, project: r.project || null, query: r.query }, enumerable: true });
   return Object.assign(ctx, {
-    project: p || (r.project ? null : currentProject()),
+    project: p || (r.project || own ? null : currentProject()),
     crumbs: (list) => Shell.setCrumbs(list),
     toast,
     needs: () => N,

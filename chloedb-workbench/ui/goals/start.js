@@ -1,16 +1,19 @@
-// Start (JOURNEYS.md, "Start (Home)" and "First run"): what do you want to
-// do? Four goals, the one that fits now filled; your projects, most active
-// first; what needs you now, answered in place. With no project known: the
-// folder box and Start a new project, and the setup line.
-import { h, useStyle, page, btn, label, kc, pane, bank, stateDot, since, ago, fmtClock, icon, avatar } from "/levels/common.js";
+// Workbench's home, `#/workbench` (JOURNEYS.md, "Workbench (Home)" and
+// "First run"; it was Start, the app's home, before Converge was): what do
+// you want to do? Four goals, the one that fits now filled; your projects,
+// most active first; the agents; Workbench's tools (what More lists); what
+// needs you now, answered in place. With no project known: the folder box
+// and Start a new project, the tools and the setup line.
+import { h, useStyle, page, btn, label, kc, pane, bank, stateDot, since, ago, fmtClock, icon, avatar, GROUP_WORDS, toMs } from "/levels/common.js";
 import { repoPicker } from "/levels/repos.js";
+import { MORE, ORDER, WB, fleetWords } from "/goals/shell.js";
 
 export function mount(root, ctx) {
   useStyle("g-start", CSS);
   const S = { digest: null, setup: null };
   const el = h("div", { class: "g-start" });
   root.append(el);
-  ctx.crumbs([{ label: "Start", href: "#/" }]);
+  ctx.crumbs(WB);
   ctx.api("/api/digest").then((d) => { S.digest = d; draw(); }, () => {});
   ctx.api("/api/chloectx").then((s) => { S.setup = s; draw(); }, () => { S.setup = { ok: false, problem: "Workbench could not check ChloeCtx" }; draw(); });
 
@@ -36,14 +39,38 @@ export function mount(root, ctx) {
       // The picker hands over the folder's path: land on its project (Lee landed on `#/p/`).
       onDone: (path) => { ctx.refreshProjects().then(() => { const p = (ctx.projectOf && ctx.projectOf(path)) || ctx.projects().find((x) => x.path === path); ctx.go(p ? `#/p/${p.project}` : "#/p"); }); },
     });
-    return page({ kicker: "Workbench", title: "What do you want to do?", sub: "Open a project you have, or start a new one. Once a project is open, this page also offers Review and ship, and Find out why something went wrong." },
+    return page({ kicker: "Converge › Workbench", title: "What do you want to do?", sub: "Open a project you have, or start a new one. Once a project is open, this page also offers Review and ship, and Find out why something went wrong." },
       bank(2,
         h("div", { class: "g-goal" }, picker,
           h("label", { class: "g-trust" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { trust = e.target.checked; } }),
             h("span", {}, h("b", {}, "Let agents work here"), " Workbench answers Claude Code's “trust this folder?” for this project's folders, so agents do not stop at it."))),
         h("div", { class: "g-goal" }, label("New"), h("b", { class: "g-gt" }, "Start a new project"), h("p", {}, "From an empty folder or an idea: describe it, and a lead agent plans the parts before anything runs."),
           h("div", { class: "g-fact" }, "Workbench runs git init and makes a first commit."), btn("Start a new project", { href: "#/new" }))),
+      tools(),
       h("div", { class: "gp-sec" }, setupLine()));
+  }
+
+  // What the top bar's Agents switcher lists: the newest of each name,
+  // running or ended in the last 3 days, grouped as everywhere.
+  function agents() {
+    const list = ctx.fleet ? ctx.fleet() : [];
+    const names = ctx.projectNames ? ctx.projectNames() : {};
+    const rows = ORDER.flatMap((g) => list.filter((a) => ctx.groupOf(a) === g)
+      .sort((x, y) => (toMs(y.state_since) || 0) - (toMs(x.state_since) || 0))
+      .map((a) => h("a", { class: "g-ag", href: `#/a/${a.id}`, "data-nav": "" },
+        avatar(a, 20), h("b", {}, a.name), h("span", { class: "g-agw" }, stateDot(g, GROUP_WORDS[g]), names[a.repo] ? ` · ${names[a.repo]}` : "", a.task ? ` · ${a.task}` : ""))));
+    return h("div", { class: "gp-sec" }, pane("Agents", h("a", { href: "#/more/terminals" }, "All terminals"),
+      rows.length ? [h("div", { class: "g-agsum" }, fleetWords(list)), h("div", { class: "g-ags" }, rows.slice(0, 12)),
+        rows.length > 12 ? h("a", { class: "lv-link g-agmore", href: "#/more/terminals" }, `All ${rows.length} →`) : null]
+        : h("p", { class: "g-dim g-agsum" }, "No agents yet. Start one from a project's Start a change.")));
+  }
+
+  // Workbench's tools: what the More menu lists.
+  function tools() {
+    return h("div", { class: "gp-sec" }, pane("Tools", null, h("nav", { class: "g-tools" },
+      MORE.map(([k, ic, t, sub]) => h("a", { class: "more-row", href: `#/more/${k}` }, icon(ic), h("span", {}, t, h("small", {}, sub)), icon("chev", "i sm"))),
+      // On a phone the top bar has no room for the bell: Notifications is here.
+      h("button", { type: "button", class: "more-row g-nt", onclick: () => ctx.notifications && ctx.notifications() }, icon("bell"), h("span", {}, "Notifications", h("small", {}, "Notify me, quiet hours, a level per project")), icon("chev", "i sm")))));
   }
 
   function home(projects) {
@@ -79,7 +106,7 @@ export function mount(root, ctx) {
         h("td", {}, h("b", {}, p.project), dense ? null : h("div", { class: "g-path" }, p.path)),
         h("td", {}, st),
         h("td", { class: "g-hide" }, h("span", { class: "g-avs" }, (ctx.state.agents || []).filter((a) => a.repo === p.path && a.running).slice(0, 5).map((a) => avatar(a, 16)))),
-        h("td", { class: "r num g-dim" }, p.last_activity_ms ? ago(p.last_activity_ms) : "—"),
+        h("td", { class: "r num g-dim g-hide" }, p.last_activity_ms ? ago(p.last_activity_ms) : "—"),
         h("td", { class: "r" }, h("span", { class: "g-acts" }, btn("Continue", { sm: true, href: `#/p/${p.project}` }), c.ready ? btn(`Review ${c.ready}`, { sm: true, href: `#/p/${p.project}/ship` }) : null)));
     });
     const needs = N.items.slice(0, 4);
@@ -89,10 +116,12 @@ export function mount(root, ctx) {
       N.count > needs.length ? h("a", { class: "lv-link", href: "#/needs" }, `All ${N.count} in the inbox →`) : null,
       ctx.slot("rules-suggest"),
     ];
-    return page({ kicker: "Start", title: "What do you want to do?", sub, wide: true, inspector: insp },
+    return page({ kicker: "Converge › Workbench", title: "What do you want to do?", sub, wide: true, inspector: insp },
       goals, hx,
       h("div", { class: "gp-sec" }, pane("Your projects", h("a", { href: "#/p" }, "Open another"),
-        h("table", { class: "tbl" }, h("thead", {}, h("tr", {}, h("th", {}, "Project"), h("th", {}, "State"), h("th", { class: "g-hide" }, "Agents"), h("th", { class: "r" }, "Active"), h("th", { class: "r" }, ""))), h("tbody", {}, rows)))),
+        h("table", { class: "tbl" }, h("thead", {}, h("tr", {}, h("th", {}, "Project"), h("th", {}, "State"), h("th", { class: "g-hide" }, "Agents"), h("th", { class: "r g-hide" }, "Active"), h("th", { class: "r" }, ""))), h("tbody", {}, rows)))),
+      agents(),
+      tools(),
       h("div", { class: "gp-sec" }, setupLine()));
   }
 
@@ -123,7 +152,19 @@ const CSS = `
 .g-setup{font-size:var(--fs-sm);color:var(--text-2);display:flex;gap:var(--s-2);align-items:center;flex-wrap:wrap}
 .g-setup.bad{color:var(--crit-ink)}
 .g-ih{display:flex}.g-ih .lbl{flex:1}
+.g-agsum{padding:var(--s-2) var(--s-4) 0;font-size:var(--fs-sm);color:var(--text-2);margin:0}
+.g-ags{display:flex;flex-direction:column;padding:var(--s-1) 0}
+.g-ag{display:flex;align-items:center;gap:var(--s-3);min-height:36px;padding:var(--s-1) var(--s-4);color:var(--text);text-decoration:none;min-width:0}
+.g-ag:hover,.g-ag:focus-visible{background:var(--surface-2)}
+.g-ag b{font-weight:var(--w-mid);flex:none}
+.g-agw{color:var(--text-2);font-size:var(--fs-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.g-agmore{display:block;padding:0 var(--s-4) var(--s-3)}
+.g-tools{display:flex;flex-direction:column}
+.g-tools .more-row{border-bottom:var(--hair) solid var(--line)}
+.g-tools .more-row:last-child{border-bottom:0}
+.g-tools .more-row>svg:last-child{margin-left:auto;color:var(--text-3)}
+.g-tools .g-nt{display:none;width:100%;border:0;background:none;font:inherit;text-align:left;cursor:pointer;color:inherit}
 .g-start .gp-insp{gap:var(--s-4)}
 @media (max-width:1024px){.g-goals{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:640px){.g-goals{grid-template-columns:minmax(0,1fr)}.g-goal{min-height:0}.g-hide{display:none}.g-goal .btn{align-self:stretch;height:var(--touch)}.g-goal .kc{display:none}}
+@media (max-width:640px){.g-ag{min-height:var(--touch)}.g-tools .g-nt{display:grid}.g-goals{grid-template-columns:minmax(0,1fr)}.g-goal{min-height:0}.g-hide{display:none}.g-goal .btn{align-self:stretch;height:var(--touch)}.g-goal .kc{display:none}}
 `;
