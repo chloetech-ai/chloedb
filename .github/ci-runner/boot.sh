@@ -27,7 +27,13 @@ blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -q "$dev"
 mkdir -p /mnt/ci
 mount -o discard,defaults,noatime "$dev" /mnt/ci
 install -d -o runner -g runner /mnt/ci/cargo/registry /mnt/ci/cargo/git /mnt/ci/sccache
-for d in registry git; do
+# Cargo locks its registry with files at the root of CARGO_HOME, not in
+# registry/: every cargo home that shares the registry shares them too.
+cargo_locks=".package-cache .package-cache-mutate"
+for f in $cargo_locks; do
+  [ -e "/mnt/ci/cargo/$f" ] || install -m 644 -o runner -g runner /dev/null "/mnt/ci/cargo/$f"
+done
+for d in registry git $cargo_locks; do
   rm -rf "/home/runner/.cargo/$d"
   ln -s "/mnt/ci/cargo/$d" "/home/runner/.cargo/$d"
 done
@@ -46,14 +52,16 @@ for i in $(seq 1 "$count"); do
   # Each runner its own rustup and cargo homes, copied from the image's:
   # two jobs starting at once on a fresh droplet ran rustup over the same
   # ~/.cargo/bin, and one died of "Text file busy" on cargo while the other
-  # could not spawn rustc (11-14). The registry stays shared on the volume;
-  # cargo locks it.
+  # could not spawn rustc (11-14). The registry stays shared on the volume,
+  # and so do the lock files cargo keeps beside it: with a lock per home,
+  # two runners unpacked the same new crate into registry/src at once and
+  # one failed with "File exists" on its .cargo-ok (11-16).
   rh=/opt/rust/$i
   rm -rf "$rh"
   install -d "$rh/cargo"
   cp -a /home/runner/.rustup "$rh/rustup"
   cp -a /home/runner/.cargo/bin "$rh/cargo/bin"
-  for d in registry git; do ln -s "/mnt/ci/cargo/$d" "$rh/cargo/$d"; done
+  for d in registry git $cargo_locks; do ln -s "/mnt/ci/cargo/$d" "$rh/cargo/$d"; done
   chown -R runner:runner "$rh" "$dir"
   cd "$dir"
   sudo -u runner ./config.sh --unattended --replace --url "$repo_url" --token "$token" \

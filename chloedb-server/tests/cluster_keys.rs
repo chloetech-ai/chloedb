@@ -375,6 +375,9 @@ async fn only_the_cluster_token_adds_a_server() {
         let refused = |what: &str, (status, j): (u16, Json)| {
             assert_eq!(status, 403, "{what}: {j}");
             assert!(j["error"].as_str().unwrap_or_default().contains("cluster's token"), "{what}: {j}");
+            // An operator from before 0.3.5 sends the admin token: the
+            // refusal, which its status shows, says to upgrade it.
+            assert!(j["error"].as_str().unwrap_or_default().contains("set image deployment/strata-operator"), "{what}: {j}");
         };
         refused("a shard", http(&base, "POST", "/v1/admin/shards", Some(who), Some(json!({"servers": [elsewhere]}))).await);
         refused("a copy", http(&base, "POST", "/v1/admin/shards/0/replicas", Some(who), Some(json!({"url": elsewhere, "force": true}))).await);
