@@ -6,6 +6,7 @@ pub mod answer;
 pub mod api;
 pub mod ask;
 pub mod complete;
+pub mod crawl;
 pub mod digest;
 pub mod ingest;
 pub mod link;

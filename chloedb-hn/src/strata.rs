@@ -153,6 +153,35 @@ impl Strata {
         }
     }
 
+    /// Every row of a SELECT, in pages of `page` rows read from one version
+    /// of the data (a scroll), each page handed to `each` as it comes.
+    pub async fn scroll(&self, sql: &str, params: Value, page: usize, mut each: impl FnMut(Vec<Row>)) -> Result<usize> {
+        // Pages of at most 10,000 rows (the server's --max-result-window by
+        // default), as arrays in the order of the columns; a first page the
+        // cluster did not answer in time is asked again.
+        let first = json!({ "sql": sql, "params": params, "page_size": page.clamp(1, 10_000), "keep_alive_ms": 120_000, "timeout_ms": 120_000 });
+        let mut tries = 0;
+        let mut j = loop {
+            match self.post("/v1/query", &first).await {
+                Ok(j) => break j,
+                Err(e) if tries < 3 && (e.status == 0 || e.status >= 500) => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_secs(5 * tries)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let mut n = 0;
+        loop {
+            let cursor = j["cursor"].as_str().map(str::to_string);
+            let rows = rows_of(j);
+            n += rows.len();
+            each(rows);
+            let Some(c) = cursor else { return Ok(n) };
+            j = self.post("/v1/query", &json!({ "cursor": c, "keep_alive_ms": 120_000, "timeout_ms": 120_000 })).await?;
+        }
+    }
+
     pub async fn health(&self) -> Result<Value> {
         self.get("/v1/health").await
     }
@@ -210,10 +239,24 @@ impl Strata {
 
 fn rows_of(j: Value) -> Vec<Row> {
     match j {
-        Value::Object(mut o) => match o.remove("rows") {
-            Some(Value::Array(a)) => a.into_iter().filter_map(|r| if let Value::Object(m) = r { Some(m) } else { None }).collect(),
-            _ => Vec::new(),
-        },
+        Value::Object(mut o) => {
+            let columns: Vec<String> = match o.remove("columns") {
+                Some(Value::Array(c)) => c.into_iter().map(|c| c.as_str().unwrap_or("").to_string()).collect(),
+                _ => Vec::new(),
+            };
+            match o.remove("rows") {
+                // Objects, or (a scroll's later pages) arrays in the order of the columns.
+                Some(Value::Array(a)) => a
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Value::Object(m) => Some(m),
+                        Value::Array(vals) if !columns.is_empty() => Some(columns.iter().cloned().zip(vals).collect()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     }
 }

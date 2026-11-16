@@ -23,6 +23,10 @@ parquet = { version = "59.3", default-features = false, features = ["arrow", "sn
 arrow-array = "59.3"
 arrow-schema = "59.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The crawl of the stories' links: ChloeDB's own crawler, its fetcher
+# (robots.txt, politeness, public addresses only) and its reading of a page.
+chloedb-crawl = { path = "../chloedb-crawl" }
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

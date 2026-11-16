@@ -32,6 +32,48 @@ enum Cmd {
     Complete(CompleteArgs),
     /// Write trending's rows only: each month's terms of titles (hn_terms.jsonl) and its spikes against the year before (hn_spikes.jsonl).
     Trending(CompleteArgs),
+    /// Read the pages the stories link to into hn_pages, most points first, with ChloeDB's crawler: robots.txt obeyed, one request at a time to a site, a second apart. Links already read are skipped, so a crawl stopped goes on where it was.
+    Crawl(CrawlArgs),
+}
+
+#[derive(Args)]
+struct CrawlArgs {
+    #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+    strata: String,
+    #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
+    key: Option<String>,
+    /// Links of stories with at least this many points.
+    #[arg(long, default_value_t = 3)]
+    min_points: i64,
+    /// The most links asked in this run (0: all).
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+    /// Requests out at once, over all sites.
+    #[arg(long, default_value_t = 256)]
+    concurrency: usize,
+    /// Requests out at once to one site.
+    #[arg(long, default_value_t = 1)]
+    per_host: usize,
+    /// Milliseconds between two requests to a site (longer when its robots.txt asks, or when it is slow).
+    #[arg(long, default_value_t = 1000)]
+    delay_ms: u64,
+    /// Whom a site's owner reaches about this crawl (an email address or a URL), sent in the user agent.
+    #[arg(long, env = "CHLOEDB_CRAWL_CONTACT")]
+    contact: Option<String>,
+    /// The most characters of a page's text kept.
+    #[arg(long, default_value_t = 30_000)]
+    max_text: usize,
+    /// Rows a write sends.
+    #[arg(long, default_value_t = 200)]
+    batch: usize,
+    #[arg(long, default_value_t = 20_000)]
+    timeout_ms: u64,
+    /// The most bytes of a page read.
+    #[arg(long, default_value_t = 5_000_000)]
+    max_bytes: usize,
+    /// The embedding model of the tables, when they are made.
+    #[arg(long, default_value = schema::MODEL)]
+    model: String,
 }
 
 #[derive(clap::Args)]
@@ -347,6 +389,26 @@ async fn main() {
             let t0 = std::time::Instant::now();
             let (terms, spikes) = chloedb_hn::trending::build(&a.rows, |m| eprintln!("chloedb-hn: {m}")).unwrap_or_else(|e| fail(e));
             eprintln!("chloedb-hn: wrote {terms} month-terms and {spikes} spikes in {:.0} s", t0.elapsed().as_secs_f64());
+        }
+        Cmd::Crawl(a) => {
+            let db = Strata::new(&a.strata, a.key.clone());
+            let made = schema::ensure(&db, &a.model, "none").await.unwrap_or_else(|e| fail(format!("{}: {e}", a.strata)));
+            if !made.is_empty() {
+                eprintln!("chloedb-hn: made {}", made.join(", "));
+            }
+            let o = chloedb_hn::crawl::Opts {
+                min_points: a.min_points, limit: a.limit, concurrency: a.concurrency, per_host: a.per_host, delay_ms: a.delay_ms,
+                contact: a.contact, max_text: a.max_text, batch: a.batch, timeout_ms: a.timeout_ms, max_bytes: a.max_bytes,
+            };
+            let stop = Arc::new(tokio::sync::Notify::new());
+            let s2 = stop.clone();
+            tokio::spawn(async move {
+                shutdown_signal().await;
+                eprintln!("chloedb-hn: stopping the crawl: the pages out are finished and written");
+                s2.notify_one();
+            });
+            let say: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|m: String| eprintln!("chloedb-hn: {m}"));
+            chloedb_hn::crawl::run(&db, &o, say, stop).await.unwrap_or_else(|e| fail(e));
         }
         Cmd::Load(a) => {
             let db = Strata::new(&a.strata, a.key.clone());

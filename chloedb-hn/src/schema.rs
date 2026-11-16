@@ -96,6 +96,22 @@ pub fn tables(model: &str, comment_model: &str) -> Vec<(&'static str, String)> {
             id KEYWORD PRIMARY KEY, month KEYWORD, year INT, rank INT, term KEYWORD, n INT,
             expected FLOAT, ratio FLOAT, score FLOAT, points INT, top INT, top_title TEXT
         ) OPTIONS(cluster_by = 'id')".to_string()),
+        // The pages the stories link to, as `crawl` read them (crate::crawl):
+        // keyed by the link's canonical form (the stories' `curl`), with
+        // what came of asking (`status`: ok, noindex, robots, http_4xx,
+        // timeout, ...), the page's text and its fields, and a vector of
+        // its title, description and text. A page that asks not to be
+        // indexed keeps no text.
+        ("hn_pages", format!("CREATE TABLE IF NOT EXISTS hn_pages (
+            id KEYWORD PRIMARY KEY,
+            url KEYWORD, final KEYWORD, site KEYWORD,
+            story INT REFERENCES hn_stories, stories INT, points INT,
+            status KEYWORD, code INT, fetched TIMESTAMP, ms INT, bytes INT,
+            title TEXT, description TEXT, body TEXT,
+            words INT, lang KEYWORD, published TIMESTAMP, author KEYWORD,
+            image KEYWORD, site_name KEYWORD, kind KEYWORD,
+            emb VECTOR OPTIONS(embed = 'title, description, body', model = '{model}')
+        )")),
     ]
 }
 
