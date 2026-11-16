@@ -48,7 +48,9 @@ class Ours:
     def __init__(self, app):
         self.app = app.rstrip("/")
     def search(self, q):
-        body, s = get(f"{self.app}/v1/search?q={urllib.parse.quote(q)}&facets=1")
+        # A token when the app is not public (CHLOEDB_ARXIV_TOKEN).
+        tok = os.environ.get("CHLOEDB_ARXIV_TOKEN")
+        body, s = get(f"{self.app}/v1/search?q={urllib.parse.quote(q)}&facets=1", {"authorization": f"Bearer {tok}"} if tok else None)
         j = json.loads(body)
         if j.get("open"):
             return [j["open"]["paper"]], s, None, j
@@ -141,6 +143,13 @@ def anthropic(model, system, user, max_tokens=300):
 STOP = set("a an the of on in for to and with by from via is are as at its into using towards toward under over between based new".split())
 
 
+def pick(a):
+    """The systems asked: --systems ours,arxiv,s2 (all three by default)."""
+    names = ["ours"] if a.only_ours else [x.strip() for x in a.systems.split(",") if x.strip()]
+    made = {"ours": lambda: Ours(a.app), "arxiv": Arxiv, "s2": S2}
+    return [made[n]() for n in names]
+
+
 def typo(title, rng):
     words = title.split()
     idx = sorted(range(len(words)), key=lambda i: -len(words[i]))[:2]
@@ -185,7 +194,7 @@ def known(a):
                        "described": anthropic(DESCRIBE_MODEL, DESCRIBE, f"Title: {r['title']}\n\nAbstract: {r['abstract'][:1800]}", 80).strip().strip('"'),
                        "paper": r}
         json.dump(qs, open(qpath, "w"), indent=1)
-    systems = [Ours(a.app)] + ([] if a.only_ours else [Arxiv(), S2()])
+    systems = pick(a)
     out = open(os.path.join(a.out, "known.jsonl"), "a")
     done = set()
     try:
@@ -214,7 +223,7 @@ JUDGE = ("You judge search results for researchers. Given a search and one paper
 
 def topical(a):
     qs = [l.strip() for l in open(a.queries) if l.strip() and not l.startswith("#")]
-    systems = [Ours(a.app)] + ([] if a.only_ours else [Arxiv(), S2()])
+    systems = pick(a)
     os.makedirs(a.out, exist_ok=True)
     rpath = os.path.join(a.out, "topical_runs.json")
     runs = json.load(open(rpath)) if os.path.exists(rpath) else {}
@@ -309,5 +318,6 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", required=True)
     ap.add_argument("--only-ours", action="store_true")
+    ap.add_argument("--systems", default="ours,arxiv,s2", help="which to ask, of ours, arxiv and s2; Semantic Scholar's shared pool can refuse for hours, so it can run on its own")
     a = ap.parse_args()
     {"known": known, "topical": topical, "report": report}[a.cmd](a)

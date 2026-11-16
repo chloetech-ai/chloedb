@@ -226,7 +226,9 @@ pub fn parse(html: &str) -> Full {
     let mut tables = Vec::new();
     let tr = re(r#"(?s)<tr\b[^>]*>(.*?)</tr>"#);
     let td = re(r#"(?s)<t[dh]\b([^>]*)>(.*?)</t[dh]>"#);
-    let span = re(r#"colspan="(\d+)""#);
+    let colspan = re(r#"colspan="(\d+)""#);
+    let rowspan = re(r#"rowspan="(\d+)""#);
+    let n_of = |r: &regex::Regex, attrs: &str| r.captures(attrs).and_then(|m| m[1].parse::<usize>().ok()).unwrap_or(1).clamp(1, 24);
     for (k, (s, id, class)) in blocks.iter().enumerate() {
         let e = blocks.get(k + 1).map(|b| b.0).unwrap_or(html.len()).min(s + 400_000);
         let part = &html[*s..e];
@@ -240,14 +242,38 @@ pub fn parse(html: &str) -> Full {
         } else {
             let Some((label, cap, _)) = caption(part, "table") else { continue };
             let mut rows = Vec::new();
+            // A cell over several columns or rows keeps the columns beside
+            // and under it in line: the places it covers are left empty.
+            // `below[j]` counts the rows a cell above still covers in column j.
+            let mut below: Vec<usize> = Vec::new();
             for r in tr.captures_iter(part).take(24) {
-                // A cell over several columns keeps the columns under it
-                // in line: it is followed by empty cells.
                 let mut cells: Vec<String> = Vec::new();
+                let covered = |below: &mut Vec<usize>, j: usize| -> bool {
+                    match below.get_mut(j) {
+                        Some(n) if *n > 0 => {
+                            *n -= 1;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
                 for c in td.captures_iter(&r[1]) {
+                    while covered(&mut below, cells.len()) {
+                        cells.push(String::new());
+                    }
+                    let (wide, tall) = (n_of(&colspan, &c[1]), n_of(&rowspan, &c[1]));
+                    for k in 0..wide {
+                        let j = cells.len() + k;
+                        if below.len() <= j {
+                            below.resize(j + 1, 0);
+                        }
+                        below[j] = tall - 1;
+                    }
                     cells.push(cut(&text_of(&c[2]), 80));
-                    let n = span.captures(&c[1]).and_then(|m| m[1].parse::<usize>().ok()).unwrap_or(1).clamp(1, 12);
-                    cells.extend(std::iter::repeat(String::new()).take(n - 1));
+                    cells.extend(std::iter::repeat(String::new()).take(wide - 1));
+                }
+                while cells.len() < below.len() && covered(&mut below, cells.len()) {
+                    cells.push(String::new());
                 }
                 cells.truncate(12);
                 if !cells.is_empty() && cells.iter().any(|c| !c.is_empty()) {
@@ -356,8 +382,8 @@ mod tests {
 <figure id="S2.F2.fig2" class="ltx_figure ltx_figure_panel"><img src="2401.00001v1/b.png" width="229" height="165"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">(b) </span>Length</figcaption></figure></div>
 <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 2: </span>(a) Recall. (b) Length.</figcaption></figure>
 <figure id="S2.T1" class="ltx_table"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 1: </span>Main results.</figcaption>
-<table class="ltx_tabular"><tr class="ltx_tr"><th class="ltx_th" colspan="2">Results</th><th class="ltx_th">Speed</th></tr><tr class="ltx_tr"><th class="ltx_th">Model</th><th class="ltx_th">NDCG</th></tr>
-<tr class="ltx_tr"><td class="ltx_td">Ours</td><td class="ltx_td"><span class="ltx_text ltx_font_bold">0.42</span></td></tr></table></figure>
+<table class="ltx_tabular"><tr class="ltx_tr"><th class="ltx_th" rowspan="2">Model</th><th class="ltx_th" colspan="2">Results</th></tr><tr class="ltx_tr"><th class="ltx_th">NDCG</th><th class="ltx_th">MRR</th></tr>
+<tr class="ltx_tr"><td class="ltx_td">Ours</td><td class="ltx_td"><span class="ltx_text ltx_font_bold">0.42</span></td><td class="ltx_td">0.31</td></tr></table></figure>
 </section>
 <section id="A1" class="ltx_appendix"><h2 class="ltx_title ltx_title_appendix">Appendix A</h2><p class="ltx_p">Proofs.</p>
 <figure id="A1.F3" class="ltx_figure"><img src="2401.00001v1/c.png" width="10" height="10"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 3: </span>An icon only.</figcaption></figure>
@@ -381,7 +407,8 @@ mod tests {
         assert_eq!(f.figures[1].images[0].src, "https://arxiv.org/html/2401.00001v1/a.svg");
         assert_eq!(f.tables.len(), 1);
         assert_eq!(f.tables[0].label, "Table 1");
-        assert_eq!(f.tables[0].rows, vec![vec!["Results".to_string(), "".into(), "Speed".into()], vec!["Model".into(), "NDCG".into()], vec!["Ours".into(), "0.42".into()]]);
+        let row = |r: &[&str]| r.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(f.tables[0].rows, vec![row(&["Model", "Results", ""]), row(&["", "NDCG", "MRR"]), row(&["Ours", "0.42", "0.31"])]);
         let ctx = f.context();
         assert!(ctx.contains("[F2] Figure 2: (a) Recall. (b) Length."), "{ctx}");
         assert!(ctx.contains("[T1] Table 1: Main results."), "{ctx}");

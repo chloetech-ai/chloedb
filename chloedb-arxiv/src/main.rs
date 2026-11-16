@@ -74,6 +74,10 @@ struct LoadArgs {
     /// Megabytes of rows a request.
     #[arg(long, default_value_t = 32)]
     chunk_mb: usize,
+    /// Go on with a load that stopped: skip each table's first N lines
+    /// (with --only one table; N is its row count, `SELECT COUNT(*)`).
+    #[arg(long, default_value_t = 0)]
+    skip_rows: u64,
     #[arg(long, default_value = schema::MODEL)]
     model: String,
     /// Do not make the recommender (it is made before the events load, and counts them as they are written).
@@ -250,7 +254,7 @@ async fn shutdown_signal() {
     let _ = ctrl_c.await;
 }
 
-async fn load_all(db: &Strata, graph: &Strata, rows: &PathBuf, only: &[String], chunk_mb: usize, recommender: bool) -> Result<(), String> {
+async fn load_all(db: &Strata, graph: &Strata, rows: &PathBuf, only: &[String], chunk_mb: usize, skip: u64, recommender: bool) -> Result<(), String> {
     // The recommender is made before its events are loaded, so it counts
     // them a request at a time as they are written: made after, it counts
     // all of them in one transaction, which over 5 million events takes
@@ -263,7 +267,7 @@ async fn load_all(db: &Strata, graph: &Strata, rows: &PathBuf, only: &[String], 
             Err(e) => return Err(format!("making the recommender: {e}")),
         }
     }
-    let n = load::load(db, graph, rows, only, chunk_mb, |m| eprintln!("chloedb-arxiv: {m}")).await?;
+    let n = load::load(db, graph, rows, only, chunk_mb, skip, |m| eprintln!("chloedb-arxiv: {m}")).await?;
     eprintln!("chloedb-arxiv: loaded {n} rows");
     Ok(())
 }
@@ -315,7 +319,7 @@ async fn serve(a: ServeArgs) {
             let n = db.query("SELECT COUNT(*) AS n FROM ax_papers", serde_json::Value::Null).await.ok().and_then(|r| r.first().and_then(|r| r.get("n").and_then(|v| v.as_i64()))).unwrap_or(0);
             if n == 0 {
                 eprintln!("chloedb-arxiv: loading the rows in {}", rows.display());
-                load_all(&db, &graph, rows, &[], 32, true).await?;
+                load_all(&db, &graph, rows, &[], 32, 0, true).await?;
             }
         }
         Ok::<(), String>(())
@@ -383,7 +387,10 @@ async fn main() {
             if !made.is_empty() {
                 eprintln!("chloedb-arxiv: made {}", made.join(", "));
             }
-            load_all(&db, &graph, &a.rows, &a.only, a.chunk_mb.clamp(1, 200), !a.no_recommender).await.unwrap_or_else(|e| fail(e));
+            if a.skip_rows > 0 && a.only.len() != 1 {
+                fail("--skip-rows goes with --only and one table");
+            }
+            load_all(&db, &graph, &a.rows, &a.only, a.chunk_mb.clamp(1, 200), a.skip_rows, !a.no_recommender).await.unwrap_or_else(|e| fail(e));
         }
         Cmd::Fetch(a) => {
             let db = Strata::new(&a.strata, a.key.clone());
