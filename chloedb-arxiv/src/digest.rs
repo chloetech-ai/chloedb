@@ -510,7 +510,7 @@ pub async fn blurb(c: &Ctx<'_>, cfg: &Config, model: &str, r: &Row, orgs: &[Stri
         ctx.push_str(&format!("Introduction (excerpt): {intro}\n"));
     }
     let t0 = Instant::now();
-    let text = crate::ask::llm(c, &format!("the paragraph for {id} (llm() on the server)"), model, &instructions(cfg), "Write the entry.", &ctx, 700).await.unwrap_or_default();
+    let text = crate::ask::llm(c, &format!("the paragraph for {id} (llm() on the server)"), model, &instructions(cfg), "Write the entry.", &ctx, 2000).await.unwrap_or_default();
     let text = text.trim().to_string();
     if !text.is_empty() {
         let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": cfg.style, "text": text, "org": who, "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": t0.elapsed().as_secs_f64() * 1000.0})]).await;
@@ -551,7 +551,7 @@ pub async fn explain(c: &Ctx<'_>, cfg: &Config, model: &str, r: &Row, orgs: &[St
         ctx.push_str(&f.context());
     }
     let t0 = Instant::now();
-    let text = crate::ask::llm(c, &format!("the explanation of {id} from its full text (llm() on the server)"), model, &explain_instructions(cfg), "Explain the paper.", &ctx, 2000).await.unwrap_or_default();
+    let text = crate::ask::llm(c, &format!("the explanation of {id} from its full text (llm() on the server)"), model, &explain_instructions(cfg), "Explain the paper.", &ctx, 4000).await.unwrap_or_default();
     let Some(v) = crate::ask::json_in(&text).filter(|v| v.get("brief").and_then(|b| b.as_str()).is_some_and(|b| !b.is_empty())) else {
         return Value::Null;
     };
@@ -566,7 +566,7 @@ async fn opening(c: &Ctx<'_>, cfg: &Config, model: &str, papers: &[Value]) -> St
         ctx.push_str(&format!("[{}] {}: {}\n", i + 1, p["title"].as_str().unwrap_or(""), p["brief"].as_str().or(p["blurb"].as_str()).unwrap_or("")));
     }
     let ins = format!("You write the opening of a weekly research digest for {}: 3 or 4 sentences on what this issue's papers have in common, where they differ, and which to read first and why, naming papers by their number in brackets, like [2]. Use only the summaries given; plain language, no hype, no greeting, no preamble.", cfg.audience);
-    crate::ask::llm(c, "the issue's opening (llm() on the server)", model, &ins, "Write the opening.", &ctx, 400).await.unwrap_or_default().trim().to_string()
+    crate::ask::llm(c, "the issue's opening (llm() on the server)", model, &ins, "Write the opening.", &ctx, 1200).await.unwrap_or_default().trim().to_string()
 }
 
 /// Dates as an issue's title gives them: "Nov 8 – Nov 14, 2026".

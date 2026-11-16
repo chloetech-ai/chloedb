@@ -508,7 +508,7 @@ async fn summary(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     if q.len() < 2 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "name a topic".into()));
     }
-    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k", json!({"k": ask::key(q)})).await;
+    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k AND answer != ''", json!({"k": ask::key(q)})).await;
     if kept.is_empty() || a.fresh == Some(1) {
         svc.spend(1)?;
     }

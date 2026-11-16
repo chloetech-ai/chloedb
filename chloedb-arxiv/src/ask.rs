@@ -57,9 +57,20 @@ pub async fn llm(c: &Ctx<'_>, what: &str, model: &str, instructions: &str, quest
         return Err(format!("not a model name: {model:?}"));
     }
     // llm() answers for each row a query returns: one row of the graph's nodes.
-    let sql = format!("SELECT id, llm('{model}', :instructions, :question, :context, max_tokens => {max_tokens}) AS answer FROM ax_nodes LIMIT 1");
-    let got = c.grows(what, &sql, json!({"instructions": instructions, "question": question, "context": context})).await.map_err(|e| e.to_string())?;
-    Ok(got.first().map(|r| r.s("answer")).unwrap_or_default())
+    // A model that thinks first can spend all of max_tokens thinking and
+    // write no text; the server keeps that empty answer for the same
+    // question, so a second try asks with room to spare (a new question).
+    let mut room = max_tokens;
+    for _ in 0..2 {
+        let sql = format!("SELECT id, llm('{model}', :instructions, :question, :context, max_tokens => {room}) AS answer FROM ax_nodes LIMIT 1");
+        let got = c.grows(what, &sql, json!({"instructions": instructions, "question": question, "context": context})).await.map_err(|e| e.to_string())?;
+        let text = got.first().map(|r| r.s("answer")).unwrap_or_default();
+        if !text.trim().is_empty() {
+            return Ok(text);
+        }
+        room = (max_tokens * 4).max(3000).min(8192);
+    }
+    Err("the model wrote no text: try again in a minute".into())
 }
 
 /// A topic summed up from its papers, kept or written now.
@@ -67,7 +78,8 @@ pub async fn summary(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<V
     let k = key(q);
     if !fresh {
         let kept = c.gsoft("a kept summary", "SELECT answer, sources, model, at, ms FROM ax_answers WHERE id = :k", json!({"k": k})).await;
-        if let Some(r) = kept.first() {
+        // An empty one (kept before empty answers were refused) is written again.
+        if let Some(r) = kept.first().filter(|r| !r.s("answer").trim().is_empty()) {
             let sources: Value = serde_json::from_str(&r.s("sources")).unwrap_or(Value::Null);
             return Ok(json!({"question": q, "answer": r.s("answer"), "sources": sources, "model": r.s("model"), "at": r.s("at"), "kept": true, "ms": r.f("ms")}));
         }
@@ -80,7 +92,7 @@ pub async fn summary(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<V
         return Ok(json!({"question": q, "answer": "", "sources": [], "note": "No papers speak to this."}));
     }
     let topic = crate::answer::subject(&p);
-    let answer = llm(c, "the summary (llm() on the server)", model, SUMMARY, &format!("Topic: {topic}"), &format!("Abstracts:\n\n{}", context(&taken)), 1100).await?;
+    let answer = llm(c, "the summary (llm() on the server)", model, SUMMARY, &format!("Topic: {topic}"), &format!("Abstracts:\n\n{}", context(&taken)), 3000).await?;
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let sources: Vec<Value> = taken.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.s("id"), "title": r.s("title"), "authors": crate::answer::first_author(r), "year": r.i("year"), "cites": r.i("cites")})).collect();
     let at = chrono::Utc::now().to_rfc3339();
@@ -93,13 +105,13 @@ pub async fn tldr(c: &Ctx<'_>, id: &str, model: &str) -> Result<Value, String> {
     let id = understand::clean_id(id);
     let k = format!("tldr:{id}");
     let kept = c.gsoft("a kept TL;DR", "SELECT text, model, at FROM ax_notes WHERE id = :k", json!({"k": k})).await;
-    if let Some(r) = kept.first() {
+    if let Some(r) = kept.first().filter(|r| !r.s("text").trim().is_empty() && r.s("text") != r#"{"tldr":""}"#) {
         let v: Value = serde_json::from_str(&r.s("text")).unwrap_or(json!({"tldr": r.s("text")}));
         return Ok(json!({"id": id, "note": v, "model": r.s("model"), "kept": true}));
     }
     let row = c.soft("the paper", "SELECT id, title, abstract FROM ax_papers WHERE id = :id", json!({"id": id})).await.into_iter().next().ok_or("no such paper")?;
     let t0 = std::time::Instant::now();
-    let text = llm(c, "the TL;DR (llm() on the server)", model, TLDR, &format!("Title: {}", row.s("title")), &format!("Abstract: {}", row.s("abstract")), 400).await?;
+    let text = llm(c, "the TL;DR (llm() on the server)", model, TLDR, &format!("Title: {}", row.s("title")), &format!("Abstract: {}", row.s("abstract")), 1200).await?;
     let v = json_in(&text).unwrap_or(json!({"tldr": text.trim()}));
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": "tldr", "text": v.to_string(), "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": ms})]).await;
