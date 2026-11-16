@@ -40,6 +40,9 @@ YEAR, MONTH, DAY = 31_556_952, 2_629_746, 86_400
 WORK = "('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')"
 MAR_2020, APR_2020 = 1_583_020_800, 1_585_699_200
 JUN_18_2024 = 1_718_668_800
+# 1 January of 2011 to 2027, in seconds.
+_JAN1 = [1293840000, 1325376000, 1356998400, 1388534400, 1420070400, 1451606400, 1483228800, 1514764800, 1546300800, 1577836800, 1609459200, 1640995200, 1672531200, 1704067200, 1735689600, 1767225600, 1798761600]
+YEARS = list(zip(_JAN1, _JAN1[1:]))
 
 REPOS = ["torvalds/linux", "kubernetes/kubernetes", "facebook/react", "microsoft/vscode"]
 PEOPLE = ["torvalds", "sindresorhus", "dependabot[bot]"]
@@ -55,6 +58,8 @@ def statements(ids):
         ("every event", "stars ever", "SELECT COUNT(*) AS n FROM gh_events WHERE kind = 'star'", {}),
         ("every event", "commits pushed ever", "SELECT SUM(n) AS commits, COUNT(*) AS pushes FROM gh_events WHERE kind = 'push'", {}),
         ("every event", "events by year (a year computed from each row's INT time)", f"SELECT t - t % {YEAR} AS y, COUNT(*) AS n FROM gh_events GROUP BY y ORDER BY y", {}),
+        ("every event", "events by year (one range count a year, 16 statements)", [f"SELECT COUNT(*) AS n FROM gh_events WHERE t >= {y0} AND t < {y1}" for y0, y1 in YEARS], {}),
+        ("every event", "kinds of events in 2024 (a range of times)", "SELECT kind, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY kind ORDER BY n DESC", {"a": YEARS[13][0], "b": YEARS[13][1]}),
         ("monthly sums", "pushes, commits and stars of every month (gh_repo_months)", "SELECT month, SUM(pushes) AS pushes, SUM(commits) AS commits, SUM(stars) AS stars, COUNT(*) AS repos FROM gh_repo_months GROUP BY month ORDER BY month", {}),
         ("a window", "busiest repos of March 2020", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY repo ORDER BY n DESC LIMIT 20", {"a": MAR_2020, "b": APR_2020}),
         ("a window", "events of each hour of 18 June 2024", "SELECT t - t % 3600 AS h, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY h ORDER BY h", {"a": JUN_18_2024, "b": JUN_18_2024 + DAY}),
@@ -107,6 +112,11 @@ def call(url, token, body=None, timeout=900):
 
 
 def sql(url, key, q, params=None):
+    """One statement, or a list of them run one after the other (their
+    rows together, their times added)."""
+    if isinstance(q, list):
+        out = [sql(url, key, one, params) for one in q]
+        return [r for o in out for r in o[0]], sum(o[1] for o in out), sum(o[2] for o in out), any(o[3] for o in out)
     j, wall = call(url + "/v1/query", key, {"sql": q, "params": params or {}, "objects": True, "steps": True, "timeout_ms": 1_800_000}, timeout=1900)
     if "error" in j:
         raise RuntimeError(f"{q[:80]}: {j['error']}")
