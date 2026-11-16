@@ -1,0 +1,22 @@
+solr-ef256 vector                   warm-up: p50 8.935, 9.324 ms
+solr-ef256 vector                   c=1        169 q/s  p50   5.782 ms  p90   6.766 ms  p99   8.367 ms  errors 0
+solr-ef256 vector                   c=4        410 q/s  p50   9.371 ms  p90  12.762 ms  p99  16.878 ms  errors 0
+solr-ef256 vector                   c=16       449 q/s  p50  34.198 ms  p90  54.754 ms  p99  73.284 ms  errors 0
+solr-ef256 vector + filter          warm-up: p50 20.326, 20.916 ms
+solr-ef256 vector + filter          c=1         70 q/s  p50  13.727 ms  p90  16.375 ms  p99  33.282 ms  errors 0
+solr-ef256 vector + filter          c=4        175 q/s  p50  21.299 ms  p90  30.892 ms  p99  44.184 ms  errors 0
+solr-ef256 vector + filter          c=16       212 q/s  p50  74.581 ms  p90 108.118 ms  p99 138.714 ms  errors 0
+solr-ef256 hybrid (RRF)             warm-up: p50 12.486, 13.009 ms
+solr-ef256 hybrid (RRF)             c=1        114 q/s  p50   7.702 ms  p90  14.171 ms  p99  19.598 ms  errors 0
+solr-ef256 hybrid (RRF)             c=4        294 q/s  p50  11.937 ms  p90  22.577 ms  p99  34.020 ms  errors 0
+solr-ef256 hybrid (RRF)             c=16       348 q/s  p50  38.718 ms  p90  83.013 ms  p99 142.491 ms  errors 0
+solr-ef256 hybrid (weighted)        warm-up: p50 13.355, 13.789 ms
+solr-ef256 hybrid (weighted)        c=1        104 q/s  p50   8.013 ms  p90  16.558 ms  p99  29.405 ms  errors 0
+solr-ef256 hybrid (weighted)        c=4        270 q/s  p50  12.815 ms  p90  25.549 ms  p99  40.696 ms  errors 0
+solr-ef256 hybrid (weighted)        c=16       316 q/s  p50  40.491 ms  p90  94.038 ms  p99 182.101 ms  errors 0
+solr-ef256 similar items            warm-up: p50 15.083, 16.022 ms
+solr-ef256 similar items            c=1         92 q/s  p50  10.416 ms  p90  12.631 ms  p99  16.650 ms  errors 0
+solr-ef256 similar items            c=4        244 q/s  p50  15.335 ms  p90  20.808 ms  p99  28.398 ms  errors 0
+solr-ef256 similar items            c=16       276 q/s  p50  54.366 ms  p90  84.310 ms  p99 113.937 ms  errors 0
+solr-ef256 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef256.json

@@ -7,10 +7,10 @@ name: Release publish
 # docs (what GitHub Pages serves), must pass. That is the server, Python
 # and JavaScript releases, the archive of every program `install.sh --with`
 # installs on every platform, each download the docs pin, the image's tags
-# on ghcr.io, PyPI's chloedb at the version (and npm's and crates.io's,
-# where the docs name them). A draft cannot be downloaded by anyone else,
-# so until then the docs' commands for the version fail as they would
-# without it, and the Docs URLs check says so.
+# on ghcr.io, PyPI's chloedb and chloedb-server (from 0.3.7) at the version
+# (and npm's and crates.io's, where the docs name them). A draft cannot be
+# downloaded by anyone else, so until then the docs' commands for the
+# version fail as they would without it, and the Docs URLs check says so.
 #
 # Then, in order: the drafts are published (the server's last, marked
 # GitHub's latest release); the Homebrew formula goes to the tap, when one

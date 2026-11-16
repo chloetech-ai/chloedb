@@ -1,0 +1,30 @@
+1	ok	1794790904	1794790911	up qdrant
+2	ok	1794790911	1794795484	load qdrant
+3	ok	1794795484	1794795791	run qdrant
+4	ok	1794795791	1794796089	run qdrant --label qdrant-pass2
+5	ok	1794796089	1794796388	run qdrant --label qdrant-pass3
+6	ok	1794796388	1794796536	run qdrant --candidates 128 --label qdrant-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+7	ok	1794796536	1794796684	run qdrant --candidates 128 --label qdrant-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+8	ok	1794796684	1794796831	run qdrant --candidates 128 --label qdrant-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+9	ok	1794796831	1794796983	run qdrant --candidates 256 --label qdrant-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+10	ok	1794796983	1794797136	run qdrant --candidates 256 --label qdrant-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+11	ok	1794797136	1794797289	run qdrant --candidates 256 --label qdrant-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+12	ok	1794797289	1794797453	run qdrant --candidates 512 --label qdrant-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+13	ok	1794797453	1794797617	run qdrant --candidates 512 --label qdrant-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+14	ok	1794797617	1794797781	run qdrant --candidates 512 --label qdrant-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+15	ok	1794797781	1794797783	down qdrant
+16	ok	1794797783	1794797805	up postgres
+17	ok	1794797805	1794799212	load postgres
+18	ok	1794799212	1794800307	run postgres
+19	ok	1794800307	1794801388	run postgres --label postgres-pass2
+20	ok	1794801388	1794802473	run postgres --label postgres-pass3
+21	ok	1794802473	1794802864	run postgres --candidates 128 --label postgres-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+22	ok	1794802864	1794803236	run postgres --candidates 128 --label postgres-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+23	ok	1794803236	1794803632	run postgres --candidates 128 --label postgres-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+24	ok	1794803632	1794804010	run postgres --candidates 256 --label postgres-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+25	ok	1794804010	1794804391	run postgres --candidates 256 --label postgres-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+26	ok	1794804391	1794804775	run postgres --candidates 256 --label postgres-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+27	ok	1794804775	1794805155	run postgres --candidates 512 --label postgres-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+28	ok	1794805155	1794805544	run postgres --candidates 512 --label postgres-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+29	ok	1794805544	1794805927	run postgres --candidates 512 --label postgres-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+30	ok	1794805927	1794805932	down postgres

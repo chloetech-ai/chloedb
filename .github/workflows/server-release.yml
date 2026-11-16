@@ -30,6 +30,19 @@ name: chloedb-server release
 # The image (image.yml) is the other way to run it without building:
 # docker run ghcr.io/chloetech-ai/chloedb-server (or strata-server, its
 # old name, for a release).
+#
+# PyPI: each build also makes a wheel of its platform holding the same
+# binary (packaging/server-wheels/make_wheels.py), installs it with pip,
+# pipx and uvx and runs it, and starts a server from the Python client
+# (chloedb.serve); a tag publishes the four wheels to PyPI as
+# chloedb-server, so that `pip install chloedb-server` and
+# `uvx chloedb-server` run the server, once the repository variable
+# CHLOEDB_PUBLISH_PYPI is `true` (as for chloedb's wheels, py-release.yml).
+# Setup, once: on pypi.org, a trusted publisher of the project
+# chloedb-server with owner chloetech-ai, repository chloedb, workflow
+# server-release.yml and environment pypi (the environment py-release.yml
+# uploads from). PyPI refuses a version it already holds, so a tag
+# publishes once.
 on:
   push:
     tags: ["chloedb-server-v*", "strata-server-v*"]
@@ -40,6 +53,7 @@ on:
       - docs/install.sh
       - install.sh
       - packaging/homebrew/**
+      - packaging/server-wheels/**
 
 permissions:
   contents: read
@@ -173,6 +187,54 @@ jobs:
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$rel/chloedb-server-${{ matrix.platform }}.tar.gz.sha256"
           if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh; then echo "::error::installed an archive whose SHA-256 is wrong"; exit 1; fi
           test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
+      # The PyPI package: this platform's wheel, with the archive's binary
+      # in it, which pip takes on this machine by its tag (manylinux_2_<the
+      # newest glibc the binary needs>, macosx_11_0), installs into an empty
+      # virtualenv and runs; pipx and uvx run it from the wheel; and the
+      # Python client, from the checkout (it needs no build), finds the
+      # installed server and starts one on a new database.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: The PyPI wheel installs and runs
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
+          python3 packaging/server-wheels/make_wheels.py --self-test
+          python3 packaging/server-wheels/make_wheels.py --version "$v" --out wheels "dist/chloedb-server-${{ matrix.platform }}.tar.gz"
+          wheel=$(ls "$GITHUB_WORKSPACE"/wheels/*.whl)
+          python3 -m venv "$RUNNER_TEMP/wheel"
+          (
+            . "$RUNNER_TEMP/wheel/bin/activate"
+            pip install --only-binary :all: --no-index --find-links "$GITHUB_WORKSPACE/wheels" chloedb-server
+            cd "$RUNNER_TEMP"
+            chloedb-server --version | grep -F "$v"
+            python -m chloedb_server --version | grep -F "$v"
+            PYTHONPATH="$GITHUB_WORKSPACE/chloedb-py/python" python - "$v" <<'PY'
+          import sys
+          import chloedb, chloedb_server
+          assert chloedb_server.__version__ == sys.argv[1], chloedb_server.__version__
+          assert chloedb.find_server() == chloedb_server.find_bin(), (chloedb.find_server(), chloedb_server.find_bin())
+          with chloedb.serve() as db:
+              db.sql("CREATE TABLE notes (id KEYWORD PRIMARY KEY, body TEXT)")
+              db.insert([{"id": "n1", "body": "rivers and mountains"}, {"id": "n2", "body": "the sea"}], table="notes")
+              ids = [r["id"] for r in db.query("SELECT id FROM notes WHERE MATCH(body, 'rivers')")]
+              assert ids == ["n1"], ids
+              server = db.server
+          assert not server.running
+          print("chloedb.serve started", chloedb_server.find_bin(), "at", server.url)
+          PY
+          )
+          # pipx and uv, the same on every runner, in a virtualenv of their own.
+          python3 -m venv "$RUNNER_TEMP/tools" && "$RUNNER_TEMP/tools/bin/pip" install -q "pipx>=1.4,<2" "uv>=0.5,<1"
+          "$RUNNER_TEMP/tools/bin/pipx" run --spec "$wheel" chloedb-server --version | grep -F "$v"
+          "$RUNNER_TEMP/tools/bin/uvx" --from "$wheel" chloedb-server --version | grep -F "$v"
+          ls -la wheels
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: server-wheel-${{ matrix.platform }}
+          path: wheels/*.whl
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-server-${{ matrix.platform }}
@@ -183,6 +245,33 @@ jobs:
             dist/chloectx-*.tar.gz*
             dist/chloedb-netops-*.tar.gz*
           if-no-files-found: error
+
+  # To PyPI as chloedb-server (the header says what it needs): the wheels
+  # the builds made and ran, once the Homebrew formula's test passed too,
+  # since an upload cannot be taken back.
+  pypi:
+    name: PyPI
+    needs: [build, homebrew]
+    if: startsWith(github.ref, 'refs/tags/') && vars.CHLOEDB_PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: pypi
+      url: https://pypi.org/project/chloedb-server/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: server-wheel-*
+          path: dist
+          merge-multiple: true
+      - name: A wheel for each platform
+        run: |
+          ls -la dist
+          test "$(ls dist/chloedb_server-*.whl | wc -l)" -eq 4
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
 
   # The Homebrew formula, written from the archives just built, installs
   # and passes its test on a Mac, from a tap on this machine whose formula

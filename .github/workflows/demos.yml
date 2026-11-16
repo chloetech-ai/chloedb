@@ -4,6 +4,8 @@ name: Demos
 # its releases' promises (docs/compatibility.md, "Demos"):
 #
 #   chloedb-netops           network operations on a simulated carrier network
+#   chloedb-arxiv            every arXiv paper: search, the recommender, feeds
+#   chloedb-hn               Hacker News searched, asked and completed
 #   chloedb-swarm            simulated users, an internal test instrument
 #   examples/feature-store   a shop ranked on features ChloeDB keeps
 #   examples/parley          a social network of LLM agents
@@ -20,6 +22,8 @@ on:
   pull_request:
     paths:
       - "chloedb-netops/**"
+      - "chloedb-hn/**"
+      - "chloedb-arxiv/**"
       - "chloedb-swarm/**"
       - "examples/feature-store/**"
       - "examples/parley/**"
@@ -113,6 +117,77 @@ jobs:
         working-directory: chloedb-netops
         run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  # Hacker News: its tests and clippy, and a small archive loaded into a
+  # server of this commit, searched, asked in sentences (answered by SQL),
+  # completed as typed and matched as exact text (tests/cluster.rs).
+  hn:
+    name: chloedb-hn
+    needs: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: chloedb-hn
+          shared-key: chloedb-hn-demos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chloedb-server-demos
+          path: .server-bin
+      - name: Tests
+        working-directory: chloedb-hn
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/.server-bin/chloedb-server
+          CHLOEDB_HN_NEED_SERVER: "1"
+        run: |
+          chmod +x "$CHLOEDB_SERVER_BIN"
+          for i in 1 2 3; do "$CHLOEDB_SERVER_BIN" fetch-model potion-base-8M && break; sleep 10; done
+          cargo test --locked --profile ci --no-fail-fast
+      - name: Clippy
+        working-directory: chloedb-hn
+        run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
+  # arXiv: its tests and clippy, and every page on two servers of this
+  # commit (the search server and the graph server, as in production) over
+  # a small made-up arXiv embedded by hash:512 (tests/cluster.rs).
+  arxiv:
+    name: chloedb-arxiv
+    needs: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: chloedb-arxiv
+          shared-key: chloedb-arxiv-demos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chloedb-server-demos
+          path: .server-bin
+      - name: Tests
+        working-directory: chloedb-arxiv
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/.server-bin/chloedb-server
+          CHLOEDB_ARXIV_NEED_SERVER: "1"
+        run: |
+          chmod +x "$CHLOEDB_SERVER_BIN"
+          cargo test --locked --profile ci --no-fail-fast
+      - name: Clippy
+        working-directory: chloedb-arxiv
+        run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # Swarm: a run of simulated users with a scripted model in place of the
   # API, each session in a sandbox server of this commit, its checks,
   # reviews and findings stored in another one.
@@ -181,7 +256,7 @@ jobs:
   demo-result:
     name: Demo result
     if: always()
-    needs: [server, netops, swarm, python]
+    needs: [server, netops, hn, arxiv, swarm, python]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

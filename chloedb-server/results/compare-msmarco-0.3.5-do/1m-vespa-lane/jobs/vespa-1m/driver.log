@@ -1,0 +1,43 @@
+06:15:18 vespa-1m: waiting for its nodes
+06:16:38 vespa-1m: nodes vespa-1m-d-a1-3apjkm vespa-1m-d-a1-3apjkq and vespa-1m-c-a1-3apjkf
+06:18:44 vespa-1m: step 1: compare.sh build
+06:25:44 vespa-1m: step 2: compare.sh up strata
+06:25:49 vespa-1m: step 3: compare.sh run strata
+06:32:02 vespa-1m: step 4: compare.sh run strata --label strata-pass2
+06:38:17 vespa-1m: step 5: compare.sh run strata --label strata-pass3
+06:44:28 vespa-1m: step 6: compare.sh run strata --candidates 128 --label strata-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:46:50 vespa-1m: step 7: compare.sh run strata --candidates 128 --label strata-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:49:13 vespa-1m: step 8: compare.sh run strata --candidates 128 --label strata-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:51:37 vespa-1m: step 9: compare.sh run strata --candidates 256 --label strata-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:53:59 vespa-1m: step 10: compare.sh run strata --candidates 256 --label strata-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:56:22 vespa-1m: step 11: compare.sh run strata --candidates 256 --label strata-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+06:58:46 vespa-1m: step 12: compare.sh run strata --candidates 512 --label strata-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+07:01:10 vespa-1m: step 13: compare.sh run strata --candidates 512 --label strata-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+07:03:34 vespa-1m: step 14: compare.sh run strata --candidates 512 --label strata-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+07:06:02 vespa-1m: step 15: compare.sh down strata
+07:06:03 vespa-1m: step 16: compare.sh up vespa
+07:08:37 vespa-1m: step 17: compare.sh load vespa
+07:34:08 vespa-1m: step 18: compare.sh run vespa
+07:40:44 vespa-1m: step 19: compare.sh run vespa --label vespa-pass2
+07:46:56 vespa-1m: step 20: compare.sh run vespa --label vespa-pass3
+07:53:08 vespa-1m: step 21: compare.sh run vespa --candidates 128 --label vespa-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+07:55:41 vespa-1m: step 22: compare.sh run vespa --candidates 128 --label vespa-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+07:58:14 vespa-1m: step 23: compare.sh run vespa --candidates 128 --label vespa-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:00:46 vespa-1m: step 24: compare.sh run vespa --candidates 256 --label vespa-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:03:20 vespa-1m: step 25: compare.sh run vespa --candidates 256 --label vespa-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:05:54 vespa-1m: step 26: compare.sh run vespa --candidates 256 --label vespa-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:08:30 vespa-1m: step 27: compare.sh run vespa --candidates 512 --label vespa-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:11:10 vespa-1m: step 28: compare.sh run vespa --candidates 512 --label vespa-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:13:50 vespa-1m: step 29: compare.sh run vespa --candidates 512 --label vespa-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+08:16:30 vespa-1m: step 30: compare.sh writes vespa
+08:18:03 vespa-1m: step 31: compare.sh stream vespa
+08:21:43 vespa-1m: step 32: compare.sh down vespa
+08:21:50 vespa-1m: step 33: compare.sh up strata
+08:21:55 vespa-1m: step 34: compare.sh run strata --label strata-b
+08:28:07 vespa-1m: step 35: compare.sh run strata --label strata-b-pass2
+08:34:18 vespa-1m: step 36: compare.sh run strata --label strata-b-pass3
+08:40:31 vespa-1m: step 37: compare.sh writes strata
+08:41:44 vespa-1m: step 38: compare.sh stream strata
+08:44:24 vespa-1m: step 39: compare.sh down strata
+08:44:32 vespa-1m: reports fetched (38 files)
+08:44:34 vespa-1m: done after 8956 s

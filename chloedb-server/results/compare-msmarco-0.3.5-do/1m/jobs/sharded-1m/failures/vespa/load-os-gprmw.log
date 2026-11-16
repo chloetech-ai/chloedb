@@ -1,0 +1,44 @@
+os: index created in 0.5 s
+os: 25000 documents sent, 13 s
+os: 50000 documents sent, 24 s
+os: 75000 documents sent, 35 s
+os: 100000 documents sent, 49 s
+os: 125000 documents sent, 57 s
+os: 150000 documents sent, 67 s
+os: 175000 documents sent, 78 s
+os: 200000 documents sent, 87 s
+os: 225000 documents sent, 96 s
+os: 250000 documents sent, 104 s
+os: 275000 documents sent, 114 s
+os: 300000 documents sent, 121 s
+os: 325000 documents sent, 131 s
+os: 350000 documents sent, 141 s
+os: 375000 documents sent, 151 s
+os: 400000 documents sent, 159 s
+os: 425000 documents sent, 170 s
+os: 450000 documents sent, 184 s
+os: 475000 documents sent, 192 s
+os: 500000 documents sent, 202 s
+os: 525000 documents sent, 216 s
+os: 550000 documents sent, 229 s
+os: 575000 documents sent, 241 s
+os: 600000 documents sent, 255 s
+os: 625000 documents sent, 272 s
+os: 650000 documents sent, 286 s
+os: 675000 documents sent, 300 s
+os: 700000 documents sent, 314 s
+os: 725000 documents sent, 332 s
+os: 750000 documents sent, 343 s
+os: 775000 documents sent, 355 s
+os: 800000 documents sent, 371 s
+os: 825000 documents sent, 387 s
+os: 850000 documents sent, 401 s
+os: 875000 documents sent, 416 s
+os: 900000 documents sent, 433 s
+os: 925000 documents sent, 448 s
+os: 950000 documents sent, 464 s
+os: 975000 documents sent, 478 s
+os: 1000000 documents sent, 494 s
+os: 1000000 documents (11.8 GB of JSON) sent in 494.5 s
+os: searchable after 1.4 s more, merged in 354.9 s; 850.7 s in all
+wrote /data/compare/load-os.json

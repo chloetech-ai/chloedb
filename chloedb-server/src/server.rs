@@ -183,6 +183,10 @@ pub struct Options {
     /// `<db>.digitalocean.json` beside a database; in memory on a
     /// coordinator without it).
     pub digitalocean_file: Option<PathBuf>,
+    /// The cloud view's Google Cloud project file (default:
+    /// `<db>.gcp.json` beside a database; in memory on a coordinator
+    /// without it). It holds no credentials.
+    pub gcp_file: Option<PathBuf>,
     /// The clusters the cloud view made (default: `<db>.cloud.json` beside
     /// a database; in memory on a coordinator without it).
     pub cloud_file: Option<PathBuf>,
@@ -568,12 +572,26 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(file) = digitalocean {
         svc.digitalocean = Arc::new(crate::digitalocean::DigitalOcean::open(file)?);
     }
+    let gcp = o.gcp_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::gcp::Gcp::file_of));
+    let kube_cluster = o.kube_cluster.as_deref().filter(|c| !c.is_empty() && !o.shards.is_empty());
+    if gcp.is_some() || kube_cluster.is_some() {
+        let mut g = match gcp {
+            Some(file) => crate::gcp::Gcp::open(file)?,
+            None => crate::gcp::Gcp::memory(),
+        };
+        // The StrataCluster this coordinator runs in: the view says how its
+        // account reaches Google Cloud with no key.
+        if let Some(c) = kube_cluster {
+            g = g.with_kube_cluster(c);
+        }
+        svc.gcp = Arc::new(g);
+    }
     let cloud = o.cloud_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::cloud::clusters::Clusters::file_of));
     if let Some(file) = cloud {
         svc.clouds = Arc::new(crate::cloud::clusters::Clusters::open(file)?);
         // Clusters on their way when the server stopped go on.
         if svc.clouds.list().iter().any(|m| !matches!(m.phase, crate::cloud::clusters::Phase::Deleted | crate::cloud::clusters::Phase::Failed)) {
-            svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
+            svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone(), svc.gcp.clone());
         }
     }
     let hub = o.hub_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::hub::Hub::file_of));
@@ -899,8 +917,27 @@ pub struct FileImport {
     pub key: Option<String>,
     /// Binary columns as base64 text ([`chloedb::sqlite::ImportOptions::blobs_base64`]).
     pub blobs_base64: bool,
+    /// SQLite: add rows to tables without a key that have rows
+    /// ([`chloedb::sqlite::ImportOptions::append`]).
+    pub append: bool,
     /// Print the plan as JSON, and write nothing.
     pub plan: bool,
+}
+
+/// An import's error `e` about the file `shown` (its local copy at
+/// `local`), named once: a file that is not one SQLite or Parquet reads,
+/// or a value that does not fit, is not an error of a schema.
+fn file_error(shown: &str, local: &Path, e: chloedb::Error) -> String {
+    let m = match e {
+        chloedb::Error::Schema(m) => m,
+        e => e.to_string(),
+    };
+    let m = m.replace(&local.display().to_string(), shown);
+    if m.starts_with(shown) {
+        m
+    } else {
+        format!("{shown}: {m}")
+    }
 }
 
 /// Whether `s` is an `s3://` (or `s3a://`) URL.
@@ -1066,7 +1103,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         (Some((s, t)), true) => Some(Schema::from_json(t).map_err(|e| format!("{s}: {e}"))?),
         _ => None,
     };
-    let sq = chloedb::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64 };
+    let sq = chloedb::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64, append: how.append };
     let pq = ParquetImport { table: table.map(String::from), schema: given_table, key: how.key.clone(), blobs_base64: how.blobs_base64 };
     let created = |db: Db| {
         for (field, why) in db.open_embedders(models) {
@@ -1089,9 +1126,9 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let mut plans = Vec::new();
         for (shown, file) in &inputs {
             if is_sqlite(&file.path) {
-                plans.push(chloedb::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| format!("{shown}: {e}"))?.to_json());
+                plans.push(chloedb::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| file_error(shown, &file.path, e))?.to_json());
             } else if is_parquet(&file.path) {
-                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| format!("{shown}: {e}"))?);
+                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| file_error(shown, &file.path, e))?);
             } else {
                 return Err(format!("{shown}: --plan is for SQLite and Parquet files"));
             }
@@ -1104,7 +1141,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let file = &fetched.path;
         let t0 = std::time::Instant::now();
         if is_sqlite(file) {
-            let at = |e: chloedb::Error| format!("{shown}: {e}");
+            let at = |e: chloedb::Error| file_error(shown, file, e);
             let src = chloedb::sqlite::Source::open(file).map_err(at)?;
             let plan = src.plan(db.as_ref(), &sq).map_err(at)?;
             let d = match db.take() {
@@ -1185,7 +1222,7 @@ impl ParquetImport {
     /// table's schema, and gives the database back.
     fn import(&self, shown: &str, file: &Path, db: Option<Db>, create: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
         let t0 = std::time::Instant::now();
-        let at = |e: chloedb::Error| format!("{shown}: {e}");
+        let at = |e: chloedb::Error| file_error(shown, file, e);
         let src = chloedb::parquet::Source::open(file).map_err(at)?;
         let plan = src.plan(db.as_ref(), &self.options()).map_err(at)?;
         let d = match db {

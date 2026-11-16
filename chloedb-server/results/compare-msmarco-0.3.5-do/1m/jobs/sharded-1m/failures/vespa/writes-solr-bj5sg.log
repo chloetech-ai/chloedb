@@ -1,0 +1,12 @@
+solr     insert one     c=1        537 docs/s  p50    1.831 ms  p90    2.390 ms  p99    3.898 ms  errors 0
+solr     insert one     c=4       1636 docs/s  p50    2.028 ms  p90    3.279 ms  p99    5.058 ms  errors 0
+solr     insert one     c=16      2456 docs/s  p50    5.175 ms  p90   12.050 ms  p99   23.461 ms  errors 0
+solr     insert batch   c=1       1574 docs/s  p50   38.920 ms  p90  119.911 ms  p99  160.971 ms  errors 0
+solr     insert batch   c=4       3782 docs/s  p50   68.946 ms  p90  156.252 ms  p99  387.077 ms  errors 0
+solr     insert batch   c=16      3617 docs/s  p50  406.509 ms  p90  595.732 ms  p99  769.452 ms  errors 0
+solr     update one     c=1        425 docs/s  p50    2.053 ms  p90    3.282 ms  p99    9.226 ms  errors 0
+solr     update one     c=4       1295 docs/s  p50    2.474 ms  p90    4.861 ms  p99   11.511 ms  errors 0
+solr     update one     c=16      2146 docs/s  p50    5.903 ms  p90   13.906 ms  p99   26.047 ms  errors 0
+solr     visible        written in p50 3.2 ms, found after p50 1012.6 ms  p90 1022.0 ms  max 1514.2 ms
+wrote /data/compare/writes-solr.json
+solr     deleted 83730 written documents and put back 20000 ratings in 14.1 s

@@ -1,0 +1,22 @@
+strata-ef256-pass3 vector                   warm-up: p50 3.620, 3.655 ms
+strata-ef256-pass3 vector                   c=1        362 q/s  p50   2.698 ms  p90   3.030 ms  p99   4.556 ms  errors 0
+strata-ef256-pass3 vector                   c=4       1060 q/s  p50   3.618 ms  p90   4.790 ms  p99   6.314 ms  errors 0
+strata-ef256-pass3 vector                   c=16      1511 q/s  p50   9.931 ms  p90  15.870 ms  p99  23.119 ms  errors 0
+strata-ef256-pass3 vector + filter          warm-up: p50 3.790, 3.840 ms
+strata-ef256-pass3 vector + filter          c=1        339 q/s  p50   2.876 ms  p90   3.237 ms  p99   4.758 ms  errors 0
+strata-ef256-pass3 vector + filter          c=4        999 q/s  p50   3.836 ms  p90   5.133 ms  p99   6.842 ms  errors 0
+strata-ef256-pass3 vector + filter          c=16      1270 q/s  p50  11.406 ms  p90  19.898 ms  p99  31.869 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             warm-up: p50 7.387, 7.144 ms
+strata-ef256-pass3 hybrid (RRF)             c=1        184 q/s  p50   5.107 ms  p90   6.789 ms  p99  11.151 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             c=4        513 q/s  p50   7.258 ms  p90  10.825 ms  p99  16.688 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             c=16       667 q/s  p50  22.059 ms  p90  37.556 ms  p99  56.106 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        warm-up: p50 7.374, 7.397 ms
+strata-ef256-pass3 hybrid (weighted)        c=1        184 q/s  p50   5.138 ms  p90   6.884 ms  p99  10.724 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        c=4        509 q/s  p50   7.310 ms  p90  10.978 ms  p99  17.094 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        c=16       668 q/s  p50  22.213 ms  p90  37.224 ms  p99  54.143 ms  errors 0
+strata-ef256-pass3 similar items            warm-up: p50 4.380, 4.299 ms
+strata-ef256-pass3 similar items            c=1        304 q/s  p50   3.239 ms  p90   3.651 ms  p99   4.745 ms  errors 0
+strata-ef256-pass3 similar items            c=4        890 q/s  p50   4.284 ms  p90   5.845 ms  p99   7.799 ms  errors 0
+strata-ef256-pass3 similar items            c=16      1267 q/s  p50  11.748 ms  p90  19.198 ms  p99  28.024 ms  errors 0
+strata-ef256-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef256-pass3.json

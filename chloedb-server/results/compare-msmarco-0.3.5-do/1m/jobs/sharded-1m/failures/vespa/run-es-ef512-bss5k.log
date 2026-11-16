@@ -1,0 +1,19 @@
+es-ef512 vector                   warm-up: p50 7.690, 7.548 ms
+es-ef512 vector                   c=1        181 q/s  p50   5.408 ms  p90   6.400 ms  p99   7.874 ms  errors 0
+es-ef512 vector                   c=4        509 q/s  p50   7.602 ms  p90   9.917 ms  p99  12.540 ms  errors 0
+es-ef512 vector                   c=16       816 q/s  p50  18.349 ms  p90  28.750 ms  p99  37.407 ms  errors 0
+es-ef512 vector + filter          warm-up: p50 10.900, 10.887 ms
+es-ef512 vector + filter          c=1        127 q/s  p50   7.663 ms  p90   9.154 ms  p99  12.833 ms  errors 0
+es-ef512 vector + filter          c=4        357 q/s  p50  10.843 ms  p90  14.472 ms  p99  18.799 ms  errors 0
+es-ef512 vector + filter          c=16       510 q/s  p50  29.970 ms  p90  43.740 ms  p99  61.666 ms  errors 0
+es-ef512 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef512 hybrid (weighted)        warm-up: p50 9.224, 9.133 ms
+es-ef512 hybrid (weighted)        c=1        140 q/s  p50   6.073 ms  p90  10.760 ms  p99  20.395 ms  errors 0
+es-ef512 hybrid (weighted)        c=4        384 q/s  p50   9.238 ms  p90  16.214 ms  p99  30.046 ms  errors 0
+es-ef512 hybrid (weighted)        c=16       536 q/s  p50  27.192 ms  p90  45.113 ms  p99  80.877 ms  errors 0
+es-ef512 similar items            warm-up: p50 13.162, 13.105 ms
+es-ef512 similar items            c=1        110 q/s  p50   8.835 ms  p90  10.382 ms  p99  14.999 ms  errors 0
+es-ef512 similar items            c=4        295 q/s  p50  13.216 ms  p90  17.537 ms  p99  21.792 ms  errors 0
+es-ef512 similar items            c=16       393 q/s  p50  39.718 ms  p90  55.854 ms  p99  67.465 ms  errors 0
+es-ef512 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef512.json

@@ -1,0 +1,22 @@
+solr-ef256-pass3 vector                   warm-up: p50 9.189, 10.495, 9.365, 9.302 ms
+solr-ef256-pass3 vector                   c=1        170 q/s  p50   5.770 ms  p90   6.656 ms  p99   8.174 ms  errors 0
+solr-ef256-pass3 vector                   c=4        403 q/s  p50   9.584 ms  p90  13.057 ms  p99  17.310 ms  errors 0
+solr-ef256-pass3 vector                   c=16       503 q/s  p50  30.388 ms  p90  47.903 ms  p99  66.526 ms  errors 0
+solr-ef256-pass3 vector + filter          warm-up: p50 24.058, 20.348, 21.217 ms
+solr-ef256-pass3 vector + filter          c=1         72 q/s  p50  13.398 ms  p90  15.497 ms  p99  31.743 ms  errors 0
+solr-ef256-pass3 vector + filter          c=4        181 q/s  p50  20.982 ms  p90  27.643 ms  p99  51.353 ms  errors 0
+solr-ef256-pass3 vector + filter          c=16       211 q/s  p50  73.209 ms  p90 108.219 ms  p99 140.795 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             warm-up: p50 11.874, 12.126 ms
+solr-ef256-pass3 hybrid (RRF)             c=1        107 q/s  p50   8.210 ms  p90  15.081 ms  p99  24.625 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             c=4        293 q/s  p50  12.147 ms  p90  23.141 ms  p99  32.827 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             c=16       338 q/s  p50  40.552 ms  p90  85.562 ms  p99 142.654 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        warm-up: p50 14.035, 13.526 ms
+solr-ef256-pass3 hybrid (weighted)        c=1        110 q/s  p50   7.680 ms  p90  15.710 ms  p99  26.479 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        c=4        278 q/s  p50  12.350 ms  p90  24.394 ms  p99  41.358 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        c=16       294 q/s  p50  43.888 ms  p90 103.297 ms  p99 190.013 ms  errors 0
+solr-ef256-pass3 similar items            warm-up: p50 15.879, 16.448 ms
+solr-ef256-pass3 similar items            c=1         93 q/s  p50  10.242 ms  p90  12.127 ms  p99  16.444 ms  errors 0
+solr-ef256-pass3 similar items            c=4        251 q/s  p50  15.081 ms  p90  19.856 ms  p99  25.470 ms  errors 0
+solr-ef256-pass3 similar items            c=16       293 q/s  p50  51.652 ms  p90  79.002 ms  p99 105.084 ms  errors 0
+solr-ef256-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef256-pass3.json

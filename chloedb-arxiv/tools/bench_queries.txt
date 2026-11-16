@@ -1,0 +1,42 @@
+# Topical searches for the judged comparison: a mix of fields, short and long,
+# acronyms and plain words, as researchers type them.
+retrieval augmented generation for question answering
+graph neural networks for molecular property prediction
+sequential recommendation with transformers
+speculative decoding to speed up LLM inference
+LoRA parameter efficient fine-tuning
+diffusion models for image super-resolution
+reinforcement learning from human feedback reward models
+mixture of experts routing
+long context attention efficiency
+vision language models hallucination
+federated learning with differential privacy
+neural radiance fields for dynamic scenes
+gaussian splatting
+contrastive learning of sentence embeddings
+LLM agents that use tools
+code generation benchmarks for large language models
+state space models for sequence modeling
+knowledge distillation for model compression
+adversarial robustness of image classifiers
+causal inference with machine learning
+anomaly detection in time series
+protein structure prediction with deep learning
+dark matter direct detection with liquid xenon
+gravitational wave parameter estimation
+exoplanet atmospheres with JWST
+topological insulators
+quantum error correction surface code
+variational quantum eigensolver
+black hole information paradox
+neutrino oscillations
+superconductivity in twisted bilayer graphene
+optimal transport in machine learning
+stochastic gradient descent convergence for nonconvex problems
+random matrix theory
+sparse autoencoders for interpretability of language models
+click-through rate prediction
+cold start in recommender systems
+speech recognition with self-supervised learning
+autonomous driving motion planning
+medical image segmentation with U-Net

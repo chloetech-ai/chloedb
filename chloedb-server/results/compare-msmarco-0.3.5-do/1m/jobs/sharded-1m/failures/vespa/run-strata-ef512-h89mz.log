@@ -1,0 +1,22 @@
+strata-ef512 vector                   warm-up: p50 4.697, 4.792 ms
+strata-ef512 vector                   c=1        293 q/s  p50   3.354 ms  p90   3.807 ms  p99   5.534 ms  errors 0
+strata-ef512 vector                   c=4        807 q/s  p50   4.701 ms  p90   6.547 ms  p99   8.705 ms  errors 0
+strata-ef512 vector                   c=16      1058 q/s  p50  14.177 ms  p90  23.205 ms  p99  32.513 ms  errors 0
+strata-ef512 vector + filter          warm-up: p50 4.928, 4.971 ms
+strata-ef512 vector + filter          c=1        279 q/s  p50   3.515 ms  p90   3.985 ms  p99   5.398 ms  errors 0
+strata-ef512 vector + filter          c=4        773 q/s  p50   4.932 ms  p90   6.793 ms  p99   9.006 ms  errors 0
+strata-ef512 vector + filter          c=16      1021 q/s  p50  14.403 ms  p90  24.555 ms  p99  35.786 ms  errors 0
+strata-ef512 hybrid (RRF)             warm-up: p50 8.330, 8.400 ms
+strata-ef512 hybrid (RRF)             c=1        166 q/s  p50   5.725 ms  p90   7.402 ms  p99  11.523 ms  errors 0
+strata-ef512 hybrid (RRF)             c=4        449 q/s  p50   8.316 ms  p90  12.200 ms  p99  17.507 ms  errors 0
+strata-ef512 hybrid (RRF)             c=16       559 q/s  p50  26.978 ms  p90  43.296 ms  p99  66.460 ms  errors 0
+strata-ef512 hybrid (weighted)        warm-up: p50 8.489, 8.341 ms
+strata-ef512 hybrid (weighted)        c=1        167 q/s  p50   5.728 ms  p90   7.431 ms  p99  11.511 ms  errors 0
+strata-ef512 hybrid (weighted)        c=4        453 q/s  p50   8.223 ms  p90  12.172 ms  p99  18.130 ms  errors 0
+strata-ef512 hybrid (weighted)        c=16       545 q/s  p50  27.785 ms  p90  44.265 ms  p99  65.602 ms  errors 0
+strata-ef512 similar items            warm-up: p50 5.427, 5.415 ms
+strata-ef512 similar items            c=1        255 q/s  p50   3.848 ms  p90   4.386 ms  p99   6.647 ms  errors 0
+strata-ef512 similar items            c=4        706 q/s  p50   5.385 ms  p90   7.539 ms  p99  10.098 ms  errors 0
+strata-ef512 similar items            c=16       943 q/s  p50  15.922 ms  p90  26.070 ms  p99  37.927 ms  errors 0
+strata-ef512 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef512.json

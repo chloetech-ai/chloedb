@@ -6,11 +6,13 @@
 Nothing here is typed by hand: each value is read from a run's committed
 results and only rounded. The reports it reads:
 
-  cloud-10m      chloedb-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass, every engine on its own nodes)
-  cloud-10m-h2h  chloedb-server/results/compare-msmarco-same-nodes-do/10m/  (Strata, Elasticsearch and
-                 OpenSearch on the same nodes on latest main, three passes)
-  cloud-1m       chloedb-server/results/compare-msmarco-same-nodes-do/1m/   (14 engines on latest main,
-                 each lane's engines on the same nodes, three passes)
+  cloud-10m      chloedb-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass, every engine on its own
+                 nodes; ChloeDB, Elasticsearch and OpenSearch from the 0.3.5 head to head)
+  cloud-10m-h2h  chloedb-server/results/compare-msmarco-0.3.5-do/10m/  (ChloeDB 0.3.5, Elasticsearch and
+                 OpenSearch on the same nodes, three passes)
+  cloud-1m       chloedb-server/results/compare-msmarco-0.3.5-do/1m/   (14 engines, ChloeDB 0.3.5, each
+                 lane's engines on the same nodes, three passes, result caches off)
+  ef-1m, ef-10m  the same run's candidates sweeps (ef.md; Qdrant and Postgres in 1m-ef-lane/)
   cloud-1m-first chloedb-server/results/compare-msmarco-1m-do/   (the first 1M run, three passes)
   laptop     chloedb-server/results/compare-nq-mac/          (compare.sh on kind, one pass)
   embedded   chloedb/results/laptop-2026-11/part-a-do/       (Part A, no server)
@@ -18,6 +20,8 @@ results and only rounded. The reports it reads:
   bm25-load  chloedb-server/results/bm25-stats-cache-container/
   bm25-do    chloedb-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
   strata-1m-since  Strata's own medians in cloud-1m-first and cloud-1m, kind by kind
+  since-1107-1m, since-1107-10m  Strata's medians on 7 November (rerun-1107-do/, image 861ab1d, the
+                 site's before 0.3.5) and in the 0.3.5 run, on nodes of the same size
 
 A results directory that is not on this checkout is read from the git ref
 named for it below (a branch whose pull request is still open), and the page
@@ -638,18 +642,6 @@ def since(before, after, rows):
     return out
 
 
-def same_nodes(src, before, after, rows):
-    """Two images in one run, on the same nodes: (kind, clients) by (kind, clients)."""
-    B, A = medians(src, before, PASSES), medians(src, after, PASSES)
-    out = []
-    for k, c in rows:
-        b, a = B.get((k, c)), A.get((k, c))
-        if b and a:
-            out.append({"kind": k, "clients": c, "before": r3(b["qps"]), "after": r3(a["qps"]),
-                        "p50_before": r3(b["p50_ms"]), "p50_after": r3(a["p50_ms"])})
-    return out
-
-
 def ef_rows(src):
     """ef.py's table: recall@10, p50 at one client and q/s at 16 per engine, kind and candidates."""
     b = src.bytes("ef.md")
@@ -687,72 +679,52 @@ def shown(v):
 def main():
     runs, reports, suites, missing = {}, {}, [], []
     c10 = Source("chloedb-server/results/compare-msmarco-10m-do")
-    c10h = Source("chloedb-server/results/compare-msmarco-same-nodes-do/10m")
-    c1 = Source("chloedb-server/results/compare-msmarco-same-nodes-do/1m")
+    c10h = Source("chloedb-server/results/compare-msmarco-0.3.5-do/10m")
+    c1 = Source("chloedb-server/results/compare-msmarco-0.3.5-do/1m")
+    c1ef = Source("chloedb-server/results/compare-msmarco-0.3.5-do/1m-ef-lane")
     c1f = Source("chloedb-server/results/compare-msmarco-1m-do")
     mac = Source("chloedb-server/results/compare-nq-mac")
     pa = Source("chloedb/results/laptop-2026-11/part-a-do")
     gr = Source("chloedb-server/results/graph-compare-mac", "origin/claude/graph-compare-mac")
     bl = Source("chloedb-server/results/bm25-stats-cache-container")
     bd = Source("chloedb-server/results/bm25-do-1m")
-    bi1 = Source("chloedb-server/results/bigger-items-do/1m")
-    bi10 = Source("chloedb-server/results/bigger-items-do/10m")
-    r1 = Source("chloedb-server/results/rerun-1106-do/1m")
-    r10 = Source("chloedb-server/results/rerun-1106-do/10m")
     n1 = Source("chloedb-server/results/rerun-1107-do/1m")
     n10 = Source("chloedb-server/results/rerun-1107-do/10m")
-    # Strata from its newest rerun (7 November: main + #293-#296 and #299), where
-    # that rerun's analysis (recall, load) is committed; 6 November's otherwise
-    s1, d1 = (n1, "7 Nov") if n1.ok and n1.json("summary.json") else (r1, "6 Nov")
-    s10, d10 = (n10, "7 Nov") if n10.ok and n10.json("summary.json") else (r10, "6 Nov")
 
     if c10.ok:
         ranked = ["strata", "os", "es", "solr", "vespa", "qdrant", "weaviate", "paradedb", "postgres"]
         # Milvus (out of memory at 52 GiB) and Redis (all in memory) ran on a 128 GB
-        # node with the same CPUs: shown, never ranked (the run's README)
-        # Strata from the newest rerun (7 November once its summary is in), Elasticsearch and OpenSearch from 5
-        # November's (result caches off, #262); the others did not change
-        take10 = {"strata": s10, "es": bi10, "os": bi10} if r10.ok else {}
+        # node with the same CPUs: shown, never ranked (the run's README).
+        # ChloeDB, Elasticsearch and OpenSearch from the 0.3.5 head to head (16
+        # November, every result cache off); the others did not run 10M again
+        take10 = {"strata": c10h, "es": c10h, "os": c10h}
         reports["cloud-10m"] = cluster(c10, "cloud-10m", ranked=ranked, take=take10,
-                                       lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked"} | (
-                                           {"strata": d10, "es": "9.5.5, 5 Nov", "os": "3.9.0, 5 Nov"} if take10 else {}))
-        if take10:
-            reports["cloud-10m"]["passes_note"] = "medians of 3 passes for Strata, Elasticsearch and OpenSearch, one pass for the rest"
+                                       lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked",
+                                              "strata": "0.3.5, 16 Nov", "es": "9.5.5, 16 Nov", "os": "3.9.0, 16 Nov"})
+        reports["cloud-10m"]["passes_note"] = "medians of 3 passes for ChloeDB, Elasticsearch and OpenSearch, one pass for the rest"
     else:
         missing.append("cloud-10m")
-    if r10.ok:
-        # 5 November's head to head with Strata from 6 November's rerun
-        reports["cloud-10m-h2h"] = cluster(bi10, "cloud-10m-h2h", take={"strata": s10}, lanes={"strata": d10, "es": "5 Nov", "os": "5 Nov"})
-        c10h = bi10
-    else:
-        reports["cloud-10m-h2h"] = cluster(c10h, "cloud-10m-h2h")
-    # Milvus from its run alone on a fresh node: last in its lane it was still
-    # compacting during its first two passes (the run's README)
-    # Engines whose code or settings changed since that run, from the runs that
-    # measured them again: Strata on 7 November (main 8e66622 with five pull
-    # requests, since merged; 6 November's main b022e39 until that run's results
-    # are in), Manticore on 6 November (its query cache off, #262),
-    # Elasticsearch and OpenSearch on 5
-    # November (result caches off, #262). The others' code and settings did
-    # not change. Every run's README names its nodes.
-    take1 = {"strata": s1, "manticore": r1, "es": bi1, "os": bi1} if r1.ok else {}
-    reports["cloud-1m"] = cluster(c1, "cloud-1m", take=take1, lanes={
-        "milvus": "2.6.26, run alone on a fresh node"} | ({
-        "strata": d1, "manticore": "29.9.0, 6 Nov", "es": "9.5.5, 5 Nov", "os": "3.9.0, 5 Nov"} if take1 else {}))
+    reports["cloud-10m-h2h"] = cluster(c10h, "cloud-10m-h2h")
+    # every engine from the one run of 16 November (UTC); Milvus ran alone on a
+    # node of its own and Vespa in a lane of its own (the run's README)
+    reports["cloud-1m"] = cluster(c1, "cloud-1m", lanes={
+        "milvus": "2.6.26, alone on its own node", "vespa": "8.778.45, its own lane"})
     reports["cloud-1m-first"] = cluster(c1f, "cloud-1m-first")
-    reports["strata-1m-since"] = {"id": "strata-1m-since", "type": "ab", "source": (s1 if r1.ok else c1).url(), "rows": since(c1f, s1 if r1.ok else c1, [
+    reports["strata-1m-since"] = {"id": "strata-1m-since", "type": "ab", "source": c1.url(), "rows": since(c1f, c1, [
         ("bm25", 1), ("bm25", 16), ("bm25 + filter", 16), ("phrase", 16), ("prefix", 16),
         ("typo", 1), ("typo", 16), ("boosted (bm25 × decay)", 16), ("hybrid (RRF)", 16), ("sql aggregate", 1)])}
-    for rid, src in [("fix-1107-1m", n1), ("fix-1107-10m", n10)]:
-        if src.ok:
-            reports[rid] = {"id": rid, "type": "ab", "source": src.url("passes.md"), "rows": same_nodes(src, "strata-b", "strata", [
+    # ChloeDB 0.3.5 against the image the site showed before (7 November's,
+    # 861ab1d), on nodes of the same size on another day: the 0.3.5 run's README
+    for rid, before, after in [("since-1107-1m", n1, c1), ("since-1107-10m", n10, c10h)]:
+        if before.ok and after.ok:
+            reports[rid] = {"id": rid, "type": "ab", "source": after.url("passes.md"), "rows": since(before, after, [
                 (k, c) for k, _, _ in KINDS for c in (1, 16)])}
         else:
             missing.append(rid)
-    for rid, src in [("ef-1m", n1), ("ef-10m", n10)]:
-        rows = ef_rows(src) if src.ok else None
+    for rid, srcs in [("ef-1m", [c1, c1ef]), ("ef-10m", [c10h])]:
+        rows = [r for src in srcs if src.ok for r in (ef_rows(src) or [])]
         if rows:
-            reports[rid] = {"id": rid, "type": "ef", "source": src.url("ef.md"), "rows": rows}
+            reports[rid] = {"id": rid, "type": "ef", "source": srcs[0].url("ef.md"), "rows": rows}
         else:
             missing.append(rid)
     reports["laptop"] = cluster(mac, "laptop", extra_runs={"solr": "solr+sql"})
