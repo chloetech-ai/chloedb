@@ -178,6 +178,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {name: gh, namespace: strata}
 spec:
+  # Recreate: a second coordinator during a rollout leaves shard 0 no room on its node.
+  strategy: {type: Recreate}
   replicas: 1
   selector: {matchLabels: {app: gh}}
   template:
