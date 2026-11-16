@@ -1,0 +1,22 @@
+os-ef512-pass3 vector                   warm-up: p50 12.315, 12.098 ms
+os-ef512-pass3 vector                   c=1        117 q/s  p50   8.493 ms  p90   9.975 ms  p99  11.963 ms  errors 0
+os-ef512-pass3 vector                   c=4        318 q/s  p50  12.138 ms  p90  16.370 ms  p99  21.115 ms  errors 0
+os-ef512-pass3 vector                   c=16       415 q/s  p50  37.245 ms  p90  54.242 ms  p99  65.569 ms  errors 0
+os-ef512-pass3 vector + filter          warm-up: p50 34.501, 36.068 ms
+os-ef512-pass3 vector + filter          c=1         41 q/s  p50  24.662 ms  p90  28.403 ms  p99  31.525 ms  errors 0
+os-ef512-pass3 vector + filter          c=4        114 q/s  p50  34.912 ms  p90  43.940 ms  p99  50.174 ms  errors 0
+os-ef512-pass3 vector + filter          c=16       121 q/s  p50 132.766 ms  p90 175.246 ms  p99 195.375 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             warm-up: p50 11.196, 11.364 ms
+os-ef512-pass3 hybrid (RRF)             c=1        124 q/s  p50   7.726 ms  p90  10.032 ms  p99  14.908 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             c=4        334 q/s  p50  11.385 ms  p90  15.918 ms  p99  23.419 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             c=16       430 q/s  p50  35.052 ms  p90  52.440 ms  p99  68.938 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        warm-up: p50 11.295, 11.172 ms
+os-ef512-pass3 hybrid (weighted)        c=1        124 q/s  p50   7.686 ms  p90  10.049 ms  p99  14.770 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        c=4        339 q/s  p50  11.254 ms  p90  15.859 ms  p99  23.440 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        c=16       436 q/s  p50  34.955 ms  p90  51.056 ms  p99  67.946 ms  errors 0
+os-ef512-pass3 similar items            warm-up: p50 25.375, 24.846 ms
+os-ef512-pass3 similar items            c=1         57 q/s  p50  17.669 ms  p90  20.775 ms  p99  23.286 ms  errors 0
+os-ef512-pass3 similar items            c=4        155 q/s  p50  25.302 ms  p90  33.224 ms  p99  40.662 ms  errors 0
+os-ef512-pass3 similar items            c=16       176 q/s  p50  91.144 ms  p90 116.134 ms  p99 135.811 ms  errors 0
+os-ef512-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef512-pass3.json

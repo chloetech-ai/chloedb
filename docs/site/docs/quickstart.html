@@ -82,6 +82,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="sheets.html">Sheets</a>
       <a href="netops.html">Network operations</a>
       <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -107,6 +108,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
 <p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
+<p><strong>pipx or uv</strong> <span class="since unreleased">since 0.3.7 (unreleased)</span>: the same server, from <a href="https://pypi.org/project/chloedb-server/">PyPI</a>, on the same Macs and on Linux with glibc 2.34 or later. <code>pipx install</code> and <code>uv tool install</code> put <code>chloedb-server</code> on your <code>PATH</code>; <code>uvx chloedb-server</code> runs it without installing it.</p>
+<pre data-lang="sh">pipx install chloedb-server      # or: uv tool install chloedb-server</pre>
 <p><strong>Homebrew</strong> is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.</p>
 <p><strong>Docker</strong>: skip to <a href="#chloedb-in-docker">ChloeDB in Docker</a> below, which runs the same steps against the image.</p>
 <p><strong>By hand</strong>: each <code>chloedb-server-v&lt;version&gt;</code> <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> has an archive per platform (<code>linux-x86_64</code>, <code>linux-aarch64</code>, <code>macos-arm64</code>, <code>macos-x86_64</code>) with a <code>.sha256</code> beside it:</p>

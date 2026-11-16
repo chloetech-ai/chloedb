@@ -1,0 +1,34 @@
+00:58:37 ef-one-1m: waiting for its nodes
+00:59:55 ef-one-1m: nodes ef-one-1m-d-a1-3a2suk ef-one-1m-d-a1-3a2suk and ef-one-1m-c-a1-3a2suh
+01:01:44 ef-one-1m: step 1: compare.sh up qdrant
+01:01:51 ef-one-1m: step 2: compare.sh load qdrant
+02:18:04 ef-one-1m: step 3: compare.sh run qdrant
+02:23:11 ef-one-1m: step 4: compare.sh run qdrant --label qdrant-pass2
+02:28:09 ef-one-1m: step 5: compare.sh run qdrant --label qdrant-pass3
+02:33:08 ef-one-1m: step 6: compare.sh run qdrant --candidates 128 --label qdrant-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:35:36 ef-one-1m: step 7: compare.sh run qdrant --candidates 128 --label qdrant-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:38:04 ef-one-1m: step 8: compare.sh run qdrant --candidates 128 --label qdrant-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:40:31 ef-one-1m: step 9: compare.sh run qdrant --candidates 256 --label qdrant-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:43:03 ef-one-1m: step 10: compare.sh run qdrant --candidates 256 --label qdrant-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:45:36 ef-one-1m: step 11: compare.sh run qdrant --candidates 256 --label qdrant-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:48:09 ef-one-1m: step 12: compare.sh run qdrant --candidates 512 --label qdrant-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:50:53 ef-one-1m: step 13: compare.sh run qdrant --candidates 512 --label qdrant-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:53:37 ef-one-1m: step 14: compare.sh run qdrant --candidates 512 --label qdrant-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:56:21 ef-one-1m: step 15: compare.sh down qdrant
+02:56:23 ef-one-1m: step 16: compare.sh up postgres
+02:56:45 ef-one-1m: step 17: compare.sh load postgres
+03:20:12 ef-one-1m: step 18: compare.sh run postgres
+03:38:27 ef-one-1m: step 19: compare.sh run postgres --label postgres-pass2
+03:56:28 ef-one-1m: step 20: compare.sh run postgres --label postgres-pass3
+04:14:33 ef-one-1m: step 21: compare.sh run postgres --candidates 128 --label postgres-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:21:04 ef-one-1m: step 22: compare.sh run postgres --candidates 128 --label postgres-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:27:16 ef-one-1m: step 23: compare.sh run postgres --candidates 128 --label postgres-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:33:52 ef-one-1m: step 24: compare.sh run postgres --candidates 256 --label postgres-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:40:10 ef-one-1m: step 25: compare.sh run postgres --candidates 256 --label postgres-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:46:31 ef-one-1m: step 26: compare.sh run postgres --candidates 256 --label postgres-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:52:55 ef-one-1m: step 27: compare.sh run postgres --candidates 512 --label postgres-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:59:15 ef-one-1m: step 28: compare.sh run postgres --candidates 512 --label postgres-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+05:05:44 ef-one-1m: step 29: compare.sh run postgres --candidates 512 --label postgres-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+05:12:07 ef-one-1m: step 30: compare.sh down postgres
+05:12:17 ef-one-1m: reports fetched (29 files)
+05:12:19 ef-one-1m: done after 15222 s

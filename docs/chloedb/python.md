@@ -22,6 +22,8 @@ If `import chloedb` raises an `ImportError` that calls it a placeholder, pip ins
 
 The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
+<!-- since 0.3.7 --> `pip install "chloedb[server]"` also installs [`chloedb-server`](server.md#run-it), the prebuilt server of the same release, which [`chloedb.serve()`](#a-server-started-from-python) starts.
+
 | platform | wheel |
 |---|---|
 | macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
@@ -40,7 +42,7 @@ The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/mai
 PYTHONPATH=chloedb-py/python python3 -c 'import chloedb; print(chloedb.connect("http://127.0.0.1:7700").health())'
 ```
 
-The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.serve`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
 
 ### From source
 
@@ -125,7 +127,7 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `add_column(name, type, **options)`, `drop_column(name)`, `rename_column(old, new)` | change a table's columns while it holds rows, as [`ALTER TABLE`](query-language.md#changing-a-tables-columns) does: `options` are the field's, in the short form of a schema (`db.add_column("price", "float", default=0.0)`, `db.add_column("emb", "vector", embed=["title"], model="potion-retrieval-32M")`); rows written before a column was added read its default, or `None`. Each takes `table=`. In-process only: through the client, send `ALTER TABLE` with `sql` |
 | `import_file(path, format=None)` | loads a JSON Lines, JSON, CSV or TSV file ([how files are read](server.md#loading-rows)); returns `{rows, bulk, skipped_fields}` |
 | `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, `set` of a field (`{"op": "set", "key": k, "field": "status", "value": "SOLD"}`: a number in place, another by writing the row again with the value), and `add` to a number in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
-| `import_sqlite(path, tables=None, schemas=None)` | imports a SQLite database's tables, each into the table of its name, created when missing ([SQLite in and out](sqlite.md)); returns what it did and what did not carry over |
+| `import_sqlite(path, tables=None, schemas=None, append=False)` | imports a SQLite database's tables, each into the table of its name, created when missing ([SQLite in and out](sqlite.md)); a table without a key that has rows takes more only with `append=True`; returns what it did and what did not carry over |
 | `export_sqlite(path, tables=None, fts=True, indexes=True)` | writes the tables to a new SQLite file, with indexes, an FTS5 index over the text and the ChloeDB schemas |
 | `import_parquet(path, table=None, schema=None, key=None)` | imports a Parquet file or a directory of them (Spark's part files, Hive partitions) into one table, created from the columns when missing ([Parquet and S3](parquet.md)); returns what it did |
 | `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its ChloeDB schema |
@@ -349,7 +351,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 
 ## A server from Python
 
-`chloedb.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. A method given `table=`, and `table(name)`, read that table alone, never the first one, so a [key limited to tables](server.md#security) works with them <!-- since 0.3.2 -->. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`chloedb.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. A method given `table=`, and `table(name)`, read that table alone, never the first one, so a [key limited to tables](server.md#security) works with them <!-- since 0.3.2 -->. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None, append=False)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
 client = chloedb.connect("http://127.0.0.1:7700")   # token= or $CHLOEDB_TOKEN for a server with --token
@@ -376,6 +378,23 @@ except chloedb.ChloeDBError as e:
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
 ```
+
+### A server started from Python
+
+<!-- since 0.3.7 --> `chloedb.serve(db=None, listen=None, token=None, args=(), binary=None, wait=60)` starts a chloedb-server on this machine and returns a `Client` of it, which stops the server when it is closed or its `with` block ends (and this Python process stops any it started when it ends). It is for a script, a notebook or a test that wants the server's API (the command center at the client's `url`, several processes on one database, a cluster's API before there is a cluster) without starting the program by hand:
+
+```python
+import chloedb
+
+with chloedb.serve("books.chloedb") as db:      # the database is made if it does not exist
+    db.sql("CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, year INT)")
+    db.insert([{"id": "b1", "title": "The river and the dragon", "year": 1999}], table="books")
+    print(db.url, db.search("dragon", table="books").dicts())
+```
+
+Without `db` it serves a new database in a temporary folder, removed when the server stops. It listens on `127.0.0.1` at a free port (`listen="host:port"` picks the address; beyond loopback the server needs a `token`, which it is given in its environment and the client sends), with the gRPC API off and no apps started; `args` are more of the server's [flags](server.md#run-it), such as `["--demo", "20000"]`, and win over those. `wait` is how many seconds it may take to answer `/livez`; one that stops first raises `ChloeDBError` with what it printed. The client's `server` is the `Server`: its `url`, `db`, `process` (the `subprocess.Popen`), `running`, `output()` (what it printed), and `stop(timeout=10)`, which sends SIGTERM, then SIGKILL after `timeout` seconds. A copy of the client (pickled, or `session()`) talks to the same server and leaves it running when closed.
+
+The program is `binary` when given, else `$CHLOEDB_SERVER_BIN`, else the one the [`chloedb-server` package](server.md#run-it) installed (`pip install chloedb-server`, or the `server` extra above), else `chloedb-server` on the `PATH`; `chloedb.find_server()` says which, and raises `FileNotFoundError` saying what to install when there is none. Like the client, it needs only the standard library.
 
 ### From asyncio
 

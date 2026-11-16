@@ -1568,36 +1568,55 @@ impl Database {
     /// In a database that numbers its writes it takes the next number, and
     /// its replicas make the same table ([`Database::apply_shipped`]); the
     /// memtables are flushed first ([`Database::change_tables`]).
-    pub fn create_table(&self, mut schema: Schema) -> Result<()> {
+    pub fn create_table(&self, schema: Schema) -> Result<()> {
+        self.create_tables(vec![schema])
+    }
+
+    /// Adds empty tables with these schemas, as [`Database::create_table`]
+    /// adds one, all in one commit (or none, on the first that cannot be
+    /// made). A commit writes the whole list of tables, so that making
+    /// many tables one commit each (an import's) costs the square of their
+    /// number. A field may reference a table made before it in `schemas`.
+    pub fn create_tables(&self, schemas: Vec<Schema>) -> Result<()> {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
-        check_table_name(&schema.table)?;
-        match system_id(&schema.table) {
-            Some(SOURCES_ID) => return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)"))),
-            Some(_) => return Err(Error::Schema(format!("{} is a system table, which CREATE FUNCTION makes and writes", schema.table))),
-            None => {}
-        }
-        if self.table(&schema.table).is_some() {
-            return Err(Error::Schema(format!("table {} already exists", schema.table)));
-        }
-        let tables = self.tables();
-        let own = schema.table.clone();
-        for f in schema.fields.iter_mut() {
-            resolve_reference(&tables, &own, f)?;
-        }
-        let (id, legacy) = {
+        let mut tables = self.tables();
+        let (mut id, legacy) = {
             let st = lock(&self.state);
             (st.manifest.next_table_id, st.manifest.is_legacy())
         };
-        if legacy {
-            // Opened to be copied: it stays as it was written.
-            schema = schema.without_ids();
-        } else if schema.is_legacy() {
-            // A table read from a database written before field ids.
-            schema = schema.with_new_ids()?;
+        let mut ops = Vec::with_capacity(schemas.len());
+        for mut schema in schemas {
+            check_table_name(&schema.table)?;
+            match system_id(&schema.table) {
+                Some(SOURCES_ID) => return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)"))),
+                Some(_) => return Err(Error::Schema(format!("{} is a system table, which CREATE FUNCTION makes and writes", schema.table))),
+                None => {}
+            }
+            if tables.iter().any(|t| t.table.eq_ignore_ascii_case(&schema.table)) {
+                return Err(Error::Schema(format!("table {} already exists", schema.table)));
+            }
+            let own = schema.table.clone();
+            for f in schema.fields.iter_mut() {
+                resolve_reference(&tables, &own, f)?;
+            }
+            if legacy {
+                // Opened to be copied: it stays as it was written.
+                schema = schema.without_ids();
+            } else if schema.is_legacy() {
+                // A table read from a database written before field ids.
+                schema = schema.with_new_ids()?;
+            }
+            schema.check_ids()?;
+            let schema = Arc::new(schema);
+            tables.push(schema.clone());
+            ops.push((id, Op::Table { def: Some(schema) }));
+            id += 1;
         }
-        schema.check_ids()?;
-        self.change_tables(&mut wal, vec![(id, Op::Table { def: Some(Arc::new(schema)) })], None)
+        if ops.is_empty() {
+            return Ok(());
+        }
+        self.change_tables(&mut wal, ops, None)
     }
 
     /// Makes the change of tables `ops` (each an [`Op::Table`]: a schema
@@ -2931,55 +2950,40 @@ impl Database {
     }
 
     fn bulk_load_table(&self, table: Option<&str>, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
+        self.try_bulk_load_tables(|b| b.load(table, docs).map(|_| ()))
+    }
+
+    /// Bulk loads into several tables in one commit, as
+    /// [`Database::try_bulk_load_into`] loads one: `f` loads each table
+    /// ([`BulkLoad::load_into`]), and nothing is committed when it fails.
+    /// A commit writes the whole list of tables, so that loading many
+    /// tables one commit each (an import's) costs the square of their
+    /// number. The writer is held until `f` returns.
+    pub fn try_bulk_load_tables<R>(&self, f: impl FnOnce(&mut BulkLoad<'_>) -> Result<R>) -> Result<R> {
         let mut wal = self.try_writer()?;
         self.refuse_unshipped("a bulk load")?;
-        let t = self.table_ref(table)?;
         // WAL deletes are replayed against the on-disk version; segments
         // written behind the WAL's back must not hold keys it touches.
         self.flush_locked(&mut wal)?;
-        let mut vw = VersionWriter::begin(self);
-        let schema = &t.schema;
-        let pk = schema.primary_key;
-        let check_existing = !lock(&self.state).tables[t.pos].handles.is_empty();
-        let mut seen = HashSet::new();
-        let mut chunk = Vec::new();
-        let max = self.opts.segment_max_docs.max(1);
-        let mut ties = Ties::default();
-        let mut vw_rows = 0u64;
-        for doc in docs {
-            let mut doc = doc?;
-            vw_rows += 1;
-            conform(schema, &mut doc)?;
-            self.fill_sids(&t, &mut doc, &mut ties, &[])?;
-            if let Some(pk) = pk {
-                if !seen.insert(Key::of(&doc[pk]).expect("validated key")) {
-                    return Err(Error::Schema(crate::query::hint::repeated_key(schema, &doc[pk])));
-                }
-                if check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some() {
-                    return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
-                }
-            }
-            chunk.push(doc);
-            if chunk.len() == max {
-                self.add_loaded(&mut vw, &t, std::mem::take(&mut chunk))?;
-            }
-        }
-        if !chunk.is_empty() {
-            self.add_loaded(&mut vw, &t, chunk)?;
-        }
+        let mut b = BulkLoad { db: self, vw: VersionWriter::begin(self), loaded: Vec::new() };
+        let r = f(&mut b)?;
+        let BulkLoad { vw, loaded, .. } = b;
         if vw.segments_added == 0 {
-            return Ok(());
+            return Ok(r);
         }
         let c = vw.commit(&mut wal)?;
-        let rows = vw_rows;
         self.publish(c, |st| {
-            if let Some(i) = st.table_index(t.id) {
-                st.tables[i].activity.wrote(super::state::now_ms(), rows);
-                if let Some(known) = st.tables[i].ties.as_mut() {
-                    known.absorb(&ties);
+            let now = super::state::now_ms();
+            for (id, rows, ties) in &loaded {
+                if let Some(i) = st.table_index(*id) {
+                    st.tables[i].activity.wrote(now, *rows);
+                    if let Some(known) = st.tables[i].ties.as_mut() {
+                        known.absorb(ties);
+                    }
                 }
             }
-        })
+        })?;
+        Ok(r)
     }
 
     /// Refuses `what`, a write that commits segments without a log record
@@ -3251,8 +3255,15 @@ impl Database {
         // taken before the lock would leave its inputs, gone by then, to
         // this one.
         let mut m = lock(&self.merging);
-        let snap = self.snapshot_inner(false).table_by_id(table)?;
-        let bytes: HashMap<u64, u64> = lock(&self.state).handles().map(|h| (h.meta.id, h.meta.extent.len)).collect();
+        // Of this table alone: a merge of each of many tables would take
+        // the square of their number otherwise.
+        let cap = lock(&self.state).capture_one(&self.pins, table)?;
+        let snap = Snapshot::of(Arc::new(cap.assemble(self.path.clone(), &self.mem_opts, self.opts.memtable_tail_docs))).table_by_id(table)?;
+        let handles: Vec<Arc<SegHandle>> = {
+            let st = lock(&self.state);
+            st.table_index(table).map(|i| st.tables[i].handles.clone()).unwrap_or_default()
+        };
+        let bytes: HashMap<u64, u64> = handles.iter().map(|h| (h.meta.id, h.meta.extent.len)).collect();
         // Rows past the table's retention count as deleted: a segment of
         // them only is dropped, and one with many is rewritten without them.
         let retention = snap.schema().retention(crate::timestamp::now());
@@ -3280,7 +3291,7 @@ impl Database {
         // Cold segments are not merged (their rows would be fetched), unless
         // nothing of them is left to keep; nor segments being made cold.
         let frozen: HashSet<u64> = {
-            let cold: HashSet<u64> = lock(&self.state).handles().filter(|h| h.is_cold()).map(|h| h.meta.id).collect();
+            let cold: HashSet<u64> = handles.iter().filter(|h| h.is_cold()).map(|h| h.meta.id).collect();
             let mut f: HashSet<u64> = infos.iter().filter(|s| s.n_live > 0 && cold.contains(&s.id)).map(|s| s.id).collect();
             f.extend(lock(&self.offloading).iter().copied());
             f
@@ -5695,6 +5706,66 @@ struct Committed {
     bytes_written: u64,
     /// Directory layout: files to unlink once the version is published.
     obsolete: Vec<String>,
+}
+
+/// A bulk load of several tables in one commit
+/// ([`Database::try_bulk_load_tables`]).
+pub struct BulkLoad<'a> {
+    db: &'a Database,
+    vw: VersionWriter<'a>,
+    /// Each table loaded: its id, its rows and its semantic ids' ties.
+    loaded: Vec<(u32, u64, Ties)>,
+}
+
+impl BulkLoad<'_> {
+    /// Loads documents into the table named `table`, as
+    /// [`Database::try_bulk_load_into`] does: the first error ends the
+    /// load, and nothing is committed. A table is loaded once a load.
+    /// Returns the rows it loaded.
+    pub fn load_into(&mut self, table: &str, docs: impl IntoIterator<Item = Result<Document>>) -> Result<u64> {
+        self.load(Some(table), docs)
+    }
+
+    fn load(&mut self, table: Option<&str>, docs: impl IntoIterator<Item = Result<Document>>) -> Result<u64> {
+        let db = self.db;
+        let t = db.table_ref(table)?;
+        if self.loaded.iter().any(|(id, ..)| *id == t.id) {
+            // Its keys would be checked against the segments committed, not
+            // those this load added.
+            return Err(Error::Schema(format!("table {} is loaded twice in one bulk load", t.schema.table)));
+        }
+        let schema = &t.schema;
+        let pk = schema.primary_key;
+        let check_existing = !lock(&db.state).tables[t.pos].handles.is_empty();
+        let mut seen = HashSet::new();
+        let mut chunk = Vec::new();
+        let max = db.opts.segment_max_docs.max(1);
+        let mut ties = Ties::default();
+        let mut rows = 0u64;
+        for doc in docs {
+            let mut doc = doc?;
+            rows += 1;
+            conform(schema, &mut doc)?;
+            db.fill_sids(&t, &mut doc, &mut ties, &[])?;
+            if let Some(pk) = pk {
+                if !seen.insert(Key::of(&doc[pk]).expect("validated key")) {
+                    return Err(Error::Schema(crate::query::hint::repeated_key(schema, &doc[pk])));
+                }
+                if check_existing && lock(&db.state).find_live(t.pos, &doc[pk]).is_some() {
+                    return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
+                }
+            }
+            chunk.push(doc);
+            if chunk.len() == max {
+                db.add_loaded(&mut self.vw, &t, std::mem::take(&mut chunk))?;
+            }
+        }
+        if !chunk.is_empty() {
+            db.add_loaded(&mut self.vw, &t, chunk)?;
+        }
+        self.loaded.push((t.id, rows, ties));
+        Ok(rows)
+    }
 }
 
 /// Builds the next on-disk version (shadow paging). Holds working copies

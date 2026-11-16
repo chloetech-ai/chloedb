@@ -19,6 +19,9 @@ checks, over the network, each of:
 - `brew install <owner>/<tap>/<formula>`: the tap's repository has the formula;
 - `pip install chloedb[extras]`: PyPI's newest chloedb is the latest release
   the docs name, and has those extras;
+- `pip install chloedb-server` (or `uvx`, `uv tool install`, `pipx`): PyPI's
+  newest chloedb-server is the latest release, from the release it was first
+  published with (SINCE: before it, the docs may name what is coming);
 - `npm install chloedb` (or bun, pnpm, yarn): npm's chloedb is the latest
   release, and so is each platform's addon package, @chloedb/<platform>;
 - `cargo add chloedb`, or `chloedb = "..."` in a Cargo.toml block: crates.io's
@@ -63,6 +66,10 @@ WITH_ALL = ["chloedb-crawl", "chloedb-sheets", "chloectx"]
 # The platforms of the npm addon packages, @chloedb/<platform> (chloedb-js/scripts/pack.mjs).
 NPM_PLATFORMS = ["linux-x64-gnu", "linux-arm64-gnu", "darwin-arm64", "darwin-x64"]
 UA = "chloedb-doc-url-check"
+# What PyPI has only from a release on: a check of it waits until the latest
+# release is that one or later (release-publish.yml's run of the release
+# itself checks it, with --version).
+SINCE = {"pypi chloedb-server": "0.3.7", "extra server": "0.3.7"}
 TIMEOUT = 30
 
 
@@ -110,6 +117,7 @@ EXPANDED = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/releases/expanded_
 IMAGE = re.compile(r"\bghcr\.io/([\w.-]+/[\w.-]+)(?::([\w][\w.-]*))?")
 BREW = re.compile(r"\bbrew install (?:--\S+ )*([\w-]+)/([\w-]+)/([\w@.+-]+)")
 PIP = re.compile(r"\bpip3? install (?:-U |--upgrade |-q )*[\"']?chloedb(?:\[([\w,-]+)\])?(?:==([\w.]+))?[\"']?(?=[\s;|&]|$)", re.M)
+PIP_SERVER = re.compile(r"\b(?:pip3? install (?:-U |--upgrade |-q )*|uvx (?:--from )?|uv tool (?:install|run) |pipx (?:install|run) (?:--spec )?)[\"']?chloedb-server(?:==([\w.]+))?[\"']?(?=[\s;|&]|$)", re.M)
 INSTALLER = re.compile(r"install\.sh\b[^\n]*?--with[ =]([\w,-]+)")
 NPM = re.compile(r"\b(?:npm (?:install|i|add)|pnpm add|yarn add|bun add) (?:-\S+ )*chloedb(?:@([\w.]+))?(?=[\s;|&]|$)", re.M)
 CARGO = re.compile(r"\bcargo add (?:-\S+ )*chloedb(?:@([\w.]+))?(?=[\s;|&]|$)|^chloedb = (?:\"([\w.^~=]+)\"|\{[^\n}]*\bversion = \"([\w.^~=]+)\")", re.M)
@@ -163,6 +171,8 @@ def find(files):
             for m in PIP.finditer(text):
                 extras = tuple(sorted(x for x in (m.group(1) or "").split(",") if x))
                 add(("pypi", extras, m.group(2) or ""), at(m))
+            for m in PIP_SERVER.finditer(text):
+                add(("pypi-server", m.group(1) or ""), at(m))
             for m in NPM.finditer(text):
                 add(("npm", m.group(1) or ""), at(m))
             for m in CARGO.finditer(text):
@@ -331,6 +341,13 @@ def check(found, net, latest=None):
             yield ok, f"brew install {owner}/{tap}/{formula} (Formula/{formula}.rb in github.com/{owner}/homebrew-{tap})", where
         elif kind == "pypi":
             _, extras, pinned = key
+            waiting = sorted(e for e in extras if _ver(latest) < _ver(SINCE.get(f"extra {e}", "0")))
+            if waiting:
+                yield True, (f"chloedb[{','.join(waiting)}]: not checked before {SINCE[f'extra {waiting[0]}']}, "
+                             f"the first release with it (the latest is {latest})"), where
+                extras = tuple(e for e in extras if e not in waiting)
+                if not extras:
+                    continue
             info = net.pypi("chloedb", pinned)
             if not info or "__error__" in info:
                 yield False, f"pip install chloedb{'==' + pinned if pinned else ''}: PyPI has no such release", where
@@ -342,6 +359,21 @@ def check(found, net, latest=None):
             if extras:
                 yield not missing, (f"chloedb {have} on PyPI has the extras [{','.join(extras)}]"
                                     + (f": no {', '.join(missing)}" if missing else "")), where
+        elif kind == "pypi-server":
+            _, pinned = key
+            since = SINCE["pypi chloedb-server"]
+            if _ver(pinned or latest) < _ver(since):
+                yield not pinned, (f"pip install chloedb-server: not checked before {since}, its first release on PyPI "
+                                   f"(the latest is {latest})" if not pinned else
+                                   f"pip install chloedb-server=={pinned}: PyPI has it from {since} on"), where
+                continue
+            info = net.pypi("chloedb-server", pinned)
+            if not info or "__error__" in info:
+                yield False, f"pip install chloedb-server{'==' + pinned if pinned else ''}: PyPI has no such release", where
+                continue
+            have = info["info"]["version"]
+            yield have == (pinned or latest), (f"pip install chloedb-server{'==' + pinned if pinned else ''} gives {have}"
+                                               + ("" if pinned else f", the latest release the docs name is {latest}")), where
         elif kind == "npm":
             # `npm install chloedb` takes npm's latest, and the addon of the
             # machine from @chloedb/<platform> at the same version: npm skips

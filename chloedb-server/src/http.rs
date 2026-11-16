@@ -446,6 +446,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/digitalocean/machines", get(do_machines))
         .route("/v1/admin/digitalocean/plan", post(do_plan))
         .route("/v1/admin/digitalocean/validate", post(do_validate))
+        .route("/v1/admin/gcp", get(gcp_status))
+        .route("/v1/admin/gcp/project", put(gcp_save).merge(axum::routing::delete(gcp_forget)))
+        .route("/v1/admin/gcp/regions", get(gcp_regions))
+        .route("/v1/admin/gcp/machines", get(gcp_machines))
+        .route("/v1/admin/gcp/plan", post(gcp_plan))
+        .route("/v1/admin/gcp/validate", post(gcp_validate))
+        .route("/v1/admin/gcp/nodes", get(gcp_nodes).post(gcp_resize))
         // The hub: connections to other clusters, and calls forwarded to them.
         .route("/v1/admin/hub", get(hub_view))
         .route("/v1/admin/hub/connections", post(hub_add))
@@ -1031,6 +1038,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let plan = matches!(
         route,
         "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/admin/simulator/routing" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+            | "/v1/admin/gcp/plan" | "/v1/admin/gcp/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -2726,13 +2734,14 @@ fn tables_param(q: &std::collections::HashMap<String, String>) -> Vec<String> {
 
 /// A SQLite file's tables ([`Service::import_sqlite`]): `?tables=a,b`
 /// imports only those, `?blobs_base64=true` keeps BLOB columns as base64
-/// text, and `?plan=true` answers what the import would do and writes
-/// nothing.
+/// text, `?append=true` adds rows to tables without a key that have rows
+/// (refused otherwise), and `?plan=true` answers what the import would do
+/// and writes nothing.
 async fn import_sqlite(app: &App, who: &Principal, q: &std::collections::HashMap<String, String>, body: Bytes) -> Res {
     if q.contains_key("table") {
         return Err(ApiError::bad("table is for rows: a SQLite file's tables go to the tables of their names (?tables= picks them)"));
     }
-    let opts = chloedb::sqlite::ImportOptions { tables: tables_param(q), schemas: Vec::new(), blobs_base64: flag(q, "blobs_base64", false)? };
+    let opts = chloedb::sqlite::ImportOptions { tables: tables_param(q), schemas: Vec::new(), blobs_base64: flag(q, "blobs_base64", false)?, append: flag(q, "append", false)? };
     let plan = flag(q, "plan", false)?;
     let t0 = std::time::Instant::now();
     let mut j = app.svc.import_sqlite(who, body, opts, plan, 0).await?;
@@ -6060,7 +6069,28 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
             }
             (j, p.nodes)
         }
-        _ => return Err(ApiError::bad("provider is aws or digitalocean")),
+        "gcp" => {
+            let p: crate::gcp::plan::Plan = serde_json::from_value(plan).map_err(|e| ApiError::bad(format!("a plan: {e}")))?;
+            let cat = app.svc.gcp.catalog(&p.region, true).await.map_err(gcp_error)?;
+            let j = crate::gcp::plan::plan(&p, &cat).map_err(ApiError::bad)?;
+            // The nodes it starts with must fit the project's quotas (the
+            // autoscaler's most only warns: GKE stops growing at a quota).
+            let vcpus = j["machine"]["vcpu"].as_f64().unwrap_or(0.0) * f64::from(p.nodes);
+            let metric = cat.cpu_metric(j["machine"]["family"].as_str().unwrap_or_default());
+            for (what, q) in [(format!("{metric} in {}", cat.region), cat.quota(&metric)), ("CPUS_ALL_REGIONS".to_string(), cat.project_quota("CPUS_ALL_REGIONS"))] {
+                if let Some(q) = q {
+                    if vcpus > q.free() {
+                        return Err(refuse(format!("the nodes need {vcpus} vCPUs and {what} leaves {} of {}: ask Google for more first (IAM & Admin, Quotas), or plan fewer or smaller nodes", q.free(), q.limit)));
+                    }
+                }
+            }
+            let (project, location, name) = (j["project"].as_str().unwrap_or_default(), j["location"].as_str().unwrap_or_default(), j["cluster_name"].as_str().unwrap_or_default());
+            if app.svc.gcp.cluster_named(project, location, name).await.map_err(gcp_error)?.is_some() {
+                return Err(refuse(format!("the project {project} already has a cluster named {name} in {location}: pick another name")));
+            }
+            (j, p.nodes)
+        }
+        _ => return Err(ApiError::bad("provider is aws, digitalocean or gcp")),
     };
     let cluster = j["cluster_name"].as_str().unwrap_or_default().to_string();
     let after_ms = delete_after(&b["delete_after_hours"])?;
@@ -6098,6 +6128,12 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
             tags.push(json!(format!("strata-owner:{}", tag(&keys::audit_name(&who)))));
         }
     }
+    // On GKE, a label of the cluster (lower-case, at most 63).
+    if provider == "gcp" {
+        if let Some(l) = j["request"]["cluster"]["resourceLabels"].as_object_mut() {
+            l.insert("strata-owner".into(), json!(crate::gcp::plan::label(&keys::audit_name(&who))));
+        }
+    }
     let m = Made {
         id: format!("{provider}-{cluster}-{now}"),
         provider: provider.clone(),
@@ -6130,12 +6166,14 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
         bring,
         brought: None,
         found: false,
+        project: j["project"].as_str().map(String::from),
+        location: j["location"].as_str().map(String::from),
+        node_hour: j["cost"]["per_node_hour"].as_f64(),
     };
     let m = app.svc.clouds.add(m).map_err(refuse)?;
-    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
+    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone(), app.svc.gcp.clone());
     crate::copy::bring_when_ready(app.svc.clone(), m.id.clone());
-    let what = if provider == "aws" { "AWS" } else { "DigitalOcean" };
-    let detail = format!("asked {what} for the cluster {cluster} in {}: {} × {}, ${:.3} an hour", m.region, m.nodes, m.machine, m.cost_hour);
+    let detail = format!("asked {} for the cluster {cluster} in {}: {} × {}, ${:.3} an hour", cloud_name(&provider), m.location.as_deref().unwrap_or(&m.region), m.nodes, m.machine, m.cost_hour);
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
@@ -6199,8 +6237,8 @@ async fn cloud_delete(State(app): State<App>, w: Option<axum::Extension<Principa
     }
     let who = who(w);
     let m = app.svc.clouds.delete(&id, &who.name).map_err(|e| ApiError { code: None, status: 409, message: e })?;
-    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
-    let detail = format!("deleting the cluster {} on {} in {}", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
+    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone(), app.svc.gcp.clone());
+    let detail = format!("deleting the cluster {} on {} in {}", m.cluster, cloud_name(&m.provider), m.location.as_deref().unwrap_or(&m.region));
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
@@ -6208,8 +6246,9 @@ async fn cloud_delete(State(app): State<App>, w: Option<axum::Extension<Principa
 
 /// The ChloeDB clusters the cloud's account holds that this server's list
 /// does not follow (made from another server, or forgotten here):
-/// `?provider=digitalocean` (every region), or `?provider=aws&region=`
-/// (CloudFormation's stacks are a region's). Each says whether this
+/// `?provider=digitalocean` (every region), `?provider=gcp` (the project's,
+/// every location), or `?provider=aws&region=` (CloudFormation's stacks
+/// are a region's). Each says whether this
 /// server runs on it (`here`), which may not be deleted from here.
 async fn cloud_found(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<AxJson<Json>, ApiError> {
     Ok(AxJson(json!({"clusters": found(&app, q.get("provider").map(String::as_str).unwrap_or_default(), q.get("region").map(String::as_str)).await?})))
@@ -6227,7 +6266,14 @@ async fn found(app: &App, provider: &str, region: Option<&str>) -> Result<Vec<Js
             let stacks = app.svc.aws.stacks(region).await.map_err(aws_error)?;
             Ok(crate::cloud::clusters::found_stacks(region, &stacks, &made))
         }
-        _ => Err(ApiError::bad("provider is aws or digitalocean")),
+        "gcp" => {
+            let project = app.svc.gcp.project().await.map(|(p, _)| p).ok_or_else(|| gcp_error("no Google Cloud project".into()))?;
+            let list = app.svc.gcp.clusters().await.map_err(gcp_error)?;
+            let meta = app.svc.gcp.metadata().await;
+            let here = meta.as_ref().and_then(|m| Some((m.cluster.as_deref()?, m.cluster_location.as_deref()?)));
+            Ok(crate::cloud::clusters::found_gke(&project, &list, &made, here))
+        }
+        _ => Err(ApiError::bad("provider is aws, digitalocean or gcp")),
     }
 }
 
@@ -6286,10 +6332,13 @@ async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Pr
         bring: Vec::new(),
         brought: None,
         found: true,
+        project: c["project"].as_str().map(String::from),
+        location: c["location"].as_str().map(String::from),
+        node_hour: None,
     };
     let m = app.svc.clouds.adopt(m, &who.name).map_err(|e| ApiError { code: None, status: 409, message: e })?;
-    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
-    let detail = format!("deleting the cluster {} on {} in {}, found in the account", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
+    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone(), app.svc.gcp.clone());
+    let detail = format!("deleting the cluster {} on {} in {}, found in the account", m.cluster, cloud_name(&m.provider), m.region);
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
@@ -6300,6 +6349,15 @@ async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Pr
 async fn cloud_forget(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
     let m = app.svc.clouds.forget(&id).map_err(|e| ApiError { code: None, status: if e.starts_with("no cluster") { 404 } else { 409 }, message: e })?;
     Ok(audited(json!({"forgot": m.view()}), format!("forgot the cluster {} ({:?})", m.cluster, m.phase)))
+}
+
+/// The cloud's name, in words.
+fn cloud_name(provider: &str) -> &'static str {
+    match provider {
+        "aws" => "AWS",
+        "gcp" => "Google Cloud",
+        _ => "DigitalOcean",
+    }
 }
 
 /// A DigitalOcean failure: 400 without a token or for a region that is no
@@ -6377,6 +6435,162 @@ async fn do_validate(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<
         Err(e) => json!({"ok": false, "error": e}),
     };
     Ok(AxJson(j))
+}
+
+/// A Google Cloud failure: 400 for what is asked wrong here (no
+/// credentials or project, a key offered, a name that is no region's or
+/// cluster's), else 502 (Google's answer).
+fn gcp_error(e: String) -> ApiError {
+    let ours = ["no Google Cloud", "ChloeDB takes no service account keys", "is not a region", "is not a GKE cluster's name", "is not a project id", "is not a zone or region"].iter().any(|x| e.contains(x));
+    ApiError { code: None, status: if ours { 400 } else { 502 }, message: e }
+}
+
+/// The cloud view's Google Cloud state: whose credentials the calls are
+/// made with and where they are (never a token), and the project.
+async fn gcp_status(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.gcp.status().await)
+}
+
+/// `{"project", "region"?}`: checked with Google (the credentials may
+/// read the project), then kept on this server. Holds no credentials.
+async fn gcp_save(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let project = b["project"].as_str().ok_or_else(|| ApiError::bad("the body is {\"project\": \"my-project\", \"region\": \"us-central1\"}"))?;
+    let who = who(w);
+    let s = app.svc.gcp.set(project, b["region"].as_str().unwrap_or_default(), &who.name).await.map_err(|e| ApiError { code: None, status: if e.starts_with("write ") { 500 } else { 400 }, message: e })?;
+    let detail = format!("saved the Google Cloud project {} ({}), called as {}", s.project, s.region, if s.account.is_empty() { "?" } else { &s.account });
+    Ok(audited(app.svc.gcp.status().await, detail))
+}
+
+async fn gcp_forget(State(app): State<App>) -> Result<Response, ApiError> {
+    let was = app.svc.gcp.forget().map_err(ApiError::internal)?;
+    let detail = match &was {
+        Some(p) => format!("forgot the Google Cloud project {p}"),
+        None => "forgot the Google Cloud project (none was saved)".into(),
+    };
+    Ok(audited(json!({"forgot": was, "status": app.svc.gcp.status().await}), detail))
+}
+
+async fn gcp_regions(State(app): State<App>) -> Result<AxJson<Json>, ApiError> {
+    Ok(AxJson(json!({"regions": app.svc.gcp.regions().await.map_err(gcp_error)?})))
+}
+
+/// `?region=` (default: the saved one, else us-central1), `&fresh=1` to
+/// fetch again: the machine types a GKE node may be there, priced from
+/// Google's price list, GKE's versions and the project's quotas.
+async fn gcp_machines(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<AxJson<Json>, ApiError> {
+    let region = q.get("region").filter(|r| !r.is_empty()).cloned().or_else(|| app.svc.gcp.saved().map(|s| s.region)).unwrap_or_else(|| "us-central1".into());
+    let fresh = q.get("fresh").is_some_and(|v| v != "0" && v != "false");
+    let cat = app.svc.gcp.catalog(&region, fresh).await.map_err(gcp_error)?;
+    let mut j = json!(&*cat);
+    let recommended: Vec<&str> = crate::gcp::catalog::recommended(&cat.machines).iter().map(|m| m.name.as_str()).collect();
+    j["recommended"] = json!(recommended);
+    Ok(AxJson(j))
+}
+
+/// A plan of a cluster on GKE ([`crate::gcp::plan`]). Creates nothing.
+async fn gcp_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let p: crate::gcp::plan::Plan = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a plan: {e}")))?;
+    let cat = app.svc.gcp.catalog(&p.region, false).await.map_err(gcp_error)?;
+    Ok(AxJson(crate::gcp::plan::plan(&p, &cat).map_err(ApiError::bad)?))
+}
+
+/// The plan, and Google's answers now: the region, machine type, version
+/// and quotas fetched again, and which permissions the credentials hold
+/// (Resource Manager's testIamPermissions). Creates nothing.
+async fn gcp_validate(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let p: crate::gcp::plan::Plan = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a plan: {e}")))?;
+    let g = &app.svc.gcp;
+    let cat = g.catalog(&p.region, true).await.map_err(gcp_error)?;
+    let mut j = crate::gcp::plan::plan(&p, &cat).map_err(ApiError::bad)?;
+    let held = g.test_permissions(&cat.project, &crate::gcp::plan::PERMISSIONS).await;
+    let checks = crate::gcp::plan::checks(&p, &cat, held.as_deref().ok());
+    j["validated"] = json!({"ok": checks.iter().all(|c| c["ok"] == true), "checks": checks, "permissions_error": held.err()});
+    Ok(AxJson(j))
+}
+
+/// The GKE cluster a nodes call is about: `cluster` (its resource name, as
+/// the Cloud view lists it), else the one this server runs in.
+async fn gke_target(app: &App, cluster: Option<&str>) -> Result<String, ApiError> {
+    if let Some(c) = cluster.filter(|c| !c.is_empty()) {
+        return Ok(c.to_string());
+    }
+    let m = app.svc.gcp.metadata().await;
+    match m.as_ref().and_then(|m| Some((m.project.as_deref()?, m.cluster_location.as_deref()?, m.cluster.as_deref()?))) {
+        Some((p, l, n)) => Ok(format!("projects/{p}/locations/{l}/clusters/{n}")),
+        None => Err(ApiError::bad("cluster is a GKE cluster's name (projects/P/locations/L/clusters/N); this server does not run on GKE")),
+    }
+}
+
+/// `?cluster=` (default: the GKE cluster this server runs in): its node
+/// pools, each with its machine type, nodes and autoscaling.
+async fn gcp_nodes(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<AxJson<Json>, ApiError> {
+    let name = gke_target(&app, q.get("cluster").map(String::as_str)).await?;
+    let c = app.svc.gcp.cluster(&name).await.map_err(gcp_error)?.ok_or_else(|| ApiError { code: None, status: 404, message: format!("GKE has no cluster {name}") })?;
+    Ok(AxJson(crate::gcp::pools(&name, &c)))
+}
+
+/// `{"cluster"?, "pool"?, "nodes"?, "min_nodes"?, "max_nodes"?}`: resizes
+/// a GKE cluster's node pool (default: the cluster this server runs in,
+/// and its pool `strata`, else its only one). `nodes` sets how many (in
+/// all, spread evenly over the pool's zones); `max_nodes` turns GKE's
+/// autoscaler on between `min_nodes` (default: `nodes`, else 1) and it,
+/// and `max_nodes: 0` turns it off. More nodes bill the project more.
+async fn gcp_resize(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let name = gke_target(&app, b["cluster"].as_str()).await?;
+    let g = &app.svc.gcp;
+    let c = g.cluster(&name).await.map_err(gcp_error)?.ok_or_else(|| ApiError { code: None, status: 404, message: format!("GKE has no cluster {name}") })?;
+    let pools = c["nodePools"].as_array().cloned().unwrap_or_default();
+    let pool = match b["pool"].as_str() {
+        Some(p) => pools.iter().find(|x| x["name"] == p).ok_or_else(|| ApiError::bad(format!("{name} has no node pool {p}")))?,
+        None => pools.iter().find(|x| x["name"] == crate::gcp::plan::POOL).or(if pools.len() == 1 { pools.first() } else { None }).ok_or_else(|| ApiError::bad("pool: the cluster has more than one node pool"))?,
+    };
+    let pool_name = pool["name"].as_str().unwrap_or_default().to_string();
+    let zones = pool["locations"].as_array().map_or(1, |z| z.len().max(1)) as u32;
+    let int = |k: &str| -> Result<Option<u32>, ApiError> {
+        match &b[k] {
+            Json::Null => Ok(None),
+            v => v.as_u64().filter(|n| *n <= u64::from(crate::cloud::MAX_NODES)).map(|n| Some(n as u32)).ok_or_else(|| ApiError::bad(format!("{k} is a number of nodes, 0 to {}", crate::cloud::MAX_NODES))),
+        }
+    };
+    let (nodes, min, max) = (int("nodes")?, int("min_nodes")?, int("max_nodes")?);
+    if nodes.is_none() && max.is_none() {
+        return Err(ApiError::bad("nodes (how many), or max_nodes (GKE's autoscaler up to it; 0 turns it off)"));
+    }
+    let mut did = Vec::new();
+    if let Some(n) = nodes {
+        if n == 0 || n % zones != 0 {
+            return Err(ApiError::bad(format!("the pool {pool_name} is in {zones} zones, with the same number of nodes in each: nodes is a multiple of {zones}, above 0")));
+        }
+    }
+    let busy = |e: String| if e.contains("FAILED_PRECONDITION") || e.contains("operation") { ApiError { code: None, status: 409, message: format!("{e} (GKE runs one change of a cluster at a time: try again when it is done)") } } else { gcp_error(e) };
+    match max {
+        Some(0) => {
+            g.set_autoscaling(&name, &pool_name, None).await.map_err(busy)?;
+            did.push("turned GKE's autoscaler off".to_string());
+        }
+        Some(mx) => {
+            let mn = min.or(nodes).unwrap_or(1).max(1);
+            if mn > mx {
+                return Err(ApiError::bad(format!("min_nodes {mn} is above max_nodes {mx}")));
+            }
+            g.set_autoscaling(&name, &pool_name, Some((mn, mx))).await.map_err(busy)?;
+            did.push(format!("GKE's autoscaler keeps {mn} to {mx} nodes"));
+        }
+        None => {}
+    }
+    // GKE takes one change at a time: a size after an autoscaling change
+    // waits for it, so it is asked only on its own.
+    if let (Some(n), None) = (nodes, max) {
+        g.set_size(&name, &pool_name, n / zones).await.map_err(busy)?;
+        did.push(if zones == 1 { format!("{n} nodes") } else { format!("{n} nodes ({} in each of {zones} zones)", n / zones) });
+    }
+    let who = who(w);
+    let (location, cluster) = crate::gcp::location_of(&name);
+    let detail = format!("resized the GKE cluster {cluster} ({location}), pool {pool_name}: {}", did.join("; "));
+    app.svc.clouds.noted(&name, &format!("{} {}", who.name, did.join("; ")));
+    let mut r = audited(json!({"cluster": name, "pool": pool_name, "did": did}), detail);
+    *r.status_mut() = axum::http::StatusCode::ACCEPTED;
+    Ok(r)
 }
 
 /// `GET /v1/routes`: requests by route and queries by kind since the

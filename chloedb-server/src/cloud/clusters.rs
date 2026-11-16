@@ -1,11 +1,12 @@
 //! The clusters made from the cloud view, and the loop that sees each one
 //! through: the cloud making it (a CloudFormation stack on AWS, a DOKS
-//! cluster on DigitalOcean), Strata installed through the new cluster's
+//! cluster on DigitalOcean, a GKE cluster on Google Cloud), Strata installed through the new cluster's
 //! API, its copies starting, ready, then deleted (its volumes first, then
 //! the cloud's cluster). Each step asks the cloud or the cluster where it
 //! is now, so the loop picks up where it was after a restart; the list is
 //! kept in a file beside the database. Nothing here holds a secret: the
-//! cloud's key stays with [`Aws`] and [`DigitalOcean`].
+//! cloud's key stays with [`Aws`] and [`DigitalOcean`], and Google Cloud's
+//! credentials (never a key) with [`Gcp`].
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +19,7 @@ use serde_json::{json, Value as Json};
 use super::install;
 use crate::aws::Aws;
 use crate::digitalocean::DigitalOcean;
+use crate::gcp::Gcp;
 use crate::operator::kube::Kube;
 
 /// Where a cluster is.
@@ -53,7 +55,7 @@ pub struct Step {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Made {
     pub id: String,
-    /// `aws` or `digitalocean`.
+    /// `aws`, `digitalocean` or `gcp`.
     pub provider: String,
     /// The StrataCluster's name.
     pub name: String,
@@ -67,7 +69,8 @@ pub struct Made {
     pub by: String,
     pub created_ms: u64,
     pub phase: Phase,
-    /// The stack's id (AWS) or the cluster's (DigitalOcean), once asked for.
+    /// The stack's id (AWS), the cluster's (DigitalOcean) or its resource
+    /// name (GKE: `projects/P/locations/L/clusters/N`), once asked for.
     pub cloud_id: Option<String>,
     /// What makes the cloud's cluster: a CloudFormation template, or DOKS's request.
     pub request: Json,
@@ -118,6 +121,15 @@ pub struct Made {
     /// is not known here.
     #[serde(default)]
     pub found: bool,
+    /// Google Cloud's project, and the zone (or region) of the GKE
+    /// cluster: where it is asked for before it has a resource name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// What a node adds an hour, as planned: the cost of a resize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_hour: Option<f64>,
 }
 
 /// How long the parts that wait wait before giving up.
@@ -177,10 +189,16 @@ impl Made {
     /// cost so far and how to reach it.
     pub fn view(&self) -> Json {
         let end = self.ended_ms.unwrap_or_else(now_ms);
-        let hours = end.saturating_sub(self.created_ms) as f64 / 3_600_000.0;
+        // A cluster the cloud never made cost nothing.
+        let made = self.cloud_id.is_some() || !matches!(self.phase, Phase::Deleted | Phase::Failed);
+        let hours = if made { end.saturating_sub(self.created_ms) as f64 / 3_600_000.0 } else { 0.0 };
         let connect: Vec<String> = match (self.provider.as_str(), &self.cloud_id) {
             ("aws", _) => vec![format!("aws eks update-kubeconfig --region {} --name {}", self.region, self.cluster)],
             ("digitalocean", Some(id)) => vec![format!("doctl kubernetes cluster kubeconfig save {id}")],
+            ("gcp", _) => match (&self.project, &self.location) {
+                (Some(p), Some(l)) => vec![format!("gcloud container clusters get-credentials {} --project {p} --location {l}", self.cluster)],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         };
         let connect = if connect.is_empty() { connect } else { [connect, vec![format!("kubectl -n {} port-forward svc/{} 7700:7700", super::NAMESPACE, self.name)]].concat() };
@@ -194,6 +212,7 @@ impl Made {
             "connect": if matches!(self.phase, Phase::Starting | Phase::Ready) { json!(connect) } else { json!([]) },
             "delete_at_ms": self.delete_at_ms,
             "bring": self.bring, "brought": self.brought, "found": self.found,
+            "project": self.project, "location": self.location, "node_hour": self.node_hour,
             // What it will have cost by then, at the planned price.
             "cost_by_delete": self.delete_at_ms.map(|t| self.cost_hour * t.saturating_sub(self.created_ms) as f64 / 3_600_000.0),
         })
@@ -289,6 +308,7 @@ impl Clusters {
         }
         m.note(match m.provider.as_str() {
             "aws" => format!("asked AWS for {} × {} in {}", m.nodes, m.machine, m.region),
+            "gcp" => format!("asked Google Cloud for {} × {} in {}", m.nodes, m.machine, m.location.as_deref().unwrap_or(&m.region)),
             _ => format!("asked DigitalOcean for {} × {} in {}", m.nodes, m.machine, m.region),
         });
         list.push(m.clone());
@@ -376,6 +396,23 @@ impl Clusters {
         self.save(&list)
     }
 
+    /// Notes `text` on the steps of the cluster the cloud knows as
+    /// `cloud_id`, if this list follows it (a resize asked from the page),
+    /// and has the loop look at it again.
+    pub fn noted(&self, cloud_id: &str, text: &str) {
+        let mut list = self.lock();
+        if let Some(m) = list.iter_mut().find(|m| m.cloud_id.as_deref() == Some(cloud_id) && m.phase != Phase::Deleted) {
+            m.generation += 1;
+            m.checked_ms = 0;
+            m.note(text.to_string());
+            if let Err(e) = self.save(&list) {
+                tracing::warn!("cloud clusters: {e}");
+            }
+        }
+        drop(list);
+        self.wake.notify_one();
+    }
+
     /// Forgets a cluster that is deleted, or that failed before the cloud
     /// made anything.
     pub fn forget(&self, id: &str) -> Result<Made, String> {
@@ -395,7 +432,7 @@ impl Clusters {
     /// of its cloud's (EKS's last 15 minutes, DOKS's longer): kept for 5
     /// minutes, so that the hub's calls through it ([`crate::hub`]) do
     /// not each ask the cloud.
-    pub async fn kube_of(&self, id: &str, aws: &Aws, d: &DigitalOcean) -> Result<Kube, String> {
+    pub async fn kube_of(&self, id: &str, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<Kube, String> {
         const KEPT_MS: u64 = 5 * 60 * 1000;
         let now = now_ms();
         if let Some((k, at)) = self.kubes.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
@@ -407,28 +444,28 @@ impl Clusters {
         if matches!(m.phase, Phase::Deleting | Phase::Deleted) {
             return Err(format!("{} is {}", m.cluster, if m.phase == Phase::Deleted { "deleted" } else { "being deleted" }));
         }
-        let k = kube(&m, aws, d).await?;
+        let k = kube(&m, aws, d, g).await?;
         self.kubes.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), (k.clone(), now));
         Ok(k)
     }
 
     /// Starts the loop once (on the first cluster, or at start when the
     /// file has some on their way).
-    pub fn start(self: &Arc<Self>, aws: Arc<Aws>, d: Arc<DigitalOcean>) {
+    pub fn start(self: &Arc<Self>, aws: Arc<Aws>, d: Arc<DigitalOcean>, g: Arc<Gcp>) {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
         }
         let me = self.clone();
-        tokio::spawn(async move { me.run(aws, d).await });
+        tokio::spawn(async move { me.run(aws, d, g).await });
     }
 
     pub fn wake(&self) {
         self.wake.notify_one();
     }
 
-    async fn run(self: Arc<Self>, aws: Arc<Aws>, d: Arc<DigitalOcean>) {
+    async fn run(self: Arc<Self>, aws: Arc<Aws>, d: Arc<DigitalOcean>, g: Arc<Gcp>) {
         loop {
-            self.tick(&aws, &d).await;
+            self.tick(&aws, &d, &g).await;
             let every = *self.every.lock().unwrap_or_else(|e| e.into_inner());
             tokio::select! {
                 _ = tokio::time::sleep(every) => {}
@@ -438,7 +475,7 @@ impl Clusters {
     }
 
     /// One pass: moves every cluster on its way one step.
-    pub async fn tick(&self, aws: &Aws, d: &DigitalOcean) {
+    pub async fn tick(&self, aws: &Aws, d: &DigitalOcean, g: &Gcp) {
         let now = now_ms();
         let todo: Vec<Made> = self.lock().iter().filter(|m| m.due(now) || match m.phase {
             Phase::Deleted | Phase::Failed => false,
@@ -447,7 +484,7 @@ impl Clusters {
         }).cloned().collect();
         for mut m in todo {
             let generation = m.generation;
-            advance(&mut m, aws, d).await;
+            advance(&mut m, aws, d, g).await;
             m.checked_ms = now_ms();
             let mut list = self.lock();
             if let Some(cur) = list.iter_mut().find(|x| x.id == m.id) {
@@ -467,7 +504,7 @@ impl Clusters {
 
 /// One step of `m`. A call that fails leaves it where it is, noted; the
 /// steps that cannot go on fail it.
-async fn advance(m: &mut Made, aws: &Aws, d: &DigitalOcean) {
+async fn advance(m: &mut Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) {
     // Its time is up: it deletes itself as a person's Delete would.
     if m.due(now_ms()) {
         m.deleting_since_ms = Some(now_ms());
@@ -477,10 +514,10 @@ async fn advance(m: &mut Made, aws: &Aws, d: &DigitalOcean) {
         return;
     }
     let r = match m.phase {
-        Phase::Creating => creating(m, aws, d).await,
-        Phase::Installing => installing(m, aws, d).await,
-        Phase::Starting | Phase::Ready => watching(m, aws, d).await,
-        Phase::Deleting => deleting(m, aws, d).await,
+        Phase::Creating => creating(m, aws, d, g).await,
+        Phase::Installing => installing(m, aws, d, g).await,
+        Phase::Starting | Phase::Ready => watching(m, aws, d, g).await,
+        Phase::Deleting => deleting(m, aws, d, g).await,
         Phase::Deleted | Phase::Failed => Ok(()),
     };
     if let Err(e) = r {
@@ -492,16 +529,20 @@ async fn advance(m: &mut Made, aws: &Aws, d: &DigitalOcean) {
 
 /// The cloud's own cluster of this name, if there is one: what a create
 /// that was cut short may have made.
-async fn find(m: &Made, aws: &Aws, d: &DigitalOcean) -> Result<Option<String>, String> {
+async fn find(m: &Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<Option<String>, String> {
     Ok(match m.provider.as_str() {
         "aws" => aws.stack(&m.region, &m.cluster).await?.filter(|s| s.status != "DELETE_COMPLETE").map(|s| s.id),
+        "gcp" => {
+            let (p, l) = gke_where(m)?;
+            g.cluster_named(p, l, &m.cluster).await?
+        }
         _ => d.cluster_named(&m.cluster).await?.and_then(|c| c["id"].as_str().map(str::to_string)),
     })
 }
 
-async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), String> {
+async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<(), String> {
     let Some(id) = m.cloud_id.clone() else {
-        if let Some(id) = find(m, aws, d).await? {
+        if let Some(id) = find(m, aws, d, g).await? {
             m.cloud_id = Some(id);
             m.note("found the cluster this server asked for");
             return Ok(());
@@ -516,18 +557,26 @@ async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
                 let tags = [("strata.chloetech.ai/cluster", m.name.as_str()), ("strata.chloetech.ai/made-by", "chloedb-server"), ("strata.chloetech.ai/owner", owner.as_str())];
                 aws.create_stack(&m.region, &m.cluster, &m.request, &m.id, &tags).await
             }
+            "gcp" => {
+                let (p, l) = gke_where(m)?;
+                g.create_cluster(p, l, &m.request).await
+            }
             _ => d.create_cluster(&m.request).await,
         };
         match made {
             Ok(id) => {
                 m.cloud_id = Some(id);
-                m.note(if m.provider == "aws" { "CloudFormation is making the network, the EKS cluster and its nodes" } else { "DigitalOcean is making the cluster and its nodes" });
+                m.note(match m.provider.as_str() {
+                    "aws" => "CloudFormation is making the network, the EKS cluster and its nodes",
+                    "gcp" => "GKE is making the cluster and its nodes",
+                    _ => "DigitalOcean is making the cluster and its nodes",
+                });
             }
             // It may have been made all the same (an answer lost on the
             // way): failed only once the cloud says it has no such cluster,
             // and asked again otherwise (CreateStack's request token makes
             // asking twice make one stack).
-            Err(e) => match find(m, aws, d).await {
+            Err(e) => match find(m, aws, d, g).await {
                 Ok(Some(id)) => {
                     m.cloud_id = Some(id);
                     m.note("the cloud made it all the same");
@@ -552,6 +601,22 @@ async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
             }
             st => m.note(format!("the stack is {st}")),
         }
+    } else if m.provider == "gcp" {
+        let Some(c) = g.cluster(&id).await? else {
+            m.fail("the cluster is gone");
+            return Ok(());
+        };
+        if let (Some(n), Some(of)) = (crate::gcp::node_count(&c), Some(m.nodes)) {
+            m.progress = Some((n.min(of) as usize, of as usize));
+        }
+        match c["status"].as_str().unwrap_or_default() {
+            "RUNNING" => m.to(Phase::Installing, "the cluster and its nodes are up"),
+            st @ ("ERROR" | "DEGRADED" | "STOPPING") => {
+                let why = c["statusMessage"].as_str().filter(|s| !s.is_empty()).map(String::from).or_else(|| c["conditions"][0]["message"].as_str().map(String::from)).unwrap_or_else(|| "no reason given".into());
+                m.fail(format!("GKE could not make the cluster ({st}): {why}"));
+            }
+            _ => {}
+        }
     } else {
         let Some(c) = d.cluster(&id).await? else {
             m.fail("the cluster is gone");
@@ -573,39 +638,63 @@ async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
     Ok(())
 }
 
+/// The project and location a GKE cluster is asked for in.
+fn gke_where(m: &Made) -> Result<(&str, &str), String> {
+    match (&m.project, &m.location) {
+        (Some(p), Some(l)) => Ok((p, l)),
+        _ => Err("the cluster names no Google Cloud project and location".into()),
+    }
+}
+
 /// A client of the cluster's API, with a fresh token.
-async fn kube(m: &Made, aws: &Aws, d: &DigitalOcean) -> Result<Kube, String> {
+async fn kube(m: &Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<Kube, String> {
     let (endpoint, ca, token) = match m.provider.as_str() {
         "aws" => {
             let (e, ca) = aws.eks_cluster(&m.region, &m.cluster).await?;
             (e, ca, aws.eks_token(&m.region, &m.cluster)?)
         }
+        "gcp" => g.credentials(m.cloud_id.as_deref().ok_or("the cluster has no name yet")?).await?,
         _ => d.credentials(m.cloud_id.as_deref().ok_or("the cluster has no id yet")?).await?,
     };
     let ca = (!ca.is_empty() && !endpoint.starts_with("http://")).then_some(ca);
     install::client(&endpoint, ca, &token)
 }
 
-async fn installing(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), String> {
+async fn installing(m: &mut Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<(), String> {
     if m.tries >= INSTALL_TRIES {
         let e = m.error.clone().unwrap_or_else(|| "the cluster's API did not take ChloeDB".into());
         m.fail(format!("installing gave up after {INSTALL_TRIES} tries: {e}"));
         return Ok(());
     }
-    let k = kube(m, aws, d).await?;
+    let k = kube(m, aws, d, g).await?;
     let done = install::apply(&k, &install::objects(&m.image, &m.objects)).await?;
     m.to(Phase::Starting, format!("installed the operator ({}) and the cluster: {} objects", m.image, done.len()));
     Ok(())
 }
 
-async fn watching(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), String> {
-    let k = kube(m, aws, d).await?;
+async fn watching(m: &mut Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<(), String> {
+    let k = kube(m, aws, d, g).await?;
     let Some(s) = install::status(&k, &m.name).await? else { return Ok(()) };
     let line = install::summary(&s);
     let changed = m.strata.is_null() || install::summary(&m.strata) != line;
     m.strata = s;
     m.tries = 0;
     m.error = None;
+    // GKE's autoscaler, or a resize, may have changed the nodes.
+    if m.provider == "gcp" {
+        if let Some(n) = match &m.cloud_id {
+            Some(id) => g.cluster(id).await.ok().flatten().and_then(|c| crate::gcp::node_count(&c)),
+            None => None,
+        } {
+            if n != m.nodes {
+                m.note(format!("{n} nodes (were {})", m.nodes));
+                if let Some(h) = m.node_hour {
+                    m.cost_hour = (m.cost_hour + h * (f64::from(n) - f64::from(m.nodes))).max(0.0);
+                }
+                m.nodes = n;
+            }
+        }
+    }
     if m.phase == Phase::Starting && m.strata["phase"] == "Ready" {
         m.ready_ms = Some(now_ms());
         m.to(Phase::Ready, format!("ready: {}", line.trim_start_matches("Ready, ")));
@@ -615,12 +704,12 @@ async fn watching(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
     Ok(())
 }
 
-async fn deleting(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), String> {
+async fn deleting(m: &mut Made, aws: &Aws, d: &DigitalOcean, g: &Gcp) -> Result<(), String> {
     let since = *m.deleting_since_ms.get_or_insert_with(now_ms);
     // The volumes first, while the cluster's API answers: their disks are
     // the cloud driver's, not the stack's, and would stay and bill.
     if !m.volumes_gone && m.cloud_id.is_some() && m.installed() {
-        let left = match kube(m, aws, d).await {
+        let left = match kube(m, aws, d, g).await {
             Ok(k) => install::teardown(&k, &m.name).await,
             Err(e) => Err(e),
         };
@@ -647,7 +736,7 @@ async fn deleting(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
     }
     let id = match &m.cloud_id {
         Some(id) => id.clone(),
-        None => match find(m, aws, d).await? {
+        None => match find(m, aws, d, g).await? {
             Some(id) => {
                 m.cloud_id = Some(id.clone());
                 id
@@ -676,6 +765,15 @@ async fn deleting(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
                 m.fail(format!("CloudFormation could not delete the stack: {why}"));
             }
             Some(_) => {}
+        }
+    } else if m.provider == "gcp" {
+        if !m.delete_asked {
+            g.delete_cluster(&id).await?;
+            m.delete_asked = true;
+            m.note("GKE is deleting the cluster and its nodes");
+        }
+        if g.cluster(&id).await?.is_none() {
+            gone(m);
         }
     } else {
         if !m.delete_asked {
@@ -716,6 +814,35 @@ pub fn found_doks(clusters: &[Json], made: &[Made], node: Option<&str>) -> Vec<J
                 "state": c["status"]["state"], "nodes": nodes, "machine": machines.join(", "), "created_at": c["created_at"],
                 "owner": c["tags"].as_array().and_then(|t| t.iter().filter_map(|t| t.as_str()).find_map(|t| t.strip_prefix("strata-owner:"))),
                 "here": here,
+            })
+        })
+        .collect()
+}
+
+/// The project's GKE clusters ([`Gcp::clusters`]) that look like
+/// ChloeDB's (labelled `strata: chloedb`, as a plan makes them, or named
+/// `strata-*`) and that this server's list does not follow. `here` is the
+/// GKE cluster this server runs in, as its metadata server says (name,
+/// location): marked so.
+pub fn found_gke(project: &str, clusters: &[Json], made: &[Made], here: Option<(&str, &str)>) -> Vec<Json> {
+    clusters
+        .iter()
+        .filter(|c| {
+            let name = c["name"].as_str().unwrap_or_default();
+            (c["resourceLabels"]["strata"] == "chloedb" || name.starts_with("strata-")) && c["status"] != "STOPPING"
+        })
+        .filter_map(|c| {
+            let (name, location) = (c["name"].as_str()?, c["location"].as_str()?);
+            let id = format!("projects/{project}/locations/{location}/clusters/{name}");
+            let followed = made.iter().any(|m| m.provider == "gcp" && m.phase != Phase::Deleted && (m.cloud_id.as_deref() == Some(id.as_str()) || (m.cluster == name && m.location.as_deref() == Some(location))));
+            let pools = c["nodePools"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let machines: Vec<&str> = pools.iter().filter_map(|p| p["config"]["machineType"].as_str()).collect();
+            (!followed).then(|| {
+                json!({
+                    "provider": "gcp", "cloud_id": id, "cluster": name, "region": location, "location": location, "project": project,
+                    "state": c["status"], "nodes": crate::gcp::node_count(c), "machine": machines.join(", "), "created_at": c["createTime"],
+                    "owner": c["resourceLabels"]["strata-owner"], "here": here == Some((name, location)),
+                })
             })
         })
         .collect()
@@ -762,7 +889,7 @@ mod tests {
             machine: "m8g.large".into(), nodes: 3, cost_hour: 0.4, by: "admin".into(), created_ms: 1, phase, cloud_id: None, request: json!({}),
             image: "img".into(), objects: Vec::new(), steps: Vec::new(), error: None, strata: Json::Null, progress: None, ready_ms: None, ended_ms: None,
             generation: 0, tries: 0, checked_ms: 0, deleting_since_ms: None, volumes_gone: false, delete_asked: false, delete_at_ms: None, bring: Vec::new(), brought: None,
-            found: false,
+            found: false, project: None, location: None, node_hour: None,
         }
     }
 
@@ -808,6 +935,9 @@ mod tests {
         assert!(again.get(&f.id).is_none());
         let v = again.get(&m.id).unwrap().view();
         assert!(v.get("request").is_none() && v.get("objects").is_none() && v["cost_so_far"].as_f64().unwrap() > 0.0, "{v}");
+        let mut never = made(Phase::Deleted);
+        never.ended_ms = Some(never.created_ms + 3_600_000);
+        assert_eq!(never.view()["cost_so_far"], 0.0, "the cloud made nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -828,6 +958,26 @@ mod tests {
         // Deleted from the list: found again.
         m.phase = Phase::Deleted;
         assert_eq!(found_stacks("us-east-1", &stacks, &[m]).len(), 2);
+    }
+
+    #[test]
+    fn gke_clusters_found_are_chloedbs_not_on_the_list() {
+        let c = |name: &str, labels: Json, status: &str| json!({"name": name, "location": "us-central1-a", "status": status, "resourceLabels": labels, "currentNodeCount": 2, "nodePools": [{"config": {"machineType": "n2d-highmem-4"}}]});
+        let clusters = vec![
+            c("strata-search", json!({"strata": "chloedb", "strata-owner": "admin"}), "RUNNING"),
+            c("other", json!({}), "RUNNING"),
+            c("labelled", json!({"strata": "chloedb"}), "PROVISIONING"),
+            c("strata-gone", json!({}), "STOPPING"),
+            c("strata-made", json!({"strata": "chloedb"}), "RUNNING"),
+        ];
+        let mut m = made(Phase::Ready);
+        m.provider = "gcp".into();
+        m.cluster = "strata-made".into();
+        m.cloud_id = Some("projects/p/locations/us-central1-a/clusters/strata-made".into());
+        let f = found_gke("p", &clusters, &[m], Some(("labelled", "us-central1-a")));
+        assert_eq!(f.iter().map(|s| s["cluster"].as_str().unwrap()).collect::<Vec<_>>(), ["strata-search", "labelled"], "{f:?}");
+        assert_eq!((f[0]["owner"].as_str(), f[0]["nodes"].as_u64(), f[0]["here"].as_bool(), f[1]["here"].as_bool()), (Some("admin"), Some(2), Some(false), Some(true)));
+        assert_eq!(f[0]["cloud_id"], "projects/p/locations/us-central1-a/clusters/strata-search");
     }
 
     #[test]

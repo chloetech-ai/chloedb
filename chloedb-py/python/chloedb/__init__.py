@@ -92,6 +92,7 @@ from ._native import (
     error_code,
 )
 from .client import Client, Session, Written
+from ._serve import Server, find_server, serve
 from .aio import AsyncClient, AsyncSession
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .nearby import Nearby, NearbyResult, nearby
@@ -129,6 +130,9 @@ __all__ = [
     "error_code",
     "open",
     "connect",
+    "serve",
+    "find_server",
+    "Server",
     "from_sqlite",
     "plan_sqlite",
     "from_parquet",
@@ -581,17 +585,19 @@ class Database(Search, FrameStore):
         rows, bulk, skipped = self._db.import_file(os.fspath(path), format, table)
         return {"rows": rows, "bulk": bulk, "skipped_fields": skipped}
 
-    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False) -> dict:
+    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, append: bool = False) -> dict:
         """Imports the tables of a SQLite database file (all, or `tables`).
         Each goes into the table of its name: an existing table takes the
         columns whose names match its fields (rows upserted by key, or
         bulk-loaded when it is empty); a missing one is created from the
         SQLite table's declarations and values, or from the schema
         `schemas` gives for it (see `plan_sqlite`). BLOB columns are left
-        out unless `blobs_base64`. Returns {tables: [{source, table, rows,
-        created, bulk, notes}], skipped: {name: why}}; the notes say what
-        did not carry over."""
-        self.last_import = json.loads(self._db.import_sqlite(os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64))
+        out unless `blobs_base64`. A table without a key that has rows is
+        refused, since importing the file again would repeat its rows,
+        unless `append` (drop the table to replace them). Returns
+        {tables: [{source, table, rows, created, bulk, notes}],
+        skipped: {name: why}}; the notes say what did not carry over."""
+        self.last_import = json.loads(self._db.import_sqlite(os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64, append))
         return self.last_import
 
     def export_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, fts: bool = True, indexes: bool = True, schemas: bool = True) -> dict:

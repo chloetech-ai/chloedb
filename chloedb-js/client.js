@@ -496,9 +496,11 @@ export class Client extends Searchable {
 
   /** Uploads a SQLite database file and imports its tables (all, or
    * `tables`), each into the table of its name; rows are upserted by key.
-   * Returns {tables, skipped, written}. */
-  async importSqlite(file, { tables, blobsBase64 = false } = {}) {
-    return this.#upload(file, "sqlite", { tables: names(tables), blobs_base64: blobsBase64 });
+   * A table without a key that has rows is refused, since importing the
+   * file again would repeat its rows, unless `append`. Returns {tables,
+   * skipped, written}. */
+  async importSqlite(file, { tables, blobsBase64 = false, append = false } = {}) {
+    return this.#upload(file, "sqlite", { tables: names(tables), blobs_base64: blobsBase64, append: append || undefined });
   }
 
   /** What `importSqlite` would do, writing nothing. */

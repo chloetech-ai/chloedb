@@ -427,10 +427,11 @@ export class Database extends Searchable {
 
   /** Imports the tables of a SQLite database file (all, or `tables`), each
    * into the table of its name, created from the SQLite table or from the
-   * schema `schemas` gives for it (see `planSqlite`). Returns {tables,
-   * skipped}. */
-  async importSqlite(path, { tables, schemas, blobsBase64 = false } = {}) {
-    this.lastImport = await this.#call("import_sqlite", { path: paths(path), tables: names(tables), schemas: schemas == null ? undefined : schemaJson(schemas), blobs_base64: blobsBase64 });
+   * schema `schemas` gives for it (see `planSqlite`). A table without a
+   * key that has rows is refused, since importing the file again would
+   * repeat its rows, unless `append`. Returns {tables, skipped}. */
+  async importSqlite(path, { tables, schemas, blobsBase64 = false, append = false } = {}) {
+    this.lastImport = await this.#call("import_sqlite", { path: paths(path), tables: names(tables), schemas: schemas == null ? undefined : schemaJson(schemas), blobs_base64: blobsBase64, append });
     return this.lastImport;
   }
 

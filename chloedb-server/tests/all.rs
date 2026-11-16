@@ -37,6 +37,7 @@ mod correlated;
 mod date_cluster;
 mod deep_statements;
 mod digitalocean;
+mod gcp;
 mod edge_tables;
 mod empty_database;
 mod encode;
