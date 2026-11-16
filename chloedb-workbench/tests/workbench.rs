@@ -6065,6 +6065,47 @@ fn harness_a_permission_storm_is_counted_with_its_mode_and_auto_modes_blocks() {
 }
 
 #[test]
+fn harness_lists_what_you_said_again_and_the_rules_broken_though_shown() {
+    let ctx = tempfile::tempdir().unwrap();
+    let bin = fake_chloectx(ctx.path());
+    std::fs::write(ctx.path().join("wiring.json"), json!({ "wired": null, "settings": {}, "mcp": {}, "model": { "ok": true } }).to_string()).unwrap();
+    std::fs::write(ctx.path().join("--version.json"), "chloectx 0.3.5\n").unwrap();
+    let now = now_s();
+    std::fs::write(
+        ctx.path().join("repeats.json"),
+        json!({ "text": "", "notes": 3, "kept": 2,
+            "rules": [
+                { "id": "s2:9", "rule": "Keep money as integer cents (the user has said this in 3 sessions)", "ts": now, "sessions": 3, "times": 4, "said_again": 2, "said_again_after_shown": 1 },
+                { "id": "s3:4", "rule": "Build the app from the CREATE statements (the user has said this in 2 sessions)", "ts": now, "sessions": 2, "times": 2, "said_again": 0, "said_again_after_shown": 0 }
+            ],
+            "groups": [{ "rule": "Call it ChloeDB, not Strata (the user has said this in 2 sessions)", "sessions": 2, "times": 2, "said": [{ "ts": now - 60 }, { "ts": now }] }] })
+        .to_string(),
+    )
+    .unwrap();
+    let s = Server::start(&["+chloectx", "--chloectx-bin", bin.to_str().unwrap()]);
+    let (_d, r) = repo();
+    harness_spawn(&s, &r, "cents");
+    let (st, o) = s.get(&format!("/api/harness?{}", harness_q(&r)));
+    assert_eq!(st, 200, "{o}");
+    let args = args_of(ctx.path(), "repeats");
+    assert_eq!(args[1..], ["repeats", "--days", "8", "--json"], "{args:?}");
+    let fs = o["findings"].as_array().unwrap();
+    let broken = fs.iter().find(|f| f["kind"] == "broken_rule").unwrap_or_else(|| panic!("no broken rule in {o}"));
+    assert_eq!(broken["title"], "Rule broken though shown: “Keep money as integer cents”");
+    assert_eq!(broken["tone"], "bad");
+    assert_eq!(broken["rows"], json!(["s2:9"]));
+    let said: Vec<&str> = fs.iter().filter(|f| f["kind"] == "repeated").map(|f| f["title"].as_str().unwrap()).collect();
+    assert!(said.contains(&"Kept as a rule: “Build the app from the CREATE statements”") && said.contains(&"Said in 2 sessions: “Call it ChloeDB, not Strata”"), "{said:?}");
+    // In Fix the harness: the broken rule waits for the replay, what was
+    // not kept is a rule to write, and what ChloeCtx kept needs nothing.
+    let (_, f) = s.get(&format!("/api/harness/fixes?{}", harness_q(&r)));
+    let ideas: Vec<(&str, &str)> = f["ideas"].as_array().unwrap().iter().map(|x| (x["kind"].as_str().unwrap(), x["title"].as_str().unwrap())).collect();
+    assert!(ideas.contains(&("broken_rule", "Replay the turn with the rule, to see why the agent broke it")), "{ideas:?}");
+    assert!(ideas.contains(&("repeated", "Make what you said again a rule")), "{ideas:?}");
+    assert_eq!(ideas.iter().filter(|x| x.0 == "repeated").count(), 1, "{ideas:?}");
+}
+
+#[test]
 fn harness_the_permissions_lint_and_the_counted_impact() {
     let s = Server::start(&[]);
     let (_d, r) = repo();

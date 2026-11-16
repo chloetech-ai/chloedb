@@ -239,6 +239,8 @@ says what a finding cost, in the unit it can measure.
 | missed memory | ChloeCtx receipts whose skipped rows include a record later cited in a correction, or a record whose words match the failing test's file (a `decision` pinned or naming the file) | the turns and time from that turn to the fix |
 | redo loop | `test_runs` with the same failing test and the same error signature 3 or more times in one session, where ChloeCtx's `fixes` had a match | the time of the loop |
 | corrected by you | steers and answers (`events`, `questions`) whose text says the same thing to 2 or more agents | the count, and the time each agent waited |
+| said again | ChloeCtx's rules kept because you said an instruction again (`chloectx repeats --json`, `rules`), and instructions said in more than one session it kept for one task only (`groups`, from a ChloeCtx before it kept them) | the sessions it was said in |
+| broken rule | a rule of those said again after the session had been shown it (`said_again_after_shown`): the agent had the rule and broke it | the times; its idea, a one-turn replay of that turn with the rule, waits for that replay |
 | context unused | tool definitions never called (`events.tool` against the session's tool list) and briefing records never cited (receipts against the transcript) | tokens × turns |
 | slow hook | hook timings (a new `hook_runs` row per run, see the data model) over a p95 threshold | the wait, summed |
 | wrong model | `task_features` where a cheaper model finished similar tasks as often (`routing.rs` already ranks them) | dollars |

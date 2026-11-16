@@ -93,11 +93,48 @@ fn close_end(text: &str, from: usize, name: &str) -> Option<usize> {
     }
 }
 
+/// The plain-text openings of a prompt that passes on another session's
+/// message, and who sent it.
+const RELAYED: [(&str, &str); 2] = [("The coordinator sent a message while you were working:", "coordinator"), ("Another Claude session sent a message:", "another-session")];
+
+/// Who relayed a prompt that is another agent's message: `coordinator`
+/// for a `<coordinator-relay>`, the `from` of a prompt that is a
+/// `<relay from="...">` (how a project's coordinator reaches a session on
+/// the user's machine), or the sender a harness names in plain words
+/// ([`RELAYED`]). `None` for the user's own prompt.
+pub fn relay_from(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    if let Some((_, who)) = RELAYED.iter().find(|(open, _)| t.starts_with(open)) {
+        return Some(who.to_string());
+    }
+    relay_markup(t)
+}
+
+/// [`relay_from`] for a prompt that is a relay's markup.
+fn relay_markup(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    let from = |t: &str| -> Option<String> {
+        let i = t.find("<relay from=\"")? + "<relay from=\"".len();
+        let name: String = t[i..].chars().take_while(|c| *c != '"').filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(64).collect();
+        (!name.is_empty()).then_some(name)
+    };
+    if t.starts_with("<coordinator-relay") {
+        return Some(from(t).unwrap_or_else(|| "coordinator".into()));
+    }
+    if t.starts_with("<relay from=\"") {
+        return from(t);
+    }
+    None
+}
+
 /// Whether `text` holds a machine envelope (a record stored before
 /// [`clean`] existed, or text that is nothing else).
 pub fn is_envelope(text: &str) -> bool {
     if !text.contains('<') && !text.contains("&lt;") {
         return false;
+    }
+    if relay_markup(text).is_some() {
+        return true;
     }
     let mut i = 0;
     while let Some(off) = text[i..].find(['<', '&']) {
@@ -285,6 +322,23 @@ mod tests {
         assert_eq!(clean(t), "Rename the export button.");
         // One that is never closed takes the rest with it.
         assert_eq!(clean("Do it.\n<system-reminder>Never ask."), "Do it.");
+    }
+
+    #[test]
+    fn a_relay_is_the_relaying_agents_and_its_markup_goes() {
+        assert_eq!(relay_from("<coordinator-relay><relay from=\"coordinator\"><note>Fix it.</note></relay></coordinator-relay>").as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("<coordinator-relay>Fix it.</coordinator-relay>").as_deref(), Some("coordinator"));
+        let t = "<relay from=\"coordinator\">\nBuild the shop from the CREATE statements.\n</relay>";
+        assert_eq!(relay_from(t).as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("  <relay from=\"lead-2\">x</relay>").as_deref(), Some("lead-2"));
+        assert_eq!(relay_from("Build the shop. <relay from=\"coordinator\">"), None, "a prompt that only quotes one is the user's");
+        assert_eq!(relay_from("Build the shop."), None);
+        // A harness that says in words whose message it passes on.
+        assert_eq!(relay_from("The coordinator sent a message while you were working:\nShip it.").as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("Another Claude session sent a message:\n<agent-message>Done.</agent-message>").as_deref(), Some("another-session"));
+        assert!(!is_envelope("The coordinator sent a message while you were working:\nShip it."));
+        assert!(is_envelope(t));
+        assert_eq!(clean(t).trim(), "Build the shop from the CREATE statements.");
     }
 
     #[test]

@@ -979,6 +979,13 @@ fn find(sup: &Supervisor, w: &Win, rules: &[Rule], with_memory: bool) -> Found {
         let last: HashMap<String, i64> = w.events.iter().filter_map(|(k, v)| v.last().map(|e| (k.clone(), e.ts))).collect();
         misses = memory::misses(&rcs, &edits, &tests, &last);
         memory::confirm(sup, Path::new(&w.cwd()), &mut misses);
+        // What you said in more than one session, from ChloeCtx: a rule it
+        // had shown that you still had to say is a rule the agent broke. A
+        // ChloeCtx too old to say adds nothing (its receipts said why not).
+        let dir = if Path::new(&w.repo).is_dir() { w.repo.clone() } else { w.cwd() };
+        if let Ok(sa) = memory::said_again(sup, Path::new(&dir), w.from) {
+            out.extend(said_again_findings(&sa));
+        }
         for m in &misses {
             let agents: HashSet<String> = [m.name.clone()].into_iter().collect();
             out.push((
@@ -990,6 +997,36 @@ fn find(sup: &Supervisor, w: &Win, rules: &[Rule], with_memory: bool) -> Found {
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let timing = w.agents.iter().any(|a| sup.session_dir(&a.id).join("hook-times.log").exists());
     Found { findings: out.into_iter().map(|x| x.1).collect(), misses, rcs, hooks, timing, missing, storms: storm_list }
+}
+
+/// One finding for each rule ChloeCtx kept for being said again, and for
+/// each instruction said in more than one session it did not keep.
+fn said_again_findings(sa: &memory::SaidAgain) -> Vec<(f64, Json)> {
+    let none = HashSet::new();
+    let times = |n: usize| format!("{n} time{}", if n == 1 { "" } else { "s" });
+    let mut out = Vec::new();
+    for r in &sa.kept {
+        let extra = json!({ "record": r.id, "text": r.text, "sessions": r.sessions, "said_again": r.said_again, "after_shown": r.after_shown, "kept": true });
+        if r.after_shown > 0 {
+            out.push((
+                r.after_shown as f64 * 40.0,
+                finding("broken_rule", "bad", format!("Rule broken though shown: “{}”", one_line(&r.text, 80)), format!("ChloeCtx gave the agent “{}”, and you still had to say it again, {} (of {} since it was kept; said in {} sessions).", one_line(&r.text, 160), times(r.after_shown), times(r.said_again), r.sessions), &none, r.sessions, 0, times(r.after_shown), "counted", vec![r.id.clone()], extra),
+            ));
+        } else {
+            let missing = if r.said_again > 0 { format!(" It was missing {} when it mattered and is now recalled in those situations.", times(r.said_again)) } else { String::new() };
+            out.push((
+                r.sessions as f64 * 15.0,
+                finding("repeated", "", format!("Kept as a rule: “{}”", one_line(&r.text, 80)), format!("You said “{}” in {} sessions, so ChloeCtx gives it to every session now.{missing}", one_line(&r.text, 160), r.sessions), &none, r.sessions, 0, format!("{} sessions", r.sessions), "counted", vec![r.id.clone()], extra),
+            ));
+        }
+    }
+    for (text, n) in &sa.unkept {
+        out.push((
+            *n as f64 * 20.0,
+            finding("repeated", "warn", format!("Said in {n} sessions: “{}”", one_line(text, 80)), format!("You gave “{}” in {n} sessions, and ChloeCtx kept it for that session's task each time.", one_line(text, 160)), &none, *n, 0, format!("{n} sessions"), "counted", Vec::new(), json!({ "text": text, "sessions": n, "kept": false })),
+        ));
+    }
+    out
 }
 
 /// Writes the findings to `harness_findings`.
@@ -2015,6 +2052,33 @@ pub fn routes() -> Router<App> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_you_said_again_is_a_kept_rule_a_broken_rule_or_a_rule_to_make() {
+        let v = json!({
+            "rules": [
+                { "id": "s2:9", "rule": "Keep money as integer cents (the user has said this in 3 sessions)", "ts": 2_000, "sessions": 3, "said_again": 2, "said_again_after_shown": 1 },
+                { "id": "s3:4", "rule": "Build the app from the CREATE statements (the user has said this in 2 sessions)", "ts": 2_100, "sessions": 2, "said_again": 0, "said_again_after_shown": 0 },
+                { "id": "s0:1", "rule": "Use tabs (the user has said this in 2 sessions)", "ts": 10, "sessions": 2, "said_again": 0, "said_again_after_shown": 0 }
+            ],
+            "groups": [
+                { "rule": "Call it ChloeDB, not Strata (the user has said this in 2 sessions)", "sessions": 2, "said": [{ "ts": 1_500 }, { "ts": 1_900 }] },
+                { "rule": "Old news (the user has said this in 2 sessions)", "sessions": 2, "said": [{ "ts": 5 }, { "ts": 6 }] }
+            ]
+        });
+        let sa = memory::said_again_of(&v, 1_000_000);
+        assert_eq!(sa.kept.len(), 2, "the rule kept before the window is left out");
+        assert_eq!((sa.kept[0].text.as_str(), sa.kept[0].after_shown), ("Keep money as integer cents", 1));
+        assert_eq!(sa.unkept, vec![("Call it ChloeDB, not Strata".to_string(), 2)]);
+        let fs: Vec<Json> = said_again_findings(&sa).into_iter().map(|x| x.1).collect();
+        let kinds: Vec<(&str, &str)> = fs.iter().map(|f| (f["kind"].as_str().unwrap(), f["tone"].as_str().unwrap())).collect();
+        assert_eq!(kinds, [("broken_rule", "bad"), ("repeated", ""), ("repeated", "warn")]);
+        assert_eq!(fs[0]["title"], "Rule broken though shown: “Keep money as integer cents”");
+        assert!(fs[0]["detail"].as_str().unwrap().contains("you still had to say it again, 1 time (of 2 times since it was kept; said in 3 sessions)"), "{}", fs[0]["detail"]);
+        assert_eq!(fs[0]["rows"], json!(["s2:9"]));
+        assert_eq!(fs[1]["title"], "Kept as a rule: “Build the app from the CREATE statements”");
+        assert_eq!(fs[2]["extra"]["kept"], false);
+    }
 
     #[test]
     fn storm_keys_keep_what_is_typed() {

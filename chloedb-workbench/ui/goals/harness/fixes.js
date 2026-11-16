@@ -17,7 +17,7 @@ export function render(host, ctx) {
   return { unmount() { alive = false; } };
 }
 
-const KIND_WORD = { storm: "permission storm", missed_memory: "missed memory", corrected: "your corrections", redo: "redo loop", slow_hook: "slow hook", unused: "unused tool", auto_mode: "auto mode" };
+const KIND_WORD = { storm: "permission storm", missed_memory: "missed memory", corrected: "your corrections", repeated: "said again", broken_rule: "broken rule", redo: "redo loop", slow_hook: "slow hook", unused: "unused tool", auto_mode: "auto mode" };
 
 function draw(host, ctx, d, reload) {
   const name = repoName(d.repo);

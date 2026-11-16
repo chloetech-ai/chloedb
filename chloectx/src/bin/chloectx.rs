@@ -19,7 +19,7 @@ as usual; it records each session, recalls what bears on each prompt and writes
 down decisions and rules. `chloectx doctor` says whether that is happening.
 
 More commands (`chloectx help <command>` explains each):
-  look into memory   report, blame, receipts, receipt, snapshot, sql, stats, briefing
+  look into memory   report, repeats, blame, receipts, receipt, snapshot, sql, stats, briefing
   maintain a store   forget, move, redact, distill, consolidate, backup, fetch-model, ingest-transcript
   share memory       sync, pack, mount, app
   run by Claude Code (not by hand): hook, mcp, serve, rpc, wiring";
@@ -231,6 +231,34 @@ enum Cmd {
         /// Print the JSON report.
         #[arg(long)]
         json: bool,
+    },
+    /// What you told agents for one task in more than one session: the
+    /// instructions ChloeCtx keeps as rules of every session once you say
+    /// them in a second session. Reads the store and writes nothing.
+    #[command(hide = true)]
+    Repeats {
+        /// The last N days.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// Print the JSON result: each group's rule, its number of sessions,
+        /// and what was said in each (`id`, `session`, `ts`, `text`).
+        #[arg(long)]
+        json: bool,
+        /// Read this store directory itself, read-only, beside the ChloeCtx
+        /// that writes it (one too old to answer `repeats`), instead of
+        /// asking the project's ChloeCtx.
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Ask the distiller about each case of this JSON-lines file
+        /// (`{"id", "request", "answer"?, "before": [{"id", "text"}],
+        /// "expect": [id]}`) and count the repeats it finds against
+        /// `expect`; nothing is stored.
+        #[arg(long)]
+        judge: Option<PathBuf>,
+        /// The distiller's model for `--judge` (otherwise
+        /// `CHLOECTX_DISTILL_MODEL`, or the store's).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
@@ -635,6 +663,48 @@ fn main() {
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user"}), 30)),
+        Cmd::Repeats { days, json: as_json, store, judge, model } => {
+            let r = match (store, judge) {
+                (store, Some(file)) => {
+                    let mut cfg = store.map(|d| daemon::Config::load(&d.join("config.json")).distill).unwrap_or_default();
+                    if let Some(m) = model {
+                        std::env::remove_var("CHLOECTX_DISTILL_MODEL");
+                        cfg.model = m;
+                    }
+                    let cases: Vec<Json> = std::fs::read_to_string(&file)
+                        .unwrap_or_else(|e| {
+                            eprintln!("chloectx repeats: {}: {e}", file.display());
+                            std::process::exit(1)
+                        })
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| {
+                            serde_json::from_str(l).unwrap_or_else(|e| {
+                                eprintln!("chloectx repeats: {}: a line is not JSON: {e}", file.display());
+                                std::process::exit(2)
+                            })
+                        })
+                        .collect();
+                    chloectx::repeats::judge(&cfg, &cases, 4)
+                }
+                (Some(dir), None) => {
+                    let cfg = daemon::Config::load(&dir.join("config.json"));
+                    let scanned = embed::open(&cfg.embedder)
+                        .and_then(|e| chloectx::store::Store::open_read_only(&dir.join("memory.strata"), std::sync::Arc::from(e)))
+                        .and_then(|s| chloectx::repeats::scan(&s, chloectx::now() - days.max(1) * 86_400, 20_000));
+                    scanned.unwrap_or_else(|e| {
+                        eprintln!("chloectx repeats: {}: {e}", dir.display());
+                        std::process::exit(1)
+                    })
+                }
+                (None, None) => send(&project, json!({"op": "repeats", "days": days}), 120),
+            };
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
         Cmd::Report { days, session, json: as_json } => {
             let r = send(&project, json!({"op": "report", "days": days, "session": session}), 120);
             if as_json {

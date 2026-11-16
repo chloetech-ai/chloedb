@@ -169,6 +169,10 @@ pub struct Session {
     /// transcript, kept until its result arrives ([`crate::report`]).
     #[serde(skip)]
     pub calls: HashMap<String, i64>,
+    /// What the window held when a turn's prompt came, before its recall:
+    /// the turn, and the records shown ([`crate::repeats::promote`]).
+    #[serde(skip)]
+    pub shown_before: (i64, HashSet<String>),
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -440,6 +444,10 @@ impl Daemon {
             "inspect_embed" => crate::inspect::embed(&self.store, req).map(|r| (r, None)),
             "distill_backfill" => self.distill_backfill().map(|(t, n)| (json!({"turns": t, "items": n}), None)),
             "consolidate" => self.op_consolidate().map(|r| (r, None)),
+            "repeats" => {
+                let days = req.get("days").and_then(|v| v.as_i64()).unwrap_or(30).max(1);
+                crate::repeats::scan(&self.store, now() - days * 86_400, 20_000).map(|r| (r, None))
+            }
             "ask" => self.op_ask(req).map(|r| (r, None)),
             // What `chloectx app --local-stores` shows of this store, as it
             // shows a space of the cluster ([`crate::app::view`]).
@@ -701,6 +709,7 @@ impl Daemon {
                 let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
                 let (turn, recent) = self.with_session(&sid, |s| {
                     s.turn += 1;
+                    s.shown_before = (s.turn, s.injected.clone());
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
                     s.episode_stored = false;
                     let recent: Vec<String> = s.last_prompts.iter().rev().take(2).rev().cloned().collect();
@@ -1024,19 +1033,38 @@ impl Daemon {
         let t0 = Instant::now();
         match crate::distill::distill_exchange(&self.distill_cfg(), prompt, answer, commands, &listed, ts, ex) {
             Ok(d) => {
+                // What the user said again, of their earlier requests and
+                // instructions most like this one ([`crate::repeats`]).
+                let before: Vec<Record> = if matches!(ex.by, None | Some(crate::record::Source::User)) { crate::repeats::said_before(&self.store, prompt, sid, turn).unwrap_or_default() } else { Vec::new() };
+                let checked = match crate::repeats::check(&self.distill_cfg(), prompt, &ex.prev_answer, &crate::repeats::listed(&before, sid)) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.log(&json!({"ts": now(), "event": "said_again", "session": sid, "turn": turn, "error": e.to_string()}));
+                        Default::default()
+                    }
+                };
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
-                // Near-copies of what is noted (other than what they replace) add nothing.
+                // An instruction for this task that the user gave in
+                // another session too is a rule of every session now.
+                // One that says what a rule says is that rule anew.
+                let shown = {
+                    let st = self.state.lock().unwrap();
+                    st.sessions.get(sid).map(|s| if s.shown_before.0 == turn { s.shown_before.1.clone() } else { s.injected.clone() }).unwrap_or_default()
+                };
+                let promoted = crate::repeats::promote(d.drafts, &checked.again, sid, &shown, &before);
+                // Near-copies of what is noted (other than what they replace,
+                // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
-                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id)).map(|r| terms(&r.text)).collect();
+                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id) && !promoted.repeats.contains(&r.id)).map(|r| terms(&r.text)).collect();
                 let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                 // Each note links to the turn it was written from.
                 let source = self.prompt_of(sid, turn);
-                let n = d.drafts.len();
+                let n = promoted.drafts.len();
                 let mut drafts = Vec::new();
                 let tree = self.tree(sid);
-                for x in d.drafts {
+                for x in promoted.drafts {
                     let t = terms(&x.text);
                     let dup = seen.iter().any(|s| {
                         let inter = s.intersection(&t).count() as f64;
@@ -1048,6 +1076,8 @@ impl Daemon {
                         // Anchored to the code the note is about, as it is now.
                         let a = anchor::make(Path::new(&tree), &x.text, &x.files, files);
                         let ctx = if a.is_empty() { ctx.clone() } else { format!("{ctx}\n{}", a.to_line()) };
+                        // A rule's counts (its `Sessions:` line) go first.
+                        let ctx = if x.ctx.is_empty() { ctx } else { format!("{}\n{ctx}", x.ctx) };
                         let mut x = x.ctx(ctx);
                         if let Some(src) = &source {
                             x = x.link("from", src.clone());
@@ -1083,9 +1113,10 @@ impl Daemon {
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()})),
         }
@@ -1243,9 +1274,13 @@ impl Daemon {
         let first = req.get("session_source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
         let mut st = self.state.lock().unwrap();
         let s = st.sessions.entry(sid.to_string()).or_default();
-        let src = match (noted, first) {
-            (Some(n), _) => n.to_string(),
-            (None, Some(f)) if s.turn == 0 => f.to_string(),
+        // A coordinator's brief to the session (a relay) is that agent's
+        // instruction, as another agent's brief is, not the user's words.
+        let relay = req.get("payload").and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).and_then(crate::envelope::relay_from);
+        let src = match (noted, first, relay) {
+            (Some(n), _, _) => n.to_string(),
+            (None, Some(f), _) if s.turn == 0 => f.to_string(),
+            (_, _, Some(from)) => format!("agent:{from}"),
             _ => "user".to_string(),
         };
         s.source = crate::record::Source::parse(&src).as_str();

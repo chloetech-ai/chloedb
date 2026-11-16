@@ -98,6 +98,8 @@ pub(super) fn build(sup: &Supervisor, w: &Win, cur_v: &Version, cur_e: &Edits, f
             "unused" => (format!("Leave out {}", title.trim_start_matches("Unused ")), "the tools editor", None),
             "slow_hook" => ("Lengthen the timeout or warm up the hook".to_string(), "the hooks editor", None),
             "corrected" => ("Make what you keep correcting a rule".to_string(), "", Some("#/more/rules")),
+            "repeated" if f["extra"]["kept"] == false => ("Make what you said again a rule".to_string(), "", Some("#/more/rules")),
+            "broken_rule" => ("Replay the turn with the rule, to see why the agent broke it".to_string(), "the one-turn replay", None),
             "redo" => ("Write a rule for the loop".to_string(), "", Some("#/more/rules")),
             "auto_mode" => ("Allow what auto mode blocked, where it is safe".to_string(), "", Some("#/harness/edit/permissions")),
             _ => continue,
