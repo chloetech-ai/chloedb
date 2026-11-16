@@ -23,6 +23,7 @@ use crate::telemetry::{self, iso, parse_iso, Fault};
 use crate::world::{Rng, World};
 use crate::{agents, schema};
 
+#[derive(Clone)]
 pub struct Opts {
     /// Hours of telemetry written when the tables are first made.
     pub history_hours: i64,

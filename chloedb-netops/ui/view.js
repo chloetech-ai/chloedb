@@ -397,10 +397,20 @@ const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFi
 const mins = (m) => (m == null ? "–" : m >= 90 ? (m / 60).toFixed(1) + " h" : Math.round(m) + " min");
 const cap = (mbps) => (mbps >= 1000 ? mbps / 1000 + "G" : mbps + "M");
 
-function render(el, ctx) {
+// Which network the page shows when the app serves both (`--topology both`):
+// the listed one at the app's root, the one read from its feeds under /d/.
+const NETWORK_KEY = "chloedb-netops.network";
+const savedNetwork = () => { try { return localStorage.getItem(NETWORK_KEY) || ""; } catch { return ""; } };
+const saveNetwork = (v) => { try { localStorage.setItem(NETWORK_KEY, v); } catch { /* the choice lasts as long as the page */ } };
+
+function render(el, host) {
+  // Every call of the app's API goes to the network in view: `base` is "" or "/d".
+  // It starts on the one chosen last time; an app that serves one network answers /d/ with a 404, and the page goes back to its root.
+  let base = savedNetwork() === "discovered" ? "/d" : "";
+  const ctx = Object.assign(Object.create(host), { api: (path, opts) => host.api(base + path, opts) });
   const C = ctx.core, { h } = C;
   el.append(h("style", {}, CSS));
-  const app = { ctx, C, h, s: C.s, charts: ctx.charts, queries: new Map(), status: null };
+  const app = { ctx, C, h, s: C.s, charts: ctx.charts, queries: new Map(), status: null, base };
   const sqlN = h("span", {}, "SQL");
   const sqlBtn = h("button", { class: "btn sm", title: "The queries behind this page", onclick: () => showSql(app) }, C.icon("sql"), sqlN);
   const simEl = h("span", { class: "no-sim" });
@@ -411,6 +421,7 @@ function render(el, ctx) {
   app.bar = cmd;
   const agentBtn = h("button", { class: "btn sm no-ag-btn", title: "The assistant: questions about what you are looking at, answered from the tables", onclick: () => app.agent.toggle() }, C.icon("sparkle"), h("span", { class: "lbl" }, "Assistant"));
   const alt = h("span");
+  const net = h("span", { style: { display: "none" } });
   const drawAlt = (page) => alt.replaceChildren(C.seg([["eng", "Engineer", "The shift: what waits, what is planned, what is broken"], ["lead", "Leadership", "The same tables from further away: reliability, risk, carriers, the team"]], page === "leadership" ? "lead" : "eng", (v) => app.go(...(v === "lead" ? ["leadership"] : []))));
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
@@ -420,7 +431,9 @@ function render(el, ctx) {
   const headMenu = h("button", { class: "btn sm no-hmenu", title: "The view, the simulator and the SQL", "aria-label": "Menu", "aria-haspopup": "menu" }, C.icon("menu"));
   headMenu.onclick = () => {
     const page = (current || [])[0] || "", sim = app.status?.sim;
+    const both = (app.status?.topologies || []).length > 1;
     C.menu(headMenu, [
+      both ? { label: base ? "Show the inventory's network" : "Show the network as it reports itself", icon: "route", onclick: () => pickNetwork(base ? "inventory" : "discovered") } : null,
       page === "leadership" ? { label: "Engineer view", icon: "user", onclick: () => app.go() } : { label: "Leadership view", icon: "overview", onclick: () => app.go("leadership") },
       sim?.simulate && sim.fault_active ? { label: `End the fault (${sim.fault_phase})`, icon: "stop", onclick: async () => { try { await ctx.api("/v1/sim/end", { body: {} }); C.toast("The fault was repaired; its alerts clear within a few minutes", "ok"); poll(); } catch (e) { C.toast(e.message, "bad"); } } } : null,
       sim?.simulate ? { label: "Inject a fault…", icon: "bolt", onclick: () => injectMenu(app, headMenu) } : null,
@@ -428,7 +441,7 @@ function render(el, ctx) {
     ].filter(Boolean));
   };
   el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth, found,
-    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
+    h("div", { class: "tools" }, net, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
   el.classList.add("no-root");
   assistant(app, el);
 
@@ -502,12 +515,45 @@ function render(el, ctx) {
   const tabsSeen = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitTabs()) : null;
   tabsSeen?.observe(tabs);
   const setup = h("div", { class: "no-setup" });
+  // The switch between the two networks, shown when the app serves both.
+  const pickNetwork = (v) => {
+    const to = v === "discovered" ? "/d" : "";
+    saveNetwork(v);
+    if (to === base) return;
+    base = to; app.base = to;
+    try { stop?.(); } catch (e) { console.warn(e); }
+    stop = null; ready = false; app.status = null; app.map = null; app.customerList = null;
+    app.queries.clear(); pre.clear(); sqlN.textContent = "SQL";
+    sub.textContent = ""; found.style.display = "none";
+    setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, v === "discovered" ? "Reading the network from what it reports" : "Opening the inventory's network"), h("div", { class: "dim" }, "…"));
+    body.replaceChildren(setup);
+    const page = (current || [])[0] || "";
+    // The other network has other incidents and changes: open the page, not the record.
+    if (page === "discovery" && !to) app.go(); else if ((current || [])[1]) app.go(page);
+    poll();
+  };
+  const drawNet = (st) => {
+    const both = (st?.topologies || []).length > 1;
+    net.style.display = both ? "" : "none";
+    if (!both) return;
+    const v = st.topology === "discovered" ? "discovered" : "inventory";
+    if (net.firstChild?.set) net.firstChild.set(v);
+    else net.replaceChildren(C.seg([["inventory", "Inventory", "The network as its inventory lists it: sites, devices and links written as rows, as from a NetBox"], ["discovered", "Discovered", "The same network read back from what it reports: BGP-LS, LLDP, SNMP's sysDescr and sysLocation, BMP and the OLTs' ONT tables, in tables of its own (netops_disc_*)"]], v, pickNetwork));
+  };
   const poll = async () => {
     let st;
-    try { st = await ctx.api("/v1/status"); } catch (e) { if (!ready) body.replaceChildren(C.failure(e, "Network operations")); return; }
+    const asked = base;
+    try { st = await ctx.api("/v1/status"); } catch (e) {
+      // An app that serves one network has no /d/: back to its own.
+      if (asked && e.status === 404) { base = ""; app.base = ""; pre.clear(); return poll(); }
+      if (!ready) body.replaceChildren(C.failure(e, "Network operations"));
+      return;
+    }
+    if (asked !== base) return;
     app.status = st;
+    drawNet(st);
     const n = st.network;
-    sub.textContent = `${n.name}${st.topology === "discovered" ? ", as it reports itself" : ""}: ${n.sites} sites, ${n.devices} devices, ${n.links} links, ${n.services} services`;
+    sub.textContent = `${n.name}${st.topology === "discovered" ? ", as it reports itself" : ""}: ${st.ready || n.devices ? `${n.sites} sites, ${n.devices} devices, ${n.links} links, ${n.services} services` : "being built"}`;
     found.style.display = st.topology === "discovered" ? "" : "none";
     app.discovered = st.topology === "discovered";
     drawTabs(st);
@@ -519,8 +565,11 @@ function render(el, ctx) {
       : [h("span", { class: "dot ok" }), sim.next_fault_at ? `Calm. Next fault ${C.fmt.ago(T(sim.next_fault_at))}` : "Calm. No faults scheduled"]));
     if (st.error && ready) simEl.append(h("span", { class: "badge ac-bad", title: st.error }, "write error"));
     if (!st.ready) {
-      setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
-        h("div", { class: "small muted" }, st.error || "Creating 47 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute."));
+      const both = base === "/d";
+      setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, both ? "Reading the network from what it reports" : "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
+        h("div", { class: "small muted" }, st.error || (both
+          ? "The simulated network writes what a collector would hear from it (BGP-LS, LLDP, SNMP, BMP and the OLTs' ONT tables), and the app reads its sites, devices, links and roles back from those rows alone, then gives it a month of history. It has 47 tables of its own (netops_disc_*), beside the inventory's. The first time takes a minute or two."
+          : "Creating 47 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute.")));
       if (!setup.isConnected) body.replaceChildren(setup);
       pre.clear();
       return;
@@ -1743,7 +1792,7 @@ function dataPage(body, app) {
   body.append(kp, h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, C.card({ title: "Where the rows come from", sub: "each source says whether its rows are simulated or arriving, and what writes them on a real network", body: src, flush: true }), C.card({ title: "Tables", sub: "all of them ordinary ChloeDB tables: query them from the SQL page or any client", body: tbl, flush: true })), side));
   const stop = live(app, body, "/v1/data", (j) => {
     const rows = j.tables.reduce((a, t) => a + (t.rows || 0), 0), minute = Object.values(j.last_minute_rows).reduce((a, n) => a + n, 0), written = Object.values(j.written).reduce((a, n) => a + n, 0);
-    put(kp, kpi(app, "Tables", String(j.tables.length), "prefixed netops_"), kpi(app, "Rows", C.fmt.si(rows), "across all of them"), kpi(app, "Written a minute", C.fmt.n(minute), "telemetry, logs and flows"), kpi(app, "Written since start", C.fmt.si(written), C.fmt.ago(T(j.since))),
+    put(kp, kpi(app, "Tables", String(j.tables.length), `prefixed ${app.base ? "netops_disc_" : "netops_"}`), kpi(app, "Rows", C.fmt.si(rows), "across all of them"), kpi(app, "Written a minute", C.fmt.n(minute), "telemetry, logs and flows"), kpi(app, "Written since start", C.fmt.si(written), C.fmt.ago(T(j.since))),
       kpi(app, "Search by meaning", j.semantic ? "on" : "off", j.semantic ? j.model : "no embedding model on this server"), kpi(app, "Graph walks", j.graph === "sql" ? "in SQL" : "in the app", j.server.role === "coordinator" ? "a coordinator does not walk graphs yet" : "REACHABLE, ppr and PATH"));
     put(src, C.table([
       { key: "name", label: "Source", render: (r) => h("b", {}, r.name) }, { key: "kind", label: "Kind" }, { key: "via", label: "On a real network", sortable: false, render: (r) => h("span", { class: "ellipsis", style: { display: "block", maxWidth: "300px" }, title: r.via }, r.via) },
@@ -1791,7 +1840,7 @@ const RULES = [
 function discoveryPage(body, app) {
   const { h, C } = app;
   if (!app.discovered) {
-    body.append(C.card({ title: "Discovery", body: C.empty("route", "This network was listed, not discovered", "Its sites, devices and links come from the inventory tables. Start the app with --topology discovered (or CHLOEDB_NETOPS_TOPOLOGY=discovered) to see it built only from what it reports: BGP-LS, LLDP, SNMP and BMP.") }));
+    body.append(C.card({ title: "Discovery", body: C.empty("route", "This network was listed, not discovered", "Its sites, devices and links come from the inventory tables. " + ((app.status?.topologies || []).includes("discovered") ? "Switch the network at the top to Discovered to see the same network built only from what it reports: BGP-LS, LLDP, SNMP and BMP." : "Start the app with --topology both or discovered (or CHLOEDB_NETOPS_TOPOLOGY) to see it built only from what it reports: BGP-LS, LLDP, SNMP and BMP.")) }));
     return () => {};
   }
   const kp = h("div", { class: "no-kpis" }), feeds = h("div", { class: "no-feed" }), found = h("div"), side = h("div", { class: "no-col" }), mapSub = h("span");
@@ -1827,7 +1876,7 @@ function discoveryPage(body, app) {
       const said = (r) => fields.filter((k) => r[k] != null && r[k] !== "" && r[k] !== 0).length;
       const first = [...(x.sample || [])].sort((a, b) => said(b) - said(a))[0] || {};
       const lines = fields.filter((k) => first[k] != null && first[k] !== "").map((k) => `${k}: ${Array.isArray(first[k]) ? first[k].join(", ") : first[k]}`);
-      return h("div", { onclick: () => feedDrawer(app, x), title: "Open its rows" }, h("div", { class: "t" }, h("b", {}, name), h("span", { class: "n" }, C.fmt.n(x.rows))), h("div", { class: "small muted mono" }, x.table), h("div", { class: "small dim", style: { marginTop: "4px" } }, what), lines.length ? h("pre", {}, lines.join("\n")) : null);
+      return h("div", { onclick: () => feedDrawer(app, x), title: "Open its rows" }, h("div", { class: "t" }, h("b", {}, name), h("span", { class: "n" }, C.fmt.n(x.rows))), h("div", { class: "small muted mono" }, x.name || x.table), h("div", { class: "small dim", style: { marginTop: "4px" } }, what), lines.length ? h("pre", {}, lines.join("\n")) : null);
     }));
     put(side,
       C.card({ title: "What the network reports", sub: "seven tables, as a collector would fill them; nothing else describes the network", body: feeds }),
@@ -1856,10 +1905,10 @@ function feedDrawer(app, x) {
   const [name, what] = FEEDS[x.table] || [x.table, x.what];
   const cols = Object.keys((x.sample || [])[0] || {});
   C.drawer({ title: name, sub: what, wide: true, body: [
-    kv(app, [["Table", x.table], ["Rows", C.fmt.n(x.rows)], ["On a real network", { netops_snmp_system: "an SNMP poller (Telegraf's snmp input, or a NetBox discovery job) walking the system group and ENTITY-MIB", netops_snmp_ifaces: "the same poller, walking ifXTable and ipAddrTable", netops_lldp: "the poller walking lldpRemTable, or gNMI's openconfig-lldp", netops_bgpls_nodes: "a BGP-LS session from a route reflector to a collector (GoBGP, pmacct, OpenBMP)", netops_bgpls_links: "the same BGP-LS session", netops_bmp_peers: "BMP from each border router to a collector (OpenBMP, pmacct)", netops_gpon_onts: "each OLT's management system, or SNMP's vendor ONT table" }[x.table] || ""]]),
+    kv(app, [["Table", x.name || x.table], ["Rows", C.fmt.n(x.rows)], ["On a real network", { netops_snmp_system: "an SNMP poller (Telegraf's snmp input, or a NetBox discovery job) walking the system group and ENTITY-MIB", netops_snmp_ifaces: "the same poller, walking ifXTable and ipAddrTable", netops_lldp: "the poller walking lldpRemTable, or gNMI's openconfig-lldp", netops_bgpls_nodes: "a BGP-LS session from a route reflector to a collector (GoBGP, pmacct, OpenBMP)", netops_bgpls_links: "the same BGP-LS session", netops_bmp_peers: "BMP from each border router to a collector (OpenBMP, pmacct)", netops_gpon_onts: "each OLT's management system, or SNMP's vendor ONT table" }[x.table] || ""]]),
     h("div", { class: "no-sec" }, "A few rows"),
     cols.length ? C.table(cols.map((c) => ({ key: c, label: c, sortable: false, render: (r) => h("span", { class: "mono small", style: { whiteSpace: "nowrap" } }, Array.isArray(r[c]) ? r[c].join(", ") : r[c] == null ? "" : String(r[c])) })), { rows: x.sample, compact: true }) : C.empty("db", "No rows"),
-    h("div", { class: "no-sec" }, "Try"), C.sqlBlock(`SELECT * FROM ${x.table} LIMIT 20`)] });
+    h("div", { class: "no-sec" }, "Try"), C.sqlBlock(`SELECT * FROM ${x.name || x.table} LIMIT 20`)] });
 }
 
 // ---------------------------------------------------------------- the shift

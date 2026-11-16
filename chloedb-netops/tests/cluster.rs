@@ -683,7 +683,7 @@ async fn a_network_read_back_from_what_it_reports() {
     app.stop();
 
     // The made-up inventory is not written over a discovered network.
-    let mut wrong = App::start_with(dir.path(), &bin, &[]);
+    let mut wrong = App::start_with(dir.path(), &bin, &["--topology", "inventory"]);
     let t0 = Instant::now();
     let code = loop {
         if let Some(c) = wrong.child.try_wait().unwrap() {
@@ -693,6 +693,64 @@ async fn a_network_read_back_from_what_it_reports() {
         std::thread::sleep(Duration::from_millis(200));
     };
     assert!(!code.success());
+}
+
+/// `--topology both`, the default: the listed network at the app's root and,
+/// under `/d/`, the same network read back from what it reports, in tables
+/// of its own (`netops_disc_*`), built the first time it is asked for. A
+/// fault on one is not on the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn both_networks_served_side_by_side() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOEDB_NETOPS_NEED_SERVER").is_none(), "no chloedb-server binary: build chloedb-server first, or set CHLOEDB_SERVER_BIN");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::start(dir.path(), &bin);
+    let api = Api::ready(&app.url).await;
+    let st = api.get("/v1/status").await;
+    assert_eq!((st["topology"].as_str(), &st["topologies"]), (Some("inventory"), &json!(["inventory", "discovered"])), "{st}");
+
+    // Asked for, it is built beside the first; its status says how far meanwhile.
+    let d = Api::ready(&format!("{}/d", app.url)).await;
+    let ds = d.get("/v1/status").await;
+    assert_eq!((ds["topology"].as_str(), &ds["topologies"]), (Some("discovered"), &json!(["inventory", "discovered"])), "{ds}");
+    assert_eq!((ds["network"]["sites"].as_i64(), ds["network"]["devices"].as_i64(), ds["network"]["links"].as_i64()), (Some(10), Some(64), Some(120)), "{ds}");
+    assert_eq!(api.get("/v1/status").await["topology"], "inventory", "the first is still the inventory's");
+
+    // Each in tables of its own.
+    let (a, b) = (api.get("/v1/data").await, d.get("/v1/data").await);
+    let names = |j: &Value| j["tables"].as_array().unwrap().iter().map(|t| t["table"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let rows = |j: &Value, t: &str| j["tables"].as_array().unwrap().iter().find(|x| x["table"] == t).and_then(|x| x["rows"].as_i64());
+    assert_eq!((names(&a).len(), names(&b).len()), (47, 47));
+    assert!(names(&a).iter().all(|n| n.starts_with("netops_") && !n.starts_with("netops_disc_")), "{:?}", names(&a));
+    assert!(names(&b).iter().all(|n| n.starts_with("netops_disc_")), "{:?}", names(&b));
+    assert_eq!((rows(&a, "netops_devices"), rows(&b, "netops_disc_devices")), (st["network"]["devices"].as_i64(), Some(64)));
+    assert_eq!(rows(&a, "netops_lldp"), Some(0), "the inventory's network wrote no feeds");
+    assert!(rows(&b, "netops_disc_lldp").unwrap() > 0);
+    let disc = d.get("/v1/discovery").await;
+    assert!(disc["feeds"].as_array().unwrap().iter().all(|f| f["name"].as_str().unwrap().starts_with("netops_disc_")), "{}", disc["feeds"]);
+    let topo = d.get("/v1/topology").await;
+    ran_sql(&topo, "the discovered topology");
+    assert!(topo["queries"].as_array().unwrap().iter().all(|q| q["sql"].as_str().unwrap().contains("netops_disc_")), "the SQL shown is the SQL run: {}", topo["queries"]);
+
+    // A fault on one network is not on the other.
+    d.post("/v1/sim/inject", json!({"scenario": "fiber_cut", "seed": 1})).await;
+    let open = |j: &Value| j["open"].as_array().unwrap().iter().filter(|i| i["category"] != "estate").count();
+    assert_eq!(open(&d.get("/v1/overview").await), 1);
+    assert_eq!(open(&api.get("/v1/overview").await), 0, "a fault on the discovered network is not on the inventory's");
+    app.stop();
+
+    // Again on the same tables: both as they were, the second read again.
+    let app = App::start(dir.path(), &bin);
+    let api = Api::ready(&app.url).await;
+    let t0 = Instant::now();
+    let d = Api::ready(&format!("{}/d", app.url)).await;
+    assert!(t0.elapsed() < Duration::from_secs(60), "the second network is read again, not built again: {:?}", t0.elapsed());
+    assert_eq!(d.get("/v1/discovery").await["summary"]["found"], disc["summary"]["found"]);
+    assert_eq!(api.get("/v1/status").await["topology"], "inventory");
+    app.stop();
 }
 
 /// A cluster on this machine: shards and a coordinator over them, each a

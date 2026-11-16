@@ -62,12 +62,73 @@ pub struct Strata {
     pub url: String,
     key: Option<String>,
     http: reqwest::Client,
+    /// Tables of their own: `netops_x` is sent as `netops_<tag>_x`.
+    tag: Option<String>,
 }
 
 impl Strata {
     pub fn new(url: &str, key: Option<String>) -> Strata {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(120)).connect_timeout(Duration::from_secs(10)).build().expect("an HTTP client");
-        Strata { url: url.trim_end_matches('/').to_string(), key: key.filter(|k| !k.is_empty()), http }
+        Strata { url: url.trim_end_matches('/').to_string(), key: key.filter(|k| !k.is_empty()), http, tag: None }
+    }
+
+    /// The same server, with tables of its own: every `netops_` table the
+    /// statements and writes sent through it name is `netops_<tag>_` (a
+    /// second network beside the first, `--topology both`). The app's code
+    /// keeps its names; what it sends, and the SQL its pages show, carry the
+    /// real ones.
+    pub fn with_tables(mut self, tag: &str) -> Strata {
+        self.tag = Some(tag.to_string());
+        self
+    }
+
+    /// The name a table has on the server.
+    pub fn table(&self, name: &str) -> String {
+        self.renamed(name).into_owned()
+    }
+
+    /// `sql` with each `netops_` table renamed (one already renamed is left).
+    pub fn renamed<'a>(&self, sql: &'a str) -> std::borrow::Cow<'a, str> {
+        let Some(tag) = &self.tag else { return std::borrow::Cow::Borrowed(sql) };
+        if !sql.contains("netops_") {
+            return std::borrow::Cow::Borrowed(sql);
+        }
+        let done = format!("{tag}_");
+        let mut out = String::with_capacity(sql.len() + 32);
+        let mut rest = sql;
+        while let Some(at) = rest.find("netops_") {
+            let (before, from) = rest.split_at(at + "netops_".len());
+            out.push_str(before);
+            // A name inside a longer word (`my_netops_x`) is not a table of the app's.
+            let inside = at > 0 && rest[..at].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !inside && !from.starts_with(&done) {
+                out.push_str(&done);
+            }
+            rest = from;
+        }
+        out.push_str(rest);
+        std::borrow::Cow::Owned(out)
+    }
+
+    /// A request's body with its tables renamed.
+    fn body_for(&self, path: &str, body: &Value) -> Option<Value> {
+        self.tag.as_ref()?;
+        let mut b = body.clone();
+        match path {
+            "/v1/query" | "/v1/sql" => {
+                let sql = b["sql"].as_str()?.to_string();
+                b["sql"] = json!(self.renamed(&sql));
+            }
+            "/v1/write" => {
+                for op in b["ops"].as_array_mut()? {
+                    if let Some(t) = op["table"].as_str().map(str::to_string) {
+                        op["table"] = json!(self.renamed(&t));
+                    }
+                }
+            }
+            _ => return None,
+        }
+        Some(b)
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -94,7 +155,10 @@ impl Strata {
     }
 
     pub async fn post(&self, path: &str, body: &Value) -> Result<Value> {
-        self.call(reqwest::Method::POST, path, Some(body)).await
+        match self.body_for(path, body) {
+            Some(b) => self.call(reqwest::Method::POST, path, Some(&b)).await,
+            None => self.call(reqwest::Method::POST, path, Some(body)).await,
+        }
     }
 
     /// A statement that is not a query (CREATE TABLE, UPDATE, DELETE).
@@ -113,9 +177,10 @@ impl Strata {
         let t0 = Instant::now();
         let r = self.query(sql, params.clone()).await;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let sql = self.renamed(sql);
         match &r {
-            Ok(rows) => trace.push(what, sql, &params, rows.len(), ms, None),
-            Err(e) => trace.push(what, sql, &params, 0, ms, Some(&format!("refused: {}", e.message))),
+            Ok(rows) => trace.push(what, &sql, &params, rows.len(), ms, None),
+            Err(e) => trace.push(what, &sql, &params, 0, ms, Some(&format!("refused: {}", e.message))),
         }
         r
     }
@@ -202,5 +267,22 @@ impl RowExt for Row {
             Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_network_has_tables_of_its_own() {
+        let db = Strata::new("http://x", None).with_tables("disc");
+        assert_eq!(db.renamed("SELECT a.id FROM netops_links a JOIN netops_devices d ON d.id = a.src"), "SELECT a.id FROM netops_disc_links a JOIN netops_disc_devices d ON d.id = a.src");
+        assert_eq!(db.renamed("FROM netops_disc_links"), "FROM netops_disc_links", "renamed once");
+        assert_eq!(db.renamed("netops_discovered"), "netops_disc_discovered");
+        assert_eq!(db.renamed("SELECT 'my_netops_x'"), "SELECT 'my_netops_x'");
+        assert_eq!(Strata::new("http://x", None).renamed("FROM netops_links"), "FROM netops_links");
+        let b = db.body_for("/v1/write", &json!({"ops": [{"op": "upsert", "table": "netops_state", "doc": {"val": "netops_x"}}]})).unwrap();
+        assert_eq!((b["ops"][0]["table"].as_str(), b["ops"][0]["doc"]["val"].as_str()), (Some("netops_disc_state"), Some("netops_x")), "rows are not rewritten");
     }
 }

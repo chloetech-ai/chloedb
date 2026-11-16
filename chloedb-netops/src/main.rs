@@ -61,8 +61,8 @@ struct ServeArgs {
     /// The model that rewrites a search asked in a sentence into a plan, called through the server's llm() (empty: the fixed reader only).
     #[arg(long, env = "CHLOEDB_NETOPS_REWRITE_MODEL", default_value = "anthropic/claude-haiku-5-5")]
     rewrite_model: String,
-    /// Where the network's records come from: `inventory` (written as a list of sites, devices and links, as from a NetBox), or `discovered` (read back from what the network reports: BGP-LS, LLDP, SNMP's sysDescr and sysLocation, BMP and the OLTs' ONT tables; with the simulator on, its network reports itself into those tables first).
-    #[arg(long, env = "CHLOEDB_NETOPS_TOPOLOGY", default_value = "inventory", value_parser = ["inventory", "discovered"])]
+    /// Where the network's records come from: `inventory` (written as a list of sites, devices and links, as from a NetBox), `discovered` (read back from what the network reports: BGP-LS, LLDP, SNMP's sysDescr and sysLocation, BMP and the OLTs' ONT tables; with the simulator on, its network reports itself into those tables first), or `both`: the inventory's network, and beside it the discovered one in tables of its own (netops_disc_*), built the first time the page's switch asks for it (with the simulator on; off, `both` is `inventory`).
+    #[arg(long, env = "CHLOEDB_NETOPS_TOPOLOGY", default_value = "both", value_parser = ["both", "inventory", "discovered"])]
     topology: String,
     /// Do not write: serve the tables as they are.
     #[arg(long)]
@@ -188,7 +188,9 @@ async fn main() {
     };
     let db = Strata::new(&url, a.key.clone());
     let discovered = a.topology == "discovered";
+    let both = a.topology == "both" && !a.no_simulate;
     let opts = Opts { history_hours: a.history_hours.clamp(1, 48), fault_every: a.fault_every.clamp(0, 24 * 60), simulate: !a.no_simulate, reset: a.reset, estate: a.estate.min(2_000_000), rewrite_model: a.rewrite_model.clone(), discovered };
+    let second = both.then(|| api::Second::new(db.clone().with_tables("disc"), opts.clone(), token.clone(), local.is_some()));
     let made: Result<Arc<Engine>, String> = async {
         // A database made from the feeds is not one to write a made-up inventory into.
         if !discovered && !a.reset {
@@ -245,12 +247,16 @@ async fn main() {
         }
     };
     tokio::spawn(engine.clone().run());
-    let svc = Arc::new(Service { engine, token: token.clone(), local: local.is_some() });
+    let svc = Arc::new(Service { engine, token: token.clone(), local: local.is_some(), both });
     eprintln!("chloedb-netops: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" });
     if local.is_none() {
         eprintln!("chloedb-netops: to see it in the command center, start chloedb-server with --app netops={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to this token" } else { "" });
     }
-    if let Err(e) = axum::serve(listener, api::router(svc)).with_graceful_shutdown(shutdown_signal()).await {
+    let routes = match second {
+        Some(second) => api::both(svc, second),
+        None => api::router(svc),
+    };
+    if let Err(e) = axum::serve(listener, routes).with_graceful_shutdown(shutdown_signal()).await {
         eprintln!("chloedb-netops: {e}");
     }
     if let Some(l) = local {

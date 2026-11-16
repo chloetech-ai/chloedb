@@ -816,7 +816,7 @@ async fn page(State(svc): State<Shared>) -> Answer {
         // Interfaces with a speed: ports, not loopbacks.
         let only = if table == "netops_snmp_ifaces" { " WHERE high_speed > 0" } else { "" };
         let sample = q.soft(&format!("A few rows of {table}"), &format!("SELECT * FROM {table}{only} LIMIT 4"), json!({})).await;
-        feeds.push(json!({"table": table, "what": what, "rows": n.first().map_or(0, |r| r.i("n")), "sample": sample}));
+        feeds.push(json!({"table": table, "name": q.e.db.table(table), "what": what, "rows": n.first().map_or(0, |r| r.i("n")), "sample": sample}));
     }
     let found = q.rows("How each was found", "SELECT kind, item, sources, how FROM netops_discovered\nWHERE kind IN ('site', 'device', 'link', 'peer')\nORDER BY kind, item LIMIT 2000", json!({})).await?;
     let hubs = q.rows("The estate's hubs, and how each was found", "SELECT kind, item, sources, how FROM netops_discovered\nWHERE kind = 'hub'\nORDER BY item LIMIT 2000", json!({})).await?;

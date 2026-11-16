@@ -30,6 +30,9 @@ pub struct Service {
     pub engine: Arc<Engine>,
     pub token: Option<String>,
     pub local: bool,
+    /// The app serves both networks (`--topology both`): the listed one, and
+    /// under `/d/` the one read from its feeds.
+    pub both: bool,
 }
 
 pub(crate) type Shared = Arc<Service>;
@@ -171,6 +174,111 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
     next.run(req).await
 }
 
+// ---- both networks (`--topology both`)
+
+/// The second network of `--topology both`: the same simulated network read
+/// back from what it reports (`discover.rs`), in tables of its own
+/// (`netops_disc_*`), served under `/d/`. It is built the first time it is
+/// asked for, so a deployment that never opens it pays nothing for it.
+pub struct Second {
+    db: crate::strata::Strata,
+    opts: std::sync::Mutex<Option<crate::sim::Opts>>,
+    token: Option<String>,
+    local: bool,
+    router: std::sync::RwLock<Option<Router>>,
+    /// What it is doing while it is built: the phase, how far, an error.
+    phase: std::sync::Mutex<(String, f64, Option<String>)>,
+}
+
+impl Second {
+    pub fn new(db: crate::strata::Strata, opts: crate::sim::Opts, token: Option<String>, local: bool) -> Arc<Second> {
+        let opts = crate::sim::Opts { discovered: true, ..opts };
+        Arc::new(Second { db, opts: std::sync::Mutex::new(Some(opts)), token, local, router: Default::default(), phase: std::sync::Mutex::new(("Waiting to be asked for".into(), 0.0, None)) })
+    }
+
+    fn router(&self) -> Option<Router> {
+        self.router.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn say(&self, what: &str, progress: f64, error: Option<String>) {
+        *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = (what.to_string(), progress, error);
+    }
+
+    /// Starts building it, once.
+    fn start(self: &Arc<Self>) {
+        let Some(opts) = self.opts.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+        self.say("Starting", 0.02, None);
+        let me = self.clone();
+        tokio::spawn(async move {
+            let (w, estate) = loop {
+                let steps = std::sync::atomic::AtomicUsize::new(0);
+                let said = |m: &str| {
+                    let n = steps.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f64;
+                    let mut first = m.chars();
+                    let m: String = first.next().map(|c| c.to_uppercase().chain(first).collect()).unwrap_or_default();
+                    me.say(&m, (0.05 + n * 0.07).min(0.9), None);
+                };
+                match crate::discover::prepare(&me.db, &opts, said).await {
+                    Ok(x) => break x,
+                    Err(e) if e.status == 0 && (e.message.starts_with("this database") || e.message.starts_with("the feeds")) => {
+                        me.say("Stopped", 0.0, Some(e.message));
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("the discovered network: {e}");
+                        me.say("Trying again", 0.02, Some(e.to_string()));
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            };
+            tracing::info!("the discovered network: {} sites, {} devices, {} links", w.sites.len(), w.devices.len(), w.links.len());
+            let engine = Engine::with_estate(me.db.clone(), crate::sim::Opts { reset: false, ..opts }, w, estate);
+            tokio::spawn(engine.clone().run());
+            let svc = Arc::new(Service { engine, token: me.token.clone(), local: me.local, both: true });
+            *me.router.write().unwrap_or_else(|e| e.into_inner()) = Some(router(svc));
+        });
+    }
+
+    /// Its status while it is built, as `/v1/status` says it once it is.
+    fn status(&self) -> Value {
+        let p = self.phase.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        json!({"version": env!("CARGO_PKG_VERSION"), "ready": false, "phase": p.0, "progress": round(p.1, 3), "error": p.2, "now": iso(now()), "local": self.local,
+            "topology": "discovered", "topologies": ["inventory", "discovered"], "sim": {"simulate": true, "scenarios": []},
+            "network": {"name": "Meridian", "sites": 0, "devices": 0, "links": 0, "services": 0, "customers": 0}})
+    }
+}
+
+/// Both networks: the listed one at `/`, the discovered one under `/d/`.
+pub fn both(first: Shared, second: Arc<Second>) -> Router {
+    let inner = router(first.clone());
+    Router::new()
+        .fallback(move |req: Request| {
+            let (inner, second) = (inner.clone(), second.clone());
+            async move { pick(inner, second, req).await }
+        })
+        .layer(axum::middleware::from_fn_with_state(first, guard))
+}
+
+async fn pick(first: Router, second: Arc<Second>, req: Request) -> Response {
+    use tower::ServiceExt;
+    let path = req.uri().path().to_string();
+    let Some(rest) = path.strip_prefix("/d").filter(|r| r.starts_with('/')).map(str::to_string) else {
+        return match first.oneshot(req).await { Ok(r) => r, Err(e) => match e {} };
+    };
+    let (mut parts, body) = req.into_parts();
+    let query = parts.uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    parts.uri = format!("{rest}{query}").parse().unwrap_or_default();
+    let req = Request::from_parts(parts, body);
+    if let Some(r) = second.router() {
+        return match r.oneshot(req).await { Ok(r) => r, Err(e) => match e {} };
+    }
+    second.start();
+    if rest == "/v1/status" {
+        return Json(second.status()).into_response();
+    }
+    ApiError(StatusCode::SERVICE_UNAVAILABLE, "the network read from its feeds is still being built: /d/v1/status says how far".into()).into_response()
+}
+
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -231,6 +339,7 @@ async fn status(State(svc): State<Shared>) -> Json<Value> {
         "semantic": st.semantic, "graph": match st.graph_sql { Some(true) => "sql", Some(false) => "app", None => "" }, "model": schema::MODEL,
         "eval_ms": round(st.eval_ms, 1), "tick_ms": round(st.tick_ms, 1), "open_incidents": st.open.len(), "firing": st.alerts.len(), "waiting": st.badges.map(|b| b.0), "notices": st.badges.map(|b| b.1), "estate": e.estate.as_ref().map(|x| json!({"objects": x.objects(), "broken": x.live.lock().unwrap_or_else(|p| p.into_inner()).len()})), "sim": sim, "local": svc.local,
         "topology": if e.opts.discovered { "discovered" } else { "inventory" },
+        "topologies": if svc.both { json!(["inventory", "discovered"]) } else if e.opts.discovered { json!(["discovered"]) } else { json!(["inventory"]) },
         "network": {"name": "Meridian", "sites": e.w.sites.len(), "devices": e.w.devices.len(), "links": e.w.links.iter().filter(|l| l.documented).count(), "services": e.w.services.len(), "customers": e.w.customers.len()},
     }))
 }
@@ -981,7 +1090,8 @@ async fn data(State(svc): State<Shared>) -> Answer {
             n.insert(k, c);
         }
     }
-    let tables: Vec<Value> = schema::tables().into_iter().enumerate().map(|(k, (name, ddl, what))| json!({"table": name, "what": what, "rows": n.get(&k), "ddl": ddl, "telemetry": schema::TELEMETRY.contains(&name)})).collect();
+    let db = &q.e.db;
+    let tables: Vec<Value> = schema::tables().into_iter().enumerate().map(|(k, (name, ddl, what))| json!({"table": db.table(name), "what": what, "rows": n.get(&k), "ddl": db.renamed(&ddl), "telemetry": schema::TELEMETRY.contains(&name)})).collect();
     let sources = q.rows("Where each table's rows come from", "SELECT id, name, kind, table_name, via, status, rate, lag_s, last_seen, retention, note, snippet FROM netops_sources LIMIT 50", json!({})).await?;
     let health = q.e.db.health().await.ok();
     let (written, last_rows, semantic, graph, started) = {
