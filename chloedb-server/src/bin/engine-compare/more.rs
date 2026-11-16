@@ -135,7 +135,7 @@ impl Conns {
                 if !self.pg.contains_key(url) {
                     let mut c = Pg::connect(url).await.map_err(|e| format!("connect {url}: {e}"))?;
                     if let Some(init) = pg_session(self.other) {
-                        c.query(init).await.map_err(|e| match e {
+                        c.query(&init).await.map_err(|e| match e {
                             Fault::Io(e) | Fault::Answer(e) => e,
                         })?;
                     }
@@ -258,11 +258,14 @@ fn manticore_sql(url: &str, sql: &str) -> Req {
 }
 
 /// Settings of each Postgres connection the clients open.
-fn pg_session(o: Other) -> Option<&'static str> {
+fn pg_session(o: Other) -> Option<String> {
     match o {
-        // HNSW searched with ef 64; filtered searches go on until they have
+        // HNSW searched with the run's candidates (64 unless `--candidates`,
+        // as the other engines); filtered searches go on until they have
         // found the rows asked for (pgvector 0.8's iterative scans).
-        Other::Postgres => Some("SET hnsw.ef_search = 64; SET hnsw.iterative_scan = strict_order"),
+        // ParadeDB's vectors are in its own pg_search index, which has no
+        // such setting: it searches the same way at every value of a sweep.
+        Other::Postgres => Some(format!("SET hnsw.ef_search = {}; SET hnsw.iterative_scan = strict_order", crate::candidates())),
         _ => None,
     }
 }
@@ -1014,18 +1017,33 @@ async fn finish(o: Other, c: &mut Conns, u: &str, docs: usize) -> Result<Json, S
         }
         Other::Qdrant => {
             // Searchable once written; the optimizer builds the HNSW graphs and merges segments after.
+            // Ready when the collection is green with every vector in a graph, three polls running;
+            // or green for a minute with the indexed count unchanged, since a segment under
+            // Qdrant's indexing threshold is searched exactly and never counted as indexed
+            // (arguana's 8,674 vectors stayed short of the count for 34 minutes); and a deadline
+            // (CHLOEDB_COMPARE_QDRANT_WAIT_S, default 4 hours: a 1M load took 63 minutes) fails
+            // the load with the last status read, instead of holding its nodes for ever.
             let t = Instant::now();
-            let mut green = 0;
-            while green < 3 {
+            let wait = std::env::var("CHLOEDB_COMPARE_QDRANT_WAIT_S").ok().and_then(|v| v.parse().ok()).unwrap_or(4 * 3600);
+            let (mut green, mut steady, mut last) = (0, 0, None);
+            while green < 3 && steady < 60 {
                 let j = c.call(Method::GET, format!("{u}/collections/docs"), None).await?;
                 let r = &j["result"];
                 let indexed = r["indexed_vectors_count"].as_u64().unwrap_or(0);
-                if r["status"] == json!("green") && r["optimizer_status"] == json!("ok") && indexed >= docs as u64 {
-                    green += 1;
-                } else {
-                    green = 0;
+                let ready = r["status"] == json!("green") && r["optimizer_status"] == json!("ok");
+                green = if ready && indexed >= docs as u64 { green + 1 } else { 0 };
+                steady = if ready && last == Some(indexed) { steady + 1 } else { 0 };
+                last = Some(indexed);
+                if t.elapsed() > Duration::from_secs(wait) {
+                    return Err(format!(
+                        "not ready after {wait} s: status {}, optimizer {}, {indexed} of {docs} vectors indexed",
+                        r["status"], r["optimizer_status"]
+                    ));
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            if green < 3 {
+                eprintln!("qdrant: green for a minute with {} of {docs} vectors in a graph (the rest searched exactly)", last.unwrap_or(0));
             }
             step("index_s", t);
         }

@@ -295,7 +295,7 @@ build)
         rc=0
         wait $b0 || rc=$?
         wait $b1 || rc=$?
-        [ $rc = 0 ] || { tail -5 "${STRATA_WORK:?}/${OUT#/data/}"/build-s[01].log >&2; exit $rc; }
+        [ $rc = 0 ] || { tail -n 5 "${STRATA_WORK:?}/${OUT#/data/}"/build-s[01].log >&2; exit $rc; }
     else
         for i in 0 1; do build_shard $i; done
     fi
