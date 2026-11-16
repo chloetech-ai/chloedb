@@ -899,8 +899,27 @@ pub struct FileImport {
     pub key: Option<String>,
     /// Binary columns as base64 text ([`chloedb::sqlite::ImportOptions::blobs_base64`]).
     pub blobs_base64: bool,
+    /// SQLite: add rows to tables without a key that have rows
+    /// ([`chloedb::sqlite::ImportOptions::append`]).
+    pub append: bool,
     /// Print the plan as JSON, and write nothing.
     pub plan: bool,
+}
+
+/// An import's error `e` about the file `shown` (its local copy at
+/// `local`), named once: a file that is not one SQLite or Parquet reads,
+/// or a value that does not fit, is not an error of a schema.
+fn file_error(shown: &str, local: &Path, e: chloedb::Error) -> String {
+    let m = match e {
+        chloedb::Error::Schema(m) => m,
+        e => e.to_string(),
+    };
+    let m = m.replace(&local.display().to_string(), shown);
+    if m.starts_with(shown) {
+        m
+    } else {
+        format!("{shown}: {m}")
+    }
 }
 
 /// Whether `s` is an `s3://` (or `s3a://`) URL.
@@ -1066,7 +1085,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         (Some((s, t)), true) => Some(Schema::from_json(t).map_err(|e| format!("{s}: {e}"))?),
         _ => None,
     };
-    let sq = chloedb::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64 };
+    let sq = chloedb::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64, append: how.append };
     let pq = ParquetImport { table: table.map(String::from), schema: given_table, key: how.key.clone(), blobs_base64: how.blobs_base64 };
     let created = |db: Db| {
         for (field, why) in db.open_embedders(models) {
@@ -1089,9 +1108,9 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let mut plans = Vec::new();
         for (shown, file) in &inputs {
             if is_sqlite(&file.path) {
-                plans.push(chloedb::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| format!("{shown}: {e}"))?.to_json());
+                plans.push(chloedb::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| file_error(shown, &file.path, e))?.to_json());
             } else if is_parquet(&file.path) {
-                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| format!("{shown}: {e}"))?);
+                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| file_error(shown, &file.path, e))?);
             } else {
                 return Err(format!("{shown}: --plan is for SQLite and Parquet files"));
             }
@@ -1104,7 +1123,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let file = &fetched.path;
         let t0 = std::time::Instant::now();
         if is_sqlite(file) {
-            let at = |e: chloedb::Error| format!("{shown}: {e}");
+            let at = |e: chloedb::Error| file_error(shown, file, e);
             let src = chloedb::sqlite::Source::open(file).map_err(at)?;
             let plan = src.plan(db.as_ref(), &sq).map_err(at)?;
             let d = match db.take() {
@@ -1185,7 +1204,7 @@ impl ParquetImport {
     /// table's schema, and gives the database back.
     fn import(&self, shown: &str, file: &Path, db: Option<Db>, create: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
         let t0 = std::time::Instant::now();
-        let at = |e: chloedb::Error| format!("{shown}: {e}");
+        let at = |e: chloedb::Error| file_error(shown, file, e);
         let src = chloedb::parquet::Source::open(file).map_err(at)?;
         let plan = src.plan(db.as_ref(), &self.options()).map_err(at)?;
         let d = match db {

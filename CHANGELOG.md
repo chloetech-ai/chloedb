@@ -32,6 +32,15 @@ changes collect under "Unreleased".
   no longer one of the user's rules.
 - Workbench's Fix the harness lists what you said again and the rules
   broken though the session was shown them, when ChloeCtx is on.
+- **A SQLite import into a table without a key that has rows is refused**
+  (409 `conflict` over HTTP), before anything is written: nothing tells
+  its rows from the file's, so they went in beside them, and importing the
+  same file again repeated every row. Over HTTP, an import into such a
+  table while another import writes it is refused too, so that the same
+  file uploaded twice at once is written once. `--append`, `?append=true`,
+  `append=True` in Python and `append: true` in JavaScript add them as
+  before; a keyed table takes the file's rows in place of its own, as it
+  did. A copy between servers into such a table is refused too.
 
 ### SQLite imports (stress test of 15 November)
 
@@ -69,6 +78,21 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   out shadow tables, skips a table it cannot read (a `vec0` table) instead
   of refusing the whole file, keeps ids of more than 15 digits as text as
   its CSV import does, and refuses a damaged file.
+- **A file of many tables imports in time that grows with their number**,
+  not its square: a 4,000-table file took 227 s from the command line, as
+  each table made two commits and each commit writes every table's schema.
+  An import now makes the tables it creates in one commit and bulk-loads
+  the empty ones in one more (`Db::create_tables`, `Db::try_load_tables`),
+  a merge looks at the table it merges rather than at every table, and an
+  HTTP import makes its tables in one commit and sends the rows of small
+  tables in shared requests.
+- A date column written in seconds and later in milliseconds reads each
+  integer in the unit of its size (the seconds were read as milliseconds,
+  in January 1970); names lose their accents (`Größe` is `Grosse`, it was
+  `Gr__e`) and a name of no Latin letter (`名前`) is named by its place
+  (`column_2`, it was `__`); a file with no table, and an upload with no
+  body, are refused (they imported nothing and answered 200); the command
+  line names the file once and without `schema error:`.
 
 ## 0.3.5
 

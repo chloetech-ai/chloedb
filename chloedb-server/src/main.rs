@@ -1085,6 +1085,12 @@ enum Command {
         /// than leave them out.
         #[arg(long)]
         blobs_base64: bool,
+        /// SQLite: add the rows to tables without a primary key that have
+        /// rows already, which an import refuses otherwise (nothing tells
+        /// their rows from the file's, so importing a file again would
+        /// repeat them).
+        #[arg(long)]
+        append: bool,
         /// SQLite and Parquet: print what the import would do as JSON (each
         /// table's schema, its columns and what is left out), and write
         /// nothing. Edit it and give it back with --schema.
@@ -1448,9 +1454,9 @@ async fn run() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, plan }) => {
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan }) => {
             let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
-            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, plan: *plan };
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan };
             let format = format
                 .as_deref()
                 .filter(|_| !files_of.sqlite && !files_of.parquet)

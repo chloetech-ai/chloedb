@@ -568,21 +568,32 @@ impl Db {
     /// [`crate::storage::WriteTxn::table`] and [`Snapshot::table`]. After
     /// [`Db::open_embedders`], its embedded fields get their models from the
     /// same place (a model it cannot open leaves the vectors to the writes).
-    pub fn create_table(&self, mut schema: Schema) -> Result<()> {
-        let name = schema.table.clone();
-        for f in &schema.fields {
-            no_self_dictionary(&name, f)?;
-        }
+    pub fn create_table(&self, schema: Schema) -> Result<()> {
+        self.create_tables(vec![schema])
+    }
+
+    /// Adds empty tables, as [`Db::create_table`] adds one, in one commit
+    /// ([`Database::create_tables`]: all or none), which is what makes
+    /// many tables at once quick.
+    pub fn create_tables(&self, mut schemas: Vec<Schema>) -> Result<()> {
         let dir = self.models.read().unwrap_or_else(|e| e.into_inner()).clone();
         let models = dir.clone().unwrap_or_else(crate::embed::models_dir);
-        crate::sid::resolve(&mut schema, &models)?;
-        crate::embed::stamp_fingerprints(&mut schema, &models);
-        self.storage.create_table(schema)?;
-        if let Some(dir) = dir {
-            self.open_embedders_of(&name, &dir);
+        for schema in schemas.iter_mut() {
+            for f in &schema.fields {
+                no_self_dictionary(&schema.table, f)?;
+            }
+            crate::sid::resolve(schema, &models)?;
+            crate::embed::stamp_fingerprints(schema, &models);
         }
-        self.open_codebooks_of(&name, &models);
-        self.open_content_models_of(&name);
+        let names: Vec<String> = schemas.iter().map(|s| s.table.clone()).collect();
+        self.storage.create_tables(schemas)?;
+        for name in &names {
+            if let Some(dir) = &dir {
+                self.open_embedders_of(name, dir);
+            }
+            self.open_codebooks_of(name, &models);
+            self.open_content_models_of(name);
+        }
         Ok(())
     }
 
@@ -744,55 +755,14 @@ impl Db {
 
     /// [`Db::try_load`] into the table named `table`.
     pub fn try_load_into(&self, table: &str, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
-        let schema = self.table(table)?;
-        let models = self.write_models_of(&schema);
-        let derivers = self.derivers_of(&schema);
-        let media = self.media_resolver();
-        let mut docs = docs.into_iter();
-        if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
-            return self.storage.try_bulk_load_into(table, docs.map(move |d| {
-                d.map(|mut d| {
-                    schema.fill_generated(&mut d);
-                    d
-                })
-            }));
-        }
-        // Resolved and embedded in batches, so that fetches run together
-        // and a model sees many texts at once; fewer rows of images, whose
-        // bytes are held until a model has read them.
-        let batch_size = if (0..schema.fields.len()).any(|f| read_by_model(&schema, f)) { MEDIA_BATCH } else { EMBED_BATCH };
-        let mut ready: std::vec::IntoIter<Result<Document>> = Vec::new().into_iter();
-        self.storage.try_bulk_load_into(
-            table,
-            std::iter::from_fn(|| loop {
-                if let Some(d) = ready.next() {
-                    return Some(d);
-                }
-                let mut batch = Vec::new();
-                for d in docs.by_ref().take(batch_size) {
-                    match d {
-                        Ok(d) => batch.push(d),
-                        Err(e) => {
-                            // The rows before the error are not loaded either.
-                            return Some(Err(e));
-                        }
-                    }
-                }
-                if batch.is_empty() {
-                    return None;
-                }
-                batch.iter_mut().for_each(|d| schema.fill_generated(d));
-                let embedded = resolve_media(&media, &schema, &mut batch).and_then(|held| {
-                    let files = Files { resolver: &media, held };
-                    derive_known(&derivers, &schema, &mut batch, &Derived::new(), &files)?;
-                    embed_with(&models, &schema, &mut batch, &files)
-                });
-                if let Err(e) = embedded {
-                    return Some(Err(e));
-                }
-                ready = batch.into_iter().map(Ok).collect::<Vec<_>>().into_iter();
-            }),
-        )
+        self.try_load_tables(|l| l.load_into(table, docs).map(|_| ()))
+    }
+
+    /// Loads several tables in one commit ([`Database::try_bulk_load_tables`]):
+    /// `f` loads each, as [`Db::try_load_into`] loads one
+    /// ([`Loads::load_into`]), and nothing is committed when it fails.
+    pub fn try_load_tables<R>(&self, f: impl FnOnce(&mut Loads<'_, '_>) -> Result<R>) -> Result<R> {
+        self.storage.try_bulk_load_tables(|load| f(&mut Loads { db: self, load }))
     }
 
     /// Every live document of `snap` as merges rebuild them (stored fields,
@@ -3834,4 +3804,69 @@ pub struct Corrected {
     /// Whether any word was replaced.
     pub changed: bool,
     pub words: Vec<crate::query::exec::Correction>,
+}
+
+/// Tables being loaded in one commit ([`Db::try_load_tables`]).
+pub struct Loads<'a, 'b> {
+    db: &'a Db,
+    load: &'a mut crate::storage::BulkLoad<'b>,
+}
+
+impl Loads<'_, '_> {
+    /// Loads documents into the table named `table`, as
+    /// [`Db::try_load_into`] does (generated columns are filled in, and
+    /// embedded vectors the documents leave out are computed): the first
+    /// error ends the load, and nothing is committed. Returns the rows it
+    /// loaded.
+    pub fn load_into(&mut self, table: &str, docs: impl IntoIterator<Item = Result<Document>>) -> Result<u64> {
+        let schema = self.db.table(table)?;
+        let models = self.db.write_models_of(&schema);
+        let derivers = self.db.derivers_of(&schema);
+        let media = self.db.media_resolver();
+        let mut docs = docs.into_iter();
+        if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
+            return self.load.load_into(table, docs.map(move |d| {
+                d.map(|mut d| {
+                    schema.fill_generated(&mut d);
+                    d
+                })
+            }));
+        }
+        // Resolved and embedded in batches, so that fetches run together
+        // and a model sees many texts at once; fewer rows of images, whose
+        // bytes are held until a model has read them.
+        let batch_size = if (0..schema.fields.len()).any(|f| read_by_model(&schema, f)) { MEDIA_BATCH } else { EMBED_BATCH };
+        let mut ready: std::vec::IntoIter<Result<Document>> = Vec::new().into_iter();
+        self.load.load_into(
+            table,
+            std::iter::from_fn(|| loop {
+                if let Some(d) = ready.next() {
+                    return Some(d);
+                }
+                let mut batch = Vec::new();
+                for d in docs.by_ref().take(batch_size) {
+                    match d {
+                        Ok(d) => batch.push(d),
+                        Err(e) => {
+                            // The rows before the error are not loaded either.
+                            return Some(Err(e));
+                        }
+                    }
+                }
+                if batch.is_empty() {
+                    return None;
+                }
+                batch.iter_mut().for_each(|d| schema.fill_generated(d));
+                let embedded = resolve_media(&media, &schema, &mut batch).and_then(|held| {
+                    let files = Files { resolver: &media, held };
+                    derive_known(&derivers, &schema, &mut batch, &Derived::new(), &files)?;
+                    embed_with(&models, &schema, &mut batch, &files)
+                });
+                if let Err(e) = embedded {
+                    return Some(Err(e));
+                }
+                ready = batch.into_iter().map(Ok).collect::<Vec<_>>().into_iter();
+            }),
+        )
+    }
 }
