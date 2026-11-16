@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { Q, QUALITY_SRC, parseLayout, LAYOUT_NAMES, labelProblems, designProblems, mainAction, staticChecks, screenLabels } from '../engine/quality.mjs';
 import { rules, repairRequest, checkStatic, namesOf } from '../engine/look.mjs';
 import { compileStatement, screenStatement, STATEMENT_DOC } from '../engine/statement.mjs';
-import { cleanArt, SYSTEM } from '../engine/forge.mjs';
+import { cleanArt, SYSTEM, planWatcher, tablesWatcher, kpiParts, signInFirst, takeExamplesInto } from '../engine/forge.mjs';
 import { shapeDesigns, designPrompt } from '../engine/designs.mjs';
 import { checkDesign } from '../web/design.js';
 
@@ -121,7 +121,8 @@ test('the static fallback reads screens stored as JSON in a view\'s code', () =>
 });
 
 test('layouts: parsed from what a statement or a plan says', () => {
-  assert.deepEqual(LAYOUT_NAMES, ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool']);
+  assert.deepEqual(LAYOUT_NAMES, ['hero', 'split', 'editorial', 'dashboard', 'gallery', 'tool', 'report']);
+  assert.equal(parseLayout('a monthly briefing'), 'report');
   assert.equal(parseLayout('split'), 'split');
   assert.equal(parseLayout('Editorial, the menu as a chalkboard list'), 'editorial');
   assert.equal(parseLayout('single-tool'), 'tool');
@@ -145,7 +146,7 @@ test('CREATE SCREEN: LAYOUT and PAGE front LAYOUT, and back to a statement', () 
   assert.match(back, /^LAYOUT split$/m);
   assert.deepEqual(compileStatement(back).screen, a.screen);
   assert.equal(screenStatement('x', 'X', { body: [], layout: 'bento' }), null);
-  assert.match(STATEMENT_DOC, /LAYOUT <hero \| split \| editorial \| dashboard \| gallery \| tool>/);
+  assert.match(STATEMENT_DOC, /LAYOUT <hero \| split \| editorial \| dashboard \| gallery \| tool \| report>/);
 });
 
 test('the art direction: layout, type, accent, imagery and the one main action', () => {
@@ -162,4 +163,184 @@ test('the art direction: layout, type, accent, imagery and the one main action',
   assert.equal(designs[0].width, 'narrow');
   assert.equal(designs[0].titles, 'serif');
   assert.match(designPrompt({ name: 'Tacos', description: 'A taco truck' }, null, { art }), /main action: See the menu/);
+});
+
+test('the plan is handed on once its </plan> has streamed in, before the statements after it', () => {
+  const got = [];
+  const w = planWatcher((p) => got.push(p));
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a qu');
+  assert.equal(got.length, 0);
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a quiet shelf"}}</plan>\n<code slug="home">CREATE SCR');
+  w({}, 'Some words <plan>{"name": "Shop", "art": {"concept": "a quiet shelf"}}</plan>\n<code slug="home">CREATE SCREEN home</code>');
+  assert.equal(got.length, 1);
+  assert.equal(got[0].art.concept, 'a quiet shelf');
+  // A plan that does not parse is not handed on, and a missing hook is fine.
+  const bad = [];
+  planWatcher((p) => bad.push(p))({}, '<plan>{"name": </plan>');
+  assert.equal(bad.length, 0);
+  planWatcher(null)({}, '<plan>{}</plan>');
+});
+
+test('the plan up to its tables is handed on once that list has streamed in, for the example rows to be written beside the rest', () => {
+  const got = [];
+  const w = tablesWatcher((p) => got.push(p));
+  const head = '<plan>\n{"name": "Kiln", "ux": {"job": "book a [class] {soon}"}, "tables": [{"name": "pieces", "columns": [{"name": "title"}], "examples": "5 pieces, one \\"sold out\\""}';
+  w({}, head);
+  assert.equal(got.length, 0);
+  w({}, `${head}, {"name": "classes"}], "views": [{"slug": "ho`);
+  w({}, `${head}, {"name": "classes"}], "views": [{"slug": "home"}]}</plan>`);
+  assert.equal(got.length, 1);
+  assert.deepEqual(got[0].tables.map((t) => t.name), ['pieces', 'classes']);
+  assert.equal(got[0].ux.job, 'book a [class] {soon}');
+  assert.equal(got[0].views, undefined);
+  // no tables, no rows to write
+  const none = [];
+  tablesWatcher((p) => none.push(p))({}, '<plan>{"name": "Journal", "tables": [], "views": []}</plan>');
+  assert.equal(none.length, 0);
+});
+
+
+test('the tests writer\'s answer never takes away the example rows their own writer wrote, whichever was done first', () => {
+  const rows = { pieces: [{ title: 'Bowl' }] };
+  // the rows' writer was done first: the tests come after and the rows stay
+  const plan = { seed: rows };
+  takeExamplesInto(plan, '{"tests": [{"name": "a piece keeps its title"}]}', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+  assert.equal(plan.tests.length, 1);
+  // a seed the tests writer gave anyway does not replace the rows' writer's
+  takeExamplesInto(plan, '{"seed": {"pieces": []}, "tests": []}', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+  // one writer for both: its answer is the rows and the tests
+  const one = { seed: rows };
+  takeExamplesInto(one, '```json\n{"seed": {"pieces": [{"title": "Cup"}]}, "tests": []}\n```');
+  assert.equal(one.seed.pieces[0].title, 'Cup');
+  takeExamplesInto(one, '{"tests": []}');
+  assert.equal(one.seed, undefined);
+  // not JSON: nothing changes
+  takeExamplesInto(plan, 'no JSON here', { seeded: true });
+  assert.deepEqual(plan.seed, rows);
+});
+
+test('a new app\'s members\' screens keep what they show over its example rows; a screen with no gate, or data that depends on the screen, is left out', async () => {
+  const { gateSamples } = await import('../engine/forge.mjs');
+  const screen = (gate, data) => JSON.stringify({ data, body: [], ...(gate ? { gate: { title: 'Sign in' } } : {}) });
+  const ran = [];
+  let kept = null;
+  const engine = {
+    view: async () => ({ views: [
+      { slug: 'books', spec: { screen: true }, code: screen(true, { books: 'SELECT * FROM books', due: { sql: 'SELECT * FROM books WHERE days_between(:today, due) < 7', params: { today: '=today' } }, mine: { sql: 'SELECT * FROM books WHERE shelf = :s', params: { s: '=state.shelf' } }, who: '=app.people()' }) },
+      { slug: 'open', spec: { screen: true }, code: screen(false, { books: 'SELECT * FROM books' }) },
+      { slug: 'code', spec: {}, code: 'function render() {}' }] }),
+    sql: async (id, sql, params) => { ran.push([sql, params]); return Array.from({ length: 20 }, (_, i) => ({ id: `b${i}`, title: `Book ${i}` })); },
+    store: { putSetting: async (app, key, value) => { kept = [key, JSON.parse(value)]; } },
+  };
+  const out = await gateSamples(engine, 'a1', { today: '2026-11-20' });
+  assert.deepEqual(Object.keys(out), ['books']);
+  assert.deepEqual(Object.keys(out.books), ['books', 'due'], 'state-dependent data and expressions are left out');
+  assert.equal(out.books.books.length, 12, 'at most 12 rows each');
+  assert.deepEqual(ran.map((r) => r[1]), [{}, { today: '2026-11-20' }]);
+  assert.equal(kept[0], 'samples');
+});
+
+test('big numbers where one is the other with more conditions are found, for the figure check to ask about', () => {
+  const screen = { data: { a: "SELECT SUM(x) AS v FROM t WHERE kind != 'z' AND d > 0", b: "SELECT SUM(x) AS v FROM t WHERE kind != 'z'", c: 'SELECT COUNT(*) AS v FROM u' },
+    body: [{ kpis: [{ label: 'Narrow', of: 'a' }, { label: 'Wide', of: 'b' }, { label: 'Other', of: 'c' }] }] };
+  assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Narrow', 'Wide']]);
+  assert.deepEqual(kpiParts({ data: { a: 'SELECT 1 AS v FROM t WHERE p OR q', b: 'SELECT 1 AS v FROM t' }, body: [{ kpis: [{ label: 'A', of: 'a' }, { label: 'B', of: 'b' }] }] }), [], 'an OR is no part');
+});
+
+test('a screen that draws a sign-in form before its main part is found', () => {
+  assert.equal(signInFirst({ body: [{ h: 'Notes' }, { if: '=!me', then: [{ ui: 'signIn' }] }, { table: '=rows' }] }), true);
+  assert.equal(signInFirst({ body: [{ hero: 'Hi' }, { table: '=rows' }, { band: [{ ui: 'signIn' }] }] }), false);
+  assert.equal(signInFirst({ body: [{ h: 'Rows' }, { table: '=rows' }] }), false);
+  assert.equal(signInFirst({ body: [{ code: 'async function render(root) { root.append(ui.signIn({})); }' }, { carousel: '=rows' }] }), true);
+});
+
+test('three big numbers that narrow one another (over 90 days, past due, unpaid) are found as parts of the widest', () => {
+  const w = "coalesce(lower(status), '') != 'paid'";
+  const screen = { data: { k0: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 90`, k1: `SELECT SUM(amount) AS v FROM r WHERE ${w} AND days_between(due, :today) > 0`, k2: `SELECT SUM(amount) AS v FROM r WHERE ${w}` },
+    body: [{ kpis: [{ label: 'Over 90', of: 'k0' }, { label: 'Past due', of: 'k1' }, { label: 'Unpaid', of: 'k2' }] }] };
+  assert.deepEqual(kpiParts(screen).map((x) => [x.part.label, x.whole.label]), [['Over 90', 'Unpaid'], ['Past due', 'Unpaid']]);
+});
+
+test('a screen its readers use that reads a table only the owner may read is a problem; the owner\'s own screens are not', async () => {
+  const { readerProblems } = await import('../engine/forge.mjs');
+  const plan = { access: ['ALLOW READ ON lessons TO members', 'ALLOW WRITE ON lessons TO owner', 'ALLOW ALL ON questions TO owner'], views: [
+    { slug: 'lesson', for: 'members', screen: { data: { q: 'SELECT * FROM questions WHERE lesson = :id LIMIT 20', l: 'SELECT * FROM lessons LIMIT 5' }, body: [] } },
+    { slug: 'manage', for: 'owner', screen: { data: { q: 'SELECT * FROM questions LIMIT 20' }, body: [] } },
+    { slug: 'home', screen: { data: { l: 'SELECT * FROM lessons LIMIT 5' }, body: [] } }] };
+  const p = readerProblems(plan, { tables: [] });
+  assert.equal(p.length, 1);
+  assert.match(p[0], /^view lesson .* reads questions, which only the owner may read/);
+  // members may read the questions: nothing to say
+  plan.access.push('ALLOW READ ON questions TO members');
+  assert.deepEqual(readerProblems(plan, { tables: [] }), []);
+});
+
+test('a screen its users use that writes a table only the owner may write is a problem; a rule they call, or the owner\'s screen, is not', async () => {
+  const { writerProblems } = await import('../engine/forge.mjs');
+  const plan = { access: ['ALLOW READ ON items TO everyone', 'ALLOW ALL ON requests TO owner', 'ALLOW CALL ON send-request TO everyone'], views: [
+    { slug: 'front', screen: { data: { p: 'SELECT * FROM items LIMIT 20' }, body: [{ form: 'requests', fields: ['name'] }] } },
+    { slug: 'ask', screen: { body: [{ button: 'Send', do: "=() => app.call('send-request', {id: 1})" }] } },
+    { slug: 'quick', for: 'members', screen: { body: [{ button: 'Add', do: "=() => app.insert('requests', {a: 1})" }] } },
+    { slug: 'manage', for: 'owner', screen: { body: [{ form: 'requests', fields: ['name'] }] } }] };
+  const p = writerProblems(plan, { tables: [] });
+  assert.deepEqual(p.map((x) => x.split(' ')[1]), ['front', 'quick']);
+  assert.match(p[0], /^view front is for its visitors and members, but adds to requests, which only the owner may do/);
+  assert.match(p[1], /^view quick is for its signed-in members/);
+  // a screen that calls a rule writing where its people may not: refused unless the rule says ALLOW CALL
+  const called = { access: ['ALLOW READ ON items TO everyone', 'ALLOW ALL ON requests TO owner'], functions: [{ slug: 'send-request' }], views: [
+    { slug: 'ask', screen: { body: [{ button: 'Send', do: "=() => app.call('send-request', {id: 1})" }] } }] };
+  const ruleCode = { 'send-request': 'CREATE RULE send_request AS\n  INSERT INTO requests (name) VALUES (:name);\n  RETURN 1;' };
+  assert.match(writerProblems(called, { tables: [] }, ruleCode)[0], /^view ask is for its visitors and members, but calls send-request, which adds to requests .* ALLOW CALL ON send-request TO everyone/);
+  called.access.push('ALLOW CALL ON send-request TO everyone');
+  assert.deepEqual(writerProblems(called, { tables: [] }, ruleCode), []);
+  // members may add their own: nothing to say about the members' screen
+  plan.access.push('ALLOW ADD ON requests TO members WHERE owner_id = :user_id');
+  assert.deepEqual(writerProblems(plan, { tables: [] }).map((x) => x.split(' ')[1]), []);
+});
+
+test('access opened to members while every screen stays the owner\'s is a problem; a screen of theirs, or access kept to the owner, is not', async () => {
+  const { audienceProblems } = await import('../engine/forge.mjs');
+  const view = { views: [{ slug: 'dashboard', spec: { for: 'owner' } }, { slug: 'invoices', spec: { for: 'owner' } }] };
+  const p = audienceProblems({ access: ['ALLOW ALL ON invoices TO members'] }, view);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /every screen is still for the owner \(dashboard, invoices\)/);
+  assert.deepEqual(audienceProblems({ access: ['ALLOW ALL ON invoices TO members'], views: [{ slug: 'invoices', for: 'members' }] }, view), []);
+  assert.deepEqual(audienceProblems({ access: ['ALLOW ALL ON invoices TO owner'] }, view), []);
+  assert.deepEqual(audienceProblems({}, view), []);
+});
+
+test('every part takes ID, the target of an #anchor link, on its first block', async () => {
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const src = "CREATE SCREEN home TITLE 'Home'\nPRICES items\n  NAME name  PRICE price\n  ID menu\nNEXT races\n  DATE day  NAME name\n  ID '#races'\nLIST guests\n  FORM (name 'Name')\n  ID guests";
+  const out = compileStatement(src);
+  assert.deepEqual(out.screen.body.map((b) => b.id), ['menu', 'races', 'guests']);
+  const r = expandScreen(out.screen);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.screen.body.filter((b) => b.id).map((b) => b.id), ['menu', 'races', 'guests']);
+  assert.throws(() => compileStatement("CREATE SCREEN home TITLE 'Home'\nPRICES items\n  NAME name  PRICE price\n  ID 'two words'"), /ID <anchor>/);
+});
+
+test(':today is the day in any SQL that names it, unless given', async () => {
+  const { withToday } = await import('../engine/engine.mjs');
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  assert.deepEqual(withToday('SELECT * FROM t WHERE days_between(:today, day) >= 0', { q: 1 }), { q: 1, today: day });
+  assert.deepEqual(withToday('SELECT * FROM t WHERE day = :today', { today: '2026-01-02' }), { today: '2026-01-02' });
+  assert.deepEqual(withToday('SELECT * FROM t WHERE day = :todays', {}), {});
+  assert.doesNotMatch(STATEMENT_DOC, /day >= :today/);
+});
+
+test('a members\' screen whose example queries find no rows gets no preview (its sign-in shows)', async () => {
+  const { gateSamples } = await import('../engine/forge.mjs');
+  const screen = JSON.stringify({ data: { outings: 'SELECT * FROM outings' }, body: [], gate: { title: 'Sign in' } });
+  let kept = null;
+  const engine = {
+    view: async () => ({ views: [{ slug: 'week', spec: { screen: true }, code: screen }] }),
+    sql: async () => [],
+    store: { putSetting: async (app, key, value) => { kept = [key, value]; } },
+  };
+  assert.deepEqual(await gateSamples(engine, 'a1', { today: '2026-11-20' }), {});
+  assert.equal(kept, null, 'nothing kept');
 });

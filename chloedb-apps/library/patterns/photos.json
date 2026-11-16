@@ -1,0 +1,127 @@
+{
+ "title": "The owner's own photos as a gallery, with an upload box for the owner",
+ "about": "A portfolio, a salon's or a studio's work, a venue's rooms, a listing's pictures: a table of photos (a stored file and a caption, an album) drawn as a gallery that opens large; with UPLOAD (on the owner's screen) photos dropped in are stored and become rows. Use it whenever the request says the owner's (my, our) photos, gallery or portfolio: never stock photos in their place.",
+ "params": {
+  "table": {
+   "about": "the table of photos",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_photos"
+  },
+  "file": {
+   "about": "the column with the stored file's id (or a picture's URL)",
+   "default": "file"
+  },
+  "caption": {
+   "about": "the column with its caption"
+  },
+  "album": {
+   "about": "a column naming the album it is in"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "upload": {
+   "about": "true for an upload box (the owner's screen)"
+  },
+  "look": {
+   "about": "mosaic, masonry or grid",
+   "default": "mosaic"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "eyebrow": {
+   "about": "a short line above the heading"
+  },
+  "empty": {
+   "about": "words when there are no photos",
+   "default": "No photos yet."
+  }
+ },
+ "example": {
+  "use": "photos",
+  "table": "pictures",
+  "file": "file",
+  "caption": "caption",
+  "album": "album",
+  "upload": true,
+  "title": "Our work"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_a": ""
+  },
+  "data": {
+   "{{key}}": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY created DESC LIMIT 200"
+  },
+  "let": {
+   "{{key}}_albums": "={{album|json}} ? [...new Set(({{key}} || []).map(r => r[{{album|json}}]).filter(Boolean).map(String))] : []",
+   "{{key}}_rows": "=({{key}} || []).filter(r => !state.{{key}}_a || String(r[{{album|json}}]) === state.{{key}}_a)"
+  },
+  "body": [
+   {
+    "$when": "upload",
+    "card": [
+     {
+      "ui": "uploader",
+      "props": {
+       "accept": "image/*",
+       "label": "Drop your photos here or choose them",
+       "onUpload": "=files => Promise.all(files.map(f => app.insert({{table|json}}, { {{file}}: f.id, {{caption}}: String(f.name || '').replace(/\\.[a-z0-9]+$/i, '') })))"
+      },
+      "$when": "caption"
+     },
+     {
+      "ui": "uploader",
+      "props": {
+       "accept": "image/*",
+       "label": "Drop your photos here or choose them",
+       "onUpload": "=files => Promise.all(files.map(f => app.insert({{table|json}}, { {{file}}: f.id })))"
+      },
+      "$when": "!caption"
+     }
+    ],
+    "title": "Add photos"
+   },
+   {
+    "if": "={{key}}_albums.length > 1",
+    "then": [
+     {
+      "chips": "{{key}}_a",
+      "options": "=[{value: '', label: 'All'}, ...{{key}}_albums.map(a => ({value: a, label: a}))]"
+     }
+    ]
+   },
+   {
+    "if": "={{key}}_rows.length === 0",
+    "then": [
+     {
+      "text": "{{empty}}",
+      "muted": true
+     }
+    ],
+    "else": [
+     {
+      "gallery": "={{key}}_rows",
+      "item": {
+       "src": "=item[{{file|json}}]",
+       "title": "={{caption|json}} ? item[{{caption|json}}] : null"
+      },
+      "look": "{{look}}",
+      "title": {
+       "$when": "title",
+       "$value": "{{title}}"
+      },
+      "eyebrow": {
+       "$when": "eyebrow",
+       "$value": "{{eyebrow}}"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -27,11 +27,12 @@ export const LAYOUTS = {
   dashboard: 'the numbers that matter in a band at the top, then cards in a two or three column grid (status, charts, recent rows)',
   gallery: 'photos or cards first, in a tight grid of tiles (products, rooms, works, dishes)',
   tool: 'one focused tool in a centered panel: the input or the main action large and first, results under it (a calculator, a quick add, a check-in)',
+  report: 'a finished report read top to bottom: its title and when it was prepared, then numbered sections with strong headings, one per thing the request names, in its order, each its figures, its table and a short note',
 };
 export const LAYOUT_NAMES = Object.keys(LAYOUTS);
 // The same, in a few words each, for the statement's reference.
-export const LAYOUT_SHORT = { hero: 'a photo or color band with the headline and the main action, then the rest', split: 'main part wide on the left, a column beside it', editorial: 'a narrow reading column, rows as a ruled list', dashboard: 'numbers in a band, then a grid of cards', gallery: 'photos or cards first, in tiles', tool: 'one centered panel, the main input first' };
-const LAYOUT_ALIASES = { landing: 'hero', photo: 'hero', columns: 'split', sidebar: 'split', list: 'editorial', article: 'editorial', magazine: 'editorial', menu: 'editorial', board: 'dashboard', stats: 'dashboard', grid: 'gallery', tiles: 'gallery', cards: 'gallery', single: 'tool', focus: 'tool', 'single-tool': 'tool', calculator: 'tool' };
+export const LAYOUT_SHORT = { hero: 'a photo or color band with the headline and the main action, then the rest', split: 'main part wide on the left, a column beside it', editorial: 'a narrow reading column, rows as a ruled list', dashboard: 'numbers in a band, then a grid of cards', gallery: 'photos or cards first, in tiles', tool: 'one centered panel, the main input first', report: 'a finished report: numbered sections with strong headings, one column' };
+const LAYOUT_ALIASES = { landing: 'hero', photo: 'hero', columns: 'split', sidebar: 'split', list: 'editorial', article: 'editorial', magazine: 'editorial', menu: 'editorial', board: 'dashboard', stats: 'dashboard', grid: 'gallery', tiles: 'gallery', cards: 'gallery', single: 'tool', focus: 'tool', 'single-tool': 'tool', calculator: 'tool', briefing: 'report', pack: 'report', statement: 'report' };
 
 // A layout's name from what a statement or a plan says ("Split", "single-tool",
 // "a gallery of the dishes"), or null.
@@ -49,15 +50,17 @@ export function parseLayout(v) {
 // ---- the rules, as the forge sees them
 
 export const ART_DOC = `- art: the app's art direction, for a new app, decided with the brief and before the screens; the designs and screens follow it. Invent ONE direction for this product, never a generic one:
-  "concept": one sentence from the subject's own world ("a chalkboard menu by the truck's window", "a quiet ledger for a corner bakery"); "mood": three words;
-  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a taco truck: "editorial, the menu as a chalkboard list"; a course: "split, lessons beside progress"); vary it by subject, not by habit;
+  "concept": one sentence from the subject's own world ("a workbench tag on every bike in for repair", "a quiet ledger for a seed library"); "mood": three words;
+  "layout": the first screen's structure, one of ${LAYOUT_NAMES.join(', ')}, then a few words on why (a bike repair shop: "editorial, the repair prices as a workshop list"; a ferry timetable: "split, the next sailing beside the day's list"); vary it by subject, not by habit;
   "type": the title face, "system", "serif" (editorial, food, books), "rounded" (friendly, families, learning) or "mono" (technical), with the pairing ("serif titles over plain text");
-  "accent": the one color of the main buttons, named as the subject would ("salsa red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
-  "imagery": what the photos show, the real product itself (the tacos on the plate, the class in session), never a related ingredient, plant or background, or "none" when photos do not help the job;
-  "action": the one main action and its words, a concrete verb ("Order tacos", "Start lesson 1"): it is on the first phone screen and is the only filled button there.`;
+  "accent": the one color of the main buttons, named as the subject would ("brick red", "deep indigo"), green or teal only when the subject is green; the text on it must read (white on a deep color, dark ink on a pale one);
+  "theme": "light" or "dark": the ground the app stands on, chosen for its identity as a brand would. Dark with one vivid accent gives a personal tool used daily, a night-time or technical subject or anything that wants a bold, focused look a strong identity; light suits paper-like records, shops and pages read in daylight. Commit to it;
+  "imagery": what the photos show, the real product itself (the bike on the repair stand, the ferry at the pier), never a related ingredient, plant or background, or "none" when photos do not help the job or there is no real photo of the product to show: then the first screen is type-led (a hero with "look": "type"), never a stock photo standing in;
+  Together the theme, the title type and the accent make the app recognisable at a glance, as a brand is: a plain system face on a light page with a stock blue or teal is what every app looks like, so choose them for this product;
+  "action": the one main action and its words, a concrete verb ("Book a repair", "See the next ferry"): it is on the first phone screen and is the only filled button there.`;
 
 export const TASTE_DOC = `## What every screen keeps (checked after the build, on a 390 px phone and a computer)
-- Pages are white or genuinely dark; no beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.
+- Pages are white, a faint paper tint or genuinely dark; no strong beige or pastel wash, no emoji icons, no ornamental bars or borders on cards.
 - Text reads at 4.5:1 against what is behind it (3:1 for large titles), button words included; white words only on a deep color or a dark photo.
 - Every control and link people tap is at least 44 by 44 px on a phone; nothing scrolls sideways at 390 px.
 - The main action (the art's "action") shows on the first phone screen, without scrolling: a short hero, never a marketing-height introduction.

@@ -98,5 +98,14 @@ export function sqlFunctionsDoc(fns) {
 
 Any SQL of an app (a screen's DATA and KPIs, a rule, app.sql) may call these functions; they run in Strata, next to the rows. Compute with them in the query rather than in a LET or an expression, and rather than with a helper: SELECT title, due, due_state(due, :today) AS state, days_left(due, :today) AS left FROM tasks. A function that gives rows is read like a table: DATA schedule AS (SELECT * FROM amortization(:p, :r, :n)) PARAMS (p = loan.principal, r = loan.rate, n = loan.months). Days are 'YYYY-MM-DD' text; pass today as a parameter (PARAMS (today = today)).
 
+Query shapes that come up again and again, as Strata runs them:
+- A day column is text, so it never compares with < or >: compare through days_between (the next one to come: WHERE days_between(:today, day) >= 0 ORDER BY day LIMIT 1; the last 30 days: WHERE days_between(day, :today) BETWEEN 0 AND 29).
+- The latest row of each group (where each thing is now, its last status, who holds it): number the rows in a subquery and keep the first: SELECT * FROM (SELECT ticket, status, changed, ROW_NUMBER() OVER (PARTITION BY ticket ORDER BY changed DESC) AS rn FROM status_changes) AS x WHERE rn = 1. A subquery that names the outer row (WHERE x = (SELECT MAX(...) ... WHERE inner.k = outer.k), NOT EXISTS of the same) is refused in WHERE: use this shape.
+- Every band or group shown, empty ones with 0: LEFT JOIN the rows to the list of them: SELECT b.band AS band, COALESCE(SUM(x.amount), 0) AS amount FROM bands() AS b LEFT JOIN (SELECT band_of(days_between(due, :today)) AS band, amount FROM bills WHERE paid = FALSE) AS x ON x.band = b.band GROUP BY b.band, b.r ORDER BY b.r (a GROUP BY over the rows alone leaves out a band nothing falls in).
+- A total row under the groups: SELECT region AS label, SUM(hours) AS value FROM visits GROUP BY region UNION ALL SELECT 'Total', SUM(hours) FROM visits (ROLLUP is not there).
+- Totals through a join (what the picked rows add up to): SELECT p.part AS part, p.unit AS unit, SUM(p.qty) AS qty FROM picks k JOIN parts p ON p.kit = k.kit GROUP BY p.part, p.unit: name every column of a join with AS, or it keeps its table's prefix (p.part).
+- Rows of the things a person belongs to: WHERE account IN (SELECT account FROM members_of WHERE person = :user_id).
+- The change from the period before: LAG(value) OVER (ORDER BY period).
+
 ${lines.join('\n\n')}`;
 }

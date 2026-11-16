@@ -3,12 +3,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rewriteSql } from '../engine/sql.mjs';
+import { rewriteSql, existsForCounts } from '../engine/sql.mjs';
 import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER, repeatedActions } from '../engine/forge.mjs';
+import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER, repeatedActions, mergeAnswers } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -513,7 +513,7 @@ test('a change to a screen can be a patch on the paths the model is shown', () =
 test('a screen pattern expands into blocks, state, data and lets that pass the screen check', async () => {
   const { PATTERNS, expandScreen, fill } = await import('../engine/patterns.mjs');
   assert.ok(PATTERNS.size >= 4);
-  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'], habits: ['name'], checkins: ['habit', 'day', 'skipped'] };
+  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'], habits: ['name'], checkins: ['habit', 'day', 'skipped'], loans: ['tool', 'holder', 'out_day', 'due_day', 'back_day'], tools: ['name', 'serial'], rota: ['day', 'job'], jobs: ['name'], job_parts: ['job', 'material', 'qty', 'unit'], members_of: ['person', 'account', 'role'], accounts: ['name'] };
   const columnsOf = (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null);
   for (const [name, p] of PATTERNS) {
     const r = expandScreen({ body: [{ h: 'Top' }, p.example] });
@@ -545,6 +545,8 @@ test('a screen pattern expands into blocks, state, data and lets that pass the s
   // the template language
   assert.equal(fill('x{{a|pre: WHERE }}y', { a: '' }), 'xy');
   assert.equal(fill('x{{a|pre: WHERE }}y', { a: 'b = 1' }), 'x WHERE b = 1y');
+  assert.equal(fill('SELECT *{{l|wrap:, ~ AS t}} FROM x', { l: 'CASE 1 END' }), 'SELECT *, CASE 1 END AS t FROM x');
+  assert.equal(fill('SELECT *{{l|wrap:, ~ AS t}} FROM x', {}), 'SELECT * FROM x');
   assert.equal(fill('{{a|json}}.map(k => r[k])', { a: ['p', 'q'] }), '["p","q"].map(k => r[k])');
   assert.deepEqual(fill([1, '{{...a}}', { $when: 'b=2', z: 1 }, { $when: 'b!=2', z: 2 }], { a: [7, 8], b: 2 }), [1, 7, 8, { z: 1 }]);
   assert.deepEqual(fill({ k: { $when: 'm', $value: '{{m}}' } }, {}), {});
@@ -947,7 +949,7 @@ test('looks: native by default (the grouped page, the tint readable on it), bold
     assert.equal(designVars({ ...p, look: 'plain' }, 'light')['--bg'], checkDesign(p).light.bg, 'a plain design keeps its page');
     for (const which of ['light', 'dark']) {
       const n = designVars(p, which);
-      assert.ok(['#f2f2f7', '#000000'].includes(n['--bg']), `${p.name} ${which}: native is the phone's grouped page`);
+      assert.ok(contrast(n['--bg'], n['--card']) >= 1.03 || n['--card-border'] === 'var(--line)', `${p.name} ${which}: native cells stand off the design's own page`);
       assert.ok(contrast(n['--accent'], n['--card']) >= 4.5 && contrast(n['--accent'], n['--bg']) >= 4.5, `${p.name} ${which}: the tint reads on cells and page`);
       assert.ok(contrast(n['--fg'], n['--card']) >= 7, `${p.name} ${which}: text reads on cells`);
       assert.ok(contrast(n['--muted'], n['--bg']) >= 4.5, `${p.name} ${which}: secondary text reads`);
@@ -1192,11 +1194,12 @@ test('front-page blocks pass the screen checks, their nested blocks checked like
     { hero: 'Hello *there*', photo: 'cafe', actions: [{ label: 'Go', do: '=() => app.toast("hi")' }] },
     { band: [{ h: 'Visit' }, 'Open daily'], look: 'dark' },
     { media: ['Our story'], photo: 'garden', side: 'right' },
-    { carousel: '=rows', item: { title: '=item.name' } },
+    { carousel: '=rows', id: 'menu', item: { title: '=item.name' } },
     { features: [{ icon: 'leaf', title: 'A', text: 'B' }] },
     { footer: 'Brand', text: 'Made here' },
   ] };
   assert.deepEqual(checkScreen(ok), []);
+  assert.match(checkScreen({ page: 'front', body: [{ nav: 'B', links: [{ label: 'Call me', href: '#callback' }] }] }).join(), /links go to #callback, which no part/);
   const bad = { page: 'front', body: [{ band: [{ nope: 1 }] }, { media: [{ h: '=(' }] }, { carousel: '=rows.map(', item: {} }] };
   const p = checkScreen(bad);
   assert.ok(p.some((x) => /body\[0\]\.band\[0\]: unknown block/.test(x)), p.join('\n'));
@@ -3267,6 +3270,293 @@ test('each app reads and writes with a key of its own, held to its tables by the
   } finally {
     child.kill();
   }
+});
+
+test('VARIANCE: periods compared, with the change, the change in percent and the biggest moves', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const expandScreen = expandWith;
+  const w = compileStatement(`CREATE SCREEN amount TITLE 'Amount'
+VARIANCE tallies AS rev
+  PERIOD month  VALUE amount  ORDER BY CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END
+  LABEL 'Amount'  NAME 'Month'  FORMAT money  FILE 'amount.csv'`);
+  assert.deepEqual(w.screen.body[0], { use: 'variance', table: 'tallies', key: 'rev', period: 'month', value: 'amount', order: "CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END", label: 'Amount', periodLabel: 'Month', format: 'money', file: 'amount.csv' });
+  const we = expandScreen(w.screen);
+  assert.deepEqual(we.problems, []);
+  assert.equal(we.screen.data.rev, "SELECT month AS p, amount AS v, NULL AS c, CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 ELSE 3 END AS o FROM tallies LIMIT 500");
+  assert.deepEqual(checkScreen(we.screen, (t) => ({ tallies: new Set(['id', 'created', 'month', 'amount']) })[t] || null), []);
+  const table = JSON.stringify(we.screen.body);
+  assert.match(table, /"Change %"/);
+  assert.match(table, /Biggest increase/);
+  assert.match(table, /Biggest decrease/);
+  // The lets work out the moves: a period's change, in money and in percent.
+  const lets = we.screen.let;
+  const rows = [{ p: 'Mar', v: 120, o: 3 }, { p: 'Jan', v: 100, o: 1 }, { p: 'Feb', v: 150, o: 2 }];
+  const rowsOf = new Function('rev', `return ${lets.rev_rows.slice(1)}`)(rows);
+  assert.deepEqual(rowsOf.map((r) => [r.period, r.change, r.pct, r.prior]), [['Jan', null, null, ''], ['Feb', 50, 50, 'Jan'], ['Mar', -30, -20, 'Feb']]);
+  // Rows added up per period: GROUP BY, and months by their dates.
+  const g = expandScreen(compileStatement(`CREATE SCREEN c
+VARIANCE costs
+  PERIOD date_trunc('month', day)  VALUE SUM(amount)  GROUP BY date_trunc('month', day)`).screen);
+  assert.deepEqual(g.problems, []);
+  assert.match(g.screen.data.costs_var, /AS o FROM costs GROUP BY date_trunc\('month', day\) LIMIT 500$/);
+  const months = new Function('costs_var', `return ${g.screen.let.costs_var_rows.slice(1)}`)([{ p: '2026-10-01', v: 5, o: '2026-10-01' }, { p: '2026-09-01', v: 10, o: '2026-09-01' }]);
+  assert.match(months[0].period, /Sep/);
+  // one series in the chart, or two with COMPARE
+  assert.equal((table.match(/"barChart"/g) || []).length, 1);
+  assert.match(table, /value: r\.value\}/);
+  const two = expandScreen(compileStatement(`CREATE SCREEN d
+VARIANCE tallies2
+  PERIOD month  VALUE amount  COMPARE spent_a + spent_b  AGAINST 'Spent'  ORDER BY n`).screen);
+  assert.deepEqual(two.problems, []);
+  assert.match(two.screen.data.tallies2_var, /spent_a \+ spent_b AS c/);
+  assert.match(JSON.stringify(two.screen.body), /values: \[r\.value, r\.compare \|\| 0\]/);
+  const none = expandScreen(compileStatement(`CREATE SCREEN d
+VARIANCE tallies2
+  PERIOD month  VALUE amount  CHART none`).screen);
+  assert.doesNotMatch(JSON.stringify(none.screen.body), /barChart/);
+  // MONEY alone says the format, as it does for a KPI (a round 2 plan wrote it so)
+  assert.equal(compileStatement("CREATE SCREEN d\nVARIANCE tallies2\n  PERIOD month  VALUE amount  MONEY").screen.body[0].format, 'money');
+});
+
+test('a yes/no FILTER says what its chips mean, and a SET action says what it sets so a row that has it shows no such action', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN bills TITLE 'Bills'\nLIST bills\n  FORM (title, settled CHECKBOX)\n  FILTER settled IN (true, false)\n  ACTION 'Mark settled' SET settled = true");
+  assert.deepEqual(w.screen.body[0].filter.options, [{ value: 'true', label: 'Settled' }, { value: 'false', label: 'Not settled' }]);
+  assert.deepEqual(w.screen.body[0].actions[0].sets, { settled: true });
+  const ex = expandWith(w.screen);
+  assert.deepEqual(ex.problems, []);
+  assert.match(JSON.stringify(ex.screen), /"sets":\{"settled":true\}/);
+});
+
+test('LESSONS NEEDS keeps the lessons shut until its query gives a row, with what unlocks them', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN learn TITLE 'Learn'\nLESSONS lessons\n  PROGRESS progress  NEEDS (SELECT id FROM passes WHERE owner_id = :user_id)  LOCKED 'Get a pass to open them.'  UNLOCK home  OPEN lesson");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.data.lessons_ok, /app\.sql\("SELECT id FROM passes WHERE owner_id = :user_id"\)/);
+  assert.deepEqual(e.screen.body[1].then[0].card.map((b) => b.text || b.button), ['Get a pass to open them.', 'Enrol']);
+  assert.match(e.screen.let.lessons_go, /app\.toast/);
+  // with no NEEDS, nothing is shut
+  const open = expandWith(compileStatement("CREATE SCREEN learn TITLE 'Learn'\nLESSONS lessons\n  PROGRESS progress  OPEN lesson").screen);
+  assert.equal(open.screen.data.lessons_ok, undefined);
+});
+
+test('OFFERS PAY: a one-tap booking takes a card payment for the row its rule returns', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN home TITLE 'Home'\nOFFERS sessions\n  LEFT seats  NAME title  PRICE price  CALL book  PAY bookings  CHARGE amount  PAID status  ACTION 'Book a seat'  DONE 'Booked'");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.let.sessions_act, /app\.call\("book", null \? \{id: item\.id, qty\} : \{id: item\.id\}\)/);
+  assert.match(e.screen.let.sessions_act, /app\.pay\(\{table: "bookings", id, amount: "amount", status: "status"/);
+  assert.match(e.screen.let.sessions_act, /app\.payNow\(p, "Booked"\)/);
+});
+
+test('a screen with a site header of its own is a front page', () => {
+  const { screen } = expandWith({ body: [{ nav: 'Shop', links: [] }, { hero: 'Hello' }] });
+  assert.equal(screen.page, 'front');
+  assert.equal(expandWith({ body: [{ h: 'Orders' }] }).screen.page, undefined);
+  assert.equal(expandWith({ page: 'front', body: [{ hero: 'x' }] }).screen.page, 'front');
+});
+
+test('a count tested above zero in a condition is EXISTS; one tested for zero is NOT EXISTS', () => {
+  assert.equal(existsForCounts('SELECT a FROM t WHERE b = 1 AND (SELECT COUNT(*) FROM u WHERE u.k = :k) > 0 ORDER BY a'), 'SELECT a FROM t WHERE b = 1 AND EXISTS (SELECT 1 FROM u WHERE u.k = :k)  ORDER BY a');
+  assert.equal(existsForCounts('SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) = 0'), 'SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM u) ');
+  // a count in the select list, one with GROUP BY, or one compared with another number stays as it is
+  for (const q of ['SELECT (SELECT COUNT(*) FROM u) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u GROUP BY y) > 0', 'SELECT a FROM t WHERE (SELECT COUNT(*) FROM u) > 2']) assert.equal(existsForCounts(q), q);
+});
+
+test('OFFERS QTY and COUNT: a quantity up to what is left goes to the rule, more is refused with why; every card says how many are left', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const w = compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  NAME name  PRICE price  CALL buy  QTY  COUNT  ACTION 'Buy'");
+  const e = expandWith(w.screen);
+  assert.deepEqual(e.problems, []);
+  const item = e.screen.body.find((b) => b.carousel).item;
+  assert.equal(item.qty, '=products_left(item)');
+  const left = (row) => Math.max(0, Number(row.stock) || 0);
+  const badge = new Function('products_left', `return ${e.screen.let.products_badge.slice(1)}`)(left);
+  assert.equal(badge({ stock: 12 }), '12 left');
+  assert.equal(badge({ stock: 2 }), 'Only 2 left');
+  assert.equal(badge({ stock: 0 }), 'Sold out');
+  // the quantity goes with the id; more than is left is refused with why, and nothing is ordered
+  const calls = [];
+  const app = { call: async (f, input) => { calls.push([f, input]); return 'o1'; }, toast: () => {} };
+  const act = new Function('app', 'products_left', `return ${e.screen.let.products_act.slice(1)}`)(app, left);
+  await assert.rejects(act({ id: 'p1', stock: 4 }).do(9), (err) => err.refused === true && /Not enough left: there are only 4\. Order 4 or fewer\./.test(err.message));
+  await act({ id: 'p1', stock: 4 }).do(2);
+  assert.deepEqual(calls, [['buy', { id: 'p1', qty: 2 }]]);
+  // without QTY or COUNT, cards are as before
+  const plain = expandWith(compileStatement("CREATE SCREEN shop TITLE 'Shop'\nOFFERS products\n  LEFT stock  CALL buy").screen);
+  assert.equal(plain.screen.body.find((b) => b.carousel).item.qty, undefined);
+});
+
+test('SUMMARY: its heading, total and bars are one section; the number of groups shows only when COUNT names it', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN d TITLE 'D'\nSUMMARY receivables AS owed\n  TITLE 'Who owes us'  GROUP BY customer  VALUE SUM(amount)  LABEL 'Unpaid'  MONEY").screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.body.length, 1);
+  const sec = e.screen.body[0];
+  assert.equal(sec.title, 'Who owes us');
+  assert.deepEqual(sec.section[0].kpis.map((k) => k.label), ['Unpaid']);
+  assert.ok(!JSON.stringify(e.screen).includes('"Groups"'));
+  const c = expandWith(compileStatement("CREATE SCREEN d TITLE 'D'\nSUMMARY receivables AS owed\n  GROUP BY customer  VALUE SUM(amount)  COUNT 'Customers'").screen);
+  assert.deepEqual(c.screen.body[0].section[0].kpis.map((k) => k.label), ['Total', 'Customers']);
+  assert.equal(c.screen.body[0].title, undefined);
+});
+
+test('a whole screen given as a part of its own body is that screen', () => {
+  const { screen, problems } = expandWith({ body: [{ page: 'front', layout: 'hero', body: [{ nav: 'Lucía' }, { hero: 'Hola' }] }] });
+  assert.deepEqual(problems, []);
+  assert.equal(screen.page, 'front');
+  assert.equal(screen.layout, 'hero');
+  assert.deepEqual(screen.body.map((b) => Object.keys(b)[0]), ['nav', 'hero']);
+});
+
+test('a plan fixed by what changes: lists merged by slug, code blocks replaced, "drop" takes one out', () => {
+  const first = { plan: { name: 'Course', views: [{ slug: 'home', t: 1 }, { slug: 'enrol' }], functions: [{ slug: 'enrol' }], access: ['a'] }, code: { home: 'H', enrol: 'E' } };
+  const out = mergeAnswers(first, { plan: { drop: ['enrol'], views: [{ slug: 'enrol' }], functions: [{ slug: 'enrol-now' }], access: ['b'] }, code: { 'enrol-now': 'N', enrol: 'V' } });
+  assert.deepEqual(out.plan.views.map((v) => v.slug), ['home', 'enrol']);
+  assert.deepEqual(out.plan.functions.map((v) => v.slug), ['enrol-now']);
+  assert.deepEqual(out.plan.access, ['b']);
+  assert.equal(out.plan.name, 'Course');
+  assert.deepEqual(out.code, { home: 'H', 'enrol-now': 'N', enrol: 'V' });
+  // the first answer is left as it was
+  assert.equal(first.plan.functions[0].slug, 'enrol');
+});
+
+test('a fix that gives a slug as a view takes the function of that name out', () => {
+  const out = mergeAnswers({ plan: { views: [{ slug: 'home' }], functions: [{ slug: 'enrol' }] }, code: { enrol: 'R' } }, { plan: { views: [{ slug: 'enrol' }], functions: [{ slug: 'start-enrolment' }] }, code: { 'start-enrolment': 'S' } });
+  assert.deepEqual(out.plan.views.map((v) => v.slug), ['home', 'enrol']);
+  assert.deepEqual(out.plan.functions.map((v) => v.slug), ['start-enrolment']);
+  assert.deepEqual(out.code, { 'start-enrolment': 'S' });
+});
+
+test('HEADER, LANES and CALLOUTS: a header line with its actions, cards in lanes with badges from related rows, callout cards', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const st = "CREATE SCREEN day TITLE 'Your day'\nHEADER 'Your day'\n  SUB '=items.length + \" planned\"'  PRIMARY 'Add one'  OPEN add  SECONDARY 'Archive'  SECONDARYOPEN archive\nLANES items\n  BY slot  LANES 'Morning:Early, Evening'  NAME name  DETAIL size  FLAGS (SELECT i.id AS row, 'Clashes with ' || c.b AS label FROM items i JOIN clashes c ON c.a = i.name)\n  ACTION 'Stop' SET active = false\nCALLOUTS clashes\n  HEAD effect  CHIPS (a, b)  TIP advice  TONE CASE level WHEN 'high' THEN 'bad' ELSE 'warn' END";
+  const e = expandWith(compileStatement(st).screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.body[0].class, 'page-head');
+  assert.deepEqual(e.screen.body.slice(1).map((b) => b.ui), ['laneList', 'callouts']);
+  assert.match(e.screen.data.items_flags, /Clashes with/);
+  assert.match(e.screen.data.clashes, /AS sa_tone/);
+  // the lanes, the action's change and the items, as the screen works them out
+  const lanes = new Function(`return ${e.screen.let.items_lanes.slice(1)}`)();
+  assert.deepEqual(lanes, [{ name: 'Morning', note: 'Early' }, { name: 'Evening' }]);
+  const set = new Function(`return ${e.screen.let.items_set.slice(1)}`)();
+  assert.deepEqual(set, { active: false });
+  assert.throws(() => compileStatement("CREATE SCREEN d TITLE 'D'\nLANES items\n  NAME name"), /BY/);
+});
+
+test('ASK: a panel where the model reads the rows a query gives and answers a standing question', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN s TITLE 'S'\nASK 'A read of your month'\n  OVER (SELECT category, amount FROM spending)  PROMPT 'Say where the money went.'  BUTTON 'Read my month'  INPUT 'Anything it should know (optional)'  WEB").screen);
+  assert.deepEqual(e.problems, []);
+  assert.equal(e.screen.data.ask, 'SELECT category, amount FROM spending');
+  assert.deepEqual(e.screen.body[0], { ui: 'askPanel', props: { title: 'A read of your month', rows: '=ask', prompt: 'Say where the money went.', button: 'Read my month', input: 'Anything it should know (optional)', web: true } });
+});
+
+test('designs: an answer wrapped or short is read as far as it goes, and what lacks is filled in the accent', async () => {
+  const { makeDesigns, designsIn } = await import('../engine/designs.mjs');
+  const one = { name: 'Linen', light: { bg: '#faf6f5', card: '#ffffff', fg: '#221a1c', accent: '#a8485f' } };
+  assert.equal(designsIn('```json\n{"designs": [' + JSON.stringify(one) + ']}\n```').length, 1);
+  // three designs written one after another, with no array around them, are all read
+  const each = ['Linen', 'Slate', 'Moss'].map((name, i) => JSON.stringify({ ...one, name, about: `a "${name}" {look}`, gradient: ['#a8485f', '#335577'][i % 2] }, null, 1)).join('\n\n');
+  assert.deepEqual(designsIn(each).map((d) => d.name), ['Linen', 'Slate', 'Moss']);
+  assert.deepEqual(designsIn(JSON.stringify(one)).map((d) => d.name), ['Linen'], 'one design on its own');
+  const app = { id: 'a2', name: 'Shop', head: 0 };
+  let asks = 0;
+  const out = await makeDesigns(app, null, { direction: { art: { accent: 'deep indigo' } }, ask: async () => { asks++; return { text: JSON.stringify([one]) }; } });
+  assert.ok(asks >= 2, 'asked once more');
+  assert.equal(out.designs.length, 3);
+  assert.equal(out.designs[0].name, 'Linen');
+  assert.notEqual(out.source, 'presets');
+});
+
+test("the request's own name for the business wins over a coined one", async () => {
+  const { appTitle, namedIn } = await import('../engine/forge.mjs');
+  assert.equal(namedIn('An online shop for Wick & Wax where people buy candles'), 'Wick & Wax');
+  assert.equal(namedIn('I make ceramics under the name Sable & Stone. Using my price list'), 'Sable & Stone');
+  assert.equal(namedIn('Quiero una web para Peluquería Lucía con mis servicios'), 'Peluquería Lucía');
+  assert.equal(namedIn('A tool for my 12-person agency'), null);
+  assert.equal(appTitle('Wickery', { description: 'An online shop for Wick & Wax where people can buy my candles' }), 'Wick & Wax');
+  assert.equal(appTitle('Wick & Wax Candles', { description: 'An online shop for Wick & Wax' }), 'Wick & Wax Candles');
+  assert.equal(appTitle('Stackwise', { description: 'A supplement tracker that tells me what is good' }), 'Stackwise');
+});
+
+test('a subquery in FROM that its query leaves unnamed is named, since the database wants a name; a named one and a join in parentheses stay as they are', () => {
+  const phys = (t) => `app_x_${t}`;
+  const out = rewriteSql("WITH u AS (SELECT amount FROM receivables) SELECT label, value FROM (SELECT 'Current' AS label, SUM(amount) AS value FROM u UNION ALL SELECT 'Later' AS label, 0 AS value FROM u) ORDER BY label LIMIT 10", ['receivables'], phys).sql;
+  assert.match(out, /FROM u\) AS sa_sub1 ORDER BY label/);
+  assert.match(rewriteSql('SELECT * FROM (SELECT * FROM receivables) t LIMIT 5', ['receivables'], phys).sql, /\) t LIMIT 5$/);
+  assert.doesNotMatch(rewriteSql('SELECT * FROM (receivables JOIN receivables r2 ON receivables.id = r2.id) LIMIT 5', ['receivables'], phys).sql, /sa_sub/);
+});
+
+test('a change that gives a view only a new "for" (no code, edits or patch) keeps its code, and its FOR line follows', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const statement = "CREATE SCREEN invoices TITLE 'Invoices'\nFOR owner\nLIST receivables\n  FORM (customer REQUIRED, amount NUMBER)\n  COLUMNS (customer, amount MONEY)";
+  const screen = compileStatement(statement).screen;
+  const jsonScreen = { body: [{ h: 'Months' }], data: {} };
+  const view = { ...empty, tables: [{ spec: { name: 'receivables', columns: [{ name: 'customer', type: 'keyword' }, { name: 'amount', type: 'float' }] } }],
+    views: [
+      { slug: 'invoices', title: 'Invoices', description: 'd', spec: { order: 2, screen: true, statement, for: 'owner' }, code: JSON.stringify(screen) },
+      { slug: 'months', title: 'Months', description: 'm', spec: { order: 3, screen: true, for: 'owner' }, code: JSON.stringify(jsonScreen) },
+      { slug: 'notes', title: 'Notes', description: 'n', spec: { order: 4, for: 'owner' }, code: 'async function render(root, app) { root.textContent = "x"; }' }] };
+  // the answer of an access change: each view restated with its new audience only
+  const plan = { access: ['ALLOW ALL ON receivables TO members'], views: [{ slug: 'invoices', for: 'members' }, { slug: 'months', for: 'members' }, { slug: 'notes', for: 'members' }] };
+  const code = {};
+  assert.deepEqual(prepareScreens(plan, code, view), []);
+  const [inv, months, notes] = plan.views;
+  assert.match(inv.statement, /^FOR members$/m);
+  assert.doesNotMatch(inv.statement, /FOR owner/);
+  assert.equal(inv.for, 'members');
+  assert.equal(inv.title, 'Invoices');
+  assert.ok(code.invoices.startsWith('{'), 'the statement is compiled into the screen again');
+  assert.deepEqual(months.screen.body, jsonScreen.body);
+  assert.equal(months.for, 'members');
+  assert.equal(code.notes, view.views[2].code);
+  // nothing is reported missing for the views the answer did not rewrite
+  const problems = await validate(plan, code, view, [], new Map(), '');
+  assert.deepEqual(problems.filter((p) => /has no <code slug=/.test(p)), []);
+  // an empty patch is no change either, also on a statement (which takes no patch)
+  const empty2 = { views: [{ slug: 'invoices', for: 'members', patch: [] }] };
+  assert.deepEqual(prepareScreens(empty2, {}, view), []);
+  assert.match(empty2.views[0].statement, /^FOR members$/m);
+  // a view restated with no new "for" keeps the one it had
+  const keep = { views: [{ slug: 'invoices', title: 'Bills' }] };
+  prepareScreens(keep, {}, view);
+  assert.equal(keep.views[0].for, 'owner');
+  assert.match(keep.views[0].statement, /^FOR owner$/m);
+});
+
+test('OFFERS: an ACTION line that also says CALL, PAY, CHARGE and PAID is split into those clauses, after a TEXT clause too; a LIST ACTION keeps its own words', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const c = compileStatement("CREATE SCREEN home TITLE 'x'\nOFFERS products AS candles\n  NAME name  TEXT scent  PRICE price  LEFT stock\n  OUT 'Sold out'  SOON 3  COUNT  QTY\n  ACTION 'Buy and pay'  CALL buy-candle  PAY orders  CHARGE total  PAID status\n  DONE 'Order placed'\nLIST t\n  FORM (a)\n  ACTION 'Done' SET done = true");
+  const [offers, list] = c.screen.body;
+  assert.equal(offers.action, 'Buy and pay');
+  assert.deepEqual([offers.call, offers.pay, offers.charge, offers.paid, offers.done], ['buy-candle', 'orders', 'total', 'status', 'Order placed']);
+  assert.equal(list.actions[0].label, 'Done');
+  assert.deepEqual(list.actions[0].sets, { done: true });
+});
+
+test('STEP: one lesson\'s page with its text, its questions and one way on that marks it done and opens the next', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const e = expandWith(compileStatement("CREATE SCREEN lesson TITLE 'Lesson'\nSTEP lessons\n  PROGRESS completions  ITEM lesson  CONTENT lesson-content  NAME title  ORDER BY position  BACK course").screen);
+  assert.deepEqual(e.problems, []);
+  assert.match(e.screen.data.lessons_one_c, /app\.call\("lesson-content", \{id: params\.id\}\)/);
+  assert.match(e.screen.data.lessons_one_done, /SELECT lesson AS one FROM completions/);
+  // the questions come as the rule gives them: choices a list or lines, the answer a text or an index
+  const qs = new Function('lessons_one_c', `return ${e.screen.let.lessons_one_qs.slice(1)}`)({ questions: [{ question: 'Q1', choices: 'a\nb\nc', answer: 'b' }, { question: 'Q2', choices: ['x', 'y'], answer: 0 }] });
+  assert.deepEqual(qs.map((q) => q.choices.map((c) => c.correct)), [[false, true, false], [true, false]]);
+  // done: a row of the progress table once, then the next lesson
+  const calls = [];
+  const app = { insert: async (t, row) => calls.push(['insert', t, row]), open: (v, p) => calls.push(['open', v, p]), view: 'lesson' };
+  const go = new Function('app', 'state', 'set', 'params', 'lessons_one_is', 'lessons_one_next', `return ${e.screen.let.lessons_one_go.slice(1)}`)(app, { lessons_one_saving: false }, () => {}, { id: 'l1' }, false, { id: 'l2' });
+  await go();
+  assert.deepEqual(calls, [['insert', 'completions', { lesson: 'l1' }], ['open', 'lesson', { id: 'l2' }]]);
+  // without BODY or CONTENT nothing is read from a missing column
+  const open = expandWith(compileStatement("CREATE SCREEN s TITLE 'Step'\nSTEP steps\n  PROGRESS done_steps  ITEM step  BODY text").screen);
+  assert.deepEqual(open.problems, []);
+  assert.equal(open.screen.data.steps_one_c, undefined);
 });
 
 test('a call nobody answered is not an error of the app: no record, no repair', async () => {

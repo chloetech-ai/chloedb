@@ -1,0 +1,96 @@
+{
+ "title": "Standings: who leads, worked out from the rows (points, wins, totals), ranked with ties, the viewer highlighted",
+ "about": "A league table, a challenge's leaderboard, a sales contest, points for chores or reading: each group's total over the rows, ranked highest first, ties sharing a place, medals for the first three, a second figure under each name (played, sessions), and the signed-in person's place shown even outside the top. QUERY gives the rows when a row scores for two groups at once (a match's two sides: SELECT ... UNION ALL SELECT ... in a subquery).",
+ "params": {
+  "table": {
+   "about": "the table the scores come from",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_rank"
+  },
+  "by": {
+   "about": "the column naming who scores (a team, a person)",
+   "default": "name"
+  },
+  "value": {
+   "about": "the SQL of each one's score",
+   "default": "COUNT(*)"
+  },
+  "sub": {
+   "about": "the SQL of a second figure per one (COUNT(*))"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "query": {
+   "about": "a whole SELECT giving name, value (and sub) per row, instead of table, by and value"
+  },
+  "me": {
+   "about": "an expression giving the name to highlight (the viewer's)"
+  },
+  "format": {
+   "about": "how scores read: number or money",
+   "default": "number"
+  },
+  "limit": {
+   "about": "how many are shown",
+   "default": 10
+  },
+  "title": {
+   "about": "a heading",
+   "default": "Standings"
+  },
+  "subword": {
+   "about": "what the second figure counts, singular (game, session)"
+  }
+ },
+ "example": {
+  "use": "standings",
+  "table": "scores",
+  "by": "player",
+  "value": "SUM(points)",
+  "sub": "COUNT(*)",
+  "subword": "game",
+  "title": "Leaders"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": {
+    "$when": "query",
+    "$value": "{{query}}"
+   },
+   "{{key}}_q": {
+    "$when": "!query",
+    "$value": "SELECT {{by}} AS name, {{value}} AS value FROM {{table}}{{where|pre: WHERE }} GROUP BY {{by}} ORDER BY value DESC LIMIT 500"
+   },
+   "{{key}}_s": {
+    "$when": "sub&!query",
+    "$value": "SELECT {{by}} AS name, {{sub}} AS sub FROM {{table}}{{where|pre: WHERE }} GROUP BY {{by}} LIMIT 500"
+   }
+  },
+  "let": {
+   "{{key}}_rows": "=(data[{{key|json}}] || data[{{key|json}} + '_q'] || []).map(r => { const s = (data[{{key|json}} + '_s'] || []).find(x => String(x.name) === String(r.name)); const sub = r.sub != null ? r.sub : s ? s.sub : null; const word = {{subword|json}}; return {id: String(r.name), name: String(r.name ?? '—'), value: Number(r.value) || 0, sub: sub != null ? (word ? app.fmt.count(Number(sub) || 0, word) : String(sub)) : null}; })"
+  },
+  "body": [
+   {
+    "h": "{{title}}",
+    "level": 2
+   },
+   {
+    "ui": "leaderboard",
+    "props": {
+     "rows": "={{key}}_rows",
+     "limit": "{{limit}}",
+     "format": "=v => {{format|json}} === 'money' ? app.fmt.money(v) : app.fmt.number(v)",
+     "highlight": {
+      "$when": "me",
+      "$value": "{{me}}"
+     },
+     "empty": "Nobody has scored yet."
+    }
+   }
+  ]
+ }
+}

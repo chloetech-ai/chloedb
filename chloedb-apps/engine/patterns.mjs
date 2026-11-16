@@ -15,8 +15,9 @@
 // - "{{name}}" alone is the parameter's value, of any type (missing: the
 //   entry is left out); "{{a.b}}" reads into an object;
 // - inside a longer string a text value goes in as it is and any other value
-//   as JSON; "{{name|json}}" is always JSON, and "{{name|pre:TEXT}}" is TEXT
-//   and the value, or nothing when the value is empty;
+//   as JSON; "{{name|json}}" is always JSON, "{{name|pre:TEXT}}" is TEXT
+//   and the value, or nothing when the value is empty, and
+//   "{{name|wrap:BEFORE~AFTER}}" the value between the two, or nothing;
 // - "{{...name}}" as an item of a list splices the list in;
 // - an object with "$when": "name" (or "name=value", "name!=value", "!name",
 //   several joined by "&") is left out unless the parameter is given (or
@@ -102,9 +103,11 @@ const get = (P, name) => name.split('.').reduce((o, k) => (o == null ? undefined
 function interpolate(s, P) {
   const whole = s.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
   if (whole) return get(P, whole[1]);
-  return s.replace(/\{\{\s*([\w.]+)\s*(?:\|\s*(json|pre:[^}]*))?\}\}/g, (_, name, filter) => {
+  return s.replace(/\{\{\s*([\w.]+)\s*(?:\|\s*(json|pre:[^}]*|wrap:[^}]*))?\}\}/g, (_, name, filter) => {
     const v = get(P, name);
     if (filter && filter.startsWith('pre:')) return empty(v) ? '' : `${filter.slice(4)}${typeof v === 'string' ? v : JSON.stringify(v)}`;
+    // wrap:BEFORE~AFTER: the value between the two, or nothing when it is empty
+    if (filter && filter.startsWith('wrap:')) { const [a, b = ''] = filter.slice(5).split('~'); return empty(v) ? '' : `${a}${typeof v === 'string' ? v : JSON.stringify(v)}${b}`; }
     if (filter === 'json') return JSON.stringify(v ?? null);
     if (v === undefined || v === null) return '';
     return typeof v === 'string' ? v : JSON.stringify(v);
@@ -187,10 +190,31 @@ const HOLDERS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else
 
 // Expands every "use" block of a screen (at any depth). Returns
 // {screen, used: [pattern names], problems}.
+// A screen that carries a site's own header (a "nav" part) is a front page,
+// written so or not: it owns the window's chrome, so the app's bar is not
+// drawn above it (web/studio.js) and the header offers the other screens.
+const isScreenLike = (b) => !!b && typeof b === 'object' && !Array.isArray(b) && Array.isArray(b.body) && Object.keys(b).every((k) => ['page', 'layout', 'body', 'state', 'data', 'let'].includes(k));
+export function frontOf(screen) {
+  // A whole screen given as a part of its own body ({"page": "front",
+  // "body": [...]} inside BLOCKS) is that screen: its parts take its place.
+  if (screen && typeof screen === 'object' && Array.isArray(screen.body) && screen.body.some(isScreenLike)) {
+    const out = { ...screen, body: [] };
+    for (const b of screen.body) {
+      if (!isScreenLike(b)) { out.body.push(b); continue; }
+      for (const k of ['page', 'layout']) if (b[k] !== undefined && out[k] === undefined) out[k] = b[k];
+      for (const k of ['state', 'data', 'let']) if (b[k] && typeof b[k] === 'object') out[k] = { ...(out[k] || {}), ...b[k] };
+      out.body.push(...b.body);
+    }
+    screen = out;
+  }
+  if (!screen || typeof screen !== 'object' || screen.page || !Array.isArray(screen.body)) return screen;
+  return screen.body.some((b) => b && typeof b === 'object' && !Array.isArray(b) && b.nav !== undefined) ? { ...screen, page: 'front' } : screen;
+}
+
 export function expandScreen(screen, patterns = PATTERNS) {
   const problems = [];
   const used = [];
-  if (!screen || typeof screen !== 'object' || !JSON.stringify(screen).includes('"use"')) return { screen: tidyScreen(screen), used, problems };
+  if (!screen || typeof screen !== 'object' || !JSON.stringify(screen).includes('"use"')) return { screen: tidyScreen(frontOf(screen)), used, problems };
   const out = { ...screen, state: { ...(screen.state || {}) }, data: { ...(screen.data || {}) } };
   const lets = {};
   const join = (into, add, what, where) => {
@@ -229,7 +253,7 @@ export function expandScreen(screen, patterns = PATTERNS) {
   for (const k of Object.keys(lets)) if (screen.let && screen.let[k] !== undefined && JSON.stringify(screen.let[k]) !== JSON.stringify(lets[k])) problems.push(`the screen has let.${k} already; give the pattern another "key"`);
   if (!Object.keys(out.state).length) delete out.state;
   if (!Object.keys(out.let).length) delete out.let;
-  return { screen: tidyScreen(out), used, problems };
+  return { screen: tidyScreen(frontOf(out)), used, problems };
 }
 
 // Expands the "use" blocks of every screen in a plan; records the patterns

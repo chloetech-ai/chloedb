@@ -1,0 +1,185 @@
+{
+ "title": "A report in numbered sections, each a titled table with its total row and a line on what it shows",
+ "about": "A board or month-end report, a summary for someone who asked for named parts ('1 Visits by month', '2 Open tickets by age'): each section its own query, drawn as a table in the order given, numbered, with a total row over the columns named in its total, and a note under it that explains it (why the first period has no change, what is left out). Choose it whenever the request names the parts of a report or asks for it to read like a report rather than a dashboard.",
+ "params": {
+  "sections": {
+   "about": "the sections in order: [{\"title\", \"query\" (a SELECT, :today is the day), \"columns\": [{\"key\", \"label\", \"format\": money | number | date | text}], \"total\": [column keys summed in a total row], \"note\"}], up to 8",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "report"
+  },
+  "title": {
+   "about": "the report's heading"
+  },
+  "sub": {
+   "about": "a line under the heading (the period it covers)"
+  }
+ },
+ "example": {
+  "use": "report",
+  "title": "Month-end report",
+  "sub": "=('As of ' + app.fmt.date(today))",
+  "sections": [
+   {
+    "title": "Visits by month",
+    "query": "SELECT month, SUM(visits) AS visits FROM traffic GROUP BY month ORDER BY month",
+    "columns": [
+     {
+      "key": "month",
+      "label": "Month"
+     },
+     {
+      "key": "visits",
+      "label": "Visits",
+      "format": "number"
+     }
+    ],
+    "total": [
+     "visits"
+    ],
+    "note": "Each visit counted in the month it was made."
+   },
+   {
+    "title": "Open tickets by days open",
+    "query": "SELECT band_of(days_between(opened, :today)) AS band, MIN(band_rank(days_between(opened, :today))) AS r, COUNT(*) AS tickets FROM tickets WHERE status = 'open' GROUP BY band_of(days_between(opened, :today)) ORDER BY r",
+    "columns": [
+     {
+      "key": "band",
+      "label": "Days open"
+     },
+     {
+      "key": "tickets",
+      "label": "Tickets",
+      "format": "number"
+     }
+    ],
+    "total": [
+     "tickets"
+    ]
+   }
+  ]
+ },
+ "screen": {
+  "data": {
+   "{{key}}_1": {
+    "$when": "sections.0",
+    "$value": {
+     "sql": "{{sections.0.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_2": {
+    "$when": "sections.1",
+    "$value": {
+     "sql": "{{sections.1.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_3": {
+    "$when": "sections.2",
+    "$value": {
+     "sql": "{{sections.2.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_4": {
+    "$when": "sections.3",
+    "$value": {
+     "sql": "{{sections.3.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_5": {
+    "$when": "sections.4",
+    "$value": {
+     "sql": "{{sections.4.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_6": {
+    "$when": "sections.5",
+    "$value": {
+     "sql": "{{sections.5.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_7": {
+    "$when": "sections.6",
+    "$value": {
+     "sql": "{{sections.6.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_8": {
+    "$when": "sections.7",
+    "$value": {
+     "sql": "{{sections.7.query}}",
+     "params": {
+      "today": "=today"
+     }
+    }
+   }
+  },
+  "let": {
+   "{{key}}_secs": "={{sections|json}}.slice(0, 8).map((s, i) => { const rows = data[{{key|json}} + '_' + (i + 1)] || []; const cols = s.columns && s.columns.length ? s.columns : Object.keys(rows[0] || {}).filter(k => k !== 'id').map(k => ({key: k})); return {n: i + 1, title: s.title, note: s.note || null, cols: cols.map(c => ({key: c.key, label: c.label || c.key, format: c.format || null})), rows, total: Array.isArray(s.total) && s.total.length ? s.total : false}; })"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}",
+    "level": 1
+   },
+   {
+    "$when": "sub",
+    "text": "{{sub}}",
+    "muted": true
+   },
+   {
+    "each": "={{key}}_secs",
+    "as": "sec",
+    "body": [
+     {
+      "section": [
+       {
+        "h": "=sec.n + '. ' + sec.title",
+        "level": 2
+       },
+       {
+        "table": "=sec.rows",
+        "columns": "=sec.cols",
+        "total": "=sec.total",
+        "empty": "Nothing to report yet."
+       },
+       {
+        "if": "=sec.note",
+        "then": [
+         {
+          "text": "=sec.note",
+          "muted": true,
+          "small": true
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}
