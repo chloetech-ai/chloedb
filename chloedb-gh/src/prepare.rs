@@ -10,11 +10,14 @@
 //! Tables (each row goes to the shard of its repo, actors to the shard of
 //! their id; see [`crate::slots`]):
 //! - `events`: every event, `t, kind, repo, actor, n`.
-//! - `names`: a repo's `owner/name` whenever this run first sees it or sees
-//!   it change.
-//! - `meta`: what an event says about a repo beyond its name (description,
-//!   language, stars, topics, license...), whenever it changes.
-//! - `actors`: an actor's public login whenever it is new or changes.
+//! - `names`: each repo's `owner/name` of the day, with when it was first
+//!   seen that day.
+//! - `meta`: what the day's events last said of a repo beyond its name
+//!   (description, language, stars, topics, license...).
+//! - `actors`: each actor's public login of the day.
+//!
+//! A day dedupes only its own rows, so that a worker's memory is that of
+//! a day (a few hundred MB): `reduce` keeps one row a key across days.
 //! - `stars`: stars and forks each repo got each day.
 //!
 //! Before 2015 the archive has no actor ids, only logins: `--logins DIR`
@@ -31,8 +34,7 @@ use chrono::NaiveDate;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
-use rustc_hash::{FxHashMap, FxHasher};
-use std::hash::{Hash, Hasher};
+use rustc_hash::FxHashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -59,34 +61,6 @@ pub struct Opts {
     pub local: Option<PathBuf>,
 }
 
-/// Remembers a value's hash per key, across workers, to write a row only
-/// when a key is new or its value changed. GitHub's ids fit in 32 bits,
-/// and a 32-bit fingerprint of the value is enough to see a change, so an
-/// entry takes 8 bytes: hundreds of millions of repos fit in a few GB.
-struct Seen {
-    parts: Vec<Mutex<(FxHashMap<u32, u32>, FxHashMap<i64, u32>)>>,
-}
-
-impl Seen {
-    fn new() -> Seen {
-        Seen { parts: (0..1024).map(|_| Mutex::new(Default::default())).collect() }
-    }
-    /// True when `key` is new or held another value.
-    fn changed(&self, key: i64, value: u64) -> bool {
-        let i = ((key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 54) as usize;
-        let v = (value ^ (value >> 32)) as u32;
-        let mut m = self.parts[i].lock().unwrap();
-        let old = match u32::try_from(key) {
-            Ok(k) => m.0.insert(k, v),
-            Err(_) => m.1.insert(key, v),
-        };
-        old != Some(v)
-    }
-    fn len(&self) -> usize {
-        self.parts.iter().map(|p| p.lock().map(|m| m.0.len() + m.1.len()).unwrap_or(0)).sum()
-    }
-}
-
 /// The kinds of a day's events, numbered as they come.
 #[derive(Default)]
 struct Kinds {
@@ -109,12 +83,6 @@ impl Kinds {
     }
 }
 
-fn hash_of<T: Hash + ?Sized>(v: &T) -> u64 {
-    let mut h = FxHasher::default();
-    v.hash(&mut h);
-    h.finish()
-}
-
 /// The id a login or repo name without one gets: negative, so it never
 /// meets a real id.
 pub fn synthetic_id(login: &str) -> i64 {
@@ -123,9 +91,6 @@ pub fn synthetic_id(login: &str) -> i64 {
 
 struct Shared {
     opts: Opts,
-    names: Seen,
-    meta: Seen,
-    actors: Seen,
     logins: Option<FxHashMap<String, i64>>,
     /// Before ids (until 2012-09 or so): "owner/name" to the repo's id.
     repo_ids: Option<FxHashMap<String, i64>>,
@@ -139,9 +104,12 @@ struct Shared {
 struct Day {
     kinds: Kinds,
     events: Vec<EventRows>,
-    names: Vec<NameRows>,
-    meta: Vec<MetaRows>,
-    actors: Vec<NameRows>,
+    /// Each (repo, name) seen today, with when it was first seen.
+    names: FxHashMap<(i64, String), i64>,
+    /// What today's events last said of each repo.
+    meta: FxHashMap<i64, Meta>,
+    /// Each actor's login today, with the last time it was seen.
+    actors: FxHashMap<i64, (String, i64)>,
     stars: FxHashMap<i64, (i64, i64)>,
     seen: u64,
     skipped: u64,
@@ -159,28 +127,32 @@ struct EventRows {
     n: Vec<Option<i64>>,
 }
 
-#[derive(Default)]
-struct NameRows {
-    id: Vec<i64>,
-    t: Vec<i64>,
-    name: Vec<String>,
+/// A repo's details as of `t`: each field the newest value given.
+#[derive(Default, Clone)]
+struct Meta {
+    t: i64,
+    name: Option<String>,
+    description: Option<String>,
+    language: Option<String>,
+    homepage: Option<String>,
+    stars: Option<i64>,
+    forks: Option<i64>,
+    created: Option<i64>,
+    topics: Option<String>,
+    license: Option<String>,
+    fork: Option<bool>,
+    archived: Option<bool>,
 }
 
-#[derive(Default)]
-struct MetaRows {
-    repo: Vec<i64>,
-    t: Vec<i64>,
-    name: Vec<Option<String>>,
-    description: Vec<Option<String>>,
-    language: Vec<Option<String>>,
-    homepage: Vec<Option<String>>,
-    stars: Vec<Option<i64>>,
-    forks: Vec<Option<i64>>,
-    created: Vec<Option<i64>>,
-    topics: Vec<Option<String>>,
-    license: Vec<Option<String>>,
-    fork: Vec<Option<bool>>,
-    archived: Vec<Option<bool>>,
+impl Meta {
+    /// Takes `newer`'s values where it has them.
+    fn update(&mut self, newer: Meta) {
+        macro_rules! take {
+            ($($f:ident),*) => { $( if newer.$f.is_some() { self.$f = newer.$f; } )* };
+        }
+        take!(name, description, language, homepage, stars, forks, created, topics, license, fork, archived);
+        self.t = self.t.max(newer.t);
+    }
 }
 
 pub fn run(opts: Opts) -> Result<()> {
@@ -218,9 +190,6 @@ pub fn run(opts: Opts) -> Result<()> {
     let queue = Arc::new(Mutex::new(days));
     let shared = Arc::new(Shared {
         opts,
-        names: Seen::new(),
-        meta: Seen::new(),
-        actors: Seen::new(),
         logins,
         repo_ids,
         client,
@@ -242,11 +211,9 @@ pub fn run(opts: Opts) -> Result<()> {
                     let gb = s.bytes.load(Ordering::Relaxed) as f64 / 1e9;
                     let ev = s.events.load(Ordering::Relaxed) as f64;
                     eprintln!(
-                        "prepare: {day} done ({done}/{total}); {gb:.1} GB in {secs:.0} s = {:.0} MB/s, {:.0}k events/s; maps: {} names, {} actors",
+                        "prepare: {day} done ({done}/{total}); {gb:.1} GB in {secs:.0} s = {:.0} MB/s, {:.0}k events/s",
                         gb * 1e3 / secs,
                         ev / secs / 1e3,
-                        s.names.len(),
-                        s.actors.len()
                     );
                 }
                 Err(e) => {
@@ -296,26 +263,36 @@ fn fetch(s: &Shared, name: &str) -> Result<Option<Vec<u8>>> {
 
 fn do_day(s: &Shared, day: NaiveDate) -> Result<()> {
     let n = s.opts.shards;
-    let mut d = Day {
-        events: (0..n).map(|_| EventRows::default()).collect(),
-        names: (0..n).map(|_| NameRows::default()).collect(),
-        meta: (0..n).map(|_| MetaRows::default()).collect(),
-        actors: (0..n).map(|_| NameRows::default()).collect(),
-        ..Default::default()
-    };
+    let mut d = Day { events: (0..n).map(|_| EventRows::default()).collect(), ..Default::default() };
     let t0 = Instant::now();
-    for hour in 0..24u32 {
-        let name = format!("{day}-{hour}.json.gz");
-        let Some(gz) = fetch(s, &name)? else {
-            d.missing_hours.push(hour);
-            continue;
-        };
-        d.bytes += gz.len() as u64;
-        s.bytes.fetch_add(gz.len() as u64, Ordering::Relaxed);
-        let before = d.seen;
-        read_hour(s, &mut d, &gz).with_context(|| name.clone())?;
-        s.events.fetch_add(d.seen - before, Ordering::Relaxed);
-    }
+    // The next hour downloads while this one is read: a download runs at
+    // about the speed one core reads, so this keeps both busy.
+    let hours = std::thread::scope(|scope| -> Result<()> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u32, String, Result<Option<Vec<u8>>>)>(1);
+        scope.spawn(move || {
+            for hour in 0..24u32 {
+                let name = format!("{day}-{hour}.json.gz");
+                let got = fetch(s, &name);
+                let failed = got.is_err();
+                if tx.send((hour, name, got)).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        for (hour, name, got) in rx {
+            let Some(gz) = got? else {
+                d.missing_hours.push(hour);
+                continue;
+            };
+            d.bytes += gz.len() as u64;
+            s.bytes.fetch_add(gz.len() as u64, Ordering::Relaxed);
+            let before = d.seen;
+            read_hour(s, &mut d, &gz).with_context(|| name.clone())?;
+            s.events.fetch_add(d.seen - before, Ordering::Relaxed);
+        }
+        Ok(())
+    });
+    hours?;
     write_day(s, day, &d)?;
     let marker = serde_json::json!({
         "day": day.to_string(), "events": d.seen, "skipped": d.skipped, "bad_lines": d.bad,
@@ -417,62 +394,68 @@ fn one(s: &Shared, d: &mut Day, e: Event) {
         r.n.push(num);
     }
     if let Some(name) = repo_name {
-        if s.names.changed(repo, hash_of(&name)) {
-            let r = &mut d.names[sh];
-            r.id.push(repo);
-            r.t.push(t);
-            r.name.push(name);
-        }
+        let e = d.names.entry((repo, name)).or_insert(t);
+        *e = (*e).min(t);
     }
     if let Some(login) = login {
-        if actor != 0 && s.actors.changed(actor, hash_of(&login)) {
-            let r = &mut d.actors[slots::shard(actor, n)];
-            r.id.push(actor);
-            r.t.push(t);
-            r.name.push(login);
+        if actor != 0 {
+            match d.actors.get_mut(&actor) {
+                Some(a) if a.1 > t => {}
+                Some(a) => *a = (login, t),
+                None => {
+                    d.actors.insert(actor, (login, t));
+                }
+            }
         }
     }
     // What the event says about repos: the old format's repository, a
     // pull request's base repo, a CreateEvent's description.
     if let Some(r) = &e.repository {
-        meta(s, d, r, t);
+        meta(d, r, t);
     }
     if let Some(r) = p.and_then(|p| p.pull_request.as_ref()).and_then(|r| r.base.as_ref()).and_then(|b| b.repo.as_ref()) {
-        meta(s, d, r, t);
+        meta(d, r, t);
     }
     if ty == "CreateEvent" {
         if let Some(desc) = p.filter(|p| p.ref_type.as_deref() == Some("repository")).and_then(|p| p.description.clone()) {
             let m = RepoMeta { id: Some(repo), description: Some(desc), ..Default::default() };
-            meta(s, d, &m, t);
+            meta(d, &m, t);
         }
     }
 }
 
-fn meta(s: &Shared, d: &mut Day, r: &RepoMeta, t: i64) {
+fn meta(d: &mut Day, r: &RepoMeta, t: i64) {
     let Some(id) = r.id else { return };
     if !r.has_details() {
         return;
     }
-    let topics = r.topics.as_ref().map(|v| v.join(","));
-    let created = r.created_at.as_deref().and_then(archive::unix);
-    let h = hash_of(&(&r.description, &r.language, &r.homepage, r.stars(), r.fork_count(), &topics, &r.license, r.fork, r.archived, created));
-    if !s.meta.changed(id, h) {
-        return;
+    let m = Meta {
+        t,
+        name: r.full(),
+        description: r.description.clone(),
+        language: r.language.clone(),
+        homepage: r.homepage.clone().filter(|h| !h.is_empty()),
+        stars: r.stars(),
+        forks: r.fork_count(),
+        created: r.created_at.as_deref().and_then(archive::unix),
+        topics: r.topics.as_ref().map(|v| v.join(",")),
+        license: r.license.clone(),
+        fork: r.fork,
+        archived: r.archived,
+    };
+    match d.meta.get_mut(&id) {
+        // Events of an hour are in time order, mostly: an older one
+        // fills only what is missing.
+        Some(old) if old.t > t => {
+            let mut m = m;
+            m.update(old.clone());
+            *old = m;
+        }
+        Some(old) => old.update(m),
+        None => {
+            d.meta.insert(id, m);
+        }
     }
-    let m = &mut d.meta[slots::shard(id, s.opts.shards)];
-    m.repo.push(id);
-    m.t.push(t);
-    m.name.push(r.full());
-    m.description.push(r.description.clone());
-    m.language.push(r.language.clone());
-    m.homepage.push(r.homepage.clone().filter(|h| !h.is_empty()));
-    m.stars.push(r.stars());
-    m.forks.push(r.fork_count());
-    m.created.push(created);
-    m.topics.push(topics);
-    m.license.push(r.license.clone());
-    m.fork.push(r.fork);
-    m.archived.push(r.archived);
 }
 
 fn props() -> WriterProperties {
@@ -535,6 +518,7 @@ fn opt_bools(v: &[Option<bool>]) -> ArrayRef {
 
 fn write_day(s: &Shared, day: NaiveDate, d: &Day) -> Result<()> {
     let out = &s.opts.out;
+    let n = s.opts.shards;
     let file = |table: &str, sh: usize| out.join(table).join(format!("s{sh}")).join(format!("{day}.parquet"));
     let day_start = day.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
     let mut stars: Vec<Vec<(i64, i64, i64)>> = vec![Vec::new(); s.opts.shards];
@@ -545,27 +529,47 @@ fn write_day(s: &Shared, day: NaiveDate, d: &Day) -> Result<()> {
         let e = &d.events[sh];
         let kinds: Vec<&str> = e.kind.iter().map(|k| d.kinds.names[*k as usize].as_str()).collect();
         write_parquet(&file("events", sh), vec![("t", ints(&e.t)), ("kind", strs(&kinds)), ("repo", ints(&e.repo)), ("actor", ints(&e.actor)), ("n", opt_ints(&e.n))])?;
-        let r = &d.names[sh];
-        write_parquet(&file("names", sh), vec![("repo", ints(&r.id)), ("t", ints(&r.t)), ("name", strs(&r.name))])?;
-        let r = &d.actors[sh];
-        write_parquet(&file("actors", sh), vec![("actor", ints(&r.id)), ("t", ints(&r.t)), ("login", strs(&r.name))])?;
-        let m = &d.meta[sh];
+        let mut names: Vec<(&(i64, String), &i64)> = d.names.iter().filter(|((r, _), _)| slots::shard(*r, n) == sh).collect();
+        names.sort_unstable();
+        write_parquet(
+            &file("names", sh),
+            vec![
+                ("repo", ints(&names.iter().map(|x| x.0 .0).collect::<Vec<_>>())),
+                ("t", ints(&names.iter().map(|x| *x.1).collect::<Vec<_>>())),
+                ("name", strs(&names.iter().map(|x| x.0 .1.as_str()).collect::<Vec<_>>())),
+            ],
+        )?;
+        let mut actors: Vec<(&i64, &(String, i64))> = d.actors.iter().filter(|(a, _)| slots::shard(**a, n) == sh).collect();
+        actors.sort_unstable_by_key(|x| *x.0);
+        write_parquet(
+            &file("actors", sh),
+            vec![
+                ("actor", ints(&actors.iter().map(|x| *x.0).collect::<Vec<_>>())),
+                ("t", ints(&actors.iter().map(|x| x.1 .1).collect::<Vec<_>>())),
+                ("login", strs(&actors.iter().map(|x| x.1 .0.as_str()).collect::<Vec<_>>())),
+            ],
+        )?;
+        let mut metas: Vec<(&i64, &Meta)> = d.meta.iter().filter(|(r, _)| slots::shard(**r, n) == sh).collect();
+        metas.sort_unstable_by_key(|x| *x.0);
+        let m = |f: &dyn Fn(&Meta) -> Option<String>| opt_strs(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
+        let mi = |f: &dyn Fn(&Meta) -> Option<i64>| opt_ints(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
+        let mb = |f: &dyn Fn(&Meta) -> Option<bool>| opt_bools(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
         write_parquet(
             &file("meta", sh),
             vec![
-                ("repo", ints(&m.repo)),
-                ("t", ints(&m.t)),
-                ("name", opt_strs(&m.name)),
-                ("description", opt_strs(&m.description)),
-                ("language", opt_strs(&m.language)),
-                ("homepage", opt_strs(&m.homepage)),
-                ("stars", opt_ints(&m.stars)),
-                ("forks", opt_ints(&m.forks)),
-                ("created", opt_ints(&m.created)),
-                ("topics", opt_strs(&m.topics)),
-                ("license", opt_strs(&m.license)),
-                ("fork", opt_bools(&m.fork)),
-                ("archived", opt_bools(&m.archived)),
+                ("repo", ints(&metas.iter().map(|x| *x.0).collect::<Vec<_>>())),
+                ("t", ints(&metas.iter().map(|x| x.1.t).collect::<Vec<_>>())),
+                ("name", m(&|x| x.name.clone())),
+                ("description", m(&|x| x.description.clone())),
+                ("language", m(&|x| x.language.clone())),
+                ("homepage", m(&|x| x.homepage.clone())),
+                ("stars", mi(&|x| x.stars)),
+                ("forks", mi(&|x| x.forks)),
+                ("created", mi(&|x| x.created)),
+                ("topics", m(&|x| x.topics.clone())),
+                ("license", m(&|x| x.license.clone())),
+                ("fork", mb(&|x| x.fork)),
+                ("archived", mb(&|x| x.archived)),
             ],
         )?;
         let mut st = std::mem::take(&mut stars[sh]);
@@ -635,14 +639,5 @@ mod tests {
         assert!(a < 0);
         assert_eq!(a, synthetic_id("octocat"));
         assert_ne!(a, synthetic_id("octocat2"));
-    }
-
-    #[test]
-    fn seen_reports_new_and_changed() {
-        let s = Seen::new();
-        assert!(s.changed(5, 1));
-        assert!(!s.changed(5, 1));
-        assert!(s.changed(5, 2));
-        assert_eq!(s.len(), 1);
     }
 }
