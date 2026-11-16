@@ -12,6 +12,9 @@
 - **Filters in the words.** `by:pg`, `site:github.com`, `points>500`, `comments>100`, `2019..2021`, `before 2015`, `-crypto`, `show hn`, `ask hn`, `"exact phrase"`; each is shown as a removable chip of what was understood.
 - **Threads, people and the graph.** A story opens as its whole thread; a comment opens in place with the path to it. People pages show what someone writes about, when, and who they talk to (the reply graph, `hn_replies`). *Who knows* ranks the people who comment most on a subject, weighed by the discussion they start. Similar stories by meaning, and the same link discussed again.
 - **What HN thinks.** A question about opinions gathers the comments that speak to it, packed into a model's budget by the database (`PACK n TOKENS ... DEDUPE ... WITH RECEIPT`), and a model behind the server's `llm()` sums them up with every claim cited to a numbered comment. Answers are kept, so a question asked again costs nothing. It is the only part that calls a model.
+- **A link across HN.** *Links* takes a page or a site and shows everywhere HN met it: each time it was submitted, the comments that cite it in other threads, the people who submitted, discussed or cited it, and the links discussed beside it, drawn as one graph (`GET /v1/link?u=`). A site alone (`sqlite.org`) lists its most discussed pages, the pages submitted again and again, and who posts it most.
+- **The week on HN.** *Weekly* is a digest of a week's ten most voted stories (one per link, jobs left out): what each is, why it mattered, what the thread said, with the top comments quoted, and an opening over the whole week. The app reads each story's linked page once (public `http` and `https` pages only, with a timeout) and `llm()` writes an entry from the page, the post and its most replied comments; entries are kept in `hn_answers`, so each story is written once (`--digest-model`, at most `--digest-per-day` new entries a day).
+- **Fast mode.** The switch beside the search box ranks by words alone (BM25, no meaning and no reranking) for every search until it is switched off.
 - **Live.** With `--feed` the app follows the HN API: new items as they are posted, and the points and comments of the stories that change.
 
 Like [the crawler](crawler.md) and [network operations](netops.md), it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (**Apps → Hacker News**).
@@ -78,7 +81,15 @@ Each answer shows its SQL (**see the SQL**). The grammar's templates are also au
 | `GET /v1/trends?q=a,b&by=year\|month` | how often each was talked about |
 | `GET /v1/ask?q=` | what HN thinks, cited |
 | `GET /v1/front` | the front page as SQL: points over age, as HN ranks it |
+| `GET /v1/facets?q=` | a search's facets on their own (the page asks for them once the results are shown) |
+| `GET /v1/ask/comments?q=` | the comments an answer is made from, before the model is asked |
+| `GET /v1/trending`, `/v1/spikes?year=` | what titles are suddenly about (the last hours against the year before); the months' strongest spikes |
+| `GET /v1/link?u=` | a page or a site across HN: its submissions, citing comments, people, related links and the graph of them; with no `u`, the most discussed stories |
+| `GET /v1/digest?week=YYYY-MM-DD` | a week's digest: the stories picked, the entries and opening already written, the week's totals; the last full week by default |
+| `GET /v1/digest/write?week=&id=` | writes one entry (`id` a story of the week's picks, or `intro`) and keeps it |
 
 ## Measured against hn.algolia.com
 
 `eval/compare.py` asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in [`chloedb-hn/eval/results`](../../chloedb-hn/eval/results/), with the machine and the date they were measured on.
+
+`eval/latency.py` times the same searches on both, each asked twice, as the server reports it and from end to end. On 2026-11-16 (a cloud machine against the deployment on DigitalOcean, four shards of 16 GB machines with the data on their own disks), the app's whole search took 100 ms at the median the first time a query was asked and 67 ms the second; hn.algolia.com's engine reported 17 ms, and its full round trip from the same machine was 243 ms against the app's 140 ms. `eval/plain.py` times the simplest statements on the same queries: BM25 of the titles alone took 15 ms at the median, as Algolia's 16.5, and the substring index with no ranking took 8 ms ([the numbers](../../chloedb-hn/eval/results/latency-2026-11-16.md)).

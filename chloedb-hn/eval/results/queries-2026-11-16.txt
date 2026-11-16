@@ -1,0 +1,40 @@
+rust
+postgres vs mysql
+kubernetes
+sqlite in production
+why is my startup failing
+llm agents
+remote work
+vim vs emacs
+apple vision pro
+self hosting email
+show hn database
+rewrite in rust
+how to learn compilers
+tesla autopilot
+best laptop for programming
+crypto scam
+open source funding
+static site generator
+burnout
+zig language
+gpt-4
+privacy google
+leaving big tech
+htmx
+web assembly
+side project revenue
+microservices vs monolith
+technical interviews
+golang generics
+deno vs node
+nuclear power
+four day work week
+python packaging
+duckdb
+paul graham essays
+bitcoin
+docker alternatives
+ycombinator
+openai board
+type systems
