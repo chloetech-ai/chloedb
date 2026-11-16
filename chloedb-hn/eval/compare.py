@@ -48,7 +48,7 @@ def post(url, body, timeout=120):
         return json.load(r)
 
 def sql(strata, q, params=None):
-    return post(f"{strata}/v1/query", {"sql": q, "params": params or {}, "objects": True})["rows"]
+    return post(f"{strata}/v1/query", {"sql": q, "params": params or {}, "objects": True, "timeout_ms": 120000})["rows"]
 
 STOP = set("a an the of to in on for and or with by from at is are was be how why what your you my we our it its this that new using use vs into about over just can not".split())
 

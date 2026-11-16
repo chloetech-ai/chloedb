@@ -201,16 +201,18 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     if !has_text {
         let ord = order_simple.unwrap_or("points DESC");
         let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(""));
-        let rows = c.rows("stories", &sql, Value::Object(params.clone())).await?;
-        let total = count(c, "hn_stories", &where_(""), &params).await;
+        let count_where = where_("");
+        let (rows, total) = tokio::join!(c.rows("stories", &sql, Value::Object(params.clone())), count(c, "hn_stories", &count_where, &params));
+        let rows = rows?;
         return Ok((rows, total));
     }
     // Words must be there (all of a short query); typos and synonyms widen them.
     let matched = STORY_MATCH;
     if let Some(ord) = order_simple {
         let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(matched));
-        let rows = c.rows("stories", &sql, Value::Object(params.clone())).await?;
-        let total = count(c, "hn_stories", &where_(matched), &params).await;
+        let count_where = where_(matched);
+        let (rows, total) = tokio::join!(c.rows("stories", &sql, Value::Object(params.clone())), count(c, "hn_stories", &count_where, &params));
+        let rows = rows?;
         return Ok((rows, total));
     }
     if mode == "exact" {
@@ -219,8 +221,9 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         let cond = "(title ILIKE :xall OR url ILIKE :xall)";
         let ord = order_simple.unwrap_or("points DESC");
         let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(cond));
-        let rows = c.rows("stories, the text exactly (substring index)", &sql, Value::Object(params.clone())).await?;
-        let total = count(c, "hn_stories", &where_(cond), &params).await;
+        let count_where = where_(cond);
+        let (rows, total) = tokio::join!(c.rows("stories, the text exactly (substring index)", &sql, Value::Object(params.clone())), count(c, "hn_stories", &count_where, &params));
+        let rows = rows?;
         return Ok((rows, total));
     }
     if mode == "meaning" {
@@ -235,27 +238,33 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         "SELECT id FROM hn_stories {} ORDER BY bm25(title, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT {cand}",
         where_("")
     );
-    let lex_rows = c.rows("candidates by words", &lex, Value::Object(params.clone())).await?;
     let body_sql = format!(
         "SELECT id FROM hn_stories {} ORDER BY bm25(body, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT 60",
         where_("")
     );
-    let body_rows = c.soft("candidates by text", &body_sql, Value::Object(params.clone())).await;
-    let mut ids: Vec<i64> = lex_rows.iter().chain(body_rows.iter()).map(|r| r.i("id")).collect();
     // Code as written (`std::move`, `node.js`): the substring index finds
     // what the analyzer split or dropped.
+    let mut code_sql = Vec::new();
     for (i, x) in p.code.iter().take(2).enumerate() {
         params.insert(format!("cx{i}"), json!(like(x)));
-        let sql = format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("(title ILIKE :cx{i} OR url ILIKE :cx{i})")));
-        let got = c.soft(&format!("candidates with “{x}” exactly (substring index)"), &sql, Value::Object(params.clone())).await;
-        ids.extend(got.iter().map(|r| r.i("id")));
+        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("(title ILIKE :cx{i} OR url ILIKE :cx{i})")))));
     }
     if mode == "hybrid" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
-        let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 80", where_(""));
-        let v = c.soft("candidates by meaning", &vec_sql, Value::Object(params.clone())).await;
-        ids.extend(v.iter().map(|r| r.i("id")));
     }
+    let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 80", where_(""));
+    // Every candidate list and the count at once: one round trip's time, not five.
+    let pv = Value::Object(params.clone());
+    let count_where = where_(matched);
+    let (lex_rows, body_rows, code_rows, v, total) = tokio::join!(
+        c.rows("candidates by words", &lex, pv.clone()),
+        c.soft("candidates by text", &body_sql, pv.clone()),
+        futures_util::future::join_all(code_sql.iter().map(|(what, sql)| c.soft(what, sql, pv.clone()))),
+        async { if mode == "hybrid" { c.soft("candidates by meaning", &vec_sql, pv.clone()).await } else { Vec::new() } },
+        count(c, "hn_stories", &count_where, &params),
+    );
+    let lex_rows = lex_rows?;
+    let mut ids: Vec<i64> = lex_rows.iter().chain(body_rows.iter()).chain(code_rows.iter().flatten()).chain(v.iter()).map(|r| r.i("id")).collect();
     ids.sort_unstable();
     ids.dedup();
     if ids.is_empty() {
@@ -274,7 +283,7 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     );
     let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {limit} OFFSET {offset}", list.join(", "));
     let rows = c.rows("stories, ranked", &sql, Value::Object(params.clone())).await?;
-    let mut total = count(c, "hn_stories", &where_(matched), &params).await;
+    let mut total = total;
     if total == 0 && !rows.is_empty() {
         total = count(c, "hn_stories", &where_(STORY_MATCH_FUZZY), &params).await;
     }
@@ -370,16 +379,18 @@ pub async fn comments(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset
     if words.is_empty() {
         let ord = match r.sort.as_str() { "comments" => "replies DESC, thread DESC", "points" => "pop DESC", "old" => "created ASC", "least_comments" => "replies ASC", _ => "created DESC" };
         let sql = format!("SELECT {COMMENT_COLS} FROM hn_comments {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(""));
-        let rows = c.rows("comments", &sql, Value::Object(params.clone())).await?;
-        let total = count(c, "hn_comments", &where_(""), &params).await;
+        let count_where = where_("");
+        let (rows, total) = tokio::join!(c.rows("comments", &sql, Value::Object(params.clone())), count(c, "hn_comments", &count_where, &params));
+        let rows = rows?;
         return Ok((rows, total));
     }
     if r.mode == "exact" {
         params.insert("xall".into(), json!(like(&words)));
         let ord = match r.sort.as_str() { "comments" => "replies DESC", "old" => "created ASC", _ => "created DESC" };
         let sql = format!("SELECT {COMMENT_COLS} FROM hn_comments {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_("body ILIKE :xall"));
-        let rows = c.rows("comments, the text exactly (substring index)", &sql, Value::Object(params.clone())).await?;
-        let total = count(c, "hn_comments", &where_("body ILIKE :xall"), &params).await;
+        let count_where = where_("body ILIKE :xall");
+        let (rows, total) = tokio::join!(c.rows("comments, the text exactly (substring index)", &sql, Value::Object(params.clone())), count(c, "hn_comments", &count_where, &params));
+        let rows = rows?;
         return Ok((rows, total));
     }
     params.insert("q".into(), json!(words));
@@ -395,8 +406,9 @@ pub async fn comments(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset
     };
     let per = if p.story.is_some() { "" } else { " MAX 2 PER story" };
     let sql = format!("SELECT {COMMENT_COLS}, score() AS score FROM hn_comments {} ORDER BY {ord}{per} LIMIT {limit} OFFSET {offset}", where_(if r.sort.is_empty() || r.sort == "best" { "" } else { matched }));
-    let rows = c.rows("comments", &sql, Value::Object(params.clone())).await?;
-    let mut total = count(c, "hn_comments", &where_(matched), &params).await;
+    let count_where = where_(matched);
+    let (rows, mut total) = tokio::join!(c.rows("comments", &sql, Value::Object(params.clone())), count(c, "hn_comments", &count_where, &params));
+    let rows = rows?;
     if total == 0 && !rows.is_empty() {
         total = count(c, "hn_comments", &where_(COMMENT_MATCH_FUZZY), &params).await;
     }
