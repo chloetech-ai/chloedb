@@ -1,0 +1,19 @@
+es-ef128-pass2 vector                   warm-up: p50 5.495, 5.490 ms
+es-ef128-pass2 vector                   c=1        240 q/s  p50   4.099 ms  p90   4.674 ms  p99   5.520 ms  errors 0
+es-ef128-pass2 vector                   c=4        707 q/s  p50   5.532 ms  p90   6.904 ms  p99   8.451 ms  errors 0
+es-ef128-pass2 vector                   c=16      1232 q/s  p50  12.163 ms  p90  18.180 ms  p99  24.773 ms  errors 0
+es-ef128-pass2 vector + filter          warm-up: p50 6.973, 6.863 ms
+es-ef128-pass2 vector + filter          c=1        192 q/s  p50   4.951 ms  p90   5.783 ms  p99   7.389 ms  errors 0
+es-ef128-pass2 vector + filter          c=4        550 q/s  p50   7.026 ms  p90   9.040 ms  p99  11.621 ms  errors 0
+es-ef128-pass2 vector + filter          c=16       891 q/s  p50  16.673 ms  p90  25.518 ms  p99  39.016 ms  errors 0
+es-ef128-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef128-pass2 hybrid (weighted)        warm-up: p50 9.143, 8.972 ms
+es-ef128-pass2 hybrid (weighted)        c=1        145 q/s  p50   5.927 ms  p90  10.350 ms  p99  19.368 ms  errors 0
+es-ef128-pass2 hybrid (weighted)        c=4        390 q/s  p50   9.056 ms  p90  15.675 ms  p99  28.580 ms  errors 0
+es-ef128-pass2 hybrid (weighted)        c=16       536 q/s  p50  26.838 ms  p90  46.136 ms  p99  83.347 ms  errors 0
+es-ef128-pass2 similar items            warm-up: p50 10.335, 10.293 ms
+es-ef128-pass2 similar items            c=1        143 q/s  p50   6.860 ms  p90   7.767 ms  p99   9.889 ms  errors 0
+es-ef128-pass2 similar items            c=4        372 q/s  p50  10.219 ms  p90  13.878 ms  p99  18.080 ms  errors 0
+es-ef128-pass2 similar items            c=16       531 q/s  p50  29.243 ms  p90  41.527 ms  p99  51.263 ms  errors 0
+es-ef128-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef128-pass2.json

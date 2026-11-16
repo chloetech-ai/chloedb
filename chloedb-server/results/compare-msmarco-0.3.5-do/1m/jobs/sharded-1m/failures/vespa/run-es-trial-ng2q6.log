@@ -1,0 +1,10 @@
+es-trial hybrid (RRF)             warm-up: p50 16.937, 15.526 ms
+es-trial hybrid (RRF)             c=1        103 q/s  p50   9.487 ms  p90  11.269 ms  p99  14.326 ms  errors 0
+es-trial hybrid (RRF)             c=4        289 q/s  p50  13.561 ms  p90  16.837 ms  p99  20.586 ms  errors 0
+es-trial hybrid (RRF)             c=16       454 q/s  p50  34.335 ms  p90  45.361 ms  p99  57.879 ms  errors 0
+es-trial hybrid (weighted)        warm-up: p50 17.542, 16.744 ms
+es-trial hybrid (weighted)        c=1         82 q/s  p50  11.081 ms  p90  18.449 ms  p99  23.423 ms  errors 0
+es-trial hybrid (weighted)        c=4        226 q/s  p50  16.646 ms  p90  24.965 ms  p99  35.455 ms  errors 0
+es-trial hybrid (weighted)        c=16       321 q/s  p50  47.767 ms  p90  67.560 ms  p99  93.630 ms  errors 0
+es-trial result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-trial.json

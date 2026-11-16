@@ -1,0 +1,12 @@
+os       insert one     c=1        239 docs/s  p50    3.981 ms  p90    5.634 ms  p99    8.215 ms  errors 0
+os       insert one     c=4        840 docs/s  p50    4.302 ms  p90    7.137 ms  p99   11.101 ms  errors 0
+os       insert one     c=16      2226 docs/s  p50    6.415 ms  p90   11.072 ms  p99   20.199 ms  errors 0
+os       insert batch   c=1       1371 docs/s  p50   60.052 ms  p90   70.119 ms  p99   93.100 ms  errors 0
+os       insert batch   c=4       3521 docs/s  p50   91.775 ms  p90  136.285 ms  p99  244.902 ms  errors 0
+os       insert batch   c=16      2942 docs/s  p50  522.866 ms  p90  683.504 ms  p99  794.695 ms  errors 0
+os       update one     c=1        224 docs/s  p50    3.981 ms  p90    6.394 ms  p99   12.457 ms  errors 0
+os       update one     c=4        814 docs/s  p50    4.380 ms  p90    7.397 ms  p99   12.056 ms  errors 0
+os       update one     c=16      2139 docs/s  p50    6.378 ms  p90   12.218 ms  p99   23.305 ms  errors 0
+os       visible        written in p50 6.8 ms, found after p50 629.7 ms  p90 1020.3 ms  max 1162.5 ms
+wrote /data/compare/writes-os.json
+os       deleted 68630 written documents and put back 19080 ratings in 15.6 s

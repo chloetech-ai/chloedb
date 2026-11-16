@@ -32,6 +32,7 @@ pub mod codec;
 pub mod cursor;
 pub mod dict;
 pub mod fuzzy;
+pub mod highlight;
 pub mod postings;
 pub mod query;
 pub mod reader;

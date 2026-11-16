@@ -107,7 +107,7 @@ pub struct ViaKube {
     /// Its id among the clusters made here
     /// ([`crate::cloud::clusters::Made`]).
     pub made: String,
-    /// `aws` or `digitalocean`.
+    /// `aws`, `digitalocean` or `gcp`.
     pub provider: String,
     /// The cloud's cluster (`strata-<name>`) and where it is.
     pub cluster: String,
@@ -125,7 +125,11 @@ impl ViaKube {
 
     /// What it is, in words.
     pub fn describe(&self) -> String {
-        let cloud = if self.provider == "aws" { "EKS" } else { "DigitalOcean" };
+        let cloud = match self.provider.as_str() {
+            "aws" => "EKS",
+            "gcp" => "GKE",
+            _ => "DigitalOcean",
+        };
         format!("{}'s Kubernetes API ({cloud}, {})", self.cluster, self.region)
     }
 }

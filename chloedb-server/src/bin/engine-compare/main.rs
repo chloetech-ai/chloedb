@@ -888,9 +888,10 @@ const VESPA_PUTS: usize = 64;
 /// Vespa has no bulk request: its batch is one document a line (id, a tab,
 /// the document), each put on its own, `VESPA_PUTS` at a time (a client's
 /// share of the 256 requests Vespa's container queues), and each again
-/// after a pause that grows to 5 s while Vespa is overloaded, for up to ten
-/// minutes: with all 500 of a batch at once from 4 clients, the 1M NQ load
-/// had puts refused for 20 s on end once the content nodes fell behind.
+/// after a pause that grows to 5 s while Vespa is overloaded or a request
+/// fails to send, for up to ten minutes: with all 500 of a batch at once
+/// from 4 clients, the 1M NQ load had puts refused for 20 s on end once the
+/// content nodes fell behind.
 async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: Arc<Vec<u8>>) -> Result<(), String> {
     if engine == Engine::Vespa {
         let text = std::str::from_utf8(&body).map_err(s)?;
@@ -906,7 +907,11 @@ async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: A
                     let r = client.post(&url).header("content-type", "application/json").body(doc.clone()).send().await;
                     let retry = match &r {
                         Ok(r) => matches!(r.status().as_u16(), 429 | 503 | 504 | 507),
-                        Err(e) => e.is_connect() || e.is_timeout(),
+                        // Any failure to send: a put of an id is idempotent, and a
+                        // connection the container closed under a request ("error
+                        // sending request") ended the 0.3.5 rerun's 1M load at its
+                        // last batch.
+                        Err(_) => true,
                     };
                     if retry && tries < 120 {
                         tokio::time::sleep(Duration::from_secs(tries.min(5))).await;

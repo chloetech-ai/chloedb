@@ -1,0 +1,19 @@
+es-ef256-pass3 vector                   warm-up: p50 6.471, 6.524 ms
+es-ef256-pass3 vector                   c=1        209 q/s  p50   4.692 ms  p90   5.569 ms  p99   6.693 ms  errors 0
+es-ef256-pass3 vector                   c=4        610 q/s  p50   6.383 ms  p90   8.212 ms  p99  10.259 ms  errors 0
+es-ef256-pass3 vector                   c=16      1020 q/s  p50  14.930 ms  p90  22.070 ms  p99  28.883 ms  errors 0
+es-ef256-pass3 vector + filter          warm-up: p50 8.611, 8.639 ms
+es-ef256-pass3 vector + filter          c=1        150 q/s  p50   6.500 ms  p90   7.537 ms  p99   9.770 ms  errors 0
+es-ef256-pass3 vector + filter          c=4        435 q/s  p50   8.786 ms  p90  11.645 ms  p99  15.313 ms  errors 0
+es-ef256-pass3 vector + filter          c=16       690 q/s  p50  22.491 ms  p90  31.897 ms  p99  40.729 ms  errors 0
+es-ef256-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef256-pass3 hybrid (weighted)        warm-up: p50 9.204, 8.953 ms
+es-ef256-pass3 hybrid (weighted)        c=1        142 q/s  p50   5.980 ms  p90  10.771 ms  p99  19.158 ms  errors 0
+es-ef256-pass3 hybrid (weighted)        c=4        381 q/s  p50   9.129 ms  p90  16.116 ms  p99  31.220 ms  errors 0
+es-ef256-pass3 hybrid (weighted)        c=16       535 q/s  p50  27.175 ms  p90  46.292 ms  p99  76.726 ms  errors 0
+es-ef256-pass3 similar items            warm-up: p50 11.359, 11.174 ms
+es-ef256-pass3 similar items            c=1        128 q/s  p50   7.618 ms  p90   8.840 ms  p99  11.068 ms  errors 0
+es-ef256-pass3 similar items            c=4        337 q/s  p50  11.372 ms  p90  15.247 ms  p99  19.703 ms  errors 0
+es-ef256-pass3 similar items            c=16       461 q/s  p50  33.683 ms  p90  47.284 ms  p99  60.160 ms  errors 0
+es-ef256-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef256-pass3.json
