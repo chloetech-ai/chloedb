@@ -3,6 +3,9 @@
 //! - `gh_events`: every public event since 2011 (`t` in seconds, `kind`,
 //!   `repo`, `actor`, `n`), placed on shards by repo and sorted by it in
 //!   each segment, so one repo's history is a short range on one shard.
+//! - `gh_stars`: every star again (`repo`, `actor`, `actor_k`, `t`), the
+//!   person also a keyword, whose list of rows answers "what did these
+//!   people star" without reading every event.
 //! - `gh_stars_daily`: stars and forks a repo got each day.
 //! - `gh_repos`: every repo with two stars or more, its latest name and
 //!   what events last said of it, searched by words and by meaning.
