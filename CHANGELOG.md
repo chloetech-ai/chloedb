@@ -9,7 +9,20 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
-## Unreleased
+## 0.3.7
+
+The server on PyPI (`pip install chloedb-server`, `uvx chloedb-server`) and
+`chloedb.serve()` from Python, SQLite files of many tables imported in
+seconds rather than minutes, Google Cloud (GKE) in the command center's
+Cloud view with no key, and `POST /v1/highlight`, which marks results the
+way a search reads its words: `chloedb-server-v0.3.7`, `chloedb-py-v0.3.7`
+and `chloedb-js-v0.3.7`, which is on npm too (the Java package is built from
+source; `chloedb-crawl`, `chloedb-sheets`, `chloectx` and `chloedb-netops`
+are attached prebuilt to the server's release, whose wheels are on PyPI as
+`chloedb-server`). The file format stays 3 and the shard protocol stays 21,
+with no new field or plan feature, so servers of 0.3.6 and 0.3.7 mix in a
+cluster in either order. **A SQLite import into a table without a key that
+already has rows is refused unless it appends.**
 
 ### What changes by default
 
@@ -22,6 +35,12 @@ changes collect under "Unreleased".
   `append=True` in Python and `append: true` in JavaScript add them as
   before; a keyed table takes the file's rows in place of its own, as it
   did. A copy between servers into such a table is refused too.
+- On Kubernetes, a cluster in the namespace `strata` (where the Cloud view
+  makes its clusters) is named without it: the operator gives its servers
+  `NAME`, not `strata/NAME`, which the command center's header shows. A
+  cluster in any other namespace keeps `namespace/name`. Servers take the
+  name at their next restart, and an alert's dedup key holds it, so an
+  alert firing across the upgrade may page once more under the new key.
 
 ### SQLite imports (what the stress test of 15 November left)
 
@@ -100,6 +119,28 @@ changes collect under "Unreleased".
   0.3.7, the first release there, so 0.3.7's drafts are published only once
   PyPI has its wheels.
 
+
+### Highlighting
+
+- **`POST /v1/highlight` marks texts the way a search of a TEXT field reads
+  its query** (`{table, field, query, texts, size?, pre?, post?}`): stems,
+  synonyms, typos, prefixes, phrases, and code such as `C++` where its
+  characters are, each text cut to the stretch of about `size` characters
+  with the most matches and HTML-escaped between `<mark>` tags (or `pre`
+  and `post`). It is a read route; a coordinator answers it from the
+  table's analyzer without asking its shards.
+
+### Demos, benchmarks and the website
+
+- Two demo apps, not part of the release: `chloedb-hn`, Hacker News
+  searched, asked in sentences and completed as typed
+  ([docs](docs/chloedb/hn.md)), and `chloedb-arxiv`, every arXiv paper with
+  search, the recommender, feeds explained from the full text, people,
+  labs, code, likely classics and weekly RSS and team feeds
+  ([docs](docs/chloedb/arxiv.md)). Both are on the `Demos` train.
+- The website's benchmark pages are measured again on 0.3.5, with every
+  engine's result cache off: 1M documents on every engine, and 10M head to
+  head. The harness retries a Vespa put that its HTTP client dropped.
 
 ## 0.3.6
 
