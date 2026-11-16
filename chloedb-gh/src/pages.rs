@@ -672,7 +672,15 @@ pub async fn rising_about(c: &Ctx<'_>, at: i64, days: i64, hn: Option<&crate::ap
         c.soft("their stars in the four weeks before", "SELECT repo, SUM(stars) AS b FROM gh_stars_daily WHERE repo IN (:ids) AND day > :b0 AND day <= :a0 GROUP BY repo", json!({"ids": rids, "a0": a0, "b0": b0})),
         repos_of(c, "the repos", &rids),
         c.soft("their releases in the window", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE repo IN (:ids) AND kind = 'release' AND t > :a0 AND t <= :a1 GROUP BY repo", json!({"ids": rids, "a0": a0, "a1": at + DAY})),
-        c.soft("their stars day by day", "SELECT repo, day, stars FROM gh_stars_daily WHERE repo IN (:ids) AND day > :b0 AND day <= :a1 ORDER BY repo, day LIMIT 20000", json!({"ids": rids, "b0": b0, "a1": at})),
+        async {
+            // A repo has a row a day at most, and a statement returns 10,000
+            // rows at most: so many repos a statement, the statements at once.
+            let per = (10_000 / (days + 28) as usize).max(1);
+            let parts = rids.chunks(per).map(|part| {
+                c.soft("their stars day by day", "SELECT repo, day, stars FROM gh_stars_daily WHERE repo IN (:ids) AND day > :b0 AND day <= :a1 ORDER BY repo, day LIMIT 10000", json!({"ids": part, "b0": b0, "a1": at}))
+            });
+            futures_util::future::join_all(parts).await.concat()
+        },
     );
     let base: HashMap<i64, i64> = base.iter().map(|r| (r.i("repo"), r.i("b"))).collect();
     let rel: HashMap<i64, i64> = rel.iter().map(|r| (r.i("repo"), r.i("n"))).collect();
