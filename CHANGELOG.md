@@ -32,6 +32,14 @@ changes collect under "Unreleased".
   no longer one of the user's rules.
 - Workbench's Fix the harness lists what you said again and the rules
   broken though the session was shown them, when ChloeCtx is on.
+- **The Kubernetes operator says what it runs** (`status.operator`: its
+  version, image and digest), and the command center's Rollouts view says
+  when the servers run a newer version or a later build than the operator, with the `kubectl set image` that upgrades it. The
+  upgrader moves the servers, never the operator: a cluster whose servers
+  followed `latest` to 0.3.5 under an older operator had its rollouts stop
+  at the extra copy, refused `403 cluster_token_required` (the 0.3.5
+  coordinator adds a server only with the cluster's token, which an older
+  operator does not send). That refusal now says to upgrade the operator.
 
 ### SQLite imports (stress test of 15 November)
 

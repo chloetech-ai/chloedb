@@ -105,6 +105,37 @@ function vname(v) {
   if (v.digest) return v.digest.replace("sha256:", "").slice(0, 12);
   return (v.tags || [])[0] || (v.image || "unknown").replace(/^.*\//, "");
 }
+/** Two releases (0.3.5, 0.10.0) in order, by their numbers. */
+export function cmpRelease(a, b) {
+  const n = (v) => String(v).replace(/^v/, "").split(/[.+-]/).slice(0, 3).map((x) => parseInt(x, 10) || 0);
+  const x = n(a), y = n(b);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  return 0;
+}
+/**
+ * Whether the operator is older than the servers it runs, in words, else
+ * null. `op` is what it says of itself (`status.operator`, since 0.3.6:
+ * `version`, and in a pod its `digest`), `servers` what the copies that
+ * answer run (`release`, `digest`), `built` the time an image of a digest
+ * was built when the registry says it, and `message` the operator's last
+ * words, which name the refusal a 0.3.5 server gives an operator from
+ * before 0.3.5 that adds a server with the admin token. Builds of one
+ * release (main's, between two) are told apart by when they were built.
+ */
+export function operatorBehind(op, servers, message, built = () => null) {
+  const live = (servers || []).filter(Boolean);
+  const newest = live.map((x) => x.release).filter(Boolean).sort(cmpRelease).pop() || null;
+  if (op?.version) {
+    if (newest && cmpRelease(op.version, newest) < 0) return `The operator runs ${op.version} and the servers ${newest}`;
+    const mine = op.digest ? built(op.digest) : null;
+    const later = mine == null ? null : live.filter((x) => x.digest && x.digest !== op.digest && (built(x.digest) ?? 0) > mine).sort((a, b) => built(b.digest) - built(a.digest))[0];
+    if (later) return `The operator runs an older build than the servers (${op.version}, built ${clock(mine)}; theirs ${clock(built(later.digest))})`;
+    return null;
+  }
+  if (/takes the cluster's token/.test(message || "")) return "The operator is older than 0.3.5: the servers refuse the copies it adds, which take the cluster's token";
+  if (newest && cmpRelease(newest, "0.3.6") >= 0) return `The operator is older than 0.3.6 (it says no version) and the servers run ${newest}`;
+  return null;
+}
 /** A version in a sentence: 5f2e523 (built Nov 2 20:16), or v0.9.4 (commit 5f2e523, built …). */
 function vsaid(v, { built = true } = {}) {
   const t = named(v), c = commitOf(v), b = sec(v?.created);
@@ -270,6 +301,7 @@ function render(page, r) {
           shard: x.shard ?? i, role: rr.takes_writes ? "primary" : rr.role || "replica", node: rr.node || rr.name || null,
           down: rr.status === "down" || rr.role === "unknown", since: rr.down_since_ms || null, was: rr.last_role || null,
           ver: rr.version?.digest || rr.version?.image || rr.version?.version || rr.detail?.system?.version || null,
+          release: rr.version?.version || rr.detail?.system?.version || null,
           load: rr.detail?.load || {}, up_s: rr.detail?.system?.uptime_s,
         });
       }
@@ -340,6 +372,26 @@ function render(page, r) {
     return h("div", { class: "ro-hd-down" }, icon("warn"),
       h("span", {}, words.join(": ") + ". Restart no other copy until ", gone.length === 1 ? "it is" : "they are", " back. ",
         h("a", { href: `#/cluster?shard=${shard}` }, `Open shard ${shard}`)));
+  }
+
+  /**
+   * An operator older than the servers it runs, which may refuse what it
+   * asks: a 0.3.5 coordinator adds a server only with the cluster's token,
+   * which an older operator does not send, so a rollout's extra copy, a
+   * copy more or a new shard stops there (audit CLU-3). The upgrader moves
+   * the servers, never the operator. An operator says its version since
+   * 0.3.6 (`status.operator`); one that says none is older than that, and
+   * is known older than 0.3.5 by that refusal.
+   */
+  function operatorLine() {
+    const built = (d) => sec(cat().get(d)?.created);
+    const said = operatorBehind(st().operator, copies().filter((c) => !c.down).map((c) => ({ release: c.release, digest: c.ver?.startsWith("sha256:") ? c.ver : null })), st().message, built);
+    if (!said) return null;
+    const image = spec().image || "IMAGE";
+    const cmd = `kubectl -n strata-system set image deployment/strata-operator operator=${image}`;
+    return h("div", { class: "ro-hd-down" }, icon("warn"),
+      h("span", {}, `${said}. The upgrader moves the servers, not the operator: upgrade it to the servers' image before the next change. `,
+        h("button", { class: "btn xs", title: cmd, onclick: () => copy(cmd, "Copied the command") }, icon("copy"), "Copy the command")));
   }
 
   // ---------------------------------------------------------- what is happening
@@ -764,6 +816,7 @@ function render(page, r) {
         why.length ? h("div", { class: "ro-hd-why" }, why) : null,
         safe ? h("div", { class: "ro-hd-safe" }, safe) : null,
         downLine(),
+        operatorLine(),
         versionStrip(map, p, !moving(m)),
         bar),
       h("div", { class: "ro-hd-acts" }, acts)));

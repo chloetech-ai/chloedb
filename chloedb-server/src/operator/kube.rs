@@ -1950,6 +1950,7 @@ pub const OPERATOR: &str = "operator";
 /// spec ([`super::reconcile`]), and writes what it found in its status.
 pub async fn run(o: Options) -> Result<(), String> {
     let kube = Kube::new(&o)?;
+    let _ = RUNS.set(own_image(&kube).await);
     if o.install_crd {
         let crd = super::crd();
         let name = crd["metadata"]["name"].as_str().unwrap_or_default().to_string();
@@ -1971,6 +1972,43 @@ pub async fn run(o: Options) -> Result<(), String> {
         }
         tokio::time::sleep(o.every).await;
     }
+}
+
+/// What this operator runs, which its status says (`status.operator`): its
+/// version, and in a pod its image and the digest its node pulled, read
+/// once as it starts ([`run`]). The upgrader moves the servers, never the
+/// operator, and servers newer than their operator may refuse what it asks
+/// (a 0.3.5 coordinator adds a server only with the cluster's token, which
+/// an operator from before 0.3.5 does not send: audit CLU-3), so the
+/// command center compares it with the servers'.
+static RUNS: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+
+fn operator_status() -> Json {
+    RUNS.get().cloned().unwrap_or_else(|| json!({"version": env!("CARGO_PKG_VERSION")}))
+}
+
+/// This operator's version, image and digest, from its own pod (`HOSTNAME`,
+/// in its account's namespace); its version alone outside a pod.
+async fn own_image(kube: &Kube) -> Json {
+    let mut j = json!({"version": env!("CARGO_PKG_VERSION")});
+    let ns = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace").ok().map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let pod = std::env::var("HOSTNAME").ok().filter(|p| !p.is_empty());
+    let (Some(ns), Some(pod)) = (ns, pod) else { return j };
+    match kube.get(&format!("{}/{pod}", ns_path(&ns, "v1", "pods"))).await {
+        Ok(Some(p)) => {
+            let cs = p["status"]["containerStatuses"].as_array().cloned().unwrap_or_default();
+            let c = cs.iter().find(|c| c["name"] == "operator").or(cs.first()).cloned().unwrap_or(Json::Null);
+            if let Some(i) = c["image"].as_str() {
+                j["image"] = json!(i);
+            }
+            if let Some(d) = c["imageID"].as_str().and_then(super::upgrade::digest_of) {
+                j["digest"] = json!(d);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "could not read the operator's own pod: its status says its version only"),
+    }
+    j
 }
 
 /// One step for one cluster, and its status: the outcome, what the next
@@ -2037,6 +2075,7 @@ pub async fn once(kube: &Kube, c: &Json) -> Outcome {
         "phase": out.phase, "message": out.message, "shards": out.shards, "observedGeneration": meta["generation"],
         "rollout": out.rollout, "history": history, "log": super::logged(&c["status"]["log"], out.phase, &out.message, now),
         "autoscale": autoscale, "upgrade": upgrade,
+        "operator": operator_status(),
     });
     // The autoscaler's readings alone rewrite the status once a minute.
     let fresh = c["status"]["autoscale"]["atMs"].as_u64().is_some_and(|t| now.saturating_sub(t) < 60_000);
