@@ -208,6 +208,14 @@ impl Cluster {
         format!("{}-s{id}", self.name)
     }
 
+    /// The cluster's name as the command center shows it: namespace/name,
+    /// or the name alone in the namespace the cloud view makes clusters in
+    /// (`strata`, an internal name kept from before the rename, which the
+    /// header should not show as if it were the product's).
+    fn shown_name(&self) -> String {
+        if self.ns == crate::cloud::NAMESPACE { self.name.clone() } else { format!("{}/{}", self.ns, self.name) }
+    }
+
     /// What a server tells of where it runs (`/v1/cluster`'s copies): its
     /// image, pod and node, and the cluster's name and environment. Taken
     /// at a server's next restart: the settings' hash leaves them out.
@@ -217,7 +225,7 @@ impl Cluster {
             json!({"name": "STRATA_IMAGE", "value": self.spec.image}),
             field("STRATA_POD", "metadata.name"),
             field("STRATA_NODE", "spec.nodeName"),
-            json!({"name": "STRATA_CLUSTER_NAME", "value": format!("{}/{}", self.ns, self.name)}),
+            json!({"name": "STRATA_CLUSTER_NAME", "value": self.shown_name()}),
         ];
         if let Some(e) = self.spec.environment.as_deref().filter(|e| !e.is_empty()) {
             env.push(json!({"name": "STRATA_ENVIRONMENT", "value": e}));
@@ -2319,6 +2327,19 @@ mod tests {
         Cluster { kube, ns: "db".into(), name: "orders".into(), uid: "u-1".into(), spec: serde_json::from_value(spec).unwrap() }
     }
 
+
+    /// The name the command center shows: namespace/name, but the name
+    /// alone in the cloud view's namespace, `strata`, which is not the
+    /// product's name.
+    #[test]
+    fn the_shown_name_leaves_out_the_cloud_namespace() {
+        let mut c = cluster(json!({"demo": 10}));
+        let named = |c: &Cluster| c.place_env().into_iter().find(|e| e["name"] == "STRATA_CLUSTER_NAME").unwrap()["value"].clone();
+        assert_eq!(named(&c), "db/orders");
+        c.ns = crate::cloud::NAMESPACE.into();
+        c.name = "e2e".into();
+        assert_eq!(named(&c), "e2e");
+    }
 
     /// N-D4: an app's pod template names the id of the key its Secret
     /// holds, so that a new key (its tables changed) rolls the pod, which
