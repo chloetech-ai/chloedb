@@ -26,6 +26,12 @@ name: chloedb-js release
 #
 #   gh workflow run js-release.yml --ref chloedb-js-v0.3.4 -f npm=true
 #
+# A release whose own copy of this file cannot publish (0.3.5's) takes the
+# packages a run on its tag built, from a run by hand on main or a branch
+# (the npm job says what it checks first):
+#
+#   gh workflow run js-release.yml --ref main -f npm=true -f from_run=<run id>
+#
 # Setup, once: on npmjs.com, the organization `chloedb` (for the scope
 # @chloedb, which does not exist yet) and a granular token that may publish
 # `chloedb` (whose 0.0.x placeholders came from packaging/chloedb/npm: the
@@ -45,9 +51,13 @@ on:
   workflow_dispatch:
     inputs:
       npm:
-        description: "Publish to npm (only on a release tag, chloedb-js-v<version>)"
+        description: "Publish to npm (only on a release tag, chloedb-js-v<version>, or with from_run)"
         type: boolean
         default: false
+      from_run:
+        description: "With npm: publish the packages an earlier run on a release tag built and tested (its run id), building nothing"
+        type: string
+        default: ""
   # A change to the release itself builds every platform as a release does,
   # without releasing.
   pull_request:
@@ -70,6 +80,7 @@ jobs:
   # A tag releases only a commit of main on which CI's full matrix passed
   # (release-gate.yml says how to start that run when it is missing).
   gate:
+    if: ${{ !inputs.from_run }}
     uses: ./.github/workflows/release-gate.yml
     permissions:
       contents: read
@@ -78,6 +89,7 @@ jobs:
   build:
     name: ${{ matrix.platform }}
     needs: gate
+    if: ${{ !inputs.from_run }}
     strategy:
       fail-fast: false
       matrix:
@@ -198,11 +210,21 @@ jobs:
   # `true`, or on a run by hand on a tag with npm=true (the header says what
   # else it needs): each platform's package, then `chloedb`, which depends
   # on them.
+  #
+  # With from_run, a run by hand (from main or a branch) publishes what an
+  # earlier run on a release tag built and tested instead, once it has
+  # checked that run: js-release.yml, on a chloedb-js-v<version> tag whose
+  # commit it built, every platform's build passed, and its packages carry
+  # that version. That is for a release whose own copy of this file cannot
+  # publish (0.3.5's handed npm a bare path, npm/<file>.tgz, which npm reads
+  # as a GitHub repository). Its packages go out without provenance: npm's
+  # attestation would name this run's commit, not the tag's.
   npm:
     name: npm
     needs: build
     if: >-
-      startsWith(github.ref, 'refs/tags/') &&
+      always() && github.event_name == 'workflow_dispatch' && inputs.npm && inputs.from_run != '' ||
+      always() && needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/') &&
       (vars.CHLOEDB_PUBLISH_NPM == 'true' || (github.event_name == 'workflow_dispatch' && inputs.npm))
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -211,30 +233,61 @@ jobs:
       url: https://www.npmjs.com/package/chloedb
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
+      - name: The earlier run built a release tag, and passed
+        if: inputs.from_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ inputs.from_run }}
+        run: |
+          run=$(gh api "repos/$REPO/actions/runs/$RUN")
+          path=$(jq -r .path <<< "$run"); tag=$(jq -r .head_branch <<< "$run"); sha=$(jq -r .head_sha <<< "$run")
+          test "$path" = .github/workflows/js-release.yml || { echo "::error::run $RUN is of $path, not js-release.yml"; exit 1; }
+          [[ "$tag" == chloedb-js-v* ]] || { echo "::error::run $RUN ran on $tag, not a chloedb-js-v<version> tag"; exit 1; }
+          tagged=$(gh api "repos/$REPO/commits/$tag" --jq .sha)
+          test "$tagged" = "$sha" || { echo "::error::run $RUN built $sha, but $tag is $tagged"; exit 1; }
+          builds=$(gh api "repos/$REPO/actions/runs/$RUN/jobs?per_page=100" --jq '[.jobs[] | select(.name | test("^(linux|darwin)-")) | .conclusion]')
+          test "$(jq 'length' <<< "$builds")" = 4 && test "$(jq 'all(. == "success")' <<< "$builds")" = true || { echo "::error::run $RUN's builds: $builds"; exit 1; }
+          echo "VERSION=${tag#chloedb-js-v}" >> "$GITHUB_ENV"
+          echo "run $RUN built and tested $tag ($sha) on every platform"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: inputs.from_run == ''
         with:
           pattern: chloedb-js-npm-*
           path: npm
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: inputs.from_run != ''
+        with:
+          pattern: chloedb-js-npm-*
+          path: npm
+          merge-multiple: true
+          run-id: ${{ inputs.from_run }}
+          github-token: ${{ github.token }}
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PROVENANCE: ${{ inputs.from_run == '' && '--provenance' || '' }}
         run: |
           test -n "$NODE_AUTH_TOKEN" || { echo "::error::the npm environment's secret NPM_TOKEN is not set"; exit 1; }
           npm whoami > /dev/null || { echo "::error::npm does not take NPM_TOKEN (expired, or not a publish token)"; exit 1; }
           ls -la npm
           publish() {
             name=$(tar -xzOf "$1" package/package.json | node -p 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); p.name + "@" + p.version')
+            if [ -n "$VERSION" ] && [ "${name##*@}" != "$VERSION" ]; then echo "::error::$1 is $name, not version $VERSION"; exit 1; fi
             if [ -n "$(npm view "$name" version 2> /dev/null)" ]; then echo "npm has $name already"; return; fi
-            npm publish "$1" --access public --provenance
+            npm publish "$1" --access public $PROVENANCE
           }
+          # Each path starts with ./: npm reads a bare a/b.tgz as the GitHub
+          # repository a/b.tgz.
           # chloedb-<platform>-<version>.tgz: the platforms' packages.
-          for f in npm/chloedb-*-*-*.tgz; do publish "$f"; done
+          for f in ./npm/chloedb-*-*-*.tgz; do publish "$f"; done
           # Every platform's builds put the same `chloedb` package here; one is published.
-          publish "$(ls npm/chloedb-[0-9]*.tgz | head -n 1)"
+          publish "$(ls ./npm/chloedb-[0-9]*.tgz | head -n 1)"
