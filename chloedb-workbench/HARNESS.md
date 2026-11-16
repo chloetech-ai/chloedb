@@ -239,6 +239,8 @@ says what a finding cost, in the unit it can measure.
 | missed memory | ChloeCtx receipts whose skipped rows include a record later cited in a correction, or a record whose words match the failing test's file (a `decision` pinned or naming the file) | the turns and time from that turn to the fix |
 | redo loop | `test_runs` with the same failing test and the same error signature 3 or more times in one session, where ChloeCtx's `fixes` had a match | the time of the loop |
 | corrected by you | steers and answers (`events`, `questions`) whose text says the same thing to 2 or more agents | the count, and the time each agent waited |
+| said again | ChloeCtx's rules kept because you said an instruction again (`chloectx repeats --json`, `rules`), and instructions said in more than one session it kept for one task only (`groups`, from a ChloeCtx before it kept them) | the sessions it was said in |
+| broken rule | a rule of those said again after the session had been shown it (`said_again_after_shown`): the agent had the rule and broke it | the times; its idea, a one-turn replay of that turn with the rule, waits for that replay |
 | context unused | tool definitions never called (`events.tool` against the session's tool list) and briefing records never cited (receipts against the transcript) | tokens × turns |
 | slow hook | hook timings (a new `hook_runs` row per run, see the data model) over a p95 threshold | the wait, summed |
 | wrong model | `task_features` where a cheaper model finished similar tasks as often (`routing.rs` already ranks them) | dollars |
@@ -350,6 +352,11 @@ Each metric on the results gets:
 - **a verdict**: *better* when the interval excludes 0 in the good
   direction and |Δ| exceeds the noise floor; *worse* when it excludes 0 in
   the bad direction; otherwise *inside the noise*, said in those words.
+  Neither counts a difference under what is measured at all: wall time is
+  read every 300 ms, so under a second is the clock's. A stretch (Optimize
+  this) compares runs, not cases, and with 2 runs a side one version's
+  runs all land above the other's one time in six by chance alone, so
+  there a *worse* difference must exceed the noise floor too.
 
 The **noise floor** comes from the N runs of A on each case: the median of
 the per-case spread of A against A. It is measured on every optimize run,
@@ -806,12 +813,18 @@ Same conventions as SPEC.md: JSON, errors as `{error, error_code}`.
 | `GET /api/harness/findings?repo=&days=` | | `{findings}` |
 | `GET /api/harness/suggestions?repo=` | | `{suggestions}` |
 | `POST /api/harness/suggestions/:id` | `{action: keep\|dismiss\|test}` | `{suggestion}`; `keep` on a widening one needs `approve_widening` |
-| `POST /api/harness/runs` | `{repo, suite?, a, b, n?, cap_usd?, cases?}` | `{run}` (201), with its estimate; 409 `widens` without the approval to test |
-| `GET /api/harness/runs/:id` | | `{run, cases: [{case, set, a: [Run], b: [Run]}], scores}` |
-| `POST /api/harness/runs/:id/stop` | | `{run}` |
-| `GET /api/harness/runs/:id/divergence?case=&a_k=&b_k=` | | `{a: [Turn], b: [Turn], first, context_diff, edits}` |
-| `GET /api/harness/suites?repo=` | | `{suites}` |
-| `POST /api/harness/cases` | `{agent, suite, turns_from?, turns_to?, checks?, set?}` | `{case}` (201); without `checks`, the proposed ones |
+| `POST /api/harness/runs/estimate` | as `POST /api/harness/runs` | `{replays, est_usd, most_usd, confirm_usd, per_replay_usd, estimated_from, skipped, over_cap, honest}` |
+| `POST /api/harness/runs` | `{kind: compare\|optimize, repo?, a?, b?, suite?, cases?, agent?, from?, to?, n?, rounds?, cap_usd?, cap_run_usd?, targets?: [{metric, pct}], confirm_usd, approve_widening?}` | `{run, estimate, case?}` (201); 409 `confirm_cost` until `confirm_usd` is the price shown, `over_cap`, `widens` until each pattern is named |
+| `GET /api/harness/runs?repo=` | | `{runs}`, newest first |
+| `GET /api/harness/runs/:id` | | `{run, cases: [{case, a: [Res], b: [Res]}], scores, replays, errors, now, sandbox}` |
+| `POST /api/harness/runs/:id/stop` | | `{run}`: Enough |
+| `POST /api/harness/runs/:id/decide` | `{approve_widening?: [pattern], skip?: true}` | `{run}`: the answer to a change that waits |
+| `GET /api/harness/runs/:id/divergence?case=&a_k=&b_k=` | | not built: `{a: [Turn], b: [Turn], first, context_diff, edits}` |
+| `GET /api/harness/timeline?agent=` | | `{agent, turns: [{n, ts, ms, prompt, tools, edits, tests, prompts, asks, code, tokens, cost_usd}]}` |
+| `GET /api/harness/cases/propose?agent=&from=&to=` | | the case a stretch makes: `{commit, tree, start_from, context, script, checks, set, warnings, replayable, ...}` |
+| `GET /api/harness/suites?repo=` | | `{suites: [{id, name, cases: [Case + results]}], sessions, cases}` |
+| `POST /api/harness/cases` | `{agent, from?, to?, suite?, name?, checks?, set?, setup?}` | `{case, warnings}` (201); without `checks`, the proposed ones that are ticked |
+| `GET`, `POST`, `DELETE /api/harness/cases/:id` | `{name?, set?, checks?, setup?}` | `{case, results}`, `{case}`, `{deleted}` |
 | `POST /api/harness/mode` | `{repo, mode: suggest\|auto\|nightly, budget_usd?}` | `{mode}` |
 
 The stream (`/api/stream`) gets `event: harness` with run progress and new
@@ -995,9 +1008,8 @@ The Overview shows:
   touches the file.
 - Hook timing is opt-in per version. It uses `date +%s%N`, so it works on
   Linux and not on macOS.
-- The tools, routing and hooks editors, replay, evals, the proposer and
-  auto-learn beyond "Suggest" are not built. They belong to step 3 and
-  later.
+- The tools, routing and hooks editors, the proposer and auto-learn beyond
+  "Suggest" are not built. Replay and evals are step 3, below.
 
 **Dev.**
 - `node ui/dev/harness-seed.mjs` starts a server with the fake `claude` and
@@ -1042,6 +1054,160 @@ aggregate of Debug's per-turn fixes.
 - Reached from the Overview's primary button, the harness tabs and a link at
   the end of Debug's Fix step. Tests: `harness_fix_the_harness_*` and the
   ranking tests in `fixes.rs`.
+
+## Built (H): step 3, Make this a test, replay A against B, Optimize this
+
+`#/harness/evals` (Tests), `#/harness/evals/new/<agent>` (a session's
+turns) and `#/harness/runs/<id>` (a run), on `src/harness/evals.rs`,
+`src/harness/replay.rs` and `src/harness/score.rs`; the agent's More menu
+has "Make this a test".
+
+**A case is a stretch of a session** (`eval_cases`, in suites:
+`eval_suites`). Pick turns on the strip: tap where the stretch starts, then
+where it ends.
+- *Where it starts.* Workbench writes a commit of each worktree as each
+  prompt arrives (`turn_trees`; its uncommitted changes through a private
+  index, no branch moved). A case keeps that commit and, when the worktree
+  had uncommitted changes, the tree to put back uncommitted. A ref,
+  `refs/workbench/cases/<id>`, keeps it from git's garbage collection.
+  Turn 1 falls back on the commit the session started from. Sessions from
+  before this build have no `turn_trees`, so only turn 1 of them is a case.
+- *What came before.* A case that starts after turn 1 keeps the session's
+  transcript cut before its first prompt (in the data folder,
+  `cases/<id>/before.jsonl`). A replay resumes a copy placed for its
+  sandbox in Claude Code's projects folder, removed after.
+- *What it plays.* Its prompts, and each permission prompt and question
+  with what the user answered: the scripted user.
+- *How it is judged.* Checks proposed from what happened, ticked or not:
+  tests that failed then passed (fail_to_pass) and passed and still did
+  (pass_to_pass), as Workbench can run one test; commands that failed then
+  passed; never `git push`; a limit on prompts (off by default). The user
+  can add a command check (its exit code decides).
+- *Its set.* One in three held out, chosen by session, changeable.
+
+**A replay** plays a case under a version, in a sandbox:
+- `git clone --shared --no-checkout` of the repository, its remote removed
+  (checked), the case's commit checked out detached, its uncommitted tree
+  put back. Nothing can be pushed. It is removed after.
+- Its agent runs in the session's permission mode (the case keeps it:
+  without it Claude Code's own default decides what is asked), with the
+  version's permissions, hooks and memory settings
+  (`at_spawn` with the version), the worktree's edit and test defaults, and
+  the replayed repository's `.claude/settings.local.json` (as a session
+  there has it; never its local MCP servers). Its memory is a ChloeCtx
+  store of its own (`CHLOECTX_HOME` under `rx/`, distiller off, models
+  shared), so the user's store is neither read nor written.
+- The user is scripted, never a model: the next prompt when the turn
+  before it ended (its Stop, or Claude Code's "Interrupted" after a No,
+  else 20 s with nothing new; an agent at its text prompt between two
+  steps reads as idle, so idle alone is not the end); a permission prompt
+  answered as the stretch answered the same command (a chain as the
+  stretch answered its commands, No if any was No), else as the user
+  answered it in the last 30 days, else No; a
+  question answered as the stretch answered the question most like it, else
+  by its precedent. Whatever was not in the log is listed and counts as an
+  intervention, and the replay is marked diverged.
+- Its checks run in the sandbox after it ends. Its cost is read from its
+  usage since it started (a resumed conversation's earlier turns are not
+  its cost). It is stopped over its cap ($0.60 by default), over the run's
+  budget ($8), past its time limit (three times the original's plus 5
+  minutes, 10 to 60 minutes), or when it waits two minutes for something
+  Workbench cannot read.
+- Replays are not the user's agents: they are left out of the lists,
+  Needs you, the digest and the findings.
+
+**Replay A against B** (`kind: compare`): each case, run k of A then of
+B, the order turning each time; N=3 a side by default. Refused (409
+`confirm_cost`) until the price the user saw is sent back, refused when the
+estimate is over the budget (`over_cap`), and refused (`widens`) until each
+pattern B widens is named. A against itself measures the noise. Over cases
+it is the scorecard above (too few under 6 complete cases); one case is
+scored over its runs (`score::stretch`: a bootstrap over each side's runs,
+Fisher's exact test on the pass counts).
+
+**Optimize this** (`kind: optimize`) on one stretch. *Not offered by the
+pages for now* (`OPTIMIZE_THIS` in `ui/goals/harness/parts.js`): on a real
+session it found little that Fix the harness does not list from the logs
+for free, at several dollars a run, so it is being rebuilt to start from
+the corrections you make (Hotspots' steers, correcting prompts, refused
+edits) and prove a fix for each on a replay of that turn. The engine and
+`POST /api/harness/runs` with `kind: optimize` stay, tested, for that. It
+makes the case
+with the checks and name on its page,
+replays the current version N times, then tries one change at a time on
+the best so far, each a version of its own (`tried`; the one kept is a
+`candidate`, which the user promotes as any version):
+- the changes, each saying what it aims at, are tried those aimed at more
+  of the targets not met yet first, and otherwise in this order:
+  - allow rules for the commands its replays were asked about: all of
+    them in one change first (up to 5), then each alone, most asked first
+    (on equal counts, those that do not widen). A prompt counts for each
+    of its simple commands the rules its own replay ran with do not allow,
+    other than those Claude Code runs without asking (`echo`, `cat`,
+    `head`, ..., unless the shell expands something in them: Claude Code
+    asks for `echo "exit=$?"` in a chain): `git status; ./check.sh` was
+    asked for `./check.sh`, `./check.sh; echo $?; python -m x run` for all
+    three; over every version
+    tried, so what one rule left is found. A rule asked about less
+    than once a replay is not tried: it cannot be better beyond the noise
+    of its replays (aims: interventions, wall time). All at once because
+    agents chain: in a real run, allowing `./scripts/check.sh` alone left
+    every `python -m shipments.cli export && ./scripts/check.sh` asking;
+  - a faster model, one step down Opus, Sonnet, Haiku from the best's (the
+    session's when the version names none); a step whose replays failed
+    what the one above passed ends the ladder, one only not better goes on
+    to the next (aims: cost, wall time);
+  - less effort (`--effort low`; Claude Code's default is medium), not on
+    Haiku (aims: wall time, cost);
+  - instructions given as each session starts (a SessionStart hook, as the
+    pins are: a resumed conversation keeps the system prompt it recorded),
+    up to 3 a version, written by Opus (`claude -p`, no tools, once per
+    best version, paid from the run's budget) from the case, the targets,
+    what was tried, and the best version's replays call by call with their
+    times; each must hold for the repository in general and never skip or
+    weaken a check (aims: what the writer says);
+  - the pins Fix the harness proposes for the week's missed memory;
+- a version's `agent` part holds its model, effort and instructions; a
+  replay plays the version's model and effort, a new session gets them
+  when it names none (its own choice wins);
+- a change is kept only by the keep rule against the best so far, so one
+  that loses a pass A had is never kept; on one stretch, worse beyond the
+  noise rejects only on what the user pays (interventions, wall time,
+  cost): a faster model that takes more turns or tokens for less time and
+  money is better;
+- wall time counts each intervention at the time the user took to answer
+  in the session (the median of their own answers, at most 5 minutes; a
+  rule's answers take no one's time), since the scripted user answers at
+  once; a replay keeps that share (`wait_ms`) apart;
+- a replay's cost is read from its transcript as it ends, at the price of
+  the model it ran (Workbench's own reading runs every 30 s, and left a
+  replay's last turns out);
+- the user ticks one or more targets (interventions ticked by default, wall
+  time, cost per run, pass rate), each a share better than A and beyond the
+  noise, 30% by default and editable;
+- it stops when every ticked target is met, the budget would not cover
+  another round, the changes or rounds run out, or the user presses Enough;
+- a change that widens waits for the user (`needs_you`): name its patterns
+  to try it, or skip it.
+One stretch says whether a change helps that stretch, not whether it
+generalizes, and the page says so: compare a candidate on the tests before
+promoting it. One run plays at a time, one replay at a time.
+
+**Left out, and why.**
+- Things outside the repository (a database, a service, files elsewhere)
+  are not rewound.
+- A case started before this build can only start at turn 1.
+- Cassettes (recorded tool results) are not built: every replay runs its
+  commands for real, in its sandbox.
+- The proposer does not edit tools, skills or MCP servers, nor the
+  context a replay resumes (a shorter one would cut cost on stretches that
+  start late in a session): phase 3.
+
+Tests: `harness_a_stretch_of_a_session_becomes_a_test_and_replays_a_against_b`,
+`harness_optimize_this_replays_a_then_tries_a_change_and_a_widening_waits_for_you`,
+`harness_optimize_this_for_cost_keeps_a_faster_model_and_stops_when_its_target_is_met`,
+`harness_a_version_runs_its_model_effort_and_instructions_in_replays_and_new_sessions`,
+and the unit tests in `evals.rs`, `replay.rs` and `score.rs`.
 
 ## Risks
 

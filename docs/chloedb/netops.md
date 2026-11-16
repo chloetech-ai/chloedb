@@ -111,7 +111,7 @@ A click on an object also lights what it hangs from and what depends on it, and 
 
 ### The box above every page, and the assistant
 
-The box has two modes, **Search** and **Ask** (Tab switches them when the box is empty), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, `/v1/suggest` completes it from the tables, from what was typed before the word, and from where the person is:
+The box has two modes, **Search** and **Ask** (the buttons before the box switch them; Tab completes the suggestion chosen with the arrows, or moves on to the page), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, `/v1/suggest` completes it from the tables, from what was typed before the word, and from where the person is:
 
 | typed | completed with | how |
 |---|---|---|

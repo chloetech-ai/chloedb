@@ -161,6 +161,8 @@ export function update() {
 
 /** Which tab a hash is under: board, needs, projects or workbench. */
 export function tabOf(hsh) {
+  if (/^#\/s\/new\b/.test(hsh)) return "new";
+  if (/^#\/s(\/|$|\?)/.test(hsh)) return "simple";
   if (/^#\/needs\b/.test(hsh)) return "needs";
   if (/^#\/converge\b/.test(hsh)) return /[?&]project=/.test(hsh) ? "board" : "projects";
   if (/^#\/(p|new)\/?(\?|$)/.test(hsh) || /^#\/new\b/.test(hsh)) return "projects";

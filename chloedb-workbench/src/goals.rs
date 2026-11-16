@@ -776,7 +776,7 @@ pub fn spawn(sup: &Arc<Supervisor>, lv: &Levels, mut req: SpawnRequest) -> Resul
 const DRAFT_SYSTEM: &str = "You split what a developer wants built into the parts that coding agents will build, one agent per part. Answer with JSON only, no prose: {\"parts\":[{\"title\":\"...\",\"done\":\"how to tell it is done: a command that passes, in backticks, or what you will see\",\"after\":[indexes of parts it waits for, from 0],\"model\":\"haiku|sonnet|opus\"}]}. Two to six parts, the smallest first; a part waits for another only when it needs that one's code. Use the developer's words and names; invent no service they did not name.";
 
 /// Runs `claude -p` with a timeout; its stdout.
-fn run_print(bin: &str, args: &[String], cwd: &std::path::Path, timeout: Duration) -> Result<String, String> {
+pub(crate) fn run_print(bin: &str, args: &[String], cwd: &std::path::Path, timeout: Duration) -> Result<String, String> {
     use std::io::Read;
     let mut child = std::process::Command::new(bin)
         .args(args)

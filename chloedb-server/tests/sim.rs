@@ -129,6 +129,37 @@ fn a_lost_volume_that_votes_is_found_again() {
     assert!(r.violations.iter().any(|v| v.contains("is not held by") || v.contains("both began it")), "{:?}", r.violations);
 }
 
+/// The follow-up to N-E2 that TLC found (spec/replication): the replica
+/// that loses its volume, started again empty, learns the shard's
+/// membership from its primary's first call, and the primary stops while
+/// it catches up and the third copy is behind (`Config::uncounted_candidate`).
+/// It asks for no votes until a primary counts it: no seed loses a write
+/// or fails to settle.
+#[test]
+fn a_replica_that_lost_its_volume_asks_for_no_votes_until_counted() {
+    let lost = std::sync::atomic::AtomicU64::new(0);
+    let failed = std::sync::Mutex::new(Vec::new());
+    sim::on_seeds(0..400, jobs(), &|seed| {
+        let r = sim::run(Config::uncounted_candidate(seed), false);
+        lost.fetch_add(r.stats.lost_volumes, std::sync::atomic::Ordering::Relaxed);
+        if !r.ok() {
+            failed.lock().unwrap().push(r);
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 400 seeds with an uncounted candidate broke a promise:{}", failed.len(), explain(&failed));
+    let lost = lost.into_inner();
+    assert!(lost > 200, "only {lost} volumes were lost in 400 seeds: the setup no longer tests them");
+}
+
+/// That bug put back: the replica that lost its volume is elected with
+/// the vote of the copy behind, and the writes both lack are lost.
+#[test]
+fn an_uncounted_candidate_is_found_again() {
+    let r = finds_with(Bug::CampaignsUncounted, 1000, Config::uncounted_candidate).expect("a seed that loses an acknowledged write to a candidate no primary counted");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
+}
+
 #[test]
 fn a_seed_replays_exactly() {
     for seed in 0..4 {

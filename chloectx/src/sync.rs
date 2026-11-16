@@ -31,9 +31,11 @@
 //! should take it over HTTPS and need a key (an API key with the `write`
 //! scope is enough once the table exists; creating it needs `admin`).
 //!
-//! Records retagged or forgotten after they were pushed are not sent
-//! again: the server keeps the version it was sent first. Records that
-//! `chloectx redact` rewrites are ([`push_records`]).
+//! Records retagged after they were pushed are not sent again: the server
+//! keeps the version it was sent first. Records that `chloectx redact`
+//! rewrites are ([`push_records`]). A record forgotten here has its row
+//! deleted on the server, and a pull never stores it again
+//! ([`Forgotten`], audit CTX-33).
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -143,14 +145,23 @@ pub fn pending_origin(r: &Record) -> Option<&str> {
     r.links.iter().find(|l| l.label == SYNCED_FROM).map(|l| l.to.as_str())
 }
 
-/// Where the sync is set up: `sync.json` (the URL) and `sync.token` (the
-/// key, readable by its owner only) in ChloeCtx's home.
+/// Where the sync is set up: `sync.json` (the URL), and the keys,
+/// readable by their owner only, in ChloeCtx's home: each project's own
+/// ([`project_token_path`]) and `sync.token`, the machine's, for the
+/// projects without one.
 pub fn config_path(home: &Path) -> PathBuf {
     home.join("sync.json")
 }
 
 pub fn token_path(home: &Path) -> PathBuf {
     home.join("sync.token")
+}
+
+/// The key of project `project` (its [`project_key`]): a key is limited to
+/// one project's table, so each project of a machine keeps its own, named
+/// for that table, under `sync-keys/`.
+pub fn project_token_path(home: &Path, project: &str) -> PathBuf {
+    home.join("sync-keys").join(format!("{}.token", table_for(project)))
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -199,20 +210,51 @@ pub fn project_key(home: &Path, project: &str) -> String {
     }
 }
 
-/// The server to sync with: `$CHLOECTX_SYNC_URL`, else `sync.json`; the
-/// key: `$CHLOECTX_SYNC_TOKEN`, else the variable `sync.json` names, else
-/// `sync.token` (none: the server is open, or a proxy adds it). `None` when
-/// no URL is set.
+/// The server to sync with, and the machine's key ([`remote_for`] with no
+/// project's own). `None` when no URL is set.
 pub fn remote(home: &Path) -> Option<Remote> {
+    remote_with(home, None)
+}
+
+/// The server to sync project `project` (its [`project_key`]) with:
+/// `$CHLOECTX_SYNC_URL`, else `sync.json`; the key: `$CHLOECTX_SYNC_TOKEN`,
+/// else the variable `sync.json` names, else the project's own
+/// ([`project_token_path`]), else the machine's, `sync.token` (none: the
+/// server is open, or a proxy adds it). `None` when no URL is set.
+pub fn remote_for(home: &Path, project: &str) -> Option<Remote> {
+    remote_with(home, Some(project))
+}
+
+fn remote_with(home: &Path, project: Option<&str>) -> Option<Remote> {
     let cfg = load_config(home);
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|t| t.trim().to_string());
+    let file = |p: PathBuf| std::fs::read_to_string(p).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let url = env("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
-    let token = env("CHLOECTX_SYNC_TOKEN")
-        .or_else(|| Some(cfg.token_env.as_str()).filter(|k| !k.is_empty()).and_then(env))
-        .or_else(|| std::fs::read_to_string(token_path(home)).ok())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
-    Some(Remote { url: url.trim().trim_end_matches('/').to_string(), token, header_dir: home.to_path_buf() })
+    let named = Some(cfg.token_env.as_str()).filter(|k| !k.is_empty());
+    let (token, key_from) = if let Some(t) = env("CHLOECTX_SYNC_TOKEN") {
+        (Some(t), "$CHLOECTX_SYNC_TOKEN".to_string())
+    } else if let Some((k, t)) = named.and_then(|k| env(k).map(|t| (k, t))) {
+        (Some(t), format!("${k}"))
+    } else if let Some(t) = project.and_then(|p| file(project_token_path(home, p))) {
+        (Some(t), "the project's key".to_string())
+    } else if let Some(t) = file(token_path(home)) {
+        (Some(t), "the machine's key (sync.token)".to_string())
+    } else {
+        (None, "no key".to_string())
+    };
+    Some(Remote { url: url.trim().trim_end_matches('/').to_string(), token, key_from, header_dir: home.to_path_buf() })
+}
+
+/// What to do when the server refused the key (`error`, a 403) for project
+/// `project`: a key of its own. Empty for any other error.
+pub fn key_hint(project: &str, error: &str) -> String {
+    if !error.contains(": 403:") {
+        return String::new();
+    }
+    format!(
+        "; this project needs a key that may write {}: \"Make a sync key\" on the server's ChloeCtx page, for project {project}, then run the setup line it shows in this project's folder",
+        table_for(project)
+    )
 }
 
 /// Refuses a server reached over plain HTTP anywhere but this machine:
@@ -237,8 +279,11 @@ pub fn check_url(url: &str) -> Result<()> {
     Err(err(format!("sync server {u}: plain HTTP to another machine would send your sessions and the key in the clear; use https:// (or set CHLOECTX_SYNC_ALLOW_HTTP=1)")))
 }
 
-/// Writes the sync's settings (and the key, owner-only, when given).
-pub fn setup(home: &Path, url: &str, token: Option<&str>, token_env: &str, renames: &[String]) -> Result<()> {
+/// Writes the sync's settings, and the key, owner-only, when given: as
+/// the own key of the project in folder `folder` (by its [`project_key`]),
+/// and as the machine's (`sync.token`, for projects without one) when there
+/// is none yet or `every_project`. Where the key went.
+pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_env: &str, renames: &[String], every_project: bool) -> Result<Vec<PathBuf>> {
     check_url(url)?;
     crate::paths::create_private_dir(home)?;
     let mut map = std::collections::BTreeMap::new();
@@ -249,17 +294,35 @@ pub fn setup(home: &Path, url: &str, token: Option<&str>, token_env: &str, renam
     let trusted = load_config(home).trusted;
     let cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map, trusted };
     std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-    if let Some(t) = token {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(token_path(home))?;
-        f.write_all(t.trim().as_bytes())?;
+    let mut kept = Vec::new();
+    if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
+        // The project's key is the one its daemon sends; the machine's is
+        // for the projects without one, so a later project's key does not
+        // replace it unless asked.
+        let own = project_token_path(home, &project_key(home, folder));
+        crate::paths::create_private_dir(own.parent().expect("under sync-keys"))?;
+        let mut paths = vec![own];
+        if every_project || !token_path(home).exists() {
+            paths.push(token_path(home));
+        }
+        for p in paths {
+            let tmp = p.with_extension("tmp");
+            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+            f.write_all(t.as_bytes())?;
+            drop(f);
+            std::fs::rename(&tmp, &p)?;
+            kept.push(p);
+        }
     }
-    Ok(())
+    Ok(kept)
 }
 
 /// A ChloeDB server's HTTP API, called with `curl`.
 pub struct Remote {
     pub url: String,
     token: Option<String>,
+    /// Where the key came from, for `chloectx sync status` and doctor.
+    pub key_from: String,
     /// Where the request's header file is written (owner-only, removed
     /// after): the key is never on a command line.
     header_dir: PathBuf,
@@ -274,7 +337,7 @@ impl Remote {
     /// server's message.
     fn post(&self, route: &str, body: &Json) -> Result<Json> {
         if self.token.as_deref().is_some_and(is_anthropic_key) {
-            return Err(err(format!("the sync's key is an Anthropic API key (sk-ant-...), not a ChloeDB token or API key (sk_<id>_<secret>): it was not sent to {}. Set the variable or sync.token to the server's key", self.url)));
+            return Err(err(format!("the sync's key is an Anthropic API key (sk-ant-...), not a ChloeDB token or API key (sk_<id>_<secret>): it was not sent to {}. It came from {}: put the server's key there instead", self.url, self.key_from)));
         }
         check_url(&self.url)?;
         let mut cmd = Command::new("curl");
@@ -367,6 +430,86 @@ pub fn save_state(store_dir: &Path, s: &SyncState) {
     if std::fs::write(&tmp, serde_json::to_string(s).unwrap_or_default()).is_ok() {
         let _ = std::fs::rename(tmp, state_path(store_dir));
     }
+}
+
+/// The records forgotten in a store (audit CTX-33): `sync-forgotten.json`
+/// beside it. A pull never stores one of them again, whichever server or
+/// machine still holds it, and each push deletes the server's rows of
+/// those whose delete the server has not answered yet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Forgotten {
+    /// Every record forgotten here, by id.
+    #[serde(default)]
+    pub ids: std::collections::BTreeSet<String>,
+    /// Those whose row the sync server may still hold.
+    #[serde(default)]
+    pub unsent: std::collections::BTreeSet<String>,
+}
+
+/// Held while `sync-forgotten.json` is read and written again: a forget
+/// adds to it while a push takes from it.
+static FORGOTTEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn forgotten_path(store_dir: &Path) -> PathBuf {
+    store_dir.join("sync-forgotten.json")
+}
+
+pub fn load_forgotten(store_dir: &Path) -> Forgotten {
+    std::fs::read_to_string(forgotten_path(store_dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_forgotten(store_dir: &Path, f: &Forgotten) -> Result<()> {
+    let tmp = forgotten_path(store_dir).with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string(f).unwrap_or_default())?;
+    std::fs::rename(tmp, forgotten_path(store_dir))?;
+    Ok(())
+}
+
+/// Notes `ids` as forgotten in the store at `store_dir`: never pulled again,
+/// and their server rows to delete ([`send_forgets`]).
+pub fn forget(store_dir: &Path, ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut f = load_forgotten(store_dir);
+    for id in ids {
+        f.ids.insert(id.clone());
+        f.unsent.insert(id.clone());
+    }
+    save_forgotten(store_dir, &f)
+}
+
+/// Deletes the server's rows of the records forgotten in the store at
+/// `store_dir` that it may still hold: in the project's table, and in the
+/// table projects shared before 0.3.4 where the key may write it (a key of
+/// the project's table alone may not, and the store's list keeps those
+/// from coming back here all the same). How many were sent.
+pub fn send_forgets(remote: &Remote, project: &str, store_dir: &Path) -> Result<usize> {
+    let unsent: Vec<String> = {
+        let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+        load_forgotten(store_dir).unsent.into_iter().collect()
+    };
+    if unsent.is_empty() {
+        return Ok(0);
+    }
+    let table = table_for(project);
+    for batch in unsent.chunks(BATCH) {
+        let ops = |t: &str| -> Vec<Json> { batch.iter().map(|id| json!({"op": "delete", "table": t, "key": format!("{project}:{id}")})).collect() };
+        match remote.post("/v1/write", &json!({ "ops": ops(&table) })) {
+            // A server with no table of the project holds none of its rows.
+            Err(e) if no_table(&e, &table) => {}
+            r => drop(r?),
+        }
+        let _ = remote.post("/v1/write", &json!({ "ops": ops(TABLE) }));
+    }
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut f = load_forgotten(store_dir);
+    for id in &unsent {
+        f.unsent.remove(id);
+    }
+    save_forgotten(store_dir, &f)?;
+    Ok(unsent.len())
 }
 
 /// A record as the server's row, redacted, pushed by machine `origin`.
@@ -481,18 +624,20 @@ pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<u
 /// Stores the records of `project` the server holds and `store` lacks:
 /// from the project's table, then from the table projects shared before
 /// 0.3.4 ([`TABLE`]) where the key may read it. A server without a table
-/// holds nothing to pull from it.
-pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
+/// holds nothing to pull from it. The records forgotten in the store
+/// (its [`Forgotten`], in `store_dir`) are never stored again (audit
+/// CTX-33).
+pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, store_dir: &Path) -> Result<usize> {
     let cfg = load_config(&remote.header_dir);
     let me = origin(&remote.header_dir);
     let table = table_for(project);
-    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg.trusted) {
+    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg.trusted, store_dir) {
         Err(e) if no_table(&e, &table) => 0,
         r => r?,
     };
     // The shared table may be gone, or not for this key (a project's key
     // is refused it): neither is an error of this project's sync.
-    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg.trusted).unwrap_or(0);
+    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg.trusted, store_dir).unwrap_or(0);
     st.pulled += got as u64;
     st.last_pull = crate::now();
     Ok(got)
@@ -503,7 +648,8 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -
 /// records, so the server holds several of one number, and a full page
 /// may end inside them, so its last number's records are read whole
 /// before the next page starts after it.
-fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, trusted: &[String]) -> Result<usize> {
+#[allow(clippy::too_many_arguments)]
+fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
     let mut got = 0;
     let mut after = i64::MIN;
     loop {
@@ -514,7 +660,7 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
             rows.retain(|r| r.get(5).and_then(|v| v.as_i64()) != Some(top));
             rows.extend(remote.rows(&format!("SELECT {cols} FROM {table} WHERE project = :p AND seq = :s LIMIT 10000"), json!({ "p": project, "s": top }))?);
         }
-        got += store_new(store, &rows, me, trusted)?;
+        got += store_new(store, &rows, me, trusted, store_dir)?;
         after = top;
         if !full {
             break;
@@ -527,11 +673,20 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
 /// here; how many. A row another machine pushed (its `origin`, the
 /// thirteenth column, is not `me`; a row of the shared table names none)
 /// is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`] when it is in
-/// `trusted`.
-fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String]) -> Result<usize> {
+/// `trusted`. A record forgotten here ([`Forgotten`], in `store_dir`) is
+/// passed over: the server, or another machine that pushes it again, may
+/// still hold it. The list is read, and the records stored, while a forget
+/// cannot add to it, so that one that deletes a record as it is pulled
+/// either finds it stored, and deletes it, or keeps it out.
+fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
+    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+    let forgotten = load_forgotten(store_dir).ids;
     let mut recs: Vec<Record> = Vec::new();
     for row in rows {
         let Some(mut r) = remote_record(row) else { continue };
+        if forgotten.contains(&r.id) {
+            continue;
+        }
         crate::redact::redact_record(&mut r);
         let from = row.get(12).and_then(|v| v.as_str()).filter(|o| !o.is_empty()).unwrap_or("unknown");
         if from != me {
@@ -631,6 +786,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_project_syncs_with_its_own_key_and_the_first_is_the_machines() {
+        // A key is limited to one project's table: one sync.token for the
+        // machine sent the first project's key for every other, refused.
+        if std::env::var_os("CHLOECTX_SYNC_TOKEN").is_some() || std::env::var_os("CHLOECTX_SYNC_URL").is_some() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("ctx");
+        let (web, shop) = (t.path().join("web"), t.path().join("shop"));
+        let url = "https://chloedb.example.com";
+        let (web_key, shop_key) = (project_key(&home, &web.to_string_lossy()), project_key(&home, &shop.to_string_lossy()));
+        let kept = setup(&home, &web.to_string_lossy(), url, Some("sk_web_1\n"), "", &[], false).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &web_key), token_path(&home)], "the first key is the machine's too");
+        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_shop_2"), "", &[], false).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &shop_key)], "a later one is its project's only");
+        let token = |r: Option<Remote>| r.and_then(|r| r.token).unwrap_or_default();
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert_eq!(token(remote_for(&home, &shop_key)), "sk_shop_2");
+        assert_eq!(remote_for(&home, &shop_key).unwrap().key_from, "the project's key");
+        // A project without one sends the machine's.
+        assert_eq!(token(remote_for(&home, "acme/other")), "sk_web_1");
+        assert_eq!(remote_for(&home, "acme/other").unwrap().key_from, "the machine's key (sync.token)");
+        assert_eq!(token(remote(&home)), "sk_web_1");
+        // --every-project replaces the machine's; no key given keeps them all.
+        setup(&home, &shop.to_string_lossy(), url, Some("sk_admin_3"), "", &[], true).unwrap();
+        assert_eq!(token(remote_for(&home, "acme/other")), "sk_admin_3");
+        assert!(setup(&home, &web.to_string_lossy(), url, None, "", &[], false).unwrap().is_empty());
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        // Each file is its owner's only.
+        use std::os::unix::fs::PermissionsExt;
+        for p in [project_token_path(&home, &web_key), token_path(&home)] {
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o077, 0, "{}", p.display());
+        }
+        // A 403 says which key the project needs; another error, nothing.
+        let h = key_hint("acme/web", "https://x/v1/write: 403: a write touches table chloectx_mem_acme_web_9, which the key \"k\" may not");
+        assert!(h.contains(&table_for("acme/web")) && h.contains("Make a sync key") && h.contains("acme/web"), "{h}");
+        assert!(key_hint("acme/web", "https://x/v1/write: curl: (7) Failed to connect").is_empty());
+    }
+
+    #[test]
     fn a_remote_names_its_repository() {
         for u in ["https://github.com/chloetech-ai/Strata", "https://github.com/chloetech-ai/strata.git", "git@github.com:chloetech-ai/strata.git", "http://local_proxy@127.0.0.1:1234/git/chloetech-ai/strata"] {
             assert_eq!(repo_of(u).as_deref(), Some("chloetech-ai/strata"), "{u}");
@@ -659,14 +854,14 @@ mod tests {
         for u in ["http://chloedb.example.com", "http://10.0.0.5:7700", "http://127.0.0.1.example.com", "http://127.0.0.1@evil.example.com/", "ftp://x"] {
             assert!(check_url(u).is_err(), "{u}");
         }
-        let r = Remote { url: "http://chloedb.example.com".into(), token: Some("sk_a_b".into()), header_dir: std::env::temp_dir() };
+        let r = Remote { url: "http://chloedb.example.com".into(), token: Some("sk_a_b".into()), key_from: String::new(), header_dir: std::env::temp_dir() };
         let e = r.post("/v1/query", &json!({})).unwrap_err().to_string();
         assert!(e.contains("plain HTTP") && !e.contains("sk_a_b"), "{e}");
     }
 
     #[test]
     fn an_anthropic_key_is_never_sent() {
-        let r = Remote { url: "http://127.0.0.1:9".into(), token: Some("sk-ant-api03-xxxx".into()), header_dir: std::env::temp_dir() };
+        let r = Remote { url: "http://127.0.0.1:9".into(), token: Some("sk-ant-api03-xxxx".into()), key_from: String::new(), header_dir: std::env::temp_dir() };
         let e = r.post("/v1/query", &json!({})).unwrap_err().to_string();
         assert!(e.contains("Anthropic API key") && !e.contains("xxxx"), "{e}");
         assert!(!is_anthropic_key("sk_abc_def") && !is_anthropic_key("a-cluster-token"));

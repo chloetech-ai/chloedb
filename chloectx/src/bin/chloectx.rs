@@ -19,7 +19,7 @@ as usual; it records each session, recalls what bears on each prompt and writes
 down decisions and rules. `chloectx doctor` says whether that is happening.
 
 More commands (`chloectx help <command>` explains each):
-  look into memory   report, blame, receipts, receipt, snapshot, sql, stats, briefing
+  look into memory   report, repeats, blame, receipts, receipt, snapshot, sql, stats, briefing
   maintain a store   forget, move, redact, distill, consolidate, backup, fetch-model, ingest-transcript
   share memory       sync, pack, mount, app
   run by Claude Code (not by hand): hook, mcp, serve, rpc, wiring";
@@ -231,6 +231,34 @@ enum Cmd {
         /// Print the JSON report.
         #[arg(long)]
         json: bool,
+    },
+    /// What you told agents for one task in more than one session: the
+    /// instructions ChloeCtx keeps as rules of every session once you say
+    /// them in a second session. Reads the store and writes nothing.
+    #[command(hide = true)]
+    Repeats {
+        /// The last N days.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// Print the JSON result: each group's rule, its number of sessions,
+        /// and what was said in each (`id`, `session`, `ts`, `text`).
+        #[arg(long)]
+        json: bool,
+        /// Read this store directory itself, read-only, beside the ChloeCtx
+        /// that writes it (one too old to answer `repeats`), instead of
+        /// asking the project's ChloeCtx.
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Ask the distiller about each case of this JSON-lines file
+        /// (`{"id", "request", "answer"?, "before": [{"id", "text"}],
+        /// "expect": [id]}`) and count the repeats it finds against
+        /// `expect`; nothing is stored.
+        #[arg(long)]
+        judge: Option<PathBuf>,
+        /// The distiller's model for `--judge` (otherwise
+        /// `CHLOECTX_DISTILL_MODEL`, or the store's).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Copy the project's store to a new directory while ChloeCtx runs: a
     /// consistent copy of the database, the session state and the event
@@ -457,9 +485,16 @@ enum SyncCmd {
         #[arg(long)]
         url: String,
         /// Read the server's key (an API key or token) from stdin, kept
-        /// owner-only in ChloeCtx's home, never on the command line.
+        /// owner-only in ChloeCtx's home as this project's own (a key may
+        /// be limited to one project's table), never on the command line.
         #[arg(long, conflicts_with = "token_env")]
         token_stdin: bool,
+        /// Keep the key from stdin as the machine's too (sync.token), for
+        /// every project without a key of its own: an admin's key, or one
+        /// that may write several projects' tables. Without it, only the
+        /// first key set up on the machine becomes the machine's.
+        #[arg(long, requires = "token_stdin")]
+        every_project: bool,
         /// Read the key from this environment variable whenever the daemon
         /// syncs (one a cloud environment sets, say); no file holds it.
         #[arg(long, default_value = "")]
@@ -628,6 +663,48 @@ fn main() {
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user"}), 30)),
+        Cmd::Repeats { days, json: as_json, store, judge, model } => {
+            let r = match (store, judge) {
+                (store, Some(file)) => {
+                    let mut cfg = store.map(|d| daemon::Config::load(&d.join("config.json")).distill).unwrap_or_default();
+                    if let Some(m) = model {
+                        std::env::remove_var("CHLOECTX_DISTILL_MODEL");
+                        cfg.model = m;
+                    }
+                    let cases: Vec<Json> = std::fs::read_to_string(&file)
+                        .unwrap_or_else(|e| {
+                            eprintln!("chloectx repeats: {}: {e}", file.display());
+                            std::process::exit(1)
+                        })
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| {
+                            serde_json::from_str(l).unwrap_or_else(|e| {
+                                eprintln!("chloectx repeats: {}: a line is not JSON: {e}", file.display());
+                                std::process::exit(2)
+                            })
+                        })
+                        .collect();
+                    chloectx::repeats::judge(&cfg, &cases, 4)
+                }
+                (Some(dir), None) => {
+                    let cfg = daemon::Config::load(&dir.join("config.json"));
+                    let scanned = embed::open(&cfg.embedder)
+                        .and_then(|e| chloectx::store::Store::open_read_only(&dir.join("memory.strata"), std::sync::Arc::from(e)))
+                        .and_then(|s| chloectx::repeats::scan(&s, chloectx::now() - days.max(1) * 86_400, 20_000));
+                    scanned.unwrap_or_else(|e| {
+                        eprintln!("chloectx repeats: {}: {e}", dir.display());
+                        std::process::exit(1)
+                    })
+                }
+                (None, None) => send(&project, json!({"op": "repeats", "days": days}), 120),
+            };
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
         Cmd::Report { days, session, json: as_json } => {
             let r = send(&project, json!({"op": "report", "days": days, "session": session}), 120);
             if as_json {
@@ -659,20 +736,23 @@ fn main() {
                 }
             }
         }
-        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, renames, no_create } } => {
+        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, every_project, token_env, renames, no_create } } => {
             let token = token_stdin.then(|| {
                 let mut t = String::new();
                 let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
                 t
             });
             let home = paths::home();
-            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env, &renames) {
+            let kept = chloectx::sync::setup(&home, &project.to_string_lossy(), &url, token.as_deref(), &token_env, &renames, every_project).unwrap_or_else(|e| {
                 eprintln!("chloectx sync: {e}");
                 std::process::exit(1);
+            });
+            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
+            let remote = chloectx::sync::remote_for(&home, &key).expect("just set up");
+            if !kept.is_empty() {
+                println!("the key is kept in {}", kept.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and "));
             }
-            let remote = chloectx::sync::remote(&home).expect("just set up");
             if !no_create {
-                let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
                 if let Err(e) = remote.create_table(&key) {
                     eprintln!("chloectx sync: could not create the table {} on {}: {e}", chloectx::sync::table_for(&key), remote.url);
                     std::process::exit(1);
@@ -680,10 +760,12 @@ fn main() {
             }
             // Not fatal: the key may only be in the environment of the
             // sessions to come (a cloud setup script runs before it is).
-            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
             match remote.count(&key) {
-                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there)", remote.url),
-                Err(e) => println!("sync set up with {}; this project syncs as {key}; the server does not answer yet ({e}): the daemon tries again when it starts", remote.url),
+                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there), with {}", remote.url, remote.key_from),
+                Err(e) => {
+                    let e = e.to_string();
+                    println!("sync set up with {}; this project syncs as {key}, with {}; the server does not answer yet ({e}){}: the daemon tries again when it starts", remote.url, remote.key_from, chloectx::sync::key_hint(&key, &e));
+                }
             }
             // A running daemon syncs once it starts again (on the next hook or tool).
             let dir = paths::store_dir(&project);

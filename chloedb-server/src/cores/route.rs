@@ -20,10 +20,14 @@
 //! round trip counts as the median of those that have one, neither
 //! favoured nor avoided.
 //!
-//! What a copy's order was before stays: copies in their cool-off (failed
-//! or outrun) are asked after the others, in turn; a copy the read must
-//! ask first (`first`, the copy holding its lease or its kept statistics)
-//! is first among those like it.
+//! Copies in their cool-off (failed or outrun) are asked after the others,
+//! in turn; when every copy is in its cool-off, they are ordered by cost
+//! as if none were. Under overload each copy is outrun in its turn, and
+//! asking them all in turn would throw away what is known of them (on
+//! DigitalOcean, with one copy of three on a busy node, least cost then
+//! did worse than round robin; `docs/chloedb/server.md` has the numbers).
+//! A copy the read must ask first (`first`, the copy holding its lease or
+//! its kept statistics) is first among those like it.
 
 /// What the order is decided by, of one copy.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -99,8 +103,11 @@ pub fn order(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> 
     let rotation: Vec<usize> = (0..n).map(|k| (start + k) % n).collect();
     let neutral = neutral(copies);
     let costs: Vec<f64> = copies.iter().map(|c| cost(c, neutral)).collect();
-    let open: Vec<usize> = rotation.iter().copied().filter(|&r| !copies[r].avoided).collect();
-    let avoided: Vec<usize> = rotation.iter().copied().filter(|&r| copies[r].avoided).collect();
+    // Every copy in its cool-off: by cost, as if none were.
+    let all = copies.iter().all(|c| c.avoided);
+    let cooling = |r: usize| copies[r].avoided && !all;
+    let open: Vec<usize> = rotation.iter().copied().filter(|&r| !cooling(r)).collect();
+    let avoided: Vec<usize> = rotation.iter().copied().filter(|&r| cooling(r)).collect();
     let mut out = Vec::with_capacity(n);
     if !open.is_empty() {
         // The rotation's copy, or the other choice when it costs clearly less.
@@ -121,7 +128,7 @@ pub fn order(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> 
     // The copy the read must ask first, first among those like it.
     if let Some(f) = first.filter(|&f| f < n) {
         let at = out.iter().position(|&r| r == f).expect("every copy is ordered");
-        let group_start = if copies[f].avoided { out.len() - out.iter().rev().take_while(|&&r| copies[r].avoided).count() } else { 0 };
+        let group_start = if cooling(f) { out.len() - out.iter().rev().take_while(|&&r| cooling(r)).count() } else { 0 };
         let r = out.remove(at);
         out.insert(group_start, r);
     }
@@ -223,9 +230,27 @@ mod tests {
         let o = order(&copies, 0, None, 0);
         assert_eq!(&o[2..], &[0, 2], "{o:?}");
         assert_eq!(o[1], 1, "the slow open copy is asked after the fast one");
-        // All in cool-off: in turn, as before.
+        // All in cool-off, alike: in turn.
         let all = [Copy { avoided: true, ..known(1.0) }; 3];
         assert_eq!(order(&all, 1, None, 9), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn copies_all_in_their_cool_off_are_ordered_by_cost() {
+        // As if none were: the slow copy is asked less, and last.
+        let mut copies = [known(1.0), known(50.0), known(1.0)];
+        for c in &mut copies {
+            c.avoided = true;
+        }
+        let open = copies.map(|c| Copy { avoided: false, ..c });
+        for turn in 0..30 {
+            assert_eq!(order(&copies, turn % 3, None, mix(turn as u64)), order(&open, turn % 3, None, mix(turn as u64)), "turn {turn}");
+        }
+        let firsts = shares(&copies, 300);
+        assert!(firsts[1] < firsts[0] / 2 && firsts[1] < firsts[2] / 2, "{firsts:?}");
+        assert_eq!(*order(&copies, 1, None, 3).last().unwrap(), 1);
+        // The copy a read must ask first still is.
+        assert_eq!(order(&copies, 0, Some(1), 3)[0], 1);
     }
 
     #[test]

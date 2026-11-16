@@ -449,18 +449,21 @@ impl Principal {
     /// [`AS_TABLES`] gives them), each no wider than its scope: what an
     /// app runs for a caller (a sheet's query) is then checked as the
     /// caller's key would be, by the tables it reads and writes. It only
-    /// ever narrows: a key already limited to tables cannot narrow itself
-    /// again (its own grants are what count), and the narrowed credential
-    /// is never the root.
+    /// ever narrows: a key already limited to tables (the key a server
+    /// gives each app it starts, [`crate::app_procs::grants`]) keeps, on
+    /// each table, the lower of its own scope there and the caller's, and
+    /// nothing where either has none ([`intersect`]; DAT-5: refusing such
+    /// a key refused every caller of the crawler and Sheets a server
+    /// starts); the narrowed credential is never the root.
     pub fn narrowed(&self, grants: &str) -> Result<Principal, ApiError> {
-        if self.limited() {
-            return Err(ApiError { code: None, status: 403, message: format!("{AS_TABLES} narrows a key of every table; the key {:?} is limited to tables already", self.name) });
-        }
         let mut g = Vec::new();
         for s in grants.split(',').filter(|s| !s.trim().is_empty()) {
             let mut x = Grant::parse(s)?;
             x.scope = x.scope.min(self.scope);
             g.push(x);
+        }
+        if let Some(own) = &self.tables {
+            g = intersect(own, &g);
         }
         let mut p = self.clone();
         p.scope = widest(&g).min(self.scope);
@@ -485,6 +488,45 @@ pub fn granted(grants: &[Grant], table: &str) -> Option<Scope> {
         .filter(|g| g.covers(table))
         .map(|g| if own && g.table.ends_with('*') { g.scope.min(Scope::Read) } else { g.scope })
         .max()
+}
+
+/// Grants that give on each table the lower of what `a` and `b` give there
+/// ([`granted`]), and nothing where either gives nothing: each grant of
+/// `a` with each of `b` that names tables in common gives those, at the
+/// lower of the two scopes. (The most of such lows on a table is the low
+/// of the two mosts.) A table of [`NAMED_TO_WRITE`] that only one side
+/// names, the other covering it by a pattern, is read only, as it is on
+/// that side.
+pub fn intersect(a: &[Grant], b: &[Grant]) -> Vec<Grant> {
+    let mut out: Vec<Grant> = Vec::new();
+    for x in a {
+        for y in b {
+            let Some(table) = common(&x.table, &y.table) else { continue };
+            let mut scope = x.scope.min(y.scope);
+            let by_pattern = x.table.ends_with('*') || y.table.ends_with('*');
+            if !table.ends_with('*') && by_pattern && NAMED_TO_WRITE.iter().any(|t| t.eq_ignore_ascii_case(&table)) {
+                scope = scope.min(Scope::Read);
+            }
+            match out.iter_mut().find(|g| g.table == table) {
+                Some(g) => g.scope = g.scope.max(scope),
+                None => out.push(Grant { table, scope }),
+            }
+        }
+    }
+    out
+}
+
+/// The tables two grants' names both cover, as one name (a table's, or a
+/// prefix and `*`), if any.
+fn common(a: &str, b: &str) -> Option<String> {
+    match (a.strip_suffix('*'), b.strip_suffix('*')) {
+        (None, None) => (a == b).then(|| a.to_string()),
+        (Some(p), None) => b.starts_with(p).then(|| b.to_string()),
+        (None, Some(q)) => a.starts_with(q).then(|| a.to_string()),
+        (Some(p), Some(q)) if p.starts_with(q) => Some(a.to_string()),
+        (Some(p), Some(q)) if q.starts_with(p) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 /// Grants as the API shows them: `{"crawl_*": "admin"}`.
@@ -1695,6 +1737,50 @@ impl Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn limited_to(name: &str, grants: &[(&str, Scope)]) -> Principal {
+        let g: Vec<Grant> = grants.iter().map(|(t, s)| Grant::new(t, *s).unwrap()).collect();
+        Principal { name: name.into(), key: Some("k1".into()), scope: widest(&g), root: false, tables: Some(g.into()), role: None, agent: false, on_behalf_of: None, allow: None }
+    }
+
+    /// DAT-5: the key a server gives an app it starts is limited to the
+    /// app's tables, and narrowed to a caller's tables it keeps on each
+    /// table the lower of the two scopes, and nothing where either has
+    /// none: never wider than the app's key, nor than the caller's.
+    #[test]
+    fn a_limited_key_narrowed_to_a_callers_tables_keeps_what_both_give() {
+        use Scope::{Admin, Read, Write};
+        let sheets = limited_to("app:sheets", &[("sheets_*", Admin), ("*", Read)]);
+        let at = |p: &Principal, t: &str| p.table_scope(t);
+        // The root: what the app's key gives.
+        let root = sheets.narrowed("*=admin").unwrap();
+        assert_eq!((at(&root, "sheets_books"), at(&root, "docs"), root.scope, root.root), (Some(Admin), Some(Read), Admin, false));
+        // A writer: writes Sheets' tables, makes none, reads the rest.
+        let writer = sheets.narrowed("*=write").unwrap();
+        assert_eq!((at(&writer, "sheets_cells"), at(&writer, "docs"), writer.scope), (Some(Write), Some(Read), Write));
+        // A key of some tables: only those, at the lower scope.
+        let some = sheets.narrowed("sheets_*=write,docs=read").unwrap();
+        assert_eq!((at(&some, "sheets_books"), at(&some, "docs"), at(&some, "other")), (Some(Write), Some(Read), None));
+        // A prefix within the app's, and one around it.
+        let team = sheets.narrowed("sheets_team_*=admin,team_*=admin").unwrap();
+        assert_eq!((at(&team, "sheets_team_a"), at(&team, "sheets_books"), at(&team, "team_x")), (Some(Admin), None, Some(Read)));
+        // A reader cannot write through the app.
+        let reader = sheets.narrowed("*=read").unwrap();
+        assert_eq!((at(&reader, "sheets_books"), reader.scope), (Some(Read), Read));
+        // Nothing in common: no table at all.
+        let crawler = limited_to("app:crawler", &[("crawl_*", Admin)]);
+        let none = crawler.narrowed("docs=admin").unwrap();
+        assert_eq!((at(&none, "docs"), at(&none, "crawl_x")), (None, None));
+        let root = crawler.narrowed("*=admin").unwrap();
+        assert_eq!((at(&root, "crawl_example_com"), at(&root, "docs")), (Some(Admin), None));
+        // A table an admin's grant by a pattern only reads stays read
+        // only when the caller names it.
+        let wide = limited_to("app:x", &[("*", Admin)]);
+        let named = wide.narrowed(&format!("{}=admin", chloedb::autopilot::PROPOSALS)).unwrap();
+        assert_eq!(at(&named, chloedb::autopilot::PROPOSALS), Some(Read));
+        // A bad grant is refused, not ignored.
+        assert!(sheets.narrowed("docs=sometimes").is_err());
+    }
 
     #[test]
     fn a_rotated_key_lives_as_long_as_the_old_one_did_from_now() {

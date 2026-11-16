@@ -176,10 +176,10 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     shard_timeout_ms: u64,
     /// With --shards: how the replica of a shard asked first for a read is
-    /// chosen: round-robin (each in turn) or least-cost (in turn, unless
-    /// another costs clearly less by its recent round trips, calls in
-    /// flight, errors and reported load).
-    #[arg(long, default_value = "round-robin", value_parser = ["round-robin", "least-cost"])]
+    /// chosen: least-cost (in turn, unless another costs clearly less by
+    /// its recent round trips, calls in flight, errors and reported load)
+    /// or round-robin (each in turn).
+    #[arg(long, default_value = "least-cost", value_parser = ["least-cost", "round-robin"])]
     route: String,
     /// With --shards: hedge a query after the replica asked has taken
     /// longer than it usually does (its recent average round trip plus six
@@ -189,8 +189,9 @@ struct Args {
     hedge_adaptive: bool,
     /// With --shards and --route least-cost: route a read that must see a
     /// write (min_seq_nos) by each replica's round trips of such reads,
-    /// unless it is known to hold the write already.
-    #[arg(long)]
+    /// unless it is known to hold the write already. On by default;
+    /// --prefer-caught-up=false routes such reads as any other.
+    #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", action = clap::ArgAction::Set)]
     prefer_caught_up: bool,
     /// With --shards: answer without shards that have no replica answering,
     /// flagged "partial" (a request's "partial" overrides it).
@@ -791,6 +792,27 @@ enum Command {
         #[arg(long)]
         ca: Option<PathBuf>,
     },
+    /// The command center in a terminal: the cluster's map, its health,
+    /// alerts, queries, logs, tables, SQL and timeline, read every two
+    /// seconds, and its changes (a handover, an alert acknowledged or
+    /// silenced, a query cancelled, a SQL write) sent to the routes the web
+    /// command center uses, with the same key. The key comes from
+    /// CHLOEDB_KEY or a prompt that does not echo it, never a flag. Through
+    /// a hub, URL is the connection's (https://hub:7700/c/prod) and the key
+    /// the hub's; `:ctx` lists its other connections. `?` lists the keys.
+    Cc {
+        /// The server's HTTP URL: a coordinator, a single server, or a
+        /// cluster through a hub (https://hub:7700/c/<connection>).
+        #[arg(env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// A CA certificate (PEM) to trust for an https URL, beside the
+        /// system's.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        /// Seconds between reads.
+        #[arg(long, default_value_t = 2.0)]
+        every: f64,
+    },
     /// The API from a shell, for scripts and agents without MCP: one
     /// request, its answer's JSON on stdout, and an exit code by what
     /// happened (0 done, 1 failed, 2 refused for the key, 3 stale: look
@@ -1275,6 +1297,17 @@ async fn run() {
                 Err(e) => fail(&format!("--ca: {e}")),
             };
             if let Err(e) = chloedb_server::mcp::stdio(url, key.as_deref(), ca).await {
+                fail(&e);
+            }
+            return;
+        }
+        Some(Command::Cc { url, ca, every }) => {
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            let every = std::time::Duration::from_secs_f64(every.clamp(0.25, 3600.0));
+            if let Err(e) = chloedb_server::cc::run(url, ca, every).await {
                 fail(&e);
             }
             return;
@@ -1883,5 +1916,22 @@ mod tests {
         for id in super::HELP_TOPICS.iter().flat_map(|(_, ids)| ids.iter()) {
             assert!(seen.insert(id), "{id} is under two topics");
         }
+    }
+
+    /// A coordinator routes by least cost and prefers copies that hold a
+    /// write for reads after it unless told otherwise, and each can be
+    /// turned off; `--prefer-caught-up` alone still means on.
+    #[test]
+    fn routing_defaults_and_their_off_switches() {
+        use clap::FromArgMatches;
+        let parse = |argv: &[&str]| super::Args::from_arg_matches(&super::args_command().try_get_matches_from(argv).unwrap()).unwrap();
+        let a = parse(&["chloedb-server"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("least-cost", true, false));
+        let a = parse(&["chloedb-server", "--route", "round-robin", "--prefer-caught-up=false", "--hedge-adaptive"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("round-robin", false, true));
+        assert!(parse(&["chloedb-server", "--prefer-caught-up"]).prefer_caught_up);
+        assert!(parse(&["chloedb-server", "--prefer-caught-up=true"]).prefer_caught_up);
+        let d = chloedb_server::coord::CoordOptions::default();
+        assert_eq!((d.route, d.prefer_caught_up, d.hedge_adaptive), (chloedb_server::coord::Route::LeastCost, true, false));
     }
 }

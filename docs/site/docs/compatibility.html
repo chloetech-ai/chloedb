@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=3871c230ea">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
@@ -84,7 +84,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.4, unreleased). The latest release is 0.3.3 (<a href="v0.3.3/index.html">its docs</a>); what is newer is marked "since 0.3.4".</p>
+      <p class="doc-version">These docs describe release 0.3.5.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#experimental-features">Experimental features</a></li><li><a href="#demos">Demos</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -92,7 +92,7 @@
 <p>What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on <code>main</code>
-(November 2026, every crate and package at version 0.3.4). The
+(November 2026, every crate and package at version 0.3.5). The
 <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> says what changed.</p>
 <p>ChloeDB is pre-1.0: the statements below are the current behaviour, which
 the code enforces, not a support commitment with a time limit.</p>
@@ -195,7 +195,7 @@ server of their own commit.</p>
 <p><strong>Not promised.</strong> A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.4), and keeps it between releases: name a
+version of the last release (0.3.5), and keeps it between releases: name a
 build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
 <p>Servers of a cluster (coordinators, shards, replicas, followers) talk over
@@ -234,7 +234,15 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   new fields that a 0.3.3 server leaves out, reading by the number alone,
   so 0.3.3 and 0.3.4 mix in either order. A key's statement budget is
   kept by 0.3.4 only: a 0.3.3 server admits the key without it, so give
-  keys budgets once every server runs 0.3.4.</li>
+  keys budgets once every server runs 0.3.4.
+  0.3.5 keeps the shard protocol at 21 and adds no plan feature and no
+  field, so 0.3.4 and 0.3.5 mix in either order. One step is ordered: a
+  0.3.5 coordinator of a cluster with a cluster token adds a server (a
+  shard, a copy, or a plan's step that adds one) only with that token, and
+  answers an API key or the admin token 403 <code>cluster_token_required</code>. On
+  Kubernetes, upgrade the operator before the coordinators: the 0.3.5
+  operator adds servers with its <code>clusterTokenSecret</code>, and an older one
+  sends the admin token.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -432,7 +440,7 @@ one does not wait for the engine's tests. An app whose manifest says
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="../assets/site.js?v=142c29c3e0"></script>
+<script src="../assets/site.js?v=699f360f4f"></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

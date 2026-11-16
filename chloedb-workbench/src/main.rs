@@ -63,6 +63,8 @@ mod harness;
 // Why a session ended, in plain words.
 mod endings;
 mod killguard;
+// The sub-agents a session starts with Claude Code's own Agent tool.
+mod helpers;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

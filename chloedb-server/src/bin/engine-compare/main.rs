@@ -137,6 +137,13 @@ enum Cmd {
         /// collection is made, at `load`, so this does not reach it.
         #[arg(long, default_value_t = CANDIDATES)]
         candidates: usize,
+        /// Strata: more servers whose answer cache counters to read before
+        /// and after the timed runs, besides the `--url`s: its shards' HTTP
+        /// endpoints, comma-separated (compare.sh sets the variable, which
+        /// a client from before it ignores). A run in which any answer came
+        /// from an answer cache fails.
+        #[arg(long, value_delimiter = ',', env = "CHLOEDB_COMPARE_METRICS_URLS")]
+        metrics_url: Vec<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -655,10 +662,11 @@ async fn check(r: reqwest::Result<reqwest::Response>, what: &str) -> Result<Json
 
 /// The engine's result cache counters, read before and after the timed
 /// runs so a report can show that no answer came from one: the shard
-/// request cache's (Elasticsearch, OpenSearch), and Solr's
-/// `queryResultCache` size and each node's counters. Null where the engine keeps none (Strata, Vespa) or
-/// the counters could not be read.
-async fn result_cache(engine: Engine, client: &reqwest::Client, urls: &[String]) -> Json {
+/// request cache's (Elasticsearch, OpenSearch), Solr's
+/// `queryResultCache` size and each node's counters, and Strata's answer
+/// cache's ([`answer_cache`]) on each of `urls` and `more`. Null where the
+/// engine keeps none (Vespa) or the counters could not be read.
+async fn result_cache(engine: Engine, client: &reqwest::Client, urls: &[String], more: &[String]) -> Json {
     match engine {
         Engine::Es | Engine::Os => match check(client.get(format!("{}/quora/_stats/request_cache", urls[0])).send().await, "request cache stats").await {
             Ok(j) => j["_all"]["total"]["request_cache"].clone(),
@@ -689,8 +697,68 @@ async fn result_cache(engine: Engine, client: &reqwest::Client, urls: &[String])
             }
             json!({"queryResultCache": size, "nodes": nodes})
         }
-        Engine::Strata | Engine::Vespa => Json::Null,
+        Engine::Strata => {
+            let mut servers: Vec<String> = urls.to_vec();
+            servers.extend(more.iter().filter(|m| !urls.contains(m)).cloned());
+            answer_cache(client, &servers).await
+        }
+        Engine::Vespa => Json::Null,
     }
+}
+
+/// Strata's answer cache (`--answer-cache-mb`, from 13 November 2026):
+/// each server's `chloedb_answer_cache_total` counters, read from its
+/// `/metrics`, as `{"answer_cache": {url: {"hit": n, "miss": n}}}`. A
+/// server without the cache (started with `--answer-cache-mb 0`, as
+/// compare.sh starts it, or from before the cache) shows null. The timed
+/// runs repeat their queries, so a server that keeps answers would answer
+/// most of them from memory: [`run`] fails when any came from it.
+async fn answer_cache(client: &reqwest::Client, urls: &[String]) -> Json {
+    let mut nodes = serde_json::Map::new();
+    for u in urls {
+        let v = match client.get(format!("{u}/metrics")).send().await {
+            Ok(r) if r.status().is_success() => answer_cache_counts(&r.text().await.unwrap_or_default()),
+            Ok(r) => json!({"error": format!("/metrics: {}", r.status())}),
+            Err(e) => json!({"error": e.to_string()}),
+        };
+        nodes.insert(u.clone(), v);
+    }
+    json!({ "answer_cache": nodes })
+}
+
+/// `{"hit": n, "miss": n}` from a server's Prometheus text, or null when
+/// it has no answer cache.
+fn answer_cache_counts(text: &str) -> Json {
+    let mut out = serde_json::Map::new();
+    for line in text.lines() {
+        let Some((labels, v)) = line.strip_prefix("chloedb_answer_cache_total{").and_then(|r| r.split_once("} ")) else { continue };
+        for o in ["hit", "miss"] {
+            if labels.split(',').any(|l| l.trim() == format!("outcome=\"{o}\"")) {
+                if let Ok(n) = v.trim().parse::<f64>() {
+                    out.insert(o.to_string(), json!(n));
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        Json::Null
+    } else {
+        Json::Object(out)
+    }
+}
+
+/// The queries Strata's answer cache answered between `before` and
+/// `after` ([`answer_cache`]'s), over every server; and the servers whose
+/// counters could not be read.
+fn answer_cache_hits(before: &Json, after: &Json) -> (f64, Vec<String>) {
+    let (mut hits, mut unread) = (0.0, Vec::new());
+    for (u, a) in after["answer_cache"].as_object().into_iter().flatten() {
+        if a.get("error").is_some() || before["answer_cache"][u].get("error").is_some() {
+            unread.push(u.clone());
+        }
+        hits += a["hit"].as_f64().unwrap_or(0.0) - before["answer_cache"][u]["hit"].as_f64().unwrap_or(0.0);
+    }
+    (hits, unread)
 }
 
 /// Creates the empty index (Elasticsearch) or collection (Solr), dropping
@@ -1814,6 +1882,7 @@ async fn run(
     collection: &str,
     engine: Engine,
     urls: &[String],
+    metrics_urls: &[String],
     n_queries: usize,
     concurrency: &[usize],
     seconds: f64,
@@ -1835,7 +1904,7 @@ async fn run(
     if matches!(engine, Engine::Es | Engine::Os) {
         check(client.put(format!("{}/quora/_settings", urls[0])).json(&json!({"index": {"requests.cache.enable": false}})).send().await, "settings").await?;
     }
-    let cache_before = result_cache(engine, &client, urls).await;
+    let cache_before = result_cache(engine, &client, urls, metrics_urls).await;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut warmups = BTreeMap::new();
@@ -1957,8 +2026,12 @@ async fn run(
             }));
         }
     }
-    let cache = json!({"before": cache_before, "after": result_cache(engine, &client, urls).await});
+    let cache = json!({"before": cache_before, "after": result_cache(engine, &client, urls, metrics_urls).await});
     eprintln!("{label:<8} result cache: {cache}");
+    let (cache_hits, unread) = answer_cache_hits(&cache["before"], &cache["after"]);
+    if !unread.is_empty() {
+        eprintln!("{label:<8} warning: the answer cache's counters of {} could not be read", unread.join(", "));
+    }
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": candidates(), "oversample": OVERSAMPLE, "hybrid_depth": DEPTH, "paid": paid},
@@ -1966,6 +2039,17 @@ async fn run(
         "result_cache": cache,
     });
     std::fs::create_dir_all(out).map_err(s)?;
+    // A run answered from Strata's answer cache measures the cache, not the
+    // engine: kept apart from the runs (which the reports read as
+    // run-*.json), and failed.
+    if cache_hits > 0.0 {
+        let path = out.join(format!("answer-cache-hits-{}.json", label.replace(' ', "-")));
+        std::fs::write(&path, serde_json::to_string(&report).unwrap()).map_err(s)?;
+        return Err(format!(
+            "{cache_hits} answers came from Strata's answer cache, so this run measured the cache: start its servers with --answer-cache-mb 0 (strata.yaml); the run is in {}, not in a run-*.json",
+            path.display()
+        ));
+    }
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
@@ -2901,10 +2985,10 @@ async fn main() {
             Ok(e) => load(&cli.collection, e, url, *shards, *batch, *clients, *limit, out).await,
             Err(o) => more::load(&cli.collection, o, url, *batch, *clients, *limit, out).await,
         },
-        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, candidates, out } => {
+        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, candidates, metrics_url, out } => {
             CANDIDATES_RUN.store(*candidates, Ordering::Relaxed);
             match engine.engine() {
-                Ok(e) => run(&cli.collection, e, url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await,
+                Ok(e) => run(&cli.collection, e, url, metrics_url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await,
                 Err(o) => more::run(&cli.collection, o, url, *queries, concurrency, *seconds, label.clone(), kinds, out).await,
             }
         }
@@ -2950,5 +3034,25 @@ async fn main() {
     if let Err(e) = r {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod answer_cache_tests {
+    use super::*;
+
+    #[test]
+    fn a_run_counts_the_answers_strata_s_answer_cache_gave() {
+        let text = "# HELP chloedb_answer_cache_total Read queries the answer cache was asked about.\n# TYPE chloedb_answer_cache_total counter\nchloedb_answer_cache_total{outcome=\"hit\"} 851065\nchloedb_answer_cache_total{outcome=\"miss\"} 4131\nchloedb_answer_cache_answers 12\n";
+        assert_eq!(answer_cache_counts(text), json!({"hit": 851065.0, "miss": 4131.0}));
+        // --answer-cache-mb 0, or a server from before the cache: no counters.
+        assert_eq!(answer_cache_counts("chloedb_up 1\n"), Json::Null);
+        let before = json!({"answer_cache": {"a": {"hit": 10.0, "miss": 5.0}, "b": null}});
+        let after = json!({"answer_cache": {"a": {"hit": 25.0, "miss": 9.0}, "b": null}});
+        assert_eq!(answer_cache_hits(&before, &after), (15.0, Vec::<String>::new()));
+        let off = json!({"answer_cache": {"a": null, "b": null}});
+        assert_eq!(answer_cache_hits(&off, &off), (0.0, Vec::<String>::new()));
+        let unread = json!({"answer_cache": {"a": {"error": "/metrics: 401 Unauthorized"}}});
+        assert_eq!(answer_cache_hits(&unread, &unread), (0.0, vec!["a".to_string()]));
     }
 }

@@ -342,3 +342,56 @@ async fn a_limited_key_reads_a_table_another_coordinator_made() {
     let (status, j) = http(&base_a, "POST", "/v1/query", Some(&crawler), Some(json!({"sql": "SELECT id FROM crawl_nothing"}))).await;
     assert_eq!(status, 400, "{j}");
 }
+
+/// CLU-3: the coordinator asks a server it adds who it is with the
+/// cluster's token, before it knows what answers there, so only the holder
+/// of that token names one: not the admin's `--token`, not an admin key,
+/// by none of the routes that add one. A listener standing for a server
+/// someone else runs is given no connection by what they ask, and is given
+/// one when the cluster's token asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_cluster_token_adds_a_server() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let shard = Access { cluster: cluster(), ..Default::default() };
+    let (_s0, u0) = serve(create(d, "s0.strata", |_| true), d, "s0.strata", shard, |_| {}).await;
+    let (_c, _svc, base) = coordinator(&[u0.clone()], cluster(), Access { token: Some(Secret::new(ADMIN)), cluster: cluster(), ..Default::default() }).await;
+    let rogue = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let elsewhere = format!("http://{}", rogue.local_addr().unwrap());
+    let dialed = Arc::new(AtomicUsize::new(0));
+    let seen = dialed.clone();
+    tokio::spawn(async move {
+        while let Ok((conn, _)) = rogue.accept().await {
+            seen.fetch_add(1, Ordering::SeqCst);
+            drop(conn);
+        }
+    });
+    let (status, j) = http(&base, "POST", "/v1/admin/keys", Some(ADMIN), Some(json!({"name": "ops", "scope": "admin"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let key = j["secret"].as_str().unwrap().to_string();
+
+    for who in [ADMIN, key.as_str()] {
+        let refused = |what: &str, (status, j): (u16, Json)| {
+            assert_eq!(status, 403, "{what}: {j}");
+            assert!(j["error"].as_str().unwrap_or_default().contains("cluster's token"), "{what}: {j}");
+        };
+        refused("a shard", http(&base, "POST", "/v1/admin/shards", Some(who), Some(json!({"servers": [elsewhere]}))).await);
+        refused("a copy", http(&base, "POST", "/v1/admin/shards/0/replicas", Some(who), Some(json!({"url": elsewhere, "force": true}))).await);
+        refused("a plan", http(&base, "POST", "/v1/admin/plan/apply", Some(who), Some(json!({"steps": [{"kind": "add_copy", "shard": 0, "url": elsewhere}]}))).await);
+        // A plan made, not applied, says why its new server is not asked.
+        let (status, p) = http(&base, "POST", "/v1/admin/plan", Some(who), Some(json!({"shards": [{"shard": 0, "copies": [u0, elsewhere]}]}))).await;
+        assert_eq!(status, 200, "{p}");
+        let failed: Vec<&str> = p["preflight"].as_array().unwrap().iter().filter(|x| x["ok"] == false).filter_map(|x| x["text"].as_str()).collect();
+        assert!(failed.iter().any(|t| t.contains("cluster's token")), "{p}");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(dialed.load(Ordering::SeqCst), 0, "the coordinator dialed a server a key named");
+
+    // The cluster's token adds servers: its call reaches the listener
+    // (which is no server, so the copy is not added).
+    let (status, j) = http(&base, "POST", "/v1/admin/shards/0/replicas", Some(CLUSTER), Some(json!({"url": elsewhere, "force": true}))).await;
+    assert_ne!(status, 403, "{j}");
+    assert!(status >= 400, "{j}");
+    until("the cluster's token dials the server it names", || dialed.load(Ordering::SeqCst) > 0).await;
+}

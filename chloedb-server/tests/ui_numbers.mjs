@@ -47,6 +47,26 @@ assert.deepEqual(flags({ n: 50, nonNull: 0 }), [["bad", "always NULL"]]);
 assert.deepEqual(flags({ n: 100, nonNull: 100, distinct: 1 }), [["warn", "one value"]]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 80 }).map(([, t]) => t), ["10 rows make 80% of the sum"]);
 assert.deepEqual(flags({ n: 1000, nonNull: 1000, distinct: 900, sum: 100, top: 10, topSum: 20 }), []);
+// Tables and storage: a table's bytes on every copy are the copies' own
+// where a coordinator asked them, else one copy's times the copies; every
+// table adds up, a table that failed counted apart and a copy that did not
+// answer said.
+{
+  const { onCopies, storageTotals } = await import(new URL("views/tables.js", app));
+  const a = { table: "a", docs: 10, bytes: 1000, segments: 2, copies_bytes: 2900, copies_measured: 3, copies_missing: 0, shards: [{}] };
+  const b = { table: "b", docs: 5, bytes: 4000, segments: 1, copies_bytes: 8000, copies_measured: 2, copies_missing: 1, shards: [{}] };
+  assert.deepEqual(onCopies(a, 3), { bytes: 2900, measured: true, copies: 3, missing: 0 });
+  assert.deepEqual(onCopies({ bytes: 1000 }, 3), { bytes: 3000, measured: false, copies: null, missing: 0 });
+  assert.equal(onCopies({ table: "x" }, 3), null);
+  const t = storageTotals([a, b, { table: "c", error: "shard 1 does not answer" }], 3);
+  assert.deepEqual([t.tables, t.failed, t.docs, t.segments, t.bytes, t.all, t.measured, t.incomplete, t.copies], [2, 1, 15, 3, 5000, 10900, true, 1, 3]);
+  assert.deepEqual(t.largest, { table: "b", bytes: 8000 });
+  // One server: nothing measured beyond its own copy.
+  const one = storageTotals([{ table: "a", docs: 1, bytes: 10, segments: 1 }], 1);
+  assert.deepEqual([one.bytes, one.all, one.measured, one.largest.table], [10, 10, false, "a"]);
+  assert.equal(storageTotals([], 1).largest, null);
+}
+
 // CCB-1: a search over a TEXT made from others (not kept, so it reads
 // NULL) shows the stored fields it is made from, the title first; the
 // saved search's SELECT is the same.
@@ -223,6 +243,28 @@ assert.doesNotMatch(memory.warn("512Mi", noLimit) + memory.effect("512Mi", noLim
 const limited = { L, d: { resources: { requests: { memory: "512Mi" }, limits: { memory: "512Mi" } } } };
 assert.match(memory.warn("512Mi", limited), /a limit of 512Mi would restart it/);
 assert.equal(memory.warn("1Gi", { L, d: { resources: { requests: { memory: "1Gi" } } } }), null);
+
+// Routing settings: least-cost and prefer-caught-up are chloedb-server's
+// defaults, so leaving them as they are writes no flag, and turning
+// prefer-caught-up off writes --prefer-caught-up=false.
+const spec = await import(new URL("spec.js", app));
+const routeSt = SETTINGS.find((x) => x.at === "cargs:--route"), preferSt = SETTINGS.find((x) => x.at === "cargs:--prefer-caught-up"), adaptiveSt = SETTINGS.find((x) => x.at === "cargs:--hedge-adaptive");
+const cs = { coordinatorArgs: ["--hedge-ms", "50"] };
+assert.deepEqual([spec.value(cs, routeSt), spec.value(cs, preferSt), spec.value(cs, adaptiveSt)], ["least-cost", true, false]);
+assert.equal(spec.shown(routeSt, spec.value(cs, routeSt)), "the one that costs least");
+spec.assign(cs, preferSt, false);
+spec.assign(cs, routeSt, "round-robin");
+spec.assign(cs, adaptiveSt, true);
+assert.deepEqual(cs.coordinatorArgs, ["--hedge-ms", "50", "--prefer-caught-up=false", "--route", "round-robin", "--hedge-adaptive"]);
+assert.deepEqual([spec.value(cs, routeSt), spec.value(cs, preferSt), spec.value(cs, adaptiveSt)], ["round-robin", false, true]);
+assert.match(preferSt.warn(true, { d: cs }), /each in turn ignores it/);
+spec.assign(cs, preferSt, true);
+spec.assign(cs, routeSt, "least-cost");
+spec.assign(cs, adaptiveSt, false);
+assert.deepEqual(cs.coordinatorArgs, ["--hedge-ms", "50"]);
+assert.equal(spec.value({ coordinatorArgs: ["--prefer-caught-up"] }, preferSt), true);
+assert.equal(spec.value({ coordinatorArgs: ["--partial"] }, SETTINGS.find((x) => x.at === "cargs:--partial")), true);
+assert.equal(spec.value({}, SETTINGS.find((x) => x.at === "cargs:--partial")), false);
 
 // LIV-10: advice names the spec's field when an operator runs the cluster, the flag otherwise.
 assert.equal(data.howToSet({ flag: "--environment", field: "spec.environment", value: "production" }), "start the server with --environment production");

@@ -35,7 +35,21 @@ spec:
       # A 30 s deadline, the time engine-compare's client waits for every
       # engine: the default of 5 s turned a cold first vector query at 10M
       # into "no answer in time", which drops the kind from the run.
-      args: [--db, /local/__COLL__.shard__I__of2.strata, --listen, "0.0.0.0:7700", --grpc, "0.0.0.0:7701", --timeout-ms, "30000"]
+      # The answer cache off (--answer-cache-mb 0): from 13 November 2026
+      # (#456, 0.3.1) a server keeps its answers and answers a query asked
+      # again on the same version from memory, and the timed runs repeat
+      # 300 queries, so after their first lap 99.5% of the queries came
+      # from it (the audit of 15 November 2026, PRF-1). The other engines'
+      # result caches are off too (README.md, "No result caches"). An image
+      # from before #456 has no such cache, and no such flag. The server
+      # goes by its old name, strata-server, which every image has, also
+      # those from before the rename that STRATA_COORD=pod is for.
+      command: [sh, -c]
+      args:
+        - |
+          nocache=""
+          if strata-server --help 2>/dev/null | grep -q -- --answer-cache-mb; then nocache="--answer-cache-mb 0"; fi
+          exec strata-server --db /local/__COLL__.shard__I__of2.strata --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --timeout-ms 30000 $nocache
       # Strata serves beyond loopback only with a token: a random one per
       # cluster, which compare.sh keeps in the secret strata-token and gives
       # the coordinator and the client too.

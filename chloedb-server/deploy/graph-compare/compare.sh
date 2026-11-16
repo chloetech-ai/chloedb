@@ -57,8 +57,10 @@ run_one() {
             else
                 schema='{"table":"papers","key":"id","fields":[{"name":"id","type":"int"}]}'
             fi
+            # The answer cache off, as in ../compare/strata.yaml (an image from
+            # before 13 November 2026 has none, and no such flag).
             docker run -d "${limits[@]}" -v "$name-data:/data" -e STRATA_TOKEN="$token" --entrypoint sh "$image" \
-                -c "echo '$schema' > /data/schema.json && exec chloedb-server --db /data/graph.strata --schema /data/schema.json --listen 0.0.0.0:7700 --grpc $grpc --allow-host $name" >/dev/null
+                -c "nocache=''; if chloedb-server --help 2>/dev/null | grep -q -- --answer-cache-mb; then nocache='--answer-cache-mb 0'; fi; echo '$schema' > /data/schema.json && exec chloedb-server --db /data/graph.strata --schema /data/schema.json --listen 0.0.0.0:7700 --grpc $grpc --allow-host $name \$nocache" >/dev/null
             args=(--token "$token")
             ;;
         neo4j)
