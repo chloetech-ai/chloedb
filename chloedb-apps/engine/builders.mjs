@@ -104,7 +104,7 @@ export class Builders {
   constructor(db) { this.db = db; }
 
   async list(appId) {
-    const rows = await this.db.query('SELECT * FROM sa_builders WHERE app = :a ORDER BY invited LIMIT 500', { a: appId });
+    const rows = await this.db.query('SELECT * FROM sa_builders WHERE app = :a ORDER BY invited, id LIMIT 500', { a: appId });
     return rows.map((r) => shapeBuilder(r));
   }
 
@@ -125,7 +125,13 @@ export class Builders {
     const existing = valid.length ? await this.db.query('SELECT * FROM sa_builders WHERE app = :a LIMIT 500', { a: appId }) : [];
     const writes = [];
     const results = [];
-    const expires = new Date(Date.now() + INVITE_DAYS * DAY).toISOString();
+    const now = Date.now();
+    const expires = new Date(now + INVITE_DAYS * DAY).toISOString();
+    // Each new invitation of one call is a millisecond after the one before,
+    // so the list, ordered by when people were invited, keeps the order they
+    // were named in: the same time for all of them would tie, and ties come
+    // back in any order on a cluster of shards.
+    let next = now;
     for (const email of valid) {
       const had = existing.find((x) => x.email === email);
       if (had && had.status === 'joined') {
@@ -134,7 +140,7 @@ export class Builders {
         continue;
       }
       const token = secret();
-      const doc = { ...(had || {}), id: had?.id || newId(12), app: appId, email, name: had?.name || '', role: r, status: 'invited', token_hash: hash(token), key_hash: '', expires, invited: had?.invited || new Date().toISOString() };
+      const doc = { ...(had || {}), id: had?.id || newId(12), app: appId, email, name: had?.name || '', role: r, status: 'invited', token_hash: hash(token), key_hash: '', expires, invited: had?.invited || new Date(next++).toISOString() };
       writes.push({ op: 'upsert', table: 'sa_builders', doc });
       results.push({ email, status: 'invited', id: doc.id, role: r, link: joinLink(base, token), expires });
     }
