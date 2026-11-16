@@ -149,6 +149,11 @@ const CSS = `
 .gx-hero h1 { margin: 0; font-size: 38px; letter-spacing: -.03em; line-height: 1.08; font-weight: 760; }
 .gx-hero h1 span { background: linear-gradient(90deg, var(--accent), var(--s7)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .gx-hero p { color: var(--text-2); font-size: 16px; margin: 12px auto 0; max-width: 700px; }
+.gx-count { display: inline-flex; flex-direction: column; align-items: center; margin: 20px auto 2px; padding: 12px 26px 11px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-1); text-decoration: none; color: inherit; }
+.gx-count[hidden] { display: none; }
+.gx-count:hover { border-color: var(--line-2); }
+.gx-count b { font-size: clamp(28px, 7.5vw, 44px); line-height: 1.1; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--accent); }
+.gx-count span { margin-top: 4px; font-size: 13.5px; color: var(--text-2); }
 .gx-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px 26px; margin: 18px 0 6px; color: var(--muted); font-size: 13px; }
 .gx-stats b { color: var(--text); font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 4px; }
 .gx-try { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin: 16px auto 4px; max-width: 920px; }
@@ -662,13 +667,17 @@ async function home(app, main, alive) {
   fill(main, h("div", { class: "gx-hero" },
     h("h1", {}, "Every GitHub repo, ", h("span", {}, "and why it moves"), "."),
     h("p", {}, "Find a repo by what it does, see why it is trending, what people use instead, who keeps it going and what to star next, from every public event since 2011."),
+    h("a", { class: "gx-count", id: "gx-count", href: app.href("about"), hidden: true }),
     h("div", { class: "gx-stats", id: "gx-stats" }),
     h("div", { class: "gx-try" }, TRY.map(([k, q]) => h("a", { href: k === "for you" ? app.href("foryou") : app.href("search", q), title: k }, q)))),
     h("div", { class: "gx-ch3" }, h("div", { id: "c1" }, skel(8)), h("div", { id: "c2" }, skel(8)), h("div", { id: "c3" }, skel(8))));
   const j = await app.api("/v1/home");
   if (!alive()) return;
   const st = main.querySelector("#gx-stats");
-  const s = app.status;
+  const s = app.status || (app.status = await app.api("/v1/status").catch(() => null));
+  if (!alive()) return;
+  const ct = main.querySelector("#gx-count");
+  if (s?.events) { fill(ct, h("b", {}, fmt(s.events)), h("span", {}, `public GitHub events indexed, from 12 Feb 2011 to ${dmy(j.latest)}`)); ct.hidden = false; }
   if (s) fill(st, h("span", {}, h("b", {}, short(s.repos)), "repos with 2+ stars"), h("span", {}, h("b", {}, short(s.people)), "people"), h("span", {}, h("b", {}, "2011"), "since"), h("span", {}, "newest ", h("b", {}, iso(j.latest))));
   fill(main.querySelector("#c1"), sec("Breaking out this week", h("a", { href: app.href("rising") }, "All rising")),
     j.rising.length ? h("ul", { class: "gx-list" }, j.rising.slice(0, 8).map((r) => repoItem(app, r, {

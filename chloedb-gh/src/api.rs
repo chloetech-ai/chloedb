@@ -408,7 +408,12 @@ async fn status(State(svc): State<Shared>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let (latest, _) = svc.latest().await;
-    let (repos, people) = tokio::join!(
+    let (events, repos, people) = tokio::join!(
+        c.soft(
+            "how many events",
+            "SELECT COUNT(*) AS n FROM gh_events",
+            Value::Null
+        ),
         c.soft(
             "how many repos",
             "SELECT COUNT(*) AS n FROM gh_repos",
@@ -423,7 +428,7 @@ async fn status(State(svc): State<Shared>) -> Answer {
     done(
         &trace,
         json!({
-            "latest": latest, "repos": repos.first().map(|r| r.i("n")), "people": people.first().map(|r| r.i("n")),
+            "latest": latest, "events": events.first().map(|r| r.i("n")), "repos": repos.first().map(|r| r.i("n")), "people": people.first().map(|r| r.i("n")),
             "hn": svc.hn.is_some(), "public": svc.public, "examples": crate::ask::EXAMPLES, "uptime_s": svc.started.elapsed().as_secs(),
         }),
         t0,
