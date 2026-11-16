@@ -1,0 +1,224 @@
+# GitHub on ChloeDB in a Kubernetes cluster: four shard servers, one a
+# node, a coordinator in front of them, and the app.
+#   gh-s0..gh-s3   a chloedb-server each, its database on its node's own SSD
+#                  (hostPath /mnt/chloedb/gh/db, written there by
+#                  `chloedb-server import` before it starts: see work.yaml)
+#   gh             the coordinator: what the app asks; it splits a query
+#                  over the shards and adds up their answers
+#   gh-app         the app (API and the command center's view); not public:
+#                  every request needs the token the command center's app
+#                  proxy sends (secret e2e-admin)
+# Nodes are labelled chloedb/gh-shard=0..3 and tainted
+# chloedb/pool=gh:NoSchedule. The events are placed on shards by repo
+# (slot = xxh3 of the key, 4096 slots split evenly): the coordinator writes
+# that map to the shards on its first start, and `chloedb-gh prepare`
+# split the rows the same way. A query that groups every repo or every
+# person (who starred what) holds more than the default 65,536 groups:
+# servers allow two million. Secrets: gh-admin (token: the servers'
+# token), e2e-admin (token: what the command center's app proxy sends).
+apiVersion: v1
+kind: Service
+metadata: {name: gh, namespace: strata}
+spec:
+  selector: {app: gh}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-app, namespace: strata}
+spec:
+  selector: {app: gh-app}
+  ports: [{name: http, port: 7880, targetPort: 7880}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-s0, namespace: strata}
+spec:
+  selector: {app: gh-s0}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-s1, namespace: strata}
+spec:
+  selector: {app: gh-s1}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-s2, namespace: strata}
+spec:
+  selector: {app: gh-s2}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-s3, namespace: strata}
+spec:
+  selector: {app: gh-s3}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-s0, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-s0}}
+  template:
+    metadata: {labels: {app: gh-s0, chloedb/gh: shard}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "0"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
+        # sized from the limit; the rest of the node's memory is the page
+        # cache over the SSD, which is what makes it fast.
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-s1, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-s1}}
+  template:
+    metadata: {labels: {app: gh-s1, chloedb/gh: shard}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "1"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
+        # sized from the limit; the rest of the node's memory is the page
+        # cache over the SSD, which is what makes it fast.
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-s2, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-s2}}
+  template:
+    metadata: {labels: {app: gh-s2, chloedb/gh: shard}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "2"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
+        # sized from the limit; the rest of the node's memory is the page
+        # cache over the SSD, which is what makes it fast.
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-s3, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-s3}}
+  template:
+    metadata: {labels: {app: gh-s3, chloedb/gh: shard}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "3"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
+        # sized from the limit; the rest of the node's memory is the page
+        # cache over the SSD, which is what makes it fast.
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh, namespace: strata}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: gh}}
+  template:
+    metadata: {labels: {app: gh}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "0"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      containers:
+      - name: coordinator
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --shards http://gh-s0.strata.svc:7701,http://gh-s1.strata.svc:7701,http://gh-s2.strata.svc:7701,http://gh-s3.strata.svc:7701 --listen 0.0.0.0:7700 --grpc off --max-groups 2000000"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources: {requests: {cpu: 300m, memory: 768Mi}, limits: {memory: 1536Mi}}
+---
+# The app, once /mnt/chloedb/gh/bin/chloedb-gh is in place on node 1.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-app}}
+  template:
+    metadata: {labels: {app: gh-app}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "1"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-gh", "serve", "--strata", "http://gh.strata.svc:7700", "--listen", "0.0.0.0:7880", "--hn", "http://hn-app.strata.svc:7850"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_GH_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: SSL_CERT_DIR, value: /etc/ssl/certs}
+        - {name: RUST_LOG, value: chloedb_gh=info}
+        ports: [{containerPort: 7880}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7880}, periodSeconds: 5}
+        resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {memory: 768Mi}}
+        volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}]

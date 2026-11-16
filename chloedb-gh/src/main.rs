@@ -9,11 +9,11 @@
 //! Only public data is read, and no event's email or name fields are kept:
 //! the old format's `actor_attributes` and commits' authors are never
 //! parsed (see `archive`).
+//!
+//! `serve` is the app: its API and the view the command center shows
+//! (chloedb-server --app gh=URL), over the cluster the rows went into.
 
-mod archive;
-mod prepare;
-mod reduce;
-mod slots;
+use chloedb_gh::{api, prepare, reduce, slots, strata::Strata};
 
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
@@ -78,6 +78,28 @@ enum Command {
         /// Keep repos with at least this many stars in the archive.
         #[arg(long, default_value_t = 2)]
         min_stars: i64,
+        #[arg(long, default_value_t = 4)]
+        shards: usize,
+    },
+    /// Serve the API and the view for the command center (chloedb-server
+    /// --app gh=URL). Every request needs the token but /healthz.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:7880")]
+        listen: String,
+        /// The cluster's coordinator (or one server) that keeps the tables.
+        #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        strata: String,
+        #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// The token each request must carry (Authorization: Bearer):
+        /// chloedb-server sends its CHLOEDB_APP_TOKEN. Without one, anyone
+        /// who reaches the address may use the app, and `/` serves the page.
+        #[arg(long, env = "CHLOEDB_GH_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// The Hacker News app on ChloeDB (chloedb-hn), to say when a repo
+        /// was discussed there.
+        #[arg(long, env = "CHLOEDB_GH_HN")]
+        hn: Option<String>,
     },
     /// The slot and shard of INT keys.
     ShardOf {
@@ -95,7 +117,8 @@ fn main() -> Result<()> {
             };
             prepare::run(prepare::Opts { from, to, shards, out, jobs, logins, names, old_ids_below, base_url, part: (i, n), local })
         }
-        Command::Reduce { inputs, shard, out, min_stars } => reduce::run(reduce::Opts { inputs, shard, out, min_stars }),
+        Command::Reduce { inputs, shard, out, min_stars, shards } => reduce::run(reduce::Opts { inputs, shard, out, min_stars, shards }),
+        Command::Serve { listen, strata, key, token, hn } => serve(listen, strata, key, token, hn),
         Command::ShardOf { shards, keys } => {
             for k in keys {
                 println!("{k}\tslot {}\tshard {}", slots::slot(k), slots::shard(k, shards));
@@ -103,4 +126,25 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn serve(listen: String, url: String, key: Option<String>, token: Option<String>, hn: Option<String>) -> Result<()> {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| anyhow::anyhow!("{listen}: {e}"))?;
+        let svc = std::sync::Arc::new(api::Service {
+            db: Strata::new(&url, key.filter(|k| !k.is_empty())),
+            token: token.filter(|t| !t.is_empty()),
+            hn: hn.filter(|h| !h.is_empty()).map(|h| api::Hn::new(&h)),
+            started: std::time::Instant::now(),
+            latest: std::sync::Mutex::new(None),
+        });
+        tracing::info!(listen = %listener.local_addr()?, strata = %url, token = svc.token.is_some(), hn = svc.hn.is_some(), "chloedb-gh serves");
+        axum::serve(listener, api::router(svc)).with_graceful_shutdown(async {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a signal handler");
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+        }).await?;
+        Ok(())
+    })
 }

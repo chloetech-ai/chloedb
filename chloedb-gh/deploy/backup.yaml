@@ -1,0 +1,165 @@
+# A checkpoint a night of each GitHub shard, on its node's own disk, after
+# the Hacker News and arXiv servers' (3:00 to 4:30 AM Pacific): POST
+# /v1/admin/checkpoint writes a consistent copy into the server's
+# --backup-dir while it serves, hard-linking the files the previous one
+# has, and the two newest are kept. The newest is then copied off the node
+# to one DigitalOcean volume (a folder a shard, attached to each job in
+# turn, half an hour apart), so losing a node loses at most a day. A
+# restore is a checkpoint copied back in place of the database with the
+# shard's server stopped.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: gh-backup, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 180Gi}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: gh-backup, namespace: strata}
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    apk add --no-cache curl rsync coreutils >/dev/null
+    NAME="n-$(date -u +%Y%m%d-%H%M)"
+    PREV="$(ls -1 /local/backup 2>/dev/null | grep '^n-' | sort | tail -1 || true)"
+    BODY="{\"name\":\"$NAME\",\"layout\":\"dir\"${PREV:+,\"link_from\":\"$PREV\"}}"
+    t0=$(date +%s)
+    curl -sS -f -m 5400 -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' "$SERVER/v1/admin/checkpoint" -d "$BODY"
+    echo
+    echo "checkpoint $NAME in $(( $(date +%s) - t0 )) s: $(du -sh "/local/backup/$NAME" | cut -f1)"
+    D="/vol/$WHO"
+    mkdir -p "$D"
+    rsync -a --delete "/local/backup/$NAME/" "$D/latest/" && echo "$NAME" > "$D/latest.name" && sync
+    echo "copied off the node to $D in $(( $(date +%s) - t0 )) s: $(du -sh "$D/latest" | cut -f1)"
+    ls -1 /local/backup | grep '^n-' | sort -r | tail -n +3 | while read -r old; do rm -rf "/local/backup/$old"; done
+    # The copies went through the node's memory and pushed the database out
+    # of it: drop the copies' pages (the shard's own pages come back as it
+    # is asked).
+    find "/local/backup/$NAME" /vol -type f -exec dd if={} iflag=nocache count=0 status=none \;
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: gh-backup-s0, namespace: strata}
+spec:
+  schedule: "40 4 * * *"
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector: {chloedb/gh-shard: "0"}
+          tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+          containers:
+          - name: b
+            image: mirror.gcr.io/library/alpine:3.20
+            command: ["sh", "/script/backup.sh"]
+            env:
+            - {name: SERVER, value: "http://gh-s0.strata.svc:7700"}
+            - {name: WHO, value: "s0"}
+            - {name: KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+            volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
+          volumes:
+          - {name: local, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}
+          - {name: script, configMap: {name: gh-backup}}
+          - {name: vol, persistentVolumeClaim: {claimName: gh-backup}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: gh-backup-s1, namespace: strata}
+spec:
+  schedule: "10 5 * * *"
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector: {chloedb/gh-shard: "1"}
+          tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+          containers:
+          - name: b
+            image: mirror.gcr.io/library/alpine:3.20
+            command: ["sh", "/script/backup.sh"]
+            env:
+            - {name: SERVER, value: "http://gh-s1.strata.svc:7700"}
+            - {name: WHO, value: "s1"}
+            - {name: KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+            volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
+          volumes:
+          - {name: local, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}
+          - {name: script, configMap: {name: gh-backup}}
+          - {name: vol, persistentVolumeClaim: {claimName: gh-backup}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: gh-backup-s2, namespace: strata}
+spec:
+  schedule: "40 5 * * *"
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector: {chloedb/gh-shard: "2"}
+          tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+          containers:
+          - name: b
+            image: mirror.gcr.io/library/alpine:3.20
+            command: ["sh", "/script/backup.sh"]
+            env:
+            - {name: SERVER, value: "http://gh-s2.strata.svc:7700"}
+            - {name: WHO, value: "s2"}
+            - {name: KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+            volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
+          volumes:
+          - {name: local, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}
+          - {name: script, configMap: {name: gh-backup}}
+          - {name: vol, persistentVolumeClaim: {claimName: gh-backup}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: gh-backup-s3, namespace: strata}
+spec:
+  schedule: "10 6 * * *"
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector: {chloedb/gh-shard: "3"}
+          tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+          containers:
+          - name: b
+            image: mirror.gcr.io/library/alpine:3.20
+            command: ["sh", "/script/backup.sh"]
+            env:
+            - {name: SERVER, value: "http://gh-s3.strata.svc:7700"}
+            - {name: WHO, value: "s3"}
+            - {name: KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+            volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
+          volumes:
+          - {name: local, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}
+          - {name: script, configMap: {name: gh-backup}}
+          - {name: vol, persistentVolumeClaim: {claimName: gh-backup}}

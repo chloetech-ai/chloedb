@@ -1,0 +1,393 @@
+//! The app's HTTP API, and its view. ChloeDB's command center reaches it
+//! through chloedb-server (`--app gh=URL`), which loads the view from here
+//! (`/app.json`, `/ui/view.js`) and sends the app's token with each call.
+//! Nothing here is public: every route but `/healthz` needs the token.
+//!
+//! Every answer carries `queries`: the SQL it ran, each with its rows and
+//! time, which the page shows behind its "SQL" button.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+use serde_json::{json, Value};
+
+use crate::pages::{self, Ctx, DAY};
+use crate::strata::{RowExt, Strata, Trace};
+
+pub const VIEW: &str = include_str!("../ui/view.js");
+pub const INDEX: &str = include_str!("../ui/index.html");
+
+/// A branch with a star: repos, and what they grow into.
+pub const ICON: &str = r#"<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10"/><path d="M6 13c0-4 4-4 7-6"/><path d="M17.5 2.5l1.1 2.3 2.4.3-1.8 1.7.5 2.4-2.2-1.2-2.2 1.2.5-2.4-1.8-1.7 2.4-.3z"/>"#;
+
+/// Hacker News, through its app on ChloeDB: when and where a repo was
+/// discussed, to explain a jump in its stars.
+pub struct Hn {
+    base: String,
+    http: reqwest::Client,
+    cache: Mutex<HashMap<String, (Instant, Value)>>,
+}
+
+impl Hn {
+    pub fn new(base: &str) -> Hn {
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(6)).user_agent("chloedb-gh").build().expect("an HTTP client");
+        Hn { base: base.trim_end_matches('/').to_string(), http, cache: Mutex::new(HashMap::new()) }
+    }
+
+    async fn link(&self, name: &str) -> Value {
+        let key = name.to_lowercase();
+        if let Some((t, v)) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            if t.elapsed() < Duration::from_secs(3600) {
+                return v.clone();
+            }
+        }
+        let url = format!("{}/v1/link", self.base);
+        let v = match self.http.get(&url).query(&[("u", format!("github.com/{name}"))]).send().await {
+            Ok(r) if r.status().is_success() => r.json::<Value>().await.unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if c.len() > 20_000 {
+            c.clear();
+        }
+        c.insert(key, (Instant::now(), v.clone()));
+        v
+    }
+
+    /// For each repo name, its most upvoted submission to Hacker News
+    /// between `from` and `to` (seconds), if there was one.
+    pub async fn mentions(&self, names: &[String], from: i64, to: i64) -> HashMap<String, Value> {
+        let found = futures_util::future::join_all(names.iter().map(|n| async move { (n.clone(), self.link(n).await) })).await;
+        let mut out = HashMap::new();
+        for (name, v) in found {
+            let best = v["submissions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|s| {
+                    let t = s["created"].as_str().and_then(|c| chrono::DateTime::parse_from_rfc3339(c).ok()).map_or(0, |d| d.timestamp());
+                    t >= from && t <= to
+                })
+                .max_by_key(|s| s["points"].as_i64().unwrap_or(0));
+            if let Some(s) = best {
+                if s["points"].as_i64().unwrap_or(0) >= 10 {
+                    out.insert(name, json!({"title": s["title"], "points": s["points"], "comments": s["comments"], "created": s["created"], "url": format!("https://news.ycombinator.com/item?id={}", s["id"])}));
+                }
+            }
+        }
+        out
+    }
+}
+
+pub struct Service {
+    pub db: Strata,
+    pub token: Option<String>,
+    pub hn: Option<Hn>,
+    pub started: Instant,
+    /// The newest day in the archive, and the most starred repos, kept a
+    /// few minutes.
+    pub latest: Mutex<Option<(Instant, i64, Vec<i64>)>>,
+}
+
+pub type Shared = Arc<Service>;
+
+pub struct ApiError(pub StatusCode, pub String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({"error": self.1}))).into_response()
+    }
+}
+
+impl From<crate::strata::Error> for ApiError {
+    fn from(e: crate::strata::Error) -> ApiError {
+        let status = match e.status {
+            400 | 404 | 409 => StatusCode::from_u16(e.status).unwrap_or(StatusCode::BAD_REQUEST),
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        ApiError(status, if e.status == 0 || e.status >= 500 { format!("ChloeDB: {}", e.message) } else { e.message })
+    }
+}
+
+type Answer = Result<Json<Value>, ApiError>;
+
+fn done(trace: &Trace, mut v: Value, t0: Instant) -> Answer {
+    v["queries"] = json!(trace.take());
+    v["took_ms"] = json!((t0.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0);
+    Ok(Json(v))
+}
+
+pub fn router(svc: Shared) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/app.json", get(manifest))
+        .route("/ui/view.js", get(view))
+        .route("/v1/status", get(status))
+        .route("/v1/home", get(home))
+        .route("/v1/search", get(search))
+        .route("/v1/repo/*name", get(repo))
+        .route("/v1/person/:login", get(person))
+        .route("/v1/rising", get(rising))
+        .route("/v1/trends", get(trends))
+        .route("/v1/ask", get(ask))
+        .route("/v1/foryou", get(for_you))
+        .route("/v1/weekly", get(weekly))
+        .route("/v1/scale", get(scale))
+        .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
+        .route("/healthz", get(|| async { "ok" }))
+        .with_state(svc)
+}
+
+fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
+    let headers = req.headers();
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+        if !origin.split("://").nth(1).is_some_and(|o| o == host) {
+            return ApiError(StatusCode::FORBIDDEN, "requests from other sites are refused".into()).into_response();
+        }
+    }
+    let authed = match &svc.token {
+        None => true,
+        Some(t) => headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|got| constant_eq(got.as_bytes(), t.as_bytes())),
+    };
+    if !authed {
+        return ApiError(StatusCode::UNAUTHORIZED, "this app needs its token: open it in ChloeDB's command center (Apps → GitHub)".into()).into_response();
+    }
+    next.run(req).await
+}
+
+fn ui_file(name: &str, compiled: &'static str) -> std::borrow::Cow<'static, str> {
+    match std::env::var_os("CHLOEDB_GH_UI_DIR") {
+        Some(d) => std::fs::read_to_string(std::path::Path::new(&d).join(name)).map(Into::into).unwrap_or(compiled.into()),
+        None => compiled.into(),
+    }
+}
+
+/// The page on its own, for a run on one's own machine without a token.
+async fn index(State(svc): State<Shared>) -> Response {
+    if svc.token.is_some() {
+        return (StatusCode::NOT_FOUND, "this app is shown in ChloeDB's command center (Apps → GitHub)").into_response();
+    }
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], ui_file("index.html", INDEX).into_owned()).into_response()
+}
+
+async fn manifest() -> Json<Value> {
+    Json(json!({
+        "name": "gh",
+        "title": "GitHub",
+        "description": "Every public GitHub event since 2011: repos found by what they do, why they trend, what people use instead, who keeps them going, and what to star next",
+        "icon_svg": ICON,
+        "view": "ui/view.js",
+        "version": env!("CARGO_PKG_VERSION"),
+        "maturity": "demo",
+    }))
+}
+
+pub fn etag(text: &str) -> String {
+    let h = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3));
+    format!("\"{h:016x}\"")
+}
+
+async fn view(headers: HeaderMap) -> Response {
+    let body = ui_file("view.js", VIEW);
+    let tag = etag(&body);
+    let fresh = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim().trim_start_matches("W/") == tag));
+    let head = [(header::CONTENT_TYPE, "text/javascript; charset=utf-8".to_string()), (header::CACHE_CONTROL, "no-cache".to_string()), (header::ETAG, tag)];
+    if fresh {
+        return (StatusCode::NOT_MODIFIED, head).into_response();
+    }
+    (head, body.into_owned()).into_response()
+}
+
+macro_rules! ctx {
+    ($svc:expr, $trace:ident, $c:ident) => {
+        let $trace = Trace::new();
+        let $c = Ctx { db: &$svc.db, trace: &$trace };
+    };
+}
+
+impl Service {
+    /// The newest day with stars, and the 300 most starred repos.
+    async fn latest(&self) -> (i64, Vec<i64>) {
+        if let Some((t, d, big)) = self.latest.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if t.elapsed() < Duration::from_secs(600) {
+                return (*d, big.clone());
+            }
+        }
+        let (d, big) = tokio::join!(self.db.query("SELECT MAX(day) AS d FROM gh_stars_daily", Value::Null), self.db.query("SELECT repo FROM gh_repos ORDER BY stars DESC LIMIT 300", Value::Null));
+        let d = d.ok().and_then(|r| r.first().map(|r| r.i("d"))).filter(|d| *d > 0).unwrap_or_else(|| {
+            let now = chrono::Utc::now().timestamp();
+            now - now % DAY - DAY
+        });
+        let big = big.map(|r| pages::ids(&r, "repo")).unwrap_or_default();
+        *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), d, big.clone()));
+        (d, big)
+    }
+}
+
+/// A day as YYYY-MM-DD, or the newest one.
+fn day_of(s: &Option<String>, latest: i64) -> i64 {
+    s.as_deref().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()).and_then(|d| d.and_hms_opt(0, 0, 0)).map_or(latest, |d| d.and_utc().timestamp()).min(latest)
+}
+
+async fn status(State(svc): State<Shared>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let (repos, people) = tokio::join!(
+        c.soft("how many repos", "SELECT COUNT(*) AS n FROM gh_repos", Value::Null),
+        c.soft("how many people", "SELECT COUNT(*) AS n FROM gh_actors", Value::Null),
+    );
+    done(&trace, json!({
+        "latest": latest, "repos": repos.first().map(|r| r.i("n")), "people": people.first().map(|r| r.i("n")),
+        "hn": svc.hn.is_some(), "examples": crate::ask::EXAMPLES, "uptime_s": svc.started.elapsed().as_secs(),
+    }), t0)
+}
+
+async fn home(State(svc): State<Shared>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let v = pages::home(&c, latest, svc.hn.as_ref()).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SearchParams {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    lang: String,
+    #[serde(default)]
+    sort: String,
+    #[serde(default)]
+    page: usize,
+}
+
+async fn search(State(svc): State<Shared>, Query(a): Query<SearchParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    if a.q.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "say what the repo should do".into()));
+    }
+    let (latest, _) = svc.latest().await;
+    let s = pages::Search { q: a.q.clone(), language: a.lang.clone(), sort: a.sort.clone(), page: a.page.min(30) };
+    let v = pages::search(&c, &s, latest).await?;
+    done(&trace, v, t0)
+}
+
+async fn repo(State(svc): State<Shared>, Path(name): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let Some(id) = pages::find_repo(&c, &name).await else {
+        return done(&trace, json!({"found": false, "name": name}), t0);
+    };
+    let mut v = pages::repo(&c, id, latest).await?;
+    // The stories on Hacker News over its life, for its spikes.
+    if let (Some(hn), Some(n)) = (&svc.hn, v["repo"]["name"].as_str().map(str::to_string)) {
+        let link = hn.link(&n).await;
+        let subs: Vec<Value> = link["submissions"].as_array().into_iter().flatten().filter(|s| s["points"].as_i64().unwrap_or(0) >= 5).map(|s| json!({"title": s["title"], "points": s["points"], "comments": s["comments"], "created": s["created"], "url": format!("https://news.ycombinator.com/item?id={}", s["id"])})).collect();
+        v["hn"] = json!({"submissions": subs, "totals": link["totals"]});
+    }
+    done(&trace, v, t0)
+}
+
+async fn person(State(svc): State<Shared>, Path(login): Path<String>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = pages::person(&c, &login).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RisingParams {
+    at: Option<String>,
+    days: Option<i64>,
+}
+
+async fn rising(State(svc): State<Shared>, Query(a): Query<RisingParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let at = day_of(&a.at, latest);
+    let v = pages::rising(&c, at, a.days.unwrap_or(7).clamp(1, 90), svc.hn.as_ref()).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct TrendParams {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    names: String,
+}
+
+async fn trends(State(svc): State<Shared>, Query(a): Query<TrendParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let names: Vec<String> = a.names.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(10).collect();
+    let v = pages::trends(&c, if a.kind == "topic" { "topic" } else { "language" }, &names, latest).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct AskParams {
+    #[serde(default)]
+    q: String,
+}
+
+async fn ask(State(svc): State<Shared>, Query(a): Query<AskParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, _) = svc.latest().await;
+    let v = crate::ask::ask(&c, a.q.trim(), latest).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ForYouParams {
+    #[serde(default)]
+    login: String,
+}
+
+async fn for_you(State(svc): State<Shared>, Query(a): Query<ForYouParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    if a.login.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "give a GitHub login".into()));
+    }
+    let v = pages::for_you(&c, &a.login).await?;
+    done(&trace, v, t0)
+}
+
+async fn weekly(State(svc): State<Shared>, Query(a): Query<RisingParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let (latest, big) = svc.latest().await;
+    let v = pages::weekly(&c, day_of(&a.at, latest), svc.hn.as_ref(), &big).await?;
+    done(&trace, v, t0)
+}
+
+async fn scale(State(svc): State<Shared>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let mut v = pages::scale(&c).await;
+    // What each shard holds and how fast it answers, from the cluster.
+    if let Ok(cl) = svc.db.get("/v1/cluster").await {
+        v["cluster"] = cl;
+    }
+    done(&trace, v, t0)
+}

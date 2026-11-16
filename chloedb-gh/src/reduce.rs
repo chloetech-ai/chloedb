@@ -36,6 +36,7 @@ pub struct Opts {
     pub shard: usize,
     pub out: PathBuf,
     pub min_stars: i64,
+    pub shards: usize,
 }
 
 /// A shard's files of `table` in every input, oldest day first.
@@ -261,6 +262,9 @@ pub fn run(o: Opts) -> Result<()> {
                 ("repo", Arc::new(Int64Array::from(ids.clone())) as ArrayRef),
                 ("name", s(&|r| r.name.clone())),
                 ("owner", s(&|r| r.name.as_deref().and_then(|n| n.split_once('/')).map(|(o, _)| o.to_string()))),
+                // GitHub's names ignore case: these find "Owner/Name" by any.
+                ("lname", s(&|r| r.name.as_deref().map(str::to_lowercase))),
+                ("lowner", s(&|r| r.name.as_deref().and_then(|n| n.split_once('/')).map(|(o, _)| o.to_lowercase()))),
                 ("description", s(&|r| r.description.clone())),
                 ("language", s(&|r| r.language.clone())),
                 ("homepage", s(&|r| r.homepage.clone())),
@@ -285,6 +289,7 @@ pub fn run(o: Opts) -> Result<()> {
         vec![
             ("repo", Arc::new(nm.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef),
             ("name", Arc::new(nm.iter().map(|x| Some(x.0 .1.as_str())).collect::<StringArray>())),
+            ("lname", Arc::new(nm.iter().map(|x| Some(x.0 .1.to_lowercase())).collect::<StringArray>())),
             ("first_seen", Arc::new(nm.iter().map(|x| x.1).collect::<Int64Array>())),
         ],
     )?;
@@ -321,6 +326,7 @@ pub fn run(o: Opts) -> Result<()> {
         vec![
             ("actor", Arc::new(av.iter().map(|x| x.0).collect::<Int64Array>()) as ArrayRef),
             ("login", Arc::new(av.iter().map(|x| Some(x.1 .0.as_str())).collect::<StringArray>())),
+            ("llogin", Arc::new(av.iter().map(|x| Some(x.1 .0.to_lowercase())).collect::<StringArray>())),
             ("first_seen", Arc::new(av.iter().map(|x| x.1 .1).collect::<Int64Array>())),
             ("last_seen", Arc::new(av.iter().map(|x| x.1 .2).collect::<Int64Array>())),
         ],
@@ -416,7 +422,10 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
         let mut v: Vec<((i64, String), Month)> = map.into_iter().collect();
         v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let key = if table == "lang_months" { "language" } else { "topic" };
-        let mut cols = vec![("month", Arc::new(v.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef), (key, Arc::new(v.iter().map(|x| Some(x.0 .1.as_str())).collect::<StringArray>()) as ArrayRef)];
+        // These sums have no key of their own: `part` places them (shard_by),
+        // a value that falls on this shard.
+        let part = (0..).find(|p| crate::slots::shard(*p, o.shards) == sh).unwrap_or(0);
+        let mut cols = vec![("part", Arc::new(Int64Array::from(vec![part; v.len()])) as ArrayRef), ("month", Arc::new(v.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef), (key, Arc::new(v.iter().map(|x| Some(x.0 .1.as_str())).collect::<StringArray>()) as ArrayRef)];
         cols.extend(month_cols(&v));
         write_parquet(&o.out.join(table).join(format!("s{sh}.parquet")), cols)?;
     }

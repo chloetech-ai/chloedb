@@ -1,0 +1,106 @@
+{
+ "table": "gh_repos",
+ "key": "repo",
+ "compression": "zstd",
+ "fields": [
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "name",
+   "type": "keyword"
+  },
+  {
+   "name": "owner",
+   "type": "keyword"
+  },
+  {
+   "name": "title",
+   "type": "text",
+   "from": [
+    "name"
+   ],
+   "analyzer": "simple"
+  },
+  {
+   "name": "description",
+   "type": "text"
+  },
+  {
+   "name": "language",
+   "type": "keyword"
+  },
+  {
+   "name": "homepage",
+   "type": "keyword",
+   "indexed": false
+  },
+  {
+   "name": "topics",
+   "type": "text",
+   "analyzer": "simple"
+  },
+  {
+   "name": "license",
+   "type": "keyword"
+  },
+  {
+   "name": "fork",
+   "type": "bool"
+  },
+  {
+   "name": "archived",
+   "type": "bool"
+  },
+  {
+   "name": "created",
+   "type": "int"
+  },
+  {
+   "name": "first_seen",
+   "type": "int"
+  },
+  {
+   "name": "stars",
+   "type": "int"
+  },
+  {
+   "name": "forks",
+   "type": "int"
+  },
+  {
+   "name": "stars_api",
+   "type": "int"
+  },
+  {
+   "name": "forks_api",
+   "type": "int"
+  },
+  {
+   "name": "api_t",
+   "type": "int"
+  },
+  {
+   "name": "emb",
+   "type": "vector",
+   "embed": {
+    "from": [
+     "name",
+     "description",
+     "topics"
+    ],
+    "model": "potion-retrieval-32M"
+   }
+  },
+  {
+   "name": "lname",
+   "type": "keyword"
+  },
+  {
+   "name": "lowner",
+   "type": "keyword"
+  }
+ ]
+}
