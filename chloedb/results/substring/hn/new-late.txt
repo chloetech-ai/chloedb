@@ -1,0 +1,24 @@
+%bitcoin %	7800	16.8	20
+%bitcoin %	7810	18.5	20
+%bitcoin %	7820	18.1	20
+%bitcoin %	7830	19.5	20
+%itcoin%	7800	29.7	20
+%itcoin%	7810	25.7	20
+%itcoin%	7820	29.5	20
+%itcoin%	7830	25.9	20
+%bitcoi%	7800	24.7	20
+%bitcoi%	7810	27.9	20
+%bitcoi%	7820	26.7	20
+%bitcoi%	7830	28.4	20
+%ubernetes%	7800	6.5	20
+%ubernetes%	7810	8.5	20
+%ubernetes%	7820	8.0	20
+%ubernetes%	7830	8.8	20
+%chatgpt%	7800	14.5	20
+%chatgpt%	7810	17.5	20
+%chatgpt%	7820	25.2	20
+%chatgpt%	7830	17.0	20
+%covid%	7800	7.6	20
+%covid%	7810	10.2	20
+%covid%	7820	8.3	20
+%covid%	7830	11.2	20
