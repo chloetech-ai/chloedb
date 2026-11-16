@@ -389,7 +389,7 @@ pub async fn highlight(c: &Ctx<'_>, table: &str, field: &str, query: &str, texts
     if texts.is_empty() || query.trim().is_empty() {
         return None;
     }
-    // A server before 0.3.6 has no /v1/highlight: asked once, then the
+    // A server before 0.3.7 has no /v1/highlight: asked once, then the
     // page marks the words itself.
     if NO_HIGHLIGHT.load(std::sync::atomic::Ordering::Relaxed) {
         return None;

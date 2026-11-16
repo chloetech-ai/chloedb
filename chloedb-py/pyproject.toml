@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "chloedb"
-version = "0.3.6"
+version = "0.3.7"
 description = "ChloeDB from Python: an embedded search database (full text, vectors, graphs, SQL), or a chloedb-server over HTTP"
 readme = "README.md"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ langgraph = ["langgraph>=0.3", "langgraph-checkpoint>=2.0"]
 llama-index = ["llama-index-core>=0.12"]
 # chloedb.serve: the prebuilt chloedb-server of the same release (its
 # version moves with this package's: tests/test_serve.py checks it)
-server = ["chloedb-server==0.3.6"]
+server = ["chloedb-server==0.3.7"]
 
 [tool.maturin]
 python-source = "python"
