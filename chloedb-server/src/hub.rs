@@ -820,7 +820,10 @@ impl Hub {
     /// caller's credential: the answer as the cluster gave it, but a
     /// refused key, which is answered 502 so that the page asks for no
     /// login of this hub's.
-    pub async fn forward(&self, name: &str, method: reqwest::Method, path: &str, headers: &axum::http::HeaderMap, body: reqwest::Body, kube: Option<&Kube>) -> Result<axum::response::Response, ApiError> {
+    /// `person`: who signed in to this hub made the call
+    /// ([`crate::signin`]), named to the cluster in [`PERSON`] for its
+    /// audit log.
+    pub async fn forward(&self, name: &str, method: reqwest::Method, path: &str, headers: &axum::http::HeaderMap, body: reqwest::Body, kube: Option<&Kube>, person: Option<&str>) -> Result<axum::response::Response, ApiError> {
         let c = self.get(name).ok_or_else(|| not_found(name))?;
         let key = self.key_of(&c)?;
         if let Some(v) = &c.kube {
@@ -828,6 +831,9 @@ impl Hub {
             let mut rb = k.request(method, &format!("{}{path}", v.proxy()), KUBE_TIMEOUT).header("x-strata-via", format!("hub {}", self.device));
             if let Some(key) = &key {
                 rb = rb.header(VIA_PROXY_AUTH, format!("Bearer {key}"));
+            }
+            if let Some(p) = person {
+                rb = rb.header(PERSON, p);
             }
             for (k, val) in headers {
                 if PASSED.iter().any(|p| k.as_str().eq_ignore_ascii_case(p)) {
@@ -856,6 +862,9 @@ impl Hub {
         let mut last = String::new();
         for (i, u) in c.urls.iter().enumerate() {
             let mut rb = cl.request(method.clone(), format!("{u}{path}")).bearer_auth(&key).header("x-strata-via", format!("hub {}", self.device));
+            if let Some(p) = person {
+                rb = rb.header(PERSON, p);
+            }
             for (k, v) in headers {
                 if PASSED.iter().any(|p| k.as_str().eq_ignore_ascii_case(p)) {
                     rb = rb.header(k.as_str(), v.as_bytes());
@@ -881,6 +890,12 @@ impl Hub {
         Err(ApiError { code: None, status: 502, message: last })
     }
 }
+
+/// The person signed in to the hub (their Google address) who made a
+/// forwarded call, which the cluster's audit log keeps beside the hub's
+/// key ([`crate::keys::Entry::person`]). The hub sets it, never the
+/// caller: it is not one of the headers [`PASSED`] on.
+pub const PERSON: &str = "x-strata-person";
 
 /// The request headers a forwarded call keeps: what the body is and what
 /// the command center says of the call. Not the caller's credential,

@@ -817,6 +817,7 @@ dependencies = [
  "rand_distr 0.4.3",
  "ratatui",
  "reqwest",
+ "ring",
  "roxmltree",
  "rskafka",
  "rustls",

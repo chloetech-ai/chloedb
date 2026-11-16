@@ -221,6 +221,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/health", get(health))
         .route("/livez", get(live))
         .route("/readyz", get(ready))
+        // Signing in with Google, before there is a session ([`crate::signin`]).
+        .route("/v1/auth/google", get(signin_start).post(signin_google))
+        .route("/v1/auth/signout", post(signout))
         // The command center of a connection of the hub's book: the same
         // page, whose calls go to /c/<name>/v1/...
         .route("/c/:name", get(ui::index))
@@ -693,6 +696,7 @@ pub fn caller_of(headers: &HeaderMap, peer: Option<std::net::SocketAddr>, truste
         agent_session: short("x-strata-agent-session"),
         agent_run: short("x-strata-agent-run"),
         change: short("x-strata-change"),
+        person: short(crate::hub::PERSON),
     }
 }
 
@@ -935,8 +939,52 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // through a Kubernetes API server's proxy (the hub's way into a
     // cluster it made, [`crate::hub`]), which takes `Authorization` for
     // itself and does not pass it on.
-    let token = header_str(req.headers(), header::AUTHORIZATION).or_else(|| header_str(req.headers(), header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
-    let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+    let bearer = header_str(req.headers(), header::AUTHORIZATION).or_else(|| header_str(req.headers(), header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
+    // A person's session, from its cookie ([`crate::signin`]), when the
+    // request sends no other credential and the server lets people sign
+    // in.
+    let from_cookie = match (bearer, &app.svc.signin) {
+        (None, Some(_)) => crate::signin::cookie(req.headers(), crate::signin::SESSION_COOKIE).map(|v| format!("Bearer {v}")),
+        _ => None,
+    };
+    let token = bearer.or(from_cookie.as_deref());
+    let mut who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+    // A session another coordinator made a moment ago: the keys are merged
+    // now, rather than at the next round, and the cookie tried again.
+    if who.is_none() {
+        let id = from_cookie.as_deref().and_then(|c| c.strip_prefix("Bearer sk_")).and_then(|r| r.split_once('_')).map(|(id, _)| id);
+        if id.is_some_and(|id| !app.svc.keys.knows(id)) && crate::keysync::catch_up(&app.svc).await {
+            who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+        }
+    }
+    // A session is let in while the allow list still names its person, at
+    // no more than the scope the list gives them now; a cookie holds
+    // sessions alone.
+    let mut session_ended = None;
+    let who = match who {
+        Some(mut w) => match w.key.as_deref().and_then(|id| app.svc.keys.session(id)) {
+            Some((email, _)) => match app.svc.signin.as_ref().and_then(|g| g.scope_of(&email)) {
+                Some(s) => {
+                    w.scope = w.scope.min(s);
+                    Some(w)
+                }
+                None => {
+                    session_ended = Some(format!("{email} may no longer sign in to this server (its --google-allow), or sign-in is off"));
+                    None
+                }
+            },
+            None if from_cookie.is_some() => None,
+            None => Some(w),
+        },
+        None => None,
+    };
+    // A change made with a session's cookie comes from a page of this
+    // server's, over HTTPS or on loopback (the cookie is SameSite=Strict
+    // too): another site's page cannot make it.
+    let cookie_refused = match (&from_cookie, &who) {
+        (Some(_), Some(_)) if !method.is_safe() => crate::signin::origin_check(header_str(req.headers(), header::ORIGIN), header_str(req.headers(), header::HOST)).err(),
+        _ => None,
+    };
     // An app that checks its callers runs a caller's statement narrowed
     // to the caller's tables ([`Principal::narrowed`]): checked as theirs.
     let (who, narrowing) = match (who, header_str(req.headers(), header::HeaderName::from_static(keys::AS_TABLES))) {
@@ -964,7 +1012,10 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // A follow process's writes ([`crate::service::FOLLOW`]).
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
+        None if session_ended.is_some() => Some(ApiError { code: Some("signed_out"), status: 401, message: session_ended.clone().unwrap_or_default() }),
+        None if from_cookie.is_some() => Some(ApiError { code: Some("signed_out"), status: 401, message: "your sign-in has ended (12 hours unused, 7 days at most, or signed out): sign in again".into() }),
         None => Some(ApiError { code: None, status: 401, message: "missing or wrong token".into() }),
+        Some(_) if cookie_refused.is_some() => Some(ApiError { code: None, status: 403, message: cookie_refused.clone().unwrap_or_default() }),
         Some(_) if narrowing.is_some() => narrowing,
         // A connector's push key writes its table and reads nothing, an
         // app's included.
@@ -1094,6 +1145,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             actor: change.actor.unwrap_or(if agent.is_some() { "agent" } else { "person" }).into(),
             agent,
             on_behalf_of: who.as_ref().and_then(|w| w.on_behalf_of.as_deref().map(String::from)),
+            person: caller.person.clone(),
             // Only a change request being applied now: the header alone
             // could be any client's.
             change_request: applying,
@@ -2926,6 +2978,7 @@ fn audit_ui_stream(svc: &Service, caller: &keys::Caller, w: &Principal, request_
         agent: None,
         on_behalf_of: None,
         change_request: None,
+        person: None,
         ts_ms: telemetry::now_ms(),
         who: keys::audit_name(w),
         key: w.key.clone(),
@@ -5991,9 +6044,11 @@ async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): 
     let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
+    // A person signed in to the hub: named to the cluster for its audit log.
+    let person = req.extensions().get::<Principal>().and_then(|w| w.key.as_deref()).and_then(|id| app.svc.keys.session(id)).map(|(email, _)| email);
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
     let k = hub_kube(&app, &name).await?;
-    app.svc.hub.forward(&name, method, &path, &headers, body, k.as_ref()).await
+    app.svc.hub.forward(&name, method, &path, &headers, body, k.as_ref(), person.as_deref()).await
 }
 
 /// The clusters the cloud view made ([`crate::cloud::clusters`]), the
@@ -6628,7 +6683,128 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     j["caller"] = json!(caller);
     // The presets a key limited to tables can be made from.
     j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
+    // A person signed in ([`crate::signin`]): who, and how.
+    j["auth"]["google_sign_in"] = json!(app.svc.signin.is_some());
+    if let Some((email, provider)) = w.key.as_deref().and_then(|id| app.svc.keys.session(id)) {
+        j["signed_in"] = json!({"email": email, "provider": provider});
+    }
     AxJson(j)
+}
+
+// ----- sign-in: people sign in to the command center with Google ([`crate::signin`])
+
+/// `GET /v1/auth/google`: whether people sign in with Google here, and if
+/// so the OAuth client's id and a nonce for this sign-in, also set in a
+/// cookie of its own, which Google's token must come back with. Needs no
+/// credential.
+async fn signin_start(State(app): State<App>) -> Response {
+    let Some(g) = &app.svc.signin else {
+        return AxJson(json!({"enabled": false})).into_response();
+    };
+    let nonce = match keys::random_hex(16) {
+        Ok(n) => n,
+        Err(e) => return e.into_response(),
+    };
+    let mut r = AxJson(json!({"enabled": true, "provider": "google", "client_id": g.client_id(), "nonce": nonce, "script": crate::signin::SCRIPT})).into_response();
+    let h = r.headers_mut();
+    if let Ok(v) = header::HeaderValue::from_str(&crate::signin::set_cookie(crate::signin::NONCE_COOKIE, Some(&nonce), crate::signin::NONCE_S)) {
+        h.append(header::SET_COOKIE, v);
+    }
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    r
+}
+
+/// `POST /v1/auth/google {"credential"}`: Google's ID token, from its
+/// button on a page of this server's (over HTTPS, or on loopback): the
+/// person's session, in a cookie the page's scripts cannot read, if the
+/// token is Google's, for this server's client, with this sign-in's
+/// nonce, and its address on the allow list. Needs no credential; audited
+/// whether it signs in or is refused.
+async fn signin_google(State(app): State<App>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let t0 = Instant::now();
+    let out = signin_google_(&app, &headers, &body).await;
+    let (status, who, detail, kind, key) = match &out {
+        Ok((_, _, key)) => (200, key.name.clone(), format!("signed in with Google as {} ({})", key.owner.as_deref().unwrap_or("?"), key.scope_name()), keys::CHANGE, Some(key.id.clone())),
+        Err((e, email)) => (e.status, email.clone().unwrap_or_else(|| "unknown".into()), format!("refused a Google sign-in{}: {}", email.as_deref().map(|m| format!(" of {m}")).unwrap_or_default(), e.message), keys::REFUSAL, None),
+    };
+    let caller = keys::caller().unwrap_or_default();
+    app.svc.audit_keep(keys::Entry {
+        ts_ms: telemetry::now_ms(),
+        who,
+        key,
+        scope: out.as_ref().ok().map(|(_, _, k)| k.scope.name()),
+        method: "POST".into(),
+        route: "/v1/auth/google".into(),
+        status,
+        ms: t0.elapsed().as_secs_f64() * 1e3,
+        request_id: obs::current().map(|id| id.to_string()),
+        detail: Some(detail),
+        kind: kind.into(),
+        addr: caller.addr.clone(),
+        client: caller.named(),
+        reason: None,
+        object: Some("sign-in".into()),
+        actor: "person".into(),
+        ..Default::default()
+    }, true);
+    match out {
+        Ok((j, cookie, _)) => {
+            let mut r = AxJson(j).into_response();
+            let h = r.headers_mut();
+            for c in [cookie, crate::signin::set_cookie(crate::signin::NONCE_COOKIE, None, 0)] {
+                if let Ok(v) = header::HeaderValue::from_str(&c) {
+                    h.append(header::SET_COOKIE, v);
+                }
+            }
+            h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+            r
+        }
+        Err((e, _)) => e.into_response(),
+    }
+}
+
+/// [`signin_google`]'s work: the answer, the session's cookie and its key;
+/// or why not, with the address when the token said one.
+async fn signin_google_(app: &App, headers: &HeaderMap, body: &[u8]) -> Result<(Json, String, keys::Key), (ApiError, Option<String>)> {
+    let g = app.svc.signin.as_ref().ok_or_else(|| (ApiError { code: None, status: 404, message: "people do not sign in with Google on this server (--google-client-id, --google-allow)".into() }, None))?;
+    crate::signin::origin_check(header_str(headers, header::ORIGIN), header_str(headers, header::HOST)).map_err(|m| (ApiError { code: None, status: 403, message: m }, None))?;
+    let b: Json = serde_json::from_slice(body).map_err(|_| (ApiError::bad("the body is {\"credential\": Google's ID token}"), None))?;
+    let credential = b["credential"].as_str().filter(|c| !c.is_empty() && c.len() <= 16 << 10).ok_or_else(|| (ApiError::bad("the body is {\"credential\": Google's ID token}"), None))?;
+    let nonce = crate::signin::cookie(headers, crate::signin::NONCE_COOKIE).unwrap_or_default();
+    let person = g.verify(credential, nonce, telemetry::now_ms() / 1000).await.map_err(|r| (ApiError { code: Some("sign_in_refused"), status: r.status, message: r.message }, None))?;
+    let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
+    let (key, secret) = app.svc.keys.create_session("google", &person.email, person.scope, app.guarded(), in_cluster).map_err(|e| (e, Some(person.email.clone())))?;
+    tracing::info!(key = %key.id, email = %person.email, scope = person.scope.name(), "signed in with Google");
+    let cookie = crate::signin::set_cookie(crate::signin::SESSION_COOKIE, Some(&secret), keys::SESSION_MAX_MS / 1000);
+    let j = json!({"signed_in": {"email": person.email, "name": person.name, "provider": "google"}, "name": key.name, "key": key.id, "scope": key.scope_name(), "expires_ms": key.expires_ms, "idle_ms": keys::SESSION_IDLE_MS});
+    Ok((j, cookie, key))
+}
+
+/// `POST /v1/auth/signout`: ends the session in this request's cookie,
+/// everywhere (it is revoked), and the cookie. Needs no credential: a
+/// session that has ended is signed out of too.
+async fn signout(State(app): State<App>, headers: HeaderMap) -> Response {
+    let mut out = json!({"signed_out": false});
+    if let Some(v) = crate::signin::cookie(&headers, crate::signin::SESSION_COOKIE) {
+        if let Some(id) = v.strip_prefix("sk_").and_then(|r| r.split_once('_')).map(|(id, _)| id.to_string()) {
+            // Only a session, and only with its whole secret.
+            let theirs = app.svc.keys.session(&id).is_some() && app.svc.keys.resolve(None, None, Some(&format!("Bearer {v}"))).is_some_and(|p| p.key.as_deref() == Some(&id));
+            if theirs {
+                let by = app.svc.keys.session(&id).map(|(e, _)| e);
+                // A session is never the admin key a server without a token
+                // keeps, so ending it leaves the server as it was.
+                match app.svc.keys.revoke_by(&id, true, by.clone().map(|e| format!("{e}, signing out"))) {
+                    Ok(_) => out = json!({"signed_out": true, "email": by}),
+                    Err(e) => return e.into_response(),
+                }
+            }
+        }
+    }
+    let mut r = AxJson(out).into_response();
+    if let Ok(v) = header::HeaderValue::from_str(&crate::signin::set_cookie(crate::signin::SESSION_COOKIE, None, 0)) {
+        r.headers_mut().append(header::SET_COOKIE, v);
+    }
+    r
 }
 
 async fn list_keys(State(app): State<App>) -> AxJson<Json> {

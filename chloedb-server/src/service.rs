@@ -623,6 +623,9 @@ pub struct Service {
     /// The other clusters this server's command center reaches, with
     /// their keys ([`crate::hub`]).
     pub hub: Arc<crate::hub::Hub>,
+    /// Google sign-in for the command center ([`crate::signin`]), when
+    /// the server has an OAuth client and an allow list.
+    pub signin: Option<Arc<crate::signin::Google>>,
     /// The server's log store ([`crate::logstore`]): its log lines and the
     /// queries it answered, in a Strata database of their own (`None`:
     /// `--log-store off`, or a coordinator without one).
@@ -865,6 +868,7 @@ impl Service {
             gcp: Arc::new(crate::gcp::Gcp::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
             hub: Arc::new(crate::hub::Hub::memory()),
+            signin: None,
             log_store: None,
             models: RwLock::new(Arc::new(Vec::new())),
             models_dir: None,
