@@ -1,7 +1,7 @@
 // Home: the pipeline. The project, "Needs you", "Run personas" and "⋯" on
 // top; then the five steps with their counts and what is moving in each (a
 // list of rows on a phone, five columns on a desktop); merged as a link.
-import { h, enc, usd, ago, toMs, statusLine, flagLine, thinBar, blockedOf, queuedOf, agentOn, happening } from "/goals/converge/util.js";
+import { h, toast, enc, usd, ago, toMs, statusLine, flagLine, thinBar, blockedOf, queuedOf, agentOn, happening } from "/goals/converge/util.js";
 
 /** The project's name as the title; a native select over it switches. */
 function projectTitle(C) {
@@ -14,10 +14,30 @@ function projectTitle(C) {
   return h("h1", { class: "cv-ptitle" }, h("span", { class: "cv-brand" }, "Converge"), h("span", { class: "cv-pname" }, name, h("span", { class: "car", "aria-hidden": "true" }, "▾")), sel);
 }
 
+/** One tap: Stop everything (the autopilot and your picks pause, every
+ * agent and run stops), and Resume while stopped. */
+function stopButton(C) {
+  const st = C.settings();
+  const stopped = !!st.stopped;
+  const busy = (C.S.d.findings || []).some((f) => agentOn(f) || f.busy) || (C.S.d.runs || []).some((r) => r.state === "running");
+  if (!stopped && !busy && !st.enabled && !st.follow_picks) return null;
+  const b = h("button", { class: `cv-btn ${stopped ? "pri" : "crit"}`, type: "button", onclick: async () => {
+    b.disabled = true;
+    try {
+      const r = await C.api("/api/converge/stop", { method: "POST", body: { repo: C.repo(), resume: stopped } });
+      toast(stopped ? `Resumed: the autopilot is ${r.enabled ? "on" : "off"}${r.follow_picks ? ", your picks move by themselves" : ""}` : `Stopped ${r.agents} agent${r.agents === 1 ? "" : "s"}${r.runs ? ` and ${r.runs} run${r.runs === 1 ? "" : "s"}` : ""}. Nothing moves until you resume.`);
+    } catch (err) { toast(err.message || String(err)); }
+    C.S.sig = ""; await C.load();
+  } }, stopped ? "Resume" : "Stop everything");
+  return b;
+}
+
 export function topBar(C) {
   return h("div", { class: "cv-top" },
     projectTitle(C),
-    h("a", { class: "cv-btn pri", href: C.href("personas") }, "Run personas"));
+    h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" } },
+      stopButton(C),
+      h("a", { class: "cv-btn pri", href: C.href("personas") }, "Run personas")));
 }
 
 /** One calm line: the autopilot, what it last did, the spend. */
@@ -26,6 +46,7 @@ function autoLine(C) {
   const lt = C.S.d.last_tick;
   const word = (x) => (typeof x === "string" ? x : x && (x.summary || x.text || x.why || x.decision)) || "";
   const last = lt ? ((lt.decisions || []).map(word).filter(Boolean)[0] || lt.summary || "") : "";
+  if (st.stopped) return h("a", { class: "cv-auto", href: C.href("activity") }, h("span", { class: "dot", "aria-hidden": "true" }), h("span", { class: "s" }, `Stopped by you${ago(st.stopped.at) && ago(st.stopped.at) !== "now" ? ` ${ago(st.stopped.at)} ago` : ""}: tap Resume to carry on`));
   const parts = [st.enabled ? `Autopilot on${st.tick_s ? ` · every ${Math.max(1, Math.round(st.tick_s / 60))} min` : ""}` : "Autopilot off", `${usd(m.spent_today)} of ${usd(st.budget_usd_day)} today`];
   if (last) parts.push(`${ago(lt.ts) || "now"}: ${last}`);
   return h("a", { class: "cv-auto", href: C.href("activity") }, h("span", { class: `dot${st.enabled ? " on" : ""}`, "aria-hidden": "true" }), h("span", { class: "s" }, parts.join(" · ")));

@@ -15,6 +15,14 @@ const CSS = `
 .cv-btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .cv-btn.pri:hover { background: var(--accent-2); }
 .cv-btn.good { background: var(--good); border-color: var(--good); color: #fff; }
+.cv-parts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.cv-parts.sugg { flex-direction: column; flex-wrap: nowrap; }
+.cv-part { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 100%; min-height: 36px; padding: 4px 28px 4px 10px; position: relative; border: var(--hair) solid var(--line-2); border-radius: 8px; background: var(--surface); font-size: var(--fs-sm); text-align: left; color: var(--text); }
+.cv-part b { font-weight: var(--w-mid); overflow-wrap: anywhere; }
+.cv-part span { font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); overflow-wrap: anywhere; }
+.cv-part span.warn { font-family: inherit; color: var(--warn, var(--crit)); }
+.cv-part.pick { width: 100%; min-height: 44px; padding-right: 10px; cursor: pointer; font: inherit; }
+.cv-part .x { position: absolute; top: 0; right: 0; width: 28px; height: 100%; border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
 .cv-btn.crit { background: var(--crit); border-color: var(--crit); color: #fff; }
 .cv-btn.quiet { border-color: transparent; background: none; color: var(--accent-text); }
 .cv-btn.icon { width: 44px; padding: 0; font-size: 18px; }

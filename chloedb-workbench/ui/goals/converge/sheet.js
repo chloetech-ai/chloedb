@@ -182,7 +182,7 @@ export async function openSheet(C, id) {
     const sev = h("select", { id: "cv-e-s", "aria-label": "Severity", onchange: () => putF({ severity: sev.value }, "Severity changed") }, [4, 3, 2, 1].map((k) => h("option", { value: SEV[k], selected: k === f.severity ? true : null }, SEV[k])));
     // The card's context: what the agents work from. Kept while the sheet
     // refreshes (ui.draft), saved together, told to the card's agent.
-    const dr = ui.draft || (ui.draft = { title: f.title || "", detail: f.detail || "", ...(f.scope && typeof f.scope === "object" ? { area: f.scope.area || "", files: (f.scope.files || []).join("\n"), root_cause: f.scope.root_cause || "", acceptance: f.scope.acceptance || "", size: f.scope.size || "M" } : {}) });
+    const dr = ui.draft || (ui.draft = { title: f.title || "", detail: f.detail || "", ...(f.scope && typeof f.scope === "object" ? { area: f.scope.area || "", parts: (f.scope.parts || []).map((x) => ({ ...x })), files: (f.scope.files || []).join("\n"), root_cause: f.scope.root_cause || "", acceptance: f.scope.acceptance || "", size: f.scope.size || "M" } : {}) });
     const hasPlan = "files" in dr;
     const field = (k, label, el) => { el.id = `cv-e-${k}`; el.value = dr[k]; el.addEventListener("input", () => { dr[k] = el.value; }); return h("div", { class: "cv-f", style: { gridColumn: "1 / -1" } }, h("label", { for: el.id }, label), el); };
     const ta = (rows) => h("textarea", { class: "cv-ta", rows: String(rows), style: { fontFamily: "var(--sans)", fontSize: "16px" } });
@@ -190,7 +190,7 @@ export async function openSheet(C, id) {
     const sizeSel = hasPlan ? h("select", { id: "cv-e-size", onchange: () => { dr.size = sizeSel.value; } }, ["S", "M", "L"].map((x) => h("option", { value: x, selected: x === (dr.size || "M").toUpperCase() ? true : null }, { S: "Small", M: "Medium", L: "Large" }[x]))) : null;
     const save = h("button", { class: "cv-btn pri", type: "button", onclick: async () => {
       const body = { title: dr.title.trim(), detail: dr.detail };
-      if (hasPlan) body.scope = { area: dr.area.trim(), files: dr.files.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean), root_cause: dr.root_cause.trim(), acceptance: dr.acceptance.trim(), size: dr.size || "M" };
+      if (hasPlan) body.scope = { area: dr.area.trim(), parts: dr.parts || [], files: dr.files.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean), root_cause: dr.root_cause.trim(), acceptance: dr.acceptance.trim(), size: dr.size || "M" };
       save.disabled = true;
       try {
         const r = await C.api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body });
@@ -206,7 +206,9 @@ export async function openSheet(C, id) {
       h("div", { class: "cv-edit" },
         field("title", "Title", inp()),
         field("detail", "What happened (and anything the agent should know)", ta(5)),
-        hasPlan ? field("files", "The plan's files (one path per line; a folder ends with /)", Object.assign(ta(3), { style: "font-family: var(--mono); font-size: 16px" })) : null,
+        hasPlan ? partsEditor(dr) : null,
+        hasPlan ? h("details", { class: "cv-fold", style: { gridColumn: "1 / -1" }, open: dr.files ? true : null }, h("summary", {}, "Exact paths", h("span", { class: "s" }, "advanced")),
+          field("files", "One path per line; a folder ends with /", Object.assign(ta(3), { style: "font-family: var(--mono); font-size: 16px" }))) : null,
         hasPlan ? field("area", "Where", inp()) : null,
         hasPlan ? field("root_cause", "Root cause", ta(2)) : null,
         hasPlan ? field("acceptance", "Fixed when", ta(2)) : null,
@@ -216,6 +218,46 @@ export async function openSheet(C, id) {
         h("div", { class: "cv-f" }, h("label", { for: "cv-e-s" }, "Severity"), sev)),
       h("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.edit = false; ui.draft = null; paint(d); } }, "Cancel"), save));
+  }
+
+  // A plan's parts of the code as chips: the name, and the files it stands for.
+  function partChips(sc) {
+    const parts = Array.isArray(sc.parts) ? sc.parts : [];
+    const files = Array.isArray(sc.files) ? sc.files : [];
+    if (!parts.length && !files.length) return "–";
+    return h("div", { class: "cv-parts" },
+      parts.map((x) => h("span", { class: "cv-part", title: (x.paths || []).join("\n") }, h("b", {}, x.name || (x.paths || [])[0] || "?"), (x.paths || []).length ? h("span", {}, (x.paths || []).join(", ")) : h("span", { class: "warn" }, "not found in the code"))),
+      files.map((p) => h("span", { class: "cv-part" }, h("b", {}, p))));
+  }
+
+  // Add parts by what they do: search as you type over the code index.
+  function partsEditor(dr) {
+    dr.parts = dr.parts || [];
+    const list = h("div", { class: "cv-parts" });
+    const sugg = h("div", { class: "cv-parts sugg" });
+    const drawList = () => put(list, dr.parts.length ? dr.parts.map((x, i) => h("span", { class: "cv-part" }, h("b", {}, x.name || (x.paths || [])[0]), (x.paths || []).length ? h("span", {}, x.paths.join(", ")) : h("span", { class: "warn" }, "found on save"),
+      h("button", { type: "button", class: "x", "aria-label": `Remove ${x.name}`, onclick: () => { dr.parts.splice(i, 1); drawList(); } }, "×"))) : h("span", { class: "cv-meta" }, "None yet: the fix may change anything."));
+    let t = null, seq = 0;
+    const q = h("input", { class: "cv-in", type: "search", id: "cv-e-part", placeholder: "e.g. the crawler's template learning", style: { fontSize: "16px" }, autocomplete: "off" });
+    const add = (part) => { if (!dr.parts.some((x) => (x.paths || []).join() === (part.paths || []).join() && x.name === part.name)) dr.parts.push(part); q.value = ""; put(sugg); drawList(); };
+    q.addEventListener("input", () => {
+      clearTimeout(t);
+      const text = q.value.trim();
+      if (text.length < 3) { put(sugg); return; }
+      t = setTimeout(async () => {
+        const my = ++seq;
+        let r = null;
+        try { r = await C.api(`/api/converge/parts?repo=${enc(C.repo())}&q=${enc(text)}`); } catch { r = null; }
+        if (my !== seq) return;
+        const found = (r && r.parts) || [];
+        put(sugg, found.map((x) => h("button", { type: "button", class: "cv-part pick", onclick: () => add(x) }, h("b", {}, x.name), h("span", {}, (x.paths || []).join(", ")))),
+          h("button", { type: "button", class: "cv-part pick", onclick: () => add({ name: text, paths: [], symbols: [] }) }, h("b", {}, `“${text}”`), h("span", {}, found.length ? "as written: matched on save" : "nothing in the code index matches: matched on save")));
+      }, 250);
+    });
+    q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const first = sugg.querySelector("button"); if (first) first.click(); } });
+    drawList();
+    return h("div", { class: "cv-f", style: { gridColumn: "1 / -1" } },
+      h("label", { for: "cv-e-part" }, "Parts of the code it touches"), list, q, sugg);
   }
 
   // The fix agent asks to change the plan: one tap to approve.
@@ -311,7 +353,7 @@ export async function openSheet(C, id) {
         h("dt", {}, "Fixed when"), h("dd", {}, sc.acceptance || "–"),
         h("dt", {}, "Size"), h("dd", {}, { S: "Small", M: "Medium", L: "Large" }[sc.size] || sc.size || "–"),
         h("dt", {}, "One-way door"), h("dd", {}, f.door ? `Yes: ${f.door}. Only you start it.` : "No"),
-        h("dt", {}, "Files"), h("dd", { style: { fontFamily: "var(--mono)", fontSize: "var(--fs-xs)" } }, (sc.files || []).join(", ") || "–"))),
+        h("dt", {}, "Parts of the code"), h("dd", {}, partChips(sc)))),
       f.stage === "prioritize" && wip ? h("p", { class: "cv-meta" }, `${Math.min(building, wip)} of ${wip} building slots in use${building >= wip ? ": it waits for one after you pick it" : ""}`) : null,
     ];
   }
@@ -343,7 +385,15 @@ export async function openSheet(C, id) {
         if (!out.length || f.scope_ask) return null;
         const sc = f.scope && typeof f.scope === "object" ? f.scope : {};
         return h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
-          h("button", { class: "cv-btn pri", type: "button", onclick: () => putF({ scope: { ...sc, files: [...(sc.files || []), ...out] } }, `Added ${out.join(", ")} to the plan: checking the branch again`) }, `Add ${out.length > 1 ? `these ${out.length} files` : out[0].split("/").pop()} to the plan and check again`),
+          h("button", { class: "cv-btn pri", type: "button", onclick: async () => {
+            const parts = [];
+            for (const file of out) {
+              let r = null;
+              try { r = await C.api(`/api/converge/parts?repo=${enc(C.repo())}&q=${enc(file)}`); } catch { r = null; }
+              parts.push(((r && r.parts) || [])[0] || { name: file, paths: [file], symbols: [] });
+            }
+            await putF({ scope: { ...sc, parts: [...(sc.parts || []), ...parts] } }, `Added ${parts.map((x) => x.name).join(", ")} to the plan: checking the branch again`);
+          } }, `Add ${out.length > 1 ? `these ${out.length} parts` : out[0].split("/").slice(-2).join("/")} to the plan and check again`),
           h("button", { class: "cv-btn quiet", type: "button", onclick: () => { ui.edit = true; paint(d); sh.body.scrollTop = 0; } }, "Edit the plan"));
       })(),
       h("section", {}, h("span", { class: "cv-label" }, f.rounds ? `Checks · round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "Checks"), list),
