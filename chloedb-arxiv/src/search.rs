@@ -293,7 +293,9 @@ pub async fn facets(c: &Ctx<'_>, p: &Parsed) -> Value {
         c.soft("papers by domain", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {wh} GROUP BY domains ORDER BY n DESC LIMIT 14"), pr.clone()),
         c.soft("papers by kind", &format!("SELECT kinds, COUNT(*) AS n FROM ax_papers {wh} GROUP BY kinds ORDER BY n DESC"), pr.clone()),
         c.soft("papers by venue", &format!("SELECT venue, COUNT(*) AS n FROM ax_papers {wh} GROUP BY venue ORDER BY n DESC LIMIT 13"), pr.clone()),
-        c.soft("papers by author", &format!("SELECT people, COUNT(*) AS n FROM ax_papers {wh} GROUP BY people ORDER BY n DESC LIMIT 12"), pr.clone()),
+        // The statement "who writes most on it" asks after (answer::people_by_count),
+        // so on a broad subject it is grouped once and the second is the server's kept answer.
+        c.soft("papers by author", &format!("SELECT people, COUNT(*) AS n FROM ax_papers {wh} GROUP BY people ORDER BY n DESC LIMIT 15"), pr.clone()),
         c.soft("papers with code", &format!("SELECT COUNT(*) AS n FROM ax_papers {code_wh}"), pr.clone()),
     );
     let dict = crate::concepts::dict();
@@ -310,7 +312,7 @@ pub async fn facets(c: &Ctx<'_>, p: &Parsed) -> Value {
         "domain": named(&doms, "domains", &|v| dict.by_slug(v).map(|c| c.name.clone()).unwrap_or_else(|| v.to_string())),
         "kind": named(&kinds, "kinds", &|v| crate::understand::kind_name(v).to_string()),
         "venue": named(&venues, "venue", &|v| v.to_string()),
-        "author": json!(people.iter().filter(|r| !r.s("people").is_empty()).map(|r| json!({"value": r.s("people"), "n": r.i("n")})).collect::<Vec<_>>()),
+        "author": json!(people.iter().filter(|r| !r.s("people").is_empty()).take(12).map(|r| json!({"value": r.s("people"), "n": r.i("n")})).collect::<Vec<_>>()),
         "code": code.first().map(|r| r.i("n")).unwrap_or(0),
     })
 }

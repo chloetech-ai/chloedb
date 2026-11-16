@@ -44,7 +44,7 @@ chloedb-arxiv serve --strata http://search:7700 --graph http://graph:7700 --key 
 chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lists it
 ```
 
-`deploy/k8s.yaml` and `deploy/app.yaml` run it on Kubernetes: two nodes of 16 GB, a server on each, and the app beside the graph server.
+`deploy/k8s.yaml` and `deploy/app.yaml` run it on Kubernetes: two nodes of 16 GB, a server on each, and the app beside the graph server. Each database is on its node's own SSD rather than a network volume, the graph database (3.6 GB) is read into memory after a start, and the search server allows a GROUP BY of two million groups, since "who writes most" on a broad subject groups every author of tens of thousands of papers. `deploy/backup.yaml` takes a checkpoint of each server a night (`POST /v1/admin/checkpoint` into `--backup-dir`, hard-linking what the previous one has) and keeps the two newest. With `--public` the app serves the page at `/` to anyone, reads and a reader's own library and feeds, within `--per-minute` requests a minute from one address; https://arxiv.chloetech.ai is this, through a web proxy.
 
 `--answer-model` names the model of summaries and TL;DRs, and `--issue-model` the one that explains an issue's papers from their full text (both are called through the graph server's `llm()`, which holds the provider's key); `--llm-per-day` caps new calls a day, and everything written is kept, so it is written once. arXiv asks programs to read a page every 15 seconds, so the first issue of ten papers takes about ten minutes; a page and its figures, once read, are kept (`ax_notes`, `ax_figures`).
 

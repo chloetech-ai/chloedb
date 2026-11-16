@@ -1,4 +1,8 @@
 # The app, once /mnt/arxiv/work/bin/chloedb-arxiv is in place on the graph node.
+# --public serves the page at / to anyone (https://arxiv.chloetech.ai, through
+# the web proxy): reads, a reader's own library and feeds, 600 requests a
+# minute from one address, and 300 new model calls a day (an explained issue
+# counts one a paper). The command center's app proxy sends the token.
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: arxiv-app, namespace: strata}
@@ -14,7 +18,7 @@ spec:
       containers:
       - name: app
         image: ubuntu:24.04
-        command: ["/work/bin/chloedb-arxiv", "serve", "--strata", "http://arxiv-search.strata.svc:7700", "--graph", "http://arxiv-graph.strata.svc:7700", "--listen", "0.0.0.0:7860", "--live"]
+        command: ["/work/bin/chloedb-arxiv", "serve", "--strata", "http://arxiv-search.strata.svc:7700", "--graph", "http://arxiv-graph.strata.svc:7700", "--listen", "0.0.0.0:7860", "--live", "--public", "--per-minute", "600", "--llm-per-day", "300"]
         env:
         - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
         - {name: CHLOEDB_ARXIV_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}

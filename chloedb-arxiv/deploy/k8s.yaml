@@ -7,7 +7,13 @@
 #   arxiv-app     the app (ui, API, live harvest), beside the graph
 # Nodes are labelled chloedb/arxiv-role=search|graph and tainted
 # chloedb/pool=arxiv:NoSchedule; each server keeps its database on its
-# node's disk (hostPath), as fast as the node's SSD. Secrets: arxiv-admin
+# node's own SSD (hostPath, not a network volume: random reads there are
+# about six times faster), with checkpoints in /data/backup on the same
+# disk (deploy/backup.yaml makes one a night). The graph database fits in
+# memory and is read once after start to warm it. "Who writes most" on a
+# broad subject groups by every author of tens of thousands of papers, more
+# than the default 65,536 groups: the search server allows two million (all
+# 1.9 million authors), held within its query memory. Secrets: arxiv-admin
 # (token: the servers' token), anthropic (key), e2e-admin (token: what the
 # command center's app proxy sends). The app's binary and rows are put in
 # /mnt/arxiv/work on the graph node (see docs/chloedb/arxiv.md).
@@ -48,7 +54,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv.chloedb --listen 0.0.0.0:7700 --grpc off"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv.chloedb --listen 0.0.0.0:7700 --grpc off --backup-dir /data/backup --max-groups 2000000"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/models}
@@ -74,7 +80,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv-graph.chloedb --listen 0.0.0.0:7700 --grpc off --merge-memory-mb 2048 --query-memory-mb 4096"]
+        command: ["sh", "-c", "(sleep 5; cat /data/arxiv-graph.chloedb > /dev/null) & exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv-graph.chloedb --listen 0.0.0.0:7700 --grpc off --merge-memory-mb 2048 --query-memory-mb 4096 --backup-dir /data/backup"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/models}
