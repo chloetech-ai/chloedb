@@ -21,7 +21,7 @@ npm install chloedb
 | Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `@chloedb/linux-x64-gnu` | `chloedb-<version>-linux-x64-gnu.tgz` |
 | Linux arm64, glibc 2.35+ | `@chloedb/linux-arm64-gnu` | `chloedb-<version>-linux-arm64-gnu.tgz` |
 
-If importing `chloedb` throws an error that calls it a placeholder, npm installed `chloedb` 0.0.x, which only held the name until ChloeDB's releases were published there (the first one, 0.0.1, still says Strata). `npm install chloedb` again in that app replaces it: with no version it takes npm's latest and rewrites the range in `package.json`.
+If importing `chloedb` throws an error that calls it a placeholder, npm installed `chloedb` 0.0.x, which only held the name until ChloeDB's releases were published there (the first one, 0.0.1, still says Strata, ChloeDB's name before the rename). `npm install chloedb` again in that app replaces it: with no version it takes npm's latest and rewrites the range in `package.json`.
 
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
