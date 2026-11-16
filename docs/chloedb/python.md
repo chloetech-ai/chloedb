@@ -22,6 +22,8 @@ If `import chloedb` raises an `ImportError` that calls it a placeholder, pip ins
 
 The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
+<!-- since 0.3.7 --> `pip install "chloedb[server]"` also installs [`chloedb-server`](server.md#run-it), the prebuilt server of the same release, which [`chloedb.serve()`](#a-server-started-from-python) starts.
+
 | platform | wheel |
 |---|---|
 | macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
@@ -40,7 +42,7 @@ The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/mai
 PYTHONPATH=chloedb-py/python python3 -c 'import chloedb; print(chloedb.connect("http://127.0.0.1:7700").health())'
 ```
 
-The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.serve`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
 
 ### From source
 
@@ -376,6 +378,23 @@ except chloedb.ChloeDBError as e:
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
 ```
+
+### A server started from Python
+
+<!-- since 0.3.7 --> `chloedb.serve(db=None, listen=None, token=None, args=(), binary=None, wait=60)` starts a chloedb-server on this machine and returns a `Client` of it, which stops the server when it is closed or its `with` block ends (and this Python process stops any it started when it ends). It is for a script, a notebook or a test that wants the server's API (the command center at the client's `url`, several processes on one database, a cluster's API before there is a cluster) without starting the program by hand:
+
+```python
+import chloedb
+
+with chloedb.serve("books.chloedb") as db:      # the database is made if it does not exist
+    db.sql("CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, year INT)")
+    db.insert([{"id": "b1", "title": "The river and the dragon", "year": 1999}], table="books")
+    print(db.url, db.search("dragon", table="books").dicts())
+```
+
+Without `db` it serves a new database in a temporary folder, removed when the server stops. It listens on `127.0.0.1` at a free port (`listen="host:port"` picks the address; beyond loopback the server needs a `token`, which it is given in its environment and the client sends), with the gRPC API off and no apps started; `args` are more of the server's [flags](server.md#run-it), such as `["--demo", "20000"]`, and win over those. `wait` is how many seconds it may take to answer `/livez`; one that stops first raises `ChloeDBError` with what it printed. The client's `server` is the `Server`: its `url`, `db`, `process` (the `subprocess.Popen`), `running`, `output()` (what it printed), and `stop(timeout=10)`, which sends SIGTERM, then SIGKILL after `timeout` seconds. A copy of the client (pickled, or `session()`) talks to the same server and leaves it running when closed.
+
+The program is `binary` when given, else `$CHLOEDB_SERVER_BIN`, else the one the [`chloedb-server` package](server.md#run-it) installed (`pip install chloedb-server`, or the `server` extra above), else `chloedb-server` on the `PATH`; `chloedb.find_server()` says which, and raises `FileNotFoundError` saying what to install when there is none. Like the client, it needs only the standard library.
 
 ### From asyncio
 

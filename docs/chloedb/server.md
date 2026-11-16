@@ -27,7 +27,19 @@ chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo c
 # open http://127.0.0.1:7700
 ```
 
-The archive holds `chloedb-server`, and `strata-server`, its old name, beside it; release 0.1.0, from before the rename, was published as `strata-server-v0.1.0`. macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine chloedb-server-$p/chloedb-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
+The archive holds `chloedb-server`, and `strata-server`, its old name, beside it; release 0.1.0, from before the rename, was published as `strata-server-v0.1.0`. macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine chloedb-server-$p/chloedb-server`; `curl` sets no such mark.
+
+<!-- since 0.3.7 --> The same binary is on [PyPI](https://pypi.org/project/chloedb-server/) as `chloedb-server`, a wheel per platform, so pip, uv and pipx install it (or run it without installing it), with no archive to unpack:
+
+```sh
+pipx install chloedb-server                              # or uv tool install chloedb-server: onto the PATH
+uvx chloedb-server --demo 20000 --db products.chloedb    # or run it without installing it (pipx run chloedb-server too)
+pip install chloedb-server                               # or into a virtualenv, beside the code that uses it
+```
+
+The wheels are tagged for what the binary needs: `manylinux_2_34` (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and newer) on Linux x86_64 and aarch64, `macosx_11_0` on macOS, so pip takes one only where it runs; there is none for Windows or Alpine, and no source distribution. The program lands in the environment's `bin`; `python -m chloedb_server ARGS` runs it where that is not on the `PATH`, and [`chloedb.serve()`](python.md#a-server-started-from-python) starts one from Python and returns a client of it (`pip install "chloedb[server]"` installs the client and the server of the same release). The server-release workflow makes the wheels from the archives above, installs and runs each on its platform, and publishes them on the tag.
+
+From source (Rust stable and a C compiler; the first build takes several minutes):
 
 ```sh
 cd chloedb-server && cargo build --release

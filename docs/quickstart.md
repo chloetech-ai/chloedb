@@ -15,6 +15,13 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
+**pipx or uv** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
+
+```sh
+# install
+pipx install chloedb-server      # or: uv tool install chloedb-server
+```
+
 **Homebrew** is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.
 
 **Docker**: skip to [ChloeDB in Docker](#chloedb-in-docker) below, which runs the same steps against the image.

@@ -11,6 +11,33 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### The server on PyPI
+
+- **`pip install chloedb-server` installs the prebuilt server, and `uvx
+  chloedb-server` runs it.** Each server release also publishes a wheel per
+  platform to PyPI as `chloedb-server`, holding the same binary as the
+  release's archive (Linux x86_64 and aarch64 with glibc 2.34 or later,
+  macOS 11 or later; no Windows, Alpine or source distribution), so pip,
+  pipx and uv install it without Rust or an archive to unpack; `python -m
+  chloedb_server` runs it where the environment's programs are not on the
+  `PATH`. server-release.yml makes the wheels from the archives
+  (`packaging/server-wheels/make_wheels.py`), installs and runs each one on
+  its platform with pip, pipx and uvx, and uploads them from the tag by
+  PyPI's trusted publishing, when `CHLOEDB_PUBLISH_PYPI` is `true`. Each
+  wheel is about 60 MB.
+- **`chloedb.serve()` starts a server from Python.** It runs the installed
+  `chloedb-server` (the package's, `$CHLOEDB_SERVER_BIN` or the `PATH`'s) on
+  a database, or a temporary one, at a free port on loopback, and returns a
+  `Client` of it, which stops it when closed or at the end of its `with`
+  block; `chloedb.find_server()` says which program it runs. `pip install
+  "chloedb[server]"` installs the server of the same release with the
+  package. `Client.close()` stops the server `serve` started and does
+  nothing for any other.
+- The Docs URLs check (`scripts/check-doc-urls.py`) checks `pip install
+  chloedb-server`, `uvx`, `uv tool` and `pipx` lines against PyPI from
+  0.3.7, the first release there, so 0.3.7's drafts are published only once
+  PyPI has its wheels.
+
 ## 0.3.6
 
 What you say again becoming a ChloeCtx rule, Kafka topics read by the server

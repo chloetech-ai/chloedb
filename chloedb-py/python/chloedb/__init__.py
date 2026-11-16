@@ -92,6 +92,7 @@ from ._native import (
     error_code,
 )
 from .client import Client, Session, Written
+from ._serve import Server, find_server, serve
 from .aio import AsyncClient, AsyncSession
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .nearby import Nearby, NearbyResult, nearby
@@ -129,6 +130,9 @@ __all__ = [
     "error_code",
     "open",
     "connect",
+    "serve",
+    "find_server",
+    "Server",
     "from_sqlite",
     "plan_sqlite",
     "from_parquet",
