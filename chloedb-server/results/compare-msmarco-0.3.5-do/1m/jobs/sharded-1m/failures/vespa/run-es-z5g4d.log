@@ -1,0 +1,55 @@
+es       bm25                     warm-up: p50 10.287, 7.802, 6.310, 5.704 ms
+es       bm25                     c=1        281 q/s  p50   3.436 ms  p90   4.338 ms  p99   6.241 ms  errors 0
+es       bm25                     c=4        857 q/s  p50   4.419 ms  p90   6.469 ms  p99   9.661 ms  errors 0
+es       bm25                     c=16      1638 q/s  p50   8.733 ms  p90  15.708 ms  p99  23.878 ms  errors 0
+es       bm25 + filter            warm-up: p50 6.142, 4.761, 4.493 ms
+es       bm25 + filter            c=1        285 q/s  p50   3.291 ms  p90   4.505 ms  p99   8.630 ms  errors 0
+es       bm25 + filter            c=4        862 q/s  p50   4.319 ms  p90   6.462 ms  p99  11.622 ms  errors 0
+es       bm25 + filter            c=16      1423 q/s  p50   9.843 ms  p90  18.552 ms  p99  30.531 ms  errors 0
+es       vector                   warm-up: p50 7.465, 5.930, 5.540 ms
+es       vector                   c=1        242 q/s  p50   4.038 ms  p90   4.678 ms  p99   5.715 ms  errors 0
+es       vector                   c=4        717 q/s  p50   5.273 ms  p90   6.793 ms  p99   9.323 ms  errors 0
+es       vector                   c=16      1384 q/s  p50  10.961 ms  p90  16.003 ms  p99  21.910 ms  errors 0
+es       vector + filter          warm-up: p50 6.521, 6.044 ms
+es       vector + filter          c=1        212 q/s  p50   4.531 ms  p90   5.343 ms  p99   6.571 ms  errors 0
+es       vector + filter          c=4        655 q/s  p50   5.881 ms  p90   7.446 ms  p99   9.401 ms  errors 0
+es       vector + filter          c=16      1084 q/s  p50  13.458 ms  p90  20.240 ms  p99  39.519 ms  errors 0
+es       hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es       hybrid (weighted)        warm-up: p50 10.376, 9.305, 9.366 ms
+es       hybrid (weighted)        c=1        140 q/s  p50   6.101 ms  p90  10.643 ms  p99  21.513 ms  errors 0
+es       hybrid (weighted)        c=4        384 q/s  p50   9.161 ms  p90  16.061 ms  p99  29.556 ms  errors 0
+es       hybrid (weighted)        c=16       523 q/s  p50  27.478 ms  p90  46.832 ms  p99  88.402 ms  errors 0
+es       boosted (bm25 × decay)   warm-up: p50 10.966, 10.895 ms
+es       boosted (bm25 × decay)   c=1        113 q/s  p50   7.065 ms  p90  17.892 ms  p99  28.510 ms  errors 0
+es       boosted (bm25 × decay)   c=4        294 q/s  p50  11.091 ms  p90  26.794 ms  p99  47.398 ms  errors 0
+es       boosted (bm25 × decay)   c=16       370 q/s  p50  37.772 ms  p90  72.766 ms  p99 121.276 ms  errors 0
+es       facet                    warm-up: p50 3.668, 2.663, 2.621 ms
+es       facet                    c=1        471 q/s  p50   1.994 ms  p90   2.637 ms  p99   4.368 ms  errors 0
+es       facet                    c=4       1699 q/s  p50   2.177 ms  p90   3.228 ms  p99   5.283 ms  errors 0
+es       facet                    c=16      3259 q/s  p50   4.233 ms  p90   7.913 ms  p99  13.607 ms  errors 0
+es       key lookup               warm-up: p50 1.245, 1.160 ms
+es       key lookup               c=1        977 q/s  p50   1.046 ms  p90   1.342 ms  p99   1.681 ms  errors 0
+es       key lookup               c=4       3977 q/s  p50   1.046 ms  p90   1.345 ms  p99   1.675 ms  errors 0
+es       key lookup               c=16     10732 q/s  p50   1.449 ms  p90   2.195 ms  p99   3.158 ms  errors 0
+es       phrase                   warm-up: p50 3.714, 3.439 ms
+es       phrase                   c=1        373 q/s  p50   2.692 ms  p90   3.781 ms  p99   6.030 ms  errors 0
+es       phrase                   c=4       1195 q/s  p50   3.230 ms  p90   5.012 ms  p99   7.455 ms  errors 0
+es       phrase                   c=16      2133 q/s  p50   6.757 ms  p90  12.793 ms  p99  20.479 ms  errors 0
+es       typo                     warm-up: p50 24.009, 23.528 ms
+es       typo                     c=1         65 q/s  p50  14.549 ms  p90  24.269 ms  p99  32.660 ms  errors 0
+es       typo                     c=4        169 q/s  p50  22.233 ms  p90  36.578 ms  p99  54.830 ms  errors 0
+es       typo                     c=16       196 q/s  p50  75.668 ms  p90 117.325 ms  p99 166.245 ms  errors 0
+es       prefix                   warm-up: p50 5.360, 5.112 ms
+es       prefix                   c=1        258 q/s  p50   3.613 ms  p90   5.012 ms  p99   8.917 ms  errors 0
+es       prefix                   c=4        754 q/s  p50   4.924 ms  p90   7.470 ms  p99  12.102 ms  errors 0
+es       prefix                   c=16      1179 q/s  p50  11.890 ms  p90  22.317 ms  p99  34.233 ms  errors 0
+es       similar items            warm-up: p50 10.294, 9.858 ms
+es       similar items            c=1        147 q/s  p50   6.520 ms  p90   7.499 ms  p99  10.250 ms  errors 0
+es       similar items            c=4        403 q/s  p50   9.555 ms  p90  12.413 ms  p99  15.909 ms  errors 0
+es       similar items            c=16       501 q/s  p50  30.271 ms  p90  45.819 ms  p99  63.319 ms  errors 0
+es       sql aggregate            warm-up: p50 92.856, 91.339 ms
+es       sql aggregate            c=1         20 q/s  p50  49.283 ms  p90  69.596 ms  p99  82.211 ms  errors 0
+es       sql aggregate            c=4         47 q/s  p50  84.982 ms  p90 119.971 ms  p99 150.346 ms  errors 0
+es       sql aggregate            c=16        49 q/s  p50 318.663 ms  p90 460.959 ms  p99 540.779 ms  errors 0
+es       result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es.json

@@ -1,0 +1,2019 @@
+service/strata created
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-0 condition met
+pod/strata-1 condition met
+job.batch/run-strata created
+strata   bm25                     warm-up: p50 2.447, 2.505 ms
+strata   bm25                     c=1        443 q/s  p50   2.035 ms  p90   3.007 ms  p99   5.777 ms  errors 0
+strata   bm25                     c=4       1413 q/s  p50   2.511 ms  p90   4.186 ms  p99   7.581 ms  errors 0
+strata   bm25                     c=16      2406 q/s  p50   5.917 ms  p90  10.481 ms  p99  18.116 ms  errors 0
+strata   bm25 + filter            warm-up: p50 2.841, 2.815 ms
+strata   bm25 + filter            c=1        398 q/s  p50   2.263 ms  p90   3.389 ms  p99   6.570 ms  errors 0
+strata   bm25 + filter            c=4       1231 q/s  p50   2.882 ms  p90   4.768 ms  p99   9.539 ms  errors 0
+strata   bm25 + filter            c=16      2086 q/s  p50   6.667 ms  p90  12.404 ms  p99  23.000 ms  errors 0
+strata   vector                   warm-up: p50 2.658, 2.656 ms
+strata   vector                   c=1        452 q/s  p50   2.172 ms  p90   2.391 ms  p99   3.204 ms  errors 0
+strata   vector                   c=4       1450 q/s  p50   2.646 ms  p90   3.390 ms  p99   4.619 ms  errors 0
+strata   vector                   c=16      2422 q/s  p50   6.114 ms  p90   9.659 ms  p99  15.638 ms  errors 0
+strata   vector + filter          warm-up: p50 2.748, 2.725 ms
+strata   vector + filter          c=1        432 q/s  p50   2.265 ms  p90   2.519 ms  p99   3.319 ms  errors 0
+strata   vector + filter          c=4       1414 q/s  p50   2.726 ms  p90   3.502 ms  p99   4.601 ms  errors 0
+strata   vector + filter          c=16      2319 q/s  p50   6.364 ms  p90  10.227 ms  p99  16.447 ms  errors 0
+strata   hybrid (RRF)             warm-up: p50 6.366, 6.367 ms
+strata   hybrid (RRF)             c=1        202 q/s  p50   4.626 ms  p90   6.399 ms  p99  10.405 ms  errors 0
+strata   hybrid (RRF)             c=4        562 q/s  p50   6.575 ms  p90  10.039 ms  p99  15.456 ms  errors 0
+strata   hybrid (RRF)             c=16       780 q/s  p50  18.927 ms  p90  31.709 ms  p99  49.094 ms  errors 0
+strata   hybrid (weighted)        warm-up: p50 6.397, 6.494 ms
+strata   hybrid (weighted)        c=1        199 q/s  p50   4.709 ms  p90   6.413 ms  p99  10.599 ms  errors 0
+strata   hybrid (weighted)        c=4        578 q/s  p50   6.397 ms  p90   9.665 ms  p99  15.520 ms  errors 0
+strata   hybrid (weighted)        c=16       762 q/s  p50  19.185 ms  p90  32.696 ms  p99  51.956 ms  errors 0
+strata   boosted (bm25 × decay)   warm-up: p50 4.983, 5.036 ms
+strata   boosted (bm25 × decay)   c=1        236 q/s  p50   3.670 ms  p90   6.942 ms  p99  10.973 ms  errors 0
+strata   boosted (bm25 × decay)   c=4        650 q/s  p50   5.098 ms  p90  10.434 ms  p99  18.648 ms  errors 0
+strata   boosted (bm25 × decay)   c=16       893 q/s  p50  14.496 ms  p90  32.560 ms  p99  62.328 ms  errors 0
+strata   facet                    warm-up: p50 1.987, 1.970 ms
+strata   facet                    c=1        544 q/s  p50   1.817 ms  p90   2.115 ms  p99   2.715 ms  errors 0
+strata   facet                    c=4       1972 q/s  p50   1.968 ms  p90   2.506 ms  p99   3.397 ms  errors 0
+strata   facet                    c=16      3935 q/s  p50   3.715 ms  p90   5.677 ms  p99  10.971 ms  errors 0
+strata   key lookup               warm-up: p50 1.019, 1.000 ms
+strata   key lookup               c=1       1081 q/s  p50   1.023 ms  p90   1.223 ms  p99   1.548 ms  errors 0
+strata   key lookup               c=4       4336 q/s  p50   0.999 ms  p90   1.250 ms  p99   1.608 ms  errors 0
+strata   key lookup               c=16     13176 q/s  p50   1.234 ms  p90   1.799 ms  p99   2.658 ms  errors 0
+strata   phrase                   warm-up: p50 1.765, 1.776 ms
+strata   phrase                   c=1        576 q/s  p50   1.710 ms  p90   1.944 ms  p99   2.603 ms  errors 0
+strata   phrase                   c=4       2193 q/s  p50   1.767 ms  p90   2.167 ms  p99   2.968 ms  errors 0
+strata   phrase                   c=16      4674 q/s  p50   3.175 ms  p90   4.584 ms  p99   8.775 ms  errors 0
+strata   typo                     warm-up: p50 25.306, 24.670 ms
+strata   typo                     c=1         61 q/s  p50  16.520 ms  p90  24.268 ms  p99  29.590 ms  errors 0
+strata   typo                     c=4        158 q/s  p50  25.203 ms  p90  37.995 ms  p99  47.978 ms  errors 0
+strata   typo                     c=16       178 q/s  p50  85.422 ms  p90 147.742 ms  p99 196.370 ms  errors 0
+strata   prefix                   warm-up: p50 2.746, 2.697 ms
+strata   prefix                   c=1        420 q/s  p50   2.151 ms  p90   3.308 ms  p99   5.060 ms  errors 0
+strata   prefix                   c=4       1315 q/s  p50   2.728 ms  p90   4.538 ms  p99   6.923 ms  errors 0
+strata   prefix                   c=16      2307 q/s  p50   6.303 ms  p90  10.860 ms  p99  16.895 ms  errors 0
+strata   similar items            warm-up: p50 3.522, 3.548 ms
+strata   similar items            c=1        350 q/s  p50   2.802 ms  p90   3.115 ms  p99   4.111 ms  errors 0
+strata   similar items            c=4       1073 q/s  p50   3.563 ms  p90   4.730 ms  p99   6.313 ms  errors 0
+strata   similar items            c=16      1676 q/s  p50   8.978 ms  p90  14.075 ms  p99  20.454 ms  errors 0
+strata   sql aggregate            warm-up: p50 11.913, 12.273 ms
+strata   sql aggregate            c=1        132 q/s  p50   7.473 ms  p90   9.899 ms  p99  15.436 ms  errors 0
+strata   sql aggregate            c=4        322 q/s  p50  11.957 ms  p90  17.769 ms  p99  24.309 ms  errors 0
+strata   sql aggregate            c=16       354 q/s  p50  42.830 ms  p90  73.527 ms  p99  97.862 ms  errors 0
+strata   result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata.json
+job.batch/run-strata-pass2 created
+strata-pass2 bm25                     warm-up: p50 2.564, 2.592 ms
+strata-pass2 bm25                     c=1        428 q/s  p50   2.132 ms  p90   3.111 ms  p99   5.605 ms  errors 0
+strata-pass2 bm25                     c=4       1378 q/s  p50   2.575 ms  p90   4.237 ms  p99   7.765 ms  errors 0
+strata-pass2 bm25                     c=16      2383 q/s  p50   5.958 ms  p90  10.549 ms  p99  18.883 ms  errors 0
+strata-pass2 bm25 + filter            warm-up: p50 2.831, 2.857 ms
+strata-pass2 bm25 + filter            c=1        399 q/s  p50   2.224 ms  p90   3.406 ms  p99   6.625 ms  errors 0
+strata-pass2 bm25 + filter            c=4       1218 q/s  p50   2.904 ms  p90   4.797 ms  p99   9.634 ms  errors 0
+strata-pass2 bm25 + filter            c=16      2079 q/s  p50   6.829 ms  p90  12.294 ms  p99  21.297 ms  errors 0
+strata-pass2 vector                   warm-up: p50 2.660, 2.637 ms
+strata-pass2 vector                   c=1        450 q/s  p50   2.173 ms  p90   2.425 ms  p99   3.224 ms  errors 0
+strata-pass2 vector                   c=4       1455 q/s  p50   2.650 ms  p90   3.367 ms  p99   4.439 ms  errors 0
+strata-pass2 vector                   c=16      2374 q/s  p50   6.289 ms  p90   9.877 ms  p99  14.570 ms  errors 0
+strata-pass2 vector + filter          warm-up: p50 2.784, 2.722 ms
+strata-pass2 vector + filter          c=1        430 q/s  p50   2.260 ms  p90   2.516 ms  p99   3.564 ms  errors 0
+strata-pass2 vector + filter          c=4       1395 q/s  p50   2.751 ms  p90   3.563 ms  p99   4.634 ms  errors 0
+strata-pass2 vector + filter          c=16      2285 q/s  p50   6.507 ms  p90  10.235 ms  p99  15.802 ms  errors 0
+strata-pass2 hybrid (RRF)             warm-up: p50 6.528, 6.444 ms
+strata-pass2 hybrid (RRF)             c=1        189 q/s  p50   4.853 ms  p90   6.969 ms  p99  12.109 ms  errors 0
+strata-pass2 hybrid (RRF)             c=4        571 q/s  p50   6.511 ms  p90   9.734 ms  p99  15.888 ms  errors 0
+strata-pass2 hybrid (RRF)             c=16       768 q/s  p50  19.353 ms  p90  32.350 ms  p99  50.203 ms  errors 0
+strata-pass2 hybrid (weighted)        warm-up: p50 6.649, 6.518 ms
+strata-pass2 hybrid (weighted)        c=1        195 q/s  p50   4.798 ms  p90   6.563 ms  p99  10.750 ms  errors 0
+strata-pass2 hybrid (weighted)        c=4        572 q/s  p50   6.510 ms  p90   9.772 ms  p99  15.060 ms  errors 0
+strata-pass2 hybrid (weighted)        c=16       764 q/s  p50  19.459 ms  p90  32.642 ms  p99  49.944 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   warm-up: p50 4.988, 4.998 ms
+strata-pass2 boosted (bm25 × decay)   c=1        231 q/s  p50   3.706 ms  p90   7.137 ms  p99  10.799 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   c=4        649 q/s  p50   5.116 ms  p90  10.349 ms  p99  18.580 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   c=16       887 q/s  p50  14.561 ms  p90  32.355 ms  p99  63.215 ms  errors 0
+strata-pass2 facet                    warm-up: p50 1.977, 1.973 ms
+strata-pass2 facet                    c=1        543 q/s  p50   1.807 ms  p90   2.112 ms  p99   3.103 ms  errors 0
+strata-pass2 facet                    c=4       1952 q/s  p50   1.987 ms  p90   2.515 ms  p99   3.441 ms  errors 0
+strata-pass2 facet                    c=16      3929 q/s  p50   3.763 ms  p90   5.650 ms  p99  10.370 ms  errors 0
+strata-pass2 key lookup               warm-up: p50 1.013, 1.009 ms
+strata-pass2 key lookup               c=1       1082 q/s  p50   1.027 ms  p90   1.217 ms  p99   1.576 ms  errors 0
+strata-pass2 key lookup               c=4       4266 q/s  p50   1.012 ms  p90   1.274 ms  p99   1.661 ms  errors 0
+strata-pass2 key lookup               c=16     12556 q/s  p50   1.279 ms  p90   1.909 ms  p99   2.953 ms  errors 0
+strata-pass2 phrase                   warm-up: p50 1.777, 1.763 ms
+strata-pass2 phrase                   c=1        593 q/s  p50   1.651 ms  p90   1.910 ms  p99   2.455 ms  errors 0
+strata-pass2 phrase                   c=4       2188 q/s  p50   1.769 ms  p90   2.173 ms  p99   2.947 ms  errors 0
+strata-pass2 phrase                   c=16      4525 q/s  p50   3.361 ms  p90   4.687 ms  p99   8.067 ms  errors 0
+strata-pass2 typo                     warm-up: p50 25.502, 24.899 ms
+strata-pass2 typo                     c=1         64 q/s  p50  16.066 ms  p90  23.006 ms  p99  30.022 ms  errors 0
+strata-pass2 typo                     c=4        159 q/s  p50  25.318 ms  p90  38.210 ms  p99  48.431 ms  errors 0
+strata-pass2 typo                     c=16       176 q/s  p50  85.621 ms  p90 149.801 ms  p99 200.158 ms  errors 0
+strata-pass2 prefix                   warm-up: p50 2.737, 2.734 ms
+strata-pass2 prefix                   c=1        419 q/s  p50   2.157 ms  p90   3.391 ms  p99   4.972 ms  errors 0
+strata-pass2 prefix                   c=4       1313 q/s  p50   2.740 ms  p90   4.513 ms  p99   6.880 ms  errors 0
+strata-pass2 prefix                   c=16      2292 q/s  p50   6.315 ms  p90  10.985 ms  p99  17.137 ms  errors 0
+strata-pass2 similar items            warm-up: p50 3.590, 3.601 ms
+strata-pass2 similar items            c=1        350 q/s  p50   2.789 ms  p90   3.128 ms  p99   4.395 ms  errors 0
+strata-pass2 similar items            c=4       1054 q/s  p50   3.618 ms  p90   4.876 ms  p99   6.527 ms  errors 0
+strata-pass2 similar items            c=16      1658 q/s  p50   8.898 ms  p90  14.547 ms  p99  21.959 ms  errors 0
+strata-pass2 sql aggregate            warm-up: p50 11.798, 11.877 ms
+strata-pass2 sql aggregate            c=1        136 q/s  p50   7.408 ms  p90   9.589 ms  p99  11.878 ms  errors 0
+strata-pass2 sql aggregate            c=4        328 q/s  p50  11.820 ms  p90  17.354 ms  p99  23.416 ms  errors 0
+strata-pass2 sql aggregate            c=16       354 q/s  p50  42.736 ms  p90  71.953 ms  p99  99.257 ms  errors 0
+strata-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-pass2.json
+job.batch/run-strata-pass3 created
+strata-pass3 bm25                     warm-up: p50 2.554, 2.567 ms
+strata-pass3 bm25                     c=1        452 q/s  p50   1.994 ms  p90   2.973 ms  p99   5.522 ms  errors 0
+strata-pass3 bm25                     c=4       1370 q/s  p50   2.579 ms  p90   4.297 ms  p99   8.089 ms  errors 0
+strata-pass3 bm25                     c=16      2387 q/s  p50   5.949 ms  p90  10.652 ms  p99  18.410 ms  errors 0
+strata-pass3 bm25 + filter            warm-up: p50 2.885, 2.905 ms
+strata-pass3 bm25 + filter            c=1        397 q/s  p50   2.263 ms  p90   3.414 ms  p99   6.888 ms  errors 0
+strata-pass3 bm25 + filter            c=4       1226 q/s  p50   2.888 ms  p90   4.771 ms  p99   9.451 ms  errors 0
+strata-pass3 bm25 + filter            c=16      2065 q/s  p50   6.862 ms  p90  12.252 ms  p99  22.241 ms  errors 0
+strata-pass3 vector                   warm-up: p50 2.657, 2.642 ms
+strata-pass3 vector                   c=1        452 q/s  p50   2.161 ms  p90   2.408 ms  p99   3.368 ms  errors 0
+strata-pass3 vector                   c=4       1424 q/s  p50   2.672 ms  p90   3.494 ms  p99   5.024 ms  errors 0
+strata-pass3 vector                   c=16      2347 q/s  p50   6.312 ms  p90  10.099 ms  p99  15.594 ms  errors 0
+strata-pass3 vector + filter          warm-up: p50 2.788, 2.752 ms
+strata-pass3 vector + filter          c=1        429 q/s  p50   2.280 ms  p90   2.523 ms  p99   3.456 ms  errors 0
+strata-pass3 vector + filter          c=4       1380 q/s  p50   2.767 ms  p90   3.625 ms  p99   4.780 ms  errors 0
+strata-pass3 vector + filter          c=16      2263 q/s  p50   6.564 ms  p90  10.401 ms  p99  16.083 ms  errors 0
+strata-pass3 hybrid (RRF)             warm-up: p50 6.457, 6.451 ms
+strata-pass3 hybrid (RRF)             c=1        201 q/s  p50   4.665 ms  p90   6.358 ms  p99  10.711 ms  errors 0
+strata-pass3 hybrid (RRF)             c=4        562 q/s  p50   6.563 ms  p90   9.994 ms  p99  16.381 ms  errors 0
+strata-pass3 hybrid (RRF)             c=16       761 q/s  p50  19.458 ms  p90  32.830 ms  p99  52.109 ms  errors 0
+strata-pass3 hybrid (weighted)        warm-up: p50 6.695, 6.477 ms
+strata-pass3 hybrid (weighted)        c=1        197 q/s  p50   4.752 ms  p90   6.483 ms  p99  10.895 ms  errors 0
+strata-pass3 hybrid (weighted)        c=4        571 q/s  p50   6.487 ms  p90   9.800 ms  p99  15.427 ms  errors 0
+strata-pass3 hybrid (weighted)        c=16       757 q/s  p50  19.442 ms  p90  33.014 ms  p99  54.161 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   warm-up: p50 5.177, 5.189 ms
+strata-pass3 boosted (bm25 × decay)   c=1        227 q/s  p50   3.759 ms  p90   7.271 ms  p99  12.706 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   c=4        644 q/s  p50   5.196 ms  p90  10.482 ms  p99  18.241 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   c=16       886 q/s  p50  14.684 ms  p90  31.630 ms  p99  62.750 ms  errors 0
+strata-pass3 facet                    warm-up: p50 2.011, 2.000 ms
+strata-pass3 facet                    c=1        532 q/s  p50   1.860 ms  p90   2.150 ms  p99   2.894 ms  errors 0
+strata-pass3 facet                    c=4       1814 q/s  p50   2.056 ms  p90   2.773 ms  p99   5.323 ms  errors 0
+strata-pass3 facet                    c=16      3866 q/s  p50   3.856 ms  p90   5.726 ms  p99  10.518 ms  errors 0
+strata-pass3 key lookup               warm-up: p50 1.014, 1.001 ms
+strata-pass3 key lookup               c=1       1077 q/s  p50   1.026 ms  p90   1.239 ms  p99   1.547 ms  errors 0
+strata-pass3 key lookup               c=4       4276 q/s  p50   1.007 ms  p90   1.270 ms  p99   1.668 ms  errors 0
+strata-pass3 key lookup               c=16     13005 q/s  p50   1.255 ms  p90   1.817 ms  p99   2.747 ms  errors 0
+strata-pass3 phrase                   warm-up: p50 1.766, 1.773 ms
+strata-pass3 phrase                   c=1        595 q/s  p50   1.651 ms  p90   1.875 ms  p99   2.365 ms  errors 0
+strata-pass3 phrase                   c=4       2165 q/s  p50   1.780 ms  p90   2.185 ms  p99   3.095 ms  errors 0
+strata-pass3 phrase                   c=16      4508 q/s  p50   3.348 ms  p90   4.730 ms  p99   8.505 ms  errors 0
+strata-pass3 typo                     warm-up: p50 25.143, 25.783 ms
+strata-pass3 typo                     c=1         61 q/s  p50  16.650 ms  p90  23.747 ms  p99  29.805 ms  errors 0
+strata-pass3 typo                     c=4        157 q/s  p50  25.494 ms  p90  38.229 ms  p99  51.017 ms  errors 0
+strata-pass3 typo                     c=16       177 q/s  p50  84.573 ms  p90 153.987 ms  p99 200.194 ms  errors 0
+strata-pass3 prefix                   warm-up: p50 2.703, 2.747 ms
+strata-pass3 prefix                   c=1        421 q/s  p50   2.143 ms  p90   3.292 ms  p99   5.017 ms  errors 0
+strata-pass3 prefix                   c=4       1304 q/s  p50   2.745 ms  p90   4.586 ms  p99   7.004 ms  errors 0
+strata-pass3 prefix                   c=16      2278 q/s  p50   6.344 ms  p90  11.067 ms  p99  17.391 ms  errors 0
+strata-pass3 similar items            warm-up: p50 3.564, 3.629 ms
+strata-pass3 similar items            c=1        345 q/s  p50   2.817 ms  p90   3.175 ms  p99   4.708 ms  errors 0
+strata-pass3 similar items            c=4       1050 q/s  p50   3.656 ms  p90   4.838 ms  p99   6.354 ms  errors 0
+strata-pass3 similar items            c=16      1631 q/s  p50   9.116 ms  p90  14.810 ms  p99  21.767 ms  errors 0
+strata-pass3 sql aggregate            warm-up: p50 12.140, 12.147 ms
+strata-pass3 sql aggregate            c=1        132 q/s  p50   7.600 ms  p90   9.758 ms  p99  11.611 ms  errors 0
+strata-pass3 sql aggregate            c=4        318 q/s  p50  12.145 ms  p90  18.129 ms  p99  23.777 ms  errors 0
+strata-pass3 sql aggregate            c=16       350 q/s  p50  42.327 ms  p90  74.358 ms  p99 100.170 ms  errors 0
+strata-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-pass3.json
+job.batch/run-strata-ef128 created
+strata-ef128 vector                   warm-up: p50 3.017, 2.988 ms
+strata-ef128 vector                   c=1        421 q/s  p50   2.325 ms  p90   2.602 ms  p99   3.427 ms  errors 0
+strata-ef128 vector                   c=4       1287 q/s  p50   2.971 ms  p90   3.927 ms  p99   5.118 ms  errors 0
+strata-ef128 vector                   c=16      1955 q/s  p50   7.555 ms  p90  12.372 ms  p99  18.969 ms  errors 0
+strata-ef128 vector + filter          warm-up: p50 3.135, 3.136 ms
+strata-ef128 vector + filter          c=1        405 q/s  p50   2.417 ms  p90   2.678 ms  p99   3.784 ms  errors 0
+strata-ef128 vector + filter          c=4       1224 q/s  p50   3.130 ms  p90   4.134 ms  p99   5.586 ms  errors 0
+strata-ef128 vector + filter          c=16      1874 q/s  p50   7.827 ms  p90  12.930 ms  p99  20.021 ms  errors 0
+strata-ef128 hybrid (RRF)             warm-up: p50 6.627, 6.677 ms
+strata-ef128 hybrid (RRF)             c=1        196 q/s  p50   4.789 ms  p90   6.505 ms  p99  10.510 ms  errors 0
+strata-ef128 hybrid (RRF)             c=4        551 q/s  p50   6.737 ms  p90  10.220 ms  p99  16.376 ms  errors 0
+strata-ef128 hybrid (RRF)             c=16       741 q/s  p50  19.704 ms  p90  33.824 ms  p99  52.784 ms  errors 0
+strata-ef128 hybrid (weighted)        warm-up: p50 6.727, 6.739 ms
+strata-ef128 hybrid (weighted)        c=1        197 q/s  p50   4.762 ms  p90   6.485 ms  p99  10.704 ms  errors 0
+strata-ef128 hybrid (weighted)        c=4        562 q/s  p50   6.588 ms  p90  10.032 ms  p99  15.325 ms  errors 0
+strata-ef128 hybrid (weighted)        c=16       745 q/s  p50  19.884 ms  p90  33.772 ms  p99  52.465 ms  errors 0
+strata-ef128 similar items            warm-up: p50 3.736, 3.642 ms
+strata-ef128 similar items            c=1        346 q/s  p50   2.823 ms  p90   3.178 ms  p99   4.509 ms  errors 0
+strata-ef128 similar items            c=4       1015 q/s  p50   3.754 ms  p90   5.047 ms  p99   6.902 ms  errors 0
+strata-ef128 similar items            c=16      1574 q/s  p50   9.375 ms  p90  15.460 ms  p99  23.057 ms  errors 0
+strata-ef128 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef128.json
+job.batch/run-strata-ef128-pass2 created
+strata-ef128-pass2 vector                   warm-up: p50 2.998, 2.994 ms
+strata-ef128-pass2 vector                   c=1        405 q/s  p50   2.414 ms  p90   2.684 ms  p99   3.669 ms  errors 0
+strata-ef128-pass2 vector                   c=4       1276 q/s  p50   3.001 ms  p90   3.929 ms  p99   5.185 ms  errors 0
+strata-ef128-pass2 vector                   c=16      1987 q/s  p50   7.472 ms  p90  11.991 ms  p99  17.852 ms  errors 0
+strata-ef128-pass2 vector + filter          warm-up: p50 3.231, 3.147 ms
+strata-ef128-pass2 vector + filter          c=1        393 q/s  p50   2.479 ms  p90   2.769 ms  p99   4.013 ms  errors 0
+strata-ef128-pass2 vector + filter          c=4       1211 q/s  p50   3.163 ms  p90   4.166 ms  p99   5.604 ms  errors 0
+strata-ef128-pass2 vector + filter          c=16      1904 q/s  p50   7.835 ms  p90  12.498 ms  p99  18.459 ms  errors 0
+strata-ef128-pass2 hybrid (RRF)             warm-up: p50 6.668, 6.553 ms
+strata-ef128-pass2 hybrid (RRF)             c=1        195 q/s  p50   4.815 ms  p90   6.452 ms  p99  10.713 ms  errors 0
+strata-ef128-pass2 hybrid (RRF)             c=4        555 q/s  p50   6.726 ms  p90  10.000 ms  p99  16.097 ms  errors 0
+strata-ef128-pass2 hybrid (RRF)             c=16       739 q/s  p50  19.875 ms  p90  34.574 ms  p99  55.055 ms  errors 0
+strata-ef128-pass2 hybrid (weighted)        warm-up: p50 6.496, 6.620 ms
+strata-ef128-pass2 hybrid (weighted)        c=1        196 q/s  p50   4.805 ms  p90   6.515 ms  p99  10.824 ms  errors 0
+strata-ef128-pass2 hybrid (weighted)        c=4        556 q/s  p50   6.636 ms  p90  10.052 ms  p99  15.848 ms  errors 0
+strata-ef128-pass2 hybrid (weighted)        c=16       745 q/s  p50  19.888 ms  p90  33.682 ms  p99  52.383 ms  errors 0
+strata-ef128-pass2 similar items            warm-up: p50 3.702, 3.742 ms
+strata-ef128-pass2 similar items            c=1        344 q/s  p50   2.854 ms  p90   3.193 ms  p99   4.347 ms  errors 0
+strata-ef128-pass2 similar items            c=4       1026 q/s  p50   3.724 ms  p90   4.982 ms  p99   6.683 ms  errors 0
+strata-ef128-pass2 similar items            c=16      1570 q/s  p50   9.487 ms  p90  15.384 ms  p99  22.859 ms  errors 0
+strata-ef128-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef128-pass2.json
+job.batch/run-strata-ef128-pass3 created
+strata-ef128-pass3 vector                   warm-up: p50 3.012, 3.004 ms
+strata-ef128-pass3 vector                   c=1        416 q/s  p50   2.341 ms  p90   2.610 ms  p99   3.821 ms  errors 0
+strata-ef128-pass3 vector                   c=4       1277 q/s  p50   3.002 ms  p90   3.929 ms  p99   5.224 ms  errors 0
+strata-ef128-pass3 vector                   c=16      1681 q/s  p50   8.291 ms  p90  15.375 ms  p99  27.229 ms  errors 0
+strata-ef128-pass3 vector + filter          warm-up: p50 3.167, 3.146 ms
+strata-ef128-pass3 vector + filter          c=1        397 q/s  p50   2.458 ms  p90   2.731 ms  p99   3.992 ms  errors 0
+strata-ef128-pass3 vector + filter          c=4       1215 q/s  p50   3.151 ms  p90   4.157 ms  p99   5.479 ms  errors 0
+strata-ef128-pass3 vector + filter          c=16      1885 q/s  p50   7.854 ms  p90  12.789 ms  p99  19.096 ms  errors 0
+strata-ef128-pass3 hybrid (RRF)             warm-up: p50 6.666, 6.623 ms
+strata-ef128-pass3 hybrid (RRF)             c=1        197 q/s  p50   4.795 ms  p90   6.381 ms  p99  10.169 ms  errors 0
+strata-ef128-pass3 hybrid (RRF)             c=4        556 q/s  p50   6.669 ms  p90  10.020 ms  p99  16.114 ms  errors 0
+strata-ef128-pass3 hybrid (RRF)             c=16       746 q/s  p50  19.980 ms  p90  32.912 ms  p99  50.886 ms  errors 0
+strata-ef128-pass3 hybrid (weighted)        warm-up: p50 6.677, 6.631 ms
+strata-ef128-pass3 hybrid (weighted)        c=1        194 q/s  p50   4.871 ms  p90   6.485 ms  p99  10.370 ms  errors 0
+strata-ef128-pass3 hybrid (weighted)        c=4        561 q/s  p50   6.632 ms  p90   9.959 ms  p99  15.623 ms  errors 0
+strata-ef128-pass3 hybrid (weighted)        c=16       740 q/s  p50  20.122 ms  p90  33.341 ms  p99  50.331 ms  errors 0
+strata-ef128-pass3 similar items            warm-up: p50 3.743, 3.787 ms
+strata-ef128-pass3 similar items            c=1        348 q/s  p50   2.813 ms  p90   3.135 ms  p99   4.564 ms  errors 0
+strata-ef128-pass3 similar items            c=4       1034 q/s  p50   3.696 ms  p90   4.886 ms  p99   6.578 ms  errors 0
+strata-ef128-pass3 similar items            c=16      1578 q/s  p50   9.451 ms  p90  15.211 ms  p99  22.466 ms  errors 0
+strata-ef128-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef128-pass3.json
+job.batch/run-strata-ef256 created
+strata-ef256 vector                   warm-up: p50 3.608, 3.633 ms
+strata-ef256 vector                   c=1        368 q/s  p50   2.659 ms  p90   2.946 ms  p99   4.211 ms  errors 0
+strata-ef256 vector                   c=4       1052 q/s  p50   3.642 ms  p90   4.793 ms  p99   6.610 ms  errors 0
+strata-ef256 vector                   c=16      1519 q/s  p50   9.774 ms  p90  15.970 ms  p99  23.374 ms  errors 0
+strata-ef256 vector + filter          warm-up: p50 3.828, 3.836 ms
+strata-ef256 vector + filter          c=1        344 q/s  p50   2.863 ms  p90   3.186 ms  p99   4.409 ms  errors 0
+strata-ef256 vector + filter          c=4       1013 q/s  p50   3.793 ms  p90   5.043 ms  p99   6.726 ms  errors 0
+strata-ef256 vector + filter          c=16      1448 q/s  p50  10.236 ms  p90  16.776 ms  p99  24.772 ms  errors 0
+strata-ef256 hybrid (RRF)             warm-up: p50 7.413, 7.242 ms
+strata-ef256 hybrid (RRF)             c=1        185 q/s  p50   5.125 ms  p90   6.830 ms  p99  11.254 ms  errors 0
+strata-ef256 hybrid (RRF)             c=4        515 q/s  p50   7.231 ms  p90  10.742 ms  p99  17.523 ms  errors 0
+strata-ef256 hybrid (RRF)             c=16       670 q/s  p50  22.472 ms  p90  36.439 ms  p99  51.382 ms  errors 0
+strata-ef256 hybrid (weighted)        warm-up: p50 7.303, 7.310 ms
+strata-ef256 hybrid (weighted)        c=1        185 q/s  p50   5.104 ms  p90   6.849 ms  p99  10.185 ms  errors 0
+strata-ef256 hybrid (weighted)        c=4        514 q/s  p50   7.288 ms  p90  10.720 ms  p99  16.246 ms  errors 0
+strata-ef256 hybrid (weighted)        c=16       669 q/s  p50  22.266 ms  p90  36.988 ms  p99  55.828 ms  errors 0
+strata-ef256 similar items            warm-up: p50 4.213, 4.308 ms
+strata-ef256 similar items            c=1        312 q/s  p50   3.133 ms  p90   3.564 ms  p99   4.824 ms  errors 0
+strata-ef256 similar items            c=4        897 q/s  p50   4.267 ms  p90   5.724 ms  p99   7.551 ms  errors 0
+strata-ef256 similar items            c=16      1272 q/s  p50  11.669 ms  p90  19.159 ms  p99  27.787 ms  errors 0
+strata-ef256 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef256.json
+job.batch/run-strata-ef256-pass2 created
+strata-ef256-pass2 vector                   warm-up: p50 3.594, 3.722 ms
+strata-ef256-pass2 vector                   c=1        372 q/s  p50   2.635 ms  p90   2.931 ms  p99   4.054 ms  errors 0
+strata-ef256-pass2 vector                   c=4       1060 q/s  p50   3.622 ms  p90   4.821 ms  p99   6.309 ms  errors 0
+strata-ef256-pass2 vector                   c=16      1504 q/s  p50   9.922 ms  p90  16.125 ms  p99  23.617 ms  errors 0
+strata-ef256-pass2 vector + filter          warm-up: p50 3.780, 3.819 ms
+strata-ef256-pass2 vector + filter          c=1        351 q/s  p50   2.801 ms  p90   3.142 ms  p99   4.184 ms  errors 0
+strata-ef256-pass2 vector + filter          c=4       1009 q/s  p50   3.782 ms  p90   5.140 ms  p99   6.870 ms  errors 0
+strata-ef256-pass2 vector + filter          c=16      1462 q/s  p50  10.096 ms  p90  16.852 ms  p99  25.092 ms  errors 0
+strata-ef256-pass2 hybrid (RRF)             warm-up: p50 7.271, 7.351 ms
+strata-ef256-pass2 hybrid (RRF)             c=1        184 q/s  p50   5.133 ms  p90   6.877 ms  p99  10.387 ms  errors 0
+strata-ef256-pass2 hybrid (RRF)             c=4        519 q/s  p50   7.208 ms  p90  10.604 ms  p99  16.389 ms  errors 0
+strata-ef256-pass2 hybrid (RRF)             c=16       670 q/s  p50  22.095 ms  p90  37.303 ms  p99  55.756 ms  errors 0
+strata-ef256-pass2 hybrid (weighted)        warm-up: p50 7.426, 7.123 ms
+strata-ef256-pass2 hybrid (weighted)        c=1        182 q/s  p50   5.214 ms  p90   6.899 ms  p99  11.054 ms  errors 0
+strata-ef256-pass2 hybrid (weighted)        c=4        510 q/s  p50   7.372 ms  p90  10.899 ms  p99  16.476 ms  errors 0
+strata-ef256-pass2 hybrid (weighted)        c=16       670 q/s  p50  22.245 ms  p90  36.733 ms  p99  56.792 ms  errors 0
+strata-ef256-pass2 similar items            warm-up: p50 4.255, 4.320 ms
+strata-ef256-pass2 similar items            c=1        313 q/s  p50   3.127 ms  p90   3.519 ms  p99   4.955 ms  errors 0
+strata-ef256-pass2 similar items            c=4        889 q/s  p50   4.288 ms  p90   5.783 ms  p99   7.939 ms  errors 0
+strata-ef256-pass2 similar items            c=16      1270 q/s  p50  11.713 ms  p90  19.192 ms  p99  28.316 ms  errors 0
+strata-ef256-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef256-pass2.json
+job.batch/run-strata-ef256-pass3 created
+strata-ef256-pass3 vector                   warm-up: p50 3.620, 3.655 ms
+strata-ef256-pass3 vector                   c=1        362 q/s  p50   2.698 ms  p90   3.030 ms  p99   4.556 ms  errors 0
+strata-ef256-pass3 vector                   c=4       1060 q/s  p50   3.618 ms  p90   4.790 ms  p99   6.314 ms  errors 0
+strata-ef256-pass3 vector                   c=16      1511 q/s  p50   9.931 ms  p90  15.870 ms  p99  23.119 ms  errors 0
+strata-ef256-pass3 vector + filter          warm-up: p50 3.790, 3.840 ms
+strata-ef256-pass3 vector + filter          c=1        339 q/s  p50   2.876 ms  p90   3.237 ms  p99   4.758 ms  errors 0
+strata-ef256-pass3 vector + filter          c=4        999 q/s  p50   3.836 ms  p90   5.133 ms  p99   6.842 ms  errors 0
+strata-ef256-pass3 vector + filter          c=16      1270 q/s  p50  11.406 ms  p90  19.898 ms  p99  31.869 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             warm-up: p50 7.387, 7.144 ms
+strata-ef256-pass3 hybrid (RRF)             c=1        184 q/s  p50   5.107 ms  p90   6.789 ms  p99  11.151 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             c=4        513 q/s  p50   7.258 ms  p90  10.825 ms  p99  16.688 ms  errors 0
+strata-ef256-pass3 hybrid (RRF)             c=16       667 q/s  p50  22.059 ms  p90  37.556 ms  p99  56.106 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        warm-up: p50 7.374, 7.397 ms
+strata-ef256-pass3 hybrid (weighted)        c=1        184 q/s  p50   5.138 ms  p90   6.884 ms  p99  10.724 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        c=4        509 q/s  p50   7.310 ms  p90  10.978 ms  p99  17.094 ms  errors 0
+strata-ef256-pass3 hybrid (weighted)        c=16       668 q/s  p50  22.213 ms  p90  37.224 ms  p99  54.143 ms  errors 0
+strata-ef256-pass3 similar items            warm-up: p50 4.380, 4.299 ms
+strata-ef256-pass3 similar items            c=1        304 q/s  p50   3.239 ms  p90   3.651 ms  p99   4.745 ms  errors 0
+strata-ef256-pass3 similar items            c=4        890 q/s  p50   4.284 ms  p90   5.845 ms  p99   7.799 ms  errors 0
+strata-ef256-pass3 similar items            c=16      1267 q/s  p50  11.748 ms  p90  19.198 ms  p99  28.024 ms  errors 0
+strata-ef256-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef256-pass3.json
+job.batch/run-strata-ef512 created
+strata-ef512 vector                   warm-up: p50 4.697, 4.792 ms
+strata-ef512 vector                   c=1        293 q/s  p50   3.354 ms  p90   3.807 ms  p99   5.534 ms  errors 0
+strata-ef512 vector                   c=4        807 q/s  p50   4.701 ms  p90   6.547 ms  p99   8.705 ms  errors 0
+strata-ef512 vector                   c=16      1058 q/s  p50  14.177 ms  p90  23.205 ms  p99  32.513 ms  errors 0
+strata-ef512 vector + filter          warm-up: p50 4.928, 4.971 ms
+strata-ef512 vector + filter          c=1        279 q/s  p50   3.515 ms  p90   3.985 ms  p99   5.398 ms  errors 0
+strata-ef512 vector + filter          c=4        773 q/s  p50   4.932 ms  p90   6.793 ms  p99   9.006 ms  errors 0
+strata-ef512 vector + filter          c=16      1021 q/s  p50  14.403 ms  p90  24.555 ms  p99  35.786 ms  errors 0
+strata-ef512 hybrid (RRF)             warm-up: p50 8.330, 8.400 ms
+strata-ef512 hybrid (RRF)             c=1        166 q/s  p50   5.725 ms  p90   7.402 ms  p99  11.523 ms  errors 0
+strata-ef512 hybrid (RRF)             c=4        449 q/s  p50   8.316 ms  p90  12.200 ms  p99  17.507 ms  errors 0
+strata-ef512 hybrid (RRF)             c=16       559 q/s  p50  26.978 ms  p90  43.296 ms  p99  66.460 ms  errors 0
+strata-ef512 hybrid (weighted)        warm-up: p50 8.489, 8.341 ms
+strata-ef512 hybrid (weighted)        c=1        167 q/s  p50   5.728 ms  p90   7.431 ms  p99  11.511 ms  errors 0
+strata-ef512 hybrid (weighted)        c=4        453 q/s  p50   8.223 ms  p90  12.172 ms  p99  18.130 ms  errors 0
+strata-ef512 hybrid (weighted)        c=16       545 q/s  p50  27.785 ms  p90  44.265 ms  p99  65.602 ms  errors 0
+strata-ef512 similar items            warm-up: p50 5.427, 5.415 ms
+strata-ef512 similar items            c=1        255 q/s  p50   3.848 ms  p90   4.386 ms  p99   6.647 ms  errors 0
+strata-ef512 similar items            c=4        706 q/s  p50   5.385 ms  p90   7.539 ms  p99  10.098 ms  errors 0
+strata-ef512 similar items            c=16       943 q/s  p50  15.922 ms  p90  26.070 ms  p99  37.927 ms  errors 0
+strata-ef512 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef512.json
+job.batch/run-strata-ef512-pass2 created
+strata-ef512-pass2 vector                   warm-up: p50 4.772, 4.764 ms
+strata-ef512-pass2 vector                   c=1        295 q/s  p50   3.316 ms  p90   3.787 ms  p99   5.495 ms  errors 0
+strata-ef512-pass2 vector                   c=4        800 q/s  p50   4.774 ms  p90   6.579 ms  p99   8.965 ms  errors 0
+strata-ef512-pass2 vector                   c=16      1051 q/s  p50  14.069 ms  p90  23.481 ms  p99  34.011 ms  errors 0
+strata-ef512-pass2 vector + filter          warm-up: p50 5.002, 4.967 ms
+strata-ef512-pass2 vector + filter          c=1        271 q/s  p50   3.607 ms  p90   4.135 ms  p99   5.965 ms  errors 0
+strata-ef512-pass2 vector + filter          c=4        768 q/s  p50   4.960 ms  p90   6.863 ms  p99   9.029 ms  errors 0
+strata-ef512-pass2 vector + filter          c=16      1027 q/s  p50  14.407 ms  p90  24.220 ms  p99  35.011 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             warm-up: p50 8.498, 8.399 ms
+strata-ef512-pass2 hybrid (RRF)             c=1        164 q/s  p50   5.798 ms  p90   7.572 ms  p99  11.722 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             c=4        447 q/s  p50   8.379 ms  p90  12.314 ms  p99  18.366 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             c=16       560 q/s  p50  27.000 ms  p90  43.446 ms  p99  61.114 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        warm-up: p50 8.357, 8.562 ms
+strata-ef512-pass2 hybrid (weighted)        c=1        164 q/s  p50   5.796 ms  p90   7.568 ms  p99  11.795 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        c=4        449 q/s  p50   8.282 ms  p90  12.365 ms  p99  18.083 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        c=16       563 q/s  p50  26.899 ms  p90  42.856 ms  p99  60.036 ms  errors 0
+strata-ef512-pass2 similar items            warm-up: p50 5.364, 5.459 ms
+strata-ef512-pass2 similar items            c=1        260 q/s  p50   3.779 ms  p90   4.354 ms  p99   6.064 ms  errors 0
+strata-ef512-pass2 similar items            c=4        711 q/s  p50   5.376 ms  p90   7.411 ms  p99   9.928 ms  errors 0
+strata-ef512-pass2 similar items            c=16       951 q/s  p50  15.759 ms  p90  25.965 ms  p99  37.072 ms  errors 0
+strata-ef512-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef512-pass2.json
+job.batch/run-strata-ef512-pass3 created
+strata-ef512-pass3 vector                   warm-up: p50 4.736, 4.671 ms
+strata-ef512-pass3 vector                   c=1        291 q/s  p50   3.333 ms  p90   3.815 ms  p99   6.505 ms  errors 0
+strata-ef512-pass3 vector                   c=4        809 q/s  p50   4.750 ms  p90   6.416 ms  p99   8.497 ms  errors 0
+strata-ef512-pass3 vector                   c=16      1055 q/s  p50  14.090 ms  p90  23.336 ms  p99  33.199 ms  errors 0
+strata-ef512-pass3 vector + filter          warm-up: p50 4.888, 5.041 ms
+strata-ef512-pass3 vector + filter          c=1        271 q/s  p50   3.614 ms  p90   4.134 ms  p99   5.424 ms  errors 0
+strata-ef512-pass3 vector + filter          c=4        779 q/s  p50   4.891 ms  p90   6.718 ms  p99   9.020 ms  errors 0
+strata-ef512-pass3 vector + filter          c=16      1029 q/s  p50  14.523 ms  p90  23.897 ms  p99  34.045 ms  errors 0
+strata-ef512-pass3 hybrid (RRF)             warm-up: p50 8.383, 8.350 ms
+strata-ef512-pass3 hybrid (RRF)             c=1        161 q/s  p50   5.883 ms  p90   7.782 ms  p99  11.591 ms  errors 0
+strata-ef512-pass3 hybrid (RRF)             c=4        425 q/s  p50   8.661 ms  p90  13.310 ms  p99  21.647 ms  errors 0
+strata-ef512-pass3 hybrid (RRF)             c=16       506 q/s  p50  29.399 ms  p90  49.575 ms  p99  74.733 ms  errors 0
+strata-ef512-pass3 hybrid (weighted)        warm-up: p50 8.448, 8.484 ms
+strata-ef512-pass3 hybrid (weighted)        c=1        164 q/s  p50   5.813 ms  p90   7.578 ms  p99  11.160 ms  errors 0
+strata-ef512-pass3 hybrid (weighted)        c=4        444 q/s  p50   8.464 ms  p90  12.281 ms  p99  18.234 ms  errors 0
+strata-ef512-pass3 hybrid (weighted)        c=16       566 q/s  p50  26.794 ms  p90  42.876 ms  p99  62.301 ms  errors 0
+strata-ef512-pass3 similar items            warm-up: p50 5.336, 5.270 ms
+strata-ef512-pass3 similar items            c=1        252 q/s  p50   3.871 ms  p90   4.502 ms  p99   7.024 ms  errors 0
+strata-ef512-pass3 similar items            c=4        718 q/s  p50   5.331 ms  p90   7.323 ms  p99   9.573 ms  errors 0
+strata-ef512-pass3 similar items            c=16       951 q/s  p50  15.593 ms  p90  25.818 ms  p99  38.317 ms  errors 0
+strata-ef512-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef512-pass3.json
+pod "strata-0" deleted from sharded-1m namespace
+pod "strata-1" deleted from sharded-1m namespace
+service/es created
+pod/es-0 created
+pod/es-1 created
+pod/es-0 condition met
+pod/es-1 condition met
+job.batch/load-es created
+es: index created in 0.4 s
+es: 25000 documents sent, 14 s
+es: 50000 documents sent, 25 s
+es: 75000 documents sent, 34 s
+es: 100000 documents sent, 44 s
+es: 125000 documents sent, 51 s
+es: 150000 documents sent, 67 s
+es: 175000 documents sent, 74 s
+es: 200000 documents sent, 82 s
+es: 225000 documents sent, 90 s
+es: 250000 documents sent, 96 s
+es: 275000 documents sent, 105 s
+es: 300000 documents sent, 114 s
+es: 325000 documents sent, 126 s
+es: 350000 documents sent, 134 s
+es: 375000 documents sent, 144 s
+es: 400000 documents sent, 154 s
+es: 425000 documents sent, 162 s
+es: 450000 documents sent, 170 s
+es: 475000 documents sent, 179 s
+es: 500000 documents sent, 192 s
+es: 525000 documents sent, 200 s
+es: 550000 documents sent, 211 s
+es: 575000 documents sent, 221 s
+es: 600000 documents sent, 233 s
+es: 625000 documents sent, 248 s
+es: 650000 documents sent, 257 s
+es: 675000 documents sent, 268 s
+es: 700000 documents sent, 277 s
+es: 725000 documents sent, 289 s
+es: 750000 documents sent, 301 s
+es: 775000 documents sent, 312 s
+es: 800000 documents sent, 322 s
+es: 825000 documents sent, 331 s
+es: 850000 documents sent, 341 s
+es: 875000 documents sent, 351 s
+es: 900000 documents sent, 363 s
+es: 925000 documents sent, 376 s
+es: 950000 documents sent, 386 s
+es: 975000 documents sent, 397 s
+es: 1000000 documents sent, 408 s
+es: 1000000 documents (11.8 GB of JSON) sent in 408.3 s
+read tcp 127.0.0.1:45300->127.0.0.1:46257: read: connection reset by peer
+error: read tcp 127.0.0.1:45300->127.0.0.1:46257: read: connection reset by peer
+es: searchable after 4.3 s more, merged in 175.0 s; 587.6 s in all
+wrote /data/compare/load-es.json
+job.batch/run-es created
+es       bm25                     warm-up: p50 10.287, 7.802, 6.310, 5.704 ms
+es       bm25                     c=1        281 q/s  p50   3.436 ms  p90   4.338 ms  p99   6.241 ms  errors 0
+es       bm25                     c=4        857 q/s  p50   4.419 ms  p90   6.469 ms  p99   9.661 ms  errors 0
+es       bm25                     c=16      1638 q/s  p50   8.733 ms  p90  15.708 ms  p99  23.878 ms  errors 0
+es       bm25 + filter            warm-up: p50 6.142, 4.761, 4.493 ms
+es       bm25 + filter            c=1        285 q/s  p50   3.291 ms  p90   4.505 ms  p99   8.630 ms  errors 0
+es       bm25 + filter            c=4        862 q/s  p50   4.319 ms  p90   6.462 ms  p99  11.622 ms  errors 0
+es       bm25 + filter            c=16      1423 q/s  p50   9.843 ms  p90  18.552 ms  p99  30.531 ms  errors 0
+es       vector                   warm-up: p50 7.465, 5.930, 5.540 ms
+es       vector                   c=1        242 q/s  p50   4.038 ms  p90   4.678 ms  p99   5.715 ms  errors 0
+es       vector                   c=4        717 q/s  p50   5.273 ms  p90   6.793 ms  p99   9.323 ms  errors 0
+es       vector                   c=16      1384 q/s  p50  10.961 ms  p90  16.003 ms  p99  21.910 ms  errors 0
+es       vector + filter          warm-up: p50 6.521, 6.044 ms
+es       vector + filter          c=1        212 q/s  p50   4.531 ms  p90   5.343 ms  p99   6.571 ms  errors 0
+es       vector + filter          c=4        655 q/s  p50   5.881 ms  p90   7.446 ms  p99   9.401 ms  errors 0
+es       vector + filter          c=16      1084 q/s  p50  13.458 ms  p90  20.240 ms  p99  39.519 ms  errors 0
+es       hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es       hybrid (weighted)        warm-up: p50 10.376, 9.305, 9.366 ms
+es       hybrid (weighted)        c=1        140 q/s  p50   6.101 ms  p90  10.643 ms  p99  21.513 ms  errors 0
+es       hybrid (weighted)        c=4        384 q/s  p50   9.161 ms  p90  16.061 ms  p99  29.556 ms  errors 0
+es       hybrid (weighted)        c=16       523 q/s  p50  27.478 ms  p90  46.832 ms  p99  88.402 ms  errors 0
+es       boosted (bm25 × decay)   warm-up: p50 10.966, 10.895 ms
+es       boosted (bm25 × decay)   c=1        113 q/s  p50   7.065 ms  p90  17.892 ms  p99  28.510 ms  errors 0
+es       boosted (bm25 × decay)   c=4        294 q/s  p50  11.091 ms  p90  26.794 ms  p99  47.398 ms  errors 0
+es       boosted (bm25 × decay)   c=16       370 q/s  p50  37.772 ms  p90  72.766 ms  p99 121.276 ms  errors 0
+es       facet                    warm-up: p50 3.668, 2.663, 2.621 ms
+es       facet                    c=1        471 q/s  p50   1.994 ms  p90   2.637 ms  p99   4.368 ms  errors 0
+es       facet                    c=4       1699 q/s  p50   2.177 ms  p90   3.228 ms  p99   5.283 ms  errors 0
+es       facet                    c=16      3259 q/s  p50   4.233 ms  p90   7.913 ms  p99  13.607 ms  errors 0
+es       key lookup               warm-up: p50 1.245, 1.160 ms
+es       key lookup               c=1        977 q/s  p50   1.046 ms  p90   1.342 ms  p99   1.681 ms  errors 0
+es       key lookup               c=4       3977 q/s  p50   1.046 ms  p90   1.345 ms  p99   1.675 ms  errors 0
+es       key lookup               c=16     10732 q/s  p50   1.449 ms  p90   2.195 ms  p99   3.158 ms  errors 0
+es       phrase                   warm-up: p50 3.714, 3.439 ms
+es       phrase                   c=1        373 q/s  p50   2.692 ms  p90   3.781 ms  p99   6.030 ms  errors 0
+es       phrase                   c=4       1195 q/s  p50   3.230 ms  p90   5.012 ms  p99   7.455 ms  errors 0
+es       phrase                   c=16      2133 q/s  p50   6.757 ms  p90  12.793 ms  p99  20.479 ms  errors 0
+es       typo                     warm-up: p50 24.009, 23.528 ms
+es       typo                     c=1         65 q/s  p50  14.549 ms  p90  24.269 ms  p99  32.660 ms  errors 0
+es       typo                     c=4        169 q/s  p50  22.233 ms  p90  36.578 ms  p99  54.830 ms  errors 0
+es       typo                     c=16       196 q/s  p50  75.668 ms  p90 117.325 ms  p99 166.245 ms  errors 0
+es       prefix                   warm-up: p50 5.360, 5.112 ms
+es       prefix                   c=1        258 q/s  p50   3.613 ms  p90   5.012 ms  p99   8.917 ms  errors 0
+es       prefix                   c=4        754 q/s  p50   4.924 ms  p90   7.470 ms  p99  12.102 ms  errors 0
+es       prefix                   c=16      1179 q/s  p50  11.890 ms  p90  22.317 ms  p99  34.233 ms  errors 0
+es       similar items            warm-up: p50 10.294, 9.858 ms
+es       similar items            c=1        147 q/s  p50   6.520 ms  p90   7.499 ms  p99  10.250 ms  errors 0
+es       similar items            c=4        403 q/s  p50   9.555 ms  p90  12.413 ms  p99  15.909 ms  errors 0
+es       similar items            c=16       501 q/s  p50  30.271 ms  p90  45.819 ms  p99  63.319 ms  errors 0
+es       sql aggregate            warm-up: p50 92.856, 91.339 ms
+es       sql aggregate            c=1         20 q/s  p50  49.283 ms  p90  69.596 ms  p99  82.211 ms  errors 0
+es       sql aggregate            c=4         47 q/s  p50  84.982 ms  p90 119.971 ms  p99 150.346 ms  errors 0
+es       sql aggregate            c=16        49 q/s  p50 318.663 ms  p90 460.959 ms  p99 540.779 ms  errors 0
+es       result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es.json
+job.batch/run-es-pass2 created
+es-pass2 bm25                     warm-up: p50 3.918, 3.680 ms
+es-pass2 bm25                     c=1        332 q/s  p50   2.884 ms  p90   3.705 ms  p99   5.381 ms  errors 0
+es-pass2 bm25                     c=4       1030 q/s  p50   3.683 ms  p90   5.141 ms  p99   7.299 ms  errors 0
+es-pass2 bm25                     c=16      1870 q/s  p50   7.524 ms  p90  13.773 ms  p99  21.537 ms  errors 0
+es-pass2 bm25 + filter            warm-up: p50 4.538, 4.484 ms
+es-pass2 bm25 + filter            c=1        261 q/s  p50   3.596 ms  p90   4.943 ms  p99   8.835 ms  errors 0
+es-pass2 bm25 + filter            c=4        825 q/s  p50   4.452 ms  p90   6.814 ms  p99  12.073 ms  errors 0
+es-pass2 bm25 + filter            c=16      1388 q/s  p50  10.068 ms  p90  18.691 ms  p99  31.971 ms  errors 0
+es-pass2 vector                   warm-up: p50 5.000, 4.966 ms
+es-pass2 vector                   c=1        251 q/s  p50   3.901 ms  p90   4.510 ms  p99   5.151 ms  errors 0
+es-pass2 vector                   c=4        784 q/s  p50   5.031 ms  p90   6.134 ms  p99   7.381 ms  errors 0
+es-pass2 vector                   c=16      1398 q/s  p50  10.710 ms  p90  15.530 ms  p99  21.545 ms  errors 0
+es-pass2 vector + filter          warm-up: p50 5.951, 5.798 ms
+es-pass2 vector + filter          c=1        219 q/s  p50   4.430 ms  p90   5.129 ms  p99   6.258 ms  errors 0
+es-pass2 vector + filter          c=4        640 q/s  p50   5.934 ms  p90   7.465 ms  p99   9.879 ms  errors 0
+es-pass2 vector + filter          c=16      1094 q/s  p50  13.684 ms  p90  20.386 ms  p99  28.849 ms  errors 0
+es-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-pass2 hybrid (weighted)        warm-up: p50 8.940, 8.984 ms
+es-pass2 hybrid (weighted)        c=1        144 q/s  p50   5.969 ms  p90  10.476 ms  p99  18.326 ms  errors 0
+es-pass2 hybrid (weighted)        c=4        386 q/s  p50   9.198 ms  p90  15.850 ms  p99  29.912 ms  errors 0
+es-pass2 hybrid (weighted)        c=16       535 q/s  p50  27.408 ms  p90  46.041 ms  p99  78.136 ms  errors 0
+es-pass2 boosted (bm25 × decay)   warm-up: p50 11.017, 10.783 ms
+es-pass2 boosted (bm25 × decay)   c=1        116 q/s  p50   6.815 ms  p90  17.858 ms  p99  31.007 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=4        301 q/s  p50  10.933 ms  p90  26.042 ms  p99  44.719 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=16       381 q/s  p50  37.352 ms  p90  70.143 ms  p99 118.858 ms  errors 0
+es-pass2 facet                    warm-up: p50 2.210, 2.201 ms
+es-pass2 facet                    c=1        503 q/s  p50   1.887 ms  p90   2.391 ms  p99   3.539 ms  errors 0
+es-pass2 facet                    c=4       1734 q/s  p50   2.139 ms  p90   3.028 ms  p99   4.511 ms  errors 0
+es-pass2 facet                    c=16      3413 q/s  p50   4.129 ms  p90   7.210 ms  p99  12.713 ms  errors 0
+es-pass2 key lookup               warm-up: p50 1.046, 1.044 ms
+es-pass2 key lookup               c=1       1013 q/s  p50   1.026 ms  p90   1.282 ms  p99   1.504 ms  errors 0
+es-pass2 key lookup               c=4       3922 q/s  p50   1.057 ms  p90   1.370 ms  p99   1.708 ms  errors 0
+es-pass2 key lookup               c=16     10705 q/s  p50   1.451 ms  p90   2.179 ms  p99   3.090 ms  errors 0
+es-pass2 phrase                   warm-up: p50 3.338, 3.302 ms
+es-pass2 phrase                   c=1        349 q/s  p50   2.877 ms  p90   4.013 ms  p99   5.587 ms  errors 0
+es-pass2 phrase                   c=4       1177 q/s  p50   3.316 ms  p90   5.118 ms  p99   7.199 ms  errors 0
+es-pass2 phrase                   c=16      2114 q/s  p50   6.790 ms  p90  12.774 ms  p99  20.948 ms  errors 0
+es-pass2 typo                     warm-up: p50 22.553, 22.245 ms
+es-pass2 typo                     c=1         63 q/s  p50  15.003 ms  p90  24.045 ms  p99  37.451 ms  errors 0
+es-pass2 typo                     c=4        170 q/s  p50  22.093 ms  p90  36.275 ms  p99  53.844 ms  errors 0
+es-pass2 typo                     c=16       195 q/s  p50  78.093 ms  p90 115.508 ms  p99 164.703 ms  errors 0
+es-pass2 prefix                   warm-up: p50 4.991, 4.906 ms
+es-pass2 prefix                   c=1        259 q/s  p50   3.604 ms  p90   4.970 ms  p99   8.932 ms  errors 0
+es-pass2 prefix                   c=4        748 q/s  p50   4.969 ms  p90   7.507 ms  p99  12.137 ms  errors 0
+es-pass2 prefix                   c=16      1174 q/s  p50  12.025 ms  p90  21.732 ms  p99  35.010 ms  errors 0
+es-pass2 similar items            warm-up: p50 9.673, 9.487 ms
+es-pass2 similar items            c=1        146 q/s  p50   6.653 ms  p90   7.529 ms  p99   9.816 ms  errors 0
+es-pass2 similar items            c=4        399 q/s  p50   9.586 ms  p90  12.451 ms  p99  16.220 ms  errors 0
+es-pass2 similar items            c=16       565 q/s  p50  27.265 ms  p90  39.748 ms  p99  49.690 ms  errors 0
+es-pass2 sql aggregate            warm-up: p50 83.262, 87.437 ms
+es-pass2 sql aggregate            c=1         19 q/s  p50  51.524 ms  p90  72.085 ms  p99  87.420 ms  errors 0
+es-pass2 sql aggregate            c=4         47 q/s  p50  83.781 ms  p90 121.336 ms  p99 143.247 ms  errors 0
+es-pass2 sql aggregate            c=16        51 q/s  p50 325.381 ms  p90 445.891 ms  p99 496.552 ms  errors 0
+es-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-pass2.json
+job.batch/run-es-pass3 created
+es-pass3 bm25                     warm-up: p50 3.641, 3.575 ms
+es-pass3 bm25                     c=1        340 q/s  p50   2.826 ms  p90   3.606 ms  p99   4.893 ms  errors 0
+es-pass3 bm25                     c=4       1063 q/s  p50   3.590 ms  p90   4.951 ms  p99   6.981 ms  errors 0
+es-pass3 bm25                     c=16      1886 q/s  p50   7.665 ms  p90  13.426 ms  p99  19.776 ms  errors 0
+es-pass3 bm25 + filter            warm-up: p50 4.398, 4.359 ms
+es-pass3 bm25 + filter            c=1        272 q/s  p50   3.461 ms  p90   4.761 ms  p99   8.874 ms  errors 0
+es-pass3 bm25 + filter            c=4        843 q/s  p50   4.410 ms  p90   6.653 ms  p99  11.413 ms  errors 0
+es-pass3 bm25 + filter            c=16      1386 q/s  p50  10.129 ms  p90  18.827 ms  p99  31.491 ms  errors 0
+es-pass3 vector                   warm-up: p50 5.009, 4.990 ms
+es-pass3 vector                   c=1        257 q/s  p50   3.808 ms  p90   4.423 ms  p99   5.149 ms  errors 0
+es-pass3 vector                   c=4        769 q/s  p50   5.061 ms  p90   6.245 ms  p99   7.587 ms  errors 0
+es-pass3 vector                   c=16      1402 q/s  p50  10.777 ms  p90  15.508 ms  p99  20.912 ms  errors 0
+es-pass3 vector + filter          warm-up: p50 5.947, 5.958 ms
+es-pass3 vector + filter          c=1        217 q/s  p50   4.478 ms  p90   5.103 ms  p99   6.243 ms  errors 0
+es-pass3 vector + filter          c=4        645 q/s  p50   5.911 ms  p90   7.435 ms  p99   9.504 ms  errors 0
+es-pass3 vector + filter          c=16      1083 q/s  p50  13.821 ms  p90  20.903 ms  p99  28.553 ms  errors 0
+es-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-pass3 hybrid (weighted)        warm-up: p50 9.118, 8.983 ms
+es-pass3 hybrid (weighted)        c=1        140 q/s  p50   6.133 ms  p90  10.818 ms  p99  19.000 ms  errors 0
+es-pass3 hybrid (weighted)        c=4        386 q/s  p50   9.164 ms  p90  15.604 ms  p99  28.610 ms  errors 0
+es-pass3 hybrid (weighted)        c=16       537 q/s  p50  27.646 ms  p90  44.240 ms  p99  74.339 ms  errors 0
+es-pass3 boosted (bm25 × decay)   warm-up: p50 10.895, 11.188 ms
+es-pass3 boosted (bm25 × decay)   c=1        114 q/s  p50   7.020 ms  p90  17.747 ms  p99  29.391 ms  errors 0
+es-pass3 boosted (bm25 × decay)   c=4        301 q/s  p50  10.899 ms  p90  26.189 ms  p99  44.151 ms  errors 0
+es-pass3 boosted (bm25 × decay)   c=16       379 q/s  p50  37.231 ms  p90  70.597 ms  p99 117.008 ms  errors 0
+read tcp 127.0.0.1:43804->127.0.0.1:46257: read: connection reset by peer
+error: read tcp 127.0.0.1:43804->127.0.0.1:46257: read: connection reset by peer
+es-pass3 facet                    warm-up: p50 2.175, 2.186 ms
+es-pass3 facet                    c=1        489 q/s  p50   1.947 ms  p90   2.462 ms  p99   3.637 ms  errors 0
+es-pass3 facet                    c=4       1701 q/s  p50   2.180 ms  p90   3.122 ms  p99   4.551 ms  errors 0
+es-pass3 facet                    c=16      3394 q/s  p50   4.152 ms  p90   7.431 ms  p99  12.331 ms  errors 0
+es-pass3 key lookup               warm-up: p50 1.055, 1.057 ms
+es-pass3 key lookup               c=1        978 q/s  p50   1.034 ms  p90   1.323 ms  p99   1.585 ms  errors 0
+es-pass3 key lookup               c=4       3930 q/s  p50   1.057 ms  p90   1.365 ms  p99   1.701 ms  errors 0
+es-pass3 key lookup               c=16     10789 q/s  p50   1.444 ms  p90   2.174 ms  p99   3.067 ms  errors 0
+es-pass3 phrase                   warm-up: p50 3.264, 3.257 ms
+es-pass3 phrase                   c=1        365 q/s  p50   2.763 ms  p90   3.826 ms  p99   5.203 ms  errors 0
+es-pass3 phrase                   c=4       1178 q/s  p50   3.281 ms  p90   5.067 ms  p99   7.168 ms  errors 0
+es-pass3 phrase                   c=16      2110 q/s  p50   6.803 ms  p90  12.774 ms  p99  21.289 ms  errors 0
+es-pass3 typo                     warm-up: p50 22.448, 22.136 ms
+es-pass3 typo                     c=1         65 q/s  p50  14.559 ms  p90  23.720 ms  p99  34.093 ms  errors 0
+es-pass3 typo                     c=4        170 q/s  p50  22.250 ms  p90  36.281 ms  p99  52.652 ms  errors 0
+es-pass3 typo                     c=16       194 q/s  p50  75.862 ms  p90 118.805 ms  p99 162.594 ms  errors 0
+es-pass3 prefix                   warm-up: p50 4.976, 4.964 ms
+es-pass3 prefix                   c=1        257 q/s  p50   3.603 ms  p90   5.098 ms  p99   8.764 ms  errors 0
+es-pass3 prefix                   c=4        747 q/s  p50   4.967 ms  p90   7.521 ms  p99  12.459 ms  errors 0
+es-pass3 prefix                   c=16      1183 q/s  p50  12.122 ms  p90  21.241 ms  p99  34.478 ms  errors 0
+es-pass3 similar items            warm-up: p50 9.532, 9.555 ms
+es-pass3 similar items            c=1        147 q/s  p50   6.661 ms  p90   7.440 ms  p99   9.708 ms  errors 0
+es-pass3 similar items            c=4        400 q/s  p50   9.647 ms  p90  12.746 ms  p99  15.879 ms  errors 0
+es-pass3 similar items            c=16       555 q/s  p50  27.563 ms  p90  40.052 ms  p99  53.664 ms  errors 0
+es-pass3 sql aggregate            warm-up: p50 81.141, 85.507 ms
+es-pass3 sql aggregate            c=1         21 q/s  p50  48.287 ms  p90  70.565 ms  p99  79.766 ms  errors 0
+es-pass3 sql aggregate            c=4         47 q/s  p50  86.911 ms  p90 121.690 ms  p99 149.568 ms  errors 0
+es-pass3 sql aggregate            c=16        50 q/s  p50 328.207 ms  p90 449.720 ms  p99 537.488 ms  errors 0
+es-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-pass3.json
+job.batch/run-es-ef128 created
+es-ef128 vector                   warm-up: p50 5.446, 5.459 ms
+es-ef128 vector                   c=1        244 q/s  p50   4.031 ms  p90   4.644 ms  p99   5.493 ms  errors 0
+es-ef128 vector                   c=4        719 q/s  p50   5.466 ms  p90   6.770 ms  p99   8.308 ms  errors 0
+es-ef128 vector                   c=16      1241 q/s  p50  11.968 ms  p90  18.483 ms  p99  25.690 ms  errors 0
+es-ef128 vector + filter          warm-up: p50 6.807, 6.860 ms
+es-ef128 vector + filter          c=1        195 q/s  p50   4.957 ms  p90   5.775 ms  p99   7.115 ms  errors 0
+es-ef128 vector + filter          c=4        559 q/s  p50   6.846 ms  p90   8.928 ms  p99  11.472 ms  errors 0
+es-ef128 vector + filter          c=16       890 q/s  p50  16.734 ms  p90  25.303 ms  p99  39.476 ms  errors 0
+es-ef128 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef128 hybrid (weighted)        warm-up: p50 8.935, 8.940 ms
+es-ef128 hybrid (weighted)        c=1        142 q/s  p50   6.037 ms  p90  10.781 ms  p99  18.399 ms  errors 0
+es-ef128 hybrid (weighted)        c=4        385 q/s  p50   9.169 ms  p90  16.074 ms  p99  31.664 ms  errors 0
+es-ef128 hybrid (weighted)        c=16       541 q/s  p50  26.644 ms  p90  45.998 ms  p99  78.577 ms  errors 0
+es-ef128 similar items            warm-up: p50 10.159, 10.036 ms
+es-ef128 similar items            c=1        140 q/s  p50   6.994 ms  p90   7.906 ms  p99  10.290 ms  errors 0
+es-ef128 similar items            c=4        376 q/s  p50  10.170 ms  p90  13.323 ms  p99  16.611 ms  errors 0
+es-ef128 similar items            c=16       528 q/s  p50  29.162 ms  p90  42.440 ms  p99  52.866 ms  errors 0
+es-ef128 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef128.json
+job.batch/run-es-ef128-pass2 created
+es-ef128-pass2 vector                   warm-up: p50 5.495, 5.490 ms
+es-ef128-pass2 vector                   c=1        240 q/s  p50   4.099 ms  p90   4.674 ms  p99   5.520 ms  errors 0
+es-ef128-pass2 vector                   c=4        707 q/s  p50   5.532 ms  p90   6.904 ms  p99   8.451 ms  errors 0
+es-ef128-pass2 vector                   c=16      1232 q/s  p50  12.163 ms  p90  18.180 ms  p99  24.773 ms  errors 0
+es-ef128-pass2 vector + filter          warm-up: p50 6.973, 6.863 ms
+es-ef128-pass2 vector + filter          c=1        192 q/s  p50   4.951 ms  p90   5.783 ms  p99   7.389 ms  errors 0
+es-ef128-pass2 vector + filter          c=4        550 q/s  p50   7.026 ms  p90   9.040 ms  p99  11.621 ms  errors 0
+es-ef128-pass2 vector + filter          c=16       891 q/s  p50  16.673 ms  p90  25.518 ms  p99  39.016 ms  errors 0
+es-ef128-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef128-pass2 hybrid (weighted)        warm-up: p50 9.143, 8.972 ms
+es-ef128-pass2 hybrid (weighted)        c=1        145 q/s  p50   5.927 ms  p90  10.350 ms  p99  19.368 ms  errors 0
+es-ef128-pass2 hybrid (weighted)        c=4        390 q/s  p50   9.056 ms  p90  15.675 ms  p99  28.580 ms  errors 0
+es-ef128-pass2 hybrid (weighted)        c=16       536 q/s  p50  26.838 ms  p90  46.136 ms  p99  83.347 ms  errors 0
+es-ef128-pass2 similar items            warm-up: p50 10.335, 10.293 ms
+es-ef128-pass2 similar items            c=1        143 q/s  p50   6.860 ms  p90   7.767 ms  p99   9.889 ms  errors 0
+es-ef128-pass2 similar items            c=4        372 q/s  p50  10.219 ms  p90  13.878 ms  p99  18.080 ms  errors 0
+es-ef128-pass2 similar items            c=16       531 q/s  p50  29.243 ms  p90  41.527 ms  p99  51.263 ms  errors 0
+es-ef128-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef128-pass2.json
+job.batch/run-es-ef128-pass3 created
+es-ef128-pass3 vector                   warm-up: p50 5.590, 5.526 ms
+es-ef128-pass3 vector                   c=1        224 q/s  p50   4.339 ms  p90   5.063 ms  p99   5.917 ms  errors 0
+es-ef128-pass3 vector                   c=4        700 q/s  p50   5.606 ms  p90   6.970 ms  p99   8.442 ms  errors 0
+es-ef128-pass3 vector                   c=16      1220 q/s  p50  12.237 ms  p90  18.245 ms  p99  24.789 ms  errors 0
+es-ef128-pass3 vector + filter          warm-up: p50 6.956, 6.814 ms
+es-ef128-pass3 vector + filter          c=1        194 q/s  p50   5.024 ms  p90   5.732 ms  p99   7.351 ms  errors 0
+es-ef128-pass3 vector + filter          c=4        548 q/s  p50   6.921 ms  p90   8.927 ms  p99  12.174 ms  errors 0
+es-ef128-pass3 vector + filter          c=16       905 q/s  p50  16.553 ms  p90  25.593 ms  p99  34.482 ms  errors 0
+es-ef128-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef128-pass3 hybrid (weighted)        warm-up: p50 9.115, 8.944 ms
+es-ef128-pass3 hybrid (weighted)        c=1        145 q/s  p50   5.938 ms  p90  10.413 ms  p99  18.729 ms  errors 0
+es-ef128-pass3 hybrid (weighted)        c=4        390 q/s  p50   9.061 ms  p90  15.685 ms  p99  29.441 ms  errors 0
+es-ef128-pass3 hybrid (weighted)        c=16       540 q/s  p50  26.996 ms  p90  44.897 ms  p99  79.454 ms  errors 0
+es-ef128-pass3 similar items            warm-up: p50 10.293, 10.084 ms
+es-ef128-pass3 similar items            c=1        141 q/s  p50   6.893 ms  p90   7.909 ms  p99  10.466 ms  errors 0
+es-ef128-pass3 similar items            c=4        378 q/s  p50  10.192 ms  p90  13.377 ms  p99  17.322 ms  errors 0
+es-ef128-pass3 similar items            c=16       521 q/s  p50  29.251 ms  p90  43.030 ms  p99  56.849 ms  errors 0
+es-ef128-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef128-pass3.json
+job.batch/run-es-ef256 created
+es-ef256 vector                   warm-up: p50 6.363, 6.320 ms
+es-ef256 vector                   c=1        211 q/s  p50   4.654 ms  p90   5.415 ms  p99   6.635 ms  errors 0
+es-ef256 vector                   c=4        608 q/s  p50   6.379 ms  p90   8.124 ms  p99   9.948 ms  errors 0
+es-ef256 vector                   c=16      1019 q/s  p50  14.649 ms  p90  22.415 ms  p99  32.009 ms  errors 0
+es-ef256 vector + filter          warm-up: p50 8.435, 8.448 ms
+es-ef256 vector + filter          c=1        162 q/s  p50   6.007 ms  p90   7.026 ms  p99   9.139 ms  errors 0
+es-ef256 vector + filter          c=4        461 q/s  p50   8.298 ms  p90  11.033 ms  p99  14.200 ms  errors 0
+es-ef256 vector + filter          c=16       688 q/s  p50  22.008 ms  p90  32.887 ms  p99  51.746 ms  errors 0
+es-ef256 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef256 hybrid (weighted)        warm-up: p50 8.993, 8.899 ms
+es-ef256 hybrid (weighted)        c=1        144 q/s  p50   5.977 ms  p90  10.390 ms  p99  19.104 ms  errors 0
+es-ef256 hybrid (weighted)        c=4        384 q/s  p50   9.020 ms  p90  15.807 ms  p99  30.218 ms  errors 0
+es-ef256 hybrid (weighted)        c=16       538 q/s  p50  27.355 ms  p90  45.651 ms  p99  76.038 ms  errors 0
+es-ef256 similar items            warm-up: p50 11.606, 11.145 ms
+es-ef256 similar items            c=1        129 q/s  p50   7.590 ms  p90   8.752 ms  p99  10.802 ms  errors 0
+es-ef256 similar items            c=4        337 q/s  p50  11.357 ms  p90  15.064 ms  p99  20.952 ms  errors 0
+es-ef256 similar items            c=16       462 q/s  p50  33.368 ms  p90  48.236 ms  p99  62.746 ms  errors 0
+es-ef256 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef256.json
+job.batch/run-es-ef256-pass2 created
+es-ef256-pass2 vector                   warm-up: p50 6.549, 6.494 ms
+es-ef256-pass2 vector                   c=1        211 q/s  p50   4.653 ms  p90   5.447 ms  p99   6.697 ms  errors 0
+es-ef256-pass2 vector                   c=4        599 q/s  p50   6.504 ms  p90   8.305 ms  p99  10.185 ms  errors 0
+es-ef256-pass2 vector                   c=16      1019 q/s  p50  14.683 ms  p90  22.434 ms  p99  31.247 ms  errors 0
+es-ef256-pass2 vector + filter          warm-up: p50 8.651, 8.673 ms
+es-ef256-pass2 vector + filter          c=1        163 q/s  p50   6.051 ms  p90   6.962 ms  p99   8.541 ms  errors 0
+es-ef256-pass2 vector + filter          c=4        439 q/s  p50   8.763 ms  p90  11.630 ms  p99  15.567 ms  errors 0
+es-ef256-pass2 vector + filter          c=16       692 q/s  p50  22.242 ms  p90  32.309 ms  p99  41.066 ms  errors 0
+es-ef256-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef256-pass2 hybrid (weighted)        warm-up: p50 8.986, 8.969 ms
+es-ef256-pass2 hybrid (weighted)        c=1        142 q/s  p50   6.079 ms  p90  10.592 ms  p99  18.954 ms  errors 0
+es-ef256-pass2 hybrid (weighted)        c=4        387 q/s  p50   9.067 ms  p90  15.949 ms  p99  29.004 ms  errors 0
+es-ef256-pass2 hybrid (weighted)        c=16       530 q/s  p50  26.946 ms  p90  46.928 ms  p99  87.697 ms  errors 0
+es-ef256-pass2 similar items            warm-up: p50 11.427, 11.147 ms
+es-ef256-pass2 similar items            c=1        127 q/s  p50   7.651 ms  p90   8.920 ms  p99  11.593 ms  errors 0
+es-ef256-pass2 similar items            c=4        335 q/s  p50  11.538 ms  p90  15.445 ms  p99  19.953 ms  errors 0
+es-ef256-pass2 similar items            c=16       466 q/s  p50  33.279 ms  p90  47.378 ms  p99  60.384 ms  errors 0
+es-ef256-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef256-pass2.json
+job.batch/run-es-ef256-pass3 created
+es-ef256-pass3 vector                   warm-up: p50 6.471, 6.524 ms
+es-ef256-pass3 vector                   c=1        209 q/s  p50   4.692 ms  p90   5.569 ms  p99   6.693 ms  errors 0
+es-ef256-pass3 vector                   c=4        610 q/s  p50   6.383 ms  p90   8.212 ms  p99  10.259 ms  errors 0
+es-ef256-pass3 vector                   c=16      1020 q/s  p50  14.930 ms  p90  22.070 ms  p99  28.883 ms  errors 0
+es-ef256-pass3 vector + filter          warm-up: p50 8.611, 8.639 ms
+es-ef256-pass3 vector + filter          c=1        150 q/s  p50   6.500 ms  p90   7.537 ms  p99   9.770 ms  errors 0
+es-ef256-pass3 vector + filter          c=4        435 q/s  p50   8.786 ms  p90  11.645 ms  p99  15.313 ms  errors 0
+es-ef256-pass3 vector + filter          c=16       690 q/s  p50  22.491 ms  p90  31.897 ms  p99  40.729 ms  errors 0
+es-ef256-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef256-pass3 hybrid (weighted)        warm-up: p50 9.204, 8.953 ms
+es-ef256-pass3 hybrid (weighted)        c=1        142 q/s  p50   5.980 ms  p90  10.771 ms  p99  19.158 ms  errors 0
+es-ef256-pass3 hybrid (weighted)        c=4        381 q/s  p50   9.129 ms  p90  16.116 ms  p99  31.220 ms  errors 0
+es-ef256-pass3 hybrid (weighted)        c=16       535 q/s  p50  27.175 ms  p90  46.292 ms  p99  76.726 ms  errors 0
+es-ef256-pass3 similar items            warm-up: p50 11.359, 11.174 ms
+es-ef256-pass3 similar items            c=1        128 q/s  p50   7.618 ms  p90   8.840 ms  p99  11.068 ms  errors 0
+es-ef256-pass3 similar items            c=4        337 q/s  p50  11.372 ms  p90  15.247 ms  p99  19.703 ms  errors 0
+es-ef256-pass3 similar items            c=16       461 q/s  p50  33.683 ms  p90  47.284 ms  p99  60.160 ms  errors 0
+es-ef256-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef256-pass3.json
+job.batch/run-es-ef512 created
+es-ef512 vector                   warm-up: p50 7.690, 7.548 ms
+es-ef512 vector                   c=1        181 q/s  p50   5.408 ms  p90   6.400 ms  p99   7.874 ms  errors 0
+es-ef512 vector                   c=4        509 q/s  p50   7.602 ms  p90   9.917 ms  p99  12.540 ms  errors 0
+es-ef512 vector                   c=16       816 q/s  p50  18.349 ms  p90  28.750 ms  p99  37.407 ms  errors 0
+es-ef512 vector + filter          warm-up: p50 10.900, 10.887 ms
+es-ef512 vector + filter          c=1        127 q/s  p50   7.663 ms  p90   9.154 ms  p99  12.833 ms  errors 0
+es-ef512 vector + filter          c=4        357 q/s  p50  10.843 ms  p90  14.472 ms  p99  18.799 ms  errors 0
+es-ef512 vector + filter          c=16       510 q/s  p50  29.970 ms  p90  43.740 ms  p99  61.666 ms  errors 0
+es-ef512 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef512 hybrid (weighted)        warm-up: p50 9.224, 9.133 ms
+es-ef512 hybrid (weighted)        c=1        140 q/s  p50   6.073 ms  p90  10.760 ms  p99  20.395 ms  errors 0
+es-ef512 hybrid (weighted)        c=4        384 q/s  p50   9.238 ms  p90  16.214 ms  p99  30.046 ms  errors 0
+es-ef512 hybrid (weighted)        c=16       536 q/s  p50  27.192 ms  p90  45.113 ms  p99  80.877 ms  errors 0
+es-ef512 similar items            warm-up: p50 13.162, 13.105 ms
+es-ef512 similar items            c=1        110 q/s  p50   8.835 ms  p90  10.382 ms  p99  14.999 ms  errors 0
+es-ef512 similar items            c=4        295 q/s  p50  13.216 ms  p90  17.537 ms  p99  21.792 ms  errors 0
+es-ef512 similar items            c=16       393 q/s  p50  39.718 ms  p90  55.854 ms  p99  67.465 ms  errors 0
+es-ef512 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef512.json
+job.batch/run-es-ef512-pass2 created
+es-ef512-pass2 vector                   warm-up: p50 7.635, 7.445 ms
+es-ef512-pass2 vector                   c=1        182 q/s  p50   5.433 ms  p90   6.386 ms  p99   7.881 ms  errors 0
+es-ef512-pass2 vector                   c=4        517 q/s  p50   7.457 ms  p90   9.729 ms  p99  12.156 ms  errors 0
+es-ef512-pass2 vector                   c=16       808 q/s  p50  18.804 ms  p90  28.180 ms  p99  38.345 ms  errors 0
+es-ef512-pass2 vector + filter          warm-up: p50 10.628, 10.659 ms
+es-ef512-pass2 vector + filter          c=1        131 q/s  p50   7.486 ms  p90   9.006 ms  p99  11.287 ms  errors 0
+es-ef512-pass2 vector + filter          c=4        359 q/s  p50  10.733 ms  p90  14.449 ms  p99  18.504 ms  errors 0
+es-ef512-pass2 vector + filter          c=16       515 q/s  p50  30.290 ms  p90  42.287 ms  p99  55.205 ms  errors 0
+es-ef512-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef512-pass2 hybrid (weighted)        warm-up: p50 9.106, 9.067 ms
+es-ef512-pass2 hybrid (weighted)        c=1        143 q/s  p50   6.005 ms  p90  10.560 ms  p99  19.321 ms  errors 0
+es-ef512-pass2 hybrid (weighted)        c=4        388 q/s  p50   9.014 ms  p90  15.732 ms  p99  30.326 ms  errors 0
+es-ef512-pass2 hybrid (weighted)        c=16       535 q/s  p50  26.781 ms  p90  46.725 ms  p99  82.031 ms  errors 0
+es-ef512-pass2 similar items            warm-up: p50 12.839, 13.033 ms
+es-ef512-pass2 similar items            c=1        109 q/s  p50   8.919 ms  p90  10.715 ms  p99  13.827 ms  errors 0
+es-ef512-pass2 similar items            c=4        296 q/s  p50  13.114 ms  p90  17.361 ms  p99  22.401 ms  errors 0
+es-ef512-pass2 similar items            c=16       391 q/s  p50  39.866 ms  p90  55.593 ms  p99  74.901 ms  errors 0
+es-ef512-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef512-pass2.json
+job.batch/run-es-ef512-pass3 created
+es-ef512-pass3 vector                   warm-up: p50 7.755, 7.511 ms
+es-ef512-pass3 vector                   c=1        177 q/s  p50   5.573 ms  p90   6.527 ms  p99   7.915 ms  errors 0
+es-ef512-pass3 vector                   c=4        510 q/s  p50   7.634 ms  p90   9.995 ms  p99  12.497 ms  errors 0
+es-ef512-pass3 vector                   c=16       808 q/s  p50  18.534 ms  p90  28.422 ms  p99  40.230 ms  errors 0
+es-ef512-pass3 vector + filter          warm-up: p50 10.866, 10.500 ms
+es-ef512-pass3 vector + filter          c=1        131 q/s  p50   7.427 ms  p90   8.960 ms  p99  10.910 ms  errors 0
+es-ef512-pass3 vector + filter          c=4        361 q/s  p50  10.702 ms  p90  14.420 ms  p99  18.596 ms  errors 0
+es-ef512-pass3 vector + filter          c=16       523 q/s  p50  29.410 ms  p90  42.411 ms  p99  55.249 ms  errors 0
+es-ef512-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef512-pass3 hybrid (weighted)        warm-up: p50 9.093, 9.119 ms
+es-ef512-pass3 hybrid (weighted)        c=1        142 q/s  p50   6.177 ms  p90  10.393 ms  p99  20.326 ms  errors 0
+es-ef512-pass3 hybrid (weighted)        c=4        385 q/s  p50   9.022 ms  p90  15.984 ms  p99  30.782 ms  errors 0
+es-ef512-pass3 hybrid (weighted)        c=16       537 q/s  p50  26.856 ms  p90  45.581 ms  p99  74.200 ms  errors 0
+es-ef512-pass3 similar items            warm-up: p50 13.070, 12.869 ms
+es-ef512-pass3 similar items            c=1        111 q/s  p50   8.831 ms  p90  10.252 ms  p99  13.103 ms  errors 0
+es-ef512-pass3 similar items            c=4        298 q/s  p50  12.896 ms  p90  17.346 ms  p99  21.119 ms  errors 0
+es-ef512-pass3 similar items            c=16       390 q/s  p50  39.183 ms  p90  55.752 ms  p99  84.386 ms  errors 0
+es-ef512-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef512-pass3.json
+{"acknowledged":true,"trial_was_started":true,"type":"trial"}
+job.batch/run-es-trial created
+es-trial hybrid (RRF)             warm-up: p50 16.937, 15.526 ms
+es-trial hybrid (RRF)             c=1        103 q/s  p50   9.487 ms  p90  11.269 ms  p99  14.326 ms  errors 0
+es-trial hybrid (RRF)             c=4        289 q/s  p50  13.561 ms  p90  16.837 ms  p99  20.586 ms  errors 0
+es-trial hybrid (RRF)             c=16       454 q/s  p50  34.335 ms  p90  45.361 ms  p99  57.879 ms  errors 0
+es-trial hybrid (weighted)        warm-up: p50 17.542, 16.744 ms
+es-trial hybrid (weighted)        c=1         82 q/s  p50  11.081 ms  p90  18.449 ms  p99  23.423 ms  errors 0
+es-trial hybrid (weighted)        c=4        226 q/s  p50  16.646 ms  p90  24.965 ms  p99  35.455 ms  errors 0
+es-trial hybrid (weighted)        c=16       321 q/s  p50  47.767 ms  p90  67.560 ms  p99  93.630 ms  errors 0
+es-trial result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-trial.json
+job.batch/writes-es created
+es       insert one     c=1        244 docs/s  p50    3.961 ms  p90    5.352 ms  p99    9.481 ms  errors 0
+es       insert one     c=4        760 docs/s  p50    4.465 ms  p90    8.360 ms  p99   16.897 ms  errors 0
+es       insert one     c=16      2079 docs/s  p50    6.449 ms  p90   11.848 ms  p99   32.672 ms  errors 0
+es       insert batch   c=1       1679 docs/s  p50   41.214 ms  p90   50.251 ms  p99  238.424 ms  errors 0
+es       insert batch   c=4       3728 docs/s  p50   71.549 ms  p90  156.458 ms  p99  421.649 ms  errors 0
+es       insert batch   c=16      3854 docs/s  p50  364.550 ms  p90  583.126 ms  p99 1114.649 ms  errors 0
+es       update one     c=1        218 docs/s  p50    4.069 ms  p90    5.916 ms  p99   10.144 ms  errors 0
+es       update one     c=4        806 docs/s  p50    4.162 ms  p90    7.701 ms  p99   17.403 ms  errors 0
+es       update one     c=16      2308 docs/s  p50    5.882 ms  p90   10.192 ms  p99   22.482 ms  errors 0
+es       visible        written in p50 6.7 ms, found after p50 892.2 ms  p90 1011.7 ms  max 1018.4 ms
+wrote /data/compare/writes-es.json
+es       deleted 75430 written documents and put back 20000 ratings in 13.3 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-es created
+es       topic docs-es-1794796820, 4 partitions; 1000000 documents before
+es       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 24 ms  p90 34 ms  p99 43 ms  max 88 ms (read p50 19 ms)
+es       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (499/s); lag p50 25 ms  p90 34 ms  p99 49 ms  max 90 ms (read p50 18 ms)
+es       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 28 ms  p90 39 ms  p99 79 ms  max 155 ms (read p50 19 ms)
+es       2000/s           produced 60000 in 30.0 s; written 60000 in 30.0 s (1998/s); lag p50 33 ms  p90 54 ms  p99 166 ms  max 293 ms (read p50 19 ms)
+es       flat out         produced 20000 in 0.9 s; written 20000 in 5.3 s (3760/s); lag p50 2043 ms  p90 3638 ms  p99 4478 ms  max 4501 ms (read p50 1726 ms)
+es       before the crash produced 10000 in 5.4 s; written 5020 in 5.4 s (938/s); lag p50 38 ms  p90 146 ms  p99 337 ms  max 420 ms (read p50 22 ms)
+es       after the crash   resumed in 2.1 s: 1114 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-es.json
+es       deleted 142500 streamed documents in 2.9 s
+pod "es-0" deleted from sharded-1m namespace
+pod "es-1" deleted from sharded-1m namespace
+service/os created
+pod/os-0 created
+pod/os-1 created
+pod/os-0 condition met
+pod/os-1 condition met
+job.batch/load-os created
+os: index created in 0.5 s
+os: 25000 documents sent, 13 s
+os: 50000 documents sent, 24 s
+os: 75000 documents sent, 35 s
+os: 100000 documents sent, 49 s
+os: 125000 documents sent, 57 s
+os: 150000 documents sent, 67 s
+os: 175000 documents sent, 78 s
+os: 200000 documents sent, 87 s
+os: 225000 documents sent, 96 s
+os: 250000 documents sent, 104 s
+os: 275000 documents sent, 114 s
+os: 300000 documents sent, 121 s
+os: 325000 documents sent, 131 s
+os: 350000 documents sent, 141 s
+os: 375000 documents sent, 151 s
+os: 400000 documents sent, 159 s
+os: 425000 documents sent, 170 s
+os: 450000 documents sent, 184 s
+os: 475000 documents sent, 192 s
+os: 500000 documents sent, 202 s
+os: 525000 documents sent, 216 s
+os: 550000 documents sent, 229 s
+os: 575000 documents sent, 241 s
+os: 600000 documents sent, 255 s
+os: 625000 documents sent, 272 s
+os: 650000 documents sent, 286 s
+os: 675000 documents sent, 300 s
+os: 700000 documents sent, 314 s
+os: 725000 documents sent, 332 s
+os: 750000 documents sent, 343 s
+os: 775000 documents sent, 355 s
+os: 800000 documents sent, 371 s
+os: 825000 documents sent, 387 s
+os: 850000 documents sent, 401 s
+os: 875000 documents sent, 416 s
+os: 900000 documents sent, 433 s
+os: 925000 documents sent, 448 s
+os: 950000 documents sent, 464 s
+os: 975000 documents sent, 478 s
+os: 1000000 documents sent, 494 s
+os: 1000000 documents (11.8 GB of JSON) sent in 494.5 s
+os: searchable after 1.4 s more, merged in 354.9 s; 850.7 s in all
+wrote /data/compare/load-os.json
+job.batch/run-os created
+os       bm25                     warm-up: p50 7.967, 6.720, 5.737, 4.672, 4.204, 3.781, 3.638 ms
+os       bm25                     c=1        331 q/s  p50   2.848 ms  p90   3.826 ms  p99   5.789 ms  errors 0
+os       bm25                     c=4       1116 q/s  p50   3.426 ms  p90   4.750 ms  p99   6.636 ms  errors 0
+os       bm25                     c=16      2062 q/s  p50   7.048 ms  p90  11.765 ms  p99  18.537 ms  errors 0
+os       bm25 + filter            warm-up: p50 5.732, 4.822, 4.430 ms
+os       bm25 + filter            c=1        277 q/s  p50   3.374 ms  p90   4.735 ms  p99   8.118 ms  errors 0
+os       bm25 + filter            c=4        880 q/s  p50   4.200 ms  p90   6.400 ms  p99  10.786 ms  errors 0
+os       bm25 + filter            c=16      1472 q/s  p50   9.544 ms  p90  18.058 ms  p99  27.815 ms  errors 0
+os       vector                   warm-up: p50 7.322, 6.595 ms
+os       vector                   c=1        209 q/s  p50   4.652 ms  p90   5.755 ms  p99   7.074 ms  errors 0
+os       vector                   c=4        581 q/s  p50   6.546 ms  p90   9.117 ms  p99  12.233 ms  errors 0
+os       vector                   c=16       971 q/s  p50  14.905 ms  p90  25.803 ms  p99  33.590 ms  errors 0
+os       vector + filter          warm-up: p50 12.271, 12.988 ms
+os       vector + filter          c=1        113 q/s  p50   8.712 ms  p90  10.339 ms  p99  12.153 ms  errors 0
+os       vector + filter          c=4        321 q/s  p50  12.169 ms  p90  16.282 ms  p99  20.226 ms  errors 0
+os       vector + filter          c=16       412 q/s  p50  37.745 ms  p90  53.474 ms  p99  66.039 ms  errors 0
+os       hybrid (RRF)             warm-up: p50 12.665, 11.961 ms
+os       hybrid (RRF)             c=1        118 q/s  p50   8.082 ms  p90  10.564 ms  p99  15.507 ms  errors 0
+os       hybrid (RRF)             c=4        320 q/s  p50  11.864 ms  p90  16.845 ms  p99  24.099 ms  errors 0
+os       hybrid (RRF)             c=16       397 q/s  p50  38.649 ms  p90  55.746 ms  p99  73.065 ms  errors 0
+os       hybrid (weighted)        warm-up: p50 11.787, 11.239 ms
+os       hybrid (weighted)        c=1        121 q/s  p50   7.847 ms  p90  10.249 ms  p99  15.852 ms  errors 0
+os       hybrid (weighted)        c=4        333 q/s  p50  11.326 ms  p90  16.233 ms  p99  23.730 ms  errors 0
+os       hybrid (weighted)        c=16       437 q/s  p50  34.803 ms  p90  50.964 ms  p99  66.426 ms  errors 0
+os       boosted (bm25 × decay)   warm-up: p50 11.230, 11.285 ms
+os       boosted (bm25 × decay)   c=1        116 q/s  p50   6.881 ms  p90  17.621 ms  p99  28.494 ms  errors 0
+os       boosted (bm25 × decay)   c=4        298 q/s  p50  10.979 ms  p90  26.092 ms  p99  45.027 ms  errors 0
+os       boosted (bm25 × decay)   c=16       352 q/s  p50  40.672 ms  p90  77.446 ms  p99 131.643 ms  errors 0
+os       facet                    warm-up: p50 3.719, 2.966, 2.184, 2.070 ms
+os       facet                    c=1        515 q/s  p50   1.772 ms  p90   2.444 ms  p99   5.131 ms  errors 0
+os       facet                    c=4       1787 q/s  p50   2.010 ms  p90   3.109 ms  p99   6.325 ms  errors 0
+os       facet                    c=16      3426 q/s  p50   4.049 ms  p90   7.746 ms  p99  13.591 ms  errors 0
+os       key lookup               warm-up: p50 0.960, 0.887 ms
+os       key lookup               c=1       1180 q/s  p50   0.888 ms  p90   1.134 ms  p99   1.420 ms  errors 0
+os       key lookup               c=4       4799 q/s  p50   0.862 ms  p90   1.145 ms  p99   1.530 ms  errors 0
+os       key lookup               c=16     14224 q/s  p50   1.082 ms  p90   1.699 ms  p99   2.529 ms  errors 0
+os       phrase                   warm-up: p50 3.595, 3.292 ms
+os       phrase                   c=1        383 q/s  p50   2.585 ms  p90   3.712 ms  p99   5.391 ms  errors 0
+os       phrase                   c=4       1222 q/s  p50   3.149 ms  p90   4.945 ms  p99   7.249 ms  errors 0
+os       phrase                   c=16      2179 q/s  p50   6.559 ms  p90  12.373 ms  p99  19.853 ms  errors 0
+os       typo                     warm-up: p50 34.459, 34.455 ms
+os       typo                     c=1         46 q/s  p50  20.390 ms  p90  35.571 ms  p99  54.516 ms  errors 0
+os       typo                     c=4        112 q/s  p50  34.016 ms  p90  56.249 ms  p99  84.819 ms  errors 0
+os       typo                     c=16       125 q/s  p50 122.099 ms  p90 176.040 ms  p99 241.565 ms  errors 0
+os       prefix                   warm-up: p50 5.878, 5.565 ms
+os       prefix                   c=1        232 q/s  p50   3.871 ms  p90   5.839 ms  p99  10.025 ms  errors 0
+os       prefix                   c=4        686 q/s  p50   5.355 ms  p90   8.458 ms  p99  14.224 ms  errors 0
+os       prefix                   c=16      1033 q/s  p50  13.653 ms  p90  25.280 ms  p99  39.353 ms  errors 0
+os       similar items            warm-up: p50 14.294, 13.493 ms
+os       similar items            c=1        114 q/s  p50   8.778 ms  p90  10.125 ms  p99  12.560 ms  errors 0
+os       similar items            c=4        299 q/s  p50  12.933 ms  p90  17.241 ms  p99  21.751 ms  errors 0
+os       similar items            c=16       393 q/s  p50  40.000 ms  p90  55.396 ms  p99  66.338 ms  errors 0
+os       sql aggregate            warm-up: p50 99.284, 99.966 ms
+os       sql aggregate            c=1         19 q/s  p50  53.484 ms  p90  77.061 ms  p99  85.396 ms  errors 0
+os       sql aggregate            c=4         40 q/s  p50 100.205 ms  p90 146.906 ms  p99 193.637 ms  errors 0
+os       sql aggregate            c=16        39 q/s  p50 399.984 ms  p90 590.317 ms  p99 665.623 ms  errors 0
+os       result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os.json
+job.batch/run-os-pass2 created
+os-pass2 bm25                     warm-up: p50 3.546, 3.450 ms
+os-pass2 bm25                     c=1        345 q/s  p50   2.799 ms  p90   3.557 ms  p99   4.937 ms  errors 0
+os-pass2 bm25                     c=4       1121 q/s  p50   3.393 ms  p90   4.697 ms  p99   6.511 ms  errors 0
+os-pass2 bm25                     c=16      2067 q/s  p50   6.998 ms  p90  11.946 ms  p99  18.291 ms  errors 0
+os-pass2 bm25 + filter            warm-up: p50 4.332, 4.231 ms
+os-pass2 bm25 + filter            c=1        284 q/s  p50   3.296 ms  p90   4.680 ms  p99   8.077 ms  errors 0
+os-pass2 bm25 + filter            c=4        873 q/s  p50   4.219 ms  p90   6.508 ms  p99  10.768 ms  errors 0
+os-pass2 bm25 + filter            c=16      1424 q/s  p50   9.878 ms  p90  18.219 ms  p99  30.382 ms  errors 0
+os-pass2 vector                   warm-up: p50 6.073, 5.871 ms
+os-pass2 vector                   c=1        222 q/s  p50   4.419 ms  p90   5.254 ms  p99   6.391 ms  errors 0
+os-pass2 vector                   c=4        643 q/s  p50   6.017 ms  p90   8.035 ms  p99   9.830 ms  errors 0
+os-pass2 vector                   c=16       999 q/s  p50  15.202 ms  p90  22.868 ms  p99  28.936 ms  errors 0
+os-pass2 vector + filter          warm-up: p50 12.123, 12.065 ms
+os-pass2 vector + filter          c=1        115 q/s  p50   8.588 ms  p90  10.122 ms  p99  12.247 ms  errors 0
+os-pass2 vector + filter          c=4        323 q/s  p50  12.007 ms  p90  16.161 ms  p99  19.974 ms  errors 0
+os-pass2 vector + filter          c=16       412 q/s  p50  37.860 ms  p90  52.969 ms  p99  63.071 ms  errors 0
+os-pass2 hybrid (RRF)             warm-up: p50 11.554, 11.506 ms
+os-pass2 hybrid (RRF)             c=1        123 q/s  p50   7.797 ms  p90  10.126 ms  p99  14.492 ms  errors 0
+os-pass2 hybrid (RRF)             c=4        332 q/s  p50  11.359 ms  p90  16.531 ms  p99  22.782 ms  errors 0
+os-pass2 hybrid (RRF)             c=16       430 q/s  p50  35.814 ms  p90  51.431 ms  p99  67.866 ms  errors 0
+os-pass2 hybrid (weighted)        warm-up: p50 11.211, 11.121 ms
+os-pass2 hybrid (weighted)        c=1        123 q/s  p50   7.794 ms  p90   9.981 ms  p99  15.019 ms  errors 0
+os-pass2 hybrid (weighted)        c=4        333 q/s  p50  11.383 ms  p90  16.041 ms  p99  24.489 ms  errors 0
+os-pass2 hybrid (weighted)        c=16       437 q/s  p50  34.797 ms  p90  51.865 ms  p99  72.122 ms  errors 0
+os-pass2 boosted (bm25 × decay)   warm-up: p50 11.245, 11.803 ms
+os-pass2 boosted (bm25 × decay)   c=1        108 q/s  p50   7.353 ms  p90  18.884 ms  p99  31.050 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=4        282 q/s  p50  11.476 ms  p90  29.183 ms  p99  52.079 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=16       343 q/s  p50  40.973 ms  p90  77.377 ms  p99 135.519 ms  errors 0
+os-pass2 facet                    warm-up: p50 2.091, 2.040 ms
+os-pass2 facet                    c=1        513 q/s  p50   1.809 ms  p90   2.423 ms  p99   4.727 ms  errors 0
+os-pass2 facet                    c=4       1790 q/s  p50   2.017 ms  p90   3.071 ms  p99   6.134 ms  errors 0
+os-pass2 facet                    c=16      3439 q/s  p50   4.039 ms  p90   7.470 ms  p99  13.471 ms  errors 0
+os-pass2 key lookup               warm-up: p50 0.858, 0.852 ms
+os-pass2 key lookup               c=1       1154 q/s  p50   0.919 ms  p90   1.157 ms  p99   1.477 ms  errors 0
+os-pass2 key lookup               c=4       4811 q/s  p50   0.866 ms  p90   1.138 ms  p99   1.451 ms  errors 0
+os-pass2 key lookup               c=16     14299 q/s  p50   1.080 ms  p90   1.699 ms  p99   2.489 ms  errors 0
+os-pass2 phrase                   warm-up: p50 3.124, 3.101 ms
+os-pass2 phrase                   c=1        365 q/s  p50   2.723 ms  p90   3.880 ms  p99   5.455 ms  errors 0
+os-pass2 phrase                   c=4       1210 q/s  p50   3.194 ms  p90   4.964 ms  p99   7.263 ms  errors 0
+os-pass2 phrase                   c=16      2108 q/s  p50   6.672 ms  p90  13.011 ms  p99  21.993 ms  errors 0
+os-pass2 typo                     warm-up: p50 33.640, 32.393 ms
+os-pass2 typo                     c=1         45 q/s  p50  20.304 ms  p90  36.348 ms  p99  54.325 ms  errors 0
+os-pass2 typo                     c=4        112 q/s  p50  33.461 ms  p90  56.096 ms  p99  87.223 ms  errors 0
+os-pass2 typo                     c=16       125 q/s  p50 124.576 ms  p90 174.397 ms  p99 236.487 ms  errors 0
+os-pass2 prefix                   warm-up: p50 5.513, 5.351 ms
+os-pass2 prefix                   c=1        236 q/s  p50   3.814 ms  p90   5.781 ms  p99  10.235 ms  errors 0
+os-pass2 prefix                   c=4        683 q/s  p50   5.365 ms  p90   8.437 ms  p99  14.360 ms  errors 0
+os-pass2 prefix                   c=16      1043 q/s  p50  13.209 ms  p90  25.773 ms  p99  39.498 ms  errors 0
+os-pass2 similar items            warm-up: p50 12.705, 12.879 ms
+os-pass2 similar items            c=1        115 q/s  p50   8.672 ms  p90  10.041 ms  p99  11.633 ms  errors 0
+os-pass2 similar items            c=4        302 q/s  p50  12.744 ms  p90  17.270 ms  p99  21.296 ms  errors 0
+os-pass2 similar items            c=16       391 q/s  p50  40.158 ms  p90  54.539 ms  p99  62.512 ms  errors 0
+os-pass2 sql aggregate            warm-up: p50 99.964, 98.387 ms
+os-pass2 sql aggregate            c=1         18 q/s  p50  55.636 ms  p90  75.511 ms  p99  85.325 ms  errors 0
+os-pass2 sql aggregate            c=4         42 q/s  p50  96.782 ms  p90 139.383 ms  p99 167.010 ms  errors 0
+os-pass2 sql aggregate            c=16        41 q/s  p50 385.302 ms  p90 553.381 ms  p99 634.053 ms  errors 0
+os-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-pass2.json
+job.batch/run-os-pass3 created
+os-pass3 bm25                     warm-up: p50 3.340, 3.359 ms
+os-pass3 bm25                     c=1        350 q/s  p50   2.739 ms  p90   3.510 ms  p99   4.990 ms  errors 0
+os-pass3 bm25                     c=4       1130 q/s  p50   3.358 ms  p90   4.705 ms  p99   6.555 ms  errors 0
+os-pass3 bm25                     c=16      2023 q/s  p50   7.151 ms  p90  12.273 ms  p99  18.668 ms  errors 0
+os-pass3 bm25 + filter            warm-up: p50 4.216, 4.178 ms
+os-pass3 bm25 + filter            c=1        281 q/s  p50   3.330 ms  p90   4.711 ms  p99   8.037 ms  errors 0
+os-pass3 bm25 + filter            c=4        877 q/s  p50   4.236 ms  p90   6.368 ms  p99  10.738 ms  errors 0
+os-pass3 bm25 + filter            c=16      1437 q/s  p50   9.704 ms  p90  18.747 ms  p99  29.382 ms  errors 0
+os-pass3 vector                   warm-up: p50 6.027, 5.949 ms
+os-pass3 vector                   c=1        221 q/s  p50   4.416 ms  p90   5.393 ms  p99   6.591 ms  errors 0
+os-pass3 vector                   c=4        641 q/s  p50   5.993 ms  p90   7.991 ms  p99   9.984 ms  errors 0
+os-pass3 vector                   c=16       993 q/s  p50  15.254 ms  p90  23.270 ms  p99  30.142 ms  errors 0
+os-pass3 vector + filter          warm-up: p50 12.207, 11.891 ms
+os-pass3 vector + filter          c=1        116 q/s  p50   8.522 ms  p90  10.007 ms  p99  12.442 ms  errors 0
+os-pass3 vector + filter          c=4        320 q/s  p50  12.069 ms  p90  16.333 ms  p99  20.066 ms  errors 0
+os-pass3 vector + filter          c=16       413 q/s  p50  37.394 ms  p90  52.991 ms  p99  64.073 ms  errors 0
+os-pass3 hybrid (RRF)             warm-up: p50 11.320, 11.597 ms
+os-pass3 hybrid (RRF)             c=1        122 q/s  p50   7.859 ms  p90  10.069 ms  p99  15.067 ms  errors 0
+os-pass3 hybrid (RRF)             c=4        336 q/s  p50  11.353 ms  p90  15.771 ms  p99  24.108 ms  errors 0
+os-pass3 hybrid (RRF)             c=16       429 q/s  p50  36.324 ms  p90  50.851 ms  p99  64.469 ms  errors 0
+os-pass3 hybrid (weighted)        warm-up: p50 11.069, 11.161 ms
+os-pass3 hybrid (weighted)        c=1        123 q/s  p50   7.742 ms  p90  10.073 ms  p99  14.639 ms  errors 0
+os-pass3 hybrid (weighted)        c=4        333 q/s  p50  11.335 ms  p90  16.305 ms  p99  24.335 ms  errors 0
+os-pass3 hybrid (weighted)        c=16       433 q/s  p50  35.243 ms  p90  51.311 ms  p99  70.375 ms  errors 0
+os-pass3 boosted (bm25 × decay)   warm-up: p50 11.420, 11.270 ms
+os-pass3 boosted (bm25 × decay)   c=1        105 q/s  p50   7.504 ms  p90  19.943 ms  p99  33.719 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=4        282 q/s  p50  11.369 ms  p90  29.162 ms  p99  50.931 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=16       344 q/s  p50  41.642 ms  p90  78.328 ms  p99 120.139 ms  errors 0
+os-pass3 facet                    warm-up: p50 2.076, 2.033 ms
+os-pass3 facet                    c=1        518 q/s  p50   1.774 ms  p90   2.421 ms  p99   4.680 ms  errors 0
+os-pass3 facet                    c=4       1766 q/s  p50   2.068 ms  p90   3.132 ms  p99   6.121 ms  errors 0
+os-pass3 facet                    c=16      3395 q/s  p50   4.103 ms  p90   7.713 ms  p99  13.457 ms  errors 0
+os-pass3 key lookup               warm-up: p50 0.862, 0.870 ms
+os-pass3 key lookup               c=1       1182 q/s  p50   0.878 ms  p90   1.126 ms  p99   1.362 ms  errors 0
+os-pass3 key lookup               c=4       4863 q/s  p50   0.865 ms  p90   1.124 ms  p99   1.450 ms  errors 0
+os-pass3 key lookup               c=16     14287 q/s  p50   1.075 ms  p90   1.701 ms  p99   2.607 ms  errors 0
+os-pass3 phrase                   warm-up: p50 3.209, 3.194 ms
+os-pass3 phrase                   c=1        354 q/s  p50   2.794 ms  p90   3.984 ms  p99   5.296 ms  errors 0
+os-pass3 phrase                   c=4       1208 q/s  p50   3.186 ms  p90   5.003 ms  p99   6.975 ms  errors 0
+os-pass3 phrase                   c=16      2161 q/s  p50   6.675 ms  p90  12.533 ms  p99  19.234 ms  errors 0
+os-pass3 typo                     warm-up: p50 33.460, 32.528 ms
+os-pass3 typo                     c=1         45 q/s  p50  20.620 ms  p90  35.322 ms  p99  52.159 ms  errors 0
+os-pass3 typo                     c=4        111 q/s  p50  33.169 ms  p90  56.828 ms  p99  84.712 ms  errors 0
+os-pass3 typo                     c=16       123 q/s  p50 126.111 ms  p90 177.941 ms  p99 249.545 ms  errors 0
+os-pass3 prefix                   warm-up: p50 5.346, 5.366 ms
+os-pass3 prefix                   c=1        237 q/s  p50   3.794 ms  p90   5.789 ms  p99  11.163 ms  errors 0
+os-pass3 prefix                   c=4        683 q/s  p50   5.387 ms  p90   8.425 ms  p99  14.876 ms  errors 0
+os-pass3 prefix                   c=16      1047 q/s  p50  13.621 ms  p90  24.611 ms  p99  38.366 ms  errors 0
+os-pass3 similar items            warm-up: p50 12.724, 12.774 ms
+os-pass3 similar items            c=1        112 q/s  p50   8.805 ms  p90  10.390 ms  p99  12.588 ms  errors 0
+os-pass3 similar items            c=4        301 q/s  p50  12.850 ms  p90  17.285 ms  p99  21.311 ms  errors 0
+os-pass3 similar items            c=16       391 q/s  p50  40.358 ms  p90  54.327 ms  p99  64.274 ms  errors 0
+os-pass3 sql aggregate            warm-up: p50 100.063, 98.371 ms
+os-pass3 sql aggregate            c=1         19 q/s  p50  55.320 ms  p90  74.877 ms  p99  86.391 ms  errors 0
+os-pass3 sql aggregate            c=4         42 q/s  p50  95.672 ms  p90 140.292 ms  p99 159.388 ms  errors 0
+os-pass3 sql aggregate            c=16        40 q/s  p50 384.204 ms  p90 530.504 ms  p99 618.908 ms  errors 0
+os-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-pass3.json
+job.batch/run-os-ef128 created
+os-ef128 vector                   warm-up: p50 6.847, 6.570 ms
+os-ef128 vector                   c=1        209 q/s  p50   4.680 ms  p90   5.629 ms  p99   6.890 ms  errors 0
+os-ef128 vector                   c=4        590 q/s  p50   6.546 ms  p90   8.832 ms  p99  11.054 ms  errors 0
+os-ef128 vector                   c=16       883 q/s  p50  16.767 ms  p90  27.206 ms  p99  35.732 ms  errors 0
+os-ef128 vector + filter          warm-up: p50 14.307, 13.843 ms
+os-ef128 vector + filter          c=1        101 q/s  p50   9.947 ms  p90  11.638 ms  p99  13.249 ms  errors 0
+os-ef128 vector + filter          c=4        278 q/s  p50  14.025 ms  p90  18.745 ms  p99  23.057 ms  errors 0
+os-ef128 vector + filter          c=16       346 q/s  p50  44.756 ms  p90  62.886 ms  p99  75.576 ms  errors 0
+os-ef128 hybrid (RRF)             warm-up: p50 11.484, 11.509 ms
+os-ef128 hybrid (RRF)             c=1        122 q/s  p50   7.887 ms  p90  10.198 ms  p99  14.747 ms  errors 0
+os-ef128 hybrid (RRF)             c=4        334 q/s  p50  11.403 ms  p90  16.107 ms  p99  23.018 ms  errors 0
+os-ef128 hybrid (RRF)             c=16       430 q/s  p50  35.607 ms  p90  50.627 ms  p99  62.551 ms  errors 0
+os-ef128 hybrid (weighted)        warm-up: p50 11.183, 11.288 ms
+os-ef128 hybrid (weighted)        c=1        122 q/s  p50   7.858 ms  p90  10.165 ms  p99  14.823 ms  errors 0
+os-ef128 hybrid (weighted)        c=4        334 q/s  p50  11.365 ms  p90  15.937 ms  p99  24.581 ms  errors 0
+os-ef128 hybrid (weighted)        c=16       432 q/s  p50  35.637 ms  p90  50.973 ms  p99  67.811 ms  errors 0
+os-ef128 similar items            warm-up: p50 13.738, 13.955 ms
+os-ef128 similar items            c=1        104 q/s  p50   9.598 ms  p90  11.195 ms  p99  12.648 ms  errors 0
+os-ef128 similar items            c=4        284 q/s  p50  13.643 ms  p90  18.300 ms  p99  22.298 ms  errors 0
+os-ef128 similar items            c=16       359 q/s  p50  44.167 ms  p90  58.125 ms  p99  67.927 ms  errors 0
+os-ef128 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef128.json
+job.batch/run-os-ef128-pass2 created
+os-ef128-pass2 vector                   warm-up: p50 6.528, 6.434 ms
+os-ef128-pass2 vector                   c=1        207 q/s  p50   4.722 ms  p90   5.799 ms  p99   6.871 ms  errors 0
+os-ef128-pass2 vector                   c=4        593 q/s  p50   6.519 ms  p90   8.702 ms  p99  11.055 ms  errors 0
+os-ef128-pass2 vector                   c=16       886 q/s  p50  16.774 ms  p90  26.492 ms  p99  35.254 ms  errors 0
+os-ef128-pass2 vector + filter          warm-up: p50 14.091, 14.012 ms
+os-ef128-pass2 vector + filter          c=1        102 q/s  p50   9.810 ms  p90  11.405 ms  p99  13.647 ms  errors 0
+os-ef128-pass2 vector + filter          c=4        278 q/s  p50  14.064 ms  p90  18.597 ms  p99  23.481 ms  errors 0
+os-ef128-pass2 vector + filter          c=16       345 q/s  p50  45.162 ms  p90  63.837 ms  p99  74.241 ms  errors 0
+os-ef128-pass2 hybrid (RRF)             warm-up: p50 11.313, 11.300 ms
+os-ef128-pass2 hybrid (RRF)             c=1        120 q/s  p50   7.985 ms  p90  10.401 ms  p99  15.313 ms  errors 0
+os-ef128-pass2 hybrid (RRF)             c=4        330 q/s  p50  11.575 ms  p90  16.078 ms  p99  23.763 ms  errors 0
+os-ef128-pass2 hybrid (RRF)             c=16       429 q/s  p50  35.593 ms  p90  52.236 ms  p99  68.522 ms  errors 0
+os-ef128-pass2 hybrid (weighted)        warm-up: p50 11.385, 11.116 ms
+os-ef128-pass2 hybrid (weighted)        c=1        124 q/s  p50   7.694 ms  p90   9.998 ms  p99  14.831 ms  errors 0
+os-ef128-pass2 hybrid (weighted)        c=4        338 q/s  p50  11.184 ms  p90  15.858 ms  p99  23.254 ms  errors 0
+os-ef128-pass2 hybrid (weighted)        c=16       436 q/s  p50  35.364 ms  p90  50.002 ms  p99  63.681 ms  errors 0
+os-ef128-pass2 similar items            warm-up: p50 13.876, 13.568 ms
+os-ef128-pass2 similar items            c=1        105 q/s  p50   9.438 ms  p90  11.128 ms  p99  12.956 ms  errors 0
+os-ef128-pass2 similar items            c=4        282 q/s  p50  13.751 ms  p90  18.278 ms  p99  23.198 ms  errors 0
+os-ef128-pass2 similar items            c=16       357 q/s  p50  44.499 ms  p90  59.770 ms  p99  68.895 ms  errors 0
+os-ef128-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef128-pass2.json
+job.batch/run-os-ef128-pass3 created
+os-ef128-pass3 vector                   warm-up: p50 6.540, 6.554 ms
+os-ef128-pass3 vector                   c=1        206 q/s  p50   4.754 ms  p90   5.650 ms  p99   6.753 ms  errors 0
+os-ef128-pass3 vector                   c=4        590 q/s  p50   6.558 ms  p90   8.744 ms  p99  10.909 ms  errors 0
+os-ef128-pass3 vector                   c=16       870 q/s  p50  17.037 ms  p90  27.334 ms  p99  35.729 ms  errors 0
+os-ef128-pass3 vector + filter          warm-up: p50 14.398, 14.469 ms
+os-ef128-pass3 vector + filter          c=1        102 q/s  p50   9.873 ms  p90  11.407 ms  p99  13.997 ms  errors 0
+os-ef128-pass3 vector + filter          c=4        273 q/s  p50  14.327 ms  p90  19.032 ms  p99  23.960 ms  errors 0
+os-ef128-pass3 vector + filter          c=16       339 q/s  p50  46.500 ms  p90  61.291 ms  p99  74.370 ms  errors 0
+os-ef128-pass3 hybrid (RRF)             warm-up: p50 11.442, 11.483 ms
+os-ef128-pass3 hybrid (RRF)             c=1        120 q/s  p50   7.946 ms  p90  10.385 ms  p99  15.410 ms  errors 0
+os-ef128-pass3 hybrid (RRF)             c=4        333 q/s  p50  11.469 ms  p90  16.227 ms  p99  23.069 ms  errors 0
+os-ef128-pass3 hybrid (RRF)             c=16       431 q/s  p50  35.980 ms  p90  49.998 ms  p99  63.634 ms  errors 0
+os-ef128-pass3 hybrid (weighted)        warm-up: p50 11.256, 11.226 ms
+os-ef128-pass3 hybrid (weighted)        c=1        123 q/s  p50   7.753 ms  p90  10.231 ms  p99  14.572 ms  errors 0
+os-ef128-pass3 hybrid (weighted)        c=4        336 q/s  p50  11.312 ms  p90  16.065 ms  p99  23.757 ms  errors 0
+os-ef128-pass3 hybrid (weighted)        c=16       436 q/s  p50  35.110 ms  p90  49.865 ms  p99  67.626 ms  errors 0
+os-ef128-pass3 similar items            warm-up: p50 13.937, 13.641 ms
+os-ef128-pass3 similar items            c=1        104 q/s  p50   9.542 ms  p90  11.119 ms  p99  13.123 ms  errors 0
+os-ef128-pass3 similar items            c=4        282 q/s  p50  13.669 ms  p90  18.476 ms  p99  23.181 ms  errors 0
+os-ef128-pass3 similar items            c=16       358 q/s  p50  43.892 ms  p90  59.072 ms  p99  67.785 ms  errors 0
+os-ef128-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef128-pass3.json
+job.batch/run-os-ef256 created
+os-ef256 vector                   warm-up: p50 8.505, 8.462 ms
+os-ef256 vector                   c=1        163 q/s  p50   6.048 ms  p90   7.130 ms  p99   8.807 ms  errors 0
+os-ef256 vector                   c=4        455 q/s  p50   8.486 ms  p90  11.443 ms  p99  14.317 ms  errors 0
+os-ef256 vector                   c=16       629 q/s  p50  24.528 ms  p90  34.473 ms  p99  45.879 ms  errors 0
+os-ef256 vector + filter          warm-up: p50 21.734, 21.979 ms
+os-ef256 vector + filter          c=1         65 q/s  p50  15.344 ms  p90  17.900 ms  p99  20.101 ms  errors 0
+os-ef256 vector + filter          c=4        180 q/s  p50  21.764 ms  p90  28.196 ms  p99  33.582 ms  errors 0
+os-ef256 vector + filter          c=16       208 q/s  p50  75.364 ms  p90 100.143 ms  p99 113.999 ms  errors 0
+os-ef256 hybrid (RRF)             warm-up: p50 11.485, 11.411 ms
+os-ef256 hybrid (RRF)             c=1        122 q/s  p50   7.753 ms  p90  10.285 ms  p99  14.787 ms  errors 0
+os-ef256 hybrid (RRF)             c=4        337 q/s  p50  11.234 ms  p90  16.066 ms  p99  23.858 ms  errors 0
+os-ef256 hybrid (RRF)             c=16       432 q/s  p50  35.803 ms  p90  50.080 ms  p99  67.954 ms  errors 0
+os-ef256 hybrid (weighted)        warm-up: p50 11.197, 11.483 ms
+os-ef256 hybrid (weighted)        c=1        125 q/s  p50   7.694 ms  p90   9.873 ms  p99  14.862 ms  errors 0
+os-ef256 hybrid (weighted)        c=4        338 q/s  p50  11.339 ms  p90  15.791 ms  p99  23.732 ms  errors 0
+os-ef256 hybrid (weighted)        c=16       436 q/s  p50  35.278 ms  p90  51.135 ms  p99  68.380 ms  errors 0
+os-ef256 similar items            warm-up: p50 18.245, 18.112 ms
+os-ef256 similar items            c=1         82 q/s  p50  12.228 ms  p90  14.433 ms  p99  17.509 ms  errors 0
+os-ef256 similar items            c=4        218 q/s  p50  17.863 ms  p90  23.826 ms  p99  29.928 ms  errors 0
+os-ef256 similar items            c=16       261 q/s  p50  60.041 ms  p90  82.262 ms  p99  93.780 ms  errors 0
+os-ef256 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef256.json
+job.batch/run-os-ef256-pass2 created
+os-ef256-pass2 vector                   warm-up: p50 8.521, 8.446 ms
+os-ef256-pass2 vector                   c=1        164 q/s  p50   6.013 ms  p90   7.047 ms  p99   8.668 ms  errors 0
+os-ef256-pass2 vector                   c=4        456 q/s  p50   8.530 ms  p90  11.274 ms  p99  14.202 ms  errors 0
+os-ef256-pass2 vector                   c=16       625 q/s  p50  24.148 ms  p90  36.244 ms  p99  45.225 ms  errors 0
+os-ef256-pass2 vector + filter          warm-up: p50 21.768, 21.524 ms
+os-ef256-pass2 vector + filter          c=1         66 q/s  p50  15.270 ms  p90  17.592 ms  p99  19.705 ms  errors 0
+os-ef256-pass2 vector + filter          c=4        181 q/s  p50  21.571 ms  p90  28.427 ms  p99  35.377 ms  errors 0
+os-ef256-pass2 vector + filter          c=16       208 q/s  p50  77.111 ms  p90  99.322 ms  p99 113.062 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             warm-up: p50 11.212, 11.463 ms
+os-ef256-pass2 hybrid (RRF)             c=1        122 q/s  p50   7.832 ms  p90  10.214 ms  p99  14.981 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             c=4        332 q/s  p50  11.374 ms  p90  16.491 ms  p99  23.869 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             c=16       434 q/s  p50  35.270 ms  p90  50.433 ms  p99  68.174 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        warm-up: p50 11.388, 11.041 ms
+os-ef256-pass2 hybrid (weighted)        c=1        123 q/s  p50   7.785 ms  p90  10.178 ms  p99  15.044 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        c=4        337 q/s  p50  11.352 ms  p90  15.898 ms  p99  23.603 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        c=16       436 q/s  p50  35.129 ms  p90  51.633 ms  p99  71.065 ms  errors 0
+os-ef256-pass2 similar items            warm-up: p50 18.156, 17.807 ms
+os-ef256-pass2 similar items            c=1         81 q/s  p50  12.381 ms  p90  14.535 ms  p99  17.073 ms  errors 0
+os-ef256-pass2 similar items            c=4        217 q/s  p50  17.980 ms  p90  23.817 ms  p99  29.115 ms  errors 0
+os-ef256-pass2 similar items            c=16       260 q/s  p50  59.845 ms  p90  82.306 ms  p99  93.397 ms  errors 0
+os-ef256-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef256-pass2.json
+job.batch/run-os-ef256-pass3 created
+os-ef256-pass3 vector                   warm-up: p50 8.599, 8.496 ms
+os-ef256-pass3 vector                   c=1        160 q/s  p50   6.131 ms  p90   7.299 ms  p99   8.872 ms  errors 0
+os-ef256-pass3 vector                   c=4        455 q/s  p50   8.547 ms  p90  11.405 ms  p99  14.311 ms  errors 0
+os-ef256-pass3 vector                   c=16       626 q/s  p50  24.563 ms  p90  35.326 ms  p99  44.241 ms  errors 0
+os-ef256-pass3 vector + filter          warm-up: p50 21.754, 21.822 ms
+os-ef256-pass3 vector + filter          c=1         65 q/s  p50  15.359 ms  p90  17.864 ms  p99  20.209 ms  errors 0
+os-ef256-pass3 vector + filter          c=4        177 q/s  p50  22.209 ms  p90  28.873 ms  p99  34.856 ms  errors 0
+os-ef256-pass3 vector + filter          c=16       201 q/s  p50  78.963 ms  p90 104.589 ms  p99 119.603 ms  errors 0
+os-ef256-pass3 hybrid (RRF)             warm-up: p50 11.615, 11.485 ms
+os-ef256-pass3 hybrid (RRF)             c=1        121 q/s  p50   7.927 ms  p90  10.352 ms  p99  14.611 ms  errors 0
+os-ef256-pass3 hybrid (RRF)             c=4        335 q/s  p50  11.385 ms  p90  15.951 ms  p99  22.769 ms  errors 0
+os-ef256-pass3 hybrid (RRF)             c=16       431 q/s  p50  35.087 ms  p90  52.088 ms  p99  70.552 ms  errors 0
+os-ef256-pass3 hybrid (weighted)        warm-up: p50 11.246, 11.199 ms
+os-ef256-pass3 hybrid (weighted)        c=1        123 q/s  p50   7.811 ms  p90   9.937 ms  p99  15.059 ms  errors 0
+os-ef256-pass3 hybrid (weighted)        c=4        336 q/s  p50  11.290 ms  p90  16.225 ms  p99  22.895 ms  errors 0
+os-ef256-pass3 hybrid (weighted)        c=16       433 q/s  p50  34.890 ms  p90  51.203 ms  p99  68.615 ms  errors 0
+os-ef256-pass3 similar items            warm-up: p50 18.271, 17.851 ms
+os-ef256-pass3 similar items            c=1         79 q/s  p50  12.627 ms  p90  15.012 ms  p99  17.360 ms  errors 0
+os-ef256-pass3 similar items            c=4        214 q/s  p50  18.131 ms  p90  24.001 ms  p99  30.889 ms  errors 0
+os-ef256-pass3 similar items            c=16       262 q/s  p50  60.170 ms  p90  80.649 ms  p99  91.458 ms  errors 0
+os-ef256-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef256-pass3.json
+job.batch/run-os-ef512 created
+os-ef512 vector                   warm-up: p50 12.105, 12.185 ms
+os-ef512 vector                   c=1        117 q/s  p50   8.504 ms  p90   9.856 ms  p99  11.444 ms  errors 0
+os-ef512 vector                   c=4        321 q/s  p50  12.134 ms  p90  16.073 ms  p99  19.911 ms  errors 0
+os-ef512 vector                   c=16       411 q/s  p50  37.933 ms  p90  52.115 ms  p99  61.563 ms  errors 0
+os-ef512 vector + filter          warm-up: p50 34.681, 34.613 ms
+os-ef512 vector + filter          c=1         40 q/s  p50  24.800 ms  p90  29.054 ms  p99  34.605 ms  errors 0
+os-ef512 vector + filter          c=4        114 q/s  p50  34.660 ms  p90  43.835 ms  p99  53.145 ms  errors 0
+os-ef512 vector + filter          c=16       123 q/s  p50 128.431 ms  p90 176.746 ms  p99 192.141 ms  errors 0
+os-ef512 hybrid (RRF)             warm-up: p50 11.396, 11.456 ms
+os-ef512 hybrid (RRF)             c=1        121 q/s  p50   7.948 ms  p90  10.132 ms  p99  15.454 ms  errors 0
+os-ef512 hybrid (RRF)             c=4        334 q/s  p50  11.336 ms  p90  16.062 ms  p99  22.919 ms  errors 0
+os-ef512 hybrid (RRF)             c=16       431 q/s  p50  35.638 ms  p90  50.861 ms  p99  67.390 ms  errors 0
+os-ef512 hybrid (weighted)        warm-up: p50 11.359, 11.476 ms
+os-ef512 hybrid (weighted)        c=1        125 q/s  p50   7.685 ms  p90  10.105 ms  p99  14.722 ms  errors 0
+os-ef512 hybrid (weighted)        c=4        338 q/s  p50  11.296 ms  p90  15.919 ms  p99  22.941 ms  errors 0
+os-ef512 hybrid (weighted)        c=16       434 q/s  p50  35.504 ms  p90  50.486 ms  p99  66.827 ms  errors 0
+os-ef512 similar items            warm-up: p50 25.800, 25.445 ms
+os-ef512 similar items            c=1         57 q/s  p50  17.688 ms  p90  20.735 ms  p99  23.364 ms  errors 0
+os-ef512 similar items            c=4        154 q/s  p50  25.365 ms  p90  33.026 ms  p99  41.477 ms  errors 0
+os-ef512 similar items            c=16       176 q/s  p50  89.762 ms  p90 118.975 ms  p99 134.599 ms  errors 0
+os-ef512 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef512.json
+job.batch/run-os-ef512-pass2 created
+os-ef512-pass2 vector                   warm-up: p50 12.258, 11.938 ms
+os-ef512-pass2 vector                   c=1        115 q/s  p50   8.651 ms  p90  10.104 ms  p99  12.589 ms  errors 0
+os-ef512-pass2 vector                   c=4        320 q/s  p50  12.103 ms  p90  16.371 ms  p99  20.150 ms  errors 0
+os-ef512-pass2 vector                   c=16       413 q/s  p50  37.613 ms  p90  53.723 ms  p99  65.458 ms  errors 0
+os-ef512-pass2 vector + filter          warm-up: p50 34.598, 34.886 ms
+os-ef512-pass2 vector + filter          c=1         40 q/s  p50  24.761 ms  p90  28.875 ms  p99  31.047 ms  errors 0
+os-ef512-pass2 vector + filter          c=4        115 q/s  p50  34.457 ms  p90  44.015 ms  p99  52.685 ms  errors 0
+os-ef512-pass2 vector + filter          c=16       122 q/s  p50 131.013 ms  p90 179.171 ms  p99 194.555 ms  errors 0
+os-ef512-pass2 hybrid (RRF)             warm-up: p50 11.246, 11.488 ms
+os-ef512-pass2 hybrid (RRF)             c=1        123 q/s  p50   7.687 ms  p90  10.252 ms  p99  14.645 ms  errors 0
+os-ef512-pass2 hybrid (RRF)             c=4        332 q/s  p50  11.406 ms  p90  16.189 ms  p99  23.268 ms  errors 0
+os-ef512-pass2 hybrid (RRF)             c=16       431 q/s  p50  35.027 ms  p90  51.583 ms  p99  69.800 ms  errors 0
+os-ef512-pass2 hybrid (weighted)        warm-up: p50 11.395, 11.097 ms
+os-ef512-pass2 hybrid (weighted)        c=1        124 q/s  p50   7.760 ms  p90   9.902 ms  p99  14.781 ms  errors 0
+os-ef512-pass2 hybrid (weighted)        c=4        338 q/s  p50  11.354 ms  p90  16.118 ms  p99  22.514 ms  errors 0
+os-ef512-pass2 hybrid (weighted)        c=16       435 q/s  p50  35.364 ms  p90  50.445 ms  p99  64.959 ms  errors 0
+os-ef512-pass2 similar items            warm-up: p50 25.793, 25.687 ms
+os-ef512-pass2 similar items            c=1         57 q/s  p50  17.741 ms  p90  20.913 ms  p99  22.869 ms  errors 0
+os-ef512-pass2 similar items            c=4        154 q/s  p50  25.610 ms  p90  32.766 ms  p99  41.158 ms  errors 0
+os-ef512-pass2 similar items            c=16       176 q/s  p50  90.392 ms  p90 118.580 ms  p99 133.835 ms  errors 0
+os-ef512-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef512-pass2.json
+job.batch/run-os-ef512-pass3 created
+os-ef512-pass3 vector                   warm-up: p50 12.315, 12.098 ms
+os-ef512-pass3 vector                   c=1        117 q/s  p50   8.493 ms  p90   9.975 ms  p99  11.963 ms  errors 0
+os-ef512-pass3 vector                   c=4        318 q/s  p50  12.138 ms  p90  16.370 ms  p99  21.115 ms  errors 0
+os-ef512-pass3 vector                   c=16       415 q/s  p50  37.245 ms  p90  54.242 ms  p99  65.569 ms  errors 0
+os-ef512-pass3 vector + filter          warm-up: p50 34.501, 36.068 ms
+os-ef512-pass3 vector + filter          c=1         41 q/s  p50  24.662 ms  p90  28.403 ms  p99  31.525 ms  errors 0
+os-ef512-pass3 vector + filter          c=4        114 q/s  p50  34.912 ms  p90  43.940 ms  p99  50.174 ms  errors 0
+os-ef512-pass3 vector + filter          c=16       121 q/s  p50 132.766 ms  p90 175.246 ms  p99 195.375 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             warm-up: p50 11.196, 11.364 ms
+os-ef512-pass3 hybrid (RRF)             c=1        124 q/s  p50   7.726 ms  p90  10.032 ms  p99  14.908 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             c=4        334 q/s  p50  11.385 ms  p90  15.918 ms  p99  23.419 ms  errors 0
+os-ef512-pass3 hybrid (RRF)             c=16       430 q/s  p50  35.052 ms  p90  52.440 ms  p99  68.938 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        warm-up: p50 11.295, 11.172 ms
+os-ef512-pass3 hybrid (weighted)        c=1        124 q/s  p50   7.686 ms  p90  10.049 ms  p99  14.770 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        c=4        339 q/s  p50  11.254 ms  p90  15.859 ms  p99  23.440 ms  errors 0
+os-ef512-pass3 hybrid (weighted)        c=16       436 q/s  p50  34.955 ms  p90  51.056 ms  p99  67.946 ms  errors 0
+os-ef512-pass3 similar items            warm-up: p50 25.375, 24.846 ms
+os-ef512-pass3 similar items            c=1         57 q/s  p50  17.669 ms  p90  20.775 ms  p99  23.286 ms  errors 0
+os-ef512-pass3 similar items            c=4        155 q/s  p50  25.302 ms  p90  33.224 ms  p99  40.662 ms  errors 0
+os-ef512-pass3 similar items            c=16       176 q/s  p50  91.144 ms  p90 116.134 ms  p99 135.811 ms  errors 0
+os-ef512-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef512-pass3.json
+job.batch/writes-os created
+os       insert one     c=1        239 docs/s  p50    3.981 ms  p90    5.634 ms  p99    8.215 ms  errors 0
+os       insert one     c=4        840 docs/s  p50    4.302 ms  p90    7.137 ms  p99   11.101 ms  errors 0
+os       insert one     c=16      2226 docs/s  p50    6.415 ms  p90   11.072 ms  p99   20.199 ms  errors 0
+os       insert batch   c=1       1371 docs/s  p50   60.052 ms  p90   70.119 ms  p99   93.100 ms  errors 0
+os       insert batch   c=4       3521 docs/s  p50   91.775 ms  p90  136.285 ms  p99  244.902 ms  errors 0
+os       insert batch   c=16      2942 docs/s  p50  522.866 ms  p90  683.504 ms  p99  794.695 ms  errors 0
+os       update one     c=1        224 docs/s  p50    3.981 ms  p90    6.394 ms  p99   12.457 ms  errors 0
+os       update one     c=4        814 docs/s  p50    4.380 ms  p90    7.397 ms  p99   12.056 ms  errors 0
+os       update one     c=16      2139 docs/s  p50    6.378 ms  p90   12.218 ms  p99   23.305 ms  errors 0
+os       visible        written in p50 6.8 ms, found after p50 629.7 ms  p90 1020.3 ms  max 1162.5 ms
+wrote /data/compare/writes-os.json
+os       deleted 68630 written documents and put back 19080 ratings in 15.6 s
+pod/redpanda condition met
+job.batch/stream-os created
+os       topic docs-os-1794800612, 4 partitions; 1000000 documents before
+os       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 24 ms  p90 34 ms  p99 42 ms  max 75 ms (read p50 19 ms)
+os       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 24 ms  p90 34 ms  p99 51 ms  max 83 ms (read p50 18 ms)
+os       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 28 ms  p90 39 ms  p99 82 ms  max 142 ms (read p50 19 ms)
+os       2000/s           produced 60000 in 30.0 s; written 60000 in 30.0 s (1998/s); lag p50 36 ms  p90 76 ms  p99 222 ms  max 374 ms (read p50 20 ms)
+os       flat out         produced 20000 in 0.9 s; written 20000 in 6.4 s (3130/s); lag p50 3070 ms  p90 4906 ms  p99 5514 ms  max 5532 ms (read p50 2519 ms)
+os       before the crash produced 10000 in 6.4 s; written 5057 in 6.4 s (790/s); lag p50 61 ms  p90 161 ms  p99 240 ms  max 285 ms (read p50 27 ms)
+os       after the crash   resumed in 2.3 s: 528 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-os.json
+os       deleted 142500 streamed documents in 3.4 s
+pod "os-0" deleted from sharded-1m namespace
+pod "os-1" deleted from sharded-1m namespace
+service/solr created
+pod/solr-0 created
+pod/solr-0 condition met
+pod/solr-1 created
+pod/solr-1 condition met
+job.batch/load-solr created
+solr: index created in 4.9 s
+solr: 25000 documents sent, 12 s
+solr: 50000 documents sent, 24 s
+solr: 75000 documents sent, 33 s
+solr: 100000 documents sent, 42 s
+solr: 125000 documents sent, 53 s
+solr: 150000 documents sent, 63 s
+solr: 175000 documents sent, 75 s
+solr: 200000 documents sent, 86 s
+solr: 225000 documents sent, 96 s
+solr: 250000 documents sent, 108 s
+solr: 275000 documents sent, 120 s
+solr: 300000 documents sent, 130 s
+solr: 325000 documents sent, 141 s
+solr: 350000 documents sent, 152 s
+solr: 375000 documents sent, 163 s
+solr: 400000 documents sent, 173 s
+solr: 425000 documents sent, 182 s
+solr: 450000 documents sent, 195 s
+solr: 475000 documents sent, 206 s
+solr: 500000 documents sent, 219 s
+solr: 525000 documents sent, 231 s
+solr: 550000 documents sent, 243 s
+solr: 575000 documents sent, 257 s
+solr: 600000 documents sent, 268 s
+solr: 625000 documents sent, 278 s
+solr: 650000 documents sent, 290 s
+solr: 675000 documents sent, 306 s
+solr: 700000 documents sent, 317 s
+solr: 725000 documents sent, 329 s
+solr: 750000 documents sent, 341 s
+solr: 775000 documents sent, 354 s
+solr: 800000 documents sent, 368 s
+solr: 825000 documents sent, 384 s
+solr: 850000 documents sent, 400 s
+solr: 875000 documents sent, 415 s
+solr: 900000 documents sent, 425 s
+solr: 925000 documents sent, 443 s
+solr: 950000 documents sent, 460 s
+solr: 975000 documents sent, 474 s
+solr: 1000000 documents sent, 498 s
+solr: 1000000 documents (11.8 GB of JSON) sent in 503.1 s
+solr: searchable after 3.9 s more, merged in 763.9 s; 1270.9 s in all
+wrote /data/compare/load-solr.json
+job.batch/run-solr created
+solr     bm25                     warm-up: p50 7.678, 6.854, 5.893, 5.334 ms
+solr     bm25                     c=1        325 q/s  p50   2.897 ms  p90   4.177 ms  p99   6.547 ms  errors 0
+solr     bm25                     c=4       1010 q/s  p50   3.513 ms  p90   6.162 ms  p99  10.595 ms  errors 0
+solr     bm25                     c=16      1729 q/s  p50   8.070 ms  p90  15.849 ms  p99  27.567 ms  errors 0
+solr     bm25 + filter            warm-up: p50 4.567, 3.707, 3.392 ms
+solr     bm25 + filter            c=1        410 q/s  p50   2.283 ms  p90   3.152 ms  p99   5.145 ms  errors 0
+solr     bm25 + filter            c=4       1063 q/s  p50   3.469 ms  p90   5.490 ms  p99   8.806 ms  errors 0
+solr     bm25 + filter            c=16      1566 q/s  p50   8.942 ms  p90  17.380 ms  p99  30.715 ms  errors 0
+solr     vector                   warm-up: p50 7.447, 6.474, 6.476 ms
+solr     vector                   c=1        242 q/s  p50   3.997 ms  p90   4.645 ms  p99   6.700 ms  errors 0
+solr     vector                   c=4        547 q/s  p50   6.929 ms  p90  10.101 ms  p99  13.518 ms  errors 0
+solr     vector                   c=16       757 q/s  p50  19.578 ms  p90  32.034 ms  p99  49.462 ms  errors 0
+solr     vector + filter          warm-up: p50 14.340, 14.197 ms
+solr     vector + filter          c=1        135 q/s  p50   6.725 ms  p90   7.900 ms  p99  30.347 ms  errors 0
+solr     vector + filter          c=4        320 q/s  p50  11.289 ms  p90  15.874 ms  p99  50.467 ms  errors 0
+solr     vector + filter          c=16       362 q/s  p50  41.685 ms  p90  64.795 ms  p99  99.141 ms  errors 0
+solr     hybrid (RRF)             warm-up: p50 11.212, 10.843 ms
+solr     hybrid (RRF)             c=1        140 q/s  p50   6.566 ms  p90  10.282 ms  p99  15.753 ms  errors 0
+solr     hybrid (RRF)             c=4        316 q/s  p50  11.624 ms  p90  19.651 ms  p99  29.252 ms  errors 0
+solr     hybrid (RRF)             c=16       384 q/s  p50  36.731 ms  p90  70.847 ms  p99 117.403 ms  errors 0
+solr     hybrid (weighted)        warm-up: p50 13.756, 11.961, 12.220 ms
+solr     hybrid (weighted)        c=1        111 q/s  p50   7.737 ms  p90  15.374 ms  p99  23.631 ms  errors 0
+solr     hybrid (weighted)        c=4        265 q/s  p50  13.079 ms  p90  25.912 ms  p99  41.463 ms  errors 0
+solr     hybrid (weighted)        c=16       282 q/s  p50  45.237 ms  p90 106.386 ms  p99 213.027 ms  errors 0
+solr     boosted (bm25 × decay)   warm-up: p50 10.770, 10.576 ms
+solr     boosted (bm25 × decay)   c=1        121 q/s  p50   6.346 ms  p90  18.374 ms  p99  30.869 ms  errors 0
+solr     boosted (bm25 × decay)   c=4        294 q/s  p50  10.354 ms  p90  29.682 ms  p99  56.000 ms  errors 0
+solr     boosted (bm25 × decay)   c=16       322 q/s  p50  33.244 ms  p90 115.264 ms  p99 232.213 ms  errors 0
+solr     facet                    warm-up: p50 4.171, 3.797 ms
+solr     facet                    c=1        337 q/s  p50   2.278 ms  p90   4.620 ms  p99  13.863 ms  errors 0
+solr     facet                    c=4       1004 q/s  p50   3.117 ms  p90   6.797 ms  p99  18.632 ms  errors 0
+solr     facet                    c=16      1322 q/s  p50   8.976 ms  p90  23.249 ms  p99  59.729 ms  errors 0
+solr     key lookup               warm-up: p50 1.598, 1.578 ms
+solr     key lookup               c=1        821 q/s  p50   1.218 ms  p90   1.438 ms  p99   1.713 ms  errors 0
+solr     key lookup               c=4       2855 q/s  p50   1.359 ms  p90   1.786 ms  p99   2.357 ms  errors 0
+solr     key lookup               c=16      5459 q/s  p50   2.681 ms  p90   4.643 ms  p99   7.234 ms  errors 0
+solr     phrase                   warm-up: p50 3.116, 2.916 ms
+solr     phrase                   c=1        492 q/s  p50   1.889 ms  p90   2.643 ms  p99   3.722 ms  errors 0
+solr     phrase                   c=4       1364 q/s  p50   2.680 ms  p90   4.202 ms  p99   6.567 ms  errors 0
+solr     phrase                   c=16      2045 q/s  p50   6.920 ms  p90  12.837 ms  p99  22.850 ms  errors 0
+solr     typo                     warm-up: p50 29.171, 28.324 ms
+solr     typo                     c=1         53 q/s  p50  17.723 ms  p90  28.040 ms  p99  44.127 ms  errors 0
+solr     typo                     c=4        130 q/s  p50  28.991 ms  p90  48.234 ms  p99  76.132 ms  errors 0
+solr     typo                     c=16       138 q/s  p50 103.713 ms  p90 204.612 ms  p99 353.631 ms  errors 0
+solr     prefix                   warm-up: p50 3.324, 3.172 ms
+solr     prefix                   c=1        453 q/s  p50   2.099 ms  p90   2.744 ms  p99   3.986 ms  errors 0
+solr     prefix                   c=4       1222 q/s  p50   3.078 ms  p90   4.611 ms  p99   6.918 ms  errors 0
+solr     prefix                   c=16      1839 q/s  p50   7.774 ms  p90  14.146 ms  p99  23.397 ms  errors 0
+solr     similar items            warm-up: p50 10.796, 10.153 ms
+solr     similar items            c=1        146 q/s  p50   6.362 ms  p90   7.080 ms  p99   9.543 ms  errors 0
+solr     similar items            c=4        350 q/s  p50  10.296 ms  p90  14.886 ms  p99  28.781 ms  errors 0
+solr     similar items            c=16       463 q/s  p50  31.772 ms  p90  48.504 ms  p99  74.678 ms  errors 0
+solr     sql aggregate            warm-up: p50 121.928, 110.712 ms
+solr     sql aggregate            c=1         16 q/s  p50  60.803 ms  p90  75.633 ms  p99  92.237 ms  errors 0
+solr     sql aggregate            c=4         40 q/s  p50  98.028 ms  p90 129.328 ms  p99 165.487 ms  errors 0
+solr     sql aggregate            c=16        50 q/s  p50 322.977 ms  p90 455.500 ms  p99 597.521 ms  errors 0
+solr     result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr.json
+job.batch/run-solr-pass2 created
+solr-pass2 bm25                     warm-up: p50 3.263, 3.107 ms
+solr-pass2 bm25                     c=1        433 q/s  p50   2.123 ms  p90   2.995 ms  p99   5.117 ms  errors 0
+solr-pass2 bm25                     c=4       1156 q/s  p50   3.213 ms  p90   4.996 ms  p99   8.160 ms  errors 0
+solr-pass2 bm25                     c=16      1426 q/s  p50   9.612 ms  p90  19.504 ms  p99  35.180 ms  errors 0
+solr-pass2 bm25 + filter            warm-up: p50 3.474, 3.340 ms
+solr-pass2 bm25 + filter            c=1        408 q/s  p50   2.297 ms  p90   3.151 ms  p99   5.163 ms  errors 0
+solr-pass2 bm25 + filter            c=4       1070 q/s  p50   3.450 ms  p90   5.351 ms  p99   8.362 ms  errors 0
+solr-pass2 bm25 + filter            c=16      1622 q/s  p50   8.694 ms  p90  16.492 ms  p99  28.984 ms  errors 0
+solr-pass2 vector                   warm-up: p50 6.110, 5.983 ms
+solr-pass2 vector                   c=1        261 q/s  p50   3.757 ms  p90   4.201 ms  p99   5.231 ms  errors 0
+solr-pass2 vector                   c=4        615 q/s  p50   6.260 ms  p90   8.452 ms  p99  11.153 ms  errors 0
+solr-pass2 vector                   c=16       679 q/s  p50  21.619 ms  p90  37.323 ms  p99  56.528 ms  errors 0
+solr-pass2 vector + filter          warm-up: p50 11.356, 13.089, 12.551 ms
+solr-pass2 vector + filter          c=1        131 q/s  p50   7.011 ms  p90   8.304 ms  p99  30.437 ms  errors 0
+solr-pass2 vector + filter          c=4        342 q/s  p50  10.654 ms  p90  14.770 ms  p99  45.198 ms  errors 0
+solr-pass2 vector + filter          c=16       379 q/s  p50  39.037 ms  p90  62.144 ms  p99 105.088 ms  errors 0
+solr-pass2 hybrid (RRF)             warm-up: p50 11.891, 14.006, 13.772 ms
+solr-pass2 hybrid (RRF)             c=1        112 q/s  p50   8.087 ms  p90  14.006 ms  p99  21.414 ms  errors 0
+solr-pass2 hybrid (RRF)             c=4        293 q/s  p50  12.060 ms  p90  22.403 ms  p99  36.383 ms  errors 0
+solr-pass2 hybrid (RRF)             c=16       335 q/s  p50  41.041 ms  p90  85.444 ms  p99 137.835 ms  errors 0
+solr-pass2 hybrid (weighted)        warm-up: p50 13.392, 14.249 ms
+solr-pass2 hybrid (weighted)        c=1        102 q/s  p50   8.332 ms  p90  16.259 ms  p99  27.482 ms  errors 0
+solr-pass2 hybrid (weighted)        c=4        279 q/s  p50  12.334 ms  p90  24.448 ms  p99  38.960 ms  errors 0
+solr-pass2 hybrid (weighted)        c=16       311 q/s  p50  42.113 ms  p90  95.192 ms  p99 163.108 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   warm-up: p50 12.205, 12.114 ms
+solr-pass2 boosted (bm25 × decay)   c=1         99 q/s  p50   7.868 ms  p90  21.883 ms  p99  38.879 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   c=4        248 q/s  p50  12.516 ms  p90  35.522 ms  p99  63.089 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   c=16       285 q/s  p50  36.763 ms  p90 132.140 ms  p99 245.117 ms  errors 0
+solr-pass2 facet                    warm-up: p50 3.136, 3.047 ms
+solr-pass2 facet                    c=1        355 q/s  p50   2.095 ms  p90   4.688 ms  p99  11.944 ms  errors 0
+solr-pass2 facet                    c=4        933 q/s  p50   3.267 ms  p90   7.430 ms  p99  21.228 ms  errors 0
+solr-pass2 facet                    c=16      1530 q/s  p50   7.965 ms  p90  19.437 ms  p99  49.729 ms  errors 0
+solr-pass2 key lookup               warm-up: p50 1.401, 1.398 ms
+solr-pass2 key lookup               c=1        774 q/s  p50   1.276 ms  p90   1.528 ms  p99   1.941 ms  errors 0
+solr-pass2 key lookup               c=4       2725 q/s  p50   1.401 ms  p90   1.903 ms  p99   2.611 ms  errors 0
+solr-pass2 key lookup               c=16      5312 q/s  p50   2.780 ms  p90   4.753 ms  p99   7.081 ms  errors 0
+solr-pass2 phrase                   warm-up: p50 2.869, 2.793 ms
+solr-pass2 phrase                   c=1        478 q/s  p50   1.922 ms  p90   2.719 ms  p99   4.058 ms  errors 0
+solr-pass2 phrase                   c=4       1291 q/s  p50   2.822 ms  p90   4.517 ms  p99   7.226 ms  errors 0
+solr-pass2 phrase                   c=16      1982 q/s  p50   7.067 ms  p90  13.350 ms  p99  23.766 ms  errors 0
+solr-pass2 typo                     warm-up: p50 28.133, 28.099 ms
+solr-pass2 typo                     c=1         54 q/s  p50  17.526 ms  p90  27.443 ms  p99  41.445 ms  errors 0
+solr-pass2 typo                     c=4        132 q/s  p50  28.358 ms  p90  46.516 ms  p99  70.491 ms  errors 0
+solr-pass2 typo                     c=16       136 q/s  p50 105.924 ms  p90 199.554 ms  p99 336.128 ms  errors 0
+solr-pass2 prefix                   warm-up: p50 3.129, 3.125 ms
+solr-pass2 prefix                   c=1        448 q/s  p50   2.111 ms  p90   2.821 ms  p99   4.148 ms  errors 0
+solr-pass2 prefix                   c=4       1203 q/s  p50   3.118 ms  p90   4.775 ms  p99   6.878 ms  errors 0
+solr-pass2 prefix                   c=16      1836 q/s  p50   7.798 ms  p90  14.453 ms  p99  24.024 ms  errors 0
+solr-pass2 similar items            warm-up: p50 15.914, 9.647, 9.678 ms
+solr-pass2 similar items            c=1        148 q/s  p50   6.274 ms  p90   7.004 ms  p99  10.457 ms  errors 0
+solr-pass2 similar items            c=4        358 q/s  p50  10.255 ms  p90  14.033 ms  p99  22.094 ms  errors 0
+solr-pass2 similar items            c=16       429 q/s  p50  34.190 ms  p90  55.517 ms  p99  84.106 ms  errors 0
+solr-pass2 sql aggregate            warm-up: p50 84.688, 80.307 ms
+solr-pass2 sql aggregate            c=1         18 q/s  p50  53.809 ms  p90  64.478 ms  p99  81.644 ms  errors 0
+solr-pass2 sql aggregate            c=4         47 q/s  p50  83.673 ms  p90 107.845 ms  p99 137.453 ms  errors 0
+solr-pass2 sql aggregate            c=16        55 q/s  p50 284.613 ms  p90 432.768 ms  p99 561.000 ms  errors 0
+solr-pass2 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-pass2.json
+job.batch/run-solr-pass3 created
+solr-pass3 bm25                     warm-up: p50 3.116, 3.127 ms
+solr-pass3 bm25                     c=1        448 q/s  p50   2.065 ms  p90   2.918 ms  p99   4.620 ms  errors 0
+solr-pass3 bm25                     c=4       1100 q/s  p50   3.305 ms  p90   5.420 ms  p99   9.018 ms  errors 0
+solr-pass3 bm25                     c=16      1688 q/s  p50   8.381 ms  p90  15.645 ms  p99  28.176 ms  errors 0
+solr-pass3 bm25 + filter            warm-up: p50 3.489, 3.451 ms
+solr-pass3 bm25 + filter            c=1        412 q/s  p50   2.275 ms  p90   3.105 ms  p99   5.137 ms  errors 0
+solr-pass3 bm25 + filter            c=4       1063 q/s  p50   3.503 ms  p90   5.442 ms  p99   8.420 ms  errors 0
+solr-pass3 bm25 + filter            c=16      1622 q/s  p50   8.730 ms  p90  16.364 ms  p99  28.431 ms  errors 0
+solr-pass3 vector                   warm-up: p50 6.219, 6.259 ms
+solr-pass3 vector                   c=1        250 q/s  p50   3.928 ms  p90   4.407 ms  p99   5.532 ms  errors 0
+solr-pass3 vector                   c=4        572 q/s  p50   6.699 ms  p90   9.390 ms  p99  13.262 ms  errors 0
+solr-pass3 vector                   c=16       750 q/s  p50  19.677 ms  p90  32.330 ms  p99  50.289 ms  errors 0
+solr-pass3 vector + filter          warm-up: p50 12.505, 12.688 ms
+solr-pass3 vector + filter          c=1        129 q/s  p50   6.993 ms  p90   8.325 ms  p99  31.953 ms  errors 0
+solr-pass3 vector + filter          c=4        346 q/s  p50  10.584 ms  p90  14.248 ms  p99  44.938 ms  errors 0
+solr-pass3 vector + filter          c=16       376 q/s  p50  40.921 ms  p90  63.295 ms  p99  90.318 ms  errors 0
+solr-pass3 hybrid (RRF)             warm-up: p50 12.322, 11.869 ms
+solr-pass3 hybrid (RRF)             c=1        110 q/s  p50   7.984 ms  p90  14.345 ms  p99  24.277 ms  errors 0
+solr-pass3 hybrid (RRF)             c=4        249 q/s  p50  13.870 ms  p90  27.113 ms  p99  43.711 ms  errors 0
+solr-pass3 hybrid (RRF)             c=16       345 q/s  p50  39.273 ms  p90  83.134 ms  p99 138.350 ms  errors 0
+solr-pass3 hybrid (weighted)        warm-up: p50 13.706, 13.312 ms
+solr-pass3 hybrid (weighted)        c=1        111 q/s  p50   7.555 ms  p90  15.499 ms  p99  25.576 ms  errors 0
+solr-pass3 hybrid (weighted)        c=4        251 q/s  p50  13.716 ms  p90  27.435 ms  p99  46.545 ms  errors 0
+solr-pass3 hybrid (weighted)        c=16       316 q/s  p50  41.504 ms  p90  93.386 ms  p99 174.339 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   warm-up: p50 12.603, 11.826 ms
+solr-pass3 boosted (bm25 × decay)   c=1         99 q/s  p50   7.444 ms  p90  22.704 ms  p99  39.907 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=4        249 q/s  p50  12.415 ms  p90  34.609 ms  p99  64.978 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=16       284 q/s  p50  36.834 ms  p90 133.379 ms  p99 262.216 ms  errors 0
+solr-pass3 facet                    warm-up: p50 3.049, 3.072 ms
+solr-pass3 facet                    c=1        344 q/s  p50   2.200 ms  p90   4.767 ms  p99  11.895 ms  errors 0
+solr-pass3 facet                    c=4        964 q/s  p50   3.176 ms  p90   7.252 ms  p99  19.860 ms  errors 0
+solr-pass3 facet                    c=16      1513 q/s  p50   8.058 ms  p90  19.701 ms  p99  51.096 ms  errors 0
+solr-pass3 key lookup               warm-up: p50 1.408, 1.413 ms
+solr-pass3 key lookup               c=1        788 q/s  p50   1.270 ms  p90   1.480 ms  p99   1.777 ms  errors 0
+solr-pass3 key lookup               c=4       2739 q/s  p50   1.413 ms  p90   1.882 ms  p99   2.471 ms  errors 0
+solr-pass3 key lookup               c=16      5356 q/s  p50   2.773 ms  p90   4.659 ms  p99   6.998 ms  errors 0
+solr-pass3 phrase                   warm-up: p50 2.845, 2.836 ms
+solr-pass3 phrase                   c=1        460 q/s  p50   1.996 ms  p90   2.833 ms  p99   4.239 ms  errors 0
+solr-pass3 phrase                   c=4       1296 q/s  p50   2.817 ms  p90   4.474 ms  p99   7.069 ms  errors 0
+solr-pass3 phrase                   c=16      1963 q/s  p50   7.194 ms  p90  13.387 ms  p99  23.924 ms  errors 0
+solr-pass3 typo                     warm-up: p50 29.083, 28.388 ms
+solr-pass3 typo                     c=1         54 q/s  p50  17.710 ms  p90  27.607 ms  p99  45.112 ms  errors 0
+solr-pass3 typo                     c=4        130 q/s  p50  28.572 ms  p90  47.022 ms  p99  76.036 ms  errors 0
+solr-pass3 typo                     c=16       134 q/s  p50 107.709 ms  p90 201.997 ms  p99 340.742 ms  errors 0
+solr-pass3 prefix                   warm-up: p50 3.070, 3.133 ms
+solr-pass3 prefix                   c=1        425 q/s  p50   2.235 ms  p90   2.962 ms  p99   4.202 ms  errors 0
+solr-pass3 prefix                   c=4       1205 q/s  p50   3.114 ms  p90   4.620 ms  p99   6.894 ms  errors 0
+solr-pass3 prefix                   c=16      1805 q/s  p50   7.921 ms  p90  14.402 ms  p99  24.931 ms  errors 0
+solr-pass3 similar items            warm-up: p50 16.720, 9.787, 9.986 ms
+solr-pass3 similar items            c=1        145 q/s  p50   6.432 ms  p90   7.182 ms  p99  10.363 ms  errors 0
+solr-pass3 similar items            c=4        354 q/s  p50  10.284 ms  p90  13.904 ms  p99  20.111 ms  errors 0
+solr-pass3 similar items            c=16       409 q/s  p50  35.464 ms  p90  58.330 ms  p99  88.318 ms  errors 0
+solr-pass3 sql aggregate            warm-up: p50 84.667, 79.961 ms
+solr-pass3 sql aggregate            c=1         18 q/s  p50  54.757 ms  p90  69.235 ms  p99  79.569 ms  errors 0
+solr-pass3 sql aggregate            c=4         49 q/s  p50  82.081 ms  p90 104.016 ms  p99 121.810 ms  errors 0
+solr-pass3 sql aggregate            c=16        57 q/s  p50 281.528 ms  p90 410.070 ms  p99 528.406 ms  errors 0
+solr-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-pass3.json
+job.batch/run-solr-ef128 created
+solr-ef128 vector                   warm-up: p50 7.266, 7.596 ms
+solr-ef128 vector                   c=1        216 q/s  p50   4.541 ms  p90   5.216 ms  p99   6.588 ms  errors 0
+solr-ef128 vector                   c=4        478 q/s  p50   7.905 ms  p90  11.311 ms  p99  16.296 ms  errors 0
+solr-ef128 vector                   c=16       615 q/s  p50  24.425 ms  p90  39.927 ms  p99  58.584 ms  errors 0
+solr-ef128 vector + filter          warm-up: p50 17.077, 16.757 ms
+solr-ef128 vector + filter          c=1        102 q/s  p50   9.247 ms  p90  10.498 ms  p99  31.150 ms  errors 0
+solr-ef128 vector + filter          c=4        261 q/s  p50  14.309 ms  p90  19.053 ms  p99  45.287 ms  errors 0
+solr-ef128 vector + filter          c=16       271 q/s  p50  57.305 ms  p90  89.452 ms  p99 116.434 ms  errors 0
+solr-ef128 hybrid (RRF)             warm-up: p50 12.184, 12.108 ms
+solr-ef128 hybrid (RRF)             c=1        108 q/s  p50   8.146 ms  p90  14.921 ms  p99  25.987 ms  errors 0
+solr-ef128 hybrid (RRF)             c=4        260 q/s  p50  13.683 ms  p90  25.990 ms  p99  39.132 ms  errors 0
+solr-ef128 hybrid (RRF)             c=16       338 q/s  p50  39.706 ms  p90  87.204 ms  p99 140.357 ms  errors 0
+solr-ef128 hybrid (weighted)        warm-up: p50 13.513, 13.376 ms
+solr-ef128 hybrid (weighted)        c=1        109 q/s  p50   7.803 ms  p90  15.667 ms  p99  22.832 ms  errors 0
+solr-ef128 hybrid (weighted)        c=4        250 q/s  p50  13.760 ms  p90  27.279 ms  p99  47.603 ms  errors 0
+solr-ef128 hybrid (weighted)        c=16       312 q/s  p50  42.214 ms  p90  95.128 ms  p99 169.244 ms  errors 0
+solr-ef128 similar items            warm-up: p50 11.974, 12.535 ms
+solr-ef128 similar items            c=1        115 q/s  p50   7.991 ms  p90   9.513 ms  p99  14.352 ms  errors 0
+solr-ef128 similar items            c=4        302 q/s  p50  12.483 ms  p90  16.596 ms  p99  25.162 ms  errors 0
+solr-ef128 similar items            c=16       355 q/s  p50  42.149 ms  p90  65.353 ms  p99  96.820 ms  errors 0
+solr-ef128 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef128.json
+job.batch/run-solr-ef128-pass2 created
+solr-ef128-pass2 vector                   warm-up: p50 7.150, 7.521 ms
+solr-ef128-pass2 vector                   c=1        213 q/s  p50   4.582 ms  p90   5.290 ms  p99   7.180 ms  errors 0
+solr-ef128-pass2 vector                   c=4        497 q/s  p50   7.731 ms  p90  10.660 ms  p99  14.785 ms  errors 0
+solr-ef128-pass2 vector                   c=16       590 q/s  p50  25.560 ms  p90  42.810 ms  p99  63.092 ms  errors 0
+solr-ef128-pass2 vector + filter          warm-up: p50 17.205, 17.206 ms
+solr-ef128-pass2 vector + filter          c=1        101 q/s  p50   9.363 ms  p90  10.909 ms  p99  31.693 ms  errors 0
+solr-ef128-pass2 vector + filter          c=4        258 q/s  p50  14.368 ms  p90  19.496 ms  p99  48.545 ms  errors 0
+solr-ef128-pass2 vector + filter          c=16       276 q/s  p50  56.677 ms  p90  86.729 ms  p99 112.813 ms  errors 0
+solr-ef128-pass2 hybrid (RRF)             warm-up: p50 12.426, 14.312, 12.802, 12.714 ms
+solr-ef128-pass2 hybrid (RRF)             c=1        107 q/s  p50   8.329 ms  p90  15.011 ms  p99  24.614 ms  errors 0
+solr-ef128-pass2 hybrid (RRF)             c=4        271 q/s  p50  12.999 ms  p90  24.590 ms  p99  37.862 ms  errors 0
+solr-ef128-pass2 hybrid (RRF)             c=16       357 q/s  p50  37.249 ms  p90  81.448 ms  p99 138.218 ms  errors 0
+solr-ef128-pass2 hybrid (weighted)        warm-up: p50 15.075, 12.630, 14.498, 14.449 ms
+solr-ef128-pass2 hybrid (weighted)        c=1        107 q/s  p50   7.922 ms  p90  16.155 ms  p99  27.691 ms  errors 0
+solr-ef128-pass2 hybrid (weighted)        c=4        244 q/s  p50  13.988 ms  p90  27.778 ms  p99  49.983 ms  errors 0
+solr-ef128-pass2 hybrid (weighted)        c=16       310 q/s  p50  42.067 ms  p90  96.405 ms  p99 179.237 ms  errors 0
+solr-ef128-pass2 similar items            warm-up: p50 12.175, 13.011 ms
+solr-ef128-pass2 similar items            c=1        119 q/s  p50   7.897 ms  p90   8.949 ms  p99  11.189 ms  errors 0
+solr-ef128-pass2 similar items            c=4        286 q/s  p50  13.021 ms  p90  18.058 ms  p99  24.921 ms  errors 0
+solr-ef128-pass2 similar items            c=16       355 q/s  p50  41.674 ms  p90  65.544 ms  p99  91.295 ms  errors 0
+solr-ef128-pass2 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef128-pass2.json
+job.batch/run-solr-ef128-pass3 created
+solr-ef128-pass3 vector                   warm-up: p50 7.413, 7.844 ms
+solr-ef128-pass3 vector                   c=1        213 q/s  p50   4.582 ms  p90   5.262 ms  p99   7.219 ms  errors 0
+solr-ef128-pass3 vector                   c=4        479 q/s  p50   8.013 ms  p90  11.226 ms  p99  14.915 ms  errors 0
+solr-ef128-pass3 vector                   c=16       611 q/s  p50  24.508 ms  p90  41.219 ms  p99  59.755 ms  errors 0
+solr-ef128-pass3 vector + filter          warm-up: p50 17.018, 17.186 ms
+solr-ef128-pass3 vector + filter          c=1        101 q/s  p50   9.373 ms  p90  10.684 ms  p99  32.453 ms  errors 0
+solr-ef128-pass3 vector + filter          c=4        252 q/s  p50  14.840 ms  p90  20.105 ms  p99  46.216 ms  errors 0
+solr-ef128-pass3 vector + filter          c=16       271 q/s  p50  56.694 ms  p90  89.832 ms  p99 114.377 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             warm-up: p50 12.370, 12.121 ms
+solr-ef128-pass3 hybrid (RRF)             c=1        107 q/s  p50   8.172 ms  p90  15.137 ms  p99  25.976 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             c=4        255 q/s  p50  13.770 ms  p90  26.577 ms  p99  40.417 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             c=16       346 q/s  p50  38.665 ms  p90  83.058 ms  p99 151.285 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        warm-up: p50 13.435, 14.073 ms
+solr-ef128-pass3 hybrid (weighted)        c=1        106 q/s  p50   7.896 ms  p90  16.150 ms  p99  26.133 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        c=4        248 q/s  p50  13.632 ms  p90  27.894 ms  p99  45.133 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        c=16       314 q/s  p50  41.767 ms  p90  95.012 ms  p99 166.072 ms  errors 0
+solr-ef128-pass3 similar items            warm-up: p50 11.954, 12.169 ms
+solr-ef128-pass3 similar items            c=1        116 q/s  p50   8.000 ms  p90   9.422 ms  p99  14.456 ms  errors 0
+solr-ef128-pass3 similar items            c=4        306 q/s  p50  12.175 ms  p90  16.481 ms  p99  23.325 ms  errors 0
+solr-ef128-pass3 similar items            c=16       353 q/s  p50  41.861 ms  p90  66.956 ms  p99  99.622 ms  errors 0
+solr-ef128-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef128-pass3.json
+job.batch/run-solr-ef256 created
+solr-ef256 vector                   warm-up: p50 8.935, 9.324 ms
+solr-ef256 vector                   c=1        169 q/s  p50   5.782 ms  p90   6.766 ms  p99   8.367 ms  errors 0
+solr-ef256 vector                   c=4        410 q/s  p50   9.371 ms  p90  12.762 ms  p99  16.878 ms  errors 0
+solr-ef256 vector                   c=16       449 q/s  p50  34.198 ms  p90  54.754 ms  p99  73.284 ms  errors 0
+solr-ef256 vector + filter          warm-up: p50 20.326, 20.916 ms
+solr-ef256 vector + filter          c=1         70 q/s  p50  13.727 ms  p90  16.375 ms  p99  33.282 ms  errors 0
+solr-ef256 vector + filter          c=4        175 q/s  p50  21.299 ms  p90  30.892 ms  p99  44.184 ms  errors 0
+solr-ef256 vector + filter          c=16       212 q/s  p50  74.581 ms  p90 108.118 ms  p99 138.714 ms  errors 0
+solr-ef256 hybrid (RRF)             warm-up: p50 12.486, 13.009 ms
+solr-ef256 hybrid (RRF)             c=1        114 q/s  p50   7.702 ms  p90  14.171 ms  p99  19.598 ms  errors 0
+solr-ef256 hybrid (RRF)             c=4        294 q/s  p50  11.937 ms  p90  22.577 ms  p99  34.020 ms  errors 0
+solr-ef256 hybrid (RRF)             c=16       348 q/s  p50  38.718 ms  p90  83.013 ms  p99 142.491 ms  errors 0
+solr-ef256 hybrid (weighted)        warm-up: p50 13.355, 13.789 ms
+solr-ef256 hybrid (weighted)        c=1        104 q/s  p50   8.013 ms  p90  16.558 ms  p99  29.405 ms  errors 0
+solr-ef256 hybrid (weighted)        c=4        270 q/s  p50  12.815 ms  p90  25.549 ms  p99  40.696 ms  errors 0
+solr-ef256 hybrid (weighted)        c=16       316 q/s  p50  40.491 ms  p90  94.038 ms  p99 182.101 ms  errors 0
+solr-ef256 similar items            warm-up: p50 15.083, 16.022 ms
+solr-ef256 similar items            c=1         92 q/s  p50  10.416 ms  p90  12.631 ms  p99  16.650 ms  errors 0
+solr-ef256 similar items            c=4        244 q/s  p50  15.335 ms  p90  20.808 ms  p99  28.398 ms  errors 0
+solr-ef256 similar items            c=16       276 q/s  p50  54.366 ms  p90  84.310 ms  p99 113.937 ms  errors 0
+solr-ef256 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef256.json
+job.batch/run-solr-ef256-pass2 created
+solr-ef256-pass2 vector                   warm-up: p50 8.940, 9.558 ms
+solr-ef256-pass2 vector                   c=1        177 q/s  p50   5.589 ms  p90   6.349 ms  p99   8.048 ms  errors 0
+solr-ef256-pass2 vector                   c=4        396 q/s  p50   9.810 ms  p90  13.306 ms  p99  17.399 ms  errors 0
+solr-ef256-pass2 vector                   c=16       494 q/s  p50  30.438 ms  p90  49.285 ms  p99  73.484 ms  errors 0
+solr-ef256-pass2 vector + filter          warm-up: p50 25.031, 20.795, 20.848 ms
+solr-ef256-pass2 vector + filter          c=1         73 q/s  p50  13.344 ms  p90  15.245 ms  p99  31.839 ms  errors 0
+solr-ef256-pass2 vector + filter          c=4        167 q/s  p50  22.781 ms  p90  32.749 ms  p99  49.940 ms  errors 0
+solr-ef256-pass2 vector + filter          c=16       208 q/s  p50  75.603 ms  p90 109.516 ms  p99 144.785 ms  errors 0
+solr-ef256-pass2 hybrid (RRF)             warm-up: p50 12.173, 12.397 ms
+solr-ef256-pass2 hybrid (RRF)             c=1        112 q/s  p50   7.931 ms  p90  14.147 ms  p99  21.630 ms  errors 0
+solr-ef256-pass2 hybrid (RRF)             c=4        292 q/s  p50  12.394 ms  p90  22.472 ms  p99  34.408 ms  errors 0
+solr-ef256-pass2 hybrid (RRF)             c=16       344 q/s  p50  39.904 ms  p90  86.648 ms  p99 135.636 ms  errors 0
+solr-ef256-pass2 hybrid (weighted)        warm-up: p50 13.711, 13.390 ms
+solr-ef256-pass2 hybrid (weighted)        c=1        108 q/s  p50   7.923 ms  p90  15.783 ms  p99  26.844 ms  errors 0
+solr-ef256-pass2 hybrid (weighted)        c=4        273 q/s  p50  12.520 ms  p90  24.586 ms  p99  42.185 ms  errors 0
+solr-ef256-pass2 hybrid (weighted)        c=16       292 q/s  p50  44.879 ms  p90 102.566 ms  p99 176.980 ms  errors 0
+solr-ef256-pass2 similar items            warm-up: p50 16.247, 16.725 ms
+solr-ef256-pass2 similar items            c=1         93 q/s  p50  10.358 ms  p90  12.391 ms  p99  15.363 ms  errors 0
+solr-ef256-pass2 similar items            c=4        252 q/s  p50  15.136 ms  p90  20.045 ms  p99  25.692 ms  errors 0
+solr-ef256-pass2 similar items            c=16       292 q/s  p50  51.245 ms  p90  79.682 ms  p99 110.628 ms  errors 0
+solr-ef256-pass2 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef256-pass2.json
+job.batch/run-solr-ef256-pass3 created
+solr-ef256-pass3 vector                   warm-up: p50 9.189, 10.495, 9.365, 9.302 ms
+solr-ef256-pass3 vector                   c=1        170 q/s  p50   5.770 ms  p90   6.656 ms  p99   8.174 ms  errors 0
+solr-ef256-pass3 vector                   c=4        403 q/s  p50   9.584 ms  p90  13.057 ms  p99  17.310 ms  errors 0
+solr-ef256-pass3 vector                   c=16       503 q/s  p50  30.388 ms  p90  47.903 ms  p99  66.526 ms  errors 0
+solr-ef256-pass3 vector + filter          warm-up: p50 24.058, 20.348, 21.217 ms
+solr-ef256-pass3 vector + filter          c=1         72 q/s  p50  13.398 ms  p90  15.497 ms  p99  31.743 ms  errors 0
+solr-ef256-pass3 vector + filter          c=4        181 q/s  p50  20.982 ms  p90  27.643 ms  p99  51.353 ms  errors 0
+solr-ef256-pass3 vector + filter          c=16       211 q/s  p50  73.209 ms  p90 108.219 ms  p99 140.795 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             warm-up: p50 11.874, 12.126 ms
+solr-ef256-pass3 hybrid (RRF)             c=1        107 q/s  p50   8.210 ms  p90  15.081 ms  p99  24.625 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             c=4        293 q/s  p50  12.147 ms  p90  23.141 ms  p99  32.827 ms  errors 0
+solr-ef256-pass3 hybrid (RRF)             c=16       338 q/s  p50  40.552 ms  p90  85.562 ms  p99 142.654 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        warm-up: p50 14.035, 13.526 ms
+solr-ef256-pass3 hybrid (weighted)        c=1        110 q/s  p50   7.680 ms  p90  15.710 ms  p99  26.479 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        c=4        278 q/s  p50  12.350 ms  p90  24.394 ms  p99  41.358 ms  errors 0
+solr-ef256-pass3 hybrid (weighted)        c=16       294 q/s  p50  43.888 ms  p90 103.297 ms  p99 190.013 ms  errors 0
+solr-ef256-pass3 similar items            warm-up: p50 15.879, 16.448 ms
+solr-ef256-pass3 similar items            c=1         93 q/s  p50  10.242 ms  p90  12.127 ms  p99  16.444 ms  errors 0
+solr-ef256-pass3 similar items            c=4        251 q/s  p50  15.081 ms  p90  19.856 ms  p99  25.470 ms  errors 0
+solr-ef256-pass3 similar items            c=16       293 q/s  p50  51.652 ms  p90  79.002 ms  p99 105.084 ms  errors 0
+solr-ef256-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef256-pass3.json
+job.batch/run-solr-ef512 created
+solr-ef512 vector                   warm-up: p50 11.954, 11.831 ms
+solr-ef512 vector                   c=1        130 q/s  p50   7.665 ms  p90   8.648 ms  p99  10.692 ms  errors 0
+solr-ef512 vector                   c=4        286 q/s  p50  13.312 ms  p90  19.191 ms  p99  25.131 ms  errors 0
+solr-ef512 vector                   c=16       369 q/s  p50  42.058 ms  p90  62.707 ms  p99  82.423 ms  errors 0
+solr-ef512 vector + filter          warm-up: p50 31.550, 30.818 ms
+solr-ef512 vector + filter          c=1         49 q/s  p50  20.449 ms  p90  23.312 ms  p99  34.319 ms  errors 0
+solr-ef512 vector + filter          c=4        114 q/s  p50  33.474 ms  p90  47.505 ms  p99  58.035 ms  errors 0
+solr-ef512 vector + filter          c=16       132 q/s  p50 120.430 ms  p90 178.864 ms  p99 223.001 ms  errors 0
+solr-ef512 hybrid (RRF)             warm-up: p50 12.317, 12.402 ms
+solr-ef512 hybrid (RRF)             c=1        115 q/s  p50   7.586 ms  p90  13.768 ms  p99  21.429 ms  errors 0
+solr-ef512 hybrid (RRF)             c=4        271 q/s  p50  12.676 ms  p90  24.987 ms  p99  37.874 ms  errors 0
+solr-ef512 hybrid (RRF)             c=16       361 q/s  p50  37.066 ms  p90  81.764 ms  p99 130.217 ms  errors 0
+solr-ef512 hybrid (weighted)        warm-up: p50 12.885, 12.986 ms
+solr-ef512 hybrid (weighted)        c=1        107 q/s  p50   7.980 ms  p90  15.720 ms  p99  26.882 ms  errors 0
+solr-ef512 hybrid (weighted)        c=4        265 q/s  p50  12.968 ms  p90  26.006 ms  p99  42.765 ms  errors 0
+solr-ef512 hybrid (weighted)        c=16       302 q/s  p50  42.700 ms  p90 100.216 ms  p99 178.085 ms  errors 0
+solr-ef512 similar items            warm-up: p50 23.929, 21.215, 21.673 ms
+solr-ef512 similar items            c=1         69 q/s  p50  14.040 ms  p90  16.625 ms  p99  22.518 ms  errors 0
+solr-ef512 similar items            c=4        174 q/s  p50  21.724 ms  p90  30.368 ms  p99  49.603 ms  errors 0
+solr-ef512 similar items            c=16       203 q/s  p50  76.232 ms  p90 114.933 ms  p99 150.027 ms  errors 0
+solr-ef512 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef512.json
+job.batch/run-solr-ef512-pass2 created
+solr-ef512-pass2 vector                   warm-up: p50 11.848, 12.625 ms
+solr-ef512-pass2 vector                   c=1        132 q/s  p50   7.554 ms  p90   8.398 ms  p99   9.655 ms  errors 0
+solr-ef512-pass2 vector                   c=4        294 q/s  p50  13.153 ms  p90  18.150 ms  p99  23.357 ms  errors 0
+solr-ef512-pass2 vector                   c=16       388 q/s  p50  39.976 ms  p90  58.920 ms  p99  80.212 ms  errors 0
+solr-ef512-pass2 vector + filter          warm-up: p50 31.116, 30.343 ms
+solr-ef512-pass2 vector + filter          c=1         49 q/s  p50  20.283 ms  p90  23.675 ms  p99  32.285 ms  errors 0
+solr-ef512-pass2 vector + filter          c=4        110 q/s  p50  34.195 ms  p90  50.339 ms  p99  63.828 ms  errors 0
+solr-ef512-pass2 vector + filter          c=16       132 q/s  p50 120.170 ms  p90 174.482 ms  p99 209.273 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             warm-up: p50 12.386, 12.176 ms
+solr-ef512-pass2 hybrid (RRF)             c=1        111 q/s  p50   7.966 ms  p90  14.623 ms  p99  23.132 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             c=4        284 q/s  p50  12.165 ms  p90  23.669 ms  p99  33.603 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             c=16       327 q/s  p50  41.464 ms  p90  90.433 ms  p99 151.510 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        warm-up: p50 14.247, 13.760 ms
+solr-ef512-pass2 hybrid (weighted)        c=1        110 q/s  p50   7.809 ms  p90  15.681 ms  p99  22.729 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        c=4        268 q/s  p50  12.827 ms  p90  25.806 ms  p99  43.233 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        c=16       294 q/s  p50  44.309 ms  p90 102.260 ms  p99 186.913 ms  errors 0
+solr-ef512-pass2 similar items            warm-up: p50 21.650, 20.959 ms
+solr-ef512-pass2 similar items            c=1         71 q/s  p50  13.792 ms  p90  16.006 ms  p99  20.162 ms  errors 0
+solr-ef512-pass2 similar items            c=4        154 q/s  p50  24.545 ms  p90  35.170 ms  p99  46.277 ms  errors 0
+solr-ef512-pass2 similar items            c=16       202 q/s  p50  76.691 ms  p90 112.665 ms  p99 145.055 ms  errors 0
+solr-ef512-pass2 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef512-pass2.json
+job.batch/run-solr-ef512-pass3 created
+solr-ef512-pass3 vector                   warm-up: p50 11.795, 11.821 ms
+solr-ef512-pass3 vector                   c=1        132 q/s  p50   7.536 ms  p90   8.518 ms  p99   9.994 ms  errors 0
+solr-ef512-pass3 vector                   c=4        317 q/s  p50  12.266 ms  p90  16.361 ms  p99  21.069 ms  errors 0
+solr-ef512-pass3 vector                   c=16       345 q/s  p50  44.609 ms  p90  68.402 ms  p99  94.649 ms  errors 0
+solr-ef512-pass3 vector + filter          warm-up: p50 30.894, 30.858 ms
+solr-ef512-pass3 vector + filter          c=1         48 q/s  p50  20.869 ms  p90  24.594 ms  p99  32.138 ms  errors 0
+solr-ef512-pass3 vector + filter          c=4        115 q/s  p50  33.160 ms  p90  46.703 ms  p99  60.350 ms  errors 0
+solr-ef512-pass3 vector + filter          c=16       132 q/s  p50 119.180 ms  p90 177.002 ms  p99 227.714 ms  errors 0
+solr-ef512-pass3 hybrid (RRF)             warm-up: p50 12.037, 12.766 ms
+solr-ef512-pass3 hybrid (RRF)             c=1        112 q/s  p50   7.755 ms  p90  14.297 ms  p99  21.158 ms  errors 0
+solr-ef512-pass3 hybrid (RRF)             c=4        272 q/s  p50  12.847 ms  p90  25.032 ms  p99  40.153 ms  errors 0
+solr-ef512-pass3 hybrid (RRF)             c=16       356 q/s  p50  37.926 ms  p90  81.455 ms  p99 138.243 ms  errors 0
+solr-ef512-pass3 hybrid (weighted)        warm-up: p50 12.988, 13.386 ms
+solr-ef512-pass3 hybrid (weighted)        c=1        108 q/s  p50   8.031 ms  p90  15.619 ms  p99  25.859 ms  errors 0
+solr-ef512-pass3 hybrid (weighted)        c=4        255 q/s  p50  13.311 ms  p90  26.777 ms  p99  45.503 ms  errors 0
+solr-ef512-pass3 hybrid (weighted)        c=16       312 q/s  p50  42.404 ms  p90  94.357 ms  p99 179.507 ms  errors 0
+solr-ef512-pass3 similar items            warm-up: p50 20.930, 20.820 ms
+solr-ef512-pass3 similar items            c=1         69 q/s  p50  14.087 ms  p90  16.341 ms  p99  27.468 ms  errors 0
+solr-ef512-pass3 similar items            c=4        170 q/s  p50  22.444 ms  p90  29.661 ms  p99  41.729 ms  errors 0
+solr-ef512-pass3 similar items            c=16       198 q/s  p50  77.287 ms  p90 116.822 ms  p99 157.179 ms  errors 0
+solr-ef512-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef512-pass3.json
+job.batch/writes-solr created
+solr     insert one     c=1        537 docs/s  p50    1.831 ms  p90    2.390 ms  p99    3.898 ms  errors 0
+solr     insert one     c=4       1636 docs/s  p50    2.028 ms  p90    3.279 ms  p99    5.058 ms  errors 0
+solr     insert one     c=16      2456 docs/s  p50    5.175 ms  p90   12.050 ms  p99   23.461 ms  errors 0
+solr     insert batch   c=1       1574 docs/s  p50   38.920 ms  p90  119.911 ms  p99  160.971 ms  errors 0
+solr     insert batch   c=4       3782 docs/s  p50   68.946 ms  p90  156.252 ms  p99  387.077 ms  errors 0
+solr     insert batch   c=16      3617 docs/s  p50  406.509 ms  p90  595.732 ms  p99  769.452 ms  errors 0
+solr     update one     c=1        425 docs/s  p50    2.053 ms  p90    3.282 ms  p99    9.226 ms  errors 0
+solr     update one     c=4       1295 docs/s  p50    2.474 ms  p90    4.861 ms  p99   11.511 ms  errors 0
+solr     update one     c=16      2146 docs/s  p50    5.903 ms  p90   13.906 ms  p99   26.047 ms  errors 0
+solr     visible        written in p50 3.2 ms, found after p50 1012.6 ms  p90 1022.0 ms  max 1514.2 ms
+wrote /data/compare/writes-solr.json
+solr     deleted 83730 written documents and put back 20000 ratings in 14.1 s
+pod/redpanda condition met
+job.batch/stream-solr created
+solr     topic docs-solr-1794804848, 4 partitions; 1000000 documents before
+solr     250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 21 ms  p90 30 ms  p99 37 ms  max 49 ms (read p50 18 ms)
+solr     500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 19 ms  p90 28 ms  p99 34 ms  max 52 ms (read p50 16 ms)
+solr     1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 21 ms  p90 31 ms  p99 37 ms  max 59 ms (read p50 16 ms)
+solr     2000/s           produced 60000 in 30.0 s; written 60000 in 30.2 s (1990/s); lag p50 31 ms  p90 64 ms  p99 286 ms  max 470 ms (read p50 20 ms)
+solr     flat out         produced 20000 in 0.8 s; written 20000 in 5.9 s (3397/s); lag p50 2487 ms  p90 4374 ms  p99 5101 ms  max 5120 ms (read p50 1670 ms)
+solr     before the crash produced 10000 in 5.9 s; written 5010 in 5.9 s (848/s); lag p50 29 ms  p90 42 ms  p99 146 ms  max 228 ms (read p50 19 ms)
+solr     after the crash   resumed in 3.3 s: 1570 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-solr.json
+solr     deleted 142500 streamed documents in 2.4 s
+pod "solr-0" deleted from sharded-1m namespace
+pod "solr-1" deleted from sharded-1m namespace
+service/vespa created
+pod/vespa-0 created
+pod/vespa-1 created
+pod/vespa-2 created
+pod/vespa-0 condition met
+pod/vespa-1 condition met
+pod/vespa-2 condition met
+job.batch/load-vespa created
+vespa: index created in 1.0 s
+vespa: 25000 documents sent, 103 s
+vespa: 50000 documents sent, 169 s
+vespa: 75000 documents sent, 219 s
+vespa: 100000 documents sent, 257 s
+vespa: 125000 documents sent, 292 s
+vespa: 150000 documents sent, 323 s
+vespa: 175000 documents sent, 354 s
+vespa: 200000 documents sent, 386 s
+vespa: 225000 documents sent, 419 s
+vespa: 250000 documents sent, 449 s
+vespa: 275000 documents sent, 480 s
+vespa: 300000 documents sent, 512 s
+vespa: 325000 documents sent, 545 s
+vespa: 350000 documents sent, 578 s
+vespa: 375000 documents sent, 608 s
+vespa: 400000 documents sent, 639 s
+vespa: 425000 documents sent, 670 s
+vespa: 450000 documents sent, 703 s
+vespa: 475000 documents sent, 734 s
+vespa: 500000 documents sent, 766 s
+vespa: 525000 documents sent, 796 s
+vespa: 550000 documents sent, 827 s
+vespa: 575000 documents sent, 859 s
+vespa: 600000 documents sent, 890 s
+vespa: 625000 documents sent, 922 s
+vespa: 650000 documents sent, 953 s
+vespa: 675000 documents sent, 984 s
+vespa: 700000 documents sent, 1013 s
+vespa: 725000 documents sent, 1045 s
+vespa: 750000 documents sent, 1075 s
+vespa: 775000 documents sent, 1107 s
+vespa: 800000 documents sent, 1138 s
+vespa: 825000 documents sent, 1170 s
+vespa: 850000 documents sent, 1200 s
+vespa: 875000 documents sent, 1232 s
+vespa: 900000 documents sent, 1262 s
+vespa: 925000 documents sent, 1294 s
+vespa: 950000 documents sent, 1325 s
+vespa: 975000 documents sent, 1356 s
+vespa: 1000000 documents sent, 1385 s
+error: put: error sending request for url (http://vespa-0.vespa:8080/document/v1/doc/doc/docid/msmarco_v2.1_doc_00_4200386%233_5530243?timeout=180s)
+job load-vespa failed
+pod "vespa-0" deleted from sharded-1m namespace
+pod "vespa-1" deleted from sharded-1m namespace
+pod "vespa-2" deleted from sharded-1m namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-0 condition met
+pod/strata-1 condition met
+job.batch/run-strata-b created
+strata-b bm25                     warm-up: p50 2.619, 2.630 ms
+strata-b bm25                     c=1        400 q/s  p50   2.231 ms  p90   3.405 ms  p99   6.548 ms  errors 0
+strata-b bm25                     c=4       1316 q/s  p50   2.677 ms  p90   4.529 ms  p99   8.268 ms  errors 0
+strata-b bm25                     c=16      2270 q/s  p50   6.208 ms  p90  11.190 ms  p99  20.143 ms  errors 0
+strata-b bm25 + filter            warm-up: p50 3.062, 3.104 ms
+strata-b bm25 + filter            c=1        344 q/s  p50   2.601 ms  p90   3.993 ms  p99   7.787 ms  errors 0
+strata-b bm25 + filter            c=4       1187 q/s  p50   3.005 ms  p90   4.943 ms  p99   9.654 ms  errors 0
+strata-b bm25 + filter            c=16      2075 q/s  p50   6.816 ms  p90  12.078 ms  p99  22.016 ms  errors 0
+strata-b vector                   warm-up: p50 2.730, 2.728 ms
+strata-b vector                   c=1        428 q/s  p50   2.277 ms  p90   2.570 ms  p99   3.503 ms  errors 0
+strata-b vector                   c=4       1430 q/s  p50   2.678 ms  p90   3.439 ms  p99   4.696 ms  errors 0
+strata-b vector                   c=16      2385 q/s  p50   6.125 ms  p90  10.032 ms  p99  15.309 ms  errors 0
+strata-b vector + filter          warm-up: p50 2.805, 2.785 ms
+strata-b vector + filter          c=1        407 q/s  p50   2.390 ms  p90   2.665 ms  p99   4.096 ms  errors 0
+strata-b vector + filter          c=4       1369 q/s  p50   2.804 ms  p90   3.619 ms  p99   4.756 ms  errors 0
+strata-b vector + filter          c=16      2317 q/s  p50   6.393 ms  p90  10.117 ms  p99  15.721 ms  errors 0
+strata-b hybrid (RRF)             warm-up: p50 6.730, 6.623 ms
+strata-b hybrid (RRF)             c=1        194 q/s  p50   4.845 ms  p90   6.591 ms  p99  10.942 ms  errors 0
+strata-b hybrid (RRF)             c=4        562 q/s  p50   6.617 ms  p90  10.027 ms  p99  15.284 ms  errors 0
+strata-b hybrid (RRF)             c=16       775 q/s  p50  19.208 ms  p90  31.668 ms  p99  50.259 ms  errors 0
+strata-b hybrid (weighted)        warm-up: p50 6.626, 6.767 ms
+strata-b hybrid (weighted)        c=1        191 q/s  p50   4.900 ms  p90   6.823 ms  p99  10.941 ms  errors 0
+strata-b hybrid (weighted)        c=4        555 q/s  p50   6.697 ms  p90  10.024 ms  p99  15.432 ms  errors 0
+strata-b hybrid (weighted)        c=16       766 q/s  p50  19.435 ms  p90  31.946 ms  p99  49.815 ms  errors 0
+strata-b boosted (bm25 × decay)   warm-up: p50 5.185, 5.096 ms
+strata-b boosted (bm25 × decay)   c=1        225 q/s  p50   3.821 ms  p90   7.144 ms  p99  12.099 ms  errors 0
+strata-b boosted (bm25 × decay)   c=4        648 q/s  p50   5.162 ms  p90  10.235 ms  p99  19.674 ms  errors 0
+strata-b boosted (bm25 × decay)   c=16       889 q/s  p50  14.775 ms  p90  31.224 ms  p99  60.468 ms  errors 0
+strata-b facet                    warm-up: p50 2.025, 2.002 ms
+strata-b facet                    c=1        507 q/s  p50   1.934 ms  p90   2.268 ms  p99   3.244 ms  errors 0
+strata-b facet                    c=4       1930 q/s  p50   2.011 ms  p90   2.564 ms  p99   3.375 ms  errors 0
+strata-b facet                    c=16      3885 q/s  p50   3.791 ms  p90   5.801 ms  p99  10.325 ms  errors 0
+strata-b key lookup               warm-up: p50 1.031, 1.027 ms
+strata-b key lookup               c=1       1012 q/s  p50   1.082 ms  p90   1.324 ms  p99   1.725 ms  errors 0
+strata-b key lookup               c=4       4166 q/s  p50   1.030 ms  p90   1.308 ms  p99   1.722 ms  errors 0
+strata-b key lookup               c=16     12342 q/s  p50   1.298 ms  p90   1.946 ms  p99   2.730 ms  errors 0
+strata-b phrase                   warm-up: p50 1.822, 1.808 ms
+strata-b phrase                   c=1        549 q/s  p50   1.796 ms  p90   2.047 ms  p99   2.530 ms  errors 0
+strata-b phrase                   c=4       2141 q/s  p50   1.811 ms  p90   2.213 ms  p99   2.966 ms  errors 0
+strata-b phrase                   c=16      4619 q/s  p50   3.251 ms  p90   4.640 ms  p99   7.813 ms  errors 0
+strata-b typo                     warm-up: p50 25.011, 25.767 ms
+strata-b typo                     c=1         60 q/s  p50  16.461 ms  p90  24.701 ms  p99  29.302 ms  errors 0
+strata-b typo                     c=4        156 q/s  p50  25.438 ms  p90  38.462 ms  p99  52.971 ms  errors 0
+strata-b typo                     c=16       178 q/s  p50  85.733 ms  p90 146.208 ms  p99 195.727 ms  errors 0
+strata-b prefix                   warm-up: p50 2.861, 2.818 ms
+strata-b prefix                   c=1        391 q/s  p50   2.327 ms  p90   3.516 ms  p99   5.258 ms  errors 0
+strata-b prefix                   c=4       1283 q/s  p50   2.816 ms  p90   4.553 ms  p99   6.819 ms  errors 0
+strata-b prefix                   c=16      2274 q/s  p50   6.392 ms  p90  10.929 ms  p99  17.004 ms  errors 0
+strata-b similar items            warm-up: p50 3.635, 3.658 ms
+strata-b similar items            c=1        323 q/s  p50   3.014 ms  p90   3.399 ms  p99   4.969 ms  errors 0
+strata-b similar items            c=4       1035 q/s  p50   3.695 ms  p90   4.888 ms  p99   6.633 ms  errors 0
+strata-b similar items            c=16      1579 q/s  p50   9.481 ms  p90  15.107 ms  p99  21.983 ms  errors 0
+strata-b sql aggregate            warm-up: p50 12.108, 12.202 ms
+strata-b sql aggregate            c=1        131 q/s  p50   7.538 ms  p90   9.908 ms  p99  12.450 ms  errors 0
+strata-b sql aggregate            c=4        321 q/s  p50  12.015 ms  p90  17.686 ms  p99  23.435 ms  errors 0
+strata-b sql aggregate            c=16       354 q/s  p50  42.597 ms  p90  73.349 ms  p99 100.138 ms  errors 0
+strata-b result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-b.json
+job.batch/run-strata-b-pass2 created
+strata-b-pass2 bm25                     warm-up: p50 2.620, 2.656 ms
+strata-b-pass2 bm25                     c=1        406 q/s  p50   2.261 ms  p90   3.251 ms  p99   5.494 ms  errors 0
+strata-b-pass2 bm25                     c=4       1335 q/s  p50   2.657 ms  p90   4.391 ms  p99   8.209 ms  errors 0
+strata-b-pass2 bm25                     c=16      2383 q/s  p50   6.040 ms  p90  10.458 ms  p99  17.512 ms  errors 0
+strata-b-pass2 bm25 + filter            warm-up: p50 2.969, 2.969 ms
+strata-b-pass2 bm25 + filter            c=1        377 q/s  p50   2.394 ms  p90   3.554 ms  p99   6.888 ms  errors 0
+strata-b-pass2 bm25 + filter            c=4       1118 q/s  p50   3.056 ms  p90   5.379 ms  p99  11.356 ms  errors 0
+strata-b-pass2 bm25 + filter            c=16      2024 q/s  p50   7.012 ms  p90  12.520 ms  p99  22.646 ms  errors 0
+strata-b-pass2 vector                   warm-up: p50 2.761, 2.743 ms
+strata-b-pass2 vector                   c=1        418 q/s  p50   2.340 ms  p90   2.603 ms  p99   3.548 ms  errors 0
+strata-b-pass2 vector                   c=4       1386 q/s  p50   2.752 ms  p90   3.551 ms  p99   5.017 ms  errors 0
+strata-b-pass2 vector                   c=16      2356 q/s  p50   6.311 ms  p90   9.841 ms  p99  15.417 ms  errors 0
+strata-b-pass2 vector + filter          warm-up: p50 2.861, 2.816 ms
+strata-b-pass2 vector + filter          c=1        409 q/s  p50   2.401 ms  p90   2.650 ms  p99   3.513 ms  errors 0
+strata-b-pass2 vector + filter          c=4       1353 q/s  p50   2.837 ms  p90   3.655 ms  p99   4.997 ms  errors 0
+strata-b-pass2 vector + filter          c=16      2272 q/s  p50   6.570 ms  p90  10.161 ms  p99  15.126 ms  errors 0
+strata-b-pass2 hybrid (RRF)             warm-up: p50 6.766, 6.733 ms
+strata-b-pass2 hybrid (RRF)             c=1        193 q/s  p50   4.887 ms  p90   6.509 ms  p99  10.490 ms  errors 0
+strata-b-pass2 hybrid (RRF)             c=4        549 q/s  p50   6.795 ms  p90  10.111 ms  p99  15.897 ms  errors 0
+strata-b-pass2 hybrid (RRF)             c=16       723 q/s  p50  19.549 ms  p90  33.985 ms  p99  92.022 ms  errors 0
+strata-b-pass2 hybrid (weighted)        warm-up: p50 6.664, 6.754 ms
+strata-b-pass2 hybrid (weighted)        c=1        192 q/s  p50   4.912 ms  p90   6.551 ms  p99   9.848 ms  errors 0
+strata-b-pass2 hybrid (weighted)        c=4        551 q/s  p50   6.757 ms  p90  10.016 ms  p99  16.000 ms  errors 0
+strata-b-pass2 hybrid (weighted)        c=16       753 q/s  p50  19.548 ms  p90  32.370 ms  p99  54.356 ms  errors 0
+strata-b-pass2 boosted (bm25 × decay)   warm-up: p50 5.186, 5.226 ms
+strata-b-pass2 boosted (bm25 × decay)   c=1        225 q/s  p50   3.827 ms  p90   7.224 ms  p99  12.455 ms  errors 0
+strata-b-pass2 boosted (bm25 × decay)   c=4        637 q/s  p50   5.265 ms  p90  10.512 ms  p99  19.358 ms  errors 0
+strata-b-pass2 boosted (bm25 × decay)   c=16       883 q/s  p50  14.752 ms  p90  31.652 ms  p99  62.993 ms  errors 0
+strata-b-pass2 facet                    warm-up: p50 2.041, 2.054 ms
+strata-b-pass2 facet                    c=1        516 q/s  p50   1.905 ms  p90   2.215 ms  p99   2.963 ms  errors 0
+strata-b-pass2 facet                    c=4       1917 q/s  p50   2.021 ms  p90   2.576 ms  p99   3.517 ms  errors 0
+strata-b-pass2 facet                    c=16      3826 q/s  p50   3.926 ms  p90   5.827 ms  p99   9.186 ms  errors 0
+strata-b-pass2 key lookup               warm-up: p50 1.019, 1.013 ms
+strata-b-pass2 key lookup               c=1       1010 q/s  p50   1.088 ms  p90   1.319 ms  p99   1.676 ms  errors 0
+strata-b-pass2 key lookup               c=4       4186 q/s  p50   1.020 ms  p90   1.300 ms  p99   1.729 ms  errors 0
+strata-b-pass2 key lookup               c=16     12649 q/s  p50   1.280 ms  p90   1.879 ms  p99   2.871 ms  errors 0
+strata-b-pass2 phrase                   warm-up: p50 1.821, 1.820 ms
+strata-b-pass2 phrase                   c=1        547 q/s  p50   1.795 ms  p90   2.056 ms  p99   2.891 ms  errors 0
+strata-b-pass2 phrase                   c=4       2135 q/s  p50   1.812 ms  p90   2.230 ms  p99   3.041 ms  errors 0
+strata-b-pass2 phrase                   c=16      4479 q/s  p50   3.324 ms  p90   4.788 ms  p99   8.784 ms  errors 0
+strata-b-pass2 typo                     warm-up: p50 25.301, 25.276 ms
+strata-b-pass2 typo                     c=1         62 q/s  p50  16.453 ms  p90  24.762 ms  p99  29.804 ms  errors 0
+strata-b-pass2 typo                     c=4        159 q/s  p50  25.341 ms  p90  37.713 ms  p99  48.798 ms  errors 0
+strata-b-pass2 typo                     c=16       178 q/s  p50  83.866 ms  p90 150.852 ms  p99 203.505 ms  errors 0
+strata-b-pass2 prefix                   warm-up: p50 2.820, 2.773 ms
+strata-b-pass2 prefix                   c=1        394 q/s  p50   2.316 ms  p90   3.455 ms  p99   5.111 ms  errors 0
+strata-b-pass2 prefix                   c=4       1278 q/s  p50   2.822 ms  p90   4.634 ms  p99   6.969 ms  errors 0
+strata-b-pass2 prefix                   c=16      2257 q/s  p50   6.400 ms  p90  11.169 ms  p99  17.808 ms  errors 0
+strata-b-pass2 similar items            warm-up: p50 3.642, 3.639 ms
+strata-b-pass2 similar items            c=1        340 q/s  p50   2.879 ms  p90   3.240 ms  p99   4.552 ms  errors 0
+strata-b-pass2 similar items            c=4       1042 q/s  p50   3.683 ms  p90   4.823 ms  p99   6.355 ms  errors 0
+strata-b-pass2 similar items            c=16      1641 q/s  p50   9.052 ms  p90  14.467 ms  p99  20.942 ms  errors 0
+strata-b-pass2 sql aggregate            warm-up: p50 12.260, 12.041 ms
+strata-b-pass2 sql aggregate            c=1        131 q/s  p50   7.663 ms  p90   9.912 ms  p99  12.483 ms  errors 0
+strata-b-pass2 sql aggregate            c=4        323 q/s  p50  12.084 ms  p90  17.468 ms  p99  23.572 ms  errors 0
+strata-b-pass2 sql aggregate            c=16       355 q/s  p50  43.351 ms  p90  70.780 ms  p99  93.028 ms  errors 0
+strata-b-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-b-pass2.json
+job.batch/run-strata-b-pass3 created
+strata-b-pass3 bm25                     warm-up: p50 2.715, 2.628 ms
+strata-b-pass3 bm25                     c=1        422 q/s  p50   2.165 ms  p90   3.149 ms  p99   5.302 ms  errors 0
+strata-b-pass3 bm25                     c=4       1357 q/s  p50   2.615 ms  p90   4.263 ms  p99   7.931 ms  errors 0
+strata-b-pass3 bm25                     c=16      2362 q/s  p50   6.012 ms  p90  10.655 ms  p99  18.227 ms  errors 0
+strata-b-pass3 bm25 + filter            warm-up: p50 2.974, 2.957 ms
+strata-b-pass3 bm25 + filter            c=1        378 q/s  p50   2.396 ms  p90   3.583 ms  p99   6.346 ms  errors 0
+strata-b-pass3 bm25 + filter            c=4       1199 q/s  p50   2.984 ms  p90   4.895 ms  p99   9.163 ms  errors 0
+strata-b-pass3 bm25 + filter            c=16      2037 q/s  p50   6.942 ms  p90  12.459 ms  p99  22.347 ms  errors 0
+strata-b-pass3 vector                   warm-up: p50 2.744, 2.696 ms
+strata-b-pass3 vector                   c=1        424 q/s  p50   2.306 ms  p90   2.583 ms  p99   3.273 ms  errors 0
+strata-b-pass3 vector                   c=4       1410 q/s  p50   2.721 ms  p90   3.503 ms  p99   4.581 ms  errors 0
+strata-b-pass3 vector                   c=16      2361 q/s  p50   6.352 ms  p90   9.798 ms  p99  15.031 ms  errors 0
+strata-b-pass3 vector + filter          warm-up: p50 2.814, 2.838 ms
+strata-b-pass3 vector + filter          c=1        410 q/s  p50   2.390 ms  p90   2.674 ms  p99   3.511 ms  errors 0
+strata-b-pass3 vector + filter          c=4       1363 q/s  p50   2.812 ms  p90   3.656 ms  p99   4.932 ms  errors 0
+strata-b-pass3 vector + filter          c=16      2231 q/s  p50   6.644 ms  p90  10.486 ms  p99  16.486 ms  errors 0
+strata-b-pass3 hybrid (RRF)             warm-up: p50 6.823, 6.670 ms
+strata-b-pass3 hybrid (RRF)             c=1        193 q/s  p50   4.888 ms  p90   6.567 ms  p99  10.140 ms  errors 0
+strata-b-pass3 hybrid (RRF)             c=4        552 q/s  p50   6.783 ms  p90   9.909 ms  p99  15.838 ms  errors 0
+strata-b-pass3 hybrid (RRF)             c=16       681 q/s  p50  21.088 ms  p90  36.358 ms  p99  69.272 ms  errors 0
+strata-b-pass3 hybrid (weighted)        warm-up: p50 6.681, 6.717 ms
+strata-b-pass3 hybrid (weighted)        c=1        191 q/s  p50   4.913 ms  p90   6.671 ms  p99  10.825 ms  errors 0
+strata-b-pass3 hybrid (weighted)        c=4        554 q/s  p50   6.727 ms  p90  10.106 ms  p99  15.497 ms  errors 0
+strata-b-pass3 hybrid (weighted)        c=16       752 q/s  p50  19.673 ms  p90  32.739 ms  p99  53.399 ms  errors 0
+strata-b-pass3 boosted (bm25 × decay)   warm-up: p50 5.162, 5.188 ms
+strata-b-pass3 boosted (bm25 × decay)   c=1        226 q/s  p50   3.829 ms  p90   7.218 ms  p99  10.767 ms  errors 0
+strata-b-pass3 boosted (bm25 × decay)   c=4        646 q/s  p50   5.184 ms  p90  10.397 ms  p99  18.603 ms  errors 0
+strata-b-pass3 boosted (bm25 × decay)   c=16       892 q/s  p50  14.591 ms  p90  31.929 ms  p99  59.928 ms  errors 0
+strata-b-pass3 facet                    warm-up: p50 2.052, 2.047 ms
+strata-b-pass3 facet                    c=1        495 q/s  p50   1.992 ms  p90   2.297 ms  p99   2.961 ms  errors 0
+strata-b-pass3 facet                    c=4       1903 q/s  p50   2.033 ms  p90   2.587 ms  p99   3.524 ms  errors 0
+strata-b-pass3 facet                    c=16      3837 q/s  p50   3.898 ms  p90   5.760 ms  p99   9.622 ms  errors 0
+strata-b-pass3 key lookup               warm-up: p50 1.018, 1.035 ms
+strata-b-pass3 key lookup               c=1       1005 q/s  p50   1.089 ms  p90   1.341 ms  p99   1.686 ms  errors 0
+strata-b-pass3 key lookup               c=4       4178 q/s  p50   1.030 ms  p90   1.295 ms  p99   1.688 ms  errors 0
+strata-b-pass3 key lookup               c=16     12704 q/s  p50   1.279 ms  p90   1.869 ms  p99   2.652 ms  errors 0
+strata-b-pass3 phrase                   warm-up: p50 1.814, 1.842 ms
+strata-b-pass3 phrase                   c=1        546 q/s  p50   1.803 ms  p90   2.065 ms  p99   2.692 ms  errors 0
+strata-b-pass3 phrase                   c=4       2103 q/s  p50   1.844 ms  p90   2.267 ms  p99   3.069 ms  errors 0
+strata-b-pass3 phrase                   c=16      4455 q/s  p50   3.372 ms  p90   4.773 ms  p99   8.561 ms  errors 0
+strata-b-pass3 typo                     warm-up: p50 24.678, 25.578 ms
+strata-b-pass3 typo                     c=1         63 q/s  p50  16.066 ms  p90  22.981 ms  p99  28.799 ms  errors 0
+strata-b-pass3 typo                     c=4        160 q/s  p50  24.968 ms  p90  37.981 ms  p99  47.963 ms  errors 0
+strata-b-pass3 typo                     c=16       179 q/s  p50  84.059 ms  p90 146.844 ms  p99 200.096 ms  errors 0
+strata-b-pass3 prefix                   warm-up: p50 2.847, 2.798 ms
+strata-b-pass3 prefix                   c=1        385 q/s  p50   2.361 ms  p90   3.549 ms  p99   5.214 ms  errors 0
+strata-b-pass3 prefix                   c=4       1294 q/s  p50   2.790 ms  p90   4.544 ms  p99   6.961 ms  errors 0
+strata-b-pass3 prefix                   c=16      2268 q/s  p50   6.404 ms  p90  10.958 ms  p99  16.784 ms  errors 0
+strata-b-pass3 similar items            warm-up: p50 3.653, 3.702 ms
+strata-b-pass3 similar items            c=1        334 q/s  p50   2.931 ms  p90   3.251 ms  p99   4.477 ms  errors 0
+strata-b-pass3 similar items            c=4       1040 q/s  p50   3.682 ms  p90   4.848 ms  p99   6.448 ms  errors 0
+strata-b-pass3 similar items            c=16      1639 q/s  p50   9.065 ms  p90  14.419 ms  p99  21.139 ms  errors 0
+strata-b-pass3 sql aggregate            warm-up: p50 11.893, 12.059 ms
+strata-b-pass3 sql aggregate            c=1        130 q/s  p50   7.642 ms  p90  10.027 ms  p99  15.885 ms  errors 0
+strata-b-pass3 sql aggregate            c=4        319 q/s  p50  12.069 ms  p90  18.273 ms  p99  25.634 ms  errors 0
+strata-b-pass3 sql aggregate            c=16       354 q/s  p50  43.113 ms  p90  72.338 ms  p99  97.379 ms  errors 0
+strata-b-pass3 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-b-pass3.json
+job.batch/writes-strata created
+strata   insert one     c=1        326 docs/s  p50    2.936 ms  p90    3.953 ms  p99    5.188 ms  errors 0
+strata   insert one     c=4       1076 docs/s  p50    3.144 ms  p90    4.960 ms  p99   11.611 ms  errors 0
+strata   insert one     c=16      2157 docs/s  p50    4.757 ms  p90   11.762 ms  p99   69.613 ms  errors 0
+strata   insert batch   c=1       1446 docs/s  p50   54.724 ms  p90   94.367 ms  p99  126.298 ms  errors 0
+strata   insert batch   c=4       2582 docs/s  p50  115.704 ms  p90  263.835 ms  p99  523.673 ms  errors 0
+strata   insert batch   c=16      3921 docs/s  p50  338.701 ms  p90  663.913 ms  p99  989.545 ms  errors 0
+strata   update one     c=1        413 docs/s  p50    2.206 ms  p90    3.091 ms  p99    4.472 ms  errors 0
+strata   update one     c=4       1466 docs/s  p50    2.440 ms  p90    4.138 ms  p99    9.801 ms  errors 0
+strata   update one     c=16      5576 docs/s  p50    2.800 ms  p90    4.400 ms  p99    7.100 ms  errors 0
+strata   visible        written in p50 3.5 ms, found after p50 7.4 ms  p90 9.4 ms  max 91.5 ms
+wrote /data/compare/writes-strata.json
+strata   deleted 70830 written documents and put back 20000 ratings in 2.2 s
+pod/redpanda condition met
+job.batch/stream-strata created
+strata   topic docs-strata-1794807860, 4 partitions; 1000000 documents before
+strata   250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 23 ms  p90 35 ms  p99 67 ms  max 126 ms (read p50 19 ms)
+strata   500/s            produced 15000 in 30.0 s; written 15000 in 30.1 s (498/s); lag p50 25 ms  p90 38 ms  p99 110 ms  max 196 ms (read p50 18 ms)
+strata   1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (998/s); lag p50 30 ms  p90 62 ms  p99 131 ms  max 265 ms (read p50 19 ms)
+strata   2000/s           produced 60000 in 30.0 s; written 60000 in 30.3 s (1979/s); lag p50 177 ms  p90 510 ms  p99 1001 ms  max 1311 ms (read p50 61 ms)
+strata   flat out         produced 20000 in 0.7 s; written 20000 in 6.3 s (3189/s); lag p50 2148 ms  p90 5059 ms  p99 5588 ms  max 5613 ms (read p50 1684 ms)
+strata   before the crash produced 10000 in 6.3 s; written 5012 in 6.3 s (796/s); lag p50 41 ms  p90 218 ms  p99 463 ms  max 509 ms (read p50 22 ms)
+strata   after the crash   resumed in 2.0 s: 0 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-strata.json
+strata   deleted 142500 streamed documents in 5.0 s
+pod "strata-0" deleted from sharded-1m namespace
+pod "strata-1" deleted from sharded-1m namespace

@@ -249,6 +249,7 @@ These apps show what ChloeDB can do and are not part of its releases or
 their promises:
 
 - `chloedb-netops`, network operations on a simulated carrier network;
+- `chloedb-hn`, Hacker News searched, asked in sentences and completed as typed;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
 - `examples/parley`, a social network of LLM agents.

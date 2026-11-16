@@ -172,7 +172,7 @@ CI_JOBS = {
 NOTHING = re.compile(
     r"^("
     # The demo train (demos.yml).
-    r"chloedb-netops/|chloedb-swarm/|examples/feature-store/|examples/parley/"
+    r"chloedb-netops/|chloedb-hn/|chloedb-swarm/|examples/feature-store/|examples/parley/"
     # The other workflows; CI calls none of them.
     r"|\.github/workflows/(?!ci\.yml$)[^/]+\.ya?ml$"
     # Their scripts: door_check.py (doors.yml), nightly_report.py
@@ -386,6 +386,7 @@ def self_test():
     # The apps and packages.
     assert on(["chloedb-sheets/src/lib.rs"]) == {"any", "test:chloedb-sheets", "smoke", "smoke_sheets", "docs", "server"}
     assert on(["chloedb-netops/src/lib.rs"]) == set()
+    assert on(["chloedb-hn/src/nl.rs", "chloedb-hn/ui/view.js"]) == set()
     assert on(["examples/parley/parley/app.py", "examples/feature-store/featurestore.py"]) == set()
     assert on(["chloedb-netops/src/lib.rs", "chloedb-sheets/src/lib.rs"]) == {"any", "test:chloedb-sheets", "smoke", "smoke_sheets", "docs", "server"}
     assert on(["chloedb-crawl/src/lib.rs"]) == {"any", "test:chloedb-crawl", "smoke", "smoke_crawl", "docs", "server"}

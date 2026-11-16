@@ -1,6 +1,9 @@
-// Cloud: a ChloeDB cluster on Amazon EKS or DigitalOcean Kubernetes (DOKS),
-// planned from this page. The account's key is kept on this server (never
-// shown again, every change audited); the region's machines are drawn by
+// Cloud: a ChloeDB cluster on Amazon EKS, DigitalOcean Kubernetes (DOKS) or
+// Google Kubernetes Engine (GKE), planned from this page. The account's key
+// is kept on this server (never shown again, every change audited); Google
+// Cloud takes no key at all: the calls are made with the gcloud sign-in of
+// where this server runs (or its metadata server), and only the project is
+// kept. The region's machines are drawn by
 // price and memory with their live prices and the account's limit; the
 // plan lays the shards' copies on the nodes, prices them line by line,
 // says what would stop them, and hands over what makes the cluster (a
@@ -19,7 +22,7 @@ import { state } from "../data.js";
 
 export default {
   id: "cloud", title: "Cloud setup", icon: "cloud", group: "Change",
-  keywords: "cloud aws amazon eks digitalocean doks droplet kubernetes k8s credentials access key token region instance instances machine machines size sizes ec2 graviton price prices cost spot quota limit cloudformation template deploy",
+  keywords: "cloud aws amazon eks digitalocean doks droplet google gcp gke gcloud compute engine workload identity federation kubernetes k8s credentials access key token region instance instances machine machines size sizes ec2 graviton price prices cost spot quota limit cloudformation template deploy",
   render, onParams,
 };
 
@@ -75,7 +78,29 @@ const PROVIDERS = {
     asks: [["the regions", "GET /v2/regions"], ["the sizes and their prices", "GET /v2/sizes, /v2/kubernetes/options"], ["the account and its droplet limit", "GET /v2/account"]],
     trail: "Each call is made with that token, and counts against its rate limit.",
   },
+  gcp: {
+    name: "Google Cloud", k8s: "Google Kubernetes Engine (GKE)", base: "/v1/admin/gcp", keyPath: "/project",
+    // No key: the credentials are gcloud's (or the metadata server's), and
+    // the project is what this server keeps.
+    status: (st) => {
+      const c = st?.credentials;
+      if (!c || c.source === "none") return null;
+      return { ...c, credentials: c.source, source: st.saved ? "stored" : "environment", project: st.project?.id || null, projectFrom: st.project?.from || null, region: st.saved?.region || null, saved_ms: st.saved?.saved_ms, by: st.saved?.by };
+    },
+    regions: ["us-central1", "us-east1", "us-east4", "us-west1", "us-west2", "northamerica-northeast1", "europe-west1", "europe-west3", "europe-west4", "europe-north1", "asia-northeast1", "asia-southeast1", "australia-southeast1", "southamerica-east1"],
+    region: "us-central1", spot: true, cpus: [["any", "Any CPU"], ["intel", "Intel"], ["amd", "AMD"], ["either", "E2"]],
+    cpu: (m) => GCP_CPU[m.family] || "intel", filled: (m) => !m.burstable, cpuLabel: (m) => m.processor || m.family.toUpperCase(),
+    hollow: "hollow: shared-core E2", ringed: "N2 and N2D high-memory types of 2 to 8 vCPUs", hoursAMonth: 730,
+    check: "Check with Google Cloud", checkTitle: "Google's own answers, fetched now: the region, the machine type, GKE's version, the quotas, and which permissions the credentials hold. Makes nothing",
+    asks: [["the regions", "compute.regions.list"], ["the machine types of the region's zones", "compute.machineTypes.list"], ["their prices", "the Cloud Billing Catalog"], ["GKE's versions", "container serverConfig"], ["the project's quotas and networks", "compute.projects.get, compute.regions.get, compute.networks.list"]],
+    trail: "Each call is in the project's audit logs, made as that account.",
+  },
 };
+/** Which CPUs a Compute Engine family has (crate::gcp::catalog::FAMILIES). */
+const GCP_CPU = { e2: "either", n1: "intel", n2: "intel", n2d: "amd", c2: "intel", c2d: "amd", c3: "intel", c3d: "amd", t2d: "amd" };
+/** What deleting a made cluster deletes, after its volumes. */
+const DELETES = { aws: "the stack: the nodes, the EKS cluster and the network", digitalocean: "the DOKS cluster, its nodes and what it made", gcp: "the GKE cluster and its nodes" };
+const provName = (p) => PROVIDERS[p]?.name || p;
 
 function download(name, text, type = "application/json") {
   const a = h("a", { href: URL.createObjectURL(new Blob([text], { type })), download: name });
@@ -174,7 +199,7 @@ function render(page, r) {
     // The machine starts as the cheapest that gives each copy a GiB and
     // half a core (the server's crate::cloud::SMALLEST); the cluster
     // starts with no tables, and is kept until it is deleted.
-    form = { name: "search", machine: SMALLEST, nodes: 3, spot: false, ha: false, version: "", volume_gb: 10, shards: 2, replicas: 3, coordinators: 1, image: "", demo: false, delete_after: null, bring: [] };
+    form = { name: "search", machine: SMALLEST, nodes: 3, max_nodes: 0, regional: false, spot: false, ha: false, version: "", volume_gb: 10, shards: 2, replicas: 3, coordinators: 1, image: "", demo: false, delete_after: null, bring: [] };
     plan = null; planErr = null; checked = null; checking = false; seq++;
   }
   reset();
@@ -182,7 +207,7 @@ function render(page, r) {
   const key = () => P.status(status);
   const have = () => !!key();
   /** Whether the page may ask the cloud: a stored key, or the environment's once asked for. */
-  const may = () => have() && (key().source === "stored" || !!envAsked[prov]);
+  const may = () => have() && (prov !== "gcp" || !!key().project) && (key().source === "stored" || !!envAsked[prov]);
 
   switchProvider = (p) => {
     if (!PROVIDERS[p] || p === prov) return;
@@ -254,7 +279,9 @@ function render(page, r) {
   // ---------------------------------------------------------- the header
   function drawHead() {
     const k = key();
-    const label = !status ? null : k ? pill("ok", prov === "aws" ? (k.account ? `account ${k.account}` : "keys from the environment") : (k.account?.team ? `team ${k.account.team}` : "token from the environment")) : pill("pending", `no ${P.name} key`);
+    const label = !status ? null
+      : prov === "gcp" ? (k ? pill(k.project ? "ok" : "pending", k.project ? `project ${k.project}` : "signed in, no project") : pill("pending", "not signed in to Google Cloud"))
+      : k ? pill("ok", prov === "aws" ? (k.account ? `account ${k.account}` : "keys from the environment") : (k.account?.team ? `team ${k.account.team}` : "token from the environment")) : pill("pending", `no ${P.name} key`);
     clear(head, h("div", { class: "page-head" },
       h("div", {}, h("h1", {}, "Cloud setup", " ", experimental("Cloud setup")), h("p", {}, `Plan a new ChloeDB cluster on ${P.k8s}: machines with their prices, where the copies go, what it costs, and what makes it.`)),
       h("div", { class: "tools" },
@@ -264,6 +291,7 @@ function render(page, r) {
 
   // ---------------------------------------------------------- the key
   function drawCreds() {
+    if (prov === "gcp") { drawGoogle(); return; }
     const k = key();
     if (k && !editing) {
       const kept = status.file ? [h("dt", {}, "Kept in"), h("dd", { class: "mono small" }, status.file)] : [h("dt", {}, "Kept in"), h("dd", { class: "small" }, "memory only: this coordinator forgets it when it stops")];
@@ -341,7 +369,95 @@ function render(page, r) {
     if (!(core.isNarrow?.() || core.isPhone?.())) setTimeout(() => first.focus(), 0); // a phone would open its keyboard over the page
   }
 
+  /** Google Cloud: the sign-in this server's calls use (never a key), and the project it keeps. */
+  function drawGoogle() {
+    const k = key(), c = status?.credentials || {}, fed = status?.federation;
+    const signIn = "gcloud auth application-default login --impersonate-service-account NAME@PROJECT.iam.gserviceaccount.com";
+    // Workload identity federation: how a coordinator on a Kubernetes
+    // cluster outside Google Cloud acts as a service account, with no key.
+    const federation = fed ? h("details", { open: !k }, h("summary", { class: "small" }, fed.configured ? "How this cluster's federation was set up" : `From this cluster (${fed.namespace}/${fed.cluster}), with no key`),
+      h("div", { class: "stack", style: { marginTop: "6px" } },
+        h("div", { class: "small" }, "This server runs on Kubernetes outside Google Cloud. Google can trust the token Kubernetes gives its account, ", h("span", { class: "mono" }, `${fed.namespace}/${fed.account}`), ", through the workload identity pool ", h("span", { class: "mono" }, fed.pool), ", and let it act as a service account. Someone who may change the project's IAM runs these once, with kubectl pointed at this cluster; ChloeDB runs none of them:"),
+        cmds(fed.commands),
+        h("div", { class: "small dim" }, "The last command restarts the coordinators with their token in ", h("span", { class: "mono" }, fed.token_file), ". Set DEPLOYER to the service account that may make GKE clusters first."))) : null;
+    if (!k) {
+      clear(creds, card({
+        title: "Sign-in", sub: "no Google Cloud credentials where this server runs",
+        tools: [h("button", { class: "btn sm", onclick: () => load() }, icon("refresh"), "Check again")],
+        body: h("div", { class: "stack" },
+          c.refused ? h("div", { class: "error small" }, c.refused) : null,
+          fed ? federation : null,
+          h("div", {}, fed ? "Or, on a laptop: ChloeDB takes no service account key. Sign in with gcloud where the server runs, acting as a service account that may make GKE clusters:" : "ChloeDB takes no service account key. Sign in with gcloud where this server runs, acting as a service account that may make GKE clusters:"),
+          cmds([signIn]),
+          h("div", { class: "small dim" }, "Your own account needs the Service Account Token Creator role on that service account. On a Compute Engine VM or in a GKE pod with Workload Identity, the server uses the metadata server's account instead, with nothing to sign in."),
+          c.file ? h("div", { class: "small dim" }, "It reads ", h("span", { class: "mono" }, c.file), ".") : null),
+      }));
+      return;
+    }
+    const kept = status.file ? [h("dt", {}, "Project kept in"), h("dd", { class: "mono small" }, status.file)] : [h("dt", {}, "Project kept in"), h("dd", { class: "small" }, "memory only: this coordinator forgets it when it stops")];
+    const resizeHere = k.credentials === "metadata" && k.cluster ? h("button", { class: "btn sm", title: "The node pool of the GKE cluster this server runs in", onclick: () => resizeGke({ cluster: k.cluster, cloud_id: "", node_hour: null }) }, icon("server"), "This cluster's nodes…") : null;
+    const rows = [
+      h("dt", {}, "Calls as"), h("dd", {}, k.what || k.service_account || "–"),
+      k.file ? [h("dt", {}, k.kind === "external_account" ? "Federation" : "Sign-in"), h("dd", { class: "mono small" }, k.file)] : null,
+      k.token_file ? [h("dt", {}, "Token"), h("dd", {}, h("span", { class: "mono small" }, k.token_file.path), k.token_file.present ? null : h("span", { class: "small", style: { color: "var(--crit-ink)" } }, " · not there: the coordinators need gcpFederation"))] : null,
+      h("dt", {}, "Project"), h("dd", {}, k.project ? h("span", { class: "mono" }, k.project) : "none yet", k.projectFrom && k.projectFrom !== "stored" ? h("span", { class: "small dim" }, ` · from ${k.projectFrom}`) : null),
+      k.region ? [h("dt", {}, "Region"), h("dd", {}, k.region)] : null,
+      k.saved_ms ? [h("dt", {}, "Saved"), h("dd", {}, `${fmt.ago(k.saved_ms)} by ${k.by}`)] : null,
+      k.source === "stored" ? kept : null,
+    ];
+    if (!editing && k.project) {
+      clear(creds, card({
+        title: "Google Cloud", sub: k.credentials === "metadata" ? "the metadata server's account" : k.kind === "external_account" ? "workload identity federation, no key" : "gcloud's sign-in, no key",
+        tools: [
+          resizeHere,
+          h("button", { class: "btn sm", onclick: () => { editing = true; drawCreds(); } }, icon("edit"), k.source === "stored" ? "Change" : "Save the project here"),
+          k.source === "stored" ? h("button", { class: "btn sm danger", onclick: forget }, icon("trash"), "Forget") : null,
+        ],
+        body: h("div", { class: "stack" },
+          h("dl", { class: "kv" }, rows),
+          k.kind === "authorized_user" ? h("div", { class: "small", style: { color: "var(--warn-ink)" } }, "These are your own credentials, not a service account's: sign in again with --impersonate-service-account so that what this server does is done, and logged, as that account.") : null,
+          k.kind === "external_account" && !k.service_account ? h("div", { class: "small", style: { color: "var(--warn-ink)" } }, "The pool's principal calls Google itself, impersonating no service account: GKE and most of Compute Engine need roles granted to it directly.") : null,
+          h("div", { class: "small dim" }, k.kind === "external_account" ? "This server keeps no Google credentials: each call takes a short-lived token, exchanged for the one Kubernetes gives its account. Saving and forgetting the project are in the audit log." : "This server keeps no Google credentials: each call takes a short-lived token from the sign-in above. Saving and forgetting the project are in the audit log."),
+          federation),
+      }));
+      return;
+    }
+    const err = h("div", { class: "small", style: { color: "var(--crit-ink)" } });
+    const save = h("button", { class: "btn primary", type: "submit" }, icon("check"), "Check and save");
+    const cancel = editing && k.project ? h("button", { class: "btn", type: "button", onclick: () => { editing = false; drawCreds(); } }, "Cancel") : null;
+    const id = h("input", { class: "input mono", placeholder: "my-project", value: k.project || "", autocomplete: "off", spellcheck: "false" });
+    const reg = h("select", { class: "select" }, P.regions.map((x) => h("option", { value: x, selected: x === (k.region || region || P.region) }, x)));
+    const f = h("form", { class: "stack cloud-form", onsubmit: async (e) => {
+      e.preventDefault(); save.disabled = true; err.textContent = "";
+      try {
+        const res = await api(P.base + P.keyPath, { method: "PUT", body: { project: id.value.trim(), region: reg.value } });
+        toast(`Saved: the project ${res.saved?.project || id.value.trim()}`, "ok");
+        editing = false; regions = null; cat = null; region = res.saved?.region || reg.value; await load();
+      } catch (ex) { err.textContent = ex.message; }
+      save.disabled = false;
+    } },
+      h("label", { class: "stack cloud-field" }, h("span", { class: "small dim" }, "Project id"), id),
+      h("label", { class: "stack cloud-field" }, h("span", { class: "small dim" }, "Region"), reg),
+      err, h("div", { class: "row" }, save, cancel));
+    clear(creds, card({
+      title: "Google Cloud", sub: "the project to plan in",
+      body: h("div", { class: "stack" },
+        h("dl", { class: "kv" }, rows.slice(0, 4)),
+        f,
+        h("div", { class: "small dim" }, "Google checks that the sign-in may read the project (compute.projects.get) before it is kept. Only its id and region are kept here."),
+        h("details", {}, h("summary", { class: "small" }, "What the service account needs"),
+          h("div", { class: "small dim", style: { marginTop: "6px" } }, "This page reads: compute.regions.list, compute.machineTypes.list, compute.networks.list, container.clusters.getServerConfig and the Cloud Billing Catalog. Making and resizing clusters takes roles/container.admin (or container.clusters.create, get, list, update and delete) and roles/iam.serviceAccountUser on the nodes' service account."))),
+    }));
+    if (!(core.isNarrow?.() || core.isPhone?.())) setTimeout(() => id.focus(), 0);
+  }
+
   async function forget() {
+    if (prov === "gcp") {
+      const p = key()?.project;
+      if (!(await confirm({ title: `Forget the project ${p}?`, body: "This server forgets which project to plan in. The gcloud sign-in and Google Cloud do not change.", ok: "Forget", danger: true }))) return;
+      try { await api(P.base + P.keyPath, { method: "DELETE" }); toast(`Forgot the project ${p}`, "ok"); cat = null; plan = null; await load(); } catch (e) { toast(e.message, "bad"); }
+      return;
+    }
     const what = prov === "aws" ? "the AWS keys" : "the DigitalOcean token";
     if (!(await confirm({ title: `Forget ${what}?`, body: `This server deletes ${prov === "aws" ? "them" : "it"}. Nothing in the ${P.name} account changes.`, ok: "Forget", danger: true }))) return;
     try { await api(P.base + P.keyPath, { method: "DELETE" }); toast(`Forgot ${what}`, "ok"); cat = null; plan = null; await load(); } catch (e) { toast(e.message, "bad"); }
@@ -358,6 +474,22 @@ function render(page, r) {
   }
 
   function drawWhere() {
+    if (prov === "gcp" && have() && !key().project) { clear(where, card({ title: "Region and limits", body: empty("cloud", "No project yet", "Save the project to see the machine types of a region, their prices and the project's quotas.") })); return; }
+    if (have() && !may() && prov === "gcp") {
+      const k = key();
+      clear(where, card({
+        title: "Region and limits", sub: "nothing asked yet",
+        body: h("div", { class: "stack" },
+          h("div", {}, "This server may call Google Cloud as ", h("span", { class: "mono" }, k.service_account || k.what), ", in the project ", h("span", { class: "mono" }, k.project), ` (from ${k.projectFrom}). Opening this page asked Google nothing.`),
+          h("div", { class: "small dim" }, "Using it asks Google Cloud for:"),
+          h("ul", { class: "ro-casks small" }, P.asks.map(([what, call]) => h("li", {}, what, " ", h("span", { class: "mono dim" }, `(${call})`)))),
+          h("div", { class: "small dim" }, P.trail, " Nothing is made: making a cluster asks again, with its name typed."),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: () => { envAsked[prov] = true; load(); } }, `Use the project ${k.project}`),
+            h("button", { class: "btn", onclick: () => { editing = true; drawCreds(); } }, icon("edit"), "Save another project"))),
+      }));
+      return;
+    }
     if (have() && !may()) {
       const k = key();
       clear(where, card({
@@ -373,7 +505,7 @@ function render(page, r) {
       }));
       return;
     }
-    if (!have()) { clear(where, card({ title: "Region and limits", body: empty("cloud", `No ${P.name} key yet`, prov === "aws" ? "Save an access key to see the machines of a region, their prices and your account's quota." : "Save a token to see the sizes of a region, their prices and your account's droplet limit.") })); return; }
+    if (!have()) { clear(where, card({ title: "Region and limits", body: empty("cloud", prov === "gcp" ? "Not signed in to Google Cloud" : `No ${P.name} key yet`, prov === "gcp" ? "Sign in with gcloud where this server runs to see the machine types of a region, their prices and the project's quotas." : prov === "aws" ? "Save an access key to see the machines of a region, their prices and your account's quota." : "Save a token to see the sizes of a region, their prices and your account's droplet limit.") })); return; }
     const list = (regions || P.regions).map((x) => (typeof x === "string" ? { slug: x, name: x } : x));
     const sel = h("select", { class: "select", onchange: () => { region = sel.value; plan = null; checked = null; drawFound(); loadCatalog(false); } }, list.map((x) => h("option", { value: x.slug, selected: x.slug === region }, x.name === x.slug ? x.slug : `${x.name} (${x.slug})`)));
     const need = plan?.quota?.needs;
@@ -385,6 +517,21 @@ function render(page, r) {
           : need != null && spot === form.spot && need > have ? h("div", { class: "small" }, `The plan needs ${need}. `, quotaLink(spot)) : null);
       meters = [m("On-demand standard instances", cat.quota_vcpus, false), m("Spot standard instances", cat.spot_quota_vcpus, true)];
       prices = `${fmt.n(cat.machines.length)} machines, prices from AWS's price list ${fmt.ago(cat.at_ms)}. EKS ${usd(cat.eks_hour)}/h a cluster, gp3 ${usd(cat.gp3_gb_month, 3)} a GB-month, a public IPv4 address ${usd(cat.ipv4_hour)}/h.`;
+    } else if (cat && prov === "gcp") {
+      const link = h("a", { href: `https://console.cloud.google.com/iam-admin/quotas?project=${encodeURIComponent(cat.project)}`, target: "_blank", rel: "noopener" }, "Ask Google for more");
+      const q = (list, metric) => (list || []).find((x) => x.metric === metric);
+      const m = (label, quota, needs, unit) => {
+        const free = quota ? Math.max(0, quota.limit - quota.usage) : null;
+        return meter(label, free, needs, unit + " free", false, quota ? h("div", { class: "small dim" }, `${fmt.n(quota.usage)} of ${fmt.n(quota.limit)} used${needs ? `, the plan needs ${fmt.n(needs)}` : ""}${needs > free ? ". " : ""}`, needs > free ? link : null) : h("div", { class: "small dim" }, "not known"));
+      };
+      const pq = plan?.quota, nodesMost = Math.max(form.nodes, form.max_nodes || 0);
+      meters = [
+        pq ? m(`${pq.metric} in ${cat.region}`, q(cat.quotas, pq.metric), need, "vCPUs") : null,
+        m("CPUS_ALL_REGIONS", q(cat.project_quotas, "CPUS_ALL_REGIONS"), need, "vCPUs"),
+        m(`IN_USE_ADDRESSES in ${cat.region}`, q(cat.quotas, "IN_USE_ADDRESSES"), plan ? nodesMost : null, "addresses"),
+      ];
+      prices = [`${fmt.n(cat.machines.length)} machine types GKE takes here, ${cat.priced ? `prices from Google's price list ${fmt.ago(cat.at_ms)}` : "with no prices (the Cloud Billing Catalog did not answer)"}. GKE ${usd(cat.gke_hour, 2)}/h a cluster, balanced disks ${usd(cat.pd_balanced_gb_month, 2)} a GiB-month, a node's public IPv4 address ${usd(cat.ipv4_hour)}/h. GKE ${(cat.versions || []).slice(0, 3).join(", ")}, Regular channel, upgrades held 90 days.`,
+        cat.networks && !cat.networks.length ? " The project has no VPC network: make one (gcloud compute networks create default --subnet-mode=auto) before a cluster." : ""].join("");
     } else if (cat) {
       const free = cat.droplet_limit != null && cat.droplets != null ? cat.droplet_limit - cat.droplets : null;
       meters = [meter("Droplets", cat.droplet_limit, (cat.droplets || 0) + (need || 0), "allowed", false,
@@ -457,7 +604,7 @@ function render(page, r) {
   function tip(m) {
     return h("div", { class: "stack", style: { gap: "2px" } },
       h("b", {}, m.type, " · ", kindLabel(m.kind)),
-      h("div", {}, `${m.vcpu} vCPUs · ${gib(m.memory_gib)}${m.local_gb ? ` · ${fmt.n(m.local_gb)} GB ${prov === "aws" ? "local disk" : "disk"}` : ""}`),
+      h("div", {}, `${m.vcpu} vCPUs · ${gib(m.memory_gib)}${m.local_gb ? ` · ${fmt.n(m.local_gb)} GB ${prov === "digitalocean" ? "disk" : "local disk"}` : ""}`),
       h("div", {}, `${usd(m.usd_hour)}/h (${usd(m.usd_hour * P.hoursAMonth)} a month)${P.spot ? ` · spot ${usd(m.spot_hour)}/h` : ""}`),
       h("div", { class: "small dim" }, [m.processor || P.cpuLabel(m), m.network, `${m.max_pods} pods a node`].filter(Boolean).join(" · ")));
   }
@@ -479,7 +626,7 @@ function render(page, r) {
       { key: "price", label: filt.spot ? "Spot /h" : P.spot ? "On demand /h" : "Price /h", num: true, sort: price, render: (m) => usd(price(m)) },
       { key: "month", label: "A month", num: true, sort: price, render: (m) => usd(price(m) * H) },
       { key: "per", label: "$ / GiB-month", num: true, sort: (m) => price(m) * H / m.memory_gib, render: (m) => usd(price(m) * H / m.memory_gib, 2) },
-      { key: "local_gb", label: prov === "aws" ? "Local disk" : "Disk", num: true, render: (m) => (m.local_gb ? fmt.n(m.local_gb) + " GB" : "–") },
+      { key: "local_gb", label: prov === "digitalocean" ? "Disk" : "Local disk", num: true, render: (m) => (m.local_gb ? fmt.n(m.local_gb) + " GB" : "–") },
       { key: "max_pods", label: "Pods", num: true, title: "The pods a node of this type may run" },
     ], { rows: list, sortKey: "per", desc: false, compact: true, maxHeight: "280px", onRow: (m) => select(m.type), rowClass: (m) => (m.type === chosen() ? "sel" : "") });
     const ks = kinds();
@@ -504,7 +651,7 @@ function render(page, r) {
   // ---------------------------------------------------------- the plan
   const body = () => ({
     name: form.name, region, machine: form.machine, nodes: form.nodes, volume_gb: form.volume_gb,
-    ...(prov === "aws" ? { spot: form.spot } : { ha: form.ha, version: form.version }),
+    ...(prov === "aws" ? { spot: form.spot } : prov === "gcp" ? { spot: form.spot, version: form.version, regional: form.regional, max_nodes: form.max_nodes > form.nodes ? form.max_nodes : 0 } : { ha: form.ha, version: form.version }),
     cluster: { shards: form.shards, replicas: form.replicas, coordinators: form.coordinators, ...(form.image ? { image: form.image } : {}), ...(form.demo ? { demo: DEMO_ROWS } : {}) },
   });
 
@@ -518,7 +665,12 @@ function render(page, r) {
     if (form.machine === SMALLEST) drawMachines();
   }, 200);
 
-  function set(k, v) { form[k] = v; if (["shards", "replicas", "coordinators", "nodes"].includes(k)) sized = true; replan(); }
+  function set(k, v) {
+    form[k] = v;
+    if (["shards", "replicas", "coordinators", "nodes"].includes(k)) sized = true;
+    if (k === "nodes" && form.max_nodes && form.max_nodes <= v) form.max_nodes = 0;
+    replan();
+  }
 
   function nodes() {
     const l = plan.layout, m = plan.machine;
@@ -573,9 +725,10 @@ function render(page, r) {
     if (prov === "aws") return checked.ok
       ? h("div", { class: "row small" }, pill("ok", "CloudFormation accepts the template"), checked.answer?.capabilities?.length ? `It needs ${checked.answer.capabilities.join(", ")}: it makes IAM roles.` : "")
       : h("div", { class: "row small" }, pill("bad", "CloudFormation refused the template"), checked.error);
-    if (checked.error) return h("div", { class: "row small" }, pill("bad", "DigitalOcean did not answer"), checked.error);
+    if (checked.error) return h("div", { class: "row small" }, pill("bad", `${P.name} did not answer`), checked.error);
     return h("div", { class: "stack", style: { gap: "4px" } },
-      h("div", { class: "row small" }, checked.ok ? pill("ok", "DigitalOcean would take this cluster") : pill("bad", "DigitalOcean would not take this cluster")),
+      h("div", { class: "row small" }, checked.ok ? pill("ok", `${P.name} would take this cluster`) : pill("bad", `${P.name} would not take this cluster`)),
+      checked.permissions_error ? h("div", { class: "small dim" }, `Which permissions the credentials hold is not known: ${checked.permissions_error}`) : null,
       (checked.checks || []).map((c) => h("div", { class: "row nw small" }, icon(c.ok ? "okc" : "bad"), h("span", {}, c.check))));
   }
 
@@ -585,8 +738,8 @@ function render(page, r) {
     const image = h("input", { class: "input sm mono", value: form.image, placeholder: "ghcr.io/chloetech-ai/chloedb-server:latest", size: 34, onchange: () => set("image", image.value.trim()) });
     const afterSel = h("select", { class: "select sm", title: "This server deletes it then (and its data), or as soon as it runs again if it was off: nothing in the cloud does", onchange: () => { form.delete_after = afterSel.value ? Number(afterSel.value) : null; drawCreate(); } },
       AFTER.map(([v, l]) => h("option", { value: v ?? "", selected: (v ?? null) === form.delete_after }, l)));
-    const version = prov === "digitalocean" ? h("select", { class: "select sm", onchange: () => set("version", version.value) },
-      h("option", { value: "", selected: !form.version }, `newest (${cat.versions?.[0] || "–"})`), (cat.versions || []).map((v) => h("option", { value: v, selected: v === form.version }, v))) : null;
+    const version = prov !== "aws" ? h("select", { class: "select sm", onchange: () => set("version", version.value) },
+      h("option", { value: "", selected: !form.version }, prov === "gcp" ? `GKE's (${cat.default_version || cat.versions?.[0] || "–"})` : `newest (${cat.versions?.[0] || "–"})`), (cat.versions || []).map((v) => h("option", { value: v, selected: v === form.version }, v))) : null;
     const controls = h("div", { class: "cloud-controls" },
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Name"), h("div", { class: "row nw" }, h("span", { class: "small dim mono" }, "strata-"), name)),
       h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Machine"), form.machine === SMALLEST
@@ -599,6 +752,11 @@ function render(page, r) {
       stepper(form.volume_gb, 1, 16384, (v) => set("volume_gb", v), "Volume a copy", " GiB"),
       prov === "aws"
         ? h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Nodes bought"), toggle(form.spot, (v) => set("spot", v), form.spot ? "spot" : "on demand"))
+        : prov === "gcp"
+        ? [stepper(Math.max(form.max_nodes, form.nodes), form.nodes, 100, (v) => set("max_nodes", v > form.nodes ? v : 0), form.max_nodes > form.nodes ? "Autoscaler up to" : "Autoscaler (off) up to"),
+          h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Nodes bought"), toggle(form.spot, (v) => set("spot", v), form.spot ? "Spot" : "on demand")),
+          h("div", { class: "cloud-step", title: "Regional: the control plane and the nodes in three zones (GKE's fee is the same; the nodes are spread evenly, so their number is a multiple of three)" }, h("span", { class: "small dim" }, "Zones"), toggle(form.regional, (v) => set("regional", v), form.regional ? "three (regional)" : `one (${plan?.location || cat.zones?.[0] || "zonal"})`)),
+          h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Kubernetes"), version)]
         : [h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Control plane"), toggle(form.ha, (v) => set("ha", v), form.ha ? "highly available" : "standard (free)")),
           h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Kubernetes"), version)],
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Image"), image),
@@ -618,6 +776,8 @@ function render(page, r) {
     const files = [
       prov === "aws"
         ? [stack + ".json", "the CloudFormation template", () => download(stack + ".json", JSON.stringify(plan.template, null, 2))]
+        : prov === "gcp"
+        ? [stack + "-gke.json", "GKE's request (POST projects.locations.clusters)", () => download(stack + "-gke.json", JSON.stringify(plan.request, null, 2))]
         : [stack + "-doks.json", "DOKS's request (POST /v2/kubernetes/clusters)", () => download(stack + "-doks.json", JSON.stringify(plan.request, null, 2))],
       [stack + "-operator.yaml", "the operator", () => download(stack + "-operator.yaml", plan.manifests.operator, "text/yaml")],
       [stack + "-cluster.yaml", prov === "aws" ? "the namespace, a gp3 storage class and the StrataCluster" : "the namespace and the StrataCluster", () => download(stack + "-cluster.yaml", plan.manifests.cluster, "text/yaml")],
@@ -625,6 +785,7 @@ function render(page, r) {
     const q = plan.quota;
     const quotaLine = prov === "aws"
       ? h("div", { class: "row small" }, q.vcpus != null && q.needs > q.vcpus ? pill("bad", "over quota") : pill("ok", "within quota"), `${q.needs} vCPUs of ${q.kind} instances; the account may run ${q.vcpus == null ? "an unknown number" : fmt.n(q.vcpus)} in ${plan.region}.`)
+      : prov === "gcp" ? gcpQuotaLine(q)
       : h("div", { class: "row small" }, q.droplets != null && q.running != null && q.running + q.needs > q.droplets ? pill("bad", "over the droplet limit") : pill("ok", "within the droplet limit"), `${q.needs} droplets; the account may run ${q.droplets == null ? "an unknown number" : fmt.n(q.droplets)} and runs ${q.running == null ? "an unknown number" : fmt.n(q.running)}.`);
     clear(planEl, card({
       title: "Plan", sub: `${plan.stack} in ${plan.region}${plan.version ? ", Kubernetes " + plan.version : ""}`,
@@ -647,12 +808,31 @@ function render(page, r) {
         createEl,
         h("div", { class: "small dim" }, "Or make it yourself, with these files:"),
         h("div", { class: "row" }, files.map(([f, what, go]) => h("button", { class: "btn sm", title: "Download " + what, onclick: go }, icon("download"), f))),
-        h("div", { class: "small dim" }, prov === "aws" ? "With the AWS CLI and kubectl, from the folder the files are in." : "With doctl (signed in with a token that may create clusters) and kubectl, from the folder the files are in; doctl points kubectl at the new cluster.", " The nodes pull the image above, so it must be one they can reach."),
+        identityPart(),
+        h("div", { class: "small dim" }, prov === "aws" ? "With the AWS CLI and kubectl, from the folder the files are in." : prov === "gcp" ? "With gcloud (signed in as an account that may make GKE clusters) and kubectl, from the folder the files are in; gcloud points kubectl at the new cluster." : "With doctl (signed in with a token that may create clusters) and kubectl, from the folder the files are in; doctl points kubectl at the new cluster.", " The nodes pull the image above, so it must be one they can reach."),
         cmds(plan.commands),
         h("details", {}, h("summary", { class: "small" }, "Delete it"),
-          h("div", { class: "small dim", style: { margin: "6px 0" } }, prov === "aws" ? "The copies' volumes belong to the EBS driver, not to the stack: delete their claims first, or they stay and cost." : "The copies' volumes belong to the CSI driver: delete their claims first (or the cluster with --dangerous), or they stay and cost."),
+          h("div", { class: "small dim", style: { margin: "6px 0" } }, prov === "aws" ? "The copies' volumes belong to the EBS driver, not to the stack: delete their claims first, or they stay and cost." : prov === "gcp" ? "The copies' volumes belong to GKE's Persistent Disk driver, not to the cluster: delete their claims first, or they stay and cost." : "The copies' volumes belong to the CSI driver: delete their claims first (or the cluster with --dangerous), or they stay and cost."),
           cmds(plan.teardown))),
     }));
+  }
+
+  /** GKE's quotas against the plan: the family's vCPUs in the region, and every region's. */
+  function gcpQuotaLine(q) {
+    const free = q.limit != null ? q.limit - q.usage : null;
+    const all = q.all_regions, allFree = all ? all.limit - all.usage : null;
+    const over = (free != null && q.needs > free) || (allFree != null && q.needs > allFree);
+    return h("div", { class: "row small" }, over ? pill("bad", "over quota") : pill("ok", "within quota"),
+      `${fmt.n(q.needs)} vCPUs${plan.autoscaling ? ` at the autoscaler's ${plan.autoscaling.max} nodes` : ""}; ${q.metric} leaves ${free == null ? "an unknown number" : fmt.n(free)} in ${plan.region}${all ? `, CPUS_ALL_REGIONS ${fmt.n(allFree)} of ${fmt.n(all.limit)}` : ""}.`);
+  }
+
+  /** How the new cluster's own command center reaches Google Cloud: Workload Identity, bound once. */
+  function identityPart() {
+    const w = plan?.identity;
+    if (prov !== "gcp" || !w) return null;
+    return h("details", {}, h("summary", { class: "small" }, "Its command center's Google access (Workload Identity)"),
+      h("div", { class: "small dim", style: { margin: "6px 0" } }, `Its coordinators run as the Kubernetes account ${w.kubernetes_account}, annotated to act as ${w.service_account}. Run this ${w.why}.`),
+      cmds([w.command]));
   }
 
   /** Tables of this server the new cluster copies in once it is ready (crate::copy::bring_when_ready). */
@@ -672,6 +852,14 @@ function render(page, r) {
     const same = clusters.find((c) => c.provider === prov && c.cluster === plan.cluster_name && c.phase !== "deleted" && !(c.phase === "failed" && !c.cloud_id));
     if (same) return `${plan.cluster_name} was made from here already (${PHASES[same.phase][1]}): delete it first, or change its name.`;
     if (prov === "aws") return q.vcpus != null && q.needs > q.vcpus ? `The account may run ${fmt.n(q.vcpus)} vCPUs of ${q.kind} instances in ${plan.region} and the nodes need ${q.needs}: ask AWS for more first.` : null;
+    if (prov === "gcp") {
+      // As the server checks it: the nodes it starts with (crate::http, cloud_create).
+      const vcpus = plan.machine.vcpu * plan.layout.nodes.length;
+      for (const [what, x] of [[q.metric, q.limit != null ? q : null], ["CPUS_ALL_REGIONS", q.all_regions]]) {
+        if (x && vcpus > x.limit - x.usage) return `The nodes need ${vcpus} vCPUs and ${what} leaves ${fmt.n(Math.max(0, x.limit - x.usage))} of ${fmt.n(x.limit)}: fewer or smaller nodes, or ask Google for more first.`;
+      }
+      return null;
+    }
     return q.droplets != null && q.running != null && q.running + q.needs > q.droplets ? `The account runs ${q.running} of its ${q.droplets} droplets and the nodes need ${q.needs}: ask DigitalOcean for more first.` : null;
   }
 
@@ -682,8 +870,13 @@ function render(page, r) {
     clear(createEl, h("div", { class: "row" },
       h("button", { class: "btn danger solid", disabled: creating || !!why, onclick: create, title: why || `Make ${plan.stack} on ${P.name} now` }, icon("cloud"), creating ? "Asking…" : `Create it on ${P.name}…`),
       h("span", { class: "small dim" }, why ? why : [form.bring.length ? `Once ready, it brings ${form.bring.join(", ")} from this server. ` : "", (form.delete_after
-        ? `About ${usd(plan.cost.hour, 2)} an hour, billed to the account whose key is saved here, and it deletes itself after ${hoursLabel(form.delete_after)}: about ${usd(plan.cost.hour * form.delete_after, 2)} in all. This server deletes it, so it must be running then (or it deletes it when it runs again).`
-        : `About ${usd(plan.cost.hour, 2)} an hour from then until it is deleted, billed to the account whose key is saved here. This page follows it and deletes it.`)])));
+        ? `About ${usd(plan.cost.hour, 2)} an hour, billed to ${billedTo()}, and it deletes itself after ${hoursLabel(form.delete_after)}: about ${usd(plan.cost.hour * form.delete_after, 2)} in all. This server deletes it, so it must be running then (or it deletes it when it runs again).`
+        : `About ${usd(plan.cost.hour, 2)} an hour from then until it is deleted, billed to ${billedTo()}. This page follows it and deletes it.`)])));
+  }
+
+  /** Who pays for what this page makes. */
+  function billedTo() {
+    return prov === "gcp" ? `the billing account of the project ${plan?.project || key()?.project}` : prov === "aws" ? "the account whose key is saved here" : "the account whose token is saved here";
   }
 
   async function create() {
@@ -696,6 +889,8 @@ function render(page, r) {
           : `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour, ${usd(p.cost.month, 0)} a month, from now until it is deleted.`),
         h("p", { class: "dim", style: { margin: 0 } }, prov === "aws"
           ? "CloudFormation makes the network, the EKS cluster and its nodes (15 to 20 minutes); then this server installs ChloeDB's operator and the cluster, and follows its copies until they answer."
+          : prov === "gcp"
+          ? `GKE makes the cluster and its nodes in ${p.location} (5 to 10 minutes); then this server installs ChloeDB's operator and the cluster, and follows its copies until they answer.`
           : "DigitalOcean makes the cluster and its nodes (5 to 10 minutes); then this server installs ChloeDB's operator and the cluster, and follows its copies until they answer."),
         form.bring.length ? h("p", { class: "dim", style: { margin: 0 } }, `Then it copies ${form.bring.join(", ")} from this server into it, with their schemas, through its Kubernetes API.`) : null,
         p.warnings.length ? h("div", { class: "stack cloud-warn" }, p.warnings.map((w) => h("div", { class: "row nw small" }, icon("warn"), h("span", {}, w)))) : null),
@@ -717,7 +912,7 @@ function render(page, r) {
   async function remove(c) {
     const ok = await typed({
       title: `Delete ${c.cluster}?`, name: c.cluster, ok: "Delete it",
-      body: h("p", { class: "dim", style: { margin: 0 } }, `This deletes the StrataCluster and its volumes (its data), then ${c.provider === "aws" ? "the stack: the nodes, the EKS cluster and the network" : "the DOKS cluster, its nodes and what it made"}. It cannot be undone.`),
+      body: h("p", { class: "dim", style: { margin: 0 } }, `This deletes the StrataCluster and its volumes (its data), then ${DELETES[c.provider]}. It cannot be undone.`),
     });
     if (!ok) return;
     try { const m = await api(`/v1/admin/cloud/clusters/${encodeURIComponent(c.id)}/delete`, { body: { confirm: c.cluster } }); clusters = clusters.map((x) => (x.id === m.id ? m : x)); drawMade(); poll(2000); }
@@ -742,7 +937,7 @@ function render(page, r) {
     looking = true; foundErr = null; drawFound();
     const r = region || key()?.region || P.region;
     try {
-      const q = prov === "aws" ? `provider=aws&region=${encodeURIComponent(r)}` : "provider=digitalocean";
+      const q = prov === "aws" ? `provider=aws&region=${encodeURIComponent(r)}` : `provider=${prov}`;
       found = (await api(`/v1/admin/cloud/found?${q}`)).clusters || []; foundRegion = r;
     } catch (e) { foundErr = e; }
     looking = false;
@@ -753,7 +948,7 @@ function render(page, r) {
     const ok = await typed({
       title: `Delete ${c.cluster}?`, name: c.cluster, ok: "Delete it",
       body: h("div", { class: "stack" },
-        h("p", { class: "dim", style: { margin: 0 } }, `It was not made from this server: made from another one, or forgotten here. This deletes the StrataCluster and its volumes (its data), then ${c.provider === "aws" ? "the stack: the nodes, the EKS cluster and the network" : "the DOKS cluster, its nodes and what it made"}. It cannot be undone.`),
+        h("p", { class: "dim", style: { margin: 0 } }, `It was not made from this server: made from another one, or forgotten here. This deletes the StrataCluster and its volumes (its data), then ${DELETES[c.provider]}. It cannot be undone.`),
         c.owner ? h("p", { class: "small dim", style: { margin: 0 } }, `Its tag says ${c.owner} asked for it.`) : null),
     });
     if (!ok) return;
@@ -770,16 +965,16 @@ function render(page, r) {
     if (!may()) { clear(foundEl); return; }
     const r = region || key()?.region || P.region;
     const stale = found && prov === "aws" && foundRegion !== r;
-    const where = prov === "aws" ? `the CloudFormation stacks ChloeDB made in ${r}` : "the DOKS clusters ChloeDB made, in every region";
+    const where = prov === "aws" ? `the CloudFormation stacks ChloeDB made in ${r}` : prov === "gcp" ? `the GKE clusters ChloeDB made in the project ${key()?.project}, in every location` : "the DOKS clusters ChloeDB made, in every region";
     const lookBtn = h("button", { class: "btn sm", disabled: looking, onclick: look }, icon("search"), looking ? "Looking…" : "Look in the account");
     let body;
     if (foundErr) body = h("div", { class: "stack" }, failure(foundErr, "The account's clusters"), h("div", {}, lookBtn));
     else if (!found || stale) body = h("div", { class: "row between" }, h("span", { class: "small dim" }, `A cluster made from another server, or forgotten here, is not on the list above. This asks ${P.name} for ${where}, and deletes none until you say which.`), lookBtn);
-    else if (!found.length) body = h("div", { class: "small dim" }, `None: every ChloeDB cluster in ${prov === "aws" ? r : "the account"} is on this server's list.`);
+    else if (!found.length) body = h("div", { class: "small dim" }, `None: every ChloeDB cluster in ${prov === "aws" ? r : prov === "gcp" ? "the project" : "the account"} is on this server's list.`);
     else body = h("div", { class: "stack" }, found.map((c) => h("div", { class: "cloud-made-row" },
       h("div", { class: "row between" },
-        h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(/^(running|CREATE_COMPLETE|UPDATE_COMPLETE)$/.test(c.state) ? "ok" : /FAILED|error|degraded/i.test(c.state) ? "bad" : "warn", String(c.state || "").toLowerCase().replace(/_/g, " ")),
-          h("span", { class: "small dim" }, [c.provider === "aws" ? "AWS" : "DigitalOcean", c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null, c.owner ? `asked for by ${c.owner}` : null].filter(Boolean).join(" · "))),
+        h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(/^(running|CREATE_COMPLETE|UPDATE_COMPLETE)$/i.test(c.state) ? "ok" : /FAILED|error|degraded/i.test(c.state) ? "bad" : "warn", String(c.state || "").toLowerCase().replace(/_/g, " ")),
+          h("span", { class: "small dim" }, [provName(c.provider), c.location || c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null, c.owner ? `asked for by ${c.owner}` : null].filter(Boolean).join(" · "))),
         c.here
           ? h("span", { class: "row nw" }, pill("warn", "this server runs on it"), h("button", { class: "btn sm danger", disabled: true, title: "Deleting it from here would stop this server halfway: delete it from another server, or from the cloud's console" }, icon("trash"), "Delete"))
           : h("button", { class: "btn sm danger", onclick: () => removeFound(c) }, icon("trash"), "Delete")),
@@ -790,6 +985,48 @@ function render(page, r) {
       tools: found && !stale ? [h("button", { class: "btn sm ghost", title: "Ask again now", disabled: looking, onclick: look }, icon("refresh"))] : [],
       body,
     }));
+  }
+
+  /** A GKE cluster's nodes: how many, and GKE's autoscaler (crate::http, gcp_resize). `c.cloud_id` empty: the one this server runs in. */
+  async function resizeGke(c) {
+    const q = c.cloud_id ? `?cluster=${encodeURIComponent(c.cloud_id)}` : "";
+    let info;
+    try { info = await api(`/v1/admin/gcp/nodes${q}`); } catch (e) { toast(e.message, "bad", 8000); return; }
+    const pool = info.pools.find((x) => x.name === "strata") || info.pools[0];
+    if (!pool) { toast(`${info.name} has no node pool`, "bad"); return; }
+    const zones = Math.max(1, pool.zones?.length || 1);
+    const was = { nodes: pool.nodes ?? info.nodes, auto: pool.autoscaling };
+    let nodes = was.nodes || zones, auto = !!was.auto, min = was.auto?.min ?? nodes, max = was.auto?.max ?? nodes + zones;
+    const box = h("div", { class: "stack" });
+    const go = h("button", { class: "btn primary" }, "Resize");
+    const draw = () => {
+      const most = auto ? max : nodes;
+      clear(box,
+        h("div", { class: "small dim" }, `${info.name} in ${info.location}, pool ${pool.name}: ${was.nodes ?? "?"} × ${pool.machine}${pool.spot ? " (Spot)" : ""}${zones > 1 ? `, in ${zones} zones (a multiple of ${zones})` : ""}${was.auto ? `, the autoscaler between ${was.auto.min} and ${was.auto.max}` : ""}.`),
+        h("div", { class: "cloud-controls" },
+          stepper(nodes, zones, 100, (v) => { nodes = v; draw(); }, "Nodes"),
+          h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "GKE's autoscaler"), toggle(auto, (v) => { auto = v; if (v && max <= min) max = min + zones; draw(); }, auto ? "on" : "off")),
+          auto ? [stepper(min, 0, 100, (v) => { min = v; draw(); }, "At least"), stepper(max, Math.max(1, zones), 100, (v) => { max = v; draw(); }, "At most")] : null),
+        c.node_hour ? h("div", { class: "small dim" }, `The nodes cost about ${usd(c.node_hour * nodes, 2)} an hour${auto ? `, up to ${usd(c.node_hour * most, 2)} at ${most}` : ""}, billed to the project.`) : h("div", { class: "small dim" }, "More nodes bill the project more."),
+        auto && min > max ? h("div", { class: "error small" }, "At least is above at most.") : null);
+      go.disabled = (auto && min > max) || nodes % zones !== 0;
+    };
+    draw();
+    const no = h("button", { class: "btn" }, "Cancel");
+    const m = modal({ title: `${info.name}'s nodes`, body: box, foot: [no, go] });
+    no.onclick = () => m.close();
+    go.onclick = async () => {
+      const body = { cluster: info.cluster, pool: pool.name };
+      if (nodes !== was.nodes) body.nodes = nodes;
+      if (auto) { body.min_nodes = min; body.max_nodes = max; } else if (was.auto) body.max_nodes = 0;
+      if (Object.keys(body).length === 2) { m.close(); return; }
+      go.disabled = true;
+      try {
+        const x = await api("/v1/admin/gcp/nodes", { body });
+        toast(`${info.name}: ${(x.did || []).join(", ") || "asked"}`, "ok");
+        m.close(); loadMade();
+      } catch (e) { toast(e.message, "bad", 8000); go.disabled = false; }
+    };
   }
 
   async function forget(c) {
@@ -846,6 +1083,8 @@ function render(page, r) {
       ? h("button", { class: "btn sm", title: "Take it off this list", onclick: () => forget(c) }, icon("x"), "Forget")
       : c.phase === "deleting" ? null
       : h("button", { class: "btn sm danger", onclick: () => remove(c) }, icon("trash"), "Delete");
+    const resize = c.provider === "gcp" && c.cloud_id && ["starting", "ready"].includes(c.phase) && !connectionName
+      ? h("button", { class: "btn sm", title: "Its node pool: how many nodes, and GKE's autoscaler", onclick: () => resizeGke(c) }, icon("server"), "Nodes…") : null;
     // On the hub's own page: its command center through the cluster's
     // Kubernetes API, nothing to install. (On another cluster's page, that
     // cluster made it, with its own cloud credentials.)
@@ -866,12 +1105,12 @@ function render(page, r) {
     return h("div", { class: "cloud-made-row" },
       h("div", { class: "row between" },
         h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(...PHASES[c.phase]),
-          h("span", { class: "small dim" }, [c.provider === "aws" ? "AWS" : "DigitalOcean", c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null].filter(Boolean).join(" · "))),
+          h("span", { class: "small dim" }, [provName(c.provider), c.location || c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null].filter(Boolean).join(" · "))),
         h("div", { class: "row nw" },
           c.found
             ? h("span", { class: "small dim", title: "It was made elsewhere: what it cost is in the cloud's billing" }, "found in the account")
             : h("span", { class: "small dim num", title: "at the planned price, from when it was asked for" }, `${usd(c.cost_so_far, 2)} so far${c.phase === "deleted" ? "" : ` · ${usd(c.cost_hour, 2)}/h`}`),
-          open, action)),
+          open, resize, action)),
       track,
       ends,
       broughtLine(c),

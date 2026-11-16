@@ -1,0 +1,22 @@
+solr-ef512-pass2 vector                   warm-up: p50 11.848, 12.625 ms
+solr-ef512-pass2 vector                   c=1        132 q/s  p50   7.554 ms  p90   8.398 ms  p99   9.655 ms  errors 0
+solr-ef512-pass2 vector                   c=4        294 q/s  p50  13.153 ms  p90  18.150 ms  p99  23.357 ms  errors 0
+solr-ef512-pass2 vector                   c=16       388 q/s  p50  39.976 ms  p90  58.920 ms  p99  80.212 ms  errors 0
+solr-ef512-pass2 vector + filter          warm-up: p50 31.116, 30.343 ms
+solr-ef512-pass2 vector + filter          c=1         49 q/s  p50  20.283 ms  p90  23.675 ms  p99  32.285 ms  errors 0
+solr-ef512-pass2 vector + filter          c=4        110 q/s  p50  34.195 ms  p90  50.339 ms  p99  63.828 ms  errors 0
+solr-ef512-pass2 vector + filter          c=16       132 q/s  p50 120.170 ms  p90 174.482 ms  p99 209.273 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             warm-up: p50 12.386, 12.176 ms
+solr-ef512-pass2 hybrid (RRF)             c=1        111 q/s  p50   7.966 ms  p90  14.623 ms  p99  23.132 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             c=4        284 q/s  p50  12.165 ms  p90  23.669 ms  p99  33.603 ms  errors 0
+solr-ef512-pass2 hybrid (RRF)             c=16       327 q/s  p50  41.464 ms  p90  90.433 ms  p99 151.510 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        warm-up: p50 14.247, 13.760 ms
+solr-ef512-pass2 hybrid (weighted)        c=1        110 q/s  p50   7.809 ms  p90  15.681 ms  p99  22.729 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        c=4        268 q/s  p50  12.827 ms  p90  25.806 ms  p99  43.233 ms  errors 0
+solr-ef512-pass2 hybrid (weighted)        c=16       294 q/s  p50  44.309 ms  p90 102.260 ms  p99 186.913 ms  errors 0
+solr-ef512-pass2 similar items            warm-up: p50 21.650, 20.959 ms
+solr-ef512-pass2 similar items            c=1         71 q/s  p50  13.792 ms  p90  16.006 ms  p99  20.162 ms  errors 0
+solr-ef512-pass2 similar items            c=4        154 q/s  p50  24.545 ms  p90  35.170 ms  p99  46.277 ms  errors 0
+solr-ef512-pass2 similar items            c=16       202 q/s  p50  76.691 ms  p90 112.665 ms  p99 145.055 ms  errors 0
+solr-ef512-pass2 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef512-pass2.json

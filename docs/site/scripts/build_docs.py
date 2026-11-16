@@ -176,6 +176,7 @@ NAV = [
         ("crawler", "Crawler", "docs/chloedb/crawler.md", "reference"),
         ("sheets", "Sheets", "docs/chloedb/sheets.md", "reference"),
         ("netops", "Network operations", "docs/chloedb/netops.md", "reference"),
+        ("hn", "Hacker News", "docs/chloedb/hn.md", "reference"),
         ("chloectx", "ChloeCtx", "docs/chloectx/index.md", "reference"),
         ("chloectx-setup", "Install ChloeCtx", "docs/chloectx/setup.md", "reference"),
         ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),

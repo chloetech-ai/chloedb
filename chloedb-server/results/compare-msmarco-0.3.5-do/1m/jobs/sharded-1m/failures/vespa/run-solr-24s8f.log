@@ -1,0 +1,58 @@
+solr     bm25                     warm-up: p50 7.678, 6.854, 5.893, 5.334 ms
+solr     bm25                     c=1        325 q/s  p50   2.897 ms  p90   4.177 ms  p99   6.547 ms  errors 0
+solr     bm25                     c=4       1010 q/s  p50   3.513 ms  p90   6.162 ms  p99  10.595 ms  errors 0
+solr     bm25                     c=16      1729 q/s  p50   8.070 ms  p90  15.849 ms  p99  27.567 ms  errors 0
+solr     bm25 + filter            warm-up: p50 4.567, 3.707, 3.392 ms
+solr     bm25 + filter            c=1        410 q/s  p50   2.283 ms  p90   3.152 ms  p99   5.145 ms  errors 0
+solr     bm25 + filter            c=4       1063 q/s  p50   3.469 ms  p90   5.490 ms  p99   8.806 ms  errors 0
+solr     bm25 + filter            c=16      1566 q/s  p50   8.942 ms  p90  17.380 ms  p99  30.715 ms  errors 0
+solr     vector                   warm-up: p50 7.447, 6.474, 6.476 ms
+solr     vector                   c=1        242 q/s  p50   3.997 ms  p90   4.645 ms  p99   6.700 ms  errors 0
+solr     vector                   c=4        547 q/s  p50   6.929 ms  p90  10.101 ms  p99  13.518 ms  errors 0
+solr     vector                   c=16       757 q/s  p50  19.578 ms  p90  32.034 ms  p99  49.462 ms  errors 0
+solr     vector + filter          warm-up: p50 14.340, 14.197 ms
+solr     vector + filter          c=1        135 q/s  p50   6.725 ms  p90   7.900 ms  p99  30.347 ms  errors 0
+solr     vector + filter          c=4        320 q/s  p50  11.289 ms  p90  15.874 ms  p99  50.467 ms  errors 0
+solr     vector + filter          c=16       362 q/s  p50  41.685 ms  p90  64.795 ms  p99  99.141 ms  errors 0
+solr     hybrid (RRF)             warm-up: p50 11.212, 10.843 ms
+solr     hybrid (RRF)             c=1        140 q/s  p50   6.566 ms  p90  10.282 ms  p99  15.753 ms  errors 0
+solr     hybrid (RRF)             c=4        316 q/s  p50  11.624 ms  p90  19.651 ms  p99  29.252 ms  errors 0
+solr     hybrid (RRF)             c=16       384 q/s  p50  36.731 ms  p90  70.847 ms  p99 117.403 ms  errors 0
+solr     hybrid (weighted)        warm-up: p50 13.756, 11.961, 12.220 ms
+solr     hybrid (weighted)        c=1        111 q/s  p50   7.737 ms  p90  15.374 ms  p99  23.631 ms  errors 0
+solr     hybrid (weighted)        c=4        265 q/s  p50  13.079 ms  p90  25.912 ms  p99  41.463 ms  errors 0
+solr     hybrid (weighted)        c=16       282 q/s  p50  45.237 ms  p90 106.386 ms  p99 213.027 ms  errors 0
+solr     boosted (bm25 × decay)   warm-up: p50 10.770, 10.576 ms
+solr     boosted (bm25 × decay)   c=1        121 q/s  p50   6.346 ms  p90  18.374 ms  p99  30.869 ms  errors 0
+solr     boosted (bm25 × decay)   c=4        294 q/s  p50  10.354 ms  p90  29.682 ms  p99  56.000 ms  errors 0
+solr     boosted (bm25 × decay)   c=16       322 q/s  p50  33.244 ms  p90 115.264 ms  p99 232.213 ms  errors 0
+solr     facet                    warm-up: p50 4.171, 3.797 ms
+solr     facet                    c=1        337 q/s  p50   2.278 ms  p90   4.620 ms  p99  13.863 ms  errors 0
+solr     facet                    c=4       1004 q/s  p50   3.117 ms  p90   6.797 ms  p99  18.632 ms  errors 0
+solr     facet                    c=16      1322 q/s  p50   8.976 ms  p90  23.249 ms  p99  59.729 ms  errors 0
+solr     key lookup               warm-up: p50 1.598, 1.578 ms
+solr     key lookup               c=1        821 q/s  p50   1.218 ms  p90   1.438 ms  p99   1.713 ms  errors 0
+solr     key lookup               c=4       2855 q/s  p50   1.359 ms  p90   1.786 ms  p99   2.357 ms  errors 0
+solr     key lookup               c=16      5459 q/s  p50   2.681 ms  p90   4.643 ms  p99   7.234 ms  errors 0
+solr     phrase                   warm-up: p50 3.116, 2.916 ms
+solr     phrase                   c=1        492 q/s  p50   1.889 ms  p90   2.643 ms  p99   3.722 ms  errors 0
+solr     phrase                   c=4       1364 q/s  p50   2.680 ms  p90   4.202 ms  p99   6.567 ms  errors 0
+solr     phrase                   c=16      2045 q/s  p50   6.920 ms  p90  12.837 ms  p99  22.850 ms  errors 0
+solr     typo                     warm-up: p50 29.171, 28.324 ms
+solr     typo                     c=1         53 q/s  p50  17.723 ms  p90  28.040 ms  p99  44.127 ms  errors 0
+solr     typo                     c=4        130 q/s  p50  28.991 ms  p90  48.234 ms  p99  76.132 ms  errors 0
+solr     typo                     c=16       138 q/s  p50 103.713 ms  p90 204.612 ms  p99 353.631 ms  errors 0
+solr     prefix                   warm-up: p50 3.324, 3.172 ms
+solr     prefix                   c=1        453 q/s  p50   2.099 ms  p90   2.744 ms  p99   3.986 ms  errors 0
+solr     prefix                   c=4       1222 q/s  p50   3.078 ms  p90   4.611 ms  p99   6.918 ms  errors 0
+solr     prefix                   c=16      1839 q/s  p50   7.774 ms  p90  14.146 ms  p99  23.397 ms  errors 0
+solr     similar items            warm-up: p50 10.796, 10.153 ms
+solr     similar items            c=1        146 q/s  p50   6.362 ms  p90   7.080 ms  p99   9.543 ms  errors 0
+solr     similar items            c=4        350 q/s  p50  10.296 ms  p90  14.886 ms  p99  28.781 ms  errors 0
+solr     similar items            c=16       463 q/s  p50  31.772 ms  p90  48.504 ms  p99  74.678 ms  errors 0
+solr     sql aggregate            warm-up: p50 121.928, 110.712 ms
+solr     sql aggregate            c=1         16 q/s  p50  60.803 ms  p90  75.633 ms  p99  92.237 ms  errors 0
+solr     sql aggregate            c=4         40 q/s  p50  98.028 ms  p90 129.328 ms  p99 165.487 ms  errors 0
+solr     sql aggregate            c=16        50 q/s  p50 322.977 ms  p90 455.500 ms  p99 597.521 ms  errors 0
+solr     result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr.json

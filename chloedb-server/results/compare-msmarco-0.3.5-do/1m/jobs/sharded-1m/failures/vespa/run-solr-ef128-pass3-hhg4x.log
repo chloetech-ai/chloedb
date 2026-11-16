@@ -1,0 +1,22 @@
+solr-ef128-pass3 vector                   warm-up: p50 7.413, 7.844 ms
+solr-ef128-pass3 vector                   c=1        213 q/s  p50   4.582 ms  p90   5.262 ms  p99   7.219 ms  errors 0
+solr-ef128-pass3 vector                   c=4        479 q/s  p50   8.013 ms  p90  11.226 ms  p99  14.915 ms  errors 0
+solr-ef128-pass3 vector                   c=16       611 q/s  p50  24.508 ms  p90  41.219 ms  p99  59.755 ms  errors 0
+solr-ef128-pass3 vector + filter          warm-up: p50 17.018, 17.186 ms
+solr-ef128-pass3 vector + filter          c=1        101 q/s  p50   9.373 ms  p90  10.684 ms  p99  32.453 ms  errors 0
+solr-ef128-pass3 vector + filter          c=4        252 q/s  p50  14.840 ms  p90  20.105 ms  p99  46.216 ms  errors 0
+solr-ef128-pass3 vector + filter          c=16       271 q/s  p50  56.694 ms  p90  89.832 ms  p99 114.377 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             warm-up: p50 12.370, 12.121 ms
+solr-ef128-pass3 hybrid (RRF)             c=1        107 q/s  p50   8.172 ms  p90  15.137 ms  p99  25.976 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             c=4        255 q/s  p50  13.770 ms  p90  26.577 ms  p99  40.417 ms  errors 0
+solr-ef128-pass3 hybrid (RRF)             c=16       346 q/s  p50  38.665 ms  p90  83.058 ms  p99 151.285 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        warm-up: p50 13.435, 14.073 ms
+solr-ef128-pass3 hybrid (weighted)        c=1        106 q/s  p50   7.896 ms  p90  16.150 ms  p99  26.133 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        c=4        248 q/s  p50  13.632 ms  p90  27.894 ms  p99  45.133 ms  errors 0
+solr-ef128-pass3 hybrid (weighted)        c=16       314 q/s  p50  41.767 ms  p90  95.012 ms  p99 166.072 ms  errors 0
+solr-ef128-pass3 similar items            warm-up: p50 11.954, 12.169 ms
+solr-ef128-pass3 similar items            c=1        116 q/s  p50   8.000 ms  p90   9.422 ms  p99  14.456 ms  errors 0
+solr-ef128-pass3 similar items            c=4        306 q/s  p50  12.175 ms  p90  16.481 ms  p99  23.325 ms  errors 0
+solr-ef128-pass3 similar items            c=16       353 q/s  p50  41.861 ms  p90  66.956 ms  p99  99.622 ms  errors 0
+solr-ef128-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef128-pass3.json
