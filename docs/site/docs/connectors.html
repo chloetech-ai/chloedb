@@ -2,12 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Connectors · ChloeDB docs</title>
 <link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
 <link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
-<meta name="description" content="A connector brings another system&#x27;s data into a table of chloedb-server, and keeps it coming: it reads the system on a schedule (a pull) or takes what the system sends (a push), turns each record into a row by a map,…">
+<meta name="description" content="A connector brings another system&#x27;s data into a table of chloedb-server, and keeps it coming: it reads the system on a schedule (a pull), takes what the system sends (a push), or, for Kafka, keeps reading its topics…">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -15,6 +22,10 @@
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/connectors.md: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
@@ -86,10 +97,10 @@
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/connectors.md">docs/chloedb/connectors.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.5.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#make-one">Make one</a></li><li><a href="#configured-as-rows">Configured as rows</a></li><li><a href="#what-a-connector-reaches">What a connector reaches</a></li><li><a href="#keys">Keys</a></li><li><a href="#who-runs-the-pulls">Who runs the pulls</a></li><li><a href="#maps">Maps</a></li><li><a href="#the-kinds-settings">The kinds' settings</a></li><li><a href="#limits">Limits</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#make-one">Make one</a></li><li><a href="#configured-as-rows">Configured as rows</a></li><li><a href="#what-a-connector-reaches">What a connector reaches</a></li><li><a href="#keys">Keys</a></li><li><a href="#who-runs-the-pulls">Who runs the pulls</a></li><li><a href="#maps">Maps</a></li><li><a href="#the-kinds-settings">The kinds' settings</a></li><li><a href="#kafka-topics">Kafka topics</a></li><li><a href="#limits">Limits</a></li></ol></details>
     <div class="doc-body">
 
-<p>A connector brings another system's data into a table of <code>chloedb-server</code>, and keeps it coming: it reads the system on a schedule (a pull) or takes what the system sends (a push), turns each record into a row by a map, and upserts the rows by the table's key, so a record read twice is the same row. Connectors are configured as rows of a table, each writes with a key limited to its own target, and the command center's <strong>Data &gt; Connectors</strong> page shows each one's health.</p>
+<p>A connector brings another system's data into a table of <code>chloedb-server</code>, and keeps it coming: it reads the system on a schedule (a pull), takes what the system sends (a push), or, for Kafka, keeps reading its topics while it is on (a stream); it turns each record into a row by a map, and upserts the rows by the table's key, so a record read twice is the same row (a stream writes each event once, by its offset). Connectors are configured as rows of a table, each writes with a key limited to its own target, and the command center's <strong>Data &gt; Connectors</strong> page shows each one's health.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -142,9 +153,15 @@
 <td>any REST API that answers JSON: records at a path, the next page at another, a cursor kept from the records</td>
 <td><code>http_records</code></td>
 </tr>
+<tr>
+<td><code>kafka</code></td>
+<td>stream</td>
+<td>Kafka (or Redpanda, MSK, Confluent Cloud) topics, read by the server itself while the connector is on, each event written once: its partition's offset is kept with its row (<a href="#kafka-topics">Kafka topics</a>)</td>
+<td><code>kafka_events</code></td>
+</tr>
 </tbody>
 </table></div>
-<p>Other ways rows come in stay as they are, and the Connectors page lists their sources beside the connectors: OpenTelemetry logs (<code>POST /v1/logs</code>, <a href="server.html#opentelemetry-logs">server.md</a>), streams with offsets applied once (<code>POST /v1/stream</code>, which Kafka consumers use), Postgres by logical replication (<a href="postgres.html"><code>follow-postgres</code></a>), and files (<a href="sqlite.html">SQLite</a>, <a href="parquet.html">Parquet and S3</a>).</p>
+<p>Other ways rows come in stay as they are, and the Connectors page lists their sources beside the connectors: OpenTelemetry logs (<code>POST /v1/logs</code>, <a href="server.html#opentelemetry-logs">server.md</a>), streams with offsets applied once (<code>POST /v1/stream</code>, which a consumer of your own can write), Postgres by logical replication (<a href="postgres.html"><code>follow-postgres</code></a>), and files (<a href="sqlite.html">SQLite</a>, <a href="parquet.html">Parquet and S3</a>).</p>
 <h2 id="make-one">Make one<a class="anchor" href="#make-one" aria-label="Link to this section">#</a></h2>
 <p><code>POST /v1/admin/connectors</code> with an admin key:</p>
 <pre data-lang="json">{
@@ -158,7 +175,7 @@
 }</pre>
 <ul>
 <li><code>name</code>: 1 to 48 lowercase letters, digits, <code>-</code> and <code>_</code>.</li>
-<li><code>target</code>: the table it writes. Left out, the kind's own table, which is made then (its columns are in the table above's <a href="#default-tables-and-presets">defaults</a>). A table that does not exist and is not the kind's own is refused, unless <code>config.create_target</code> is <code>true</code>, which makes it with the columns of the connector's own <code>map</code> when it has one (each typed by its <code>as</code>: <code>int</code> an <code>INT</code>, <code>float</code> a <code>FLOAT</code>, <code>bool</code> a <code>BOOL</code>, <code>time</code> or <code>{"now": true}</code> a <code>TIMESTAMP</code>, <code>list</code> a <code>KEYWORD[]</code>, <code>json</code> a <code>JSON</code>, <code>hash</code> a <code>KEYWORD</code>, any other <code>TEXT</code>; <code>id</code> its primary key, or none without an <code>id</code>), else with the kind's columns.</li>
+<li><code>target</code>: the table it writes. Left out, the kind's own table, which is made then (its columns are in the table above's <a href="#default-tables-and-presets">defaults</a>). A table that does not exist and is not the kind's own is refused, unless <code>config.create_target</code> is <code>true</code>, which makes it with the columns of the connector's own <code>map</code> when it has one (each typed by its <code>as</code>: <code>int</code> an <code>INT</code>, <code>float</code> a <code>FLOAT</code>, <code>bool</code> a <code>BOOL</code>, <code>time</code> or <code>{"now": true}</code> a <code>TIMESTAMP</code>, <code>list</code> a <code>KEYWORD[]</code>, <code>json</code> a <code>JSON</code>, <code>hash</code> a <code>KEYWORD</code>, any other <code>TEXT</code>, or the type a spec says: <code>{"path": "$.action", "type": "KEYWORD"}</code> for a value kept whole, to group or filter by, rather than searched as words; <code>id</code> its primary key, or none without an <code>id</code>), else with the kind's columns.</li>
 <li><code>every_s</code>: seconds between pulls (at least 10; 0 runs only when asked). The defaults: 60 for Prometheus, 300 for Jira, ServiceNow and HTTP pulls, 900 for Oxidized. A failed pull waits twice as long each time, up to an hour; one that stopped at its limit (20,000 records a run) runs again at once.</li>
 <li><code>config</code>: the kind's settings (below) and an optional <code>map</code>.</li>
 <li><code>secrets</code>: passwords and tokens, by name. They are never written to a table nor answered: the server keeps them in <code>&lt;db&gt;.connectors.json</code> beside the database, readable by its user only (<code>--connector-secrets FILE</code>; a coordinator without one keeps them in memory, so give it one, or name each secret as <code>"env:VARIABLE"</code>, which the server reads from its environment at each run, as a Kubernetes Secret gives it). An <code>env:</code> secret names a variable whose name starts with <code>CHLOEDB_CONNECTOR_SECRET_</code> (<code>--connector-env-prefix</code> chooses another prefix), so that no connector reads the server's own tokens, model keys or cloud credentials; another name is refused with a 400.</li>
@@ -352,12 +369,40 @@ FROM chloedb_connector_runs WHERE ok = false AND started &gt; &#x27;2026-11-13&#
           authorization:
             credentials: sk_...</pre>
 <p><strong>http_json</strong>: <code>url</code> (<code>{cursor}</code> is replaced by the cursor, URL-encoded); <code>records</code>; <code>next</code> (the path to the next page's URL, or a path on the same host); <code>cursor</code> (the path in a record whose highest value is the next cursor) and <code>start</code> (the first one); <code>headers</code> (<code>{secret:NAME}</code> is replaced by a secret); <code>auth</code>, <code>username</code>.</p>
+<h2 id="kafka-topics">Kafka topics<a class="anchor" href="#kafka-topics" aria-label="Link to this section">#</a></h2>
+<p>A <code>kafka</code> connector reads topics into a table while it is on, and writes each event once. Its section on <strong>Data &gt; Connectors</strong> lists the Kafka connectors with their consumers live: state, events a second, lag (each partition's end less the next offset to write, since there is no consumer group for Kafka's own lag tools to see), events and rows since the server started, replays skipped, events that made no row, and a table of partitions; <strong>Start</strong> and <strong>Stop</strong> turn one on and off (kept in its row, so it stays so across restarts), and <strong>Add a Kafka connector</strong> has a form with a dry run that connects and shows the rows a few events would make.</p>
+<pre data-lang="sh">curl -X POST localhost:7700/v1/admin/connectors -H &quot;Authorization: Bearer $KEY&quot; -d &#x27;{
+  &quot;name&quot;: &quot;orders&quot;, &quot;kind&quot;: &quot;kafka&quot;, &quot;target&quot;: &quot;orders&quot;,
+  &quot;config&quot;: {
+    &quot;brokers&quot;: &quot;kafka-1:9092,kafka-2:9092&quot;, &quot;topics&quot;: &quot;orders&quot;, &quot;allow_internal&quot;: true, &quot;create_target&quot;: true,
+    &quot;map&quot;: {&quot;id&quot;: &quot;$.value.order_id&quot;, &quot;customer&quot;: {&quot;path&quot;: &quot;$.key&quot;, &quot;type&quot;: &quot;KEYWORD&quot;}, &quot;total&quot;: {&quot;path&quot;: &quot;$.value.total&quot;, &quot;as&quot;: &quot;float&quot;}, &quot;at&quot;: {&quot;path&quot;: &quot;$.ts&quot;, &quot;as&quot;: &quot;time&quot;}}
+  }
+}&#x27;
+curl -X POST localhost:7700/v1/admin/connectors/orders/stop -H &quot;Authorization: Bearer $KEY&quot;
+curl -X POST localhost:7700/v1/admin/connectors/orders/start -H &quot;Authorization: Bearer $KEY&quot;</pre>
+<ul>
+<li><strong>Each event once.</strong> Each partition is a <a href="server.html#streams">stream source</a> named <code>&lt;prefix&gt;&lt;topic&gt;/&lt;partition&gt;</code> (prefix <code>kafka/&lt;name&gt;/</code> unless <code>prefix</code> says another), whose last offset the server keeps in <code>_sources</code> in the same transaction as the rows its events made. A consumer starts each partition after the offset ChloeDB has, not after one committed to Kafka, so a stop, a restart of the server or of a broker, or a coordinator taking over writes no event twice and misses none (a second write of an offset is a replay, and skipped). A partition ChloeDB has no offset of starts at its first event (<code>"start": "earliest"</code>, the default) or its end (<code>"latest"</code>). Another prefix reads the topics again from the start; two connectors with the same prefix share their offsets.</li>
+<li><strong>Who reads.</strong> The server that runs the pulls (<a href="#who-runs-the-pulls">above</a>) keeps one consumer per connector: a task per partition fetching, and one writer writing the rows in batches through the stream path, as <code>POST /v1/stream</code> does. It commits nothing to Kafka and joins no consumer group. New partitions of its topics are found within 30 seconds and read from their first event.</li>
+<li><strong>Rows.</strong> An event's value is JSON (<code>"format": "json"</code>, the default) or text (<code>"text"</code>). The map reads the event as <code>{topic, partition, offset, ts, key, value, headers}</code>: <code>$.value.x</code> a field of the value, <code>$.key</code>, <code>$.offset</code>, <code>$.ts</code> (milliseconds since 1970; <code>"as": "time"</code> makes it a time). Without a map, a JSON object's fields are the row; the default table, <code>kafka_events</code>, keeps each event as a row (<code>id</code> <code>&lt;topic&gt;/&lt;partition&gt;/&lt;offset&gt;</code>, <code>topic</code>, <code>partition_</code>, <code>offset_</code>, <code>ts</code>, <code>msg_key</code>, <code>value</code> as JSON, <code>text</code> the value's text, searched, <code>headers</code>). A keyed table whose row has no key gets <code>&lt;topic&gt;/&lt;partition&gt;/&lt;offset&gt;</code>; a keyed table's rows are upserted, another's inserted. An event no row comes of (a value that is not JSON, a map that fails) still moves its partition's offset, and is counted with the first reason. A tombstone (an event without a value) writes nothing, or, with <code>"tombstones": "delete"</code>, deletes the row of its key.</li>
+<li><strong>When it fails.</strong> A broker that cannot be reached, a sign-in refused or a write that fails ends the consumer's session, and the next one starts after a wait that doubles up to a minute, from ChloeDB's offsets again; the connector's health is <code>failing</code> until it streams. Events that the topic's retention deleted before they were read are counted (<code>lost</code>) and said in a warning, and the partition goes on from its first event kept. A partition whose offsets went back (a topic emptied or made again) stops the consumer with an error that says so, since its new offsets would be taken for events written already: give the connector another prefix to read it.</li>
+</ul>
+<p>The settings, in <code>config</code>: <code>brokers</code> (bootstrap brokers, <code>host:port</code>, joined by commas or a list); <code>topics</code> (joined by commas or a list); <code>start</code>; <code>format</code>; <code>map</code>; <code>prefix</code>; <code>tombstones</code> (<code>skip</code> or <code>delete</code>); <code>tls</code> (<code>true</code> to connect with TLS, checked against the public roots, or against <code>ca_pem</code>, a PEM certificate); <code>sasl</code> (<code>{"mechanism": "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512", "username": "..."}</code>, the password the secret <code>password</code>); <code>allow_internal</code> (the bootstrap brokers are checked as a pull's URL is: a private address, or this machine, only with <code>true</code>); <code>batch</code> (events written at a time, 1 to 4,096, default 1,000); <code>max_wait_ms</code> (how long a fetch waits for new events, 10 to 10,000, default 500); <code>fetch_kb</code> (1 to 65,536, default 1,024). The API answers a Kafka connector with <code>"streams": true</code> and its consumer as <code>stream</code>; <code>POST /v1/admin/connectors/NAME/run</code> is refused for one (it streams while it is on), and its runs table gets a row per session (<code>trigger</code> <code>stream</code>, every 10 minutes while it lasts).</p>
+<h3 id="the-test-broker">The test broker<a class="anchor" href="#the-test-broker" aria-label="Link to this section">#</a></h3>
+<p>To try a connector without Kafka, the server has a test broker: a broker in its own process that speaks as much of Kafka's protocol as a consumer needs (and producing, so any Kafka client can write to it), keeps topics in memory (the last 200,000 events of each partition), and writes made-up click events (<code>{event_id, user, item, action, page, at, price}</code>, keyed by user) into a topic at a rate. On <strong>Data &gt; Connectors</strong> the <strong>Test Kafka broker</strong> card starts and stops it, sets the rate, sends an event typed in, and <strong>Connect a connector to it</strong> fills the form with its address, its topic and a map into <code>demo_clicks</code>. By the API:</p>
+<pre data-lang="sh">curl -X POST localhost:7700/v1/admin/kafka/test-broker -H &quot;Authorization: Bearer $KEY&quot; \
+  -d &#x27;{&quot;listen&quot;: &quot;127.0.0.1:19092&quot;, &quot;topic&quot;: &quot;demo.clicks&quot;, &quot;partitions&quot;: 3, &quot;rate&quot;: 5}&#x27;   # or {&quot;rate&quot;: 50} while it runs
+curl -X POST localhost:7700/v1/admin/kafka/test-broker/produce -H &quot;Authorization: Bearer $KEY&quot; \
+  -d &#x27;{&quot;topic&quot;: &quot;orders&quot;, &quot;messages&quot;: [{&quot;key&quot;: &quot;c42&quot;, &quot;value&quot;: {&quot;order_id&quot;: &quot;o1&quot;, &quot;total&quot;: 19.5}}]}&#x27;
+curl localhost:7700/v1/admin/kafka/test-broker -H &quot;Authorization: Bearer $KEY&quot;        # its topics, offsets and counts
+curl -X DELETE localhost:7700/v1/admin/kafka/test-broker -H &quot;Authorization: Bearer $KEY&quot;</pre>
+<p>The API starts it on a loopback address only, and it stops with the server; <code>username</code> and <code>password</code> make it ask clients to sign in with SASL PLAIN. For one other machines reach, run it on its own: <code>chloedb-server kafka-test-broker --listen 0.0.0.0:19092 --advertise test-kafka.internal --topic demo.clicks --rate 20</code> (<code>--advertise</code> is the host its clients are told to connect to after the first; <code>--username</code> with <code>CHLOEDB_KAFKA_TEST_PASSWORD</code> for a sign-in). Kafka's own tools that need no consumer group read and write it too: <code>rpk topic consume demo.clicks -X brokers=127.0.0.1:19092</code>. It is for trying and testing, not a Kafka: one broker, no replication, nothing kept on disk.</p>
 <h2 id="limits">Limits<a class="anchor" href="#limits" aria-label="Link to this section">#</a></h2>
 <ul>
 <li>One run reads 20,000 records at most (a push too: one of more answers 413, and a push's body is 32 MiB at most, or <code>--max-body-mb</code> when that is smaller), and writes them 500 rows (or about 4 MB) at a time; a run that stopped at the limit runs again at once. An <code>http_json</code> pull whose cursor does not move its URL on (no <code>cursor</code> path, or no <code>{cursor}</code> in the URL) keeps the next page's URL in its cursor instead (<code>{"next": URL, "cursor": ...}</code>, a secret in it kept as its <code>{secret:NAME}</code>), so the next run goes on from that page, and the run that reads the last page clears it. A run that fails partway keeps the rows it wrote and its cursor, so the next one reads them again, as upserts.</li>
 <li>A pull runs for 10 minutes at most; each request to the system waits 60 seconds.</li>
 <li>Pulls are not yet spread over coordinators or shards, and a connector's runs are one at a time.</li>
-<li>Not yet connectors: IMAP mailboxes (hand the mail over instead), Kafka topics read by the server itself (use a consumer that writes <code>/v1/stream</code>), and S3 prefixes watched for new Parquet files.</li>
+<li>A Kafka connector's writer writes up to <code>batch</code> events (default 1,000) at a time, and each partition's fetch asks for up to <code>fetch_kb</code> (default 1 MiB); one server reads every partition of its Kafka connectors (no consumer group spreads them over servers).</li>
+<li>Not yet connectors: IMAP mailboxes (hand the mail over instead) and S3 prefixes watched for new Parquet files.</li>
 </ul>
     </div>
     <footer class="doc-foot">

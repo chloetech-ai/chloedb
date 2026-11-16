@@ -1,6 +1,6 @@
 # Connectors
 
-A connector brings another system's data into a table of `chloedb-server`, and keeps it coming: it reads the system on a schedule (a pull) or takes what the system sends (a push), turns each record into a row by a map, and upserts the rows by the table's key, so a record read twice is the same row. Connectors are configured as rows of a table, each writes with a key limited to its own target, and the command center's **Data > Connectors** page shows each one's health.
+A connector brings another system's data into a table of `chloedb-server`, and keeps it coming: it reads the system on a schedule (a pull), takes what the system sends (a push), or, for Kafka, keeps reading its topics while it is on (a stream); it turns each record into a row by a map, and upserts the rows by the table's key, so a record read twice is the same row (a stream writes each event once, by its offset). Connectors are configured as rows of a table, each writes with a key limited to its own target, and the command center's **Data > Connectors** page shows each one's health.
 
 | kind | pull or push | what it brings in | default table |
 |---|---|---|---|
@@ -11,8 +11,9 @@ A connector brings another system's data into a table of `chloedb-server`, and k
 | `mail` | push | emails handed over raw: headers, text, and the maintenance fields carriers attach (the BCOP `X-MAINTNOTE` iCalendar properties: provider, maintenance id, circuits, window, impact, status) | `mail_messages` |
 | `webhook` | push | any system that posts JSON; preset `alertmanager` for Alertmanager's webhook | `webhook_events`, `alertmanager_alerts` |
 | `http_json` | pull | any REST API that answers JSON: records at a path, the next page at another, a cursor kept from the records | `http_records` |
+| `kafka` | stream | Kafka (or Redpanda, MSK, Confluent Cloud) topics, read by the server itself while the connector is on, each event written once: its partition's offset is kept with its row ([Kafka topics](#kafka-topics)) | `kafka_events` |
 
-Other ways rows come in stay as they are, and the Connectors page lists their sources beside the connectors: OpenTelemetry logs (`POST /v1/logs`, [server.md](server.md#opentelemetry-logs)), streams with offsets applied once (`POST /v1/stream`, which Kafka consumers use), Postgres by logical replication ([`follow-postgres`](postgres.md)), and files ([SQLite](sqlite.md), [Parquet and S3](parquet.md)).
+Other ways rows come in stay as they are, and the Connectors page lists their sources beside the connectors: OpenTelemetry logs (`POST /v1/logs`, [server.md](server.md#opentelemetry-logs)), streams with offsets applied once (`POST /v1/stream`, which a consumer of your own can write), Postgres by logical replication ([`follow-postgres`](postgres.md)), and files ([SQLite](sqlite.md), [Parquet and S3](parquet.md)).
 
 ## Make one
 
@@ -31,7 +32,7 @@ Other ways rows come in stay as they are, and the Connectors page lists their so
 ```
 
 - `name`: 1 to 48 lowercase letters, digits, `-` and `_`.
-- `target`: the table it writes. Left out, the kind's own table, which is made then (its columns are in the table above's [defaults](#default-tables-and-presets)). A table that does not exist and is not the kind's own is refused, unless `config.create_target` is `true`, which makes it with the columns of the connector's own `map` when it has one (each typed by its `as`: `int` an `INT`, `float` a `FLOAT`, `bool` a `BOOL`, `time` or `{"now": true}` a `TIMESTAMP`, `list` a `KEYWORD[]`, `json` a `JSON`, `hash` a `KEYWORD`, any other `TEXT`; `id` its primary key, or none without an `id`), else with the kind's columns.
+- `target`: the table it writes. Left out, the kind's own table, which is made then (its columns are in the table above's [defaults](#default-tables-and-presets)). A table that does not exist and is not the kind's own is refused, unless `config.create_target` is `true`, which makes it with the columns of the connector's own `map` when it has one (each typed by its `as`: `int` an `INT`, `float` a `FLOAT`, `bool` a `BOOL`, `time` or `{"now": true}` a `TIMESTAMP`, `list` a `KEYWORD[]`, `json` a `JSON`, `hash` a `KEYWORD`, any other `TEXT`, or the type a spec says: `{"path": "$.action", "type": "KEYWORD"}` for a value kept whole, to group or filter by, rather than searched as words; `id` its primary key, or none without an `id`), else with the kind's columns.
 - `every_s`: seconds between pulls (at least 10; 0 runs only when asked). The defaults: 60 for Prometheus, 300 for Jira, ServiceNow and HTTP pulls, 900 for Oxidized. A failed pull waits twice as long each time, up to an hour; one that stopped at its limit (20,000 records a run) runs again at once.
 - `config`: the kind's settings (below) and an optional `map`.
 - `secrets`: passwords and tokens, by name. They are never written to a table nor answered: the server keeps them in `<db>.connectors.json` beside the database, readable by its user only (`--connector-secrets FILE`; a coordinator without one keeps them in memory, so give it one, or name each secret as `"env:VARIABLE"`, which the server reads from its environment at each run, as a Kubernetes Secret gives it). An `env:` secret names a variable whose name starts with `CHLOEDB_CONNECTOR_SECRET_` (`--connector-env-prefix` chooses another prefix), so that no connector reads the server's own tokens, model keys or cloud credentials; another name is refused with a 400.
@@ -160,9 +161,48 @@ receivers:
 
 **http_json**: `url` (`{cursor}` is replaced by the cursor, URL-encoded); `records`; `next` (the path to the next page's URL, or a path on the same host); `cursor` (the path in a record whose highest value is the next cursor) and `start` (the first one); `headers` (`{secret:NAME}` is replaced by a secret); `auth`, `username`.
 
+## Kafka topics
+
+A `kafka` connector reads topics into a table while it is on, and writes each event once. Its section on **Data > Connectors** lists the Kafka connectors with their consumers live: state, events a second, lag (each partition's end less the next offset to write, since there is no consumer group for Kafka's own lag tools to see), events and rows since the server started, replays skipped, events that made no row, and a table of partitions; **Start** and **Stop** turn one on and off (kept in its row, so it stays so across restarts), and **Add a Kafka connector** has a form with a dry run that connects and shows the rows a few events would make.
+
+```bash
+curl -X POST localhost:7700/v1/admin/connectors -H "Authorization: Bearer $KEY" -d '{
+  "name": "orders", "kind": "kafka", "target": "orders",
+  "config": {
+    "brokers": "kafka-1:9092,kafka-2:9092", "topics": "orders", "allow_internal": true, "create_target": true,
+    "map": {"id": "$.value.order_id", "customer": {"path": "$.key", "type": "KEYWORD"}, "total": {"path": "$.value.total", "as": "float"}, "at": {"path": "$.ts", "as": "time"}}
+  }
+}'
+curl -X POST localhost:7700/v1/admin/connectors/orders/stop -H "Authorization: Bearer $KEY"
+curl -X POST localhost:7700/v1/admin/connectors/orders/start -H "Authorization: Bearer $KEY"
+```
+
+- **Each event once.** Each partition is a [stream source](server.md#streams) named `<prefix><topic>/<partition>` (prefix `kafka/<name>/` unless `prefix` says another), whose last offset the server keeps in `_sources` in the same transaction as the rows its events made. A consumer starts each partition after the offset ChloeDB has, not after one committed to Kafka, so a stop, a restart of the server or of a broker, or a coordinator taking over writes no event twice and misses none (a second write of an offset is a replay, and skipped). A partition ChloeDB has no offset of starts at its first event (`"start": "earliest"`, the default) or its end (`"latest"`). Another prefix reads the topics again from the start; two connectors with the same prefix share their offsets.
+- **Who reads.** The server that runs the pulls ([above](#who-runs-the-pulls)) keeps one consumer per connector: a task per partition fetching, and one writer writing the rows in batches through the stream path, as `POST /v1/stream` does. It commits nothing to Kafka and joins no consumer group. New partitions of its topics are found within 30 seconds and read from their first event.
+- **Rows.** An event's value is JSON (`"format": "json"`, the default) or text (`"text"`). The map reads the event as `{topic, partition, offset, ts, key, value, headers}`: `$.value.x` a field of the value, `$.key`, `$.offset`, `$.ts` (milliseconds since 1970; `"as": "time"` makes it a time). Without a map, a JSON object's fields are the row; the default table, `kafka_events`, keeps each event as a row (`id` `<topic>/<partition>/<offset>`, `topic`, `partition_`, `offset_`, `ts`, `msg_key`, `value` as JSON, `text` the value's text, searched, `headers`). A keyed table whose row has no key gets `<topic>/<partition>/<offset>`; a keyed table's rows are upserted, another's inserted. An event no row comes of (a value that is not JSON, a map that fails) still moves its partition's offset, and is counted with the first reason. A tombstone (an event without a value) writes nothing, or, with `"tombstones": "delete"`, deletes the row of its key.
+- **When it fails.** A broker that cannot be reached, a sign-in refused or a write that fails ends the consumer's session, and the next one starts after a wait that doubles up to a minute, from ChloeDB's offsets again; the connector's health is `failing` until it streams. Events that the topic's retention deleted before they were read are counted (`lost`) and said in a warning, and the partition goes on from its first event kept. A partition whose offsets went back (a topic emptied or made again) stops the consumer with an error that says so, since its new offsets would be taken for events written already: give the connector another prefix to read it.
+
+The settings, in `config`: `brokers` (bootstrap brokers, `host:port`, joined by commas or a list); `topics` (joined by commas or a list); `start`; `format`; `map`; `prefix`; `tombstones` (`skip` or `delete`); `tls` (`true` to connect with TLS, checked against the public roots, or against `ca_pem`, a PEM certificate); `sasl` (`{"mechanism": "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512", "username": "..."}`, the password the secret `password`); `allow_internal` (the bootstrap brokers are checked as a pull's URL is: a private address, or this machine, only with `true`); `batch` (events written at a time, 1 to 4,096, default 1,000); `max_wait_ms` (how long a fetch waits for new events, 10 to 10,000, default 500); `fetch_kb` (1 to 65,536, default 1,024). The API answers a Kafka connector with `"streams": true` and its consumer as `stream`; `POST /v1/admin/connectors/NAME/run` is refused for one (it streams while it is on), and its runs table gets a row per session (`trigger` `stream`, every 10 minutes while it lasts).
+
+### The test broker
+
+To try a connector without Kafka, the server has a test broker: a broker in its own process that speaks as much of Kafka's protocol as a consumer needs (and producing, so any Kafka client can write to it), keeps topics in memory (the last 200,000 events of each partition), and writes made-up click events (`{event_id, user, item, action, page, at, price}`, keyed by user) into a topic at a rate. On **Data > Connectors** the **Test Kafka broker** card starts and stops it, sets the rate, sends an event typed in, and **Connect a connector to it** fills the form with its address, its topic and a map into `demo_clicks`. By the API:
+
+```bash
+curl -X POST localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY" \
+  -d '{"listen": "127.0.0.1:19092", "topic": "demo.clicks", "partitions": 3, "rate": 5}'   # or {"rate": 50} while it runs
+curl -X POST localhost:7700/v1/admin/kafka/test-broker/produce -H "Authorization: Bearer $KEY" \
+  -d '{"topic": "orders", "messages": [{"key": "c42", "value": {"order_id": "o1", "total": 19.5}}]}'
+curl localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY"        # its topics, offsets and counts
+curl -X DELETE localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY"
+```
+
+The API starts it on a loopback address only, and it stops with the server; `username` and `password` make it ask clients to sign in with SASL PLAIN. For one other machines reach, run it on its own: `chloedb-server kafka-test-broker --listen 0.0.0.0:19092 --advertise test-kafka.internal --topic demo.clicks --rate 20` (`--advertise` is the host its clients are told to connect to after the first; `--username` with `CHLOEDB_KAFKA_TEST_PASSWORD` for a sign-in). Kafka's own tools that need no consumer group read and write it too: `rpk topic consume demo.clicks -X brokers=127.0.0.1:19092`. It is for trying and testing, not a Kafka: one broker, no replication, nothing kept on disk.
+
 ## Limits
 
 - One run reads 20,000 records at most (a push too: one of more answers 413, and a push's body is 32 MiB at most, or `--max-body-mb` when that is smaller), and writes them 500 rows (or about 4 MB) at a time; a run that stopped at the limit runs again at once. An `http_json` pull whose cursor does not move its URL on (no `cursor` path, or no `{cursor}` in the URL) keeps the next page's URL in its cursor instead (`{"next": URL, "cursor": ...}`, a secret in it kept as its `{secret:NAME}`), so the next run goes on from that page, and the run that reads the last page clears it. A run that fails partway keeps the rows it wrote and its cursor, so the next one reads them again, as upserts.
 - A pull runs for 10 minutes at most; each request to the system waits 60 seconds.
 - Pulls are not yet spread over coordinators or shards, and a connector's runs are one at a time.
-- Not yet connectors: IMAP mailboxes (hand the mail over instead), Kafka topics read by the server itself (use a consumer that writes `/v1/stream`), and S3 prefixes watched for new Parquet files.
+- A Kafka connector's writer writes up to `batch` events (default 1,000) at a time, and each partition's fetch asks for up to `fetch_kb` (default 1 MiB); one server reads every partition of its Kafka connectors (no consumer group spreads them over servers).
+- Not yet connectors: IMAP mailboxes (hand the mail over instead) and S3 prefixes watched for new Parquet files.

@@ -41,10 +41,19 @@
 //!   several, the one that sends the alerts' messages: [`crate::alerts`]);
 //!   never a replica or a shard (`--connectors off` turns them off). A
 //!   push goes to any coordinator.
+//! - **Streams.** A Kafka connector ([`kafka`]) reads its topics while it
+//!   is on, on the server that runs the pulls, each event written once
+//!   (its offset kept with its rows); `POST /v1/admin/connectors/NAME/start`
+//!   and `/stop` turn it on and off. A test broker that speaks enough of
+//!   Kafka's protocol for it ([`kafka_broker`]) starts in the process from
+//!   the command center (`/v1/admin/kafka/test-broker`, an admin's, on
+//!   this machine's loopback only).
 //! - **Health.** `GET /v1/admin/connectors` answers each connector's
 //!   health (ok, warning, failing, stale, waiting, pending, disabled), its last
 //!   runs and its counts; the command center's Connectors page shows it.
 
+pub mod kafka;
+pub mod kafka_broker;
 pub mod kinds;
 pub mod mail;
 pub mod map;
@@ -373,6 +382,12 @@ pub struct Connectors {
     /// of those that may reach this network too ([`reach`]).
     http: OnceLock<reqwest::Client>,
     http_internal: OnceLock<reqwest::Client>,
+    /// The Kafka connectors' consumers running here, and what each did
+    /// ([`kafka`]).
+    streams: Mutex<HashMap<String, kafka::Running>>,
+    lives: Mutex<HashMap<String, Arc<kafka::Live>>>,
+    /// The test Kafka broker, when one runs in this process.
+    test_broker: tokio::sync::Mutex<Option<kafka_broker::TestBroker>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -682,9 +697,12 @@ impl Connectors {
     async fn tick(&self, svc: &Arc<Service>) {
         let (me, pager) = svc.alerts.pager();
         if !me.is_empty() && me != pager {
+            // Another coordinator runs the connectors: its Kafka consumers too.
+            kafka::supervise(svc, &[], false);
             return;
         }
         let Ok(list) = self.list(svc, false).await else { return };
+        kafka::supervise(svc, &list, true);
         let now = now_ms();
         // A row that fails the API's checks (written past it) never runs.
         for c in list.into_iter().filter(|c| c.enabled && c.pulls() && c.invalid.is_none()) {
@@ -862,7 +880,10 @@ impl Connectors {
     }
 
     /// A connector's health ([`self`]).
-    fn health(&self, c: &Connector, st: &State) -> &'static str {
+    fn health(&self, svc: &Service, c: &Connector, st: &State) -> &'static str {
+        if c.kind == kafka::KIND {
+            return kafka::health(svc, c);
+        }
         if c.invalid.is_some() {
             return "invalid";
         }
@@ -892,15 +913,16 @@ impl Connectors {
         "ok"
     }
 
-    fn json_of(&self, c: &Connector) -> Json {
+    fn json_of(&self, svc: &Service, c: &Connector) -> Json {
         let st = self.state_of(&c.name);
-        let health = self.health(c, &st);
+        let health = self.health(svc, c, &st);
         let next_ms = (c.enabled && c.pulls()).then(|| if st.last_run_ms == 0 { now_ms() } else { st.last_run_ms + c.every_s * 1000 });
         json!({
             "name": c.name, "kind": c.kind, "target": c.target, "enabled": c.enabled, "every_s": c.every_s, "config": c.config,
             "note": c.note, "created_ms": c.created_ms, "updated_ms": c.updated_ms, "updated_by": c.updated_by, "invalid": c.invalid, "pulls": c.pulls(), "pushed": c.pushed(),
             "push": c.pushed().then(|| json!({"url": format!("/v1/connectors/{}/push", c.name), "key_id": c.push_key})),
             "secrets": self.secret_names(&c.name), "health": health, "state": st, "next_ms": next_ms,
+            "streams": c.kind == kafka::KIND, "stream": (c.kind == kafka::KIND).then(|| kafka::json_of(svc, c)),
         })
     }
 }
@@ -920,7 +942,7 @@ fn kinds_json() -> Json {
             .iter()
             .map(|k| {
                 let c = Connector { name: String::new(), kind: k.name.into(), target: String::new(), enabled: true, every_s: 0, config: json!({}), push_key: None, note: String::new(), created_ms: 0, updated_ms: 0, updated_by: String::new(), invalid: None };
-                json!({"kind": k.name, "title": k.title, "about": k.about, "pull": k.pull, "push": k.push, "target": kinds::default_target(&c), "every_s": default_every(k.name), "settings": k.settings.iter().map(|(n, w)| json!({"name": n, "about": w})).collect::<Vec<_>>(), "secrets": k.secrets})
+                json!({"kind": k.name, "title": k.title, "about": k.about, "pull": k.pull, "push": k.push, "stream": k.stream, "target": kinds::default_target(&c), "every_s": default_every(k.name), "settings": k.settings.iter().map(|(n, w)| json!({"name": n, "about": w})).collect::<Vec<_>>(), "secrets": k.secrets})
             })
             .collect(),
     )
@@ -954,7 +976,7 @@ pub async fn list_json(svc: &Arc<Service>, caller: &Caller) -> Result<Json, ApiE
     let connectors: Vec<Json> = list
         .iter()
         .map(|c| {
-            let mut j = me.json_of(c);
+            let mut j = me.json_of(svc, c);
             j["runs"] = Json::Array(runs.remove(&c.name).unwrap_or_default());
             j
         })
@@ -980,7 +1002,7 @@ pub async fn list_json(svc: &Arc<Service>, caller: &Caller) -> Result<Json, ApiE
 pub async fn one_json(svc: &Arc<Service>, name: &str) -> Result<Json, ApiError> {
     let me = &svc.connectors;
     let c = me.find(svc, name).await?;
-    let mut j = me.json_of(&c);
+    let mut j = me.json_of(svc, &c);
     let runs = me.own_sql(svc, &format!("SELECT * FROM {RUNS} WHERE connector = :n ORDER BY started DESC LIMIT 50"), json!({"n": name})).await.map(|j| j["rows"].clone()).unwrap_or(json!([]));
     j["runs"] = runs;
     j["map"] = kinds::map_of(&c).map_or(Json::Null, Json::Object);
@@ -1100,7 +1122,7 @@ pub async fn create(svc: &Arc<Service>, caller: &Caller, b: &Json) -> Result<Jso
     me.own_write(svc, vec![json!({"op": "upsert", "table": CONFIGS, "doc": c.row()})]).await.map_err(ApiError::internal)?;
     me.forget_cache();
     me.wake.notify_one();
-    out["connector"] = me.json_of(&c);
+    out["connector"] = me.json_of(svc, &c);
     out["made_target"] = json!(made);
     Ok(out)
 }
@@ -1128,7 +1150,7 @@ pub async fn update(svc: &Arc<Service>, caller: &Caller, name: &str, b: &Json) -
     me.own_write(svc, vec![json!({"op": "upsert", "table": CONFIGS, "doc": c.row()})]).await.map_err(ApiError::internal)?;
     me.forget_cache();
     me.wake.notify_one();
-    out["connector"] = me.json_of(&c);
+    out["connector"] = me.json_of(svc, &c);
     Ok(out)
 }
 
@@ -1142,6 +1164,8 @@ pub async fn delete(svc: &Arc<Service>, caller: &Caller, name: &str) -> Result<J
     }
     me.own_write(svc, vec![json!({"op": "delete", "table": CONFIGS, "key": c.name}), json!({"op": "delete", "table": STATE, "key": c.name})]).await.map_err(ApiError::internal)?;
     me.drop_secrets(&c.name)?;
+    kafka::stop(svc, &c.name);
+    lock(&me.lives).remove(&c.name);
     lock(&me.state).remove(&c.name);
     me.forget_cache();
     Ok(json!({"deleted": c.name}))
@@ -1168,6 +1192,9 @@ pub async fn run_now(svc: &Arc<Service>, name: &str) -> Result<Json, ApiError> {
     let c = me.find(svc, name).await?;
     if let Some(why) = &c.invalid {
         return Err(ApiError { code: None, status: 409, message: format!("connector {name} does not run: {why} (change it with POST /v1/admin/connectors/{name}, or delete it)") });
+    }
+    if c.kind == kafka::KIND {
+        return Err(bad(format!("a kafka connector streams while it is on: start and stop it (POST /v1/admin/connectors/{}/start, /stop)", c.name)));
     }
     if !kinds::kind(&c.kind).is_some_and(|k| k.pull) {
         return Err(bad(format!("a {} connector is not pulled: systems push to it (POST /v1/connectors/{}/push)", c.kind, c.name)));
@@ -1214,6 +1241,9 @@ pub async fn test(svc: &Arc<Service>, b: &Json) -> Result<Json, ApiError> {
     let reach = kinds::reach_of(&c);
     let ctx = kinds::Ctx { c: &c, cursor, secrets: &secrets, http: me.http(&c), reach: &reach, now_us, limit: 200, max_bytes: kinds::max_bytes(&c) };
     let t0 = std::time::Instant::now();
+    if c.kind == kafka::KIND {
+        return test_kafka(svc, &c, &secrets, t0).await;
+    }
     let fetched = match b.get("sample").filter(|s| !s.is_null()) {
         Some(Json::String(raw)) => kinds::push(&ctx, raw.as_bytes(), if c.kind == "mail" { "message/rfc822" } else { "application/json" }).await.map(|records| kinds::Fetched { records, ..Default::default() }),
         Some(j) => kinds::push(&ctx, j.to_string().as_bytes(), "application/json").await.map(|records| kinds::Fetched { records, ..Default::default() }),
@@ -1246,6 +1276,174 @@ pub async fn test(svc: &Arc<Service>, b: &Json) -> Result<Json, ApiError> {
     }))
 }
 
+/// A Kafka connector's dry run ([`test`]): events read from where it
+/// would read next (else the last ones), and the rows they make.
+async fn test_kafka(svc: &Arc<Service>, c: &Connector, secrets: &HashMap<String, String>, t0: std::time::Instant) -> Result<Json, ApiError> {
+    let have: HashMap<String, i64> = svc.sources().await?.into_iter().map(|s| (s.name, s.offset)).collect();
+    let f = kafka::sample(c, secrets, &have, 10).await.map_err(|e| ApiError { code: None, status: 502, message: kinds::redact(&e, secrets) })?;
+    let target = svc.table(&c.target).await.ok();
+    let m = kinds::map_of(c);
+    let now_us = now_ms() as i64 * 1000;
+    let mut fitted = map::Fitted::default();
+    let (mut rows, mut errors) = (Vec::new(), Vec::new());
+    for r in f.records.iter().take(10) {
+        match kafka::row_of(m.as_ref(), r, target.as_deref(), &mut fitted, now_us) {
+            Ok(Some(row)) => rows.push(Json::Object(row)),
+            Ok(None) => {}
+            Err(e) => errors.push(json!(format!("{}/{} offset {}: {e}", r["topic"].as_str().unwrap_or_default(), r["partition"], r["offset"]))),
+        }
+    }
+    Ok(json!({
+        "connector": c.name, "kind": c.kind, "target": c.target, "target_exists": target.is_some(),
+        "records": f.records.len(), "cursor": f.cursor, "more": f.more, "warning": f.warning.map(|w| kinds::redact(&w, secrets)), "took_ms": t0.elapsed().as_millis() as u64,
+        "sample_records": f.records.iter().take(3).cloned().collect::<Vec<_>>(), "rows": rows, "errors": errors, "dropped": fitted.dropped,
+        "map": m.map_or(Json::Null, Json::Object),
+    }))
+}
+
+/// `POST /v1/admin/connectors/:name/start` and `/stop`: turns a Kafka
+/// connector's consumer on or off (kept in its row, so it stays so across
+/// restarts), and starts or stops it now.
+pub async fn start_stop(svc: &Arc<Service>, caller: &Caller, name: &str, on: bool) -> Result<Json, ApiError> {
+    let me = &svc.connectors;
+    let c = me.find(svc, name).await?;
+    if c.kind != kafka::KIND {
+        return Err(bad(format!("a {} connector does not stream: turn it on or off with POST /v1/admin/connectors/{name} {{\"enabled\": {on}}}", c.kind)));
+    }
+    if let Some(why) = &c.invalid {
+        return Err(ApiError { code: None, status: 409, message: format!("connector {name} does not run: {why}") });
+    }
+    let mut out = match c.enabled == on {
+        true => json!({"connector": me.json_of(svc, &c)}),
+        false => update(svc, caller, name, &json!({"enabled": on})).await?,
+    };
+    if !on {
+        kafka::stop(svc, name);
+    }
+    let here = me.enabled() && {
+        let (here, pager) = svc.alerts.pager();
+        here.is_empty() || here == pager
+    };
+    if on && here {
+        if let Ok(list) = me.list(svc, true).await {
+            kafka::supervise(svc, &list, true);
+        }
+    }
+    out["runs_here"] = json!(here);
+    if on && !here {
+        out["note"] = json!("this server does not run the connectors (a replica, a shard, --connectors off, or another coordinator runs them): the consumer runs there");
+    }
+    Ok(out)
+}
+
+/// `GET /v1/admin/kafka/test-broker`: the test broker of this process.
+pub async fn test_broker_status(svc: &Arc<Service>) -> Json {
+    match svc.connectors.test_broker.lock().await.as_ref() {
+        Some(b) => b.status(),
+        None => json!({"running": false, "default": {"listen": "127.0.0.1:19092", "topic": "demo.clicks", "partitions": 3, "rate": 5}}),
+    }
+}
+
+/// `POST /v1/admin/kafka/test-broker {listen?, topic?, partitions?, rate?,
+/// username?, password?, retain?}`: starts the test broker in this
+/// process, on a loopback address only; or, when one runs, sets its
+/// generator (`topic`, `rate`) and makes `topic` if it is new.
+pub async fn test_broker_start(svc: &Arc<Service>, b: &Json) -> Result<Json, ApiError> {
+    let mut slot = svc.connectors.test_broker.lock().await;
+    let rate = match &b["rate"] {
+        Json::Null => None,
+        v => Some(v.as_f64().filter(|r| (0.0..=100_000.0).contains(r)).ok_or_else(|| bad("rate is 0 to 100,000 events a second"))?),
+    };
+    let topic = b["topic"].as_str().map(str::trim).filter(|t| !t.is_empty());
+    if let Some(running) = slot.as_ref() {
+        if let Some(p) = b["partitions"].as_i64() {
+            let t = topic.unwrap_or("demo.clicks");
+            match running.create_topic(t, p as i32) {
+                Ok(()) => {}
+                Err(e) if e.ends_with("exists") => {}
+                Err(e) => return Err(bad(e)),
+            }
+        }
+        if topic.is_some() || rate.is_some() {
+            let st = running.status();
+            let t = topic.map(str::to_string).unwrap_or_else(|| st["generator"]["topic"].as_str().unwrap_or("demo.clicks").to_string());
+            let r = rate.unwrap_or_else(|| st["generator"]["rate"].as_f64().unwrap_or(0.0));
+            running.set_generator(&t, r).map_err(bad)?;
+        }
+        return Ok(running.status());
+    }
+    let listen: std::net::SocketAddr = b["listen"].as_str().unwrap_or("127.0.0.1:19092").parse().map_err(|_| bad("listen is ip:port, on this machine's loopback (127.0.0.1:19092)"))?;
+    if !listen.ip().is_loopback() {
+        return Err(bad("the test broker listens on this machine's loopback only (127.0.0.1); run chloedb-server kafka-test-broker for one that others reach"));
+    }
+    let sasl = match (b["username"].as_str().filter(|u| !u.is_empty()), b["password"].as_str()) {
+        (Some(u), Some(p)) if !p.is_empty() => Some((u.to_string(), p.to_string())),
+        (None, None) => None,
+        _ => return Err(bad("a test broker that asks clients to sign in has a username and a password")),
+    };
+    let o = kafka_broker::Options {
+        listen,
+        topic: topic.unwrap_or("demo.clicks").to_string(),
+        partitions: b["partitions"].as_i64().unwrap_or(3) as i32,
+        rate: rate.unwrap_or(5.0),
+        sasl,
+        retain: b["retain"].as_u64().unwrap_or(200_000).clamp(1, 10_000_000) as usize,
+        advertise: None,
+    };
+    let broker = kafka_broker::TestBroker::start(o).await.map_err(bad)?;
+    tracing::info!(address = %broker.address(), "test kafka broker started");
+    let st = broker.status();
+    *slot = Some(broker);
+    Ok(st)
+}
+
+/// `DELETE /v1/admin/kafka/test-broker`: stops it; its topics go.
+pub async fn test_broker_stop(svc: &Arc<Service>) -> Json {
+    let old = svc.connectors.test_broker.lock().await.take();
+    match old {
+        Some(b) => {
+            b.stop();
+            json!({"stopped": b.address()})
+        }
+        None => json!({"stopped": null}),
+    }
+}
+
+/// `POST /v1/admin/kafka/test-broker/produce {topic, partition?, messages:
+/// [{key?, value, headers?}] | value, count?}`: adds messages to a topic
+/// of the test broker (made if missing); a value that is not text is sent
+/// as its JSON. The offsets they took.
+pub async fn test_broker_produce(svc: &Arc<Service>, b: &Json) -> Result<Json, ApiError> {
+    let slot = svc.connectors.test_broker.lock().await;
+    let broker = slot.as_ref().ok_or_else(|| ApiError { code: None, status: 409, message: "no test broker runs here: start one first (POST /v1/admin/kafka/test-broker)".into() })?;
+    let topic = b["topic"].as_str().unwrap_or("demo.clicks");
+    let bytes = |v: &Json| -> Option<Vec<u8>> {
+        match v {
+            Json::Null => None,
+            Json::String(s) => Some(s.clone().into_bytes()),
+            v => Some(v.to_string().into_bytes()),
+        }
+    };
+    let one = |m: &Json| -> kafka_broker::Message {
+        let headers = m["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.clone(), bytes(v))).collect()).unwrap_or_default();
+        kafka_broker::Message { ts: now_ms() as i64, key: m["key"].as_str().map(|k| k.as_bytes().to_vec()), value: bytes(&m["value"]), headers }
+    };
+    let msgs: Vec<kafka_broker::Message> = match &b["messages"] {
+        Json::Array(a) => a.iter().map(one).collect(),
+        Json::Null => vec![one(b); b["count"].as_u64().unwrap_or(1).clamp(1, 100_000) as usize],
+        _ => return Err(bad("messages is a list of {key?, value, headers?}")),
+    };
+    if msgs.len() > 100_000 {
+        return Err(bad("a produce adds 100,000 messages at most"));
+    }
+    let partition = match &b["partition"] {
+        Json::Null => None,
+        v => Some(v.as_i64().ok_or_else(|| bad("partition is a whole number"))? as i32),
+    };
+    let at = broker.produce(topic, partition, msgs).map_err(bad)?;
+    Ok(json!({"topic": topic, "offsets": at.iter().map(|(p, o)| json!({"partition": p, "offset": o})).collect::<Vec<_>>()}))
+}
+
 /// `POST /v1/connectors/:name/push`: a system's push, written with its
 /// own credential (the connector's push key, or any key that may write
 /// the target).
@@ -1257,7 +1455,10 @@ pub async fn push(svc: &Arc<Service>, name: &str, auth: Option<&HeaderValue>, co
         None => me.find(svc, name).await?,
     };
     if !c.pushed() {
-        return Err(bad(format!("a {} connector is not pushed to: it pulls on its schedule", c.kind)));
+        return Err(bad(match c.kind == kafka::KIND {
+            true => "a kafka connector is not pushed to: it reads its topics".to_string(),
+            false => format!("a {} connector is not pushed to: it pulls on its schedule", c.kind),
+        }));
     }
     if let Some(why) = &c.invalid {
         return Err(ApiError { code: None, status: 409, message: format!("connector {name} takes no push: {why}") });
