@@ -1,17 +1,22 @@
 //! The app's HTTP API, and its view. ChloeDB's command center reaches it
 //! through chloedb-server (`--app gh=URL`), which loads the view from here
 //! (`/app.json`, `/ui/view.js`) and sends the app's token with each call.
-//! Nothing here is public: every route but `/healthz` needs the token.
+//! Without `--public` every route but `/healthz` needs the token. With it
+//! the app also serves its page at `/` to anyone, and the page's reads
+//! (every route is a GET) without the token: so many a minute from one
+//! address, and so many at once, the rest waiting for a turn. Nothing runs
+//! SQL a reader writes: each page asks its own statements.
 //!
 //! Every answer carries `queries`: the SQL it ran, each with its rows and
 //! time, which the page shows behind its "SQL" button.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -116,6 +121,15 @@ impl Hn {
 pub struct Service {
     pub db: Strata,
     pub token: Option<String>,
+    /// Whether readers without the token may read (`--public`).
+    pub public: bool,
+    /// Requests a minute one address may make without the token.
+    pub per_minute: usize,
+    /// Each address's minute and its requests in it.
+    pub seen: Mutex<HashMap<String, (u64, usize)>>,
+    /// Turns for the requests without the token: so many are answered at
+    /// once, so that a crowd waits rather than outruns the shards' memory.
+    pub turns: tokio::sync::Semaphore,
     pub hn: Option<Hn>,
     pub started: Instant,
     /// The newest day in the archive, and the most starred repos, kept a
@@ -206,14 +220,47 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
             .and_then(|v| v.strip_prefix("Bearer "))
             .is_some_and(|got| constant_eq(got.as_bytes(), t.as_bytes())),
     };
-    if !authed {
+    if authed {
+        return next.run(req).await;
+    }
+    if !(svc.public && req.method() == Method::GET) {
         return ApiError(
             StatusCode::UNAUTHORIZED,
             "this app needs its token: open it in ChloeDB's command center (Apps → GitHub)".into(),
         )
         .into_response();
     }
+    if !req.uri().path().starts_with("/v1/") {
+        return next.run(req).await;
+    }
+    let who = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip().to_string()))
+        .unwrap_or_default();
+    if !svc.admit(&who, now_s() / 60) {
+        return ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many requests from this address: wait a minute".into(),
+        )
+        .into_response();
+    }
+    let Ok(Ok(_turn)) = tokio::time::timeout(Duration::from_secs(30), svc.turns.acquire()).await else {
+        return ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "many people are reading at once: try again in a moment".into(),
+        )
+        .into_response();
+    };
     next.run(req).await
+}
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn ui_file(name: &str, compiled: &'static str) -> std::borrow::Cow<'static, str> {
@@ -225,9 +272,9 @@ fn ui_file(name: &str, compiled: &'static str) -> std::borrow::Cow<'static, str>
     }
 }
 
-/// The page on its own, for a run on one's own machine without a token.
+/// The page on its own: in public, or on one's own machine without a token.
 async fn index(State(svc): State<Shared>) -> Response {
-    if svc.token.is_some() {
+    if svc.token.is_some() && !svc.public {
         return (
             StatusCode::NOT_FOUND,
             "this app is shown in ChloeDB's command center (Apps → GitHub)",
@@ -298,6 +345,21 @@ macro_rules! ctx {
 }
 
 impl Service {
+    /// Counts a request from `who` in minute `minute`: false past
+    /// `per_minute` of them.
+    pub fn admit(&self, who: &str, minute: u64) -> bool {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() > 50_000 {
+            seen.retain(|_, v| v.0 == minute);
+        }
+        let e = seen.entry(who.to_string()).or_insert((minute, 0));
+        if e.0 != minute {
+            *e = (minute, 0);
+        }
+        e.1 += 1;
+        e.1 <= self.per_minute
+    }
+
     /// The newest day with stars, and the 300 most starred repos.
     async fn latest(&self) -> (i64, Vec<i64>) {
         if let Some((t, d, big)) = self
@@ -362,7 +424,7 @@ async fn status(State(svc): State<Shared>) -> Answer {
         &trace,
         json!({
             "latest": latest, "repos": repos.first().map(|r| r.i("n")), "people": people.first().map(|r| r.i("n")),
-            "hn": svc.hn.is_some(), "examples": crate::ask::EXAMPLES, "uptime_s": svc.started.elapsed().as_secs(),
+            "hn": svc.hn.is_some(), "public": svc.public, "examples": crate::ask::EXAMPLES, "uptime_s": svc.started.elapsed().as_secs(),
         }),
         t0,
     )
@@ -521,13 +583,65 @@ async fn weekly(State(svc): State<Shared>, Query(a): Query<RisingParams>) -> Ans
     done(&trace, v, t0)
 }
 
+/// Each shard of a coordinator's `/v1/cluster`: its number, state, slots
+/// and its first copy's rows and segments.
+fn shards_of(cl: &Value) -> Vec<Value> {
+    cl["shards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            let r = &s["replicas"][0];
+            json!({"shard": s["shard"], "state": s["state"], "slots": s["slots_held"], "rows": r["docs"], "segments": r["segments"]})
+        })
+        .collect()
+}
+
 async fn scale(State(svc): State<Shared>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let mut v = pages::scale(&c).await;
-    // What each shard holds and how fast it answers, from the cluster.
+    // What each shard holds, from the cluster: its rows, segments and
+    // state, not its address or settings.
     if let Ok(cl) = svc.db.get("/v1/cluster").await {
-        v["cluster"] = cl;
+        v["shards"] = json!(shards_of(&cl));
     }
     done(&trace, v, t0)
+}
+
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+
+    fn svc(per_minute: usize) -> Service {
+        Service {
+            db: Strata::new("http://127.0.0.1:1", None),
+            token: Some("t".into()),
+            public: true,
+            per_minute,
+            seen: Mutex::new(HashMap::new()),
+            turns: tokio::sync::Semaphore::new(1),
+            hn: None,
+            started: Instant::now(),
+            latest: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn an_address_gets_so_many_a_minute() {
+        let s = svc(3);
+        assert!((0..3).all(|_| s.admit("1.2.3.4", 10)));
+        assert!(!s.admit("1.2.3.4", 10));
+        assert!(s.admit("5.6.7.8", 10), "another address has its own count");
+        assert!(s.admit("1.2.3.4", 11), "a new minute starts again");
+    }
+
+    #[test]
+    fn the_cluster_summary_leaves_out_addresses() {
+        let cl = json!({"shards": [{"shard": 0, "state": "ok", "slots_held": 1024, "url": "http://gh-s0:7701",
+            "replicas": [{"docs": 5, "segments": 2, "url": "http://gh-s0:7701", "backup_dir": "/data/backup"}]}]});
+        let s = shards_of(&cl);
+        assert_eq!(s, vec![json!({"shard": 0, "state": "ok", "slots": 1024, "rows": 5, "segments": 2})]);
+        assert!(!serde_json::to_string(&s).unwrap().contains("gh-s0"));
+    }
 }

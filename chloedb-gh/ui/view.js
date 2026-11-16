@@ -954,7 +954,7 @@ async function aboutPage(app, main, alive) {
   fill(main, skel(10));
   const j = await app.api("/v1/scale");
   if (!alive()) return;
-  const shards = j.cluster?.shards || j.cluster?.members || [];
+  const shards = j.shards || [];
   fill(main, h("div", { class: "gx-prose" },
     h("h1", { class: "gx-h1" }, "How it works"),
     h("p", {}, "Every public event on GitHub since February 2011, as GH Archive recorded it hour by hour, kept in ChloeDB: a search engine with SQL. Each page above is a handful of SQL statements; the SQL button at the bottom right shows them, with their rows and time."),
@@ -963,8 +963,9 @@ async function aboutPage(app, main, alive) {
       Object.entries(j.tables || {}).map(([t, n]) => h("tr", {}, h("td", {}, h("code", {}, t)), h("td", { class: "r" }, fmt(n)), h("td", {}, TABLE_ABOUT[t] || "")))),
     j.span ? h("p", {}, `Events from ${dmy(j.span.first)} to ${dmy(j.span.last)}.`) : null,
     h("h2", {}, "Where it runs"),
-    h("p", {}, "Four machines of 8 GB each, every one with a local SSD. The events are split by repo across four shards, so one repo's history is a short range on one machine, and a question about all of GitHub is asked of the four at once by a coordinator that adds up their answers. Each night the shards write a checkpoint to a network volume."),
-    shards.length ? h("pre", {}, JSON.stringify(shards, null, 1).slice(0, 1500)) : null,
+    h("p", {}, "Four machines of 8 GB each, every one with a local SSD. The events are split by repo across four shards, so one repo's history is a short range on one machine, and a question about all of GitHub is asked of the four at once by a coordinator that adds up their answers."),
+    shards.length ? h("table", { class: "gx-tbl" }, h("tr", {}, h("th", {}, "shard"), h("th", { class: "r" }, "rows"), h("th", { class: "r" }, "segments"), h("th", { class: "r" }, "slots"), h("th", {}, "state")),
+      shards.map(s => h("tr", {}, h("td", {}, String(s.shard)), h("td", { class: "r" }, fmt(s.rows)), h("td", { class: "r" }, fmt(s.segments)), h("td", { class: "r" }, fmt(s.slots)), h("td", {}, String(s.state || ""))))) : null,
     h("h2", {}, "How the pages are made"),
     h("p", {}, h("b", {}, "Search"), " ranks repos by the words of their name, description and topics (BM25) and by meaning (a vector of the same, compared with the question's), with their stars."),
     h("p", {}, h("b", {}, "Rising"), " compares each repo's stars in the window with its four weeks before, and says what may explain the jump: a first appearance, a release in the window, one big day, or a story on Hacker News (from the Hacker News app on the same cluster)."),

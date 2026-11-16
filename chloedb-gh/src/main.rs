@@ -115,7 +115,8 @@ enum Command {
         base_url: String,
     },
     /// Serve the API and the view for the command center (chloedb-server
-    /// --app gh=URL). Every request needs the token but /healthz.
+    /// --app gh=URL). Every request needs the token but /healthz, unless
+    /// --public.
     Serve {
         #[arg(long, default_value = "127.0.0.1:7880")]
         listen: String,
@@ -129,6 +130,15 @@ enum Command {
         /// who reaches the address may use the app, and `/` serves the page.
         #[arg(long, env = "CHLOEDB_GH_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Serve the page at / to anyone, and its reads without the token.
+        #[arg(long)]
+        public: bool,
+        /// Requests a minute one address may make without the token.
+        #[arg(long, default_value_t = 600)]
+        per_minute: usize,
+        /// Requests without the token answered at once; the rest wait.
+        #[arg(long, default_value_t = 8)]
+        at_once: usize,
         /// The Hacker News app on ChloeDB (chloedb-hn), to say when a repo
         /// was discussed there.
         #[arg(long, env = "CHLOEDB_GH_HN")]
@@ -227,8 +237,11 @@ fn main() -> Result<()> {
             strata,
             key,
             token,
+            public,
+            per_minute,
+            at_once,
             hn,
-        } => serve(listen, strata, key, token, hn),
+        } => serve(listen, strata, key, token, Public { on: public, per_minute, at_once }, hn),
         Command::ShardOf { shards, keys } => {
             for k in keys {
                 println!(
@@ -242,11 +255,19 @@ fn main() -> Result<()> {
     }
 }
 
+/// Who may read without the token, and how much.
+struct Public {
+    on: bool,
+    per_minute: usize,
+    at_once: usize,
+}
+
 fn serve(
     listen: String,
     url: String,
     key: Option<String>,
     token: Option<String>,
+    public: Public,
     hn: Option<String>,
 ) -> Result<()> {
     tracing_subscriber::fmt()
@@ -262,12 +283,16 @@ fn serve(
         let svc = std::sync::Arc::new(api::Service {
             db: Strata::new(&url, key.filter(|k| !k.is_empty())),
             token: token.filter(|t| !t.is_empty()),
+            public: public.on,
+            per_minute: public.per_minute.max(1),
+            seen: std::sync::Mutex::new(Default::default()),
+            turns: tokio::sync::Semaphore::new(public.at_once.max(1)),
             hn: hn.filter(|h| !h.is_empty()).map(|h| api::Hn::new(&h)),
             started: std::time::Instant::now(),
             latest: std::sync::Mutex::new(None),
         });
-        tracing::info!(listen = %listener.local_addr()?, strata = %url, token = svc.token.is_some(), hn = svc.hn.is_some(), "chloedb-gh serves");
-        axum::serve(listener, api::router(svc)).with_graceful_shutdown(async {
+        tracing::info!(listen = %listener.local_addr()?, strata = %url, token = svc.token.is_some(), public = svc.public, hn = svc.hn.is_some(), "chloedb-gh serves");
+        axum::serve(listener, api::router(svc).into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(async {
             let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a signal handler");
             tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
         }).await?;

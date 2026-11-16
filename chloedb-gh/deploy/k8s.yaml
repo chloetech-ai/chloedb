@@ -213,7 +213,9 @@ spec:
       containers:
       - name: app
         image: mirror.gcr.io/library/debian:trixie-slim
-        command: ["/work/bin/chloedb-gh", "serve", "--strata", "http://gh.strata.svc:7700", "--listen", "0.0.0.0:7880", "--hn", "http://hn-app.strata.svc:7850"]
+        # --public: the page and its reads for anyone (gh.chloetech.ai, through
+        # the web namespace's Caddy), 600 requests a minute an address, 8 at once.
+        command: ["/work/bin/chloedb-gh", "serve", "--strata", "http://gh.strata.svc:7700", "--listen", "0.0.0.0:7880", "--hn", "http://hn-app.strata.svc:7850", "--public", "--per-minute", "600", "--at-once", "8"]
         env:
         - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_GH_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
