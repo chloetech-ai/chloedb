@@ -54,6 +54,9 @@ pub struct Opts {
     pub batch: usize,
     pub timeout_ms: u64,
     pub max_bytes: usize,
+    /// What came of a link (`status`) that makes it asked again: a link
+    /// read before is not, unless its row says one of these.
+    pub again: Vec<String>,
 }
 
 /// A link to read: the most voted story that links it, how many do, and
@@ -65,6 +68,8 @@ struct Seed {
     story: i64,
     points: i64,
     stories: i64,
+    /// The year HN first linked it.
+    year: i64,
 }
 
 /// The crawl's counts, for its progress line and `hn_state`.
@@ -91,24 +96,49 @@ impl Counts {
 }
 
 /// The links of the stories, one a canonical link, most points first,
-/// without those already in `hn_pages`.
-async fn seeds(db: &Strata, min_points: i64, say: &(dyn Fn(String) + Sync)) -> Result<Vec<Seed>, String> {
+/// without those already in `hn_pages` (unless their status is one of
+/// `again`). A row read before without the year HN first linked it is
+/// given it.
+async fn seeds(db: &Strata, min_points: i64, again: &[String], say: &(dyn Fn(String) + Sync)) -> Result<Vec<Seed>, String> {
     let t0 = Instant::now();
     let mut done: HashSet<String> = HashSet::new();
-    db.scroll("SELECT id FROM hn_pages", Value::Null, 10_000, |rows| done.extend(rows.iter().map(|r| r.s("id"))))
-        .await
-        .map_err(|e| format!("hn_pages: {e}"))?;
+    let mut no_year: HashSet<String> = HashSet::new();
+    let mut retried = 0usize;
+    db.scroll("SELECT id, status, year FROM hn_pages", Value::Null, 10_000, |rows| {
+        for r in rows {
+            let id = r.s("id");
+            if again.iter().any(|a| *a == r.s("status")) {
+                retried += 1;
+                continue;
+            }
+            if r.get("year").is_none_or(Value::is_null) {
+                no_year.insert(id.clone());
+            }
+            done.insert(id);
+        }
+    })
+    .await
+    .map_err(|e| format!("hn_pages: {e}"))?;
     let mut by: HashMap<String, Seed> = HashMap::new();
+    let mut years: HashMap<String, i64> = HashMap::new();
     let n = db
-        .scroll("SELECT id, url, curl, points FROM hn_stories WHERE url != '' AND points >= :min", json!({"min": min_points}), 10_000, |rows| {
+        .scroll("SELECT id, url, curl, points, year FROM hn_stories WHERE url != '' AND points >= :min", json!({"min": min_points}), 10_000, |rows| {
             for r in rows {
                 let curl = r.s("curl");
-                if curl.is_empty() || done.contains(&curl) {
+                if curl.is_empty() {
                     continue;
                 }
-                let (id, points) = (r.i("id"), r.i("points"));
-                let s = by.entry(curl.clone()).or_insert_with(|| Seed { curl, url: r.s("url"), story: id, points, stories: 0 });
+                let (id, points, year) = (r.i("id"), r.i("points"), r.i("year"));
+                if done.contains(&curl) {
+                    if no_year.contains(&curl) {
+                        let y = years.entry(curl).or_insert(year);
+                        *y = (*y).min(year);
+                    }
+                    continue;
+                }
+                let s = by.entry(curl.clone()).or_insert_with(|| Seed { curl, url: r.s("url"), story: id, points, stories: 0, year });
                 s.stories += 1;
+                s.year = s.year.min(year);
                 if points > s.points {
                     (s.points, s.story, s.url) = (points, id, r.s("url"));
                 }
@@ -116,9 +146,15 @@ async fn seeds(db: &Strata, min_points: i64, say: &(dyn Fn(String) + Sync)) -> R
         })
         .await
         .map_err(|e| format!("hn_stories: {e}"))?;
+    if !years.is_empty() {
+        let ops: Vec<Value> = years.iter().map(|(k, y)| json!({"op": "set", "table": "hn_pages", "key": k, "field": "year", "value": y})).collect();
+        let k = ops.len();
+        db.write(ops).await.map_err(|e| format!("hn_pages' years: {e}"))?;
+        say(format!("{k} pages read before given the year HN first linked them"));
+    }
     let mut out: Vec<Seed> = by.into_values().collect();
     out.sort_by(|a, b| b.points.cmp(&a.points).then(a.story.cmp(&b.story)));
-    say(format!("{} links of {n} stories with {min_points} points or more, {} read before, in {:.0} s", out.len(), done.len(), t0.elapsed().as_secs_f64()));
+    say(format!("{} links of {n} stories with {min_points} points or more, {} read before, {retried} asked again, in {:.0} s", out.len(), done.len(), t0.elapsed().as_secs_f64()));
     Ok(out)
 }
 
@@ -146,7 +182,7 @@ fn cut(s: &str, n: usize) -> String {
 fn row(seed: &Seed, status: &str, code: Option<u16>, ms: Option<u64>) -> Value {
     json!({
         "id": seed.curl, "url": seed.url, "site": text::site(&seed.url),
-        "story": seed.story, "stories": seed.stories, "points": seed.points,
+        "story": seed.story, "stories": seed.stories, "points": seed.points, "year": seed.year,
         "status": status, "code": code, "ms": ms,
         "fetched": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
@@ -176,7 +212,7 @@ fn page_row(seed: &Seed, final_url: &str, code: u16, ms: u64, bytes: usize, p: &
 /// Reads the links into `hn_pages`, `say` told of its progress. Stops
 /// when every link was asked, or at `stop`.
 pub async fn run(db: &Strata, o: &Opts, say: Arc<dyn Fn(String) + Send + Sync>, stop: Arc<tokio::sync::Notify>) -> Result<Value, String> {
-    let mut seeds = seeds(db, o.min_points, &*say).await?;
+    let mut seeds = seeds(db, o.min_points, &o.again, &*say).await?;
     if o.limit > 0 {
         seeds.truncate(o.limit);
     }
@@ -343,7 +379,7 @@ mod tests {
 
     #[test]
     fn a_page_that_asks_not_to_be_indexed_keeps_no_text() {
-        let seed = Seed { curl: "example.com/a".into(), url: "https://example.com/a".into(), story: 1, points: 10, stories: 2 };
+        let seed = Seed { curl: "example.com/a".into(), url: "https://example.com/a".into(), story: 1, points: 10, stories: 2, year: 2019 };
         let p = extract::extract(
             r#"<html lang="en"><head><title>A</title><meta name="robots" content="noindex"><meta name="description" content="d"></head><body><p>secret words</p></body></html>"#,
             &Url::parse("https://example.com/a").unwrap(),
@@ -362,5 +398,6 @@ mod tests {
         assert_eq!(r["status"], "ok");
         assert_eq!(r["body"].as_str().unwrap().chars().count(), 9);
         assert_eq!(r["site"], "example.com");
+        assert_eq!(r["year"], 2019);
     }
 }

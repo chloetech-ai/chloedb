@@ -105,7 +105,7 @@ pub fn tables(model: &str, comment_model: &str) -> Vec<(&'static str, String)> {
         ("hn_pages", format!("CREATE TABLE IF NOT EXISTS hn_pages (
             id KEYWORD PRIMARY KEY,
             url KEYWORD, final KEYWORD, site KEYWORD,
-            story INT REFERENCES hn_stories, stories INT, points INT,
+            story INT REFERENCES hn_stories, stories INT, points INT, year INT,
             status KEYWORD, code INT, fetched TIMESTAMP, ms INT, bytes INT,
             title TEXT, description TEXT, body TEXT,
             words INT, lang KEYWORD, published TIMESTAMP, author KEYWORD,
@@ -198,7 +198,11 @@ pub async fn ensure(db: &Strata, model: &str, comment_model: &str) -> Result<Vec
             made.push(name.to_string());
         }
     }
-    for t in ["hn_stories", "hn_comments"] {
+    // A column added since the table was first made.
+    if have.iter().any(|t| t == "hn_pages") {
+        db.sql("ALTER TABLE hn_pages ADD COLUMN IF NOT EXISTS year INT").await?;
+    }
+    for t in ["hn_stories", "hn_comments", "hn_pages"] {
         let _ = db.sql(&format!("CREATE OR REPLACE SYNONYMS ON {t} AS '{}'", SYNONYMS.replace('\'', "''"))).await;
     }
     Ok(made)

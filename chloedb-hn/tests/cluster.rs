@@ -207,6 +207,17 @@ async fn searches_questions_and_completions() {
     // The comments that speak of it, with their story's title.
     assert!(r["comments"].as_array().unwrap().iter().any(|c| c["author"] == "carol"), "{}", r["comments"]);
 
+    // Instant, a keystroke at a time: the last word as the start of one,
+    // by points while it is typed, by the words once it is finished.
+    let r = get(&http, &app, "/v1/search", &[("q", "postg"), ("mode", "instant")]).await;
+    assert_eq!(titles(&r), ["PostgreSQL 16 released", "Postgres full text search is good enough", "Show HN: Kubernetes operator for Postgres backups"], "{r}");
+    let r = get(&http, &app, "/v1/search", &[("q", "rust lin"), ("mode", "instant")]).await;
+    assert_eq!(titles(&r), ["Rust in the Linux kernel"], "{r}");
+    let r = get(&http, &app, "/v1/search", &[("q", "bitcoin "), ("mode", "instant")]).await;
+    assert_eq!(r["mode"], "instant");
+    assert_eq!(titles(&r).len(), 3, "{r}");
+    assert_eq!(r["queries"].as_array().unwrap().len(), 1, "one statement a keystroke: {}", r["queries"]);
+
     // Questions in a sentence, answered by SQL with no model.
     let r = search(&http, &app, "which post has received the most comments").await;
     assert_eq!(r["answer"]["kind"], "top", "{}", r["answer"]);

@@ -64,6 +64,8 @@ const CSS = `
 .hn-grid { display: grid; grid-template-columns: 216px minmax(0, 1fr) 268px; gap: 26px; align-items: start; }
 .hn-grid.two { grid-template-columns: minmax(0, 1fr) 300px; }
 @media (max-width: 1100px) { .hn-grid { grid-template-columns: 200px minmax(0, 1fr); } .hn-grid > .hn-right { display: none; } }
+.hn-key { font: 11px var(--mono); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px; }
+@media (max-width: 600px) { .hn-it-hint { display: none; } .hn-bar { gap: 8px; } .hn-fast { padding: 9px 10px; font-size: 12px; } .hn-brand span { display: none; } }
 @media (max-width: 760px) { .hn-grid, .hn-grid.two { grid-template-columns: minmax(0, 1fr); } .hn-grid > .hn-left { display: none; } .hn-brand small { display: none; } }
 .hn-left { position: sticky; top: 108px; max-height: calc(100vh - 120px); overflow: auto; scrollbar-width: thin; padding-right: 4px; }
 .hn-facet { margin-bottom: 18px; }
@@ -479,13 +481,26 @@ function render(el, ctx) {
     drawFast();
     if (current && (current[0] === "search" || (current[0] || "") === "")) show(current);
   });
+  // Instant: results on every keystroke (the stories whose titles hold
+  // the words so far, the last one as the start of a word), the full
+  // search when typing stops; on unless switched off (kept in this browser).
+  let instantOn = true;
+  try { instantOn = localStorage.getItem("hn.instant") !== "0"; } catch { /* storage off */ }
+  const instBtn = h("button", { class: "hn-fast hn-instbtn", title: "Instant: results on every keystroke (titles with the words so far, the last one as the start of a word, by points); the full search follows when you stop typing.", "aria-pressed": "false" });
+  const drawInst = () => { fill(instBtn, h("span", { class: "dot" }), "Instant"); instBtn.classList.toggle("on", instantOn); instBtn.setAttribute("aria-pressed", String(instantOn)); };
+  drawInst();
+  instBtn.addEventListener("click", () => {
+    instantOn = !instantOn;
+    try { localStorage.setItem("hn.instant", instantOn ? "1" : "0"); } catch { /* storage off */ }
+    drawInst();
+  });
   const nav = h("nav", { class: "hn-nav" });
   const live = h("span", { class: "live" });
   const top = h("div", { class: "hn-top" },
     h("div", { class: "hn-bar" },
       h("a", { class: "hn-brand", href: app.href(""), html: `${ICON}<span>HN Search <small>on ChloeDB</small></span>` }),
       h("div", { class: "hn-box" }, h("span", { html: SEARCH, style: { display: "contents" } }), input, h("span", { class: "kbd" }, "/"), sugg),
-      fastBtn),
+      instBtn, fastBtn),
     nav);
   const main = h("main", { class: "hn-main" });
   const sqlBtn = h("button", { onclick: () => sqlPanel.classList.toggle("on"), title: "The SQL behind this page" });
@@ -516,21 +531,52 @@ function render(el, ctx) {
   let typed = 0, suggs = [], sel = -1;
   function search(q, push) {
     const path = q.trim() ? ["search", q.trim()] : [""];
-    if (push) { closeSugg(); app.go(...path); return null; }
+    if (push) {
+      closeSugg();
+      // The address may already say this search (typed, shown instantly):
+      // then no hashchange comes, and the full search runs here.
+      if (location.hash === app.href(...path)) return show(path);
+      app.go(...path); return null;
+    }
     history.replaceState(null, "", app.href(...path));
     return show(path);
   }
   // The completions close once the search they were typed for is on the
   // page, and a completion that answers after that is dropped.
   function closeSugg() { ++sq; sel = -1; sugg.classList.remove("on"); }
+  // A question being typed gets its completions under the box; with
+  // instant results there, nothing else does.
+  const QUESTION = /^\s*(which|who|whom|whose|what|when|where|how|why|top|most|list|show me|count|number|is|are|was|were|did|does|do|has|have)\b/i;
   input.addEventListener("input", () => {
     clearTimeout(typed);
+    const v = input.value;
+    if (instantOn && v.trim()) {
+      // Instant: every keystroke shows the titles as typed; Enter (or a
+      // completion) runs the full search, which reads the last word whole.
+      instant(v);
+      if (QUESTION.test(v)) suggest(v); else closeSugg();
+      return;
+    }
     typed = setTimeout(() => {
-      const v = input.value;
       Promise.resolve(search(v, false)).catch(() => {}).finally(() => { if (input.value === v) closeSugg(); });
     }, 140);
-    suggest(input.value);
+    suggest(v);
   });
+  // A keystroke's results: the newest keystroke's answer is shown, an
+  // older one's is dropped, and so is a full search of older words.
+  let iq = 0;
+  async function instant(v) {
+    const my = ++iq;
+    const t0 = performance.now();
+    let j;
+    try { j = await ctx.api(`/v1/search?q=${enc(v)}&mode=instant&per=20`); } catch { return; }
+    if (my !== iq || input.value !== v) return;
+    ++app.seq;
+    app.queries = j.queries || []; app.took = j.took_ms; drawSql();
+    drawNav("search");
+    try { history.replaceState(null, "", app.href("search", v.trim())); current = ["search", v.trim()]; } catch { /* the address stays */ }
+    instantView(main, app, j, performance.now() - t0);
+  }
   window.addEventListener("hashchange", closeSugg);
   input.addEventListener("keydown", (e) => {
     const items = [...sugg.querySelectorAll(".it")];
@@ -571,6 +617,8 @@ function render(el, ctx) {
       suggs.push(go(t));
       rows.push(h("div", { class: "it", onmousedown: (e) => { e.preventDefault(); go(t)(); } }, h("span", { class: "q" }, "?"), h("span", { class: "t" }, done(t.endsWith(" ") ? `${t}…` : t))));
     }
+    // With instant results under the box, the box offers only questions.
+    if (instantOn) { fill(sugg, ...rows); sugg.classList.toggle("on", rows.length > 0); return; }
     const ph = (j.phrases || []).slice(0, 5);
     if (ph.length) head(ph[0].fixed ? "Did you mean" : "Search");
     for (const p of ph) {
@@ -721,6 +769,29 @@ function storyItem(app, s, re, extra) {
       extra));
 }
 
+// A keystroke's results, in the results' place: the list alone, its
+// time on the server and here (the request's whole round trip).
+function instantView(main, app, j, ms) {
+  let box = main.querySelector(".hn-inst");
+  const st = j.stories || [];
+  if (!box) {
+    box = h("section", { class: "hn-inst" });
+    fill(main, h("div", { class: "hn-und" }), h("div", { class: "hn-grid" }, h("aside", { class: "hn-left" }), box, h("aside", { class: "hn-right" })));
+  } else if (!st.length && box.querySelector(".hn-res")) {
+    // A word half typed that no title starts: the last results stay.
+    const t = box.querySelector(".hn-it-t");
+    if (t) fill(t, h("b", {}, "instant"), " · no title holds these words yet · keep typing");
+    return;
+  }
+  const re = markers(j.understood);
+  fill(box,
+    h("div", { class: "hn-head", style: { margin: "8px 0 2px" } },
+      h("span", { class: "t hn-it-t" }, h("b", {}, "instant"), ` · ${st.length ? `titles as typed` : "no title holds these words yet"} · ${Math.round(j.took_ms)} ms on the server, ${Math.round(ms)} ms here`),
+      h("span", { class: "sp" }),
+      h("span", { class: "t hn-it-hint", style: { fontSize: "12px" } }, h("span", { class: "hn-key" }, "Enter"), " for the full search: meaning, comments, facets")),
+    st.length ? h("ul", { class: "hn-res" }, st.map((s) => storyItem(app, s, re))) : h("div", { class: "hn-empty" }, "Keep typing: no title holds these words yet."));
+}
+
 function commentItem(app, c, re) {
   // The server's highlight (the field's stems, synonyms and typos), else marked here.
   const txt = c.body_hl ? h("div", { class: "txt", html: c.body_hl }) : h("div", { class: "txt" }, marked(excerpt(c.body, re, 700), re));
@@ -786,7 +857,10 @@ async function results(main, app, q, opts, alive) {
   const left = h("aside", { class: "hn-left" });
   const right = h("aside", { class: "hn-right" });
   const und = h("div", { class: "hn-und" });
-  fill(main, und, h("div", { class: "hn-grid" }, left, h("section", {}, head, body), right));
+  const grid = h("div", { class: "hn-grid" }, left, h("section", {}, head, body), right);
+  // Instant results stay until these replace them, without a skeleton between.
+  const keep = main.querySelector(".hn-inst");
+  if (!keep) fill(main, und, grid);
   const base = `q=${enc(q)}${sort ? `&sort=${sort}` : ""}${mode ? `&mode=${mode}` : ""}`;
   const qs = `${base}${only ? `&only=${only}` : ""}`;
   // The stories first. The comments are asked for at the same time and
@@ -795,6 +869,7 @@ async function results(main, app, q, opts, alive) {
   const cP = all ? app.ctx.api(`/v1/search?${base}&only=comment&per=8&facets=0`).catch(() => null) : null;
   const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}`);
   if (!alive()) return;
+  if (keep) fill(main, und, grid);
   const u = j.understood || {};
   const re = markers(u);
   // What the box understood, each part removable.

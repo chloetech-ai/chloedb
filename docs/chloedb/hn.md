@@ -6,6 +6,7 @@
 
 - **Questions in a sentence, answered by SQL, no model.** "which post has received the most comments", "who posted the most stories about rust", "how many Show HN posts about postgres in 2023", "when was HN most into bitcoin", "what was the first story about docker". A small grammar ([`src/nl.rs`](../../chloedb-hn/src/nl.rs)) reads the question into what it asks (the top item by a measure, a count, people, sites or years), the topic and the filters, and the answer above the results is one query, shown with it. Anything the grammar does not read is searched as words.
 - **Autocomplete of questions, phrases and people.** As a search is typed the box offers whole questions the grammar reads (`which post` → "which post has received the most comments"), the phrases HN's titles use most (`kubernetes o` → "kubernetes operator"), people and sites. The phrases are a table, `hn_complete`, keyed by kind and text, so completing is a prefix of its sorted key: one run of the dictionary, read from a few blocks (`PREFIX(id, 'p:kubernetes o')`).
+- **Instant, a keystroke at a time.** Each keystroke shows the stories whose titles hold the words typed so far, the last one as a word or the start of one (`rust asy` is `MATCH(title, 'rust (asy OR asy*)')`), by points while that word is being typed and by BM25 times the votes once a space follows it: one statement, no count, no meaning. Enter runs the full search, which reads the last word whole. The *Instant* switch beside the box turns it off; a question being typed still gets its completions.
 - **Words and meaning together.** Titles, texts and the words of each link are ranked by BM25 with typos, stems and synonyms, fused with a static embedding model's similarity on the server, and weighed by points (`pow(points + 1, 0.35)`) and a gentle decay for age. Every word must be there for searches of up to three words, and most of them for longer ones, so the counts and facets match the results.
 - **Exact text, punctuation and all.** `` `C++` ``, `` `std::move` ``, `` `k8s.io/api` `` in backticks, or *Match by → exact text*, are matched where their characters are, by `ILIKE` answered from each segment's FM-index (`OPTIONS(substring = true)`), which tokenized search cannot do.
 - **Highlights the way the index reads.** A server of 0.3.6 or later marks each result with `POST /v1/highlight`: stems, synonyms, typos and code as the field's analyzer reads them, cut to the stretch with the most matches.
@@ -58,6 +59,14 @@ chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN
 
 Each answer shows its SQL (**see the SQL**). The grammar's templates are also autocomplete's questions, so what the box offers it can answer.
 
+## Read the linked pages
+
+```bash
+chloedb-hn crawl --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --min-points 3 --contact https://your.site
+```
+
+`crawl` reads each page the stories link to, once, into `hn_pages`, with [the crawler](crawler.md)'s fetcher and frontier: robots.txt read before a site's first page and obeyed, one request at a time to a site and a second between two (longer when its robots.txt or its answers ask), redirects checked hop by hop, public addresses only, HTML only, at most 5 MB a page. The links are the stories' canonical links (`curl`) of at least `--min-points` points, most voted first. Every link asked becomes a row saying what came of it (`ok`, `noindex`, `robots`, `http_4xx` with its code, `network`, `timeout`, `not_html`, ...), so the table also says which of HN's links still answer, by the year HN first linked them. A page whose `<meta name="robots">` says `noindex` keeps no text. A run skips the links already in the table, so a crawl that stops goes on where it was; `--again network,timeout` asks those that failed that way again. `--contact` goes in the user agent, for a site's owner to reach whoever runs it.
+
 ## Tables
 
 | table | what |
@@ -67,6 +76,7 @@ Each answer shows its SQL (**see the SQL**). The grammar's templates are also au
 | `hn_users` | people: stories, comments, points earned, first and last item, replies received, people talked to |
 | `hn_replies` | the reply graph: who replied to whom, how often |
 | `hn_links` | which discussion links to which: a story or one of its comments naming another's `item?id=` |
+| `hn_pages` | the linked pages as `crawl` read them, keyed by canonical link: what came of asking, the HTTP code, the year HN first linked it, the most voted story and how many link it, the page's title, description, text (at most `--max-text` characters), words, language, date, author and image, and a vector of its title, description and text |
 | `hn_complete` | autocomplete: phrases of titles (`p:`), sites (`s:`), topics (`t:`) and people (`u:`), each with how many stories hold it and their points |
 | `hn_answers`, `hn_searches`, `hn_state` | kept answers, the searches people ran (their words and counts only) and the feed's place |
 
@@ -74,7 +84,7 @@ Each answer shows its SQL (**see the SQL**). The grammar's templates are also au
 
 | route | what |
 |---|---|
-| `GET /v1/search?q=&only=all\|story\|comment&sort=best\|date\|points\|comments&mode=hybrid\|words\|meaning\|exact&page=` | results, what was understood, the answer when it is a question, facets, "did you mean", and every query run with its time |
+| `GET /v1/search?q=&only=all\|story\|comment&sort=best\|date\|points\|comments&mode=hybrid\|words\|meaning\|exact\|fast\|instant&page=` | results, what was understood, the answer when it is a question, facets, "did you mean", and every query run with its time |
 | `GET /v1/suggest?q=` | completions: questions, phrases, people, sites, stories |
 | `GET /v1/item/:id`, `/v1/item/:id/around` | a thread; similar stories and the same link again |
 | `GET /v1/user/:id`, `/v1/experts?q=` | a person; who knows a subject |
@@ -91,5 +101,7 @@ Each answer shows its SQL (**see the SQL**). The grammar's templates are also au
 ## Measured against hn.algolia.com
 
 `eval/compare.py` asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in [`chloedb-hn/eval/results`](../../chloedb-hn/eval/results/), with the machine and the date they were measured on.
+
+`eval/instant.py` types six searches a character at a time and asks both at each keystroke, as their pages do. On 2026-11-16, while `crawl` was writing pages into the same cluster, the app's instant search took 10 ms at the median on the server (22 ms at the 90th percentile) against Algolia's 13.5 ms (34 ms), and its round trip from the same cloud machine 48 ms against Algolia's 199 ms ([the numbers](../../chloedb-hn/eval/results/instant-2026-11-16.json)).
 
 `eval/latency.py` times the same searches on both, each asked twice, as the server reports it and from end to end. On 2026-11-16 (a cloud machine against the deployment on DigitalOcean, four shards of 16 GB machines with the data on their own disks), the app's whole search took 100 ms at the median the first time a query was asked and 67 ms the second; hn.algolia.com's engine reported 17 ms, and its full round trip from the same machine was 243 ms against the app's 140 ms. `eval/plain.py` times the simplest statements on the same queries: BM25 of the titles alone took 15 ms at the median, as Algolia's 16.5, and the substring index with no ranking took 8 ms ([the numbers](../../chloedb-hn/eval/results/latency-2026-11-16.md)).

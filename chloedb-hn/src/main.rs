@@ -74,6 +74,9 @@ struct CrawlArgs {
     /// The embedding model of the tables, when they are made.
     #[arg(long, default_value = schema::MODEL)]
     model: String,
+    /// Links read before whose row says one of these (comma separated) are asked again.
+    #[arg(long, default_value = "", value_delimiter = ',')]
+    again: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -399,6 +402,7 @@ async fn main() {
             let o = chloedb_hn::crawl::Opts {
                 min_points: a.min_points, limit: a.limit, concurrency: a.concurrency, per_host: a.per_host, delay_ms: a.delay_ms,
                 contact: a.contact, max_text: a.max_text, batch: a.batch, timeout_ms: a.timeout_ms, max_bytes: a.max_bytes,
+                again: a.again.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             };
             let stop = Arc::new(tokio::sync::Notify::new());
             let s2 = stop.clone();

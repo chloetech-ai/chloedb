@@ -248,6 +248,25 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         let n = rows.len() as i64;
         return Ok((rows, if n < limit as i64 { offset as i64 + n } else { -1 }));
     }
+    if mode == "instant" {
+        // As typed, a keystroke at a time, one statement: while the last
+        // word is being typed, the titles with the words so far and a word
+        // that is or starts with the last one, by points (as hn.algolia.com
+        // ranks a prefix); once it is finished (a space after it), by BM25
+        // times the votes. No count, no meaning.
+        let (m, typing, n) = instant_text(&r.q, &words);
+        params.insert("im".into(), json!(m));
+        params.insert("imin".into(), json!(n.to_string()));
+        let (what, ord) = if typing {
+            ("stories as typed: the last word a word or the start of one, by points", "points DESC, id DESC")
+        } else {
+            ("stories with the words, by BM25 times the votes", "bm25(title, :im, synonyms => 1) * (1 + 0.35 * pop) DESC")
+        };
+        let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord} LIMIT {limit} OFFSET {offset}", where_("MATCH(title, :im, synonyms => 1, min => :imin)"));
+        let rows = c.rows(what, &sql, Value::Object(params.clone())).await?;
+        let got = rows.len() as i64;
+        return Ok((rows, if got < limit as i64 { offset as i64 + got } else { -1 }));
+    }
     if mode == "meaning" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
         let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories {} ORDER BY similarity(emb, :v) DESC LIMIT {limit} OFFSET {offset}", where_(""));
@@ -326,6 +345,27 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         total = count(c, "hn_stories", &where_(STORY_MATCH_FUZZY), &params).await;
     }
     Ok((rows, total))
+}
+
+/// What a search typed so far matches as it is typed: while the last word
+/// is being typed (the box does not end with a space), the words with the
+/// last one as a word or the start of one (`rust asy` is
+/// `rust (asy OR asy*)`), and `true`; else the words as they are. And how
+/// many words a title must hold. The last word is a prefix only when it is
+/// what was typed last (not an operator being written), letters and
+/// digits, and, alone, of two letters at least (one starts too many words).
+pub fn instant_text(raw: &str, words: &str) -> (String, bool, usize) {
+    let toks: Vec<&str> = words.split_whitespace().collect();
+    let partial = !raw.is_empty() && !raw.ends_with(char::is_whitespace);
+    let last_raw = raw.split_whitespace().last().unwrap_or("").to_lowercase();
+    let prefix = toks.last().filter(|t| {
+        partial && t.chars().all(char::is_alphanumeric) && last_raw.ends_with(&t.to_lowercase()) && (toks.len() > 1 || t.chars().count() >= 2)
+    });
+    let n = toks.len().max(1);
+    match prefix {
+        Some(l) => (format!("{} ({l} OR {l}*)", toks[..toks.len() - 1].join(" ")).trim().to_string(), true, n),
+        None => (toks.join(" "), false, n),
+    }
 }
 
 /// A title without its "Show HN: " (the page shows the kind beside it).
@@ -564,6 +604,19 @@ pub async fn did_you_mean(c: &Ctx<'_>, text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_so_far() {
+        let t = |raw: &str, words: &str| instant_text(raw, words);
+        assert_eq!(t("rust asy", "rust asy"), ("rust (asy OR asy*)".into(), true, 2));
+        assert_eq!(t("rust async ", "rust async"), ("rust async".into(), false, 2));
+        assert_eq!(t("javascr", "javascr"), ("(javascr OR javascr*)".into(), true, 1));
+        // One letter alone is a word, not a prefix.
+        assert_eq!(t("j", "j"), ("j".into(), false, 1));
+        // An operator being typed is not a prefix; nor is code.
+        assert_eq!(t("rust site:git", "rust"), ("rust".into(), false, 1));
+        assert_eq!(t("node.j", "node.j"), ("node.j".into(), false, 1));
+    }
 
     #[test]
     fn short_titles() {

@@ -278,6 +278,19 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
     let t0 = Instant::now();
     let trace = Trace::new();
     let c = Ctx { db: &svc.db, trace: &trace };
+    if a.mode == "instant" {
+        // A keystroke's search: the stories alone, one statement, no
+        // lookups (a word that may be a person stays a word).
+        let mut p = query::parse(&a.q, crate::ingest::now());
+        p.confirm_author(false);
+        let r = SearchReq { q: a.q.clone(), only: "story".into(), sort: "best".into(), mode: "instant".into(), page: a.page, per_page: 20, facets: false };
+        let per = a.per.filter(|n| (1..=50).contains(n)).unwrap_or(20);
+        let (stories, total) = search::stories(&c, &p, &r, per, a.page * per).await?;
+        return done(&trace, json!({
+            "q": a.q, "understood": p, "only": "story", "sort": "best", "mode": "instant",
+            "stories": stories, "comments": [], "total_stories": total, "total_comments": 0, "page": a.page, "per_page": per,
+        }), t0);
+    }
     let p = understand(&c, &a.q).await;
     let only = if !a.only.is_empty() { a.only.clone() } else { p.only.clone().unwrap_or_else(|| "all".into()) };
     let sort = if !a.sort.is_empty() { a.sort.clone() } else { p.sort.clone().unwrap_or_else(|| "best".into()) };
