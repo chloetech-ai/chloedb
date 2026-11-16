@@ -50,6 +50,9 @@ import unicodedata
 
 import markdown
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import analytics  # noqa: E402  (the site's Google Tag Manager snippet, analytics.py beside this script)
+
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 DOCS = ROOT / "docs"
 SITE = DOCS / "site"
@@ -377,6 +380,7 @@ TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+{analytics_head}
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{title} · ChloeDB docs</title>
 <link rel="icon" href="{up}../assets/brand/chloedb-icon.svg" type="image/svg+xml">
@@ -390,6 +394,7 @@ TEMPLATE = """<!doctype html>
 <link rel="stylesheet" href="{up}assets/docs.css?v={h_docs_css}">
 </head>
 <body class="docs">
+{analytics_body}
 <!-- Written by docs/site/scripts/build_docs.py from {source}: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="{up}index.html"><img class="on-light" src="{up}../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="{up}../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
@@ -480,7 +485,8 @@ def render_page(p, all_pages, by_source, hashes):
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
         mermaid=MERMAID if has_mermaid else "", up=UP, version=version_line(),
-        start=start, start_label="Quickstart" if start == "quickstart.html" else "Overview")
+        start=start, start_label="Quickstart" if start == "quickstart.html" else "Overview",
+        analytics_head=analytics.HEAD, analytics_body=analytics.BODY)
 
 
 def check_links(out, written):

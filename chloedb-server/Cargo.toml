@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-server"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 # Integration tests are the targets below, not one per file in tests/.
 autotests = false
@@ -61,8 +61,13 @@ md-5 = "0.10"
 webpki-roots = "1"
 # AWS answers in XML (EC2: instance types, regions, spot prices; `aws`).
 roxmltree = "0.20"
-# Kafka (Redpanda) topics for engine-compare's stream test: a client in Rust alone.
-rskafka = { version = "0.6", default-features = false }
+# Kafka: the kafka connector's consumer (crate::connectors::kafka) and
+# engine-compare's stream test, a client in Rust alone. The codecs Kafka's
+# producers compress with, and TLS for brokers that take it.
+rskafka = { version = "0.6", default-features = false, features = ["compression-gzip", "compression-lz4", "compression-snappy", "compression-zstd", "transport-tls"] }
+# The checksum of Kafka's record batches, for the test broker
+# (crate::connectors::kafka_broker).
+crc32c = "0.6"
 # engine-compare's traffic simulator (`plan`, `replay`): seeded draws,
 # profiles in TOML, latency histograms, gzip-compressed schedule files.
 rand = "0.8"

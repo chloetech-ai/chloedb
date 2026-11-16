@@ -278,12 +278,16 @@ async fn feeds_written_again_give_the_rows_while_slots_move() {
     assert!(marks[0].iter().all(|m| m["to"] == 1 && m["slots"] == 512), "{marks:?}");
 
     // The marks are not stream sources, and `_sources` keeps none of them:
-    // only the records of idempotency keys (`idem::record`).
+    // only the records of idempotency keys (`idem::record`), and on the
+    // shard the slots left the mark of the last flip, by which its copies
+    // take a flip, which no feed carries.
     for s in [&s0, &s1] {
         assert!(s.sources().await.unwrap().is_empty());
         let kept = s.local_db().unwrap().sources().unwrap();
-        assert!(kept.iter().all(|k| k.name.starts_with(chloedb_server::idem::ROW)), "{:?}", kept.iter().map(|k| &k.name).collect::<Vec<_>>());
+        assert!(kept.iter().all(|k| k.name.starts_with(chloedb_server::idem::ROW) || k.name == "_strata/move flip"), "{:?}", kept.iter().map(|k| &k.name).collect::<Vec<_>>());
     }
+    assert!(s0.local_db().unwrap().sources().unwrap().iter().any(|k| k.name == "_strata/move flip"));
+    assert!(feeds.iter().flatten().all(|l| !l.to_string().contains("move flip")));
     let e = s0.write_ops_as(vec![json!({"op": "source", "source": {"name": "_strata/mine", "offset": 1}})], None, Moved::No).await.unwrap_err();
     assert!(e.message.contains("_strata/"), "{}", e.message);
 }

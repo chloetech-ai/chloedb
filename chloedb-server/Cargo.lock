@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "chloedb"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "base64 0.23.1",
  "bitpacking",
@@ -791,13 +791,14 @@ dependencies = [
 
 [[package]]
 name = "chloedb-server"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "axum",
  "backtrace",
  "base64 0.23.1",
  "chloedb",
  "clap",
+ "crc32c",
  "flate2",
  "futures",
  "hdrhistogram",
@@ -3207,6 +3208,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "lz4"
+version = "1.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a20b523e860d03443e98350ceaac5e71c6ba89aea7d960769ec3ce37f4de5af4"
+dependencies = [
+ "lz4-sys",
+]
+
+[[package]]
+name = "lz4-sys"
+version = "1.11.1+lz4-1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "lz4_flex"
 version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4594,14 +4614,20 @@ dependencies = [
  "bytes",
  "chrono",
  "crc32c",
+ "flate2",
  "futures",
  "integer-encoding",
+ "lz4",
  "parking_lot",
  "rand 0.8.8",
  "rsasl",
+ "rustls",
+ "snap",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

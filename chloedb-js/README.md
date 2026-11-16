@@ -20,11 +20,12 @@ for (const row of await db.search("dragon")) console.log(row.id, row.title);
 await db.close();
 ```
 
-Prebuilt for macOS and Linux (no Rust needed): `npm install` the tarball of
-your platform from a `chloedb-js-v<version>` GitHub release
-([docs](../docs/chloedb/javascript.md#prebuilt)); release 0.1.0, from before
-the rename, was published as `strata-db`. Build (Rust and a C compiler), test,
-and use from an app:
+Prebuilt for macOS and Linux (no Rust needed): `npm install chloedb`, which
+takes the addon of your platform from its package (`@chloedb/darwin-arm64`
+and the like); each `chloedb-js-v<version>` GitHub release has the same as a
+tarball per platform ([docs](../docs/chloedb/javascript.md#prebuilt)).
+Release 0.1.0, from before the rename, was published as `strata-db`. Build
+(Rust and a C compiler), test, and use from an app:
 
 ```sh
 npm run build                         # cargo build --release; chloedb.node beside index.js

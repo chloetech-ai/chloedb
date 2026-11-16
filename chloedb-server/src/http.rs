@@ -467,6 +467,10 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
         .route("/v1/admin/connectors/:name/run", post(connectors_run))
         .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
+        .route("/v1/admin/connectors/:name/start", post(connectors_start))
+        .route("/v1/admin/connectors/:name/stop", post(connectors_stop))
+        .route("/v1/admin/kafka/test-broker", get(kafka_broker_status).post(kafka_broker_start).delete(kafka_broker_stop))
+        .route("/v1/admin/kafka/test-broker/produce", post(kafka_broker_produce))
         .route("/v1/connectors/:name/push", post(connectors_push).layer(DefaultBodyLimit::max(app.svc.max_body.min(crate::connectors::PUSH_BODY_MAX))))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
@@ -6966,6 +6970,38 @@ async fn connectors_rotate(State(app): State<App>, w: Option<axum::Extension<Pri
     let c = connector_caller(&app, &headers, &who(w));
     let r = crate::connectors::rotate(&app.svc, &c, &name).await?;
     Ok(audited(r, format!("rotated the push key of connector {name}")))
+}
+
+async fn connectors_start(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::start_stop(&app.svc, &c, &name, true).await?;
+    Ok(audited(r, format!("started connector {name}")))
+}
+
+async fn connectors_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::start_stop(&app.svc, &c, &name, false).await?;
+    Ok(audited(r, format!("stopped connector {name}")))
+}
+
+/// The test Kafka broker (crate::connectors::kafka_broker), an admin's.
+async fn kafka_broker_status(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::connectors::test_broker_status(&app.svc).await))
+}
+
+async fn kafka_broker_start(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let r = crate::connectors::test_broker_start(&app.svc, &b).await?;
+    let detail = format!("started or set the test kafka broker at {}", r["address"].as_str().unwrap_or_default());
+    Ok(audited(r, detail))
+}
+
+async fn kafka_broker_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let r = crate::connectors::test_broker_stop(&app.svc).await;
+    Ok(audited(r, "stopped the test kafka broker".to_string()))
+}
+
+async fn kafka_broker_produce(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::connectors::test_broker_produce(&app.svc, &b).await?))
 }
 
 async fn connectors_run(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {

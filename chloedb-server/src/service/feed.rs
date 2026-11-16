@@ -62,6 +62,34 @@ pub(crate) const MOVE_COPY: &str = "_strata/move copy";
 /// The deletes of the rows a slot move left on a shard.
 pub(crate) const MOVE_CLEANUP: &str = "_strata/move cleanup";
 
+/// The mark of a slot move's flip, which the shard the slots leave writes
+/// through its log before its writer takes the flip's map, a row of
+/// `_sources` that its copies apply: its offset is twice the flip map's
+/// epoch, plus one once the copies its writes wait for hold the mark
+/// ([`flip_mark`]). A replica takes the flip only once it applied a mark
+/// acknowledged so, and a writer whose log holds one refuses writes to the
+/// moving slots (TLC, spec/slots `Fix = "mark"`).
+pub(crate) const FLIP: &str = "_strata/move flip";
+
+/// The flip mark `db` holds ([`FLIP`]): the epoch of the map it marks
+/// (0: none), and whether it was acknowledged.
+pub(crate) fn flip_mark(db: &Db) -> Result<(u64, bool), ApiError> {
+    if db.snapshot().table(SOURCES).is_none() {
+        return Ok((0, false));
+    }
+    let offset = db.get(SOURCES, &chloedb::value::Value::Str(FLIP.to_string()))?.and_then(|row| row.get(1).and_then(chloedb::value::Value::as_i64)).unwrap_or(0).max(0) as u64;
+    Ok((offset / 2, offset % 2 == 1))
+}
+
+/// Writes the flip mark of the map of `epoch` ([`FLIP`]), `acked` or not
+/// yet, in a transaction of its own: its sequence number.
+pub(crate) fn write_flip_mark(db: &Db, epoch: u64, acked: bool) -> Result<Option<u64>, ApiError> {
+    db.storage().ensure_sources()?;
+    let mut t = db.storage().begin()?;
+    t.set_source(FLIP, (epoch * 2 + acked as u64) as i64, chloedb::timestamp::now())?;
+    Ok(t.commit_seq()?)
+}
+
 /// The start of the source name by which a shard keeps the cluster it
 /// follows: `_strata/follows <name>`, which only that cluster's follow
 /// process writes ([`super::FOLLOW`]). The offset is twice the time it

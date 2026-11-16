@@ -56,6 +56,13 @@ impl Reach {
         Reach { internal, hosts: Vec::new() }.with_proxies()
     }
 
+    /// A reach for connections that go to their address directly, through
+    /// no HTTP proxy (a Kafka broker's): the proxies' hosts are not let
+    /// through.
+    pub(crate) fn direct(internal: bool) -> Reach {
+        Reach { internal, hosts: Vec::new() }
+    }
+
     /// The proxies' hosts (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, either case).
     fn with_proxies(mut self) -> Reach {
         for k in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
@@ -111,7 +118,7 @@ impl Reach {
     }
 
     /// The addresses of `name` a connection may use.
-    fn addresses(&self, name: &str, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
+    pub(crate) fn addresses(&self, name: &str, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
         if self.hosts.iter().any(|(h, _)| h.eq_ignore_ascii_case(name.trim_end_matches('.'))) {
             return Ok(addrs);
         }
