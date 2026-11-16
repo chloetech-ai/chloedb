@@ -5,6 +5,7 @@
 pub mod answer;
 pub mod api;
 pub mod ask;
+pub mod complete;
 pub mod ingest;
 pub mod load;
 pub mod nl;

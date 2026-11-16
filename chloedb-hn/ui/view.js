@@ -116,6 +116,34 @@ const CSS = `
 .hn-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow-1); }
 .hn-card h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
 .hn-card h4 a { text-transform: none; letter-spacing: 0; color: var(--accent); font-weight: 500; }
+.hn-ans { border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, var(--surface)), var(--surface)); border-radius: var(--r); padding: 14px 16px 12px; margin: 10px 0 14px; }
+.hn-ans .ey { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); font-weight: 650; display: flex; gap: 8px; align-items: center; }
+.hn-ans .ey .nm { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: auto; cursor: pointer; }
+.hn-ans .ey .nm:hover { color: var(--accent); }
+.hn-ans .q { font-size: 14px; color: var(--text-2); margin: 4px 0 8px; }
+.hn-ans .big { font-size: 19px; font-weight: 680; line-height: 1.3; letter-spacing: -.01em; }
+.hn-ans .big a { color: var(--text); }
+.hn-ans .big a:hover { color: var(--accent); }
+.hn-ans .num { font-size: 34px; font-weight: 720; letter-spacing: -.02em; line-height: 1.1; }
+.hn-ans .meta { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.hn-ans .meta b { color: var(--text); font-weight: 650; }
+.hn-ans .txt { font-size: 14px; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.hn-ans ol { margin: 6px 0 0; padding: 0; list-style: none; counter-reset: r; }
+.hn-ans ol li { counter-increment: r; display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.hn-ans ol li:first-child { border-top: 0; }
+.hn-ans ol li:before { content: counter(r); color: var(--muted); font-size: 12px; text-align: right; }
+.hn-ans ol li .n { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hn-ans ol li .who { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.hn-ans ol li .who a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hn-ans .yrs { display: flex; align-items: flex-end; gap: 3px; height: 64px; margin-top: 10px; }
+.hn-ans .yrs div { flex: 1; background: color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 2px 2px 0 0; min-height: 2px; position: relative; }
+.hn-ans .yrs div.pk { background: var(--accent); }
+.hn-ans .yl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; }
+.hn-ans .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.hn-sugg .hd { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 7px 9px 2px; }
+.hn-sugg .it .q { flex: none; width: 18px; height: 18px; border-radius: 5px; display: inline-grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; }
+.hn-sugg .it .t b { font-weight: 650; }
+.hn-sugg .it .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hn-mini { list-style: none; margin: 0; padding: 0; }
 .hn-mini li { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.35; }
 .hn-mini li:first-child { border-top: 0; padding-top: 0; }
@@ -265,6 +293,7 @@ const ESC = /[.*+?^${}()|[\]\\]/g;
 function markers(und) {
   const words = [];
   for (const p of und?.phrases || []) words.push(p);
+  for (const e of und?.exact || []) words.push(e);
   for (const w of String(und?.text || "").split(/\s+/)) {
     const x = w.replace(/^[-"'(]+|["'),.:;!?]+$/g, "");
     if (x.length < 2 || /^(the|and|for|with|how|what|why|are|you|does|about|of|in|on|to|is|a|an|vs)$/i.test(x)) continue;
@@ -400,13 +429,42 @@ function render(el, ctx) {
     if (my !== sq || document.activeElement !== input) return;
     suggs = [];
     const rows = [];
-    for (const s of (j.stories || []).slice(0, 5)) {
-      suggs.push(() => app.go("item", s.id));
-      rows.push(h("div", { class: "it", onmousedown: () => app.go("item", s.id) }, h("span", { class: "k" }, "story"), h("span", {}, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${new Date(s.created).getFullYear()}`)));
+    const typed = q.trim().toLowerCase();
+    // What is typed in plain weight, the completion in bold.
+    const done = (text) => {
+      const t = String(text);
+      return t.toLowerCase().startsWith(typed) ? [t.slice(0, typed.length), h("b", {}, t.slice(typed.length))] : t;
+    };
+    const go = (text) => () => { input.value = text; sugg.classList.remove("on"); search(text, true); };
+    const head = (t) => rows.push(h("div", { class: "hd" }, t));
+    const qs = j.questions || [];
+    if (qs.length) head("Ask");
+    for (const t of qs) {
+      suggs.push(go(t));
+      rows.push(h("div", { class: "it", onmousedown: go(t) }, h("span", { class: "q" }, "?"), h("span", { class: "t" }, done(t))));
     }
-    for (const p of (j.people || []).slice(0, 3)) {
-      suggs.push(() => app.go("user", p.id));
-      rows.push(h("div", { class: "it", onmousedown: () => app.go("user", p.id) }, h("span", { class: "k" }, "person"), h("span", {}, ava(p.id), " ", p.id), h("span", { class: "m" }, `${fmt(p.comments)} comments`)));
+    const ph = (j.phrases || []).slice(0, 5);
+    if (ph.length) head(ph[0].fixed ? "Did you mean" : "Search");
+    for (const p of ph) {
+      suggs.push(go(p.text));
+      rows.push(h("div", { class: "it", onmousedown: go(p.text) }, h("span", { class: "q", style: { background: "var(--surface-2)", color: "var(--muted)" } }, "⌕"), h("span", { class: "t" }, done(p.text)), h("span", { class: "m" }, `${compact(p.n)} ${p.n === 1 ? "story" : "stories"}`)));
+    }
+    const people = (j.people || []).slice(0, 3), sites = (j.sites || []).slice(0, 2);
+    if (people.length || sites.length) head("People and sites");
+    for (const p of people) {
+      suggs.push(() => app.go("user", p.text));
+      rows.push(h("div", { class: "it", onmousedown: () => app.go("user", p.text) }, ava(p.text), h("span", { class: "t" }, p.text), h("span", { class: "m" }, `${compact(p.n)} posts`)));
+    }
+    for (const s2 of sites) {
+      const t = `site:${s2.text}`;
+      suggs.push(go(t));
+      rows.push(h("div", { class: "it", onmousedown: go(t) }, h("span", { class: "q", style: { background: "var(--surface-2)", color: "var(--muted)" } }, "↗"), h("span", { class: "t" }, s2.text), h("span", { class: "m" }, `${compact(s2.n)} stories`)));
+    }
+    const st = (j.stories || []).slice(0, 3);
+    if (st.length) head("Stories");
+    for (const s of st) {
+      suggs.push(() => app.go("item", s.id));
+      rows.push(h("div", { class: "it", onmousedown: () => app.go("item", s.id) }, h("span", { class: "t" }, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${new Date(s.created).getFullYear()}`)));
     }
     fill(sugg, ...rows);
     sugg.classList.toggle("on", rows.length > 0);
@@ -463,6 +521,53 @@ function render(el, ctx) {
 }
 
 // ---- results ---------------------------------------------------------------
+
+// The answer to a question asked in a sentence: read by a grammar, answered
+// by SQL (the drawer shows it), no model.
+function answerCard(app, a, re, q, j) {
+  const sqlNote = h("span", { class: "nm", title: "Read by a grammar, not a model; answered by the SQL in the drawer", onclick: () => document.querySelector(".hn-sql button")?.click() }, "no model · see the SQL");
+  const ey = h("div", { class: "ey" }, "Answer", sqlNote);
+  const kids = [ey];
+  const bars = (rows, peak) => {
+    if (!rows?.length) return null;
+    const max = Math.max(...rows.map((r) => r.v));
+    return [h("div", { class: "yrs" }, rows.map((r) => h("div", { class: r.k === peak ? "pk" : "", style: { height: `${Math.max(3, (r.v / max) * 100)}%` }, title: r.t }))),
+      h("div", { class: "yl" }, h("span", {}, rows[0].k), peak ? h("span", {}, `peak ${peak}`) : null, h("span", {}, rows[rows.length - 1].k))];
+  };
+  if (a.kind === "top") {
+    kids.push(h("div", { class: "q" }, a.title));
+    const one = (x) => a.item_kind === "comment"
+      ? [h("div", { class: "big" }, h("a", { href: app.href("item", x.id) }, `${x.author} on “${x.story_title || "a story"}”`)),
+         h("div", { class: "meta" }, h("span", {}, h("b", {}, fmt(x.thread || x.replies || 0)), " replies under it"), h("span", {}, day(x.created))),
+         h("div", { class: "txt" }, marked(excerpt(x.body || "", re, 600), re))]
+      : [h("div", { class: "big" }, h("a", { href: app.href("item", x.id) }, String(x.title || "").replace(/^(Show|Ask|Launch|Tell) HN:\s*/i, (m) => m))),
+         h("div", { class: "meta" }, h("span", {}, h("b", {}, fmt(x.comments)), " comments"), h("span", {}, h("b", {}, fmt(x.points)), " points"), h("a", { href: app.href("user", x.author) }, x.author), h("span", {}, day(x.created)), x.site ? h("span", {}, x.site) : null)];
+    if (a.one || !(a.items || []).length) kids.push(...one(a.item));
+    else kids.push(h("ol", {}, a.items.map((x) => h("li", {}, h("div", { class: "who" }, h("a", { href: app.href("item", x.id) }, a.item_kind === "comment" ? `${x.author} on “${x.story_title}”` : x.title)), h("span", { class: "n" }, a.by === "points" ? `${fmt(x.points)} points` : a.by === "comments" || a.by === "least_comments" ? `${fmt(a.item_kind === "comment" ? x.thread : x.comments)} ${a.item_kind === "comment" ? "replies" : "comments"}` : day(x.created))))));
+  } else if (a.kind === "count") {
+    kids.push(h("div", { class: "num" }, fmt(a.n)), h("div", { class: "q" }, a.title.replace(/^[\d,]+\s*/, "")));
+    const ys = (a.years || []).filter((y) => y.value >= 2006).map((y) => ({ k: y.value, v: y.n, t: `${y.value}: ${fmt(y.n)}` }));
+    kids.push(bars(ys));
+  } else if (a.kind === "people") {
+    kids.push(h("div", { class: "q" }, a.title));
+    const what = a.what === "points" ? "points" : a.what === "comments" ? "comments" : a.what === "stories" ? "stories" : "comments on it";
+    kids.push(h("ol", {}, (a.people || []).map((p) => h("li", {}, h("div", { class: "who" }, ava(p.author), h("a", { href: app.href("user", p.author) }, p.author)), h("span", { class: "n" }, `${fmt(p.n)} ${what}`)))));
+    if (a.note) kids.push(h("div", { class: "note" }, a.note));
+  } else if (a.kind === "sites") {
+    kids.push(h("div", { class: "q" }, a.title));
+    const topic = (j.understood?.text || "").trim();
+    kids.push(h("ol", {}, (a.sites || []).map((s) => h("li", {}, h("div", { class: "who" }, h("a", { href: app.href("search", `${topic} site:${s.site}`.trim()) }, s.site)), h("span", { class: "n" }, `${fmt(s.n)} stories`)))));
+  } else if (a.kind === "when") {
+    kids.push(h("div", { class: "big" }, a.title));
+    if (a.more) kids.push(h("div", { class: "meta" }, a.more));
+    const ys = (a.years || []).filter((y) => y.year >= 2006).map((y) => ({ k: y.year, v: y.share, t: `${y.year}: ${fmt(y.n)} stories, ${(100 * y.share).toFixed(2)}%` }));
+    kids.push(bars(ys, a.peak));
+    kids.push(h("div", { class: "note" }, "Bars are each year's share of all stories posted that year: HN grew, so counts alone would favour recent years."));
+  } else if (a.kind === "opinion") {
+    kids.push(h("a", { class: "hn-ask", href: app.href("ask", a.topic), style: { margin: "6px 0 0" } }, h("span", { html: SPARK }), h("span", {}, h("b", {}, a.title), h("span", {}, "A short answer from the comments, every claim cited"))));
+  }
+  return h("div", { class: "hn-ans" }, kids);
+}
 
 function storyItem(app, s, re, extra) {
   const k = s.kind && s.kind !== "story" ? h("span", { class: `k ${s.kind}` }, s.kind === "show" ? "Show HN" : s.kind === "ask" ? "Ask HN" : s.kind === "launch" ? "Launch HN" : s.kind === "tell" ? "Tell HN" : s.kind) : null;
@@ -560,8 +665,9 @@ async function results(main, app, q, opts, alive) {
   );
   const list = [];
   if (j.did_you_mean) list.push(h("div", { class: "hn-dym" }, "Did you mean ", h("a", { href: app.href("search", j.did_you_mean) }, j.did_you_mean), "?"));
+  if (j.answer) list.push(answerCard(app, j.answer, re, q, j));
   list.push(h("div", { class: "hn-head", style: { margin: "8px 0 2px" } }, h("span", { class: "t" }, h("b", {}, fmt(ts)), " stories", tc ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`), h("span", { class: "sp" }),
-    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
+    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"], ["exact", "exact text"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
   // The same link submitted again folds under its best discussion.
   const seen = new Map();
   const stories = [];

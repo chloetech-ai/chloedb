@@ -80,6 +80,12 @@ pub fn tables(model: &str, comment_model: &str) -> Vec<(&'static str, String)> {
         ("hn_searches", "CREATE TABLE IF NOT EXISTS hn_searches (
             id KEYWORD PRIMARY KEY, n INT, last TIMESTAMP
         ) OPTIONS(cluster_by = 'id')".to_string()),
+        // Autocomplete: phrases of titles, sites, topics and people, keyed
+        // `p:`, `s:`, `t:`, `u:` and their text, completed by a prefix of
+        // the key (crate::complete).
+        ("hn_complete", "CREATE TABLE IF NOT EXISTS hn_complete (
+            id KEYWORD PRIMARY KEY, kind KEYWORD, text KEYWORD, n INT, weight FLOAT
+        ) OPTIONS(cluster_by = 'id')".to_string()),
     ]
 }
 

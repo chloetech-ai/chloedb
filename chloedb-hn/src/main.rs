@@ -28,6 +28,15 @@ enum Cmd {
     Load(LoadArgs),
     /// Serve the API, the view for the command center (chloedb-server --app hn=URL) and, with --public, the page itself.
     Serve(ServeArgs),
+    /// Write autocomplete's rows (hn_complete.jsonl: phrases of titles, sites, topics, people) from the rows `prepare` wrote.
+    Complete(CompleteArgs),
+}
+
+#[derive(clap::Args)]
+struct CompleteArgs {
+    /// Where `prepare` wrote the rows; hn_complete.jsonl is written there too.
+    #[arg(long)]
+    rows: PathBuf,
 }
 
 #[derive(Args)]
@@ -316,6 +325,11 @@ async fn main() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "chloedb_hn=info".into())).with_writer(std::io::stderr).with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr())).init();
     match Cli::parse().cmd {
         Cmd::Serve(a) => serve(a).await,
+        Cmd::Complete(a) => {
+            let t0 = std::time::Instant::now();
+            let n = chloedb_hn::complete::build(&a.rows, |m| eprintln!("chloedb-hn: {m}")).unwrap_or_else(|e| fail(e));
+            eprintln!("chloedb-hn: wrote {n} rows to {} in {:.0} s", a.rows.join("hn_complete.jsonl").display(), t0.elapsed().as_secs_f64());
+        }
         Cmd::Load(a) => {
             let db = Strata::new(&a.strata, a.key.clone());
             let made = schema::ensure(&db, &a.model, &a.comment_model).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.strata)));

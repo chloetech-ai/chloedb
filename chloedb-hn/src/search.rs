@@ -73,6 +73,12 @@ pub fn filters(p: &Parsed, story_table: bool, params: &mut serde_json::Map<Strin
     if let Some(b) = p.before {
         w.push(format!("created < TIMESTAMP '{}'", iso(b)));
     }
+    // Text in backticks, exactly: the substring index (an FM-index a
+    // segment) answers `ILIKE` without reading the rows.
+    for (i, x) in p.exact.iter().enumerate() {
+        params.insert(format!("ex{i}"), json!(like(x)));
+        w.push(if story_table { format!("(title ILIKE :ex{i} OR url ILIKE :ex{i})") } else { format!("body ILIKE :ex{i}") });
+    }
     if story_table {
         if !p.kinds.is_empty() {
             let ks: Vec<String> = p.kinds.iter().map(|k| format!("'{}'", k.replace('\'', ""))).collect();
@@ -99,6 +105,12 @@ pub fn filters(p: &Parsed, story_table: bool, params: &mut serde_json::Map<Strin
         w.push(format!("story = {s}"));
     }
     w
+}
+
+/// A `%text%` pattern for `ILIKE` (a `%` in the text matches any one
+/// character: the substring index takes no `ESCAPE`).
+pub fn like(x: &str) -> String {
+    format!("%{}%", x.replace('%', "_"))
 }
 
 fn and(conds: &[String]) -> String {
@@ -201,6 +213,16 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         let total = count(c, "hn_stories", &where_(matched), &params).await;
         return Ok((rows, total));
     }
+    if mode == "exact" {
+        // The words exactly as typed, inside words and punctuation too.
+        params.insert("xall".into(), json!(like(&words)));
+        let cond = "(title ILIKE :xall OR url ILIKE :xall)";
+        let ord = order_simple.unwrap_or("points DESC");
+        let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(cond));
+        let rows = c.rows("stories, the text exactly (substring index)", &sql, Value::Object(params.clone())).await?;
+        let total = count(c, "hn_stories", &where_(cond), &params).await;
+        return Ok((rows, total));
+    }
     if mode == "meaning" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
         let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories {} ORDER BY similarity(emb, :v) DESC LIMIT {limit} OFFSET {offset}", where_(""));
@@ -220,6 +242,14 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     );
     let body_rows = c.soft("candidates by text", &body_sql, Value::Object(params.clone())).await;
     let mut ids: Vec<i64> = lex_rows.iter().chain(body_rows.iter()).map(|r| r.i("id")).collect();
+    // Code as written (`std::move`, `node.js`): the substring index finds
+    // what the analyzer split or dropped.
+    for (i, x) in p.code.iter().take(2).enumerate() {
+        params.insert(format!("cx{i}"), json!(like(x)));
+        let sql = format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("(title ILIKE :cx{i} OR url ILIKE :cx{i})")));
+        let got = c.soft(&format!("candidates with “{x}” exactly (substring index)"), &sql, Value::Object(params.clone())).await;
+        ids.extend(got.iter().map(|r| r.i("id")));
+    }
     if mode == "hybrid" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
         let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 80", where_(""));
@@ -342,6 +372,14 @@ pub async fn comments(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset
         let sql = format!("SELECT {COMMENT_COLS} FROM hn_comments {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(""));
         let rows = c.rows("comments", &sql, Value::Object(params.clone())).await?;
         let total = count(c, "hn_comments", &where_(""), &params).await;
+        return Ok((rows, total));
+    }
+    if r.mode == "exact" {
+        params.insert("xall".into(), json!(like(&words)));
+        let ord = match r.sort.as_str() { "comments" => "replies DESC", "old" => "created ASC", _ => "created DESC" };
+        let sql = format!("SELECT {COMMENT_COLS} FROM hn_comments {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_("body ILIKE :xall"));
+        let rows = c.rows("comments, the text exactly (substring index)", &sql, Value::Object(params.clone())).await?;
+        let total = count(c, "hn_comments", &where_("body ILIKE :xall"), &params).await;
         return Ok((rows, total));
     }
     params.insert("q".into(), json!(words));

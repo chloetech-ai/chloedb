@@ -15,6 +15,12 @@ pub struct Parsed {
     pub phrases: Vec<String>,
     /// Words written with a minus: rows that hold them are left out.
     pub exclude: Vec<String>,
+    /// Text in backticks: found exactly as written, inside words and
+    /// punctuation too, by the substring index (`ILIKE`).
+    pub exact: Vec<String>,
+    /// Words that look like code (`std::move`, `node.js`, `x86_64`,
+    /// `foo()`): searched by words, and also exactly as written.
+    pub code: Vec<String>,
     pub author: Option<String>,
     /// A person named in a sentence ("by tptacek"): a filter only if such a
     /// person exists, which the search checks.
@@ -147,8 +153,21 @@ fn parse_words(raw: &str, now: i64) -> Parsed {
     let mut rest = String::new();
     let mut in_q = false;
     let mut cur = String::new();
+    let mut in_tick = false;
     for c in raw.chars() {
-        if c == '"' {
+        if c == '`' && !in_q {
+            if in_tick {
+                let ex = cur.trim().to_string();
+                if !ex.is_empty() {
+                    p.note(format!("exactly “{ex}”"), format!("`{ex}`"));
+                    p.exact.push(ex);
+                }
+                cur.clear();
+            }
+            in_tick = !in_tick;
+        } else if in_tick {
+            cur.push(c);
+        } else if c == '"' {
             if in_q {
                 let ph = cur.trim().to_string();
                 if !ph.is_empty() {
@@ -163,7 +182,7 @@ fn parse_words(raw: &str, now: i64) -> Parsed {
             rest.push(c);
         }
     }
-    if in_q && !cur.trim().is_empty() {
+    if (in_q || in_tick) && !cur.trim().is_empty() {
         rest.push(' ');
         rest.push_str(&cur);
     }
@@ -297,7 +316,32 @@ fn parse_words(raw: &str, now: i64) -> Parsed {
         keep.push(t);
     }
     sentence(&mut p, keep, now);
+    p.code = p.text.split_whitespace().filter(|w| code_like(w)).map(|w| w.trim_matches(|c: char| matches!(c, ',' | '?' | '!' | ';')).to_string()).collect();
     p
+}
+
+/// A word that reads as code, not prose: punctuation inside it that a
+/// word analyzer splits on or drops (`std::move`, `node.js`, `x86_64`,
+/// `foo()`, `C++20`, `a->b`, `$PATH`, `@decorator`, `--flag`).
+pub fn code_like(w: &str) -> bool {
+    let w = w.trim_matches(|c: char| matches!(c, ',' | '?' | '!' | ';' | '"' | '\''));
+    if w.chars().count() < 2 || w.starts_with("http") {
+        return false;
+    }
+    let inner = |c: char| matches!(c, ':' | '>' | '(' | ')' | '[' | ']' | '_' | '/' | '$' | '@' | '=' | '{' | '}' | '<' | '+' | '#' | '.' | '-');
+    let chars: Vec<char> = w.chars().collect();
+    let letters = chars.iter().filter(|c| c.is_alphanumeric()).count();
+    if letters == 0 {
+        return false;
+    }
+    // A plain hyphenated word ("open-source") or a sentence's period is prose.
+    if chars.iter().all(|c| c.is_alphanumeric() || *c == '-') {
+        return w.starts_with("--");
+    }
+    if chars.iter().all(|c| c.is_alphanumeric() || *c == '.') && w.ends_with('.') {
+        return false;
+    }
+    chars.iter().enumerate().any(|(i, &c)| inner(c) && (i > 0 || matches!(c, '$' | '@' | '.' | '#')))
 }
 
 pub fn kind_name(k: &str) -> String {
@@ -540,6 +584,21 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_794_960_000; // 2026-11-16
+
+    #[test]
+    fn code_and_exact_text() {
+        for w in ["std::move", "node.js", "x86_64", "foo()", "C++20", "a->b", "$PATH", "@decorator", "--flag", ".NET", "c#"] {
+            assert!(code_like(w), "{w}");
+        }
+        for w in ["open-source", "rust", "end.", "go", "it's", "https://x.com"] {
+            assert!(!code_like(w), "{w}");
+        }
+        let p = parse("why `left-pad` broke npm", NOW);
+        assert_eq!(p.exact, vec!["left-pad"]);
+        assert_eq!(p.text, "why broke npm");
+        let p = parse("std::move vs copy", NOW);
+        assert_eq!(p.code, vec!["std::move"]);
+    }
 
     #[test]
     fn operators() {

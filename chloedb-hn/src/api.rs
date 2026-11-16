@@ -285,24 +285,80 @@ struct Q {
     fresh: Option<u8>,
 }
 
-/// Completions as a search is typed: stories whose titles start so, people
-/// and sites by prefix, and the searches asked most.
+/// Completions as a search is typed: whole questions the grammar reads
+/// (crate::nl), phrases of titles, people, sites and topics by a prefix of
+/// `hn_complete`'s key (crate::complete), and stories whose titles hold
+/// the words.
 async fn suggest(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     let t0 = Instant::now();
     let trace = Trace::new();
     let c = Ctx { db: &svc.db, trace: &trace };
-    let q = a.q.trim().to_string();
-    if q.len() < 2 {
-        return done(&trace, json!({"stories": [], "people": [], "searches": []}), t0);
+    let raw = a.q.trim_start().to_string();
+    let typed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    if typed.chars().count() < 2 {
+        return done(&trace, json!({"questions": [], "phrases": [], "people": [], "sites": [], "topics": [], "stories": []}), t0);
     }
-    let last = q.split_whitespace().last().unwrap_or("").to_string();
-    let m = query::match_text(&query::parse(&q, 0));
-    let prefix = if q.ends_with(' ') { m.clone() } else { format!("{m}*") };
-    let (stories, people) = tokio::join!(
-        c.soft("titles as typed", "SELECT id, title, points, comments, created FROM hn_stories WHERE MATCH(title, :p) ORDER BY points DESC LIMIT 6", json!({"p": prefix})),
-        c.soft("people as typed", "SELECT id, comments, stories FROM hn_users WHERE PREFIX(id, :u) ORDER BY comments DESC LIMIT 4", json!({"u": last})),
+    let partial = !raw.ends_with(' ');
+    let words: Vec<&str> = typed.split(' ').collect();
+    let last = words.last().copied().unwrap_or("").to_string();
+    let head = if words.len() > 1 { words[..words.len() - 1].join(" ") } else { String::new() };
+    let frame = crate::nl::read(&typed);
+    // The topic words, when the box holds a question: those are completed.
+    let p = query::parse(&raw, crate::ingest::now());
+    let m = query::match_text(&p);
+    let prefix = if m.is_empty() { String::new() } else if partial { format!("{m}*") } else { m.clone() };
+    let pre = |k: &str, s: &str| format!("{k}:{s}");
+    let full = if partial { typed.clone() } else { format!("{typed} ") };
+    let (phr, tail, people, sites, stories) = tokio::join!(
+        c.soft("phrases as typed", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p) ORDER BY weight DESC LIMIT 8", json!({"p": pre("p", &full)})),
+        async {
+            // The last word (or two) completed after the words before.
+            if words.len() > 1 && frame.is_none() {
+                let two = words[words.len().saturating_sub(2)..].join(" ");
+                let mut r = c.soft("the last words as typed", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p) ORDER BY weight DESC LIMIT 5", json!({"p": pre("p", &two)})).await;
+                if r.len() < 3 && partial {
+                    r.extend(c.soft("the last word as typed", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p) ORDER BY weight DESC LIMIT 5", json!({"p": pre("p", &last)})).await);
+                }
+                r
+            } else {
+                Vec::new()
+            }
+        },
+        async { if last.len() >= 2 && frame.is_none() { c.soft("people as typed", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p) ORDER BY weight DESC LIMIT 3", json!({"p": pre("u", &last)})).await } else { Vec::new() } },
+        async { if last.len() >= 3 && frame.is_none() { c.soft("sites as typed", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p) ORDER BY weight DESC LIMIT 2", json!({"p": pre("s", &last)})).await } else { Vec::new() } },
+        async { if prefix.is_empty() { Vec::new() } else { c.soft("titles as typed", "SELECT id, title, points, comments, created FROM hn_stories WHERE MATCH(title, :p) ORDER BY points DESC LIMIT 4", json!({"p": prefix})).await } },
     );
-    done(&trace, json!({"stories": stories, "people": people}), t0)
+    let mut phrases: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for r in phr.iter() {
+        let t = r.s("text");
+        if t != typed.trim() && seen.insert(t.clone()) {
+            phrases.push(json!({"text": t, "n": r.i("n")}));
+        }
+    }
+    for r in tail.iter() {
+        let t = r.s("text");
+        // "rust async ru" + "rust" is not a completion; "rust async" + "runtime" is.
+        let two = words[words.len().saturating_sub(2)..].join(" ");
+        let base = if t.starts_with(&format!("{two}")) && words.len() > 2 { words[..words.len() - 2].join(" ") } else if t.starts_with(&two) { String::new() } else { head.clone() };
+        let whole = if base.is_empty() { t.clone() } else { format!("{base} {t}") };
+        if whole != typed.trim() && seen.insert(whole.clone()) {
+            phrases.push(json!({"text": whole, "n": r.i("n")}));
+        }
+    }
+    phrases.truncate(6);
+    // Questions: the grammar's templates, the topic filled with the best completion.
+    let topic = phrases.first().and_then(|x| x["text"].as_str()).map(str::to_string);
+    let questions = crate::nl::complete(&raw, topic.as_deref(), 4);
+    let fuzzy = if phrases.is_empty() && questions.is_empty() && frame.is_none() && typed.len() >= 4 {
+        c.soft("phrases near what is typed (typos)", "SELECT text, n FROM hn_complete WHERE PREFIX(id, :p, fuzzy => 'auto') ORDER BY weight DESC LIMIT 4", json!({"p": pre("p", &typed)})).await
+    } else {
+        Vec::new()
+    };
+    for r in fuzzy {
+        phrases.push(json!({"text": r.s("text"), "n": r.i("n"), "fixed": true}));
+    }
+    done(&trace, json!({"questions": questions, "phrases": phrases, "people": people, "sites": sites, "stories": stories}), t0)
 }
 
 async fn item(State(svc): State<Shared>, Path(id): Path<i64>) -> Answer {
