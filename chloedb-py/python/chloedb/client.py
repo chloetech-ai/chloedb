@@ -733,15 +733,17 @@ class Client(Search, FrameStore):
         q.update({k: "true" if v else "false" for k, v in flags.items()})
         return q
 
-    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False) -> dict:
+    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False, append: bool = False) -> dict:
         """Uploads a SQLite database file (up to the server's 256 MB) and
         imports its tables (all, or `tables`), each into the table of its
         name: one the server has keeps its schema, and a missing one is
         created from the SQLite table's declarations and values; rows are
         upserted by key. BLOB columns are left out unless `blobs_base64`.
-        Returns {tables: [{source, table, rows, created, notes}], skipped:
-        {name: why}, written}."""
-        return self._sqlite(path, self._sqlite_query(tables, blobs_base64=blobs_base64))
+        A table without a key that has rows is refused, since importing the
+        file again would repeat its rows, unless `append`. Returns {tables:
+        [{source, table, rows, created, notes}], skipped: {name: why},
+        written}."""
+        return self._sqlite(path, self._sqlite_query(tables, blobs_base64=blobs_base64, append=append))
 
     def plan_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False) -> dict:
         """What `import_sqlite` would do, writing nothing: each table's

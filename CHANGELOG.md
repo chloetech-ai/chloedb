@@ -11,6 +11,36 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### What changes by default
+
+- **A SQLite import into a table without a key that has rows is refused**
+  (409 `conflict` over HTTP), before anything is written: nothing tells
+  its rows from the file's, so they went in beside them, and importing the
+  same file again repeated every row. Over HTTP, an import into such a
+  table while another import writes it is refused too, so that the same
+  file uploaded twice at once is written once. `--append`, `?append=true`,
+  `append=True` in Python and `append: true` in JavaScript add them as
+  before; a keyed table takes the file's rows in place of its own, as it
+  did. A copy between servers into such a table is refused too.
+
+### SQLite imports (what the stress test of 15 November left)
+
+- **A file of many tables imports in time that grows with their number**,
+  not its square: a 4,000-table file took 227 s from the command line, as
+  each table made two commits and each commit writes every table's schema.
+  An import now makes the tables it creates in one commit and bulk-loads
+  the empty ones in one more (`Db::create_tables`, `Db::try_load_tables`),
+  a merge looks at the table it merges rather than at every table, and an
+  HTTP import makes its tables in one commit and sends the rows of small
+  tables in shared requests.
+- A date column written in seconds and later in milliseconds reads each
+  integer in the unit of its size (the seconds were read as milliseconds,
+  in January 1970); names lose their accents (`Größe` is `Grosse`, it was
+  `Gr__e`) and a name of no Latin letter (`名前`) is named by its place
+  (`column_2`, it was `__`); a file with no table, and an upload with no
+  body, are refused (they imported nothing and answered 200); the command
+  line names the file once and without `schema error:`.
+
 ### Google Cloud in the Cloud view (experimental)
 
 - The command center's **Cloud setup** plans, makes, resizes and deletes a

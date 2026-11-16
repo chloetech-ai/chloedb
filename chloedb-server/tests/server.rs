@@ -2715,6 +2715,83 @@ async fn sqlite_imports_at_once_and_after_a_hang_up() {
     assert_eq!(count("gone").await, n as u64, "the import went on after its client hung up");
 }
 
+/// A SQLite file of many tables over HTTP, made in one commit and their
+/// rows written in few requests; the same file again, which a table
+/// without a key takes only when asked; and a request with no file.
+#[tokio::test(flavor = "multi_thread")]
+async fn sqlite_imports_of_many_tables_and_tables_without_a_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = chloedb::Schema::from_json(ITEMS).unwrap();
+    let db = Arc::new(Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap());
+    let svc = Service::new(Backend::Local(db.clone()), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
+    let base = http(Arc::new(svc), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let import = |bytes: Vec<u8>, q: &'static str| {
+        let (c, base) = (c.clone(), base.clone());
+        async move {
+            let r = c.post(format!("{base}/v1/import?format=sqlite{q}")).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+    let count = |table: &str| db.query(&format!("SELECT COUNT(*) FROM {table}"), &Params::new()).unwrap().rows[0][0].clone();
+    // A log without a key, and 300 keyed tables of 3 rows.
+    let log = chloedb::Schema::from_json(r#"{"table": "log", "fields": [{"name": "at", "type": "int"}, {"name": "what", "type": "keyword"}]}"#).unwrap();
+    let src = Db::create(&dir.path().join("src.strata"), log, DbOptions::default()).unwrap();
+    let keyed = |i: usize| chloedb::Schema::from_json(&format!(r#"{{"table": "t{i}", "key": "id", "fields": [{{"name": "id", "type": "int"}}, {{"name": "name", "type": "keyword"}}]}}"#)).unwrap();
+    src.create_tables((0..300).map(keyed).collect()).unwrap();
+    src.sql("INSERT INTO log (at, what) VALUES (1, 'a'), (2, 'b')", &Params::new()).unwrap();
+    for i in 0..300 {
+        src.sql(&format!("INSERT INTO t{i} (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c')"), &Params::new()).unwrap();
+    }
+    let out = dir.path().join("many.sqlite");
+    chloedb::sqlite::export(&src, &out, &chloedb::sqlite::ExportOptions { meta: false, ..Default::default() }).unwrap();
+    let file = std::fs::read(&out).unwrap();
+    let before = db.snapshot().txn();
+    let (status, r) = import(file.clone(), "").await;
+    assert_eq!((status, &r["written"]), (200, &json!(902)), "{r}");
+    let tables = r["tables"].as_array().unwrap();
+    assert_eq!(tables.len(), 301);
+    assert!(tables.iter().all(|t| t["created"] == json!(true)), "{r}");
+    assert_eq!(tables[300]["rows"], json!(3), "{r}");
+    // One commit made the tables, rather than one each.
+    assert!(db.snapshot().txn() - before < 100, "{} commits", db.snapshot().txn() - before);
+    assert_eq!(count("t299"), Value::Int(3));
+    // Again: the keyed tables would take it, the log would hold every row twice.
+    let (status, r) = import(file.clone(), "").await;
+    assert_eq!((status, r["error_code"].as_str()), (409, Some("conflict")), "{r}");
+    let e = r["error"].as_str().unwrap();
+    assert!(e.contains("table log has rows and no primary key") && e.contains("append=true"), "{e}");
+    assert_eq!((count("log"), count("t0")), (Value::Int(2), Value::Int(3)));
+    let (status, r) = import(file.clone(), "&append=true").await;
+    assert_eq!((status, &r["written"]), (200, &json!(902)), "{r}");
+    assert_eq!((count("log"), count("t0")), (Value::Int(4), Value::Int(3)));
+    // The keyed tables alone need no asking.
+    let (status, r) = import(file, "&tables=t5,t6").await;
+    assert_eq!((status, &r["written"]), (200, &json!(6)), "{r}");
+    // A new table without a key, uploaded 4 times at once: one import
+    // writes it, and the others are told another import is writing it,
+    // or that it has rows.
+    let events = chloedb::Schema::from_json(r#"{"table": "events", "fields": [{"name": "at", "type": "int"}]}"#).unwrap();
+    let src = Db::create(&dir.path().join("events.strata"), events, DbOptions::default()).unwrap();
+    for b in 0..20 {
+        let values: Vec<String> = (0..1000).map(|i| format!("({})", b * 1000 + i)).collect();
+        src.sql(&format!("INSERT INTO events (at) VALUES {}", values.join(", ")), &Params::new()).unwrap();
+    }
+    let out = dir.path().join("events.sqlite");
+    chloedb::sqlite::export(&src, &out, &chloedb::sqlite::ExportOptions { meta: false, ..Default::default() }).unwrap();
+    let file = std::fs::read(&out).unwrap();
+    let answers = futures::future::join_all((0..4).map(|_| import(file.clone(), ""))).await;
+    let mut statuses: Vec<u16> = answers.iter().map(|(s, _)| *s).collect();
+    statuses.sort();
+    assert_eq!(statuses, [200, 409, 409, 409], "{answers:?}");
+    assert!(answers.iter().all(|(s, r)| *s == 200 || r["error_code"] == json!("conflict")), "{answers:?}");
+    assert_eq!(count("events"), Value::Int(20_000));
+    // A request with no file (curl -d @missing sends none).
+    let (status, r) = import(Vec::new(), "").await;
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("no body"), "{r}");
+}
+
 #[test]
 fn imports_files_from_the_command_line() {
     let dir = tempfile::tempdir().unwrap();

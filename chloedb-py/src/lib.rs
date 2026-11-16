@@ -423,8 +423,14 @@ impl Database {
     }
 
     fn sqlite_options(tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<sqlite::ImportOptions> {
+        Database::sqlite_import_options(tables, schemas, blobs_base64, false)
+    }
+
+    /// [`Database::sqlite_options`] of an import, which may append
+    /// ([`sqlite::ImportOptions::append`]).
+    fn sqlite_import_options(tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool, append: bool) -> PyResult<sqlite::ImportOptions> {
         let schemas = schemas.map(sqlite::schemas_from_json).transpose().map_err(err)?.unwrap_or_default();
-        Ok(sqlite::ImportOptions { tables: tables.unwrap_or_default(), schemas, blobs_base64 })
+        Ok(sqlite::ImportOptions { tables: tables.unwrap_or_default(), schemas, blobs_base64, append })
     }
 
     /// Documents of `rows`, the first numbered `first` in errors.
@@ -908,10 +914,10 @@ impl Database {
 
     /// Imports the tables of the SQLite file `path` ([`sqlite::import`]);
     /// returns what it did as JSON.
-    #[pyo3(signature = (path, tables = None, schemas = None, blobs_base64 = false))]
-    fn import_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<String> {
+    #[pyo3(signature = (path, tables = None, schemas = None, blobs_base64 = false, append = false))]
+    fn import_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool, append: bool) -> PyResult<String> {
         let db = self.get()?;
-        let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
+        let opts = Database::sqlite_import_options(tables, schemas, blobs_base64, append)?;
         let r = py.detach(|| local(&path).and_then(|l| sqlite::import(&db, &l.path, &opts))).map_err(err)?;
         Ok(r.to_json().to_string())
     }

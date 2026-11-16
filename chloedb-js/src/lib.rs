@@ -311,7 +311,7 @@ fn embed_errors_of(db: &Db, models: &Path) -> Vec<(String, String)> {
 
 fn sqlite_options(a: &Args) -> Result<sqlite::ImportOptions> {
     let schemas = a.text("schemas").map(|s| sqlite::schemas_from_json(&s)).transpose()?.unwrap_or_default();
-    Ok(sqlite::ImportOptions { tables: a.strings("tables")?.unwrap_or_default(), schemas, blobs_base64: a.bool("blobs_base64", false)? })
+    Ok(sqlite::ImportOptions { tables: a.strings("tables")?.unwrap_or_default(), schemas, blobs_base64: a.bool("blobs_base64", false)?, append: a.bool("append", false)? })
 }
 
 #[cfg(feature = "parquet")]

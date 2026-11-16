@@ -74,7 +74,7 @@ export declare class Client extends Searchable {
   sources(): Promise<{ name: string; offset: number; updated: string }[]>;
 
   importFile(file: File, options?: { format?: "jsonl" | "json" | "csv" | "tsv"; table?: string }): Promise<{ rows: number; bulk: boolean; skippedFields: string[] }>;
-  importSqlite(file: File, options?: { tables?: Tables; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
+  importSqlite(file: File, options?: { tables?: Tables; blobsBase64?: boolean; append?: boolean }): Promise<Record<string, unknown>>;
   planSqlite(file: File, options?: { tables?: Tables; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
   importParquet(file: File, options?: { table?: string; key?: string; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
   planParquet(file: File, options?: { table?: string; key?: string; blobsBase64?: boolean }): Promise<Record<string, unknown>>;

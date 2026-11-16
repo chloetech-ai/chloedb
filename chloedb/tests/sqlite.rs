@@ -614,3 +614,92 @@ fn damaged_files_are_refused() {
     let plan = planned(&src, &[]).unwrap();
     assert_eq!(plan.tables.iter().map(|t| t.source.as_str()).collect::<Vec<_>>(), ["t", "_strata_tables"]);
 }
+
+/// A file of many tables makes them in one commit and loads them in
+/// another, rather than two a table (each commit writes every table's
+/// schema, so that two a table took the square of their number).
+#[test]
+fn many_tables_in_few_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("many.sqlite");
+    let c = Connection::open(&src).unwrap();
+    let tx = c.unchecked_transaction().unwrap();
+    for t in 0..150 {
+        tx.execute_batch(&format!("CREATE TABLE t{t} (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO t{t} VALUES (1, 'a'), (2, 'b');")).unwrap();
+    }
+    tx.commit().unwrap();
+    drop(c);
+    let s = Schema::from_json(r#"{"table": "first", "key": "id", "fields": [{"name": "id", "type": "int"}]}"#).unwrap();
+    let db = Db::create(&dir.path().join("db.strata"), s, DbOptions::default()).unwrap();
+    let before = db.snapshot().txn();
+    let r = sqlite::import(&db, &src, &ImportOptions::default()).unwrap();
+    assert_eq!(r.tables.len(), 150);
+    assert!(r.tables.iter().all(|t| t.created && t.bulk && t.rows == 2));
+    let commits = db.snapshot().txn() - before;
+    assert!(commits <= 2, "{commits} commits for 150 tables");
+    assert_eq!(ids(&db, "SELECT name FROM t149 WHERE id = 2"), [Value::Str("b".into())]);
+    // Again: the keyed tables take the rows in place of theirs.
+    sqlite::import(&db, &src, &ImportOptions::default()).unwrap();
+    assert_eq!(ids(&db, "SELECT COUNT(*) FROM t7"), [Value::Int(2)]);
+}
+
+/// Rows into a table without a key that has rows would sit beside them,
+/// and a second import of a file would repeat it: refused, unless asked.
+#[test]
+fn keyless_tables_with_rows_take_more_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("log.sqlite");
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT); INSERT INTO kv VALUES ('x', '1'); CREATE TABLE log (at INTEGER, what TEXT); INSERT INTO log VALUES (1, 'a'), (2, 'b');").unwrap();
+    drop(c);
+    let (db, first) = sqlite::import_new(&src, &dir.path().join("db.strata"), DbOptions::default(), &ImportOptions::default()).unwrap();
+    assert!(first.tables.iter().all(|t| t.created));
+    let e = sqlite::import(&db, &src, &ImportOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("table log has rows and no primary key") && e.contains("append"), "{e}");
+    // Refused before anything is written, the keyed table too.
+    assert_eq!(ids(&db, "SELECT COUNT(*) FROM log"), [Value::Int(2)]);
+    let r = sqlite::import(&db, &src, &ImportOptions { append: true, ..Default::default() }).unwrap();
+    assert_eq!(r.tables.iter().map(|t| (t.table.as_str(), t.rows, t.bulk)).collect::<Vec<_>>(), [("kv", 1, false), ("log", 2, false)]);
+    assert_eq!(ids(&db, "SELECT COUNT(*) FROM log"), [Value::Int(4)]);
+    assert_eq!(ids(&db, "SELECT COUNT(*) FROM kv"), [Value::Int(1)]);
+    // Into the keyed table alone it asks for nothing; a dropped table is made again.
+    sqlite::import(&db, &src, &ImportOptions { tables: vec!["kv".into()], ..Default::default() }).unwrap();
+    db.sql("DROP TABLE log", &Params::new()).unwrap();
+    let r = sqlite::import(&db, &src, &ImportOptions::default()).unwrap();
+    assert!(r.tables[1].created && r.tables[1].bulk);
+    assert_eq!(ids(&db, "SELECT COUNT(*) FROM log"), [Value::Int(2)]);
+}
+
+/// A column written in seconds and later in milliseconds; names Strata
+/// cannot spell as SQLite does; a file with no table at all.
+#[test]
+fn mixed_units_unicode_names_and_empty_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("odd.sqlite");
+    let c = Connection::open(&src).unwrap();
+    c.execute_batch(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, at TIMESTAMP);
+         INSERT INTO events VALUES (1, 1700000000), (2, 1700000000123), (3, 0);
+         CREATE TABLE \"Größe\" (id INTEGER PRIMARY KEY, \"名前\" TEXT, \"café\" TEXT);
+         INSERT INTO \"Größe\" VALUES (1, 'x', 'y');",
+    )
+    .unwrap();
+    drop(c);
+    let plan = planned(&src, &[]).unwrap();
+    let events = &plan.tables[0];
+    assert!(events.notes.iter().any(|n| n.contains("each in the unit of its size")), "{:?}", events.notes);
+    let (db, _) = sqlite::import_new(&src, &dir.path().join("db.strata"), DbOptions::default(), &ImportOptions::default()).unwrap();
+    let at = |id: i64| ids(&db, &format!("SELECT at FROM events WHERE id = {id}"));
+    assert_eq!(at(1), [Value::Timestamp(1_700_000_000_000_000)]);
+    assert_eq!(at(2), [Value::Timestamp(1_700_000_000_123_000)]);
+    assert_eq!(at(3), [Value::Timestamp(0)]);
+    let grosse = &plan.tables[1];
+    assert_eq!(grosse.schema.table, "Grosse");
+    assert_eq!(grosse.schema.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["id", "column_2", "cafe"]);
+    assert_eq!(ids(&db, "SELECT column_2 FROM Grosse"), [Value::Str("x".into())]);
+    // An empty file is an empty database.
+    let empty = dir.path().join("empty.sqlite");
+    std::fs::write(&empty, b"").unwrap();
+    let e = planned(&empty, &[]).unwrap_err().to_string();
+    assert!(e.contains("no table to import"), "{e}");
+}
