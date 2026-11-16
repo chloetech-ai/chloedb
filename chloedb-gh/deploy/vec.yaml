@@ -1,0 +1,182 @@
+# The vector table gh_vec in a cluster of its own, beside the main one
+# (k8s.yaml): the 3.3 million repos with a vector (ten stars or more), each
+# with its stars and language, for the app's searches by meaning (--vec).
+#   gh-v0..gh-v3   a chloedb-server each, on the node of gh-s0..gh-s3, its
+#                  database at hostPath /mnt/chloedb/gh/vec, built there by
+#                  vec-build.yaml from the reduce step's repos
+#   gh-vec         its coordinator, which embeds the query and asks the four
+# Why apart: next to the 60 GB of events a shard reads, the vectors' pages
+# (half a gigabyte a node, quantized, and the graph) were pushed out of the
+# shard's 6 GiB, so a new search read them from the SSD, 1.5 to 3 s. In a
+# cgroup of its own, with a limit the pages fit in, they stay in memory.
+# Rows are placed as in gh_repos (by repo, 4096 slots split evenly), so
+# each part's slots file is its gh-sN's with the gh-v addresses.
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-v0, namespace: strata}
+spec:
+  selector: {app: gh-v0}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-v0, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-v0}}
+  template:
+    metadata: {labels: {app: gh-v0, chloedb/gh: vec}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "0"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The quantized vectors and the graph are about 530 MB a part: the
+        # limit leaves them room as page cache.
+        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-v1, namespace: strata}
+spec:
+  selector: {app: gh-v1}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-v1, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-v1}}
+  template:
+    metadata: {labels: {app: gh-v1, chloedb/gh: vec}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "1"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The quantized vectors and the graph are about 530 MB a part: the
+        # limit leaves them room as page cache.
+        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-v2, namespace: strata}
+spec:
+  selector: {app: gh-v2}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-v2, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-v2}}
+  template:
+    metadata: {labels: {app: gh-v2, chloedb/gh: vec}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "2"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The quantized vectors and the graph are about 530 MB a part: the
+        # limit leaves them room as page cache.
+        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-v3, namespace: strata}
+spec:
+  selector: {app: gh-v3}
+  ports: [{name: http, port: 7700, targetPort: 7700}, {name: grpc, port: 7701, targetPort: 7701}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-v3, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gh-v3}}
+  template:
+    metadata: {labels: {app: gh-v3, chloedb/gh: vec}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "3"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
+        ports: [{containerPort: 7700}, {containerPort: 7701}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The quantized vectors and the graph are about 530 MB a part: the
+        # limit leaves them room as page cache.
+        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gh-vec, namespace: strata}
+spec:
+  selector: {app: gh-vec}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gh-vec, namespace: strata}
+spec:
+  strategy: {type: Recreate}
+  replicas: 1
+  selector: {matchLabels: {app: gh-vec}}
+  template:
+    metadata: {labels: {app: gh-vec}}
+    spec:
+      nodeSelector: {chloedb/gh-shard: "3"}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+      containers:
+      - name: coordinator
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --shards http://gh-v0.strata.svc:7701,http://gh-v1.strata.svc:7701,http://gh-v2.strata.svc:7701,http://gh-v3.strata.svc:7701 --listen 0.0.0.0:7700 --grpc off"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 768Mi}}

@@ -120,6 +120,8 @@ impl Hn {
 
 pub struct Service {
     pub db: Strata,
+    /// The cluster of the vector table `gh_vec` (`--vec`), if any.
+    pub vec: Option<Strata>,
     pub token: Option<String>,
     /// Whether readers without the token may read (`--public`).
     pub public: bool,
@@ -342,6 +344,7 @@ macro_rules! ctx {
         let $trace = Trace::new();
         let $c = Ctx {
             db: &$svc.db,
+            vec: $svc.vec.as_ref(),
             trace: &$trace,
         };
     };
@@ -648,6 +651,7 @@ mod public_tests {
     fn svc(per_minute: usize) -> Service {
         Service {
             db: Strata::new("http://127.0.0.1:1", None),
+            vec: None,
             token: Some("t".into()),
             public: true,
             per_minute,

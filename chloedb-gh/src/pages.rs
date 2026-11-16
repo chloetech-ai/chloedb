@@ -9,6 +9,10 @@
 //! - `gh_stars_daily`: stars and forks a repo got each day.
 //! - `gh_repos`: every repo with two stars or more, its latest name and
 //!   what events last said of it, searched by words and by meaning.
+//! - `gh_vec`: the repos of `gh_repos` that have a vector (ten stars or
+//!   more), with only their stars and language beside it, in a cluster of
+//!   its own when the app is given one (`--vec`): there the vectors stay
+//!   in memory, where next to the events they are read from the disk.
 //! - `gh_repo_names`, `gh_actors`: old names, and people's public logins.
 //! - `gh_repo_months`, `gh_lang_months`, `gh_topic_months`: what happened
 //!   each month, per repo, language and topic.
@@ -42,10 +46,66 @@ pub const WORK: &str = "('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_o
 
 pub struct Ctx<'a> {
     pub db: &'a Strata,
+    /// The cluster of `gh_vec`, if there is one.
+    pub vec: Option<&'a Strata>,
     pub trace: &'a Trace,
 }
 
+/// A search by meaning: the repos nearest `text`, ranked by
+/// `similarity * (stars + 1)^boost`, among those `cond` keeps (a condition
+/// on `repo`, `stars` or `language`, the columns both tables have).
+pub struct Near<'s> {
+    pub text: &'s str,
+    pub cond: &'s str,
+    pub boost: f64,
+    pub limit: usize,
+}
+
 impl Ctx<'_> {
+    /// The repos nearest in meaning, as `repo` and `sim`: from `gh_vec`
+    /// when there is a vector cluster, else from `gh_repos` (whose repos
+    /// with a vector are those with ten stars or more). `params` are the
+    /// condition's.
+    pub async fn near(&self, what: &str, n: &Near<'_>, mut params: Value) -> Vec<Row> {
+        let (db, table, stars) = match self.vec {
+            Some(v) => (v, "gh_vec", ""),
+            None => (self.db, "gh_repos", "stars >= 10"),
+        };
+        let cond = [stars, n.cond]
+            .into_iter()
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let filter = if cond.is_empty() { String::new() } else { format!(" WHERE {cond}") };
+        let sql = format!(
+            "SELECT repo, similarity(emb, :v) AS sim FROM {table}{filter} ORDER BY similarity(emb, :v) * pow(stars + 1, {}) DESC LIMIT {}",
+            n.boost, n.limit
+        );
+        params["v"] = json!({"embed": n.text, "field": "emb", "table": table});
+        db.traced(self.trace, what, &sql, params).await.unwrap_or_default()
+    }
+
+    /// How close in meaning to `text` each of `ids` is, by repo (none for
+    /// a repo without a vector).
+    pub async fn closeness(&self, what: &str, text: &str, ids: &[i64]) -> HashMap<i64, f64> {
+        if ids.is_empty() {
+            return HashMap::new();
+        }
+        let (db, table) = match self.vec {
+            Some(v) => (v, "gh_vec"),
+            None => (self.db, "gh_repos"),
+        };
+        let sql = format!("SELECT repo, similarity(emb, :v) AS sim FROM {table} WHERE repo IN (:ids)");
+        let p = json!({"ids": ids, "v": {"embed": text, "field": "emb", "table": table}});
+        db.traced(self.trace, what, &sql, p)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.get("sim").is_some_and(|v| !v.is_null()))
+            .map(|r| (r.i("repo"), r.f("sim")))
+            .collect()
+    }
+
     pub async fn rows(
         &self,
         what: impl AsRef<str>,
@@ -190,9 +250,10 @@ pub async fn search(c: &Ctx<'_>, s: &Search, latest: i64) -> Result<Value> {
         params["lang"] = json!(s.language);
     }
     let limit = 30;
+    let near = Near { text: q, cond: if s.language.is_empty() { "" } else { "language = :lang" }, boost: 0.12, limit: 120 };
     let (words, meaning, langs, total) = tokio::join!(
         c.soft("repos with the words", format!("SELECT repo FROM gh_repos WHERE {MATCHED}{cond} ORDER BY {TEXT_RANK} * pow(stars + 1, 0.35) DESC LIMIT 200"), params.clone()),
-        c.soft("repos by meaning", format!("SELECT repo FROM gh_repos WHERE stars >= 10{cond} ORDER BY similarity(emb, :v) * pow(stars + 1, 0.12) DESC LIMIT 120"), params.clone()),
+        c.near("repos by meaning", &near, params.clone()),
         c.soft("the languages of the matches", format!("SELECT language, COUNT(*) AS n FROM gh_repos WHERE {MATCHED} GROUP BY language ORDER BY n DESC LIMIT 14"), params.clone()),
         c.soft("how many repos have the words", format!("SELECT COUNT(*) AS n FROM gh_repos WHERE {MATCHED}{cond}"), params.clone()),
     );
@@ -299,7 +360,17 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let gz = ids(&gazers, "actor");
     let (who, alike, co) = tokio::join!(
         logins(c, &people),
-        c.soft("repos that do the same job (by meaning)", format!("SELECT {REPO_COLS}, similarity(emb, :v) AS sim FROM gh_repos WHERE repo <> :id AND stars >= 10 ORDER BY similarity(emb, :v) * pow(stars + 1, 0.1) DESC LIMIT 40"), json!({"id": id, "v": {"embed": text, "field": "emb", "table": "gh_repos"}})),
+        async {
+            let near = c.near("repos that do the same job (by meaning)", &Near { text: &text, cond: "repo <> :id", boost: 0.1, limit: 40 }, json!({"id": id})).await;
+            let info = repos_of(c, "those repos", &ids(&near, "repo")).await;
+            near.iter()
+                .filter_map(|n| {
+                    let mut r = info.get(&n.i("repo"))?.clone();
+                    r.insert("sim".into(), json!(n.f("sim")));
+                    Some(r)
+                })
+                .collect::<Vec<Row>>()
+        },
         async {
             if gz.len() < 20 {
                 return Vec::new();
@@ -347,25 +418,15 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
         .copied()
         .filter(|x| !alike_ids.contains(x))
         .collect();
-    let extra_sims = if extra.is_empty() {
-        Vec::new()
-    } else {
-        c.soft(
-            "how close in meaning the co-starred repos are",
-            "SELECT repo, similarity(emb, :v) AS sim FROM gh_repos WHERE repo IN (:ids)",
-            json!({"ids": extra, "v": {"embed": text, "field": "emb", "table": "gh_repos"}}),
-        )
-        .await
-    };
+    let extra_sims = c
+        .closeness("how close in meaning the co-starred repos are", &text, &extra)
+        .await;
     let top_sim = alike.iter().map(|r| r.f("sim")).fold(0.0, f64::max);
     let mut alts: Vec<Value> = alike.iter().map(obj).collect();
-    for e in &extra_sims {
-        if let Some(v) = costar
-            .iter()
-            .find(|v| v["repo"].as_i64() == Some(e.i("repo")))
-        {
+    for e in &extra {
+        if let Some(v) = costar.iter().find(|v| v["repo"].as_i64() == Some(*e)) {
             let mut v = v.clone();
-            v["sim"] = json!(e.f("sim"));
+            v["sim"] = json!(extra_sims.get(e).copied().unwrap_or(0.0));
             alts.push(v);
         }
     }

@@ -143,6 +143,11 @@ enum Command {
         /// was discussed there.
         #[arg(long, env = "CHLOEDB_GH_HN")]
         hn: Option<String>,
+        /// A cluster (or one server) whose table gh_vec has the repos with
+        /// a vector, for the searches by meaning (else gh_repos is searched,
+        /// on --strata). Same key as --strata.
+        #[arg(long, env = "CHLOEDB_GH_VEC")]
+        vec: Option<String>,
     },
     /// The slot and shard of INT keys.
     ShardOf {
@@ -241,7 +246,8 @@ fn main() -> Result<()> {
             per_minute,
             at_once,
             hn,
-        } => serve(listen, strata, key, token, Public { on: public, per_minute, at_once }, hn),
+            vec,
+        } => serve(listen, strata, key, token, Public { on: public, per_minute, at_once }, hn, vec),
         Command::ShardOf { shards, keys } => {
             for k in keys {
                 println!(
@@ -269,6 +275,7 @@ fn serve(
     token: Option<String>,
     public: Public,
     hn: Option<String>,
+    vec: Option<String>,
 ) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -280,8 +287,10 @@ fn serve(
         .build()?;
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| anyhow::anyhow!("{listen}: {e}"))?;
+        let key = key.filter(|k| !k.is_empty());
         let svc = std::sync::Arc::new(api::Service {
-            db: Strata::new(&url, key.filter(|k| !k.is_empty())),
+            vec: vec.filter(|v| !v.is_empty()).map(|v| Strata::new(&v, key.clone())),
+            db: Strata::new(&url, key),
             token: token.filter(|t| !t.is_empty()),
             public: public.on,
             per_minute: public.per_minute.max(1),
@@ -297,7 +306,7 @@ fn serve(
             let svc = svc.clone();
             tokio::spawn(async move {
                 let trace = chloedb_gh::strata::Trace::new();
-                let c = chloedb_gh::pages::Ctx { db: &svc.db, trace: &trace };
+                let c = chloedb_gh::pages::Ctx { db: &svc.db, vec: svc.vec.as_ref(), trace: &trace };
                 svc.topics(&c).await;
             });
         }
