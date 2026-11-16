@@ -115,6 +115,11 @@ test('an app carried to another engine: made there with its rows, look and files
   assert.ok(!v2.comp.caps.includes(v1.tables[0].id), 'the table that changed is a new version of it');
   assert.ok(v2.comp.caps.includes(badge.id), 'and the shared piece it carried before is used again');
   assert.deepEqual((await cloud.client.query(`SELECT dog FROM app_${c}_bookings ORDER BY dog`)).map((r) => r.dog), ['Ada', 'Fido', 'Rex'], 'people\'s rows kept, no example row added');
+  // Carried again with nothing changed: the live version stays, no copy of it.
+  const third = await importBundle(cloud, b2, { into: c });
+  assert.equal(third.n, 2);
+  assert.equal(third.unchanged, true);
+  assert.equal((await cloud.store.resolve(c)).comp.n, 2);
   await cloud.client.write([{ op: 'insert', table: `app_${c}_bookings`, doc: { id: 'r4', dog: 'Bo', status: 'booked', minutes: 45 } }]);
   assert.equal((await cloud.client.query(`SELECT minutes FROM app_${c}_bookings WHERE id = 'r4'`))[0].minutes, 45);
 });

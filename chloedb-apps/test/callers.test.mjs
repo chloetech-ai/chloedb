@@ -13,6 +13,8 @@ const may = (c, method, path) => refusal(c, method, new URL(path, 'http://x'));
 test('an app owner key builds and changes apps by their tables', () => {
   const owner = callerOf(req({ 'x-chloedb-principal': 'groomer', 'x-chloedb-scope': 'admin', 'x-chloedb-tables': 'app_*=admin' }));
   assert.equal(may(owner, 'POST', '/api/apps'), null, 'builds a new app');
+  assert.equal(may(owner, 'POST', '/api/apps/import'), null, 'carries one in');
+  assert.equal(may(owner, 'POST', '/api/apps/btk06c/restore'), null);
   assert.equal(may(owner, 'POST', '/api/apps/btk06c/publish'), null);
   assert.equal(may(owner, 'POST', '/api/apps/btk06c/requests'), null);
   assert.equal(may(owner, 'GET', '/api/apps/btk06c'), null);
@@ -29,6 +31,11 @@ test('a key of one app uses it, and changes it only as its admin', () => {
   assert.match(may(one, 'GET', '/api/apps/other1'), /read scope/);
   assert.match(may(one, 'POST', '/api/apps'), /every app's tables/);
   assert.match(may(one, 'POST', '/api/apps/btk06c/duplicate'), /admin/);
+  // An app carried in is a new app; one carried into this app is a change of it.
+  assert.match(may(one, 'POST', '/api/apps/import'), /every app's tables/);
+  assert.match(may(callerOf(req({ 'x-chloedb-scope': 'admin', 'x-chloedb-tables': 'app_import_*=admin' })), 'POST', '/api/apps/import'), /every app's tables/);
+  assert.match(may(one, 'POST', '/api/apps/btk06c/import'), /admin scope on the app's tables/);
+  assert.equal(may(one, 'GET', '/api/apps/btk06c/bundle'), null);
   assert.equal(may(one, 'GET', '/api/events?app=btk06c'), null);
   assert.match(may(one, 'GET', '/api/events'), /one app's events/);
   assert.equal(sees(one, 'btk06c'), true);
