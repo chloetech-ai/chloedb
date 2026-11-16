@@ -81,6 +81,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="crawler.html">Crawler</a>
       <a href="sheets.html">Sheets</a>
       <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -1484,6 +1485,11 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <td><code>POST /v1/correct</code></td>
 <td><code>{table, field, text}</code></td>
 <td><a href="sql.html#did-you-mean-correcting-a-querys-words">"did you mean"</a>: <code>{text, changed, words}</code>, the words in no row taken for typos of the field's terms; a coordinator counts by its shards' term statistics</td>
+</tr>
+<tr>
+<td><code>POST /v1/highlight</code></td>
+<td><code>{table, field, query, texts, size?, pre?, post?}</code></td>
+<td><code>{texts, took_ms}</code>: each text with what a search <code>query</code> of the TEXT field matches marked, as the field's analyzer and synonyms read it (stems, synonyms, typos, prefixes, phrases, and code such as <code>C++</code> where its characters are), cut to the stretch of about <code>size</code> characters with the most matches (160; <code>0</code>: the whole text), HTML-escaped between <code>&lt;mark&gt;</code> tags, or between <code>pre</code> and <code>post</code> as given; at most 10,000 texts a request; a read key's route</td>
 </tr>
 <tr>
 <td><code>POST /v1/sid/next</code></td>

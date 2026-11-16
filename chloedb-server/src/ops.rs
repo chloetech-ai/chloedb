@@ -47,6 +47,7 @@ pub const READ_POSTS: &[&str] = &[
     "/v1/classify",
     "/v1/understand",
     "/v1/correct",
+    "/v1/highlight",
     "/v1/derive/preview",
     "/v1/schema/check",
     "/v1/kv/get",
