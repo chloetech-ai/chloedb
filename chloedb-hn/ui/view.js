@@ -441,13 +441,15 @@ function excerpt(text, re, n = 320) {
 
 function render(el, ctx) {
   if (!document.getElementById("hn-css")) document.head.append(h("style", { id: "hn-css" }, CSS));
-  // Fast mode: every search by BM25 alone, no candidates by meaning and
-  // no reranking, until switched off (kept in this browser).
-  let fastOn = false;
-  try { fastOn = localStorage.getItem("hn.fast") === "1"; } catch { /* storage off */ }
+  // How searches run, kept in this browser: the full search, ranked (the
+  // default); `instant`, results on every keystroke; or `fast`, every
+  // search by BM25 alone. One at a time: switching one on switches the
+  // other off, and switching it off again goes back to the full search.
+  let modeOn = "";
+  try { const m = localStorage.getItem("hn.mode"); if (m === "instant" || m === "fast") modeOn = m; } catch { /* storage off */ }
   const app = {
     ctx,
-    get fast() { return fastOn; },
+    get fast() { return modeOn === "fast"; },
     queries: [],
     took: 0,
     seq: 0,
@@ -472,28 +474,24 @@ function render(el, ctx) {
   // The bar: the box, with completions, and the pages.
   const input = h("input", { type: "search", placeholder: "Search stories and comments: try  rust by:steveklabnik  or  postgres vs mysql after:2020", autocomplete: "off", spellcheck: "false", "aria-label": "Search Hacker News" });
   const sugg = h("div", { class: "hn-sugg" });
-  const fastBtn = h("button", { class: "hn-fast", title: "Fast mode: rank by words alone (BM25), no meaning and no reranking. Applies to every search until switched off.", "aria-pressed": "false" });
-  const drawFast = () => { fill(fastBtn, h("span", { class: "dot" }), "Fast"); fastBtn.classList.toggle("on", fastOn); fastBtn.setAttribute("aria-pressed", String(fastOn)); };
-  drawFast();
-  fastBtn.addEventListener("click", () => {
-    fastOn = !fastOn;
-    try { localStorage.setItem("hn.fast", fastOn ? "1" : "0"); } catch { /* storage off */ }
-    drawFast();
-    if (current && (current[0] === "search" || (current[0] || "") === "")) show(current);
-  });
-  // Instant: results on every keystroke (the stories whose titles hold
-  // the words so far, the last one as the start of a word), the full
-  // search when typing stops; on unless switched off (kept in this browser).
-  let instantOn = true;
-  try { instantOn = localStorage.getItem("hn.instant") !== "0"; } catch { /* storage off */ }
-  const instBtn = h("button", { class: "hn-fast hn-instbtn", title: "Instant: results on every keystroke (titles with the words so far, the last one as the start of a word, by points); the full search follows when you stop typing.", "aria-pressed": "false" });
-  const drawInst = () => { fill(instBtn, h("span", { class: "dot" }), "Instant"); instBtn.classList.toggle("on", instantOn); instBtn.setAttribute("aria-pressed", String(instantOn)); };
-  drawInst();
-  instBtn.addEventListener("click", () => {
-    instantOn = !instantOn;
-    try { localStorage.setItem("hn.instant", instantOn ? "1" : "0"); } catch { /* storage off */ }
-    drawInst();
-  });
+  const fastBtn = h("button", { class: "hn-fast", title: "Fast mode: rank by words alone (BM25), no meaning and no reranking. Applies to every search until switched off. Switches Instant off.", "aria-pressed": "false" });
+  const instBtn = h("button", { class: "hn-fast hn-instbtn", title: "Instant: results on every keystroke (titles with the words so far, the last one as the start of a word, by points); Enter runs the full search. Switches Fast off.", "aria-pressed": "false" });
+  const drawModes = () => {
+    for (const [b, m, t] of [[fastBtn, "fast", "Fast"], [instBtn, "instant", "Instant"]]) {
+      fill(b, h("span", { class: "dot" }), t); b.classList.toggle("on", modeOn === m); b.setAttribute("aria-pressed", String(modeOn === m));
+    }
+  };
+  drawModes();
+  const pickMode = (m) => {
+    const was = modeOn;
+    modeOn = modeOn === m ? "" : m;
+    try { localStorage.setItem("hn.mode", modeOn); } catch { /* storage off */ }
+    drawModes();
+    // Fast on or off changes the results on the page: they are asked again.
+    if ((was === "fast" || modeOn === "fast") && current && (current[0] === "search" || (current[0] || "") === "")) show(current);
+  };
+  fastBtn.addEventListener("click", () => pickMode("fast"));
+  instBtn.addEventListener("click", () => pickMode("instant"));
   const nav = h("nav", { class: "hn-nav" });
   const live = h("span", { class: "live" });
   const top = h("div", { class: "hn-top" },
@@ -550,7 +548,7 @@ function render(el, ctx) {
   input.addEventListener("input", () => {
     clearTimeout(typed);
     const v = input.value;
-    if (instantOn && v.trim()) {
+    if (modeOn === "instant" && v.trim()) {
       // Instant: every keystroke shows the titles as typed; Enter (or a
       // completion) runs the full search, which reads the last word whole.
       instant(v);
@@ -618,7 +616,7 @@ function render(el, ctx) {
       rows.push(h("div", { class: "it", onmousedown: (e) => { e.preventDefault(); go(t)(); } }, h("span", { class: "q" }, "?"), h("span", { class: "t" }, done(t.endsWith(" ") ? `${t}…` : t))));
     }
     // With instant results under the box, the box offers only questions.
-    if (instantOn) { fill(sugg, ...rows); sugg.classList.toggle("on", rows.length > 0); return; }
+    if (modeOn === "instant") { fill(sugg, ...rows); sugg.classList.toggle("on", rows.length > 0); return; }
     const ph = (j.phrases || []).slice(0, 5);
     if (ph.length) head(ph[0].fixed ? "Did you mean" : "Search");
     for (const p of ph) {
