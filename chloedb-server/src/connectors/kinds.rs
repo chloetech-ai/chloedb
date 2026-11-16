@@ -24,6 +24,8 @@ pub struct Kind {
     pub about: &'static str,
     pub pull: bool,
     pub push: bool,
+    /// It streams: a consumer runs while it is on ([`super::kafka`]).
+    pub stream: bool,
     /// The settings it reads from `config`, each with what it is.
     pub settings: &'static [(&'static str, &'static str)],
     /// The secrets it reads, by name.
@@ -39,6 +41,7 @@ pub const KINDS: &[Kind] = &[
         about: "Any system that posts JSON: each request's records (a list in the body, or the body) become rows. Presets: alertmanager, and any target with a map.",
         pull: false,
         push: true,
+        stream: false,
         settings: &[("records", "path to the list of records in a request (default: the body, or its list)"), ("preset", "alertmanager: Alertmanager's webhook (alerts[*])"), ("map", "column -> path, template or value")],
         secrets: &[],
         target: "webhook_events",
@@ -49,6 +52,7 @@ pub const KINDS: &[Kind] = &[
         about: "Any REST API that answers JSON, asked on a schedule: the records at a path, the next page at another, a cursor kept from the records.",
         pull: true,
         push: false,
+        stream: false,
         settings: &[("url", "the URL; {cursor} is replaced by the cursor"), ("records", "path to the records"), ("next", "path to the next page's URL (optional)"), ("cursor", "path in a record whose highest value is the next cursor (optional)"), ("start", "the first cursor"), ("headers", "headers; {secret:NAME} is a secret"), ("auth", "basic (username + secret password) or bearer (secret token)"), ("map", "column -> path, template or value"), ("allow_internal", "true to reach a system inside this network (a private address, this machine); never cloud metadata"), ("max_body_mb", "the largest answer read, MiB (default 32, at most 1024)")],
         secrets: &["token", "password"],
         target: "http_records",
@@ -59,6 +63,7 @@ pub const KINDS: &[Kind] = &[
         about: "PromQL queries asked over each new minute (query_range), their series joined by labels into one row per key and step: the per-minute rollups an incident needs, the full series staying in Prometheus.",
         pull: true,
         push: false,
+        stream: false,
         settings: &[("url", "Prometheus (or Thanos, Mimir, VictoriaMetrics) base URL"), ("queries", "{column: PromQL}"), ("key", "the labels that name a row's subject (default: every label)"), ("rename", "{label: column}"), ("step_s", "the step, seconds (default 60)"), ("lag_s", "how far behind now to stay (default 60)"), ("backfill_s", "how far back the first run reads (default 3600)"), ("auth", "basic or bearer"), ("allow_internal", "true to reach a system inside this network (a private address, this machine); never cloud metadata"), ("max_body_mb", "the largest answer read, MiB (default 32, at most 1024)")],
         secrets: &["token", "password"],
         target: "prometheus_rollups",
@@ -69,6 +74,7 @@ pub const KINDS: &[Kind] = &[
         about: "Records of a ServiceNow table (change_request, incident, problem...) updated since the last run, through the Table API.",
         pull: true,
         push: false,
+        stream: false,
         settings: &[("instance", "https://<instance>.service-now.com"), ("table", "change_request, incident, ..."), ("query", "an encoded query that narrows them (optional)"), ("fields", "the fields to read (optional, comma separated)"), ("username", "the integration user (basic auth)"), ("backfill_days", "how far back the first run reads (default 30)"), ("allow_internal", "true to reach a system inside this network (a private address, this machine); never cloud metadata"), ("max_body_mb", "the largest answer read, MiB (default 32, at most 1024)")],
         secrets: &["password", "token"],
         target: "servicenow_records",
@@ -79,6 +85,7 @@ pub const KINDS: &[Kind] = &[
         about: "Issues matching a JQL query updated since the last run, through Jira Cloud's or Data Center's search API.",
         pull: true,
         push: false,
+        stream: false,
         settings: &[("url", "https://<site>.atlassian.net or your Jira's base URL"), ("jql", "which issues (project = NET AND issuetype = Change)"), ("username", "the account's email (Cloud, basic auth with an API token)"), ("fields", "{name: field id} for custom fields (window_start: customfield_10050)"), ("api", "cloud or server (default: cloud for *.atlassian.net)"), ("backfill_days", "how far back the first run reads (default 30)"), ("allow_internal", "true to reach a system inside this network (a private address, this machine); never cloud metadata"), ("max_body_mb", "the largest answer read, MiB (default 32, at most 1024)")],
         secrets: &["token"],
         target: "jira_issues",
@@ -89,6 +96,7 @@ pub const KINDS: &[Kind] = &[
         about: "Device configurations from Oxidized's web API: each node whose backup changed is fetched and kept as a version. Its exec hook can push a node at once.",
         pull: true,
         push: true,
+        stream: false,
         settings: &[("url", "oxidized-web's base URL"), ("username", "basic auth, if oxidized-web is behind it"), ("max_nodes", "nodes fetched per run (default 200)"), ("allow_internal", "true to reach a system inside this network (a private address, this machine); never cloud metadata"), ("max_body_mb", "the largest answer read, MiB (default 32, at most 1024)")],
         secrets: &["password"],
         target: "device_configs",
@@ -99,9 +107,36 @@ pub const KINDS: &[Kind] = &[
         about: "Emails handed over raw (a mail server's pipe, a .forward to curl, an inbound mail route): headers, text, and the BCOP maintenance fields carriers attach (provider, circuits, window, impact).",
         pull: false,
         push: true,
+        stream: false,
         settings: &[("map", "column -> path, template or value")],
         secrets: &[],
         target: "mail_messages",
+    },
+    Kind {
+        name: "kafka",
+        title: "Kafka topics",
+        about: "Kafka (or Redpanda) topics read by the server itself while the connector is on, each event written once: every partition's offset is kept in _sources with the rows it made, so a restart, a failover or a replay writes nothing twice. Started and stopped here; no consumer group.",
+        pull: false,
+        push: false,
+        stream: true,
+        settings: &[
+            ("brokers", "bootstrap brokers, host:port joined by commas (the test broker: 127.0.0.1:19092)"),
+            ("topics", "the topics it reads, joined by commas or a list"),
+            ("start", "earliest (default) or latest: where a partition ChloeDB has no offset of starts"),
+            ("format", "json (default) or text: what an event's value is"),
+            ("map", "column -> path into the event ($.value.x, $.key, $.topic, $.partition, $.offset, $.ts, $.headers), template or value; none: a JSON value's fields are the columns"),
+            ("prefix", "the stream sources' names before <topic>/<partition> (default kafka/<name>/)"),
+            ("tls", "true to connect with TLS (checked against the public roots, or ca_pem)"),
+            ("ca_pem", "a CA certificate (PEM) to check the brokers' TLS certificates by"),
+            ("sasl", "{\"mechanism\": \"PLAIN\" | \"SCRAM-SHA-256\" | \"SCRAM-SHA-512\", \"username\": ...}, the password the secret password"),
+            ("tombstones", "skip (default) or delete: an event without a value deletes the row of its key"),
+            ("batch", "the most events of one write (1 to 4096, default 1000)"),
+            ("max_wait_ms", "how long a fetch waits for an event (default 500)"),
+            ("fetch_kb", "the most KiB one fetch of a partition reads (default 1024)"),
+            ("allow_internal", "true to reach brokers inside this network (a private address, this machine); never cloud metadata"),
+        ],
+        secrets: &["password"],
+        target: "kafka_events",
     },
 ];
 
@@ -118,6 +153,7 @@ pub fn default_schema(kind: &str, table: &str) -> String {
         "oxidized" => "id KEYWORD PRIMARY KEY, device KEYWORD, ip KEYWORD, model KEYWORD, grp KEYWORD, ts TIMESTAMP, version INT, lines INT, sha256 KEYWORD, body TEXT",
         "mail" => "id KEYWORD PRIMARY KEY, sender KEYWORD, subject TEXT, sent TIMESTAMP, received TIMESTAMP, body TEXT, provider KEYWORD, maint_id KEYWORD, circuits KEYWORD[], starts TIMESTAMP, ends TIMESTAMP, impact KEYWORD, status KEYWORD",
         "webhook" | "http_json" => "id KEYWORD PRIMARY KEY, received TIMESTAMP, connector KEYWORD, data JSON, text TEXT",
+        "kafka" => "id KEYWORD PRIMARY KEY, topic KEYWORD, partition_ INT, offset_ INT, ts TIMESTAMP, msg_key KEYWORD, value JSON, text TEXT, headers JSON",
         _ => "id KEYWORD PRIMARY KEY, data JSON",
     };
     let retain = match kind {
@@ -139,7 +175,21 @@ pub fn map_schema(m: &Map<String, Json>, table: &str) -> Result<String, String> 
         if name.is_empty() || name.len() > 128 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.starts_with(|c: char| c.is_ascii_digit()) {
             return Err(format!("map column {name:?} is not a column name: letters, digits and _, not starting with a digit"));
         }
+        // The column's type said in its spec (`"type": "KEYWORD"`), for a
+        // value kept whole rather than searched as words.
+        let said = match spec {
+            Json::Object(o) => match o.get("type") {
+                None => None,
+                Some(t) => {
+                    let t = t.as_str().map(str::to_ascii_uppercase).unwrap_or_default();
+                    const TYPES: [&str; 9] = ["KEYWORD", "TEXT", "INT", "FLOAT", "BOOL", "TIMESTAMP", "JSON", "KEYWORD[]", "INT[]"];
+                    Some(TYPES.into_iter().find(|x| *x == t).ok_or_else(|| format!("map column {name:?}: type is one of {}", TYPES.join(", ")))?)
+                }
+            },
+            _ => None,
+        };
         let ty = match spec {
+            _ if said.is_some() => said.unwrap_or_default(),
             Json::Object(o) if o.get("now").and_then(Json::as_bool) == Some(true) && o.get("as").is_none() => "TIMESTAMP",
             Json::Object(o) => match o.get("as").and_then(Json::as_str) {
                 Some("int") => "INT",
@@ -181,6 +231,7 @@ fn default_map(c: &Connector) -> Option<Json> {
         "mail" => json!({"id": "$.id", "sender": "$.sender", "subject": "$.subject", "sent": "$.date", "received": "$.received", "body": "$.body", "provider": "$.provider", "maint_id": "$.maint_id", "circuits": "$.circuits", "starts": "$.start", "ends": "$.end", "impact": "$.impact", "status": "$.status"}),
         "webhook" if c.config["preset"] == "alertmanager" => json!({"id": "{fingerprint}-{startsAt}", "received": {"now": true}, "connector": {"const": c.name}, "data": "$", "text": "{labels.alertname} {labels.severity} {labels.instance} {annotations.summary} {annotations.description}"}),
         "webhook" | "http_json" => json!({"id": {"as": "hash"}, "received": {"now": true}, "connector": {"const": c.name}, "data": "$", "text": {"as": "text_of"}}),
+        "kafka" => json!({"id": "{topic}/{partition}/{offset}", "topic": "$.topic", "partition_": "$.partition", "offset_": "$.offset", "ts": {"path": "$.ts", "as": "time"}, "msg_key": "$.key", "value": "$.value", "text": {"path": "$.value", "as": "text_of"}, "headers": "$.headers"}),
         _ => return None,
     })
 }
@@ -288,6 +339,9 @@ pub fn check_config(c: &Connector) -> Result<(), String> {
     match c.config.get("allow_internal") {
         None | Some(Json::Null) | Some(Json::Bool(_)) => {}
         Some(_) => return Err("allow_internal is true or false".into()),
+    }
+    if c.kind == super::kafka::KIND {
+        return super::kafka::Settings::of(c).map(|_| ());
     }
     match c.config.get("max_body_mb") {
         None | Some(Json::Null) => {}
@@ -1170,6 +1224,9 @@ mod tests {
         }
         assert!(map_schema(json!({"bad name": "$.a"}).as_object().unwrap(), "t").is_err());
         assert!(!map_schema(json!({"a": "$.a"}).as_object().unwrap(), "t").unwrap().contains("PRIMARY KEY"));
+        let typed = map_schema(json!({"id": "$.id", "action": {"path": "$.a", "type": "keyword"}, "n": {"path": "$.n", "type": "INT"}}).as_object().unwrap(), "t").unwrap();
+        assert!(typed.contains("\"action\" KEYWORD") && typed.contains("\"n\" INT"), "{typed}");
+        assert!(map_schema(json!({"a": {"path": "$.a", "type": "VARCHAR"}}).as_object().unwrap(), "t").is_err());
     }
 
     /// A source of `n` records, ten a page, each page naming the next.
