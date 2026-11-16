@@ -1,0 +1,5 @@
+# The 10M head to head of fanout-jobs-0.3.5.tsv (run with
+# COLLECTION=msmarco-10000k once `fanout.sh prep 10000000` is done): ChloeDB,
+# Elasticsearch and OpenSearch on one set of the 10M run's bigger-disk nodes,
+# ChloeDB first and again last, with the candidates swept.
+h2h-10m     strata-first+es+os+strata-last  sharded  15  COLLECTION=msmarco-10000k,SHARDED_SIZE=m3-4vcpu-32gb,LOAD_HOURS=5,EFS=128/256
