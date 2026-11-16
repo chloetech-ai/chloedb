@@ -78,10 +78,11 @@ pub async fn people(c: &Ctx<'_>, topic: &str) -> Value {
             json!({"author": a, "n": r.i("n"), "first": r.i("y0"), "last": r.i("y1"), "years": ys.iter().map(|(y, n)| json!({"year": y, "n": n})).collect::<Vec<_>>(), "active_years": ys.len(), "arc": arc})
         })
         .collect();
-    // The arcs made, the biggest change of mind first; then the rest by
-    // the years they wrote about it in.
+    // The arcs made, those the reading calls a change of mind first and
+    // the biggest shift first; then the rest by the years they wrote
+    // about it in.
     people.sort_by(|a, b| {
-        let s = |v: &Value| v["arc"]["shift"].as_f64().map(f64::abs);
+        let s = |v: &Value| v["arc"]["shift"].as_f64().map(|x| x.abs() + if v["arc"]["changed"].as_bool() == Some(true) { 10.0 } else { 0.0 });
         match (s(a), s(b)) {
             (Some(x), Some(y)) => y.total_cmp(&x),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -130,9 +131,12 @@ fn parse_json(s: &str) -> Option<Value> {
     let a = s.find('{')?;
     let b = s.rfind('}')?;
     let s = &s[a..=b];
+    // The first whole value, whatever follows it (a model sometimes closes
+    // its JSON twice).
+    let first = |t: &str| serde_json::Deserializer::from_str(t).into_iter::<Value>().next().and_then(|v| v.ok());
     let r = repair(s);
     // A reading cut short by the model's budget: the comments read so far.
-    serde_json::from_str(s).ok().or_else(|| serde_json::from_str(&r).ok()).or_else(|| serde_json::from_str(&format!("{r}]}}")).ok())
+    first(s).or_else(|| first(&r)).or_else(|| serde_json::from_str(&format!("{r}]}}")).ok())
 }
 
 /// A model's JSON with double quotes left bare inside a string (a quote
@@ -166,7 +170,8 @@ fn repair(s: &str) -> String {
 
 /// The model's reading of the comments, checked: a stance of each comment
 /// read, the quote kept only if the comment holds it, the mean stance of
-/// each year, and the shift, the last years' mean less the first years'.
+/// each year over the comments that take a side, and the shift, the last
+/// years' mean less the first years'.
 pub fn arc_of(read: &Value, comments: &[Row]) -> Value {
     let by_id: std::collections::HashMap<i64, &Row> = comments.iter().map(|r| (r.i("id"), r)).collect();
     let mut points = Vec::new();
@@ -180,8 +185,10 @@ pub fn arc_of(read: &Value, comments: &[Row]) -> Value {
         points.push(json!({"id": id, "year": r.i("year"), "created": r.s("created"), "stance": stance, "quote": if held { json!(quote) } else { Value::Null }, "story": r.i("story"), "story_title": r.s("story_title")}));
     }
     let mut years: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    // The years' stance is the mean of the comments that take a side: a
+    // neutral or technical comment says nothing of which way a view moved.
     for p in &points {
-        let Some(st) = p["stance"].as_f64() else { continue };
+        let Some(st) = p["stance"].as_f64().filter(|s| *s != 0.0) else { continue };
         let e = years.entry(p["year"].as_i64().unwrap_or(0)).or_default();
         e.0 += st;
         e.1 += 1.0;
@@ -266,6 +273,7 @@ mod tests {
         let v = parse_json(s).unwrap();
         assert_eq!(v["comments"][0]["quote"], "the \"safe\" subset is a lie");
         assert_eq!(v["to"], "b");
+        assert_eq!(parse_json(r#"{"comments":[],"summary":"s"}]}"#).unwrap()["summary"], "s", "closed twice");
         let cut = r#"{"comments":[{"id":1,"stance":-1,"quote":"x"},{"id":2,"stance":1,"quote":"y"},{"id":3,"sta"#;
         assert_eq!(parse_json(cut).unwrap()["comments"].as_array().unwrap().len(), 2);
     }

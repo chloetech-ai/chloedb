@@ -24,7 +24,8 @@ Goodreads id joins the book of its title. A comment names a work when it
     besides small ones needs no such word,
   - or writes the title, in any case, beside one of its authors' names,
     which is the only way to name a title of one or two such words
-    ("Steve Jobs", "Deep Learning"),
+    ("Steve Jobs", "Deep Learning"; a title of one word also needs a word
+    about books: "UNIX" beside Kernighan is often not his book),
 
 and a paper counts only from the year of its arXiv id. The statement that
 found a work's candidates, the rule and how many each part of it kept are
@@ -147,7 +148,7 @@ def names_work(body, w):
     b = plain(body)
     if w['alias'] and w['alias'].search(b):
         return 'alias'
-    if w['names'] and w['any'].search(b) and w['names'].search(b):
+    if w['names'] and w['any'].search(b) and w['names'].search(b) and (w['sig'] >= 2 or CUE.search(b)):
         return 'name'
     if w['sig'] >= 5 and w['cap'].search(b):
         return 'title'
@@ -300,10 +301,10 @@ def step_count(s, d, books, papers):
         top = [r['id'] for r, _ in sorted(kept, key=lambda x: -(x[0].get('pop') or 0))[:8]]
         rule = ('a comment counts when it links the work' + (', uses its short name (' + ', '.join(aliases) + ')' if aliases else '')
                 + ((', writes the title with each word capitalised' + (' beside a word about books or papers' if sig < 5 else '')) if sig >= 3 else '')
-                + (', or writes the title beside ' + ' or '.join(names) if names else '') + (f'; and is from {since} or later, when the paper appeared' if since else ''))
+                + (', or writes the title beside ' + ' or '.join(names) + (' and a word about books' if sig < 2 else '') if names else '') + (f'; and is from {since} or later, when the paper appeared' if since else ''))
         kid = g['ids'][0] if g['kind'] == 'paper' else 'book:' + re.sub(r'[^a-z0-9]+', '-', st)[:60] + ('-' + names[0].lower() if names else '')
         url = f"https://arxiv.org/abs/{g['arxiv']}" if g['kind'] == 'paper' else (f"https://openlibrary.org/isbn/{g['ids'][0][5:]}" if g['ids'][0].startswith('book:') else '')
-        rows.append({'id': kid, 'kind': g['kind'], 'title': g['title'], 'creator': ', '.join(g['authors'][:3]), 'published': str(g['year'])[-4:], 'url': url, 'image': g.get('cover', ''),
+        rows.append({'id': kid, 'kind': g['kind'], 'title': g['title'], 'creator': ', '.join(list(dict.fromkeys(a.strip() for a in g['authors']))[:3]), 'published': str(g['year'])[-4:], 'url': url, 'image': g.get('cover', ''),
                      'people': len({r['author'] for r, _ in kept}), 'mentions': len(kept), 'linkers': len(g['who']),
                      'first': min(map(int, ys)) if ys else None, 'last': max(map(int, ys)) if ys else None, 'years': json.dumps(ys),
                      'comments': json.dumps(top), 'phrase': where, 'params': json.dumps(params), 'ids': json.dumps(g['ids'][:20]),

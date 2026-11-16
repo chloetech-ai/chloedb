@@ -1713,7 +1713,11 @@ async function canonWork(main, app, id, alive) {
   fill(main, h("div", { class: "hn-grid two" }, h("section", {}, skel(6)), h("aside", {})));
   const w = await app.api(`/v1/canon/work?id=${enc(id)}`);
   if (!alive()) return;
-  const re = markers({ text: "" });
+  // Marked in the page when the server does not mark them: the title, its
+  // short names and the authors' last names.
+  const ps = w.counted_params || {};
+  const re = markers({ phrases: [String(ps.p || "").replace(/"/g, "")].filter(Boolean),
+    text: [...Object.entries(ps).filter(([k]) => k.startsWith("al")).map(([, v]) => v), ...String(w.creator || "").split(/,\s*/).map((a) => a.trim().split(/\s+/).pop())].join(" ") });
   fill(main, h("div", { class: "hn-grid two" },
     h("section", {},
       h("a", { href: app.href("canon", w.kind), style: { fontSize: "13px", color: "var(--accent)" } }, "← The canon"),
@@ -1738,11 +1742,14 @@ async function canonWork(main, app, id, alive) {
 
 const STANCE = (s) => s >= 1.25 ? "var(--good)" : s >= 0.25 ? "color-mix(in srgb, var(--good) 55%, var(--muted))" : s > -0.25 ? "var(--muted)" : s > -1.25 ? "color-mix(in srgb, var(--bad) 60%, var(--muted))" : "var(--bad)";
 
+// Which way a view moved: the reading says whether it changed, from all
+// the comments; the years' stances say which way and how far.
 function shiftBadge(arc) {
   if (!arc) return null;
   const s = Number(arc.shift || 0);
-  const cls = s >= 0.5 ? "up" : s <= -0.5 ? "down" : "flat";
-  return h("span", { class: `hn-shift ${cls}`, title: "The last years' stance less the first years', from -4 to 4" }, s >= 0.5 ? `warmed ${s.toFixed(1)}` : s <= -0.5 ? `cooled ${s.toFixed(1)}` : "steady");
+  const moved = arc.changed && Math.abs(s) >= 0.5;
+  const cls = !moved ? "flat" : s > 0 ? "up" : "down";
+  return h("span", { class: `hn-shift ${cls}`, title: "The last years' stance less the first years', from -4 to 4, over the comments that take a side" }, !moved ? (arc.changed ? "changed" : "held") : s > 0 ? `warmed ${s.toFixed(1)}` : `cooled ${s.toFixed(1)}`);
 }
 
 // A stance a year, from -2 (against) to 2 (for), as a line.
@@ -1819,7 +1826,7 @@ async function mindArc(main, app, topic, who, alive) {
     h("aside", { class: "hn-right", style: { display: "block" } },
       h("div", { class: "hn-card" }, h("h4", {}, "Stance, year by year"), stanceLine(a.years, 236, 70)),
       h("div", { class: "hn-card" }, h("h4", {}, "How this was read"), h("div", { style: { fontSize: "12.5px", color: "var(--text-2)" } },
-        `${a.read || pts.length} of ${who}'s comments that BM25 finds most about “${topic}”, three a year at most, read by ${String(a.model || "a model").replace(/^anthropic\//, "")} for where each stands (from −2, against, to 2, for; a hollow dot is a comment with no view of it, left out of the years). A quote the comment does not hold word for word is not shown. `,
+        `${a.read || pts.length} of ${who}'s comments that BM25 finds most about “${topic}”, three a year at most, read by ${String(a.model || "a model").replace(/^anthropic\//, "")} for where each stands (from −2, against, to 2, for; a hollow dot is a comment with no view of it). The years' stance counts only the comments that take a side. A quote the comment does not hold word for word is not shown. `,
         a.kept ? `Read ${day(a.at)} and kept.` : "Read just now, and kept.")))));
 }
 
