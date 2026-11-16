@@ -2348,3 +2348,71 @@ async fn ranked_reads_after_a_write_with_kept_statistics_go_to_copies_that_hold_
     eprintln!("ranked reads after a write that waited: {slow} of 30; kept-statistics hits {hits:?}");
     assert!(slow <= 3, "kept statistics do not pin a read after a write to a replica that applies late: {slow}");
 }
+
+/// Reads an export of moving slots to its end.
+async fn exported(mut rx: tokio::sync::mpsc::Receiver<Result<pb::ExportSlotsChunk, chloedb_server::ApiError>>) {
+    while let Some(c) = rx.recv().await {
+        if c.unwrap().last {
+            return;
+        }
+    }
+    panic!("the export ended without its last chunk");
+}
+
+/// A slot move's flip from a replicated shard (TLC, spec/slots `MoveNow`).
+/// A replica given the flip before its primary refuses it: a primary that
+/// failed over after the last export may have taken writes to the slots
+/// that no export copied, and a replica that took the flip then let them
+/// be lost. The primary, its writes held since their last export, marks
+/// the flip through its log, waits until its copies hold the mark, and
+/// takes it; the replicas take it once they applied the mark. A replica
+/// elected then, before it was given the flip, refuses writes to the
+/// moving slots, which the shard they go to may already serve.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_flip_from_a_replicated_shard_is_marked_through_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pdb, r1db, r2db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"), create(dir.path(), "r2.strata"));
+    let (r1, u1) = replica(r1db.clone(), None).await;
+    let (r2, u2) = replica(r2db.clone(), None).await;
+    let p = primary(pdb.clone(), None, ships_to(&[&u1, &u2], Acks::All), Duration::from_secs(5));
+    let pu = grpc(p.clone()).await;
+    p.write_ops(vec![set("p0000001", "sold", json!(1))], None).await.unwrap();
+    until("both replicas hold the write", || async { last(&r1db) == last(&pdb) && last(&r2db) == last(&pdb) }).await;
+
+    // Shard 0, these three copies, holds every slot; the slot of p0000001
+    // starts moving to shard 1.
+    let s = slot_of("p0000001");
+    let one = slots::SlotMap::even(1, 1).with_replicas(vec![vec![pu.clone(), u1.clone(), u2.clone()]]).unwrap().add_shard(vec!["http://127.0.0.1:9".into()]).unwrap();
+    let copying = one.start_move(&[s], 1).unwrap();
+    let flip = copying.flip_move().unwrap();
+    for svc in [&p, &r1, &r2] {
+        svc.set_slots(one.clone(), 0).await.unwrap();
+        svc.set_slots(copying.clone(), 0).await.unwrap();
+    }
+    // The move copies the rows, holds the writes, copies what changed.
+    exported(p.export_slots(false, 100).await.unwrap()).await;
+    p.freeze_slots(Duration::from_secs(30), false).await.unwrap();
+    exported(p.export_slots(true, 100).await.unwrap()).await;
+
+    let e = r1.set_slots(flip.clone(), 0).await.unwrap_err();
+    assert!(e.status == 409 && e.message.contains("has not applied the mark"), "{}", e.message);
+    assert_eq!(p.set_slots(flip.clone(), 0).await.unwrap(), flip.epoch);
+    let mark = |db: &Db| db.get(chloedb::storage::SOURCES, &Value::Str("_strata/move flip".into())).unwrap().and_then(|r| r[1].as_i64());
+    assert_eq!(mark(&pdb), Some(flip.epoch as i64 * 2 + 1), "marked, then acknowledged");
+    until("the replicas applied the mark", || async { mark(&r1db) == mark(&pdb) && mark(&r2db) == mark(&pdb) }).await;
+    assert_eq!(r1.set_slots(flip.clone(), 0).await.unwrap(), flip.epoch);
+
+    // r2 is elected while it holds the map from before the flip.
+    until("r2 counts among the shard's copies", || async { r2.health().await["replication"]["member"] == json!(true) }).await;
+    r2.promote(&Principal::open(), vec![u1.clone()], Acks::All, false).await.unwrap();
+    let e = r2.write_ops(vec![set("p0000001", "sold", json!(2))], None).await.unwrap_err();
+    assert!(e.status == 503 && e.message.contains("is marked in this shard's log"), "{}", e.message);
+    let other = (2..N).map(|i| format!("p{i:07}")).find(|k| slot_of(k) != s).unwrap();
+    r2.write_ops(vec![set(&other, "sold", json!(2))], None).await.unwrap();
+    // Given the flip, it takes it on the mark, and refuses the write by
+    // the map from then on.
+    assert_eq!(r2.set_slots(flip.clone(), 0).await.unwrap(), flip.epoch);
+    assert_eq!(mark(&r2db), Some(flip.epoch as i64 * 2 + 1));
+    let e = r2.write_ops(vec![set("p0000001", "sold", json!(2))], None).await.unwrap_err();
+    assert_eq!(e.status, 400, "{}", e.message);
+}

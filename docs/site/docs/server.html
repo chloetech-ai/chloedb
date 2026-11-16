@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>chloedb-server · ChloeDB docs</title>
 <link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
@@ -15,6 +22,10 @@
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/server.md: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
@@ -84,7 +95,7 @@
       <span class="eyebrow">Server and cluster</span>
       <h1>chloedb-server</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">docs/chloedb/server.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.5.</p>
+      <p class="doc-version">These docs follow main (0.3.6, unreleased). The latest release is 0.3.5 (<a href="v0.3.5/index.html">its docs</a>); what is newer is marked "since 0.3.6".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#schemas">Schemas</a></li><li><a href="#loading-rows">Loading rows</a></li><li><a href="#embedded-vector-fields">Embedded vector fields</a></li><li><a href="#media-fields">Media fields</a></li><li><a href="#semantic-ids">Semantic IDs</a></li><li><a href="#http-api">HTTP API</a></li><li><a href="#security">Security</a></li><li><a href="#grpc">gRPC</a></li><li><a href="#sharding-one-coordinator-many-shards">Sharding: one coordinator, many shards</a></li><li><a href="#replication-a-primary-and-its-replicas">Replication: a primary and its replicas</a></li><li><a href="#on-kubernetes">On Kubernetes</a></li><li><a href="#deadlines-admission-and-metrics">Deadlines, admission and metrics</a></li><li><a href="#the-ui">The UI</a></li><li><a href="#the-agent">The agent</a></li><li><a href="#the-on-call-agent">The on-call agent</a></li><li><a href="#agents-over-mcp">Agents over MCP</a></li><li><a href="#agents-and-administration">Agents and administration</a></li></ol></details>
     <div class="doc-body">
@@ -128,7 +139,7 @@
 <p><strong>Old names.</strong> ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (<code>strata-server</code>, <code>STRATA_*</code> settings, <code>x-strata-*</code> headers) still work for a release: <a href="compatibility.html#old-names">Compatibility</a> lists them.</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> (tagged <code>chloedb-server-v&lt;version&gt;</code>) has one archive a platform: <code>linux-x86_64</code> and <code>linux-aarch64</code> (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), <code>macos-arm64</code> and <code>macos-x86_64</code> (macOS 11 or later), each with its <code>.sha256</code> beside it.</p>
-<pre data-lang="sh">v=0.3.5 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+<pre data-lang="sh">v=0.3.6 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz
 chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo catalogue
@@ -1946,7 +1957,7 @@ chloedb-server --demo 20000 --demo-shard 1/2 --db b.chloedb --listen 127.0.0.1:7
 <ol>
 <li><strong>Copying.</strong> The coordinator streams every row of the slots from the primary of the shard they leave (<code>ExportSlots</code>) and writes them to the shard they go to, marked <code>moved</code>; that shard holds them without serving them, and takes rows marked <code>moved</code> only while the move copies to it. A chunk the shard refuses because it is behind on its flushes (429, as a shard just added is while the first chunks build its indexes) waits a second and goes again, for up to 2 minutes, before the move fails. Then it copies what changed since (rows written since, by sequence number, and deletes of rows gone), again, until a round copies 2,000 rows or fewer, or after 8 rounds. Reads and writes of the slots go on at the shard they leave.</li>
 <li><strong>Holding writes.</strong> The shard they leave holds new writes to the slots, and UPDATE and DELETE statements (<code>FreezeSlots</code>: 30 s unless asked again, and the coordinator asks every 10 s), waits for those under way to commit, and the coordinator copies the last changes. Writes to other slots go on.</li>
-<li><strong>Flip</strong> (state <code>cleaning</code>). A new map gives the slots to the shard they went to, the shard they left taking it first and hiding its copies from then. The map's move carries the <a href="#streams">stream offsets</a> of the slots on the shard they left (<code>offsets</code>), read while their writes are held, which the shard they went to keeps for them. It takes it only while it has held the writes to the slots since before their last copy: one that started again, or whose hold ran out, may have taken writes no copy holds, and refuses the flip (409), so that the move is given up. The writes it held find the map changed and are refused (409), and their coordinators send them by the new map to the new shard: they waited <code>held_ms</code>, a few milliseconds when the last round was small.</li>
+<li><strong>Flip</strong> (state <code>cleaning</code>). A new map gives the slots to the shard they went to, the shard they left taking it first and hiding its copies from then. The map's move carries the <a href="#streams">stream offsets</a> of the slots on the shard they left (<code>offsets</code>), read while their writes are held, which the shard they went to keeps for them. It takes it only while it has held the writes to the slots since before their last copy, in its term: one that started again, whose primary changed, or whose hold ran out, may have taken writes no copy holds, and refuses the flip (409), so that the move is given up. On a replicated shard, its primary first writes a mark of the flip through its log (<code>_strata/move flip</code> in <code>_sources</code>) and waits until the copies its writes wait for hold it (else the flip is refused, 503), then takes the map; a replica takes the flip only once it applied that mark, and refuses it before (409): given the flip first, a former primary that started again as a replica would otherwise take it while the new primary took writes to the slots that no copy reached. A primary elected while its log holds the mark refuses writes to the moving slots (503) until it takes the map, and takes it on the mark. The writes it held find the map changed and are refused (409), and their coordinators send them by the new map to the new shard: they waited <code>held_ms</code>, a few milliseconds when the last round was small.</li>
 <li><strong>Clean up.</strong> The shard they left deletes its copies (<code>CleanupSlots</code>), and the map drops the move.</li>
 </ol>
 <p>A move that fails before its flip is given up (state <code>aborting</code>): the shard the slots were to go to deletes what it was sent, once the writes under way there have committed, and the move ends, its slots where they were. A shard that does not number its writes (no <code>--seq-no</code>) cannot say what changed, so it holds the writes to the slots for the whole copy. Rows move by their primary keys, so every table needs one; the rows of a table placed by a column (<code>shard_by</code>) move with the slots of their column's values.</p>
