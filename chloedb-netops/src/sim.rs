@@ -23,6 +23,7 @@ use crate::telemetry::{self, iso, parse_iso, Fault};
 use crate::world::{Rng, World};
 use crate::{agents, schema};
 
+#[derive(Clone)]
 pub struct Opts {
     /// Hours of telemetry written when the tables are first made.
     pub history_hours: i64,
@@ -36,6 +37,9 @@ pub struct Opts {
     pub estate: usize,
     /// The model the server's llm() is asked to rewrite a search with ("" for none).
     pub rewrite_model: String,
+    /// The network is read from what it reports (BGP-LS, LLDP, SNMP, BMP,
+    /// ONT tables) rather than written as an inventory: `--topology discovered`.
+    pub discovered: bool,
 }
 
 /// An incident that is not resolved yet.
@@ -155,9 +159,15 @@ impl Engine {
     }
 
     pub fn with(db: Strata, opts: Opts, w: World) -> Arc<Engine> {
+        let estate = (opts.simulate && opts.estate > 0).then(|| crate::estate::Estate::build(&w, opts.estate));
+        Engine::with_estate(db, opts, w, estate)
+    }
+
+    /// As `with`, with the estate behind the backbone given (the one
+    /// discovery read from the feeds) rather than made.
+    pub fn with_estate(db: Strata, opts: Opts, w: World, estate: Option<crate::estate::Estate>) -> Arc<Engine> {
         let graph = Graph::of(&w);
         let fault_every = opts.fault_every;
-        let estate = (opts.simulate && opts.estate > 0).then(|| crate::estate::Estate::build(&w, opts.estate));
         Arc::new(Engine {
             db,
             graph,
@@ -347,7 +357,7 @@ impl Engine {
                     self.db.upsert("netops_runbooks", seed::runbook_rows(now)).await?;
                     {
                         let mut st = self.st();
-                        st.sources = seed::source_rows(now);
+                        st.sources = seed::source_rows(now, self.opts.discovered);
                         st.last_minute = now - 120;
                     }
                     return self.persist().await;
@@ -412,7 +422,7 @@ impl Engine {
             for b in bgp {
                 st.status.insert(format!("bgp:{}", b.s("id")), "idle".into());
             }
-            st.sources = seed::source_rows(s.last_minute);
+            st.sources = seed::source_rows(s.last_minute, self.opts.discovered);
             st.last_minute
         };
         if !self.opts.simulate {
@@ -439,13 +449,17 @@ impl Engine {
         let day = 86400;
         self.phase("Writing the inventory", 0.04);
         let mut rng = Rng::new(5);
-        self.db.upsert("netops_sites", w.site_rows()).await?;
-        self.db.upsert("netops_devices", w.device_rows(&iso(now - 400 * day))).await?;
-        self.db.upsert("netops_links", w.link_rows()).await?;
+        // A discovered network's sites, devices, links and sessions were
+        // written by discovery, and its services and customers with the feeds.
+        if !self.opts.discovered {
+            self.db.upsert("netops_sites", w.site_rows()).await?;
+            self.db.upsert("netops_devices", w.device_rows(&iso(now - 400 * day))).await?;
+            self.db.upsert("netops_links", w.link_rows()).await?;
+            self.db.upsert("netops_bgp", w.peer_rows(&iso(now - 23 * day))).await?;
+            self.db.upsert("netops_services", w.service_rows()).await?;
+            self.db.upsert("netops_customers", w.customer_rows()).await?;
+        }
         self.db.upsert("netops_circuits", w.circuit_rows(&mut rng)).await?;
-        self.db.upsert("netops_bgp", w.peer_rows(&iso(now - 23 * day))).await?;
-        self.db.upsert("netops_services", w.service_rows()).await?;
-        self.db.upsert("netops_customers", w.customer_rows()).await?;
         self.phase("Writing rules, runbooks and a month of history", 0.08);
         self.db.upsert("netops_alert_rules", seed::rule_rows()).await?;
         self.db.upsert("netops_runbooks", seed::runbook_rows(now)).await?;
@@ -461,7 +475,7 @@ impl Engine {
         self.db.upsert("netops_maintenance", seed::maintenance_rows(w, now)).await?;
         self.db.upsert("netops_handovers", seed::handover_rows(w, now)).await?;
         self.db.upsert("netops_faults", h.faults.iter().map(|f| fault_row(f, now)).collect()).await?;
-        let sources = seed::source_rows(now);
+        let sources = seed::source_rows(now, self.opts.discovered);
         self.db.upsert("netops_sources", sources.clone()).await?;
         let start = now - self.opts.history_hours * 3600;
         {

@@ -162,6 +162,11 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, n INT, source KEYWORD, row_id KEYWORD, title TEXT,
   score FLOAT, tokens INT, used INT, decision KEYWORD, excerpt TEXT OPTIONS(indexed = false)
 )".into(), "What each agent was shown and what was left out: PACK's decision for every candidate row"),
+        ("netops_evidence", "CREATE TABLE IF NOT EXISTS netops_evidence (
+  id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, n INT, role KEYWORD, kind KEYWORD, claim TEXT,
+  refs KEYWORD[], ts TIMESTAMP, excerpt TEXT OPTIONS(indexed = false), sql_text TEXT OPTIONS(indexed = false),
+  params TEXT OPTIONS(indexed = false), absent BOOL
+)".into(), "Why the agent named its cause: what happened, each claim with the query that shows its rows, and what it ruled out"),
         ("netops_actions", "CREATE TABLE IF NOT EXISTS netops_actions (
   id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, kind KEYWORD, title TEXT, detail TEXT,
   command TEXT OPTIONS(indexed = false), target KEYWORD, risk KEYWORD, status KEYWORD,
@@ -196,6 +201,39 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, ts TIMESTAMP, asked TEXT, reader KEYWORD, plan TEXT OPTIONS(indexed = false),
   sql_text TEXT OPTIONS(indexed = false), found INT, ms FLOAT
 )".into(), "Questions asked of the estate in a sentence: who read each (a model or the fixed reader), the plan and the SQL it became"),
+        // What the network reports about itself, as collectors write it:
+        // with `--topology discovered` the inventory above is built from
+        // these alone (`crate::discover`).
+        ("netops_snmp_system", "CREATE TABLE IF NOT EXISTS netops_snmp_system (
+  id KEYWORD PRIMARY KEY, sys_name KEYWORD OPTIONS(substring = true), sys_descr TEXT, sys_object_id KEYWORD,
+  sys_location KEYWORD OPTIONS(substring = true), model KEYWORD, serial KEYWORD, sw_rev KEYWORD, polled TIMESTAMP
+)".into(), "SNMP: each agent's system group (sysName, sysDescr, sysObjectID, sysLocation) and its chassis from ENTITY-MIB"),
+        ("netops_snmp_ifaces", "CREATE TABLE IF NOT EXISTS netops_snmp_ifaces (
+  id KEYWORD PRIMARY KEY, agent KEYWORD, if_index INT, if_name KEYWORD, if_alias KEYWORD OPTIONS(substring = true),
+  high_speed INT, oper_status KEYWORD, ip KEYWORD, prefix_len INT, polled TIMESTAMP
+)".into(), "SNMP: interfaces (IF-MIB ifXTable) and their addresses (IP-MIB)"),
+        ("netops_lldp", "CREATE TABLE IF NOT EXISTS netops_lldp (
+  id KEYWORD PRIMARY KEY, agent KEYWORD, local_port KEYWORD, local_port_desc KEYWORD OPTIONS(substring = true),
+  rem_chassis KEYWORD, rem_sys_name KEYWORD, rem_port KEYWORD, rem_mgmt KEYWORD, rem_caps KEYWORD[], polled TIMESTAMP
+)".into(), "LLDP: each agent's neighbour table (LLDP-MIB lldpRemTable), one row a port"),
+        ("netops_bgpls_nodes", "CREATE TABLE IF NOT EXISTS netops_bgpls_nodes (
+  id KEYWORD PRIMARY KEY, protocol KEYWORD, system_id KEYWORD, hostname KEYWORD, area KEYWORD, received TIMESTAMP
+)".into(), "BGP-LS: the IGP's nodes (router id, IS-IS system id, dynamic hostname)"),
+        ("netops_bgpls_links", "CREATE TABLE IF NOT EXISTS netops_bgpls_links (
+  id KEYWORD PRIMARY KEY, local_node KEYWORD, remote_node KEYWORD, local_ip KEYWORD, remote_ip KEYWORD,
+  igp_metric INT, max_bw_mbps INT, delay_us INT, admin_group INT, received TIMESTAMP
+)".into(), "BGP-LS: the IGP's links, one a direction, with their TE attributes (bandwidth, delay, admin group)"),
+        ("netops_bmp_peers", "CREATE TABLE IF NOT EXISTS netops_bmp_peers (
+  id KEYWORD PRIMARY KEY, router KEYWORD, local_asn INT, peer_ip KEYWORD, peer_asn INT, peer_bgp_id KEYWORD,
+  peer_desc KEYWORD, state KEYWORD, adj_rib_in INT, up_since TIMESTAMP
+)".into(), "BMP: the BGP sessions each router reports, with the routes it takes from each"),
+        ("netops_gpon_onts", "CREATE TABLE IF NOT EXISTS netops_gpon_onts (
+  id KEYWORD PRIMARY KEY, agent KEYWORD, pon_port KEYWORD, ont_id INT, serial KEYWORD, model KEYWORD,
+  version KEYWORD, description KEYWORD, oper_status KEYWORD
+)".into(), "GPON: each OLT's ONT table: the ONTs on its PON ports"),
+        ("netops_discovered", "CREATE TABLE IF NOT EXISTS netops_discovered (
+  id KEYWORD PRIMARY KEY, kind KEYWORD, item KEYWORD, sources KEYWORD[], how TEXT, at TIMESTAMP
+)".into(), "How discovery found each site, device, link and session: from which feeds, and by what rule"),
         ("netops_state", "CREATE TABLE IF NOT EXISTS netops_state (
   id KEYWORD PRIMARY KEY, val TEXT OPTIONS(indexed = false), updated TIMESTAMP
 )".into(), "The app's own bookkeeping"),
@@ -206,5 +244,8 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
 pub fn names() -> Vec<&'static str> {
     tables().into_iter().map(|t| t.0).collect()
 }
+
+/// The feeds `--topology discovered` builds the network from.
+pub const FEEDS: &[&str] = &["netops_snmp_system", "netops_snmp_ifaces", "netops_lldp", "netops_bgpls_nodes", "netops_bgpls_links", "netops_bmp_peers", "netops_gpon_onts"];
 
 pub const TELEMETRY: &[&str] = &["netops_link_metrics", "netops_device_metrics", "netops_service_metrics", "netops_flows", "netops_syslog"];

@@ -30,6 +30,9 @@ pub struct Service {
     pub engine: Arc<Engine>,
     pub token: Option<String>,
     pub local: bool,
+    /// The app serves both networks (`--topology both`): the listed one, and
+    /// under `/d/` the one read from its feeds.
+    pub both: bool,
 }
 
 pub(crate) type Shared = Arc<Service>;
@@ -116,6 +119,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/incidents/:id", get(incident))
         .route("/v1/incidents/:id/replay", get(replay))
         .route("/v1/incidents/:id/key", get(answer_key))
+        .route("/v1/evidence/:id", get(cause_evidence))
         .route("/v1/incidents/:id/:action", post(incident_act))
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/webhook", post(webhook))
@@ -145,6 +149,7 @@ pub fn router(svc: Shared) -> Router {
         .merge(crate::hub::routes())
         .merge(crate::debug::routes())
         .merge(crate::estate::routes())
+        .merge(crate::discover::routes())
         .merge(crate::ask::routes())
         .merge(crate::assist::routes())
         .route("/v1/sim/inject", post(inject))
@@ -168,6 +173,111 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
         }
     }
     next.run(req).await
+}
+
+// ---- both networks (`--topology both`)
+
+/// The second network of `--topology both`: the same simulated network read
+/// back from what it reports (`discover.rs`), in tables of its own
+/// (`netops_disc_*`), served under `/d/`. It is built the first time it is
+/// asked for, so a deployment that never opens it pays nothing for it.
+pub struct Second {
+    db: crate::strata::Strata,
+    opts: std::sync::Mutex<Option<crate::sim::Opts>>,
+    token: Option<String>,
+    local: bool,
+    router: std::sync::RwLock<Option<Router>>,
+    /// What it is doing while it is built: the phase, how far, an error.
+    phase: std::sync::Mutex<(String, f64, Option<String>)>,
+}
+
+impl Second {
+    pub fn new(db: crate::strata::Strata, opts: crate::sim::Opts, token: Option<String>, local: bool) -> Arc<Second> {
+        let opts = crate::sim::Opts { discovered: true, ..opts };
+        Arc::new(Second { db, opts: std::sync::Mutex::new(Some(opts)), token, local, router: Default::default(), phase: std::sync::Mutex::new(("Waiting to be asked for".into(), 0.0, None)) })
+    }
+
+    fn router(&self) -> Option<Router> {
+        self.router.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn say(&self, what: &str, progress: f64, error: Option<String>) {
+        *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = (what.to_string(), progress, error);
+    }
+
+    /// Starts building it, once.
+    fn start(self: &Arc<Self>) {
+        let Some(opts) = self.opts.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+        self.say("Starting", 0.02, None);
+        let me = self.clone();
+        tokio::spawn(async move {
+            let (w, estate) = loop {
+                let steps = std::sync::atomic::AtomicUsize::new(0);
+                let said = |m: &str| {
+                    let n = steps.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f64;
+                    let mut first = m.chars();
+                    let m: String = first.next().map(|c| c.to_uppercase().chain(first).collect()).unwrap_or_default();
+                    me.say(&m, (0.05 + n * 0.07).min(0.9), None);
+                };
+                match crate::discover::prepare(&me.db, &opts, said).await {
+                    Ok(x) => break x,
+                    Err(e) if e.status == 0 && (e.message.starts_with("this database") || e.message.starts_with("the feeds")) => {
+                        me.say("Stopped", 0.0, Some(e.message));
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("the discovered network: {e}");
+                        me.say("Trying again", 0.02, Some(e.to_string()));
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            };
+            tracing::info!("the discovered network: {} sites, {} devices, {} links", w.sites.len(), w.devices.len(), w.links.len());
+            let engine = Engine::with_estate(me.db.clone(), crate::sim::Opts { reset: false, ..opts }, w, estate);
+            tokio::spawn(engine.clone().run());
+            let svc = Arc::new(Service { engine, token: me.token.clone(), local: me.local, both: true });
+            *me.router.write().unwrap_or_else(|e| e.into_inner()) = Some(router(svc));
+        });
+    }
+
+    /// Its status while it is built, as `/v1/status` says it once it is.
+    fn status(&self) -> Value {
+        let p = self.phase.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        json!({"version": env!("CARGO_PKG_VERSION"), "ready": false, "phase": p.0, "progress": round(p.1, 3), "error": p.2, "now": iso(now()), "local": self.local,
+            "topology": "discovered", "topologies": ["inventory", "discovered"], "sim": {"simulate": true, "scenarios": []},
+            "network": {"name": "Meridian", "sites": 0, "devices": 0, "links": 0, "services": 0, "customers": 0}})
+    }
+}
+
+/// Both networks: the listed one at `/`, the discovered one under `/d/`.
+pub fn both(first: Shared, second: Arc<Second>) -> Router {
+    let inner = router(first.clone());
+    Router::new()
+        .fallback(move |req: Request| {
+            let (inner, second) = (inner.clone(), second.clone());
+            async move { pick(inner, second, req).await }
+        })
+        .layer(axum::middleware::from_fn_with_state(first, guard))
+}
+
+async fn pick(first: Router, second: Arc<Second>, req: Request) -> Response {
+    use tower::ServiceExt;
+    let path = req.uri().path().to_string();
+    let Some(rest) = path.strip_prefix("/d").filter(|r| r.starts_with('/')).map(str::to_string) else {
+        return match first.oneshot(req).await { Ok(r) => r, Err(e) => match e {} };
+    };
+    let (mut parts, body) = req.into_parts();
+    let query = parts.uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    parts.uri = format!("{rest}{query}").parse().unwrap_or_default();
+    let req = Request::from_parts(parts, body);
+    if let Some(r) = second.router() {
+        return match r.oneshot(req).await { Ok(r) => r, Err(e) => match e {} };
+    }
+    second.start();
+    if rest == "/v1/status" {
+        return Json(second.status()).into_response();
+    }
+    ApiError(StatusCode::SERVICE_UNAVAILABLE, "the network read from its feeds is still being built: /d/v1/status says how far".into()).into_response()
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
@@ -229,6 +339,8 @@ async fn status(State(svc): State<Shared>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"), "ready": st.ready, "phase": st.phase, "progress": round(st.progress, 3), "error": st.error, "last_minute": iso(st.last_minute), "now": iso(now()),
         "semantic": st.semantic, "graph": match st.graph_sql { Some(true) => "sql", Some(false) => "app", None => "" }, "model": schema::MODEL,
         "eval_ms": round(st.eval_ms, 1), "tick_ms": round(st.tick_ms, 1), "open_incidents": st.open.len(), "firing": st.alerts.len(), "waiting": st.badges.map(|b| b.0), "notices": st.badges.map(|b| b.1), "estate": e.estate.as_ref().map(|x| json!({"objects": x.objects(), "broken": x.live.lock().unwrap_or_else(|p| p.into_inner()).len()})), "sim": sim, "local": svc.local,
+        "topology": if e.opts.discovered { "discovered" } else { "inventory" },
+        "topologies": if svc.both { json!(["inventory", "discovered"]) } else if e.opts.discovered { json!(["discovered"]) } else { json!(["inventory"]) },
         "network": {"name": "Meridian", "sites": e.w.sites.len(), "devices": e.w.devices.len(), "links": e.w.links.iter().filter(|l| l.documented).count(), "services": e.w.services.len(), "customers": e.w.customers.len()},
     }))
 }
@@ -359,13 +471,19 @@ async fn incident(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let runs = q.rows("Agent runs on it", "SELECT * FROM netops_agent_runs WHERE incident = :id ORDER BY started DESC LIMIT 20", json!({"id": id})).await?;
     let acts = q.rows("Actions proposed for it", "SELECT * FROM netops_actions WHERE incident = :id ORDER BY proposed LIMIT 50", json!({"id": id})).await?;
     let rca = runs.iter().find(|r| r.s("agent") == "root-cause" || r.s("agent") == "estate").map(|r| r.s("id"));
-    let (steps, receipts) = match &rca {
+    let (steps, receipts, mut evidence) = match &rca {
         Some(run) => (
             q.rows("What the root-cause agent did, step by step", "SELECT n, tool, title, detail, sql_text, row_count, ms FROM netops_agent_steps\nWHERE run = :run ORDER BY n LIMIT 100", json!({"run": run})).await?,
             q.rows("What it was shown, and what did not fit (the receipt)", "SELECT n, source, row_id, title, score, tokens, used, decision, excerpt FROM netops_receipts\nWHERE run = :run ORDER BY n LIMIT 400", json!({"run": run})).await?,
+            q.soft("Why it named that cause: what happened, the evidence, what it ruled out", "SELECT id, n, role, kind, claim, refs, ts, excerpt, sql_text, absent FROM netops_evidence\nWHERE run = :run ORDER BY n LIMIT 100", json!({"run": run})).await,
         ),
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
+    // The SQL as it runs on this network's tables.
+    for r in evidence.iter_mut() {
+        let sql = q.e.db.renamed(&r.s("sql_text")).into_owned();
+        r.insert("sql_text".into(), json!(sql));
+    }
     let runbook = if inc.s("runbook").is_empty() { Vec::new() } else { q.rows("The runbook", "SELECT id, title, body, category, uses, wins, owner FROM netops_runbooks WHERE id = :id", json!({"id": inc.s("runbook")})).await? };
     let semantic = q.e.st().semantic;
     let text = format!("{} {}", inc.s("title"), inc.s("summary"));
@@ -402,9 +520,25 @@ async fn incident(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let logs = if around.is_empty() { Vec::new() } else { q.rows("Warnings and errors around it", &format!("SELECT ts, device, severity, sev, template, message FROM netops_syslog\nWHERE ts >= :a AND ts <= :b AND sev <= 4 AND device IN ({})\nORDER BY ts LIMIT 150", quoted(&around)), json!({"a": iso(started - 5 * 60), "b": b})).await? };
     let change = if inc.s("change_id").is_empty() { Vec::new() } else { q.rows("The change it names", "SELECT id, title, description, kind, risk, status, executed, owner, approver, diff, rollback_plan, outcome FROM netops_changes WHERE id = :id", json!({"id": inc.s("change_id")})).await? };
     let judged = q.soft("Runbooks graded for it", "SELECT runbook, grade, judge, ts FROM netops_judgments WHERE incident = :id LIMIT 10", json!({"id": id})).await;
-    q.done(json!({"incident": inc, "alerts": alerts, "timeline": timeline, "runs": runs, "steps": steps, "receipts": receipts, "actions": acts, "runbook": runbook.first(), "similar": similar,
+    q.done(json!({"incident": inc, "alerts": alerts, "timeline": timeline, "runs": runs, "steps": steps, "receipts": receipts, "evidence": evidence, "actions": acts, "runbook": runbook.first(), "similar": similar,
         "blast": blast, "customers": customers, "link_series": link_series, "device_series": dev_series, "service_series": svc_series, "logs": logs, "change": change.first(), "around": around, "judgments": judged,
         "window": {"from": a, "to": b}}))
+}
+
+/// One piece of the root-cause agent's evidence, with its query run again:
+/// the rows behind the claim, as the tables hold them now.
+async fn cause_evidence(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let q = Q::new(&svc);
+    let rows = q.rows("The claim", "SELECT id, run, incident, n, role, kind, claim, refs, ts, excerpt, sql_text, params, absent FROM netops_evidence WHERE id = :id", json!({"id": id})).await?;
+    let Some(mut ev) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no evidence {id}"))) };
+    let sql = ev.s("sql_text");
+    // Only the agent's own reads are run again.
+    let read = sql.trim_start().to_ascii_uppercase().starts_with("SELECT") && !sql.contains(';');
+    let params: Value = serde_json::from_str(&ev.s("params")).unwrap_or_else(|_| json!({}));
+    let found = if read && !sql.is_empty() { q.soft("The rows behind it, read again", &sql, params.clone()).await } else { Vec::new() };
+    ev.insert("sql_text".into(), json!(q.e.db.renamed(&sql)));
+    ev.insert("params".into(), params);
+    q.done(json!({"evidence": ev, "rows": found}))
 }
 
 async fn replay(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
@@ -979,7 +1113,8 @@ async fn data(State(svc): State<Shared>) -> Answer {
             n.insert(k, c);
         }
     }
-    let tables: Vec<Value> = schema::tables().into_iter().enumerate().map(|(k, (name, ddl, what))| json!({"table": name, "what": what, "rows": n.get(&k), "ddl": ddl, "telemetry": schema::TELEMETRY.contains(&name)})).collect();
+    let db = &q.e.db;
+    let tables: Vec<Value> = schema::tables().into_iter().enumerate().map(|(k, (name, ddl, what))| json!({"table": db.table(name), "what": what, "rows": n.get(&k), "ddl": db.renamed(&ddl), "telemetry": schema::TELEMETRY.contains(&name)})).collect();
     let sources = q.rows("Where each table's rows come from", "SELECT id, name, kind, table_name, via, status, rate, lag_s, last_seen, retention, note, snippet FROM netops_sources LIMIT 50", json!({})).await?;
     let health = q.e.db.health().await.ok();
     let (written, last_rows, semantic, graph, started) = {
