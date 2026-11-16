@@ -1,0 +1,3 @@
+# build_docs.py imports analytics.py, and release-publish.yml commits docs/site
+# after running it: the bytecode Python leaves here is not part of the site.
+__pycache__/

@@ -1,0 +1,19 @@
+es-ef256 vector                   warm-up: p50 6.363, 6.320 ms
+es-ef256 vector                   c=1        211 q/s  p50   4.654 ms  p90   5.415 ms  p99   6.635 ms  errors 0
+es-ef256 vector                   c=4        608 q/s  p50   6.379 ms  p90   8.124 ms  p99   9.948 ms  errors 0
+es-ef256 vector                   c=16      1019 q/s  p50  14.649 ms  p90  22.415 ms  p99  32.009 ms  errors 0
+es-ef256 vector + filter          warm-up: p50 8.435, 8.448 ms
+es-ef256 vector + filter          c=1        162 q/s  p50   6.007 ms  p90   7.026 ms  p99   9.139 ms  errors 0
+es-ef256 vector + filter          c=4        461 q/s  p50   8.298 ms  p90  11.033 ms  p99  14.200 ms  errors 0
+es-ef256 vector + filter          c=16       688 q/s  p50  22.008 ms  p90  32.887 ms  p99  51.746 ms  errors 0
+es-ef256 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef256 hybrid (weighted)        warm-up: p50 8.993, 8.899 ms
+es-ef256 hybrid (weighted)        c=1        144 q/s  p50   5.977 ms  p90  10.390 ms  p99  19.104 ms  errors 0
+es-ef256 hybrid (weighted)        c=4        384 q/s  p50   9.020 ms  p90  15.807 ms  p99  30.218 ms  errors 0
+es-ef256 hybrid (weighted)        c=16       538 q/s  p50  27.355 ms  p90  45.651 ms  p99  76.038 ms  errors 0
+es-ef256 similar items            warm-up: p50 11.606, 11.145 ms
+es-ef256 similar items            c=1        129 q/s  p50   7.590 ms  p90   8.752 ms  p99  10.802 ms  errors 0
+es-ef256 similar items            c=4        337 q/s  p50  11.357 ms  p90  15.064 ms  p99  20.952 ms  errors 0
+es-ef256 similar items            c=16       462 q/s  p50  33.368 ms  p90  48.236 ms  p99  62.746 ms  errors 0
+es-ef256 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef256.json

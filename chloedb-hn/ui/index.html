@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HN Search on ChloeDB</title>
+<meta name="description" content="Every Hacker News story and comment, searched by words and by meaning, with threads, trends, experts and cited answers. Built on ChloeDB.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232f5bd3' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4A2.5 2.5 0 0 1 4 13.5z'/%3E%3Ccircle cx='11.5' cy='9.3' r='2.8'/%3E%3C/svg%3E">
+<style>
+/* The command center's colors, so the page looks the same on its own. */
+:root {
+  color-scheme: light;
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f4f5f7; --surface-3: #e9ebef; --sunken: #eef0f3;
+  --line: #e2e5ea; --line-2: #cfd4dc; --text: #0f1216; --text-2: #48505b; --muted: #77808b;
+  --accent: #2f5bd3; --accent-2: #2449b3; --accent-ink: #ffffff; --accent-soft: #e6ecfb; --focus: rgba(47, 91, 211, .28);
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b; --good-ink: #006300; --crit-ink: #b42323;
+  --good-soft: #e3f4e3; --warn-soft: #fdf2d8; --serious-soft: #fce9e1; --crit-soft: #f9e1e1;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec; --seq-4: #3987e5; --seq-5: #256abf; --seq-6: #184f95; --seq-7: #0d366b;
+  --grid: #e8e9ec; --axis: #c3c7ce; --code: #f3f4f6;
+  --kw: #7b3fc4; --str: #0f7b4a; --num: #b45309; --fn: #1d63c9; --cmt: #8a919c; --op: #9d174d;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 1px rgba(16, 24, 40, .03);
+  --shadow-2: 0 10px 30px rgba(16, 24, 40, .12), 0 2px 6px rgba(16, 24, 40, .06);
+  --shadow-3: 0 24px 64px rgba(16, 24, 40, .22);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --r: 10px; --r-sm: 7px;
+  --side: 236px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0d0f12; --surface: #16181c; --surface-2: #1c1f24; --surface-3: #252930; --sunken: #111317;
+    --line: #262a31; --line-2: #343942; --text: #eceef1; --text-2: #b5bbc5; --muted: #858c97;
+    --accent: #7aa2ff; --accent-2: #9ab8ff; --accent-ink: #0b1430; --accent-soft: #1b2440; --focus: rgba(122, 162, 255, .3);
+    --good-ink: #3fcf5c; --crit-ink: #ff8a80;
+    --good-soft: #13281a; --warn-soft: #2e2611; --serious-soft: #2e1d15; --crit-soft: #321718;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --seq-1: #13233a; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf; --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
+    --grid: #22262c; --axis: #383d46; --code: #111317;
+    --kw: #c4a5ff; --str: #7fd6a4; --num: #f2b56b; --fn: #8ab8ff; --cmt: #6f7782; --op: #f58fb6;
+    --shadow-1: none; --shadow-2: 0 12px 32px rgba(0, 0, 0, .45); --shadow-3: 0 24px 72px rgba(0, 0, 0, .6);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0f12; --surface: #16181c; --surface-2: #1c1f24; --surface-3: #252930; --sunken: #111317;
+  --line: #262a31; --line-2: #343942; --text: #eceef1; --text-2: #b5bbc5; --muted: #858c97;
+  --accent: #7aa2ff; --accent-2: #9ab8ff; --accent-ink: #0b1430; --accent-soft: #1b2440; --focus: rgba(122, 162, 255, .3);
+  --good-ink: #3fcf5c; --crit-ink: #ff8a80;
+  --good-soft: #13281a; --warn-soft: #2e2611; --serious-soft: #2e1d15; --crit-soft: #321718;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --seq-1: #13233a; --seq-2: #104281; --seq-3: #184f95; --seq-4: #256abf; --seq-5: #3987e5; --seq-6: #6da7ec; --seq-7: #b7d3f6;
+  --grid: #22262c; --axis: #383d46; --code: #111317;
+  --kw: #c4a5ff; --str: #7fd6a4; --num: #f2b56b; --fn: #8ab8ff; --cmt: #6f7782; --op: #f58fb6;
+  --shadow-1: none; --shadow-2: 0 12px 32px rgba(0, 0, 0, .45); --shadow-3: 0 24px 72px rgba(0, 0, 0, .6);
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { padding: 0 20px; }
+@media (max-width: 600px) { body { padding: 0 12px; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+// The page on its own (the app's / with --public): the view the command
+// center runs, given a context of the same shape: api, path, href, onPath.
+import view from "./ui/view.js";
+const sub = () => {
+  const [p] = location.hash.replace(/^#\/?/, "").split("?");
+  return p.split("/").map((x) => { try { return decodeURIComponent(x); } catch { return x; } }).filter(Boolean);
+};
+const ctx = {
+  api: async (path, o = {}) => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), o.timeout || 30000);
+    try {
+      const r = await fetch(path, { method: o.body ? "POST" : "GET", headers: o.body ? { "content-type": "application/json" } : {}, body: o.body ? JSON.stringify(o.body) : undefined, signal: ac.signal });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      return j;
+    } finally { clearTimeout(t); }
+  },
+  path: sub,
+  href: (...parts) => "#" + parts.map((x) => "/" + encodeURIComponent(x)).join(""),
+  onPath: (f) => { let last = sub().join("/"); addEventListener("hashchange", () => { const p = sub(); if (p.join("/") !== last) { last = p.join("/"); f(p); } }); },
+};
+view.render(document.getElementById("app"), ctx);
+</script>
+</body>
+</html>

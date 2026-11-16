@@ -1,0 +1,2 @@
+{"node": "one-1m-d-a1-3a2su6", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 8, "mem_kb": 65853644, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.631, "sha256_1g_x_vcpus_s": 11.352, "disk_write_2g_s": 0.72, "copy_ms": 0, "time": 1794790870, "size": "m-8vcpu-64gb"}
+{"node": "one-1m-c-a1-3a2sup", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382180, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.723, "sha256_1g_x_vcpus_s": 11.229, "disk_write_2g_s": 6.131, "copy_ms": 81149, "time": 1794790957, "size": "c-8"}

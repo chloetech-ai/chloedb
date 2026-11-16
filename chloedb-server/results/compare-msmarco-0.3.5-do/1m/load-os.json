@@ -1,0 +1,17 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "os",
+  "index_bytes": 5130184300,
+  "indexed_docs": 1000000,
+  "ingest_s": 494.470734864,
+  "json_bytes": 11817599866,
+  "merge_s": 354.860501061,
+  "refresh_s": 1.412992321,
+  "searchable_docs": 1000000,
+  "segments": 2,
+  "setup_s": 0.489086387,
+  "total_s": 850.744260398
+}

@@ -81,6 +81,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="crawler.html">Crawler</a>
       <a href="sheets.html">Sheets</a>
       <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
       <a href="arxiv.html" aria-current="page">arXiv explorer</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
@@ -96,7 +97,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Apps</span>
       <h1>chloedb-arxiv: arXiv on ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/arxiv.md">docs/chloedb/arxiv.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.6, unreleased). The latest release is 0.3.5 (<a href="v0.3.5/index.html">its docs</a>); what is newer is marked "since 0.3.6".</p>
+      <p class="doc-version">These docs describe release 0.3.6.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-the-data-comes-from">Where the data comes from</a></li><li><a href="#run-it">Run it</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -120,6 +121,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Trends and the atlas.</strong> Any words, compared as a share of each year's papers. The atlas places the topics on one map, near topics near, colored by arXiv area, sized by papers, a ring on those that grew most last year.</li>
 <li><strong>Feeds you shape yourself.</strong> A feed says what you want in your words: topics, papers like some you name, categories, techniques, domains, people whose new papers always go in, words that keep a paper out, kinds (surveys, benchmarks, datasets, tools), how many papers, how many of one topic, for whom, and how much code, citations and known authors count. The papers an issue would hold are SQL and answer as the knobs move (no model is called). <strong>Write issue</strong> then reads each paper in full from its HTML page on arxiv.org (its sections, figures and tables) and explains it, so the issue can be read without opening the papers: an opening on what the week's papers share, a contents list, and for each paper <em>in brief</em>, the problem, the approach, the results with their numbers, the takeaway, the limits, the terms a newcomer needs, the one or two figures that explain it best (copied from the paper, with what to notice in each) and its main results table. A paper without an HTML version is explained from its abstract. Each issue has a page, a Markdown copy for a newsletter and an RSS feed; the shorter styles of <a href="https://recsys.substack.com/">a weekly research newsletter</a> (a paragraph a paper, brief, bullets) remain.</li>
 <li><strong>Standing questions.</strong> Ask once (<em>tell me when someone uses diffusion models for weather forecasting</em>) and every new paper that answers it comes to you, on a page and in an RSS feed. Every hour the papers of the last week are searched for the question (all its words and most of them by BM25, and its meaning, fused by rank), and the fifteen closest not read for it yet go to the model in one call (<code>llm()</code> on the server), which says for each whether it does what the question asks and why. Every verdict is kept, so a paper is read once per question and an hour with nothing new calls no model; a new question reads the closest papers of the last month at once. A reader keeps ten questions (<code>src/watch.rs</code>).</li>
+<li><strong>People to work with.</strong> On a person's page: the people whose work of the last four years is nearest theirs in meaning but who have never written with them or with anyone they write with, with the techniques each would bring, their papers nearest the person's work, and the shortest way to them in the coauthor graph (through people with the fewest papers, since a name with thousands is many people sharing it). Their eight newest and eight most cited papers of the last six years are one text; the 500 nearest papers are read and each author scores by their papers' ranks there (<code>src/collab.rs</code>).</li>
+<li><strong>Who could review it.</strong> On a paper's page, or for a title and abstract pasted in with its authors: the people who know its subject (their papers among the 500 nearest to it in the last six years), with eight papers or more and one in the last three years, its authors and everyone who wrote with one of them in the last four years left out and named, each with their nearest papers and seniority.</li>
+<li><strong>Rising people</strong>, on the Rising page: people whose first paper is at most five years old, by the citations to their papers of the last one or two years (two cited papers or more, of 20 authors or fewer), by area.</li>
+<li><strong>Where someone's work went.</strong> A person's page shows their most used techniques year by year as a river, each band a technique and its width their papers using it that year.</li>
+<li><strong>Code and data.</strong> The share of papers that link their code, year by year, in all of arXiv or an area; the repositories behind the most papers; the techniques whose papers share code most and least; the newest and most cited papers with code and those with models or data on Hugging Face (<code>src/code.rs</code>). <code>has:code</code> in a search keeps only papers with code.</li>
+<li><strong>Labs.</strong> The organisations behind 2.5 million papers (78%), from the authors' affiliations in <a href="https://openalex.org">OpenAlex</a>'s public snapshot: the labs with the most papers of the last twelve months, those whose share of the papers grew most, who is moving into a technique (a button on its page), and a page per lab with its papers a year, what it is known for and moving into, who writes its papers, the labs and countries it writes with. A paper's page names its organisations. OpenAlex names organisations for fewer of the newest papers, so growth is a lab's share, not its count (<code>src/labs.rs</code>).</li>
 <li><strong>It stays current.</strong> <code>--live</code> reads the new and revised papers from arXiv's OAI-PMH interface every six hours, three seconds between pages, and a new paper goes to the topic whose centroid its text is nearest.</li>
 </ul>
 <h2 id="where-the-data-comes-from">Where the data comes from<a class="anchor" href="#where-the-data-comes-from" aria-label="Link to this section">#</a></h2>
@@ -127,6 +134,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Papers</strong>: arXiv's metadata (<a href="https://huggingface.co/datasets/librarian-bots/arxiv-metadata-snapshot">librarian-bots/arxiv-metadata-snapshot</a>, CC0), and the weeks after the snapshot from <a href="https://info.arxiv.org/help/oa/index.html">OAI-PMH</a>.</li>
 <li><strong>Citations</strong>: Crossref's references of arXiv papers' published versions (<a href="https://huggingface.co/datasets/cometadata/crossref-arxiv-citations">cometadata/crossref-arxiv-citations</a>). A citing work that is an arXiv paper, by its DOI, makes an edge of the citation graph; every citing work is a reader of the recommender.</li>
 <li><strong>Topics</strong>: <code>tools/topics.py</code> clusters every paper's embedding into 1,500 topics with k-means fitted on 300,000 older papers and 250,000 of the last two years (so recent research is not folded into a few catch-all topics), drops the topics fewer than 150 papers would join (<code>--min-papers</code>; 1,093 remain), places each paper in the nearest of its ten closest topics with a small pull toward topics that hold its primary category, puts each topic in one of 17 fields (arXiv's areas, by its papers' categories), names each from its terms and its most cited titles, and places them on the map. A topic that is mostly an old one keeps its id (<code>--keep</code>), and its name when its centroid has not moved (<code>--labels</code>). New papers are placed by the same rule in <code>src/live.rs</code>.</li>
+<li><strong>Organisations</strong> of each paper come from <a href="https://openalex.org">OpenAlex</a>'s public snapshot (CC0) on S3, read without a key: <code>tools/oa_orgs.py</code> reads only the columns it needs (whether a work is on arXiv, its arXiv link, its authors' institutions) from the 744 GB of Parquet files, about 30 GB, and <code>tools/labs.py</code> joins them with the papers' rows into <code>ax_lab_papers</code> and <code>ax_labs</code>.</li>
 <li><strong>Affiliations</strong> for a feed's papers are read from each paper's HTML page on arxiv.org, once a paper and fifteen seconds apart, as arXiv's <code>robots.txt</code> asks. The app never reads arxiv.org's search or API pages.</li>
 </ul>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
@@ -205,6 +213,11 @@ chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lis
 <td>the figures issues show, each image copied once from the paper's page</td>
 </tr>
 <tr>
+<td><code>ax_labs</code>, <code>ax_lab_papers</code></td>
+<td>search</td>
+<td>each organisation with its papers in all, in the last twelve months and the twelve before; each paper's organisations with the columns a lab page counts by</td>
+</tr>
+<tr>
 <td><code>ax_watches</code>, <code>ax_matches</code></td>
 <td>graph</td>
 <td>readers' standing questions, and each paper read for one with the model's verdict and why</td>
@@ -212,12 +225,12 @@ chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lis
 </tbody>
 </table></div>
 <h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
-<p><code>tests/cluster.rs</code> starts two chloedb-servers through <code>serve --local --local-graph</code>, loads a small made-up arXiv into them (embedded by the <code>hash:512</code> model, so nothing is downloaded), and checks every page: search, a paper's citations and what to read next, a person, a topic, the atlas, events becoming For you, a feed's preview, what to cite for a draft, a standing question kept, listed, read as RSS and dropped, and that gaps, new topics, spread, rising and trends answer.</p>
+<p><code>tests/cluster.rs</code> starts two chloedb-servers through <code>serve --local --local-graph</code>, loads a small made-up arXiv into them (embedded by the <code>hash:512</code> model, so nothing is downloaded), and checks every page: search, a paper's citations and what to read next, a person, a topic, the atlas, events becoming For you, a feed's preview, what to cite for a draft, people to work with, reviewers for a paper and for a pasted abstract with its authors left out, a standing question kept, listed, read as RSS and dropped, and that gaps, new topics, spread, rising people, code, labs and trends answer.</p>
 <pre data-lang="sh">cd chloedb-arxiv &amp;&amp; cargo test --profile ci</pre>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/arxiv.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="netops.html">← Network operations</a><a href="chloectx.html">ChloeCtx →</a></span>
+      <span class="pager"><a href="hn.html">← Hacker News</a><a href="chloectx.html">ChloeCtx →</a></span>
     </footer>
   </article>
 </div></main>

@@ -1,0 +1,1013 @@
+{
+ "kind": "compute#machineTypeList",
+ "id": "projects/chloedb/zones/us-central1-a/machineTypes",
+ "items": [
+  {
+   "kind": "compute#machineType",
+   "name": "c3-highcpu-4",
+   "description": "4 vCPUs, 8 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-standard-4-lssd",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-highcpu-8",
+   "description": "8 vCPUs, 16 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3-standard-8-lssd",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highcpu-4",
+   "description": "4 vCPUs, 8 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highcpu-8",
+   "description": "8 vCPUs, 16 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highmem-8-lssd",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-standard-8-lssd",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highcpu-16",
+   "description": "16 vCPUs, 32 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highmem-16",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-highmem-16-lssd",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-standard-16",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c3d-standard-16-lssd",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highcpu-2",
+   "description": "2 vCPUs, 4 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 4096,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-2",
+   "description": "2 vCPUs, 15 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 15360,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-2",
+   "description": "2 vCPUs, 7 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 7168,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highcpu-4",
+   "description": "4 vCPUs, 8 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-4",
+   "description": "4 vCPUs, 31 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 31744,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-4-lssd",
+   "description": "4 vCPUs, 31 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 31744,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-4",
+   "description": "4 vCPUs, 15 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 15360,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-4-lssd",
+   "description": "4 vCPUs, 15 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 15360,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highcpu-8",
+   "description": "8 vCPUs, 16 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-8",
+   "description": "8 vCPUs, 62 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 63488,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-8-lssd",
+   "description": "8 vCPUs, 62 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 63488,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-8",
+   "description": "8 vCPUs, 30 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 30720,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-8-lssd",
+   "description": "8 vCPUs, 30 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 30720,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highcpu-16",
+   "description": "16 vCPUs, 32 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-16",
+   "description": "16 vCPUs, 124 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 126976,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-highmem-16-lssd",
+   "description": "16 vCPUs, 124 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 126976,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-16",
+   "description": "16 vCPUs, 60 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 61440,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "c4-standard-16-lssd",
+   "description": "16 vCPUs, 60 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 61440,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highcpu-2",
+   "description": "2 vCPUs, 2 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 2048,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highmem-2",
+   "description": "2 vCPUs, 16 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-medium",
+   "description": "2 vCPUs, 4 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 4096,
+   "isSharedCpu": true,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-micro",
+   "description": "2 vCPUs, 1 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 1024,
+   "isSharedCpu": true,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-small",
+   "description": "2 vCPUs, 2 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 2048,
+   "isSharedCpu": true,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-standard-2",
+   "description": "2 vCPUs, 8 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highcpu-4",
+   "description": "4 vCPUs, 4 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 4096,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highcpu-8",
+   "description": "8 vCPUs, 8 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highcpu-16",
+   "description": "16 vCPUs, 16 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-highmem-16",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "e2-standard-16",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highcpu-2",
+   "description": "2 vCPUs, 2 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 2048,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highmem-2",
+   "description": "2 vCPUs, 16 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-standard-2",
+   "description": "2 vCPUs, 8 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highcpu-4",
+   "description": "4 vCPUs, 4 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 4096,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highcpu-8",
+   "description": "8 vCPUs, 8 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highcpu-16",
+   "description": "16 vCPUs, 16 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-highmem-16",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2-standard-16",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highcpu-2",
+   "description": "2 vCPUs, 2 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 2048,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highmem-2",
+   "description": "2 vCPUs, 16 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-standard-2",
+   "description": "2 vCPUs, 8 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highcpu-4",
+   "description": "4 vCPUs, 4 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 4096,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highcpu-8",
+   "description": "8 vCPUs, 8 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highcpu-16",
+   "description": "16 vCPUs, 16 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-highmem-16",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n2d-standard-16",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highcpu-2",
+   "description": "2 vCPUs, 4 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 4096,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highmem-2",
+   "description": "2 vCPUs, 16 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-standard-2",
+   "description": "2 vCPUs, 8 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highcpu-4",
+   "description": "4 vCPUs, 8 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 8192,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highmem-4",
+   "description": "4 vCPUs, 32 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highcpu-8",
+   "description": "8 vCPUs, 16 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highmem-8",
+   "description": "8 vCPUs, 64 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-standard-8",
+   "description": "8 vCPUs, 32 GB RAM",
+   "guestCpus": 8,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highcpu-16",
+   "description": "16 vCPUs, 32 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 32768,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-highmem-16",
+   "description": "16 vCPUs, 128 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 131072,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n4-standard-16",
+   "description": "16 vCPUs, 64 GB RAM",
+   "guestCpus": 16,
+   "memoryMb": 65536,
+   "isSharedCpu": false,
+   "maximumPersistentDisks": 128,
+   "zone": "us-central1-a",
+   "architecture": "X86_64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "t2a-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "zone": "us-central1-a",
+   "architecture": "ARM64"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "g2-standard-4",
+   "description": "4 vCPUs, 16 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 16384,
+   "isSharedCpu": false,
+   "zone": "us-central1-a",
+   "accelerators": [
+    {
+     "guestAcceleratorType": "nvidia-l4",
+     "guestAcceleratorCount": 1
+    }
+   ]
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n1-standard-2",
+   "description": "2 vCPUs, 7.5 GB RAM",
+   "guestCpus": 2,
+   "memoryMb": 7680,
+   "isSharedCpu": false,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n1-standard-4",
+   "description": "4 vCPUs, 15 GB RAM",
+   "guestCpus": 4,
+   "memoryMb": 15360,
+   "isSharedCpu": false,
+   "zone": "us-central1-a"
+  },
+  {
+   "kind": "compute#machineType",
+   "name": "n1-highmem-96",
+   "description": "96 vCPUs, 624 GB RAM",
+   "guestCpus": 96,
+   "memoryMb": 638976,
+   "isSharedCpu": false,
+   "zone": "us-central1-a",
+   "deprecated": {
+    "state": "DEPRECATED"
+   }
+  }
+ ],
+ "selfLink": "https://www.googleapis.com/compute/v1/projects/chloedb/zones/us-central1-a/machineTypes"
+}

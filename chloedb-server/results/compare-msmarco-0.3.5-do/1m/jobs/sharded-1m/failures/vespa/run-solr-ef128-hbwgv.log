@@ -1,0 +1,22 @@
+solr-ef128 vector                   warm-up: p50 7.266, 7.596 ms
+solr-ef128 vector                   c=1        216 q/s  p50   4.541 ms  p90   5.216 ms  p99   6.588 ms  errors 0
+solr-ef128 vector                   c=4        478 q/s  p50   7.905 ms  p90  11.311 ms  p99  16.296 ms  errors 0
+solr-ef128 vector                   c=16       615 q/s  p50  24.425 ms  p90  39.927 ms  p99  58.584 ms  errors 0
+solr-ef128 vector + filter          warm-up: p50 17.077, 16.757 ms
+solr-ef128 vector + filter          c=1        102 q/s  p50   9.247 ms  p90  10.498 ms  p99  31.150 ms  errors 0
+solr-ef128 vector + filter          c=4        261 q/s  p50  14.309 ms  p90  19.053 ms  p99  45.287 ms  errors 0
+solr-ef128 vector + filter          c=16       271 q/s  p50  57.305 ms  p90  89.452 ms  p99 116.434 ms  errors 0
+solr-ef128 hybrid (RRF)             warm-up: p50 12.184, 12.108 ms
+solr-ef128 hybrid (RRF)             c=1        108 q/s  p50   8.146 ms  p90  14.921 ms  p99  25.987 ms  errors 0
+solr-ef128 hybrid (RRF)             c=4        260 q/s  p50  13.683 ms  p90  25.990 ms  p99  39.132 ms  errors 0
+solr-ef128 hybrid (RRF)             c=16       338 q/s  p50  39.706 ms  p90  87.204 ms  p99 140.357 ms  errors 0
+solr-ef128 hybrid (weighted)        warm-up: p50 13.513, 13.376 ms
+solr-ef128 hybrid (weighted)        c=1        109 q/s  p50   7.803 ms  p90  15.667 ms  p99  22.832 ms  errors 0
+solr-ef128 hybrid (weighted)        c=4        250 q/s  p50  13.760 ms  p90  27.279 ms  p99  47.603 ms  errors 0
+solr-ef128 hybrid (weighted)        c=16       312 q/s  p50  42.214 ms  p90  95.128 ms  p99 169.244 ms  errors 0
+solr-ef128 similar items            warm-up: p50 11.974, 12.535 ms
+solr-ef128 similar items            c=1        115 q/s  p50   7.991 ms  p90   9.513 ms  p99  14.352 ms  errors 0
+solr-ef128 similar items            c=4        302 q/s  p50  12.483 ms  p90  16.596 ms  p99  25.162 ms  errors 0
+solr-ef128 similar items            c=16       355 q/s  p50  42.149 ms  p90  65.353 ms  p99  96.820 ms  errors 0
+solr-ef128 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef128.json

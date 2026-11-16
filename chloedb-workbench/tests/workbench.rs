@@ -1715,7 +1715,16 @@ fn the_trust_prompt_is_answered_in_workbenchs_worktrees_and_asked_elsewhere() {
     let id = a["id"].as_str().unwrap().to_string();
     ws_read_until(&s, &id, "CHOSE: Yes, I trust this folder", &[]);
     s.wait(&id, "idle");
-    let evs = s.events(&id);
+    // Its note comes once Workbench sees the prompt gone, which on a slow
+    // machine can be after the turn's own Stop.
+    let end = Instant::now() + Duration::from_secs(30);
+    let evs = loop {
+        let evs = s.events(&id);
+        if evs.iter().any(|e| e["kind"] == "screen" && e["summary"].as_str().unwrap().contains("Workbench trusted")) || Instant::now() > end {
+            break evs;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert!(evs.iter().any(|e| e["kind"] == "screen" && e["summary"].as_str().unwrap().contains("Workbench trusted")), "{evs:?}");
     let (_, v) = s.get(&format!("/api/questions?agent={id}"));
     assert!(v["questions"].as_array().unwrap().is_empty(), "{v}");
@@ -2575,7 +2584,7 @@ fn health_counts_tests_by_name_without_permission_waits_and_runs_one_again() {
     let a = s.spawn(json!({ "repo": r, "name": "flake", "worktree": false }));
     let id = a["id"].as_str().unwrap().to_string();
     let started = s.until(&id, "started", |a| a["session_id"].is_string());
-    let junit = s.data.join("sessions").join(&id).join("pytest-junit.xml");
+    let junit = s.data.canonicalize().unwrap().join("sessions").join(&id).join("pytest-junit.xml");
     // The session's pytest writes its junit report where Workbench reads it
     // (read from /proc, so on Linux only).
     #[cfg(not(target_os = "linux"))]
@@ -7202,8 +7211,10 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let allow = settings["permissions"]["allow"].to_string();
     assert!(allow.contains("Bash(cargo:*)") && allow.contains("Edit"), "{settings}");
     assert!(settings["permissions"]["deny"].to_string().contains("Bash(git push:*)"), "{settings}");
-    let rec = http().get(format!("{}/api/agents/{aid}/recording", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap().body_mut().read_to_string().unwrap();
-    assert!(rec.contains("MODE: auto"), "the agent was not started in auto mode");
+    // What it prints first, once it has printed it (a slow machine's
+    // terminal is a moment behind its stage).
+    let screen = ws_read_until(&s, &aid, "MODE: auto", &[]);
+    assert!(screen.contains("MODE: auto"), "the agent was not started in auto mode");
     let task = s.agent(&aid)["task"].as_str().unwrap_or("").to_string();
     assert!(task.contains("test -f src/FIXED") && task.contains("regression test"), "{task}");
     s.wait(&aid, "idle");
@@ -7559,7 +7570,9 @@ fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
     let v = play(json!({ "wait": true }));
     assert_eq!(v["run"]["use_memory"], true, "{v}");
     let last = envs().lines().last().unwrap().to_string();
-    let store = s.data.join("converge").join("memory").join(&pid);
+    // The server names its data dir as it resolves it (on macOS the
+    // temporary folder's /var is /private/var).
+    let store = s.data.canonicalize().unwrap().join("converge").join("memory").join(&pid);
     assert!(last.contains(&format!("home={} disable= source=workbench", store.display())), "{last}");
     assert!(store.is_dir());
     let job = std::fs::read_to_string(fd.join("jobs-play")).unwrap();

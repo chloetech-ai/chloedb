@@ -1,0 +1,39 @@
+1	ok	1794809924	1794810344	build
+2	ok	1794810344	1794810349	up strata
+3	ok	1794810349	1794810722	run strata
+4	ok	1794810722	1794811097	run strata --label strata-pass2
+5	ok	1794811097	1794811468	run strata --label strata-pass3
+6	ok	1794811468	1794811610	run strata --candidates 128 --label strata-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+7	ok	1794811610	1794811753	run strata --candidates 128 --label strata-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+8	ok	1794811753	1794811897	run strata --candidates 128 --label strata-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+9	ok	1794811897	1794812039	run strata --candidates 256 --label strata-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+10	ok	1794812039	1794812182	run strata --candidates 256 --label strata-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+11	ok	1794812182	1794812326	run strata --candidates 256 --label strata-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+12	ok	1794812326	1794812470	run strata --candidates 512 --label strata-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+13	ok	1794812470	1794812614	run strata --candidates 512 --label strata-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+14	ok	1794812614	1794812762	run strata --candidates 512 --label strata-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+15	ok	1794812762	1794812763	down strata
+16	ok	1794812763	1794812917	up vespa
+17	ok	1794812917	1794814448	load vespa
+18	ok	1794814448	1794814844	run vespa
+19	ok	1794814844	1794815216	run vespa --label vespa-pass2
+20	ok	1794815216	1794815588	run vespa --label vespa-pass3
+21	ok	1794815588	1794815741	run vespa --candidates 128 --label vespa-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+22	ok	1794815741	1794815894	run vespa --candidates 128 --label vespa-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+23	ok	1794815894	1794816046	run vespa --candidates 128 --label vespa-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+24	ok	1794816046	1794816200	run vespa --candidates 256 --label vespa-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+25	ok	1794816200	1794816354	run vespa --candidates 256 --label vespa-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+26	ok	1794816354	1794816510	run vespa --candidates 256 --label vespa-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+27	ok	1794816510	1794816670	run vespa --candidates 512 --label vespa-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+28	ok	1794816670	1794816830	run vespa --candidates 512 --label vespa-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+29	ok	1794816830	1794816990	run vespa --candidates 512 --label vespa-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+30	ok	1794816990	1794817083	writes vespa
+31	ok	1794817083	1794817303	stream vespa
+32	ok	1794817303	1794817310	down vespa
+33	ok	1794817310	1794817315	up strata
+34	ok	1794817315	1794817687	run strata --label strata-b
+35	ok	1794817687	1794818058	run strata --label strata-b-pass2
+36	ok	1794818058	1794818431	run strata --label strata-b-pass3
+37	ok	1794818431	1794818504	writes strata
+38	ok	1794818504	1794818664	stream strata
+39	ok	1794818664	1794818666	down strata

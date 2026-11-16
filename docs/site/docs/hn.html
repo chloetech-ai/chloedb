@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chloedb-hn: Hacker News on ChloeDB · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-hn keeps every public Hacker News item in ChloeDB, about 49 million stories, comments, jobs and polls from October 2006 on, and searches them the way people look for things on HN: a story they half remember,…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/hn.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html" aria-current="page">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>chloedb-hn: Hacker News on ChloeDB</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/hn.md">docs/chloedb/hn.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.6.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-questions-it-reads">The questions it reads</a></li><li><a href="#read-the-linked-pages">Read the linked pages</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#measured-against-hnalgoliacom">Measured against hn.algolia.com</a></li></ol></details>
+    <div class="doc-body">
+
+<blockquote>
+<p><strong>A demo.</strong> chloedb-hn shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the <code>Demos</code> workflow, <code>.github/workflows/demos.yml</code>), outside CI's required check, and the command center marks it as a demo (<a href="compatibility.html#demos">compatibility</a>).</p>
+</blockquote>
+<p><code>chloedb-hn</code> keeps every public Hacker News item in ChloeDB, about 49 million stories, comments, jobs and polls from October 2006 on, and searches them the way people look for things on HN: a story they half remember, what HN said about a tool, who knows a subject, when something was talked about, or a question asked in a sentence.</p>
+<ul>
+<li><strong>Questions in a sentence, answered by SQL, no model.</strong> "which post has received the most comments", "who posted the most stories about rust", "how many Show HN posts about postgres in 2023", "when was HN most into bitcoin", "what was the first story about docker". A small grammar (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/src/nl.rs"><code>src/nl.rs</code></a>) reads the question into what it asks (the top item by a measure, a count, people, sites or years), the topic and the filters, and the answer above the results is one query, shown with it. Anything the grammar does not read is searched as words.</li>
+<li><strong>Autocomplete of questions, phrases and people.</strong> As a search is typed the box offers whole questions the grammar reads (<code>which post</code> → "which post has received the most comments"), the phrases HN's titles use most (<code>kubernetes o</code> → "kubernetes operator"), people and sites. The phrases are a table, <code>hn_complete</code>, keyed by kind and text, so completing is a prefix of its sorted key: one run of the dictionary, read from a few blocks (<code>PREFIX(id, 'p:kubernetes o')</code>).</li>
+<li><strong>Instant, a keystroke at a time.</strong> Each keystroke shows the stories whose titles hold the words typed so far, the last one as a word or the start of one (<code>rust asy</code> is <code>MATCH(title, 'rust (asy OR asy*)')</code>), by points while that word is being typed and by BM25 times the votes once a space follows it: one statement, no count, no meaning. Enter runs the full search, which reads the last word whole. It is off until the <em>Instant</em> switch beside the box turns it on, and it and <em>Fast</em> are one at a time: switching one on switches the other off. A question being typed still gets its completions.</li>
+<li><strong>Words and meaning together.</strong> Titles, texts and the words of each link are ranked by BM25 with typos, stems and synonyms, fused with a static embedding model's similarity on the server, and weighed by points (<code>pow(points + 1, 0.35)</code>) and a gentle decay for age. Every word must be there for searches of up to three words, and most of them for longer ones, so the counts and facets match the results.</li>
+<li><strong>Exact text, punctuation and all.</strong> <code>`C++`</code>, <code>`std::move`</code>, <code>`k8s.io/api`</code> in backticks, or <em>Match by → exact text</em>, are matched where their characters are, by <code>ILIKE</code> answered from each segment's FM-index (<code>OPTIONS(substring = true)</code>), which tokenized search cannot do.</li>
+<li><strong>Highlights the way the index reads.</strong> A server of 0.3.6 or later marks each result with <code>POST /v1/highlight</code>: stems, synonyms, typos and code as the field's analyzer reads them, cut to the stretch with the most matches.</li>
+<li><strong>Filters in the words.</strong> <code>by:pg</code>, <code>site:github.com</code>, <code>points&gt;500</code>, <code>comments&gt;100</code>, <code>2019..2021</code>, <code>before 2015</code>, <code>-crypto</code>, <code>show hn</code>, <code>ask hn</code>, <code>"exact phrase"</code>; each is shown as a removable chip of what was understood.</li>
+<li><strong>Threads, people and the graph.</strong> A story opens as its whole thread; a comment opens in place with the path to it. People pages show what someone writes about, when, and who they talk to (the reply graph, <code>hn_replies</code>). <em>Who knows</em> ranks the people who comment most on a subject, weighed by the discussion they start. Similar stories by meaning, and the same link discussed again.</li>
+<li><strong>What HN thinks.</strong> A question about opinions gathers the comments that speak to it, packed into a model's budget by the database (<code>PACK n TOKENS ... DEDUPE ... WITH RECEIPT</code>), and a model behind the server's <code>llm()</code> sums them up with every claim cited to a numbered comment. Answers are kept, so a question asked again costs nothing. It, <em>Weekly</em> and <em>Changed minds</em> are the parts that call a model.</li>
+<li><strong>A link across HN.</strong> <em>Links</em> takes a page or a site and shows everywhere HN met it: each time it was submitted, the comments that cite it in other threads, the people who submitted, discussed or cited it, and the links discussed beside it, drawn as one graph (<code>GET /v1/link?u=</code>). A site alone (<code>sqlite.org</code>) lists its most discussed pages, the pages submitted again and again, and who posts it most.</li>
+<li><strong>The week on HN.</strong> <em>Weekly</em> is a digest of a week's ten most voted stories (one per link, jobs left out): what each is, why it mattered, what the thread said, with the top comments quoted, and an opening over the whole week. The app reads each story's linked page once (public <code>http</code> and <code>https</code> pages only, with a timeout) and <code>llm()</code> writes an entry from the page, the post and its most replied comments; entries are kept in <code>hn_answers</code>, so each story is written once (<code>--digest-model</code>, at most <code>--digest-per-day</code> new entries a day).</li>
+<li><strong>The canon.</strong> <em>Canon</em> ranks the books and papers HN recommends, by the people who linked or named each, one person once: for all years, for a span of them (<code>2010..2014</code>) or by a word of the title. A work's page shows the people who named it a year, its best received comments with the name marked, and how it was counted. <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/canon/build.py"><code>canon/build.py</code></a> builds <code>hn_canon</code> from the cluster: the comments that link Amazon, Goodreads or arXiv, the works' titles from Open Library and the arXiv API, books merged across editions by title and first author, then every work counted. A comment counts when it links the work, uses its short name (SICP), writes the title as a title (each word capitalised: "Getting Things Done", not "getting things done") beside a word about books or papers, or writes it beside one of its authors' names, which is the only way to name a title of one or two words ("Steve Jobs", "Deep Learning"); a paper counts only from the year of its arXiv id. So a title that is also a common phrase, a person or a subject ("World Models", "On Writing") is not counted every time it is written.</li>
+<li><strong>Changed minds.</strong> For a topic (<code>rust</code>, <code>bitcoin</code>, <code>remote work</code>), the people who wrote about it in four years or more, and for one of them an arc: their comments that BM25 finds most about it, three a year at most, read by a model through <code>llm()</code> for where each stands (from -2, against, to 2, for, or no view when a comment only explains a detail) with a quote, and what they thought first and last; a year's stance is the mean of its comments that take a side, so neutral and technical comments are shown but do not move it. A quote the comment does not hold word for word is dropped, and every point links to its comment. Arcs are kept in <code>hn_answers</code>; a new one counts against <code>--ask-per-day</code>.</li>
+<li><strong>Fast mode.</strong> The switch beside the search box ranks by words alone (BM25, no meaning and no reranking) for every search until it is switched off.</li>
+<li><strong>Live.</strong> With <code>--feed</code> the app follows the HN API: new items as they are posted, and the points and comments of the stories that change.</li>
+</ul>
+<p>Like <a href="crawler.html">the crawler</a> and <a href="netops.html">network operations</a>, it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (<strong>Apps → Hacker News</strong>).</p>
+<h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
+<p>Build both programs, then prepare the archive and start the app with a server of its own:</p>
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+cd chloedb-hn &amp;&amp; cargo build --release
+target/release/chloedb-hn prepare --parquet ./hn-parquet --out ./hn-rows --download
+target/release/chloedb-hn complete --rows ./hn-rows
+target/release/chloedb-hn serve --local ./hn-data --rows ./hn-rows --server-bin ../chloedb-server/target/release/chloedb-server</pre>
+<p><code>prepare --download</code> fetches the archive's monthly Parquet files (about 12 GB, from <a href="https://huggingface.co/datasets/open-index/hacker-news">open-index/hacker-news</a>) and writes the app's rows: stories, comments (each with its story's title, depth, place among its siblings and the discussion under it), people, the reply graph and the links between stories. <code>--from 2024-01</code> and <code>--to</code> take part of it; <code>--comments-since</code> keeps every story and only the newer comments. <code>complete</code> writes autocomplete's rows from them. <code>serve --local DIR</code> starts a chloedb-server with its database in <code>DIR</code>, makes the tables, loads the rows when they are empty, and lists the app as <code>hn</code>; open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Hacker News</strong>.</p>
+<p>Against a server or a cluster that runs elsewhere, load into it and give the server the app:</p>
+<pre data-lang="sh">chloedb-hn load --rows ./hn-rows --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --comment-model none
+chloedb-hn serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$HN_TOKEN&quot; --listen 0.0.0.0:7850 --feed --comment-model none
+chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN_TOKEN</pre>
+<p><code>--comment-model none</code> keeps the comments without vectors: they take a third of the bytes, and are found by their words and their story's title. The people and sites questions group by author or site; a server whose <code>--max-groups</code> (65,536 by default) is below HN's 1.1 million authors answers them for a topic but not over the whole archive, so give it <code>--max-groups 2000000</code>.</p>
+<h2 id="the-questions-it-reads">The questions it reads<a class="anchor" href="#the-questions-it-reads" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>asked</th>
+<th>answered by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>which post has received the most comments / the most upvoted story about X / the top 5 Show HN posts in 2023</td>
+<td>the top stories by comments, points or date, with the question's filters (<code>ORDER BY comments DESC</code>)</td>
+</tr>
+<tr>
+<td>the first / oldest / newest story about X</td>
+<td><code>ORDER BY created</code></td>
+</tr>
+<tr>
+<td>how many stories mention X / number of comments about X in 2020</td>
+<td><code>COUNT(*)</code> with the same match as the results, and its years</td>
+</tr>
+<tr>
+<td>who posted the most about X / who commented the most / who has the most karma</td>
+<td><code>GROUP BY author</code>; HN's archive carries no karma, so karma is the points a person's stories earned, and the answer says so</td>
+</tr>
+<tr>
+<td>who knows the most about X</td>
+<td>the people who comment most on it, weighed by the discussion they start</td>
+</tr>
+<tr>
+<td>which sites are posted the most about X</td>
+<td><code>GROUP BY site</code></td>
+</tr>
+<tr>
+<td>when was HN most into X / which year did X peak</td>
+<td>the years' counts, each as a share of that year's stories (HN grew; raw counts favour late years)</td>
+</tr>
+<tr>
+<td>what does HN think about X</td>
+<td>the cited summary above, the one answer a model writes</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each answer shows its SQL (<strong>see the SQL</strong>). The grammar's templates are also autocomplete's questions, so what the box offers it can answer.</p>
+<h2 id="read-the-linked-pages">Read the linked pages<a class="anchor" href="#read-the-linked-pages" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">chloedb-hn crawl --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --min-points 3 --contact https://your.site</pre>
+<p><code>crawl</code> reads each page the stories link to, once, into <code>hn_pages</code>, with <a href="crawler.html">the crawler</a>'s fetcher and frontier: robots.txt read before a site's first page and obeyed, one request at a time to a site and a second between two (longer when its robots.txt or its answers ask), redirects checked hop by hop, public addresses only, HTML only, at most 5 MB a page. The links are the stories' canonical links (<code>curl</code>) of at least <code>--min-points</code> points, most voted first. Every link asked becomes a row saying what came of it (<code>ok</code>, <code>noindex</code>, <code>robots</code>, <code>http_4xx</code> with its code, <code>network</code>, <code>timeout</code>, <code>not_html</code>, ...), so the table also says which of HN's links still answer, by the year HN first linked them. A page whose <code>&lt;meta name="robots"&gt;</code> says <code>noindex</code> keeps no text. A run skips the links already in the table, so a crawl that stops goes on where it was; <code>--again network,timeout</code> asks those that failed that way again. <code>--contact</code> goes in the user agent, for a site's owner to reach whoever runs it.</p>
+<h2 id="tables">Tables<a class="anchor" href="#tables" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>table</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hn_stories</code></td>
+<td>stories, Ask and Show HN, jobs and polls: title, text, link (its site and words), author, time, points, comments, kind, topics, a vector of the title and text</td>
+</tr>
+<tr>
+<td><code>hn_comments</code></td>
+<td>comments: text, author, time, parent and its author, story and its title, depth, place among siblings, replies, the discussion under it (and a vector, unless <code>--comment-model none</code>)</td>
+</tr>
+<tr>
+<td><code>hn_users</code></td>
+<td>people: stories, comments, points earned, first and last item, replies received, people talked to</td>
+</tr>
+<tr>
+<td><code>hn_replies</code></td>
+<td>the reply graph: who replied to whom, how often</td>
+</tr>
+<tr>
+<td><code>hn_links</code></td>
+<td>which discussion links to which: a story or one of its comments naming another's <code>item?id=</code></td>
+</tr>
+<tr>
+<td><code>hn_pages</code></td>
+<td>the linked pages as <code>crawl</code> read them, keyed by canonical link: what came of asking, the HTTP code, the year HN first linked it, the most voted story and how many link it, the page's title, description, text (at most <code>--max-text</code> characters), words, language, date, author and image, and a vector of its title, description and text</td>
+</tr>
+<tr>
+<td><code>hn_canon</code></td>
+<td>the canon: a row a book or paper, with its title, authors, cover, link, the people who named it in all and a year, its best received comments, the statement that found its candidates, the rule that kept them and how many each part kept</td>
+</tr>
+<tr>
+<td><code>hn_complete</code></td>
+<td>autocomplete: phrases of titles (<code>p:</code>), sites (<code>s:</code>), topics (<code>t:</code>) and people (<code>u:</code>), each with how many stories hold it and their points</td>
+</tr>
+<tr>
+<td><code>hn_answers</code>, <code>hn_searches</code>, <code>hn_state</code></td>
+<td>kept answers, the searches people ran (their words and counts only) and the feed's place</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="the-api">The API<a class="anchor" href="#the-api" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>route</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /v1/search?q=&amp;only=all\|story\|comment&amp;sort=best\|date\|points\|comments&amp;mode=hybrid\|words\|meaning\|exact\|fast\|instant&amp;page=</code></td>
+<td>results, what was understood, the answer when it is a question, facets, "did you mean", and every query run with its time</td>
+</tr>
+<tr>
+<td><code>GET /v1/suggest?q=</code></td>
+<td>completions: questions, phrases, people, sites, stories</td>
+</tr>
+<tr>
+<td><code>GET /v1/item/:id</code>, <code>/v1/item/:id/around</code></td>
+<td>a thread; similar stories and the same link again</td>
+</tr>
+<tr>
+<td><code>GET /v1/user/:id</code>, <code>/v1/experts?q=</code></td>
+<td>a person; who knows a subject</td>
+</tr>
+<tr>
+<td><code>GET /v1/trends?q=a,b&amp;by=year\|month</code></td>
+<td>how often each was talked about</td>
+</tr>
+<tr>
+<td><code>GET /v1/ask?q=</code></td>
+<td>what HN thinks, cited</td>
+</tr>
+<tr>
+<td><code>GET /v1/front</code></td>
+<td>the front page as SQL: points over age, as HN ranks it</td>
+</tr>
+<tr>
+<td><code>GET /v1/facets?q=</code></td>
+<td>a search's facets on their own (the page asks for them once the results are shown)</td>
+</tr>
+<tr>
+<td><code>GET /v1/ask/comments?q=</code></td>
+<td>the comments an answer is made from, before the model is asked</td>
+</tr>
+<tr>
+<td><code>GET /v1/trending</code>, <code>/v1/spikes?year=</code></td>
+<td>what titles are suddenly about (the last hours against the year before); the months' strongest spikes</td>
+</tr>
+<tr>
+<td><code>GET /v1/link?u=</code></td>
+<td>a page or a site across HN: its submissions, citing comments, people, related links and the graph of them; with no <code>u</code>, the most discussed stories</td>
+</tr>
+<tr>
+<td><code>GET /v1/digest?week=YYYY-MM-DD</code></td>
+<td>a week's digest: the stories picked, the entries and opening already written, the week's totals; the last full week by default</td>
+</tr>
+<tr>
+<td><code>GET /v1/canon?kind=book\|paper&amp;from=&amp;to=&amp;q=</code>, <code>/v1/canon/work?id=</code></td>
+<td>the canon, ranked by everyone or by the people of the years asked; one work with its comments and how it was counted</td>
+</tr>
+<tr>
+<td><code>GET /v1/minds?topic=</code>, <code>/v1/minds/arc?topic=&amp;who=</code></td>
+<td>the people who wrote about a topic for years, with the arcs already read; one person's arc (read and kept when it is new)</td>
+</tr>
+<tr>
+<td><code>GET /v1/digest/write?week=&amp;id=</code></td>
+<td>writes one entry (<code>id</code> a story of the week's picks, or <code>intro</code>) and keeps it</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="measured-against-hnalgoliacom">Measured against hn.algolia.com<a class="anchor" href="#measured-against-hnalgoliacom" aria-label="Link to this section">#</a></h2>
+<p><code>eval/compare.py</code> asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-hn/eval/results"><code>chloedb-hn/eval/results</code></a>, with the machine and the date they were measured on.</p>
+<p><code>eval/instant.py</code> types six searches a character at a time and asks both at each keystroke, as their pages do. On 2026-11-16, while <code>crawl</code> was writing pages into the same cluster, the app's instant search took 10 ms at the median on the server (22 ms at the 90th percentile) against Algolia's 13.5 ms (34 ms), and its round trip from the same cloud machine 48 ms against Algolia's 199 ms (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/eval/results/instant-2026-11-16.json">the numbers</a>).</p>
+<p><code>eval/latency.py</code> times the same searches on both, each asked twice, as the server reports it and from end to end. On 2026-11-16 (a cloud machine against the deployment on DigitalOcean, four shards of 16 GB machines with the data on their own disks), the app's whole search took 100 ms at the median the first time a query was asked and 67 ms the second; hn.algolia.com's engine reported 17 ms, and its full round trip from the same machine was 243 ms against the app's 140 ms. <code>eval/plain.py</code> times the simplest statements on the same queries: BM25 of the titles alone took 15 ms at the median, as Algolia's 16.5, and the substring index with no ranking took 8 ms (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/eval/results/latency-2026-11-16.md">the numbers</a>).</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/hn.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="netops.html">← Network operations</a><a href="arxiv.html">arXiv explorer →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

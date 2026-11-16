@@ -1,0 +1,10 @@
+solr     topic docs-solr-1794804848, 4 partitions; 1000000 documents before
+solr     250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 21 ms  p90 30 ms  p99 37 ms  max 49 ms (read p50 18 ms)
+solr     500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 19 ms  p90 28 ms  p99 34 ms  max 52 ms (read p50 16 ms)
+solr     1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 21 ms  p90 31 ms  p99 37 ms  max 59 ms (read p50 16 ms)
+solr     2000/s           produced 60000 in 30.0 s; written 60000 in 30.2 s (1990/s); lag p50 31 ms  p90 64 ms  p99 286 ms  max 470 ms (read p50 20 ms)
+solr     flat out         produced 20000 in 0.8 s; written 20000 in 5.9 s (3397/s); lag p50 2487 ms  p90 4374 ms  p99 5101 ms  max 5120 ms (read p50 1670 ms)
+solr     before the crash produced 10000 in 5.9 s; written 5010 in 5.9 s (848/s); lag p50 29 ms  p90 42 ms  p99 146 ms  max 228 ms (read p50 19 ms)
+solr     after the crash   resumed in 3.3 s: 1570 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-solr.json
+solr     deleted 142500 streamed documents in 2.4 s

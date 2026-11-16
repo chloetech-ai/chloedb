@@ -1,0 +1,22 @@
+os-ef256-pass2 vector                   warm-up: p50 8.521, 8.446 ms
+os-ef256-pass2 vector                   c=1        164 q/s  p50   6.013 ms  p90   7.047 ms  p99   8.668 ms  errors 0
+os-ef256-pass2 vector                   c=4        456 q/s  p50   8.530 ms  p90  11.274 ms  p99  14.202 ms  errors 0
+os-ef256-pass2 vector                   c=16       625 q/s  p50  24.148 ms  p90  36.244 ms  p99  45.225 ms  errors 0
+os-ef256-pass2 vector + filter          warm-up: p50 21.768, 21.524 ms
+os-ef256-pass2 vector + filter          c=1         66 q/s  p50  15.270 ms  p90  17.592 ms  p99  19.705 ms  errors 0
+os-ef256-pass2 vector + filter          c=4        181 q/s  p50  21.571 ms  p90  28.427 ms  p99  35.377 ms  errors 0
+os-ef256-pass2 vector + filter          c=16       208 q/s  p50  77.111 ms  p90  99.322 ms  p99 113.062 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             warm-up: p50 11.212, 11.463 ms
+os-ef256-pass2 hybrid (RRF)             c=1        122 q/s  p50   7.832 ms  p90  10.214 ms  p99  14.981 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             c=4        332 q/s  p50  11.374 ms  p90  16.491 ms  p99  23.869 ms  errors 0
+os-ef256-pass2 hybrid (RRF)             c=16       434 q/s  p50  35.270 ms  p90  50.433 ms  p99  68.174 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        warm-up: p50 11.388, 11.041 ms
+os-ef256-pass2 hybrid (weighted)        c=1        123 q/s  p50   7.785 ms  p90  10.178 ms  p99  15.044 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        c=4        337 q/s  p50  11.352 ms  p90  15.898 ms  p99  23.603 ms  errors 0
+os-ef256-pass2 hybrid (weighted)        c=16       436 q/s  p50  35.129 ms  p90  51.633 ms  p99  71.065 ms  errors 0
+os-ef256-pass2 similar items            warm-up: p50 18.156, 17.807 ms
+os-ef256-pass2 similar items            c=1         81 q/s  p50  12.381 ms  p90  14.535 ms  p99  17.073 ms  errors 0
+os-ef256-pass2 similar items            c=4        217 q/s  p50  17.980 ms  p90  23.817 ms  p99  29.115 ms  errors 0
+os-ef256-pass2 similar items            c=16       260 q/s  p50  59.845 ms  p90  82.306 ms  p99  93.397 ms  errors 0
+os-ef256-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef256-pass2.json

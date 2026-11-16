@@ -323,7 +323,13 @@ async fn server_on(aws: Option<&str>, digitalocean: Option<&str>, node: Option<&
 /// A server whose cloud view keeps its clusters and the accounts' keys in
 /// files beside its database (`files`: the clusters, the keys), or in
 /// memory only, as a coordinator does unless given files.
-async fn server_kept(aws: Option<&str>, digitalocean: Option<&str>, node: Option<&str>, (clusters, keys): (bool, bool)) -> (String, tempfile::TempDir, Arc<Service>) {
+async fn server_kept(aws: Option<&str>, digitalocean: Option<&str>, node: Option<&str>, kept: (bool, bool)) -> (String, tempfile::TempDir, Arc<Service>) {
+    server_with(aws, digitalocean, None, node, kept).await
+}
+
+/// A server whose Google Cloud calls go to `gcp`, as the credentials file
+/// gcloud writes there says ([`super::gcp::adc_file`]).
+async fn server_with(aws: Option<&str>, digitalocean: Option<&str>, gcp: Option<&str>, node: Option<&str>, (clusters, keys): (bool, bool)) -> (String, tempfile::TempDir, Arc<Service>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.strata");
     let db = Db::create(&path, demo::schema(10), DbOptions::default()).unwrap();
@@ -338,6 +344,10 @@ async fn server_kept(aws: Option<&str>, digitalocean: Option<&str>, node: Option
     if let Some(u) = digitalocean {
         let d = if keys { DigitalOcean::open(DigitalOcean::file_of(&path)).unwrap() } else { DigitalOcean::memory() };
         svc.digitalocean = Arc::new(d.with_endpoint(u));
+    }
+    if let Some(u) = gcp {
+        let adc = super::gcp::adc_file(dir.path());
+        svc.gcp = Arc::new(chloedb_server::gcp::Gcp::open(chloedb_server::gcp::Gcp::file_of(&path)).unwrap().with_endpoint(u).with_adc(Some(adc)));
     }
     svc.place.node = node.map(str::to_string);
     let clouds = if clusters { Clusters::open(Clusters::file_of(&path)).unwrap() } else { Clusters::memory() };
@@ -604,6 +614,101 @@ async fn a_cluster_is_made_on_doks_installed_and_deleted() {
     assert!(pos("DELETE ") > pos("POST "));
     let a = audit(&base).await;
     assert!(a.iter().any(|d| d.starts_with("asked DigitalOcean for the cluster strata-search in nyc3: 2 × m-4vcpu-32gb, $")), "{a:?}");
+}
+
+// ------------------------------------------------------------ Google Cloud
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cluster_is_made_on_gke_installed_resized_and_deleted() {
+    use super::gcp::{CLUSTER, DEPLOYER, TOKEN};
+    let (kube_seen, kube_url) = kube_api().await;
+    let (google, url) = super::gcp::google_api(&kube_url).await;
+    let (base, dir, _svc) = server_with(None, None, Some(&url), None, (true, true)).await;
+    let (status, j) = call(&base, "PUT", "/v1/admin/gcp/project", Some(json!({"project": "chloedb", "region": "us-central1"}))).await;
+    assert_eq!(status, 200, "{j}");
+
+    let plan = json!({"name": "search", "region": "us-central1", "machine": "e2-standard-4", "nodes": 2, "volume_gb": 10, "cluster": {"shards": 2, "replicas": 2}});
+    // 16 vCPUs do not fit the project's 12 in all regions.
+    let mut big = plan.clone();
+    big["nodes"] = json!(4);
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "gcp", "plan": big, "confirm": "strata-search", "keep": true}))).await;
+    assert_eq!(status, 409, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("the nodes need 16 vCPUs and CPUS_ALL_REGIONS leaves 12 of 12"), "{j}");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "gcp", "plan": plan, "confirm": "strata-search", "delete_after_hours": 2}))).await;
+    assert_eq!(status, 202, "{j}");
+    let id = j["id"].as_str().unwrap().to_string();
+    let cloud_id = "projects/chloedb/locations/us-central1-a/clusters/strata-search";
+
+    let j = until(&base, &id, "ready").await;
+    assert_eq!((j["cloud_id"].as_str(), j["provider"].as_str(), j["location"].as_str()), (Some(cloud_id), Some("gcp"), Some("us-central1-a")), "{j}");
+    assert_eq!(j["connect"][0], "gcloud container clusters get-credentials strata-search --project chloedb --location us-central1-a");
+    assert!(j["steps"].as_array().unwrap().iter().any(|s| s["text"] == "GKE is making the cluster and its nodes"), "{j}");
+    {
+        let k = kube_seen.lock().unwrap();
+        let paths: Vec<&str> = k.applied.iter().map(|(p, _)| p.as_str()).collect();
+        let mut want: Vec<&str> = OPERATOR.to_vec();
+        want.extend(["/api/v1/namespaces/strata", "/api/v1/namespaces/strata/secrets/strata-token", "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"]);
+        assert_eq!(paths, want);
+        let spec = &k.applied.last().unwrap().1["spec"];
+        assert_eq!(spec["storage"]["storageClassName"], "standard-rwo");
+        // The coordinators act as the deployer, through Workload Identity.
+        assert_eq!(spec["coordinatorAccountAnnotations"]["iam.gke.io/gcp-service-account"], DEPLOYER);
+        // The credentials' own token: GKE's API takes it.
+        assert!(k.tokens.iter().all(|t| t == TOKEN), "{:?}", k.tokens);
+    }
+
+    // A resize through the routes: GKE's setSize, followed into the list.
+    let (status, j) = call(&base, "POST", "/v1/admin/gcp/nodes", Some(json!({"cluster": cloud_id, "nodes": 3}))).await;
+    assert_eq!(status, 202, "{j}");
+    assert_eq!(j["did"], json!(["3 nodes"]));
+    let start = Instant::now();
+    let m = loop {
+        let (_, m) = call(&base, "GET", &format!("/v1/admin/cloud/clusters/{id}"), None).await;
+        if m["nodes"] == 3 {
+            break m;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "never 3 nodes: {m}");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+    assert!(m["steps"].as_array().unwrap().iter().any(|s| s["text"] == "3 nodes (were 2)"), "{m}");
+    let (status, j) = call(&base, "POST", "/v1/admin/gcp/nodes", Some(json!({"cluster": cloud_id, "min_nodes": 2, "max_nodes": 3}))).await;
+    assert_eq!(status, 202, "{j}");
+    let (status, j) = call(&base, "GET", &format!("/v1/admin/gcp/nodes?cluster={cloud_id}"), None).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!((j["nodes"].as_u64(), j["pools"][0]["autoscaling"].clone()), (Some(3), json!({"min": 2, "max": 3})), "{j}");
+    for (bad, says) in [(json!({"cluster": cloud_id, "nodes": 0}), "a multiple of 1"), (json!({"cluster": cloud_id}), "nodes (how many)"), (json!({"cluster": cloud_id, "min_nodes": 3, "max_nodes": 2}), "above max_nodes"), (json!({"cluster": "projects/x/../y", "nodes": 2}), "is not a GKE cluster's name")] {
+        let (status, j) = call(&base, "POST", "/v1/admin/gcp/nodes", Some(bad.clone())).await;
+        assert!(status == 400 && j.to_string().contains(says), "{bad}: {status} {j}");
+    }
+    {
+        let g = google.lock().unwrap();
+        assert_eq!(g.pools.iter().map(|(w, b)| (w.as_str(), b.clone())).collect::<Vec<_>>(), [("setSize", json!({"nodeCount": 3})), ("setAutoscaling", json!({"autoscaling": {"enabled": true, "totalMinNodeCount": 2, "totalMaxNodeCount": 3, "locationPolicy": "BALANCED"}}))]);
+    }
+
+    // Found in the project: ChloeDB's other cluster, not this one, nor others'.
+    let (status, j) = call(&base, "GET", "/v1/admin/cloud/found?provider=gcp", None).await;
+    assert_eq!(status, 200, "{j}");
+    let found: Vec<&str> = j["clusters"].as_array().unwrap().iter().map(|c| c["cluster"].as_str().unwrap()).collect();
+    assert_eq!(found, ["strata-other"], "{j}");
+    assert_eq!((j["clusters"][0]["cloud_id"].as_str(), j["clusters"][0]["owner"].as_str()), (Some("projects/chloedb/locations/us-central1-b/clusters/strata-other"), Some("someone")));
+
+    // A restart reads it back.
+    let again = Clusters::open(Clusters::file_of(&dir.path().join("a.strata"))).unwrap();
+    assert_eq!(again.get(&id).unwrap().cloud_id.as_deref(), Some(cloud_id));
+
+    let (status, _) = call(&base, "POST", &format!("/v1/admin/cloud/clusters/{id}/delete"), Some(json!({"confirm": "strata-search"}))).await;
+    assert_eq!(status, 202);
+    let j = until(&base, &id, "deleted").await;
+    assert!(j["steps"].as_array().unwrap().iter().any(|s| s["text"] == "GKE is deleting the cluster and its nodes"), "{j}");
+    let calls = google.lock().unwrap().calls.clone();
+    assert_eq!(calls.iter().filter(|c| *c == "POST /container/v1/projects/chloedb/locations/us-central1-a/clusters").count(), 1, "{calls:?}");
+    assert_eq!(calls.iter().filter(|c| c.starts_with("DELETE ")).collect::<Vec<_>>(), [&format!("DELETE {CLUSTER}")], "{calls:?}");
+    // The volumes went first, while the cluster's API answered.
+    assert!(kube_seen.lock().unwrap().calls.iter().any(|c| c.starts_with("DELETE /api/v1/namespaces/strata/persistentvolumeclaims/")));
+    let a = audit(&base).await;
+    assert!(a.iter().any(|d| d.starts_with("asked Google Cloud for the cluster strata-search in us-central1-a: 2 × e2-standard-4, $")), "{a:?}");
+    assert!(a.iter().any(|d| d == "resized the GKE cluster strata-search (us-central1-a), pool strata: 3 nodes"), "{a:?}");
+    assert!(a.iter().any(|d| d == "deleting the cluster strata-search on Google Cloud in us-central1-a"), "{a:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

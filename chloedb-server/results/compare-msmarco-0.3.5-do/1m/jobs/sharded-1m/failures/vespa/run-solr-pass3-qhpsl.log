@@ -1,0 +1,58 @@
+solr-pass3 bm25                     warm-up: p50 3.116, 3.127 ms
+solr-pass3 bm25                     c=1        448 q/s  p50   2.065 ms  p90   2.918 ms  p99   4.620 ms  errors 0
+solr-pass3 bm25                     c=4       1100 q/s  p50   3.305 ms  p90   5.420 ms  p99   9.018 ms  errors 0
+solr-pass3 bm25                     c=16      1688 q/s  p50   8.381 ms  p90  15.645 ms  p99  28.176 ms  errors 0
+solr-pass3 bm25 + filter            warm-up: p50 3.489, 3.451 ms
+solr-pass3 bm25 + filter            c=1        412 q/s  p50   2.275 ms  p90   3.105 ms  p99   5.137 ms  errors 0
+solr-pass3 bm25 + filter            c=4       1063 q/s  p50   3.503 ms  p90   5.442 ms  p99   8.420 ms  errors 0
+solr-pass3 bm25 + filter            c=16      1622 q/s  p50   8.730 ms  p90  16.364 ms  p99  28.431 ms  errors 0
+solr-pass3 vector                   warm-up: p50 6.219, 6.259 ms
+solr-pass3 vector                   c=1        250 q/s  p50   3.928 ms  p90   4.407 ms  p99   5.532 ms  errors 0
+solr-pass3 vector                   c=4        572 q/s  p50   6.699 ms  p90   9.390 ms  p99  13.262 ms  errors 0
+solr-pass3 vector                   c=16       750 q/s  p50  19.677 ms  p90  32.330 ms  p99  50.289 ms  errors 0
+solr-pass3 vector + filter          warm-up: p50 12.505, 12.688 ms
+solr-pass3 vector + filter          c=1        129 q/s  p50   6.993 ms  p90   8.325 ms  p99  31.953 ms  errors 0
+solr-pass3 vector + filter          c=4        346 q/s  p50  10.584 ms  p90  14.248 ms  p99  44.938 ms  errors 0
+solr-pass3 vector + filter          c=16       376 q/s  p50  40.921 ms  p90  63.295 ms  p99  90.318 ms  errors 0
+solr-pass3 hybrid (RRF)             warm-up: p50 12.322, 11.869 ms
+solr-pass3 hybrid (RRF)             c=1        110 q/s  p50   7.984 ms  p90  14.345 ms  p99  24.277 ms  errors 0
+solr-pass3 hybrid (RRF)             c=4        249 q/s  p50  13.870 ms  p90  27.113 ms  p99  43.711 ms  errors 0
+solr-pass3 hybrid (RRF)             c=16       345 q/s  p50  39.273 ms  p90  83.134 ms  p99 138.350 ms  errors 0
+solr-pass3 hybrid (weighted)        warm-up: p50 13.706, 13.312 ms
+solr-pass3 hybrid (weighted)        c=1        111 q/s  p50   7.555 ms  p90  15.499 ms  p99  25.576 ms  errors 0
+solr-pass3 hybrid (weighted)        c=4        251 q/s  p50  13.716 ms  p90  27.435 ms  p99  46.545 ms  errors 0
+solr-pass3 hybrid (weighted)        c=16       316 q/s  p50  41.504 ms  p90  93.386 ms  p99 174.339 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   warm-up: p50 12.603, 11.826 ms
+solr-pass3 boosted (bm25 × decay)   c=1         99 q/s  p50   7.444 ms  p90  22.704 ms  p99  39.907 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=4        249 q/s  p50  12.415 ms  p90  34.609 ms  p99  64.978 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=16       284 q/s  p50  36.834 ms  p90 133.379 ms  p99 262.216 ms  errors 0
+solr-pass3 facet                    warm-up: p50 3.049, 3.072 ms
+solr-pass3 facet                    c=1        344 q/s  p50   2.200 ms  p90   4.767 ms  p99  11.895 ms  errors 0
+solr-pass3 facet                    c=4        964 q/s  p50   3.176 ms  p90   7.252 ms  p99  19.860 ms  errors 0
+solr-pass3 facet                    c=16      1513 q/s  p50   8.058 ms  p90  19.701 ms  p99  51.096 ms  errors 0
+solr-pass3 key lookup               warm-up: p50 1.408, 1.413 ms
+solr-pass3 key lookup               c=1        788 q/s  p50   1.270 ms  p90   1.480 ms  p99   1.777 ms  errors 0
+solr-pass3 key lookup               c=4       2739 q/s  p50   1.413 ms  p90   1.882 ms  p99   2.471 ms  errors 0
+solr-pass3 key lookup               c=16      5356 q/s  p50   2.773 ms  p90   4.659 ms  p99   6.998 ms  errors 0
+solr-pass3 phrase                   warm-up: p50 2.845, 2.836 ms
+solr-pass3 phrase                   c=1        460 q/s  p50   1.996 ms  p90   2.833 ms  p99   4.239 ms  errors 0
+solr-pass3 phrase                   c=4       1296 q/s  p50   2.817 ms  p90   4.474 ms  p99   7.069 ms  errors 0
+solr-pass3 phrase                   c=16      1963 q/s  p50   7.194 ms  p90  13.387 ms  p99  23.924 ms  errors 0
+solr-pass3 typo                     warm-up: p50 29.083, 28.388 ms
+solr-pass3 typo                     c=1         54 q/s  p50  17.710 ms  p90  27.607 ms  p99  45.112 ms  errors 0
+solr-pass3 typo                     c=4        130 q/s  p50  28.572 ms  p90  47.022 ms  p99  76.036 ms  errors 0
+solr-pass3 typo                     c=16       134 q/s  p50 107.709 ms  p90 201.997 ms  p99 340.742 ms  errors 0
+solr-pass3 prefix                   warm-up: p50 3.070, 3.133 ms
+solr-pass3 prefix                   c=1        425 q/s  p50   2.235 ms  p90   2.962 ms  p99   4.202 ms  errors 0
+solr-pass3 prefix                   c=4       1205 q/s  p50   3.114 ms  p90   4.620 ms  p99   6.894 ms  errors 0
+solr-pass3 prefix                   c=16      1805 q/s  p50   7.921 ms  p90  14.402 ms  p99  24.931 ms  errors 0
+solr-pass3 similar items            warm-up: p50 16.720, 9.787, 9.986 ms
+solr-pass3 similar items            c=1        145 q/s  p50   6.432 ms  p90   7.182 ms  p99  10.363 ms  errors 0
+solr-pass3 similar items            c=4        354 q/s  p50  10.284 ms  p90  13.904 ms  p99  20.111 ms  errors 0
+solr-pass3 similar items            c=16       409 q/s  p50  35.464 ms  p90  58.330 ms  p99  88.318 ms  errors 0
+solr-pass3 sql aggregate            warm-up: p50 84.667, 79.961 ms
+solr-pass3 sql aggregate            c=1         18 q/s  p50  54.757 ms  p90  69.235 ms  p99  79.569 ms  errors 0
+solr-pass3 sql aggregate            c=4         49 q/s  p50  82.081 ms  p90 104.016 ms  p99 121.810 ms  errors 0
+solr-pass3 sql aggregate            c=16        57 q/s  p50 281.528 ms  p90 410.070 ms  p99 528.406 ms  errors 0
+solr-pass3 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-pass3.json
