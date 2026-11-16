@@ -1,0 +1,49 @@
+1	ok	1794793421	1794799007	build
+2	ok	1794799007	1794799013	up strata
+3	ok	1794799013	1794799429	run strata
+4	ok	1794799429	1794799828	run strata --label strata-pass2
+5	ok	1794799828	1794800230	run strata --label strata-pass3
+6	ok	1794800230	1794800374	run strata --candidates 128 --label strata-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+7	ok	1794800374	1794800518	run strata --candidates 128 --label strata-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+8	ok	1794800518	1794800662	run strata --candidates 128 --label strata-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+9	ok	1794800662	1794800809	run strata --candidates 256 --label strata-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+10	ok	1794800809	1794800955	run strata --candidates 256 --label strata-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+11	ok	1794800955	1794801102	run strata --candidates 256 --label strata-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+12	ok	1794801102	1794801105	down strata
+13	ok	1794801105	1794801167	up es
+14	ok	1794801167	1794810212	load es
+15	ok	1794810212	1794810766	run es
+16	ok	1794810766	1794811268	run es --label es-pass2
+17	ok	1794811268	1794811768	run es --label es-pass3
+18	ok	1794811768	1794811911	run es --candidates 128 --label es-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+19	ok	1794811911	1794812052	run es --candidates 128 --label es-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+20	ok	1794812052	1794812193	run es --candidates 128 --label es-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+21	ok	1794812193	1794812339	run es --candidates 256 --label es-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+22	ok	1794812339	1794812485	run es --candidates 256 --label es-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+23	ok	1794812485	1794812631	run es --candidates 256 --label es-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+24	ok	1794812631	1794812632	trial
+25	ok	1794812632	1794812714	run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+26	ok	1794812714	1794812819	writes es
+27	ok	1794812819	1794812983	stream es
+28	ok	1794812983	1794812989	down es
+29	ok	1794812989	1794813048	up os
+30	ok	1794813048	1794824013	load os
+31	ok	1794824013	1794824627	run os
+32	ok	1794824627	1794825194	run os --label os-pass2
+33	ok	1794825194	1794825750	run os --label os-pass3
+34	ok	1794825750	1794825911	run os --candidates 128 --label os-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+35	ok	1794825911	1794826072	run os --candidates 128 --label os-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+36	ok	1794826072	1794826233	run os --candidates 128 --label os-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+37	ok	1794826233	1794826397	run os --candidates 256 --label os-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+38	ok	1794826397	1794826561	run os --candidates 256 --label os-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+39	ok	1794826561	1794826725	run os --candidates 256 --label os-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+40	ok	1794826725	1794826834	writes os
+41	ok	1794826834	1794826996	stream os
+42	ok	1794826996	1794826999	down os
+43	ok	1794826999	1794827005	up strata
+44	ok	1794827005	1794827423	run strata --label strata-b
+45	ok	1794827423	1794827823	run strata --label strata-b-pass2
+46	ok	1794827823	1794828230	run strata --label strata-b-pass3
+47	ok	1794828230	1794828303	writes strata
+48	ok	1794828303	1794828462	stream strata
+49	ok	1794828462	1794828464	down strata

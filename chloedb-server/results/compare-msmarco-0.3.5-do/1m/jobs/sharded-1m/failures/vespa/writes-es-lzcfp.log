@@ -1,0 +1,12 @@
+es       insert one     c=1        244 docs/s  p50    3.961 ms  p90    5.352 ms  p99    9.481 ms  errors 0
+es       insert one     c=4        760 docs/s  p50    4.465 ms  p90    8.360 ms  p99   16.897 ms  errors 0
+es       insert one     c=16      2079 docs/s  p50    6.449 ms  p90   11.848 ms  p99   32.672 ms  errors 0
+es       insert batch   c=1       1679 docs/s  p50   41.214 ms  p90   50.251 ms  p99  238.424 ms  errors 0
+es       insert batch   c=4       3728 docs/s  p50   71.549 ms  p90  156.458 ms  p99  421.649 ms  errors 0
+es       insert batch   c=16      3854 docs/s  p50  364.550 ms  p90  583.126 ms  p99 1114.649 ms  errors 0
+es       update one     c=1        218 docs/s  p50    4.069 ms  p90    5.916 ms  p99   10.144 ms  errors 0
+es       update one     c=4        806 docs/s  p50    4.162 ms  p90    7.701 ms  p99   17.403 ms  errors 0
+es       update one     c=16      2308 docs/s  p50    5.882 ms  p90   10.192 ms  p99   22.482 ms  errors 0
+es       visible        written in p50 6.7 ms, found after p50 892.2 ms  p90 1011.7 ms  max 1018.4 ms
+wrote /data/compare/writes-es.json
+es       deleted 75430 written documents and put back 20000 ratings in 13.3 s

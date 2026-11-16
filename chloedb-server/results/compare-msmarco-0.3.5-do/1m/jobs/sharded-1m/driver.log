@@ -1,0 +1,84 @@
+00:58:31 sharded-1m: waiting for its nodes
+01:00:21 sharded-1m: nodes sharded-1m-d-a1-3a2sub sharded-1m-d-a1-3a2sur and sharded-1m-c-a1-3a2sua
+01:02:54 sharded-1m: step 1: compare.sh build
+01:09:17 sharded-1m: step 2: compare.sh up strata
+01:09:22 sharded-1m: step 3: compare.sh run strata
+01:15:33 sharded-1m: step 4: compare.sh run strata --label strata-pass2
+01:21:42 sharded-1m: step 5: compare.sh run strata --label strata-pass3
+01:27:51 sharded-1m: step 6: compare.sh run strata --candidates 128 --label strata-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:30:12 sharded-1m: step 7: compare.sh run strata --candidates 128 --label strata-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:32:32 sharded-1m: step 8: compare.sh run strata --candidates 128 --label strata-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:34:53 sharded-1m: step 9: compare.sh run strata --candidates 256 --label strata-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:37:15 sharded-1m: step 10: compare.sh run strata --candidates 256 --label strata-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:39:36 sharded-1m: step 11: compare.sh run strata --candidates 256 --label strata-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:41:58 sharded-1m: step 12: compare.sh run strata --candidates 512 --label strata-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:44:22 sharded-1m: step 13: compare.sh run strata --candidates 512 --label strata-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:46:45 sharded-1m: step 14: compare.sh run strata --candidates 512 --label strata-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+01:49:09 sharded-1m: step 15: compare.sh down strata
+01:49:10 sharded-1m: step 16: compare.sh up es
+01:50:20 sharded-1m: step 17: compare.sh load es
+02:00:25 sharded-1m: step 18: compare.sh run es
+02:07:00 sharded-1m: step 19: compare.sh run es --label es-pass2
+02:13:03 sharded-1m: step 20: compare.sh run es --label es-pass3
+02:19:05 sharded-1m: step 21: compare.sh run es --candidates 128 --label es-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:21:05 sharded-1m: step 22: compare.sh run es --candidates 128 --label es-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:23:04 sharded-1m: step 23: compare.sh run es --candidates 128 --label es-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:25:03 sharded-1m: step 24: compare.sh run es --candidates 256 --label es-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:27:03 sharded-1m: step 25: compare.sh run es --candidates 256 --label es-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:29:03 sharded-1m: step 26: compare.sh run es --candidates 256 --label es-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:31:04 sharded-1m: step 27: compare.sh run es --candidates 512 --label es-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:33:05 sharded-1m: step 28: compare.sh run es --candidates 512 --label es-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:35:06 sharded-1m: step 29: compare.sh run es --candidates 512 --label es-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+02:37:07 sharded-1m: step 30: compare.sh trial
+02:37:08 sharded-1m: step 31: compare.sh run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+02:38:20 sharded-1m: step 32: compare.sh writes es
+02:40:04 sharded-1m: step 33: compare.sh stream es
+02:42:48 sharded-1m: step 34: compare.sh down es
+02:42:52 sharded-1m: step 35: compare.sh up os
+02:44:01 sharded-1m: step 36: compare.sh load os
+02:58:29 sharded-1m: step 37: compare.sh run os
+03:05:41 sharded-1m: step 38: compare.sh run os --label os-pass2
+03:12:15 sharded-1m: step 39: compare.sh run os --label os-pass3
+03:18:50 sharded-1m: step 40: compare.sh run os --candidates 128 --label os-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:21:20 sharded-1m: step 41: compare.sh run os --candidates 128 --label os-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:23:49 sharded-1m: step 42: compare.sh run os --candidates 128 --label os-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:26:19 sharded-1m: step 43: compare.sh run os --candidates 256 --label os-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:28:45 sharded-1m: step 44: compare.sh run os --candidates 256 --label os-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:31:17 sharded-1m: step 45: compare.sh run os --candidates 256 --label os-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:33:49 sharded-1m: step 46: compare.sh run os --candidates 512 --label os-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:36:26 sharded-1m: step 47: compare.sh run os --candidates 512 --label os-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:39:02 sharded-1m: step 48: compare.sh run os --candidates 512 --label os-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+03:41:39 sharded-1m: step 49: compare.sh writes os
+03:43:26 sharded-1m: step 50: compare.sh stream os
+03:46:02 sharded-1m: step 51: compare.sh down os
+03:46:04 sharded-1m: step 52: compare.sh up solr
+03:46:47 sharded-1m: step 53: compare.sh load solr
+04:08:20 sharded-1m: step 54: compare.sh run solr
+04:15:31 sharded-1m: step 55: compare.sh run solr --label solr-pass2
+04:22:15 sharded-1m: step 56: compare.sh run solr --label solr-pass3
+04:28:54 sharded-1m: step 57: compare.sh run solr --candidates 128 --label solr-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:31:23 sharded-1m: step 58: compare.sh run solr --candidates 128 --label solr-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:34:04 sharded-1m: step 59: compare.sh run solr --candidates 128 --label solr-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:36:32 sharded-1m: step 60: compare.sh run solr --candidates 256 --label solr-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:39:03 sharded-1m: step 61: compare.sh run solr --candidates 256 --label solr-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:41:37 sharded-1m: step 62: compare.sh run solr --candidates 256 --label solr-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:44:17 sharded-1m: step 63: compare.sh run solr --candidates 512 --label solr-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:46:54 sharded-1m: step 64: compare.sh run solr --candidates 512 --label solr-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:49:29 sharded-1m: step 65: compare.sh run solr --candidates 512 --label solr-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+04:52:04 sharded-1m: step 66: compare.sh writes solr
+04:54:01 sharded-1m: step 67: compare.sh stream solr
+04:56:37 sharded-1m: step 68: compare.sh down solr
+04:57:09 sharded-1m: step 69: compare.sh up vespa
+04:59:45 sharded-1m: step 70: compare.sh load vespa
+05:23:05 sharded-1m: step 70 (load vespa) failed (1)
+05:23:46 sharded-1m: vespa's other steps are skipped (its down runs); the next engine goes on
+05:23:46 sharded-1m: step 85: compare.sh down vespa
+05:24:18 sharded-1m: step 86: compare.sh up strata
+05:24:25 sharded-1m: step 87: compare.sh run strata --label strata-b
+05:30:40 sharded-1m: step 88: compare.sh run strata --label strata-b-pass2
+05:36:51 sharded-1m: step 89: compare.sh run strata --label strata-b-pass3
+05:43:01 sharded-1m: step 90: compare.sh writes strata
+05:44:14 sharded-1m: step 91: compare.sh stream strata
+05:46:52 sharded-1m: step 92: compare.sh down strata
+05:47:01 sharded-1m: reports fetched (68 files)
+05:47:03 sharded-1m: done after 17312 s

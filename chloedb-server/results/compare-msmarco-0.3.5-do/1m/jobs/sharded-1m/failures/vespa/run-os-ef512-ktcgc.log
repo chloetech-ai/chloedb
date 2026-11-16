@@ -1,0 +1,22 @@
+os-ef512 vector                   warm-up: p50 12.105, 12.185 ms
+os-ef512 vector                   c=1        117 q/s  p50   8.504 ms  p90   9.856 ms  p99  11.444 ms  errors 0
+os-ef512 vector                   c=4        321 q/s  p50  12.134 ms  p90  16.073 ms  p99  19.911 ms  errors 0
+os-ef512 vector                   c=16       411 q/s  p50  37.933 ms  p90  52.115 ms  p99  61.563 ms  errors 0
+os-ef512 vector + filter          warm-up: p50 34.681, 34.613 ms
+os-ef512 vector + filter          c=1         40 q/s  p50  24.800 ms  p90  29.054 ms  p99  34.605 ms  errors 0
+os-ef512 vector + filter          c=4        114 q/s  p50  34.660 ms  p90  43.835 ms  p99  53.145 ms  errors 0
+os-ef512 vector + filter          c=16       123 q/s  p50 128.431 ms  p90 176.746 ms  p99 192.141 ms  errors 0
+os-ef512 hybrid (RRF)             warm-up: p50 11.396, 11.456 ms
+os-ef512 hybrid (RRF)             c=1        121 q/s  p50   7.948 ms  p90  10.132 ms  p99  15.454 ms  errors 0
+os-ef512 hybrid (RRF)             c=4        334 q/s  p50  11.336 ms  p90  16.062 ms  p99  22.919 ms  errors 0
+os-ef512 hybrid (RRF)             c=16       431 q/s  p50  35.638 ms  p90  50.861 ms  p99  67.390 ms  errors 0
+os-ef512 hybrid (weighted)        warm-up: p50 11.359, 11.476 ms
+os-ef512 hybrid (weighted)        c=1        125 q/s  p50   7.685 ms  p90  10.105 ms  p99  14.722 ms  errors 0
+os-ef512 hybrid (weighted)        c=4        338 q/s  p50  11.296 ms  p90  15.919 ms  p99  22.941 ms  errors 0
+os-ef512 hybrid (weighted)        c=16       434 q/s  p50  35.504 ms  p90  50.486 ms  p99  66.827 ms  errors 0
+os-ef512 similar items            warm-up: p50 25.800, 25.445 ms
+os-ef512 similar items            c=1         57 q/s  p50  17.688 ms  p90  20.735 ms  p99  23.364 ms  errors 0
+os-ef512 similar items            c=4        154 q/s  p50  25.365 ms  p90  33.026 ms  p99  41.477 ms  errors 0
+os-ef512 similar items            c=16       176 q/s  p50  89.762 ms  p90 118.975 ms  p99 134.599 ms  errors 0
+os-ef512 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef512.json

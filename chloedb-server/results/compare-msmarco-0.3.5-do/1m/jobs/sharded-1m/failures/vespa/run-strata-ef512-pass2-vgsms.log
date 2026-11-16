@@ -1,0 +1,22 @@
+strata-ef512-pass2 vector                   warm-up: p50 4.772, 4.764 ms
+strata-ef512-pass2 vector                   c=1        295 q/s  p50   3.316 ms  p90   3.787 ms  p99   5.495 ms  errors 0
+strata-ef512-pass2 vector                   c=4        800 q/s  p50   4.774 ms  p90   6.579 ms  p99   8.965 ms  errors 0
+strata-ef512-pass2 vector                   c=16      1051 q/s  p50  14.069 ms  p90  23.481 ms  p99  34.011 ms  errors 0
+strata-ef512-pass2 vector + filter          warm-up: p50 5.002, 4.967 ms
+strata-ef512-pass2 vector + filter          c=1        271 q/s  p50   3.607 ms  p90   4.135 ms  p99   5.965 ms  errors 0
+strata-ef512-pass2 vector + filter          c=4        768 q/s  p50   4.960 ms  p90   6.863 ms  p99   9.029 ms  errors 0
+strata-ef512-pass2 vector + filter          c=16      1027 q/s  p50  14.407 ms  p90  24.220 ms  p99  35.011 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             warm-up: p50 8.498, 8.399 ms
+strata-ef512-pass2 hybrid (RRF)             c=1        164 q/s  p50   5.798 ms  p90   7.572 ms  p99  11.722 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             c=4        447 q/s  p50   8.379 ms  p90  12.314 ms  p99  18.366 ms  errors 0
+strata-ef512-pass2 hybrid (RRF)             c=16       560 q/s  p50  27.000 ms  p90  43.446 ms  p99  61.114 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        warm-up: p50 8.357, 8.562 ms
+strata-ef512-pass2 hybrid (weighted)        c=1        164 q/s  p50   5.796 ms  p90   7.568 ms  p99  11.795 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        c=4        449 q/s  p50   8.282 ms  p90  12.365 ms  p99  18.083 ms  errors 0
+strata-ef512-pass2 hybrid (weighted)        c=16       563 q/s  p50  26.899 ms  p90  42.856 ms  p99  60.036 ms  errors 0
+strata-ef512-pass2 similar items            warm-up: p50 5.364, 5.459 ms
+strata-ef512-pass2 similar items            c=1        260 q/s  p50   3.779 ms  p90   4.354 ms  p99   6.064 ms  errors 0
+strata-ef512-pass2 similar items            c=4        711 q/s  p50   5.376 ms  p90   7.411 ms  p99   9.928 ms  errors 0
+strata-ef512-pass2 similar items            c=16       951 q/s  p50  15.759 ms  p90  25.965 ms  p99  37.072 ms  errors 0
+strata-ef512-pass2 result cache: {"after":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}},"before":{"answer_cache":{"http://strata-0.strata:7700":null,"http://strata-0.strata:7710":null,"http://strata-1.strata:7700":null,"http://strata-1.strata:7710":null}}}
+wrote /data/compare/run-strata-ef512-pass2.json

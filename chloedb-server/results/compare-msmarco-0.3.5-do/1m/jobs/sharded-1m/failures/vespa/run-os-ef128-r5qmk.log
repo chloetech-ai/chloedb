@@ -1,0 +1,22 @@
+os-ef128 vector                   warm-up: p50 6.847, 6.570 ms
+os-ef128 vector                   c=1        209 q/s  p50   4.680 ms  p90   5.629 ms  p99   6.890 ms  errors 0
+os-ef128 vector                   c=4        590 q/s  p50   6.546 ms  p90   8.832 ms  p99  11.054 ms  errors 0
+os-ef128 vector                   c=16       883 q/s  p50  16.767 ms  p90  27.206 ms  p99  35.732 ms  errors 0
+os-ef128 vector + filter          warm-up: p50 14.307, 13.843 ms
+os-ef128 vector + filter          c=1        101 q/s  p50   9.947 ms  p90  11.638 ms  p99  13.249 ms  errors 0
+os-ef128 vector + filter          c=4        278 q/s  p50  14.025 ms  p90  18.745 ms  p99  23.057 ms  errors 0
+os-ef128 vector + filter          c=16       346 q/s  p50  44.756 ms  p90  62.886 ms  p99  75.576 ms  errors 0
+os-ef128 hybrid (RRF)             warm-up: p50 11.484, 11.509 ms
+os-ef128 hybrid (RRF)             c=1        122 q/s  p50   7.887 ms  p90  10.198 ms  p99  14.747 ms  errors 0
+os-ef128 hybrid (RRF)             c=4        334 q/s  p50  11.403 ms  p90  16.107 ms  p99  23.018 ms  errors 0
+os-ef128 hybrid (RRF)             c=16       430 q/s  p50  35.607 ms  p90  50.627 ms  p99  62.551 ms  errors 0
+os-ef128 hybrid (weighted)        warm-up: p50 11.183, 11.288 ms
+os-ef128 hybrid (weighted)        c=1        122 q/s  p50   7.858 ms  p90  10.165 ms  p99  14.823 ms  errors 0
+os-ef128 hybrid (weighted)        c=4        334 q/s  p50  11.365 ms  p90  15.937 ms  p99  24.581 ms  errors 0
+os-ef128 hybrid (weighted)        c=16       432 q/s  p50  35.637 ms  p90  50.973 ms  p99  67.811 ms  errors 0
+os-ef128 similar items            warm-up: p50 13.738, 13.955 ms
+os-ef128 similar items            c=1        104 q/s  p50   9.598 ms  p90  11.195 ms  p99  12.648 ms  errors 0
+os-ef128 similar items            c=4        284 q/s  p50  13.643 ms  p90  18.300 ms  p99  22.298 ms  errors 0
+os-ef128 similar items            c=16       359 q/s  p50  44.167 ms  p90  58.125 ms  p99  67.927 ms  errors 0
+os-ef128 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef128.json
