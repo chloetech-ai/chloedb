@@ -32,6 +32,7 @@ mod cluster_keys;
 mod cluster_writes;
 mod command_center;
 mod connectors;
+mod kafka;
 mod correlated;
 mod date_cluster;
 mod deep_statements;

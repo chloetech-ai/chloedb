@@ -15,7 +15,10 @@
 //!   ","` (text into a list), `"values": {"-5": "new", ...}` (a value to
 //!   another, by its text; `"*"` for any other), `"as"` (`text`, `int`,
 //!   `float`, `bool`, `time`, `list`, `first`, `json`, `lower`, `upper`,
-//!   `hash`, `text_of`) and `"default"` (when it came out null).
+//!   `hash`, `text_of`) and `"default"` (when it came out null); `"type"`
+//!   (`KEYWORD`, `INT`, ...) is the column's type when `create_target`
+//!   makes the table from the map ([`super::kinds::map_schema`]), and
+//!   changes no value.
 //!
 //! A column the map does not name is left out of the row; with no map at
 //! all, the record is the row. Either way the row is then fitted to the
