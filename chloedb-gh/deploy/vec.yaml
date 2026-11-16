@@ -35,14 +35,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache.
+        # limit leaves them room as page cache. No scheduled scrub: reading
+        # the part's 2.3 GB against its checksums pushes them out of it (and
+        # the part is rebuilt from the reduce output in minutes).
         resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
@@ -70,14 +72,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache.
+        # limit leaves them room as page cache. No scheduled scrub: reading
+        # the part's 2.3 GB against its checksums pushes them out of it (and
+        # the part is rebuilt from the reduce output in minutes).
         resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
@@ -105,14 +109,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache.
+        # limit leaves them room as page cache. No scheduled scrub: reading
+        # the part's 2.3 GB against its checksums pushes them out of it (and
+        # the part is rebuilt from the reduce output in minutes).
         resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
@@ -140,14 +146,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache.
+        # limit leaves them room as page cache. No scheduled scrub: reading
+        # the part's 2.3 GB against its checksums pushes them out of it (and
+        # the part is rebuilt from the reduce output in minutes).
         resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
