@@ -1,0 +1,40 @@
+[package]
+name = "chloedb-arxiv"
+version = "0.3.5"
+edition = "2021"
+license = "Apache-2.0"
+description = "arXiv on ChloeDB: every paper searched by words and meaning, questions in a sentence, topics, trends, authors, techniques and domains, citations, what to read next by ChloeDB's recommender, and digests tailored to each reader, kept current from arXiv's OAI-PMH"
+
+# A client of chloedb-server over HTTP, as chloedb-hn is: no ChloeDB crate
+# in its build. Parquet is read only by `prepare`, which turns arXiv's
+# metadata snapshot and Crossref's citations into rows for the server.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream"] }
+axum = "0.7"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+parquet = { version = "59.3", default-features = false, features = ["arrow", "snap", "zstd", "lz4"] }
+arrow-array = "59.3"
+arrow-schema = "59.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+quick-xml = "0.37"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+unicode-normalization = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

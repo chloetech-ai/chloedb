@@ -1,0 +1,26 @@
+# The app, once /mnt/arxiv/work/bin/chloedb-arxiv is in place on the graph node.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: arxiv-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: arxiv-app}}
+  template:
+    metadata: {labels: {app: arxiv-app}}
+    spec:
+      nodeSelector: {chloedb/arxiv-role: graph}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: arxiv, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: ubuntu:24.04
+        command: ["/work/bin/chloedb-arxiv", "serve", "--strata", "http://arxiv-search.strata.svc:7700", "--graph", "http://arxiv-graph.strata.svc:7700", "--listen", "0.0.0.0:7860", "--live"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
+        - {name: CHLOEDB_ARXIV_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_arxiv=info}
+        ports: [{containerPort: 7860}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7860}, periodSeconds: 5}
+        resources: {requests: {cpu: 500m, memory: 1Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/arxiv/work, type: Directory}}]

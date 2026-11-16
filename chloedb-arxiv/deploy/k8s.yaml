@@ -1,0 +1,104 @@
+# arXiv on ChloeDB in a Kubernetes cluster: two single chloedb-servers on
+# two nodes, split by job (the recommender and graph walks need one
+# database, so these tables are not sharded):
+#   arxiv-search  papers, people, topics: what a search reads
+#   arxiv-graph   reading events and the recommender, citations, coauthors,
+#                 what readers keep, and the model calls (llm())
+#   arxiv-app     the app (ui, API, live harvest), beside the graph
+# Nodes are labelled chloedb/arxiv-role=search|graph and tainted
+# chloedb/pool=arxiv:NoSchedule; each server keeps its database on its
+# node's disk (hostPath), as fast as the node's SSD. Secrets: arxiv-admin
+# (token: the servers' token), anthropic (key), e2e-admin (token: what the
+# command center's app proxy sends). The app's binary and rows are put in
+# /mnt/arxiv/work on the graph node (see docs/chloedb/arxiv.md).
+apiVersion: v1
+kind: Service
+metadata: {name: arxiv-search, namespace: strata}
+spec:
+  selector: {app: arxiv-search}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: arxiv-graph, namespace: strata}
+spec:
+  selector: {app: arxiv-graph}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: arxiv-app, namespace: strata}
+spec:
+  selector: {app: arxiv-app}
+  ports: [{name: http, port: 7860, targetPort: 7860}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: arxiv-search, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: arxiv-search}}
+  template:
+    metadata: {labels: {app: arxiv-search}}
+    spec:
+      nodeSelector: {chloedb/arxiv-role: search}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: arxiv, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv.chloedb --listen 0.0.0.0:7700 --grpc off"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources: {requests: {cpu: "3", memory: 10Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/arxiv/db, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: arxiv-graph, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: arxiv-graph}}
+  template:
+    metadata: {labels: {app: arxiv-graph}}
+    spec:
+      nodeSelector: {chloedb/arxiv-role: graph}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: arxiv, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv-graph.chloedb --listen 0.0.0.0:7700 --grpc off"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /data/models}
+        - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: anthropic, key: key}}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources: {requests: {cpu: "2", memory: 6Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/arxiv/db, type: DirectoryOrCreate}}]
+---
+# A shell beside the graph server for putting the app's binary and rows in
+# place and loading them (kubectl cp, kubectl exec).
+apiVersion: v1
+kind: Pod
+metadata: {name: arxiv-work, namespace: strata, labels: {app: arxiv-work}}
+spec:
+  nodeSelector: {chloedb/arxiv-role: graph}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: arxiv, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: ubuntu:24.04
+    command: ["sleep", "infinity"]
+    env:
+    - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
+    resources: {requests: {cpu: 200m, memory: 512Mi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/arxiv/work, type: DirectoryOrCreate}}]
