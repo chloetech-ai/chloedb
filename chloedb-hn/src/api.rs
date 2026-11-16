@@ -92,6 +92,8 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/ask", get(ask_route))
         .route("/v1/front", get(front))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
+        // Up, for a probe: no token, nothing read.
+        .route("/healthz", get(|| async { "ok" }))
         .with_state(svc)
 }
 

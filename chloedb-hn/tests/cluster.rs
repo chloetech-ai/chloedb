@@ -189,7 +189,7 @@ async fn searches_questions_and_completions() {
     // The tables are made and loaded before the API answers.
     let t0 = Instant::now();
     loop {
-        if let Ok(r) = http.get(format!("{}/app.json", app.url)).send().await {
+        if let Ok(r) = http.get(format!("{}/healthz", app.url)).send().await {
             if r.status().is_success() {
                 break;
             }
@@ -255,6 +255,11 @@ async fn searches_questions_and_completions() {
     assert!(qs.iter().any(|q| q.contains("postgres")), "questions about the topic typed: {s}");
     let s = get(&http, &app, "/v1/suggest", &[("q", "car")]).await;
     assert!(s["people"].as_array().unwrap().iter().any(|p| p["text"] == "carol"), "{s}");
+
+    // The manifest and the view take the token too.
+    let r = http.get(format!("{}/app.json", app.url)).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(get(&http, &app, "/app.json", &[]).await["maturity"], "demo");
 
     // A thread, from its story down.
     let th = get(&http, &app, "/v1/item/103", &[]).await;
