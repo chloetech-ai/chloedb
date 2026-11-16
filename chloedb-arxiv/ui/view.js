@@ -243,6 +243,18 @@ const CSS = `
 .ax-others { font-size: 13px; color: var(--text-2); margin-top: 16px; }
 .ax-others summary { cursor: pointer; color: var(--muted); }
 .ax-others li { margin: 3px 0; }
+.ax-rw { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 6px 18px 14px; margin-top: 12px; }
+.ax-rw .ax-tabs { margin: 4px 0 10px; }
+.ax-rw p { font-size: 14.5px; line-height: 1.65; margin: 0 0 12px; color: var(--text); }
+.ax-rw p b { font-weight: 650; }
+.ax-rw sup a { text-decoration: none; }
+.ax-rw pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0; max-height: 560px; overflow: auto; }
+.ax-rw .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.ax-rw ol.refs { font-size: 13px; color: var(--text-2); padding-left: 22px; margin: 4px 0 0; }
+.ax-rw ol.refs li { margin: 3px 0; }
+.ax-keys { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 2px; }
+.ax-keys .ax-chip { font: 12px var(--mono); }
+.ax-keys .ax-chip.miss { border-style: dashed; color: var(--muted); }
 .ax-co { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 10px 0; background: var(--surface); }
 .ax-co .top { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
 .ax-co .nm { font-size: 16px; font-weight: 650; color: var(--text); text-decoration: none; }
@@ -735,7 +747,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["reviewers", "Reviewers"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["related", "Related work"], ["reviewers", "Reviewers"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -803,6 +815,7 @@ function render(el, ctx) {
         case "collab": return await collabPage(app, main, arg, alive);
         case "reviewers": return await reviewersPage(app, main, arg, alive);
         case "claim": return await claimPage(app, main, arg, alive);
+        case "related": return await relatedPage(app, main, arg, alive);
         case "code": return await codePage(app, main, arg, alive);
         case "labs": return await labsPage(app, main, arg, alive);
         case "lab": return await labPage(app, main, arg, alive);
@@ -928,6 +941,7 @@ function answerCard(app, a, und) {
       break;
     case "reading_list":
       kids.push(...(a.steps || []).map((s) => h("div", { style: { marginTop: "8px" } }, h("h5", { style: { margin: "6px 0 0", fontSize: "11px", textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)" } }, s.step), paperList(app, s.papers, { compact: true }))));
+      kids.push(h("div", { style: { marginTop: "10px" } }, h("a", { class: "ax-btn", href: app.href("related", (a.steps || []).flatMap((s) => s.papers.map((p) => p.id)).join(",")) }, "Write related work from this list")));
       break;
     case "summary": {
       const slot = h("div", {}, h("div", { class: "ax-prog" }, h("div")), h("div", { style: { color: "var(--muted)", fontSize: "13px" } }, "Reading the most relevant abstracts and writing a summary with every claim cited…"));
@@ -1326,6 +1340,113 @@ async function claimPage(app, main, arg, alive) {
     (j.others || []).length ? h("details", { class: "ax-others" }, h("summary", {}, `Read but not about the claim (${j.others.length})`),
       h("ul", {}, j.others.map((o) => h("li", {}, h("a", { href: app.href("paper", o.id) }, o.title), ` · ${o.year}`)))) : null);
   if (spoke) draw();
+}
+
+// ------------------------------------------------------------- related work
+
+// A related-work section's LaTeX shown as a page: \paragraph{} in bold and
+// \cite{} as numbered links to the papers, numbered by first citation.
+function latexPreview(app, latex, papers, cited) {
+  const by = Object.fromEntries((papers || []).map((p) => [p.key, p]));
+  const num = Object.fromEntries((cited || []).map((k, i) => [k, i + 1]));
+  const wrap = h("div", {});
+  for (const para of String(latex || "").split(/\n\s*\n/)) {
+    let t = esc(para.trim()).replace(/\\([%&_#$])/g, "$1").replace(/~/g, " ").replace(/``|''/g, "\"");
+    t = t.replace(/\\paragraph\{([^}]*)\}/g, "<b>$1</b>");
+    t = t.replace(/\\cite[pt]?\{([^}]*)\}/g, (m, keys) => "[" + keys.split(",").map((k) => { k = k.trim(); const p = by[k]; return p ? `<a href="${app.href("paper", p.id)}" title="${esc(p.title)}">${num[k] || "?"}</a>` : ""; }).filter(Boolean).join(", ") + "]");
+    t = t.replace(/\\emph\{([^}]*)\}|\\textit\{([^}]*)\}/g, (m, a, b) => `<i>${a || b}</i>`);
+    if (t) wrap.append(h("p", { html: t }));
+  }
+  return wrap;
+}
+
+async function relatedPage(app, main, arg, alive) {
+  const given = (arg || "").split(/[,\s]+/).filter(Boolean);
+  const box = h("textarea", { maxlength: 6000, placeholder: "arXiv ids or links, one per line (2 to 30). Or start from your library.", "aria-label": "Papers" });
+  box.value = given.join("\n");
+  const about = h("input", { type: "text", maxlength: 600, placeholder: "Your paper in a sentence or two (optional): the section then says how your work differs", "aria-label": "Your paper" });
+  const write = h("button", { class: "ax-btn pri" }, "Write the section");
+  const lib = h("button", { class: "ax-btn" }, "Use my library");
+  const msg = h("span", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)" } });
+  const list = h("div", {});
+  const out = h("div", {});
+  const aside = h("aside", {},
+    h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+      h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+        h("p", {}, "BibTeX is made from the papers' rows with no model: authors surname first, the venue when one is known, and the arXiv identifiers. Each key is the first author's surname, the year and the title's first word."),
+        h("p", {}, "The section is written by a model from the papers' abstracts (llm() on the server), grouped by theme, citing each paper by its key. A citation of a key not in the list is taken out, and any paper the text leaves uncited is named."),
+        h("p", {}, "It is a first draft from abstracts: check each sentence against the papers before it goes in yours."))));
+  const ids = () => box.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  let papers = [], bibtex = "";
+  const copy = (text, b) => { navigator.clipboard?.writeText(text).then(() => { const was = b.textContent; b.textContent = "Copied"; setTimeout(() => (b.textContent = was), 1200); }).catch(() => {}); };
+  const bibFile = () => { const a = h("a", { href: URL.createObjectURL(new Blob([bibtex], { type: "application/x-bibtex" })), download: "related.bib" }); document.body.append(a); a.click(); a.remove(); };
+  const drawList = (missing) => fill(list, papers.length ? h("div", {},
+    h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", marginTop: "8px" } }, `${papers.length} papers found${missing ? `, ${missing} not on arXiv here` : ""}`),
+    h("div", { class: "ax-keys" }, papers.map((p) => h("a", { class: "ax-chip", href: app.href("paper", p.id), title: p.title }, p.key)))) : null);
+  async function loadBib() {
+    const want = ids();
+    if (!want.length) { papers = []; bibtex = ""; drawList(0); return; }
+    const j = await app.api(`/v1/related/bib?ids=${enc(want.join(","))}`);
+    if (!alive()) return;
+    papers = j.papers; bibtex = j.bibtex;
+    drawList(Math.max(0, want.length - papers.length));
+    if (!out.firstChild && bibtex) showBib();
+  }
+  function showBib() {
+    const b = h("button", { class: "ax-btn", onclick: (e) => copy(bibtex, e.target) }, "Copy BibTeX");
+    fill(out, h("div", { class: "ax-rw" }, h("div", { class: "ax-tabs" }, h("button", { class: "on" }, "BibTeX")),
+      h("div", { class: "bar" }, b, h("button", { class: "ax-btn", onclick: bibFile }, "Download related.bib"), "Made from the papers' rows, no model"),
+      h("pre", {}, bibtex)));
+  }
+  function show(j) {
+    papers = j.papers; bibtex = j.bibtex;
+    const panes = {
+      Section: () => h("div", {}, latexPreview(app, j.latex, j.papers, j.cited),
+        h("ol", { class: "refs" }, (j.cited || []).map((k) => { const p = j.papers.find((x) => x.key === k); return p ? h("li", {}, `${String(p.authors).replace(/\.$/, "")}. `, h("a", { href: app.href("paper", p.id) }, p.title), `. ${p.year}.`) : null; }))),
+      LaTeX: () => h("div", {}, h("div", { class: "bar" }, h("button", { class: "ax-btn", onclick: (e) => copy(j.latex, e.target) }, "Copy LaTeX"), "Paste under \\section{Related Work}; it cites with \\cite{}"), h("pre", {}, j.latex)),
+      BibTeX: () => h("div", {}, h("div", { class: "bar" }, h("button", { class: "ax-btn", onclick: (e) => copy(j.bibtex, e.target) }, "Copy BibTeX"), h("button", { class: "ax-btn", onclick: bibFile }, "Download related.bib")), h("pre", {}, j.bibtex)),
+    };
+    let on = "Section";
+    const tabs = h("div", { class: "ax-tabs" });
+    const pane = h("div", {});
+    const draw = () => { fill(tabs, Object.keys(panes).map((k) => h("button", { class: k === on ? "on" : "", onclick: () => { on = k; draw(); } }, k))); fill(pane, panes[on]()); };
+    draw();
+    const unc = (j.uncited || []).map((k) => j.papers.find((p) => p.key === k)).filter(Boolean);
+    fill(out, h("div", { class: "ax-rw" }, tabs,
+      h("div", { class: "bar" }, `${(j.cited || []).length} of ${j.papers.length} papers cited`, j.kept ? ` · written earlier${j.at ? `, ${day(j.at)}` : ""}` : ` · written in ${((j.ms || 0) / 1000).toFixed(1)} s`, j.model ? ` · ${String(j.model).replace(/^anthropic\//, "")}` : ""),
+      unc.length ? h("div", { class: "ax-err", style: { marginBottom: "10px" } }, "Not cited by the text: ", unc.map((p, i) => [i ? ", " : "", h("a", { href: app.href("paper", p.id) }, p.title)])) : null,
+      pane));
+  }
+  write.onclick = async () => {
+    write.disabled = true;
+    fill(msg, "Reading the abstracts and writing, about ten seconds…");
+    try {
+      const j = await app.api("/v1/related", { body: { text: box.value, about: about.value }, timeout: 120000 });
+      if (!alive()) return;
+      fill(msg, "");
+      show(j);
+    } catch (e) { fill(msg, h("span", { class: "ax-err" }, String(e.message || e))); }
+    write.disabled = false;
+  };
+  lib.onclick = async () => {
+    const j = await app.api(`/v1/library?user=${enc(app.user)}`);
+    const have = (j.papers || []).map((p) => p.id).slice(0, 30);
+    if (!have.length) { fill(msg, "Your library is empty: save papers with ☆ on their pages."); return; }
+    box.value = have.join("\n");
+    fill(out); loadBib();
+  };
+  let t;
+  box.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { fill(out); loadBib(); }, 500); });
+  fill(main, h("div", { class: "ax-grid two" },
+    h("section", {},
+      h("div", { class: "ax-ph" },
+        h("div", { class: "ey" }, "Related work"),
+        h("h1", {}, "From a reading list to a related-work section"),
+        h("div", { class: "au" }, "Name the papers you would cite, and get their BibTeX at once and a related-work section in LaTeX that cites every one of them, grouped by theme."),
+        h("div", { class: "ax-rform" }, box, about, h("div", { class: "row" }, write, lib, msg))),
+      list, out),
+    aside));
+  if (given.length) loadBib();
 }
 
 // -------------------------------------------- topic, concept, category, venue
@@ -1956,7 +2077,9 @@ async function libraryPage(app, main, alive) {
   fill(main, skel(8));
   const j = await app.api(`/v1/library?user=${enc(app.user)}`);
   if (!alive()) return;
-  fill(main, h("div", { style: { maxWidth: "900px" } }, h("div", { class: "ax-ph" }, h("h1", {}, "Library"), h("div", { class: "au" }, "The papers you saved, kept under this browser's reader id.")), paperList(app, j.papers)));
+  const ids = (j.papers || []).map((p) => p.id);
+  fill(main, h("div", { style: { maxWidth: "900px" } }, h("div", { class: "ax-ph" }, h("h1", {}, "Library"), h("div", { class: "au" }, "The papers you saved, kept under this browser's reader id."),
+    ids.length >= 2 ? h("div", { class: "acts" }, h("a", { class: "ax-btn", href: app.href("related", ids.slice(0, 30).join(",")) }, "Write related work from these"), h("a", { class: "ax-btn", href: app.href("related", ids.slice(0, 30).join(",")) }, "BibTeX")) : null), paperList(app, j.papers)));
 }
 
 // ----------------------------------------------------------------- feeds

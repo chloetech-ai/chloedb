@@ -363,6 +363,15 @@ async fn two_servers_every_page() {
     assert_eq!(c["kept"], true, "{c}");
     assert_eq!(c["for"][0]["id"], rec_id(3), "{c}");
 
+    // Related work: a list's BibTeX with no model, keyed by surname, year and
+    // title word; a list of one paper is refused.
+    let b = get(&http, &app, &format!("/v1/related/bib?ids={},{},nope", rec_id(1), rec_id(2))).await;
+    assert_eq!(b["papers"].as_array().unwrap().len(), 2, "{b}");
+    let bib = b["bibtex"].as_str().unwrap();
+    assert!(bib.matches("archivePrefix = {arXiv}").count() == 2 && bib.contains(&format!("eprint = {{{}}}", rec_id(1))), "{bib}");
+    let r = http.post(format!("{}/v1/related", app.url)).bearer_auth(TOKEN).json(&json!({"text": rec_id(1)})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+
     // The pages of trends, rising, gaps, new topics, spread, code, labs and home answer too.
     for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/hot/people", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/code", "/v1/labs", "/v1/labs/find?q=university", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;

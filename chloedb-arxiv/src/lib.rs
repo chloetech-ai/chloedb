@@ -21,6 +21,7 @@ pub mod pages;
 pub mod paper;
 pub mod prepare;
 pub mod raw;
+pub mod related;
 pub mod schema;
 pub mod search;
 pub mod spread;

@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, claims, code, collab, gaps, labs, spread, pages, schema, understand, watch};
+use crate::{answer, ask, born, claims, code, collab, related, gaps, labs, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -103,6 +103,8 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/tldr/*id", get(tldr))
         .route("/v1/new/*id", get(novelty))
         .route("/v1/claim", get(claim_sides))
+        .route("/v1/related", post(related_write))
+        .route("/v1/related/bib", get(related_bib))
         .route("/v1/author/:id", get(author))
         .route("/v1/collab/:id", get(collaborators))
         .route("/v1/reviewers", post(reviewers_for_text))
@@ -158,7 +160,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 fn public_ok(method: &Method, path: &str) -> bool {
     method == Method::GET
         || (method == Method::POST
-            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || path == "/v1/reviewers" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
+            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || path == "/v1/reviewers" || path == "/v1/related" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
 }
 
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
@@ -373,6 +375,9 @@ struct Q {
     /// For and against: papers from this year on.
     #[serde(default)]
     since: Option<i64>,
+    /// A list of papers: arXiv ids, separated by commas.
+    #[serde(default)]
+    ids: String,
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -496,6 +501,55 @@ async fn claim_sides(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     }
     let v = claims::sides(&c, &claim, since, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RelatedBody {
+    #[serde(default)]
+    ids: Vec<String>,
+    /// Ids written in a text, as pasted.
+    #[serde(default)]
+    text: String,
+    /// The reader's own paper, in a sentence or two.
+    #[serde(default)]
+    about: String,
+}
+
+fn list_ids(ids: &[String], text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids.iter().map(|i| understand::clean_id(i)).chain(related::ids_in(text)) {
+        if !id.is_empty() && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// A related-work section in LaTeX from a list of papers, with its BibTeX.
+async fn related_write(State(svc): State<Shared>, Json(b): Json<RelatedBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let ids = list_ids(&b.ids, &b.text);
+    if ids.len() < 2 || ids.len() > related::MOST {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("name 2 to {} papers by their arXiv ids", related::MOST)));
+    }
+    let about: String = b.about.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(600).collect();
+    if !related::is_kept(&c, &ids, &about).await {
+        svc.spend(1)?;
+    }
+    let v = related::write(&c, &ids, &about, &svc.issue_model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// The BibTeX of a list of papers (no model).
+async fn related_bib(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let ids: Vec<String> = list_ids(&[], &a.ids).into_iter().take(200).collect();
+    let rows = related::papers(&c, &ids).await;
+    let (keys, bibtex) = related::bib(&rows);
+    let papers: Vec<Value> = rows.iter().zip(&keys).map(|(r, k)| json!({"id": r.s("id"), "key": k, "title": r.s("title")})).collect();
+    done(&trace, json!({"papers": papers, "bibtex": bibtex}), t0)
 }
 
 async fn author(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
