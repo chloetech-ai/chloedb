@@ -351,6 +351,18 @@ async fn two_servers_every_page() {
     assert!(rv["people"].as_array().unwrap().iter().all(|p| p["id"] != "ada recsys"), "{rv}");
     assert!(get(&http, &app, "/v1/labs/of/2401.00001").await["labs"].as_array().unwrap().is_empty());
 
+    // For and against: a claim of one word is refused, and a kept answer
+    // is served as it was kept (no model runs here).
+    let r = http.get(format!("{}/v1/claim?q=scaling", app.url)).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let kept = json!({"claim": "transformers help sequential recommendation", "since": 0, "for": [{"id": rec_id(3), "title": "t", "quote": "q", "why": "w"}], "against": [], "mixed": [], "read": 1, "none": 0, "others": [], "dropped": 0, "kept": false});
+    let doc = json!({"id": "claim:transformers help sequential recommendation", "paper": "", "style": "claim", "text": kept.to_string(), "model": "m", "at": "2026-11-16T00:00:00Z", "ms": 1.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": doc}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let c = get(&http, &app, "/v1/claim?q=Transformers%20help%20sequential%20recommendation!").await;
+    assert_eq!(c["kept"], true, "{c}");
+    assert_eq!(c["for"][0]["id"], rec_id(3), "{c}");
+
     // The pages of trends, rising, gaps, new topics, spread, code, labs and home answer too.
     for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/hot/people", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/code", "/v1/labs", "/v1/labs/find?q=university", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;

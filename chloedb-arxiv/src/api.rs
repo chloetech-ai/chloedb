@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, code, collab, gaps, labs, spread, pages, schema, understand, watch};
+use crate::{answer, ask, born, claims, code, collab, gaps, labs, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -102,6 +102,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/paper/*id", get(paper))
         .route("/v1/tldr/*id", get(tldr))
         .route("/v1/new/*id", get(novelty))
+        .route("/v1/claim", get(claim_sides))
         .route("/v1/author/:id", get(author))
         .route("/v1/collab/:id", get(collaborators))
         .route("/v1/reviewers", post(reviewers_for_text))
@@ -369,6 +370,9 @@ struct Q {
     t: String,
     #[serde(default)]
     d: String,
+    /// For and against: papers from this year on.
+    #[serde(default)]
+    since: Option<i64>,
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -474,6 +478,23 @@ async fn novelty(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
         svc.spend(1)?;
     }
     let v = ask::novelty(&c, &id, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// The papers for and against a claim stated in a sentence.
+async fn claim_sides(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let claim = a.q.split_whitespace().collect::<Vec<_>>().join(" ");
+    let words = claim.split(' ').count();
+    if claim.chars().count() > 240 || !(3..=40).contains(&words) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "state a claim in a sentence of 3 to 40 words: q=".into()));
+    }
+    let since = a.since.filter(|y| *y > 0).map(|y| y.clamp(1990, 2100)).unwrap_or(0);
+    if !claims::is_kept(&c, &claim, since).await {
+        svc.spend(claims::READ.div_ceil(claims::PER_CALL))?;
+    }
+    let v = claims::sides(&c, &claim, since, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
 }
 

@@ -5,6 +5,7 @@
 pub mod answer;
 pub mod born;
 pub mod cite;
+pub mod claims;
 pub mod code;
 pub mod collab;
 pub mod api;

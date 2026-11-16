@@ -218,6 +218,31 @@ const CSS = `
 .ax-wq { font-size: 22px; font-weight: 650; line-height: 1.3; margin: 0 0 6px; letter-spacing: -0.01em; }
 .ax-wacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
 .ax-p .why { font-size: 13px; color: var(--text-2); margin-top: 4px; }
+.ax-claim { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 760px) { .ax-claim { grid-template-columns: 1fr; } }
+.ax-claim h3 { display: flex; align-items: baseline; gap: 8px; font-size: 15px; margin: 6px 0 2px; }
+.ax-claim h3 .n { font-size: 12.5px; color: var(--muted); font-weight: 500; }
+.ax-claim h3 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.ax-side { border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 12px; padding: 12px 14px; margin: 10px 0; background: var(--surface); }
+.ax-side.for { border-left-color: var(--good); }
+.ax-side.against { border-left-color: var(--crit); }
+.ax-side.mixed { border-left-color: var(--warn); }
+.ax-side .t { font-weight: 620; color: var(--text); text-decoration: none; line-height: 1.35; overflow-wrap: anywhere; }
+.ax-side .t:hover { color: var(--accent); }
+.ax-side .m { font-size: 12.5px; color: var(--muted); margin: 3px 0 6px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.ax-side blockquote { margin: 6px 0 4px; padding: 2px 0 2px 10px; border-left: 2px solid var(--line-2); font-size: 13.5px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.ax-side .why { font-size: 12.5px; color: var(--text-2); }
+.ax-bal { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 4px; }
+.ax-bal span { display: block; height: 100%; }
+.ax-ballab { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); }
+.ax-ballab b { color: var(--text); font-weight: 650; }
+.ax-ballab select { font: 12.5px var(--sans); padding: 3px 8px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); }
+.ax-cform { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 6px; }
+.ax-cform input { flex: 1 1 320px; min-width: 0; box-sizing: border-box; font: 15px/1.4 var(--sans); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-cform select { font: 14px var(--sans); padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-others { font-size: 13px; color: var(--text-2); margin-top: 16px; }
+.ax-others summary { cursor: pointer; color: var(--muted); }
+.ax-others li { margin: 3px 0; }
 .ax-co { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 10px 0; background: var(--surface); }
 .ax-co .top { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
 .ax-co .nm { font-size: 16px; font-weight: 650; color: var(--text); text-decoration: none; }
@@ -710,7 +735,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["library", "Library"], ["cite", "What to cite"], ["reviewers", "Reviewers"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["reviewers", "Reviewers"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -777,6 +802,7 @@ function render(el, ctx) {
         case "author": return await authorPage(app, main, arg, alive);
         case "collab": return await collabPage(app, main, arg, alive);
         case "reviewers": return await reviewersPage(app, main, arg, alive);
+        case "claim": return await claimPage(app, main, arg, alive);
         case "code": return await codePage(app, main, arg, alive);
         case "labs": return await labsPage(app, main, arg, alive);
         case "lab": return await labPage(app, main, arg, alive);
@@ -963,6 +989,7 @@ async function searchPage(app, main, q, alive, search) {
             h("a", { class: "ax-btn", href: app.href("search", `summarize ${j.understood.text}`) }, "✦ Summarize the research"),
             h("a", { class: "ax-btn", href: app.href("search", `reading list for ${j.understood.text}`) }, "Reading list"),
             h("a", { class: "ax-btn", href: app.href("trends", j.understood.text) }, "Trend over the years"),
+            j.understood.text.split(/\s+/).length >= 3 ? h("a", { class: "ax-btn", href: app.href("claim", j.understood.text) }, "For and against") : null,
             h("a", { class: "ax-btn", href: app.href("search", `first papers on ${j.understood.text}`) }, "Where it began"),
             h("a", { class: "ax-btn", href: app.href("feed", "new", j.understood.text) }, "Make a weekly feed of it"))) : null);
     }
@@ -1231,6 +1258,74 @@ async function reviewersPage(app, main, id, alive) {
         h("div", { class: "ax-rform" }, ti, ab, au, h("div", { class: "row" }, btn, msg))),
       body),
     aside));
+}
+
+// ------------------------------------------------------------ for and against
+
+const CLAIMS = ["Scaling laws hold for dense retrieval", "LLMs can self-correct their reasoning without external feedback", "Chain-of-thought prompting helps small language models", "Dense retrieval beats BM25 out of domain", "Mixture-of-experts models are harder to fine-tune than dense models", "Weight decay improves generalization in transformers"];
+
+async function claimPage(app, main, arg, alive) {
+  const m = /^(\d{4})\/(.+)$/.exec(arg || "");
+  const since = m ? Number(m[1]) : 0;
+  const claim = (m ? m[2] : arg || "").trim();
+  const input = h("input", { type: "text", maxlength: 240, value: claim, placeholder: "A claim, in a sentence: “weight decay improves generalization in transformers”", "aria-label": "Claim" });
+  const sel = h("select", { "aria-label": "Papers from" }, [[0, "Any year"], [2020, "Since 2020"], [2023, "Since 2023"], [2025, "Since 2025"]].map(([v, t]) => h("option", { value: v, selected: v === since }, t)));
+  const go = () => { const c = input.value.trim(); if (c) app.go("claim", ...(Number(sel.value) ? [sel.value] : []), c); };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const head = h("div", { class: "ax-ph" },
+    h("div", { class: "ey" }, "For and against"),
+    h("h1", {}, claim ? claim : "What the papers say about a claim"),
+    claim ? null : h("div", { class: "au" }, "State a claim and get the papers whose results support it and those that contradict it, each with the sentence of its abstract that says so."),
+    h("div", { class: "ax-cform" }, input, sel, h("button", { class: "ax-btn pri", onclick: go }, claim ? "Ask again" : "Read the papers")),
+    h("div", { class: "ax-wex" }, "Try", CLAIMS.filter((c) => c !== claim).slice(0, claim ? 3 : 6).map((c) => h("button", { onclick: () => app.go("claim", c) }, c))));
+  const aside = h("aside", {},
+    h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+      h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+        h("p", {}, "The 40 papers nearest the claim are found by the words of its subject and by its meaning, and a language model reads their abstracts against it, ten to a call, all at once (llm() on the server)."),
+        h("p", {}, "A paper counts for or against only with a sentence of its abstract that shows it, checked against the abstract word for word; a sentence the model made up is dropped. Mixed means it holds in some settings and not others."),
+        h("p", {}, "The model can misread a paper, so read the sentence. Abstracts say less than papers, and arXiv is not peer review. An answer is kept, so asking again is instant."))));
+  if (!claim) {
+    fill(main, h("div", { class: "ax-grid two" }, h("section", {}, head), aside));
+    input.focus();
+    return;
+  }
+  const body = h("div", {}, h("div", { class: "s", style: { fontSize: "13px", color: "var(--muted)", margin: "10px 0" } }, "Reading the 40 nearest papers against the claim, about ten seconds…"), skel(6));
+  fill(main, h("div", { class: "ax-grid two" }, h("section", {}, head, body), aside));
+  let j;
+  try { j = await app.api(`/v1/claim?q=${enc(claim)}${since ? `&since=${since}` : ""}`); }
+  catch (e) { if (alive()) fill(body, h("div", { class: "ax-err" }, String(e.message || e))); return; }
+  if (!alive()) return;
+  const n = { for: j.for.length, against: j.against.length, mixed: j.mixed.length };
+  const spoke = n.for + n.against + n.mixed;
+  const order = { nearest: (a) => a, cited: (a) => [...a].sort((x, y) => y.cites - x.cites), newest: (a) => [...a].sort((x, y) => y.year - x.year) };
+  let how = "nearest";
+  const card = (p, side) => h("div", { class: `ax-side ${side}` },
+    h("a", { class: "t", href: app.href("paper", p.id) }, p.title),
+    h("div", { class: "m" }, `${p.authors} · ${p.year}`, p.cites ? ` · ${fmt(p.cites)} citations` : "", catChip(app, p.pcat), p.code ? h("span", { class: "ax-badge code" }, "code") : null),
+    h("blockquote", {}, p.quote),
+    p.why ? h("div", { class: "why" }, p.why) : null);
+  const col = (side, title, color) => h("div", {},
+    h("h3", {}, h("span", { class: "dot", style: { background: color } }), title, h("span", { class: "n" }, `${n[side]} ${n[side] === 1 ? "paper" : "papers"}`)),
+    n[side] ? order[how](j[side]).map((p) => card(p, side)) : h("div", { class: "ax-empty" }, side === "for" ? "None of the nearest papers supports it." : "None of the nearest papers contradicts it."));
+  const lists = h("div", {});
+  const draw = () => fill(lists,
+    h("div", { class: "ax-claim" }, col("for", "For", "var(--good)"), col("against", "Against", "var(--crit)")),
+    n.mixed ? h("div", { style: { marginTop: "8px" } }, h("div", { class: "ax-claim", style: { gridTemplateColumns: "1fr" } }, col("mixed", "Holds only in some settings", "var(--warn)"))) : null);
+  const sorter = h("select", { "aria-label": "Order", onchange: (e) => { how = e.target.value; draw(); } }, [["nearest", "Nearest the claim"], ["cited", "Most cited"], ["newest", "Newest"]].map(([v, t]) => h("option", { value: v }, t)));
+  const pct = (k) => `${(100 * n[k]) / Math.max(1, spoke)}%`;
+  fill(body,
+    h("div", { class: "s", style: { fontSize: "13px", color: "var(--muted)", margin: "10px 0 2px" } },
+      `Read the ${fmt(j.read)} papers nearest the claim${since ? ` since ${since}` : ""}: ${fmt(spoke)} speak to it, ${fmt(j.none)} do not`,
+      j.dropped ? `, ${fmt(j.dropped)} left out for a sentence not in their abstract` : "",
+      j.kept ? ` · read earlier${j.at ? `, ${day(j.at)}` : ""}` : ` · ${((j.ms || j.took_ms || 0) / 1000).toFixed(1)} s`),
+    spoke ? h("div", {},
+      h("div", { class: "ax-bal", role: "img", "aria-label": `${n.for} for, ${n.against} against, ${n.mixed} mixed` },
+        h("span", { style: { width: pct("for"), background: "var(--good)" } }), h("span", { style: { width: pct("mixed"), background: "var(--warn)" } }), h("span", { style: { width: pct("against"), background: "var(--crit)" } })),
+      h("div", { class: "ax-ballab" }, h("span", {}, h("b", {}, fmt(n.for)), " for"), h("span", {}, h("b", {}, fmt(n.mixed)), " mixed"), h("span", {}, h("b", {}, fmt(n.against)), " against"), h("span", { class: "sp", style: { flex: "1" } }), sorter)) : null,
+    spoke ? lists : h("div", { class: "ax-empty", style: { marginTop: "12px" } }, "None of the nearest papers tests this claim. Try stating it with the words papers would use."),
+    (j.others || []).length ? h("details", { class: "ax-others" }, h("summary", {}, `Read but not about the claim (${j.others.length})`),
+      h("ul", {}, j.others.map((o) => h("li", {}, h("a", { href: app.href("paper", o.id) }, o.title), ` · ${o.year}`)))) : null);
+  if (spoke) draw();
 }
 
 // -------------------------------------------- topic, concept, category, venue

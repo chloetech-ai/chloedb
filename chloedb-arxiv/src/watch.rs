@@ -51,10 +51,10 @@ pub fn fuse(lists: &[Vec<String>]) -> Vec<String> {
 
 const JUDGE: &str = "A reader asked to be told about new papers that answer a standing question. Read each numbered paper and decide whether it is one the reader asked for: it must do what the question describes, not merely use the same words or touch the area. Answer with JSON only, one object per paper in order: [{\"n\": 1, \"fit\": true, \"why\": \"one sentence of at most 30 words on what the paper does that answers the question, or why it does not\"}]";
 
-/// The model's verdicts, by the papers' numbers (from 1). Each object is
-/// read on its own, so an answer cut short keeps the verdicts it holds.
-pub fn verdicts(text: &str) -> HashMap<usize, (bool, String)> {
-    let mut out = HashMap::new();
+/// The JSON objects of a model's answer, each read on its own, so an
+/// answer cut short keeps the objects it holds.
+pub fn objects(text: &str) -> Vec<Value> {
+    let mut out = Vec::new();
     let mut depth = 0usize;
     let mut start = None;
     let mut in_str = false;
@@ -81,13 +81,22 @@ pub fn verdicts(text: &str) -> HashMap<usize, (bool, String)> {
                 depth -= 1;
                 if depth == 0 {
                     if let Some(v) = start.and_then(|s| serde_json::from_str::<Value>(&text[s..=i]).ok()) {
-                        if let Some(n) = v["n"].as_u64() {
-                            out.insert(n as usize, (v["fit"].as_bool().unwrap_or(false), v["why"].as_str().unwrap_or("").trim().to_string()));
-                        }
+                        out.push(v);
                     }
                 }
             }
             _ => {}
+        }
+    }
+    out
+}
+
+/// The model's verdicts, by the papers' numbers (from 1).
+pub fn verdicts(text: &str) -> HashMap<usize, (bool, String)> {
+    let mut out = HashMap::new();
+    for v in objects(text) {
+        if let Some(n) = v["n"].as_u64() {
+            out.insert(n as usize, (v["fit"].as_bool().unwrap_or(false), v["why"].as_str().unwrap_or("").trim().to_string()));
         }
     }
     out
