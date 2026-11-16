@@ -28,6 +28,7 @@ import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
 import { STEP_DEFAULTS, expectedSteps } from './trace.mjs';
 import { Publish, forVisitor, strangerOf } from './publish.mjs';
+import { bundleApp, importBundle } from './bundle.mjs';
 import { forVisitors } from './audience.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
@@ -538,12 +539,15 @@ const MANIFEST = {
   checks_callers: true,
 };
 
-async function body(req) {
+// A request's JSON body, at most 2 MB (an app's bundle, carried with its
+// files, up to STRATA_APPS_BUNDLE_MB, 200 by default).
+const BUNDLE_BYTES = (Number(process.env.STRATA_APPS_BUNDLE_MB) || 200) * 1024 * 1024;
+async function body(req, limit = 2 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 2 * 1024 * 1024) throw Object.assign(new Error('request too large'), { status: 413 });
+    if (size > limit) throw Object.assign(new Error('request too large'), { status: 413 });
     chunks.push(c);
   }
   const text = Buffer.concat(chunks).toString('utf8');
@@ -810,6 +814,29 @@ const routes = [
     log(`[${id}] copied as ${copy}`);
     broadcast('app', { app: copy });
     return { app: copy };
+  }],
+  // The app carried to another engine (engine/bundle.mjs): its live version
+  // whole as a bundle (?rows=0 without its rows, ?files=0 without its files'
+  // bytes), and a bundle unpacked here, as a new app or as a new version of
+  // one. Only the studio itself: never a visitor, never a builder's key.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/bundle$/, async (b, [id], url, cx) => {
+    if (cx.public || cx.builder) throw Object.assign(new Error("only the studio carries an app"), { status: 403 });
+    return bundleApp(engine, id, { rows: url.searchParams.get('rows') !== '0', files: url.searchParams.get('files') !== '0' });
+  }],
+  ['POST', /^\/api\/apps\/import$/, async (b, m, url, cx) => {
+    if (cx.public || cx.builder) throw Object.assign(new Error("only the studio carries an app"), { status: 403 });
+    const out = await importBundle(engine, b);
+    log(`[${out.app}] imported from ${String(b.app?.id || '?').slice(0, 20)} as version ${out.n} (${out.created.length} tables made, ${out.rows} rows, ${out.files} files)`);
+    broadcast('app', { app: out.app });
+    return out;
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/import$/, async (b, [id], url, cx) => {
+    if (cx.public || cx.builder) throw Object.assign(new Error("only the studio carries an app"), { status: 403 });
+    const out = await importBundle(engine, b, { into: id });
+    engine.store.forget(id);
+    log(`[${id}] version ${out.n} imported from ${String(b.app?.id || '?').slice(0, 20)} (${out.created.length} tables made, ${Object.keys(out.added).length} given columns)`);
+    broadcast('app', { app: id });
+    return out;
   }],
   // Its rows, every table, as JSON (the app creator makes CSV of a table from it).
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/export$/, async (b, [id]) => engine.store.exportApp(id)],
@@ -1320,7 +1347,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== method) continue;
       const mm = url.pathname.match(re);
       if (!mm) continue;
-      const b = method === 'POST' ? await body(req) : {};
+      const b = method === 'POST' ? await body(req, /^\/api\/apps\/(?:[a-z0-9]+\/)?import$/.test(url.pathname) ? BUNDLE_BYTES : undefined) : {};
       const run = () => fn(b, mm.slice(1), url, cx);
       return send(res, 200, await (v && url.pathname.startsWith('/api/apps/') ? engine.atVersion(mm[1], v, run) : run()));
     }
