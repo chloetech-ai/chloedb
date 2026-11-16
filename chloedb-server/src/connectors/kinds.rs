@@ -1283,9 +1283,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_request_names_no_secret_and_no_query() {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
-        drop(l);
+        // A port bound and never listened on refuses connections, and stays
+        // ours for the test: a listener dropped to free its port could be
+        // given that port again by another test running at the same time,
+        // which then answered this one's request (404).
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = held.local_addr().unwrap().port();
         let c = connector("http_json", json!({"url": format!("http://127.0.0.1:{port}/x?api_key={{secret:token}}"), "records": "$.items"}));
         let secrets: HashMap<String, String> = [("token".to_string(), "SUPERSECRET123".to_string())].into();
         let http = reqwest::Client::new();
