@@ -63,6 +63,7 @@ def statements(ids):
         ("monthly sums", "pushes, commits and stars of every month (gh_repo_months)", "SELECT month, SUM(pushes) AS pushes, SUM(commits) AS commits, SUM(stars) AS stars, COUNT(*) AS repos FROM gh_repo_months GROUP BY month ORDER BY month", {}),
         ("a window", "busiest repos of March 2020", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY repo ORDER BY n DESC LIMIT 20", {"a": MAR_2020, "b": APR_2020}),
         ("a window", "events of each hour of 18 June 2024", "SELECT t - t % 3600 AS h, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY h ORDER BY h", {"a": JUN_18_2024, "b": JUN_18_2024 + DAY}),
+        ("a window", "events of each hour of 18 June 2024 (24 range counts)", [f"SELECT COUNT(*) AS n FROM gh_events WHERE t >= {JUN_18_2024 + h * 3600} AND t < {JUN_18_2024 + (h + 1) * 3600}" for h in range(24)], {}),
         ("a window", "most starred repos of 18 June 2024", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE kind = 'star' AND t >= :a AND t < :b GROUP BY repo ORDER BY n DESC LIMIT 20", {"a": JUN_18_2024, "b": JUN_18_2024 + DAY}),
     ]
     for name, id in r.items():
@@ -137,6 +138,12 @@ def resolve(url, key):
     return ids
 
 
+def lost(s):
+    """Whether a statement's run failed on a dropped connection."""
+    e = s["runs"][-1].get("error", "") if s.get("runs") else ""
+    return any(w in e for w in ("Connection refused", "Remote end closed", "Connection reset", "timed out"))
+
+
 def summary(runs):
     ms = [r["ms"] for r in runs[1:]] or [runs[0]["ms"]]
     return {"first_ms": runs[0]["ms"], "median_ms": statistics.median(ms), "max_ms": max(ms), "cached": sum(r.get("cached", False) for r in runs)}
@@ -145,6 +152,15 @@ def summary(runs):
 def run(a):
     key, app_token = os.environ.get("CHLOEDB_KEY"), os.environ.get("CHLOEDB_GH_TOKEN")
     out = {"machine": a.machine, "started": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()), "runs": a.runs}
+    kept = {}
+    if a.redo:
+        # Statements a run before answered, or failed on for a reason of
+        # their own, are kept; the ones it lost to a dropped connection
+        # (a server restarting) run again, and so do new ones.
+        old = json.load(open(os.path.join(RESULTS, "events.json")))
+        again = lambda n: any(k in n for k in a.again)
+        out["started"], kept = old["started"], {s["name"]: s for s in old["statements"] if not lost(s) and not again(s["name"])}
+        out["pages_kept"] = {p["name"]: p for p in old.get("pages", []) if not lost(p) and not again(p["name"])}
     ids = resolve(a.url, key)
     out["ids"] = ids
     print("ids:", ids, file=sys.stderr)
@@ -153,6 +169,13 @@ def run(a):
     print(f"events: {out['events']:,}", file=sys.stderr)
     out["statements"] = []
     for group, name, q, params in statements(ids):
+        if name in kept:
+            out["statements"].append(kept[name])
+            continue
+        if any(k in name for k in a.skip):
+            out["statements"].append({"group": group, "name": name, "sql": q, "params": params, "runs": [{"ms": float("nan"), "error": a.skip_why or "skipped"}]})
+            print(f"{group:12} {name:52} skipped", file=sys.stderr)
+            continue
         runs = []
         for i in range(a.runs + 1):
             if i == 2 and runs[0]["ms"] > 30_000:
@@ -171,6 +194,9 @@ def run(a):
     out["pages"] = []
     if a.app:
         for name, path in PAGES:
+            if name in out.get("pages_kept", {}):
+                out["pages"].append(out["pages_kept"][name])
+                continue
             runs = []
             for i in range(a.runs + 1):
                 j, wall = call(a.app + path, app_token)
@@ -178,11 +204,16 @@ def run(a):
                     runs.append({"ms": float("nan"), "error": j["error"]})
                     break
                 runs.append({"ms": j.get("took_ms", wall), "wall_ms": wall, "statements": len(j.get("queries", [])), "refused": sum(1 for q in j.get("queries", []) if q.get("note"))})
+                last = j.get("queries", [])
             p = {"name": name, "path": path, "runs": runs}
+            if runs and "error" not in runs[-1]:
+                # The last run's statements, slowest first: what the page waits on.
+                p["queries"] = sorted(({"name": q.get("what"), "ms": q.get("ms"), "note": q.get("note")} for q in last), key=lambda q: -(q["ms"] or 0))
             if all("error" not in r for r in runs):
                 p.update(summary(runs))
             out["pages"].append(p)
             print(f"{'page':12} {name:52} " + (f"first {p['first_ms']:9.1f}  median {p['median_ms']:9.1f} ms" if "median_ms" in p else runs[-1].get("error", "")), file=sys.stderr)
+    out.pop("pages_kept", None)
     out["finished"] = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
     os.makedirs(RESULTS, exist_ok=True)
     with open(os.path.join(RESULTS, "events.json"), "w") as f:
@@ -194,6 +225,13 @@ def fmt(ms):
     if ms != ms:
         return "failed"
     return f"{ms / 1000:.2f} s" if ms >= 1000 else f"{ms:.0f} ms" if ms >= 10 else f"{ms:.1f} ms"
+
+
+def why(e):
+    """A failure, in the report's words."""
+    if "matches more than" in e:
+        return "refused: grouped by an expression, so read a row at a time, and a shard reads at most 1,000,001 rows that way"
+    return "failed: " + e[:160]
 
 
 def report(a):
@@ -213,12 +251,14 @@ def report(a):
         if "median_ms" in s:
             lines.append(f"| {s['group']} | {s['name']} | {fmt(s['first_ms'])} | {fmt(s['median_ms'])}{c} | {fmt(s['max_ms'])} | {rows} |")
         else:
-            lines.append(f"| {s['group']} | {s['name']} | failed: {s['runs'][-1].get('error', '')[:120]} | | | |")
+            lines.append(f"| {s['group']} | {s['name']} | {why(s['runs'][-1].get('error', ''))} | | | |")
     if j.get("pages"):
-        lines += ["", "The app's pages, end to end (all their statements):", "", "| page | statements | first run | median | slowest |", "|---|---:|---:|---:|---:|"]
+        lines += ["", "The app's pages, end to end (all their statements, several at once):", "", "| page | statements | first run | median | slowest | what it waits on (last run) |", "|---|---:|---:|---:|---:|---|"]
         for p in j["pages"]:
             if "median_ms" in p:
-                lines.append(f"| {p['name']} | {p['runs'][-1].get('statements', '')} | {fmt(p['first_ms'])} | {fmt(p['median_ms'])} | {fmt(p['max_ms'])} |")
+                q = (p.get("queries") or [{}])[0]
+                waits = f"{q['name']}: {fmt(q['ms'])}" + (f" ({q['note'][:60]})" if q.get("note") else "") if q.get("ms") is not None else ""
+                lines.append(f"| {p['name']} | {p['runs'][-1].get('statements', '')} | {fmt(p['first_ms'])} | {fmt(p['median_ms'])} | {fmt(p['max_ms'])} | {waits} |")
             else:
                 lines.append(f"| {p['name']} | | failed: {p['runs'][-1].get('error', '')[:120]} | | |")
     lines += ["", "The statements, with their parameters, are in `results/events.json`."]
@@ -235,6 +275,10 @@ def main():
     r.add_argument("--app")
     r.add_argument("--runs", type=int, default=5)
     r.add_argument("--machine", required=True)
+    r.add_argument("--redo", action="store_true", help="keep results/events.json's answers; run again what a dropped connection lost")
+    r.add_argument("--again", action="append", default=[], help="with --redo, run again the statements and pages whose name holds this")
+    r.add_argument("--skip", action="append", default=[], help="skip statements whose name holds this")
+    r.add_argument("--skip-why", help="what the report says of a skipped statement")
     sub.add_parser("report")
     a = ap.parse_args()
     run(a) if a.cmd == "run" else report(a)
