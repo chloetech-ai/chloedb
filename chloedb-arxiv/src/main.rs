@@ -24,7 +24,7 @@ struct Cli {
 enum Cmd {
     /// Turn arXiv's metadata snapshot, OAI-PMH pages and Crossref's citations into the app's rows (JSON lines).
     Prepare(PrepareArgs),
-    /// Load the rows `prepare` wrote into a chloedb-server (the tables are made first), then make the recommender.
+    /// Load the rows `prepare` wrote into the servers (the tables and the recommender are made first).
     Load(LoadArgs),
     /// Serve the API, the view for the command center (chloedb-server --app arxiv=URL) and, with --public, the page itself.
     Serve(ServeArgs),
@@ -76,7 +76,7 @@ struct LoadArgs {
     chunk_mb: usize,
     #[arg(long, default_value = schema::MODEL)]
     model: String,
-    /// Do not make the recommender after loading (it counts every event in one transaction).
+    /// Do not make the recommender (it is made before the events load, and counts them as they are written).
     #[arg(long)]
     no_recommender: bool,
 }
@@ -251,17 +251,20 @@ async fn shutdown_signal() {
 }
 
 async fn load_all(db: &Strata, graph: &Strata, rows: &PathBuf, only: &[String], chunk_mb: usize, recommender: bool) -> Result<(), String> {
-    let n = load::load(db, graph, rows, only, chunk_mb, |m| eprintln!("chloedb-arxiv: {m}")).await?;
-    eprintln!("chloedb-arxiv: loaded {n} rows");
+    // The recommender is made before its events are loaded, so it counts
+    // them a request at a time as they are written: made after, it counts
+    // all of them in one transaction, which over 5 million events takes
+    // more memory than a 16 GB machine has.
     if recommender && (only.is_empty() || only.iter().any(|t| t == "ax_events")) {
         let t0 = Instant::now();
-        eprintln!("chloedb-arxiv: making the recommender (it counts every event once)");
         match schema::ensure_recommender(graph).await {
-            Ok(Some(v)) => eprintln!("chloedb-arxiv: recommender made in {:.0} s: {v}", t0.elapsed().as_secs_f64()),
-            Ok(None) => eprintln!("chloedb-arxiv: the recommender was there"),
+            Ok(Some(v)) => eprintln!("chloedb-arxiv: recommender made in {:.0} s, before its events: {v}", t0.elapsed().as_secs_f64()),
+            Ok(None) => eprintln!("chloedb-arxiv: the recommender was there; it counts the events as they are loaded"),
             Err(e) => return Err(format!("making the recommender: {e}")),
         }
     }
+    let n = load::load(db, graph, rows, only, chunk_mb, |m| eprintln!("chloedb-arxiv: {m}")).await?;
+    eprintln!("chloedb-arxiv: loaded {n} rows");
     Ok(())
 }
 

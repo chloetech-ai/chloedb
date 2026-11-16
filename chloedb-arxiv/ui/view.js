@@ -1282,7 +1282,7 @@ function issueRefs(text, ids) {
 function paperEntry(app, p, i) {
   const link = (href, t) => h("a", { href, target: "_blank", rel: "noopener" }, t);
   const links = h("div", { class: "links" }, link(`https://arxiv.org/abs/${p.id}`, "📚 arXiv"), link(`https://arxiv.org/pdf/${p.id}`, "📄 PDF"), p.full_text ? link(`https://arxiv.org/html/${p.id}`, "🌐 HTML") : null, p.code ? link(p.code, "👨🏽‍💻 Code") : null, p.hf ? link(p.hf, "🤗 Hugging Face") : null);
-  const who = [(p.orgs || []).slice(0, 4).join(" · "), (p.authors || "").split(",").slice(0, 4).join(",") + ((p.authors || "").split(",").length > 4 ? " et al." : "")].filter(Boolean).join(" — ");
+  const who = [(p.orgs || []).filter((o) => !/:$/.test(o)).slice(0, 4).join(" · "), (p.authors || "").split(",").slice(0, 4).join(",") + ((p.authors || "").split(",").length > 4 ? " et al." : "")].filter(Boolean).join(" — ");
   const head = [h("h2", {}, h("span", { class: "n" }, `${i + 1}.`), h("a", { href: app.href("paper", p.id) }, p.title)), who ? h("div", { class: "who" }, who) : null];
   if (!p.brief) return h("div", { class: "item", id: `ax-is-${i + 1}` }, head, h("p", {}, p.blurb), links);
   const sec = (label, text) => (text ? [h("span", { class: "lab" }, label), h("p", {}, text)] : null);
@@ -1313,7 +1313,7 @@ async function issuePage(app, main, id, alive) {
   const papers = is.papers || [];
   const full = papers.some((p) => p.brief);
   fill(main, h("div", { class: "ax-news" },
-    h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feed", is.feed) }, "← Studio"), `made ${ago(j.made)}`, is.ms ? `in ${Math.round(is.ms / 1000)} s` : "", is.model ? `· ${is.model}` : "")),
+    h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feed", is.feed) }, "← Studio"), " ", [`made ${ago(j.made)}`, is.ms ? `in ${Math.round(is.ms / 60000) >= 2 ? Math.round(is.ms / 60000) + " min" : Math.round(is.ms / 1000) + " s"}` : "", is.model ? `· ${is.model.replace(/^anthropic\//, "")}` : ""].filter(Boolean).join(" "))),
     h("h1", {}, j.title),
     h("div", { class: "tag" }, `${papers.length} papers chosen from ${fmt(is.candidates)} for ${name}${full ? ", each explained from its full text with its figures" : ""}.`),
     h("div", { style: { display: "flex", gap: "8px", marginBottom: "14px" } }, copy, h("a", { class: "ax-btn", href: `feeds/${is.feed}/rss.xml`, target: "_blank" }, "RSS")),

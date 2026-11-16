@@ -344,7 +344,7 @@ impl Pages {
     pub async fn paper(&self, c: &Ctx<'_>, id: &str) -> Read {
         let k = format!("full:{id}");
         if let Some(r) = c.gsoft("its page, read before", "SELECT org, text FROM ax_notes WHERE id = :k", json!({"k": k})).await.first() {
-            let orgs: Vec<String> = r.s("org").split(" | ").filter(|s| !s.is_empty()).map(str::to_string).collect();
+            let orgs: Vec<String> = r.s("org").split(" | ").filter(|s| !s.is_empty() && !s.ends_with(':')).map(str::to_string).collect();
             let v: Value = serde_json::from_str(&r.s("text")).unwrap_or(Value::Null);
             let full: Option<Full> = v.get("full").cloned().and_then(|x| serde_json::from_value(x).ok());
             return Read { orgs, intro: v["intro"].as_str().unwrap_or("").to_string(), full };
@@ -417,17 +417,40 @@ fn strip_tags(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What a span holds, up to the `</span>` that closes it (spans inside it
+/// are passed over).
+fn span_inner(html: &str) -> &str {
+    let mut depth = 0usize;
+    let mut i = 0;
+    while let Some(k) = html[i..].find('<') {
+        let at = i + k;
+        let rest = &html[at..];
+        if rest.starts_with("</span") {
+            if depth == 0 {
+                return &html[..at];
+            }
+            depth -= 1;
+        } else if rest.starts_with("<span") {
+            depth += 1;
+        }
+        i = at + 1;
+    }
+    &html[..html.len().min(400)]
+}
+
 /// Affiliations and the introduction from a paper's LaTeXML page.
 pub fn parse_page(html: &str) -> (Vec<String>, String) {
     if html.is_empty() {
         return (Vec::new(), String::new());
     }
     let mut orgs: Vec<String> = Vec::new();
-    let re = regex::Regex::new(r#"(?s)class="ltx_contact ltx_role_affiliation"[^>]*>(.*?)</span>"#).expect("regex");
-    for m in re.captures_iter(html) {
-        let t = strip_tags(&m[1]);
-        let t = t.trim_matches(|c: char| c == ',' || c == ' ' || c.is_ascii_digit() || c == '∗' || c == '*').to_string();
-        if t.len() > 2 && t.len() < 160 && !orgs.contains(&t) && !t.contains('@') {
+    let re = regex::Regex::new(r#"class="ltx_contact ltx_role_affiliation"[^>]*>"#).expect("regex");
+    for m in re.find_iter(html) {
+        let t = strip_tags(span_inner(&html[m.end()..]));
+        let t = t.trim_matches(|c: char| c == ',' || c == ' ' || c.is_ascii_digit() || c == '∗' || c == '*');
+        // A label ("Affiliation:") on its own, or in front of the name.
+        let t = t.strip_prefix("Affiliations:").or_else(|| t.strip_prefix("Affiliation:")).unwrap_or(t).trim().to_string();
+        if t.len() > 2 && t.len() < 160 && !t.ends_with(':') && !orgs.contains(&t) && !t.contains('@') {
             orgs.push(t);
         }
     }
@@ -767,9 +790,9 @@ mod tests {
 
     #[test]
     fn pages() {
-        let html = r#"<div class="ltx_authors"><span class="ltx_contact ltx_role_affiliation"><sup>1</sup>Google DeepMind, London</span><span class="ltx_contact ltx_role_affiliation">Stanford University</span></div><section id="S1"><p class="ltx_p">Recommender systems are everywhere.</p></section>"#;
+        let html = r#"<div class="ltx_authors"><span class="ltx_contact ltx_role_affiliation"><sup>1</sup>Google DeepMind, London</span><span class="ltx_contact ltx_role_affiliation">Stanford University</span><span class="ltx_contact ltx_role_affiliation"><span class="ltx_text ltx_font_bold">Affiliation:</span> Kuaishou <span class="ltx_text">Technology</span></span></div><section id="S1"><p class="ltx_p">Recommender systems are everywhere.</p></section>"#;
         let (orgs, intro) = parse_page(html);
-        assert_eq!(orgs, vec!["Google DeepMind, London", "Stanford University"]);
+        assert_eq!(orgs, vec!["Google DeepMind, London", "Stanford University", "Kuaishou Technology"]);
         assert_eq!(intro, "Recommender systems are everywhere.");
         assert_eq!(short_org("Google DeepMind, London"), "Google DeepMind");
     }

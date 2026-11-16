@@ -71,7 +71,20 @@ impl Strata {
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
+        self.call_within(method, path, body, None).await
+    }
+
+    /// A statement that may take minutes (`CREATE RECOMMENDER` over
+    /// millions of events): the client waits up to `secs`.
+    pub async fn sql_long(&self, sql: &str, secs: u64) -> Result<Value> {
+        self.call_within(reqwest::Method::POST, "/v1/sql", Some(&json!({ "sql": sql })), Some(Duration::from_secs(secs))).await
+    }
+
+    async fn call_within(&self, method: reqwest::Method, path: &str, body: Option<&Value>, timeout: Option<Duration>) -> Result<Value> {
         let mut req = self.http.request(method, format!("{}{}", self.url, path)).header("x-chloedb-client", "chloedb-arxiv");
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);
         }

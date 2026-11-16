@@ -112,13 +112,24 @@ def anthropic(model, system, user, max_tokens=300):
     key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("STRATA_ANTHROPIC_KEY")
     if not key:
         sys.exit("needs ANTHROPIC_API_KEY or STRATA_ANTHROPIC_KEY")
-    body = json.dumps({"model": model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}).encode()
+    req_body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}
+    # Short answers only: Haiku takes thinking off outright (at its default
+    # effort); Sonnet 5.5 refuses "disabled" and takes "between_tools".
+    if "haiku" in model:
+        req_body["thinking"] = {"type": "disabled"}
+    elif "sonnet-5-5" in model:
+        req_body["thinking"] = {"type": "between_tools"}
+    body = json.dumps(req_body).encode()
     for attempt in range(6):
         try:
             req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
             with urllib.request.urlopen(req, timeout=120) as r:
                 j = json.loads(r.read())
-            return "".join(c.get("text", "") for c in j.get("content", []))
+            text = "".join(c.get("text", "") for c in j.get("content", []) if c.get("type") == "text")
+            if text.strip():
+                return text
+            time.sleep(1)
+            continue
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 529, 503):
                 time.sleep(5 * (attempt + 1))

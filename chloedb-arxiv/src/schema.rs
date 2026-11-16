@@ -251,7 +251,7 @@ pub async fn ensure_recommender(db: &Strata) -> Result<Option<Value>> {
     if !have.is_empty() {
         return Ok(None);
     }
-    let r = db.post("/v1/sql", &serde_json::json!({"sql": format!("CREATE RECOMMENDER {RECOMMENDER} ON ax_events(usr, item, ts) ITEMS ax_nodes OPTIONS (window = 5, history = 50)")})).await?;
+    let r = db.sql_long(&format!("CREATE RECOMMENDER {RECOMMENDER} ON ax_events(usr, item, ts) ITEMS ax_nodes OPTIONS (window = 5, history = 50)"), 3600).await?;
     Ok(Some(r))
 }
 

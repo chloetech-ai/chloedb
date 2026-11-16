@@ -138,12 +138,18 @@ fn images_in(html: &str) -> Vec<Image> {
     out
 }
 
-/// The caption of a figure or table: its label ("Figure 2") and its text.
-fn caption(html: &str, kind: &str) -> Option<(String, String)> {
+/// The caption of a figure or table: its label ("Figure 2"), its text and
+/// where it ends. A panel's own caption ("(a)") comes before its figure's
+/// and is passed over.
+fn caption(html: &str, kind: &str) -> Option<(String, String, usize)> {
     let c = re(&format!(r#"(?s)<figcaption[^>]*>\s*<span class="ltx_tag ltx_tag_{kind}">(.*?)</span>(.*?)</figcaption>"#));
-    let m = c.captures(html)?;
-    let label = text_of(&m[1]).trim_end_matches(':').trim().to_string();
-    Some((label, text_of(&m[2])))
+    for m in c.captures_iter(html) {
+        let label = text_of(&m[1]).trim_end_matches(|c: char| c == ':' || c == '.' || c.is_whitespace()).to_string();
+        if !(label.starts_with('(') || label.chars().count() <= 2) {
+            return Some((label, text_of(&m[2]), m.get(0).map(|x| x.end()).unwrap_or(0)));
+        }
+    }
+    None
 }
 
 /// Reads a LaTeXML page.
@@ -219,23 +225,31 @@ pub fn parse(html: &str) -> Full {
     let mut figures = Vec::new();
     let mut tables = Vec::new();
     let tr = re(r#"(?s)<tr\b[^>]*>(.*?)</tr>"#);
-    let td = re(r#"(?s)<t[dh]\b[^>]*>(.*?)</t[dh]>"#);
+    let td = re(r#"(?s)<t[dh]\b([^>]*)>(.*?)</t[dh]>"#);
+    let span = re(r#"colspan="(\d+)""#);
     for (k, (s, id, class)) in blocks.iter().enumerate() {
         let e = blocks.get(k + 1).map(|b| b.0).unwrap_or(html.len()).min(s + 400_000);
         let part = &html[*s..e];
         if class == "ltx_figure" {
-            let Some((label, cap)) = caption(part, "figure") else { continue };
+            let Some((label, cap, upto)) = caption(part, "figure") else { continue };
             // The figure's own images: those before its caption ends.
-            let upto = part.find("</figcaption>").unwrap_or(part.len());
             let images: Vec<Image> = images_in(&part[..upto]).into_iter().take(4).collect();
             if !images.is_empty() {
                 figures.push(Figure { id: id.clone(), label, caption: cut(&cap, 1200), images });
             }
         } else {
-            let Some((label, cap)) = caption(part, "table") else { continue };
+            let Some((label, cap, _)) = caption(part, "table") else { continue };
             let mut rows = Vec::new();
             for r in tr.captures_iter(part).take(24) {
-                let cells: Vec<String> = td.captures_iter(&r[1]).take(12).map(|c| cut(&text_of(&c[1]), 80)).collect();
+                // A cell over several columns keeps the columns under it
+                // in line: it is followed by empty cells.
+                let mut cells: Vec<String> = Vec::new();
+                for c in td.captures_iter(&r[1]) {
+                    cells.push(cut(&text_of(&c[2]), 80));
+                    let n = span.captures(&c[1]).and_then(|m| m[1].parse::<usize>().ok()).unwrap_or(1).clamp(1, 12);
+                    cells.extend(std::iter::repeat(String::new()).take(n - 1));
+                }
+                cells.truncate(12);
                 if !cells.is_empty() && cells.iter().any(|c| !c.is_empty()) {
                     rows.push(cells);
                 }
@@ -338,11 +352,11 @@ mod tests {
 <h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>Results</h2>
 <div class="ltx_para"><p class="ltx_p">It is 12% better than the baseline.</p></div>
 <figure id="S2.F2" class="ltx_figure"><div class="ltx_flex_figure">
-<figure id="S2.F2.fig1" class="ltx_figure ltx_figure_panel"><object type="image/svg+xml" data="2401.00001v1/a.svg" width="224" height="166"></object></figure>
-<figure id="S2.F2.fig2" class="ltx_figure ltx_figure_panel"><img src="2401.00001v1/b.png" width="229" height="165"></figure></div>
+<figure id="S2.F2.fig1" class="ltx_figure ltx_figure_panel"><object type="image/svg+xml" data="2401.00001v1/a.svg" width="224" height="166"></object><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">(a) </span>Recall</figcaption></figure>
+<figure id="S2.F2.fig2" class="ltx_figure ltx_figure_panel"><img src="2401.00001v1/b.png" width="229" height="165"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">(b) </span>Length</figcaption></figure></div>
 <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 2: </span>(a) Recall. (b) Length.</figcaption></figure>
 <figure id="S2.T1" class="ltx_table"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 1: </span>Main results.</figcaption>
-<table class="ltx_tabular"><tr class="ltx_tr"><th class="ltx_th">Model</th><th class="ltx_th">NDCG</th></tr>
+<table class="ltx_tabular"><tr class="ltx_tr"><th class="ltx_th" colspan="2">Results</th><th class="ltx_th">Speed</th></tr><tr class="ltx_tr"><th class="ltx_th">Model</th><th class="ltx_th">NDCG</th></tr>
 <tr class="ltx_tr"><td class="ltx_td">Ours</td><td class="ltx_td"><span class="ltx_text ltx_font_bold">0.42</span></td></tr></table></figure>
 </section>
 <section id="A1" class="ltx_appendix"><h2 class="ltx_title ltx_title_appendix">Appendix A</h2><p class="ltx_p">Proofs.</p>
@@ -362,11 +376,12 @@ mod tests {
         assert_eq!(f.figures[0].label, "Figure 1");
         assert_eq!(f.figures[0].caption, "The model, end to end.");
         assert_eq!(f.figures[0].images, vec![Image { src: "https://arxiv.org/html/2401.00001v1/x1.png".into(), w: 476, h: 300 }]);
+        assert_eq!(f.figures[1].label, "Figure 2");
         assert_eq!(f.figures[1].images.len(), 2);
         assert_eq!(f.figures[1].images[0].src, "https://arxiv.org/html/2401.00001v1/a.svg");
         assert_eq!(f.tables.len(), 1);
         assert_eq!(f.tables[0].label, "Table 1");
-        assert_eq!(f.tables[0].rows, vec![vec!["Model".to_string(), "NDCG".into()], vec!["Ours".into(), "0.42".into()]]);
+        assert_eq!(f.tables[0].rows, vec![vec!["Results".to_string(), "".into(), "Speed".into()], vec!["Model".into(), "NDCG".into()], vec!["Ours".into(), "0.42".into()]]);
         let ctx = f.context();
         assert!(ctx.contains("[F2] Figure 2: (a) Recall. (b) Length."), "{ctx}");
         assert!(ctx.contains("[T1] Table 1: Main results."), "{ctx}");

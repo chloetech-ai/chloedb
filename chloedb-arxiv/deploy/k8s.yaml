@@ -54,7 +54,7 @@ spec:
         - {name: CHLOEDB_MODELS, value: /data/models}
         ports: [{containerPort: 7700}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        resources: {requests: {cpu: "3", memory: 10Gi}}
+        resources: {requests: {cpu: "3", memory: 10Gi}, limits: {memory: 12Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/arxiv/db, type: DirectoryOrCreate}}]
 ---
@@ -74,14 +74,17 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv-graph.chloedb --listen 0.0.0.0:7700 --grpc off"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/arxiv-graph.chloedb --listen 0.0.0.0:7700 --grpc off --merge-memory-mb 2048 --query-memory-mb 4096"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: arxiv-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/models}
         - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: anthropic, key: key}}}
         ports: [{containerPort: 7700}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        resources: {requests: {cpu: "2", memory: 6Gi}}
+        # A limit, so its memory budgets are sized from it, and room on the
+        # node for the app beside it (making the recommender over 5.2M
+        # events with merges at the default half of the node ran it out).
+        resources: {requests: {cpu: "2", memory: 6Gi}, limits: {memory: 10Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/arxiv/db, type: DirectoryOrCreate}}]
 ---
