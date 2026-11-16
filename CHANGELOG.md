@@ -11,6 +11,43 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### SQLite imports (stress test of 15 November)
+
+A test of every way a SQLite file comes in (the command line, `POST
+/v1/import`, Sheets) against SQLite's own rows, on 25 files of odd types,
+names and schemas, files of up to 5 million rows, 4,000 tables and 2,000
+columns, imports at once, killed, of damaged, locked and WAL files:
+
+- **Tables that begin with a virtual table's name are imported**
+  (`notes_archive` beside an FTS5 table `notes`, `geo_points` beside an
+  R-tree `geo`): they were left out silently, as if they were its own.
+  The importer now asks SQLite which tables are `shadow`; beside a virtual
+  table of a module it lacks (sqlite-vec's `vec0`), `vecs_...` tables are
+  listed in `skipped` and imported when named.
+- **A vector holding NaN or an infinity is NULL**, with a note: a file with
+  one failed to import, and over HTTP the rows before it stayed written.
+  The importer now checks every row as the write will before it writes.
+- **A key whose values are one to ChloeDB** (the integer 1 and the text
+  `'1'`, in a column without a type) leaves the table without a key: the
+  command line refused the file, and HTTP kept one row of the two.
+- **A damaged file is refused** (`PRAGMA quick_check`), saying where, in
+  place of importing what could be read of it; a file whose writer stopped
+  mid-transaction says to let SQLite roll it back first.
+- **An HTTP import goes on to its end when its client hangs up**, and the
+  server logs each import (rows, seconds); an error after rows were written
+  says how many. Imports at once of the same new table all succeed. An
+  upload in WAL mode answers a note that its `-wal` file's writes are not in
+  it.
+- Julian-day dates are exact to the millisecond (they were off by
+  microseconds), text that is not UTF-8 is noted, a table with no column to
+  import is skipped with the reason, and a table `_strata_tables` without an
+  export's columns is imported as the file's own.
+- **Sheets** lists tables whose names begin `sqlite` (`sqlite3_dump`,
+  `SQLiteData`: they were left out, as `_` is a wildcard to `LIKE`), leaves
+  out shadow tables, skips a table it cannot read (a `vec0` table) instead
+  of refusing the whole file, keeps ids of more than 15 digits as text as
+  its CSV import does, and refuses a damaged file.
+
 ## 0.3.5
 
 The audit of 15 November's first lanes (security, wrong answers, apps that

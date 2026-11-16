@@ -2643,6 +2643,78 @@ async fn sqlite_files_over_http() {
     assert_eq!(r.status().as_u16(), 400);
 }
 
+/// Imports at once of a file whose keyed table is new: each answers, and
+/// the rows are there once. One whose client hangs up goes on to its end.
+/// A file in WAL mode is said to be one (its -wal file is not uploaded).
+#[tokio::test(flavor = "multi_thread")]
+async fn sqlite_imports_at_once_and_after_a_hang_up() {
+    use tokio::io::AsyncWriteExt;
+    let dir = tempfile::tempdir().unwrap();
+    let schema = chloedb::Schema::from_json(ITEMS).unwrap();
+    let db = Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
+    let base = http(Arc::new(svc), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    // A SQLite file of one keyed table of `n` rows.
+    let file = |table: &str, n: usize| {
+        let schema = chloedb::Schema::from_json(&format!(r#"{{"table": "{table}", "key": "id", "fields": [{{"name": "id", "type": "int"}}, {{"name": "name", "type": "keyword"}}]}}"#)).unwrap();
+        let src = Db::create(&dir.path().join(format!("{table}.strata")), schema, DbOptions::default()).unwrap();
+        for at in (0..n).step_by(10_000) {
+            let values: Vec<String> = (at..(at + 10_000).min(n)).map(|i| format!("({i}, 'row {i}')")).collect();
+            src.sql(&format!("INSERT INTO {table} (id, name) VALUES {}", values.join(", ")), &Params::new()).unwrap();
+        }
+        let out = dir.path().join(format!("{table}.sqlite"));
+        chloedb::sqlite::export(&src, &out, &chloedb::sqlite::ExportOptions { meta: false, ..Default::default() }).unwrap();
+        std::fs::read(&out).unwrap()
+    };
+    let count = |table: &'static str| {
+        let (c, base) = (c.clone(), base.clone());
+        async move {
+            let (status, q) = post(&c, &format!("{base}/v1/query"), json!({ "sql": format!("SELECT COUNT(*) FROM {table}") })).await;
+            if status == 200 { q["rows"][0][0].as_u64().unwrap() } else { 0 }
+        }
+    };
+    let import = |bytes: Vec<u8>| {
+        let (c, base) = (c.clone(), base.clone());
+        async move {
+            let r = c.post(format!("{base}/v1/import?format=sqlite")).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+
+    let same = file("same", 20_000);
+    let answers = futures::future::join_all((0..4).map(|_| import(same.clone()))).await;
+    for (status, r) in &answers {
+        assert_eq!((*status, &r["written"]), (200, &json!(20_000)), "{r}");
+    }
+    assert_eq!(answers.iter().filter(|(_, r)| r["tables"][0]["created"] == json!(true)).count(), 1, "{answers:?}");
+    assert_eq!(count("same").await, 20_000);
+
+    // WAL mode is in the header's bytes 18 and 19.
+    let mut wal = same.clone();
+    wal[18..20].copy_from_slice(&[2, 2]);
+    let (status, r) = import(wal).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["notes"][0].as_str().unwrap().contains("WAL mode"), "{r}");
+
+    let n = 300_000;
+    let gone = file("gone", n);
+    let url = base.strip_prefix("http://").unwrap().to_string();
+    let mut sock = tokio::net::TcpStream::connect(&url).await.unwrap();
+    let head = format!("POST /v1/import?format=sqlite HTTP/1.1\r\nhost: {url}\r\ncontent-type: application/vnd.sqlite3\r\ncontent-length: {}\r\n\r\n", gone.len());
+    sock.write_all(head.as_bytes()).await.unwrap();
+    sock.write_all(&gone).await.unwrap();
+    let started = std::time::Instant::now();
+    while count("gone").await == 0 && started.elapsed() < Duration::from_secs(60) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    drop(sock);
+    while count("gone").await < n as u64 && started.elapsed() < Duration::from_secs(120) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(count("gone").await, n as u64, "the import went on after its client hung up");
+}
+
 #[test]
 fn imports_files_from_the_command_line() {
     let dir = tempfile::tempdir().unwrap();
