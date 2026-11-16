@@ -163,12 +163,17 @@ impl Strata {
 
     /// A SELECT's rows, each an object keyed by column.
     pub async fn query(&self, sql: &str, params: Value) -> Result<Vec<Row>> {
-        let j = self
-            .post(
-                "/v1/query",
-                &json!({ "sql": sql, "params": params, "objects": true }),
-            )
-            .await?;
+        self.query_within(sql, params, None).await
+    }
+
+    /// As [`Strata::query`], given `ms` milliseconds rather than the
+    /// server's default deadline.
+    pub async fn query_within(&self, sql: &str, params: Value, ms: Option<u64>) -> Result<Vec<Row>> {
+        let mut body = json!({ "sql": sql, "params": params, "objects": true });
+        if let Some(ms) = ms {
+            body["timeout_ms"] = json!(ms);
+        }
+        let j = self.post("/v1/query", &body).await?;
         Ok(rows_of(j))
     }
 
@@ -180,8 +185,20 @@ impl Strata {
         sql: &str,
         params: Value,
     ) -> Result<Vec<Row>> {
+        self.traced_within(trace, what, sql, params, None).await
+    }
+
+    /// As [`Strata::traced`], given `ms` milliseconds.
+    pub async fn traced_within(
+        &self,
+        trace: &Trace,
+        what: &str,
+        sql: &str,
+        params: Value,
+        ms: Option<u64>,
+    ) -> Result<Vec<Row>> {
         let t0 = Instant::now();
-        let r = self.query(sql, params.clone()).await;
+        let r = self.query_within(sql, params.clone(), ms).await;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         match &r {
             Ok(rows) => trace.push(what, sql, &params, rows.len(), ms, None),

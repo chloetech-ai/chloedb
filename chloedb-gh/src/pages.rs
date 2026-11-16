@@ -28,6 +28,15 @@ pub const YEAR: i64 = 31_556_952;
 /// The columns of a repo as the page lists it.
 pub const REPO_COLS: &str = "repo, name, owner, description, language, topics, license, homepage, stars, forks, stars_api, forks_api, created, first_seen, archived, fork";
 
+/// The people whose stars say what else a repo's stargazers like (its
+/// latest), and of the repos a person starred for their "for you". Each one's stars
+/// are rows all over the stars table, sorted by repo: on 8 GB machines
+/// over 524 million stars, 1,500 people took past the server's 5 s, 400
+/// take about a second from the disk and tens of milliseconds once read.
+pub const COSTAR_PEOPLE: usize = 400;
+/// How long those statements may take.
+pub const COSTAR_MS: u64 = 15_000;
+
 /// What people do in a repo, as opposed to starring or forking it.
 pub const WORK: &str = "('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')";
 
@@ -47,6 +56,22 @@ impl Ctx<'_> {
             .traced(self.trace, what.as_ref(), sql.as_ref(), params)
             .await
     }
+    /// As [`Ctx::soft`], given `ms` milliseconds rather than the server's
+    /// default deadline: for a statement that reads rows of many people,
+    /// which come from all over the stars table.
+    pub async fn soft_within(
+        &self,
+        what: impl AsRef<str>,
+        sql: impl AsRef<str>,
+        params: Value,
+        ms: u64,
+    ) -> Vec<Row> {
+        self.db
+            .traced_within(self.trace, what.as_ref(), sql.as_ref(), params, Some(ms))
+            .await
+            .unwrap_or_default()
+    }
+
     /// The rows, or none when the query fails (the trace says why).
     pub async fn soft(
         &self,
@@ -261,7 +286,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let (recent, ever, gazers) = tokio::join!(
         c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), json!({"id": id, "since": year_ago})),
         c.soft("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone()),
-        c.soft("its latest stargazers", "SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT 1500", p.clone()),
+        c.soft("its latest stargazers", format!("SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT {COSTAR_PEOPLE}"), p.clone()),
     );
     let mut people: Vec<i64> = ids(&recent, "actor");
     people.extend(ids(&ever, "actor"));
@@ -279,7 +304,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
             if gz.len() < 20 {
                 return Vec::new();
             }
-            c.soft("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)})).await
+            c.soft_within("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)}), COSTAR_MS).await
         },
     );
     let co_ids: Vec<i64> = ids(&co, "repo").into_iter().filter(|x| *x != id).collect();
@@ -526,7 +551,7 @@ pub async fn person(c: &Ctx<'_>, login: &str) -> Result<Value> {
     let (kinds, years, repos, stars) = tokio::join!(
         c.soft("what they did", "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30", p.clone()),
         c.soft("year by year", format!("SELECT t - t % {YEAR} AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY y ORDER BY y LIMIT 40"), p.clone()),
-        c.soft("where they work", format!("SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 24"), p.clone()),
+        c.soft_within("where they work", format!("SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 24"), p.clone(), COSTAR_MS),
         c.soft("what they starred lately", "SELECT repo, t FROM gh_stars WHERE actor_k = :k ORDER BY t DESC LIMIT 24", json!({"k": a.to_string()})),
     );
     let mut rids = ids(&repos, "repo");
@@ -750,7 +775,7 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
     let nb = c
         .soft(
             "people who starred the same repos",
-            "SELECT actor FROM gh_stars WHERE repo IN (:s) ORDER BY t DESC LIMIT 3000",
+            format!("SELECT actor FROM gh_stars WHERE repo IN (:s) ORDER BY t DESC LIMIT {COSTAR_PEOPLE}"),
             json!({"s": seeds}),
         )
         .await;
@@ -758,7 +783,7 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
     let cand = if nb.is_empty() {
         Vec::new()
     } else {
-        c.soft("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": keys(&nb)})).await
+        c.soft_within("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": keys(&nb)}), COSTAR_MS).await
     };
     let cids: Vec<i64> = ids(&cand, "repo")
         .into_iter()
@@ -890,11 +915,24 @@ pub async fn scale(c: &Ctx<'_>) -> Value {
     .await;
     let span = c
         .soft(
-            "the events' span",
-            "SELECT MIN(t) AS first, MAX(t) AS last FROM gh_events",
+            "the first event",
+            // Ordered by time, the column's block bounds find each end
+            // at once; MIN and MAX read every row.
+            "SELECT t FROM gh_events ORDER BY t LIMIT 1",
             Value::Null,
         )
         .await;
+    let last = c
+        .soft(
+            "the latest event",
+            "SELECT t FROM gh_events ORDER BY t DESC LIMIT 1",
+            Value::Null,
+        )
+        .await;
+    let span: Vec<Row> = match (span.first(), last.first()) {
+        (Some(a), Some(b)) => vec![json!({"first": a.i("t"), "last": b.i("t")}).as_object().cloned().unwrap_or_default()],
+        _ => Vec::new(),
+    };
     json!({"tables": counts.into_iter().collect::<Map<String, Value>>().into_iter().map(|(k, v)| (k, v)).collect::<Map<String, Value>>(), "span": span.first().map(obj)})
 }
 
