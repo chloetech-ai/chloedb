@@ -187,11 +187,11 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     ran_sql(&ov, "overview");
     assert!(len(&ov["traffic"]) > 60 && len(&ov["services"]) == 12 && len(&ov["recent"]) > 0, "overview: {}", ov["at"]);
     let data = api.get("/v1/data").await;
-    assert_eq!(len(&data["tables"]), 47);
+    assert_eq!(len(&data["tables"]), 48);
     assert!(data["tables"].as_array().unwrap().iter().all(|t| t["rows"].as_i64().is_some()), "every table answers a count");
     // NET-21: each count is in the SQL the page shows.
     let counts = data["queries"].as_array().unwrap().iter().filter(|q| q["sql"].as_str().unwrap().starts_with("SELECT COUNT(*) AS n FROM netops_")).count();
-    assert_eq!(counts, 47, "every count is traced: {}", len(&data["queries"]));
+    assert_eq!(counts, 48, "every count is traced: {}", len(&data["queries"]));
 
     // The estate behind the backbone, as the map reads it: the places, what
     // is broken and where, a window at a level of detail, and one object
@@ -404,6 +404,25 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
         assert!(!inc["runbook"].is_null() && len(&inc["actions"]) > 0, "{sc}: a runbook and something to do");
         let run = inc["runs"].as_array().unwrap().iter().rfind(|r| r["agent"] == "root-cause").unwrap().clone();
         assert_eq!(run["verdict"], "correct", "{sc}: {run}");
+        // Why it is the cause: what happened, each claim with a query that
+        // shows the rows behind it (none, for a claim that something did not
+        // happen), and the other explanations it checked.
+        let ev = inc["evidence"].as_array().unwrap();
+        let role = |r: &str| ev.iter().filter(|x| x["role"] == r).collect::<Vec<_>>();
+        let story = role("story");
+        assert!(story.len() == 1 && story[0]["claim"].as_str().unwrap().len() > 120, "{sc}: what happened: {story:?}");
+        assert!(role("for").len() >= 2 && !role("against").is_empty(), "{sc}: evidence {ev:?}");
+        for x in role("for").into_iter().chain(role("against")) {
+            let id = x["id"].as_str().unwrap();
+            let back = api.get(&format!("/v1/evidence/{}", id.replace(':', "%3A"))).await;
+            ran_sql(&back, "evidence");
+            let rows = len(&back["rows"]);
+            if x["absent"] == true {
+                assert_eq!(rows, 0, "{sc}: {} says nothing happened, but its query finds rows: {}", x["claim"], back["rows"]);
+            } else if x["role"] == "for" {
+                assert!(rows > 0, "{sc}: {} has no rows behind it: {}", x["claim"], back["evidence"]["sql_text"]);
+            }
+        }
         ran_sql(&api.get(&format!("/v1/incidents/{id}/replay")).await, "replay");
 
         // While it is broken: the stack by place says where, lowest layer first,
@@ -723,7 +742,7 @@ async fn both_networks_served_side_by_side() {
     let (a, b) = (api.get("/v1/data").await, d.get("/v1/data").await);
     let names = |j: &Value| j["tables"].as_array().unwrap().iter().map(|t| t["table"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     let rows = |j: &Value, t: &str| j["tables"].as_array().unwrap().iter().find(|x| x["table"] == t).and_then(|x| x["rows"].as_i64());
-    assert_eq!((names(&a).len(), names(&b).len()), (47, 47));
+    assert_eq!((names(&a).len(), names(&b).len()), (48, 48));
     assert!(names(&a).iter().all(|n| n.starts_with("netops_") && !n.starts_with("netops_disc_")), "{:?}", names(&a));
     assert!(names(&b).iter().all(|n| n.starts_with("netops_disc_")), "{:?}", names(&b));
     assert_eq!((rows(&a, "netops_devices"), rows(&b, "netops_disc_devices")), (st["network"]["devices"].as_i64(), Some(64)));

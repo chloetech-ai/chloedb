@@ -162,6 +162,11 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, n INT, source KEYWORD, row_id KEYWORD, title TEXT,
   score FLOAT, tokens INT, used INT, decision KEYWORD, excerpt TEXT OPTIONS(indexed = false)
 )".into(), "What each agent was shown and what was left out: PACK's decision for every candidate row"),
+        ("netops_evidence", "CREATE TABLE IF NOT EXISTS netops_evidence (
+  id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, n INT, role KEYWORD, kind KEYWORD, claim TEXT,
+  refs KEYWORD[], ts TIMESTAMP, excerpt TEXT OPTIONS(indexed = false), sql_text TEXT OPTIONS(indexed = false),
+  params TEXT OPTIONS(indexed = false), absent BOOL
+)".into(), "Why the agent named its cause: what happened, each claim with the query that shows its rows, and what it ruled out"),
         ("netops_actions", "CREATE TABLE IF NOT EXISTS netops_actions (
   id KEYWORD PRIMARY KEY, run KEYWORD, incident KEYWORD, kind KEYWORD, title TEXT, detail TEXT,
   command TEXT OPTIONS(indexed = false), target KEYWORD, risk KEYWORD, status KEYWORD,

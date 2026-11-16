@@ -118,6 +118,21 @@ const CSS = `
 .no-conf .meter { height: 10px; }
 .no-cause { font-size: 14.5px; line-height: 1.5; }
 .no-why { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
+.no-story { margin: 4px 0 0; font-size: 13.5px; line-height: 1.6; }
+.no-proofs { margin: 4px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.no-proof { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 2px 10px; font-size: 13px; line-height: 1.45; }
+.no-proof > .k { grid-row: span 3; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 6px; height: fit-content; text-align: center; white-space: nowrap; }
+.no-proof.absent > .k { border-style: dashed; }
+.no-proof .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.no-proof .refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.no-quote { display: block; font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); border-radius: var(--r-sm); padding: 4px 8px; overflow-x: auto; white-space: pre; color: var(--text-2); }
+.no-ref { font-family: var(--mono); font-size: 11.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--accent); text-decoration: none; cursor: pointer; white-space: nowrap; }
+.no-ref:hover { background: var(--accent-soft); }
+.no-ref.plain { color: var(--text-2); cursor: default; }
+.no-ref.plain:hover { background: none; }
+.no-against { margin-top: 12px; }
+.no-against > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); font-weight: 600; }
+.no-against .no-proof { color: var(--text-2); }
 .no-key { margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm); border: 1px dashed var(--line-2); font-size: 12.5px; }
 .no-key.ok { border-color: var(--good); background: var(--good-soft); } .no-key.no { border-color: var(--crit); background: var(--crit-soft); }
 .no-budget { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--surface-3); }
@@ -568,8 +583,8 @@ function render(el, host) {
       const both = base === "/d";
       setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, both ? "Reading the network from what it reports" : "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
         h("div", { class: "small muted" }, st.error || (both
-          ? "The simulated network writes what a collector would hear from it (BGP-LS, LLDP, SNMP, BMP and the OLTs' ONT tables), and the app reads its sites, devices, links and roles back from those rows alone, then gives it a month of history. It has 47 tables of its own (netops_disc_*), beside the inventory's. The first time takes a minute or two."
-          : "Creating 47 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute.")));
+          ? "The simulated network writes what a collector would hear from it (BGP-LS, LLDP, SNMP, BMP and the OLTs' ONT tables), and the app reads its sites, devices, links and roles back from those rows alone, then gives it a month of history. It has 48 tables of its own (netops_disc_*), beside the inventory's. The first time takes a minute or two."
+          : "Creating 48 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute.")));
       if (!setup.isConnected) body.replaceChildren(setup);
       pre.clear();
       return;
@@ -948,6 +963,55 @@ function actionCard(app, a, after) {
     open ? h("div", { class: "row", style: { marginTop: "8px", gap: "8px" } }, yes, no, a.incident && after === undefined ? app.link(a.incident, "incidents", a.incident) : null) : null);
 }
 
+// ---- the evidence behind a cause
+
+/** The agent writes times as tokens ([[t:ISO]]); they are shown in the reader's own time zone. */
+const localTimes = (s) => String(s ?? "").replace(/\[\[t:([^\]]+)\]\]/g, (_, iso) => hhmm(T(iso)));
+
+const PROOF_KIND = { alert: "Alert", log: "Log", metric: "Reading", change: "Change", flow: "Flows", advisory: "Advisory", history: "History" };
+
+/** What a piece of evidence points at, as a link to it: `device:cr1-ams`, `link:…`, `change:…`, `incident:…`. */
+function refChip(app, ref) {
+  const { h } = app;
+  const [kind, ...rest] = String(ref).split(":"), id = rest.join(":");
+  const open = { device: () => deviceDrawer(app, id), link: () => linkDrawer(app, id), change: () => changeDrawer(app, id), incident: () => app.go("incidents", id), service: () => serviceDrawer(app, id) }[kind];
+  const label = kind === "site" ? id.toUpperCase() : id;
+  return open ? h("a", { class: "no-ref", title: `Open ${kind} ${id}`, onclick: (e) => { e.preventDefault(); open(); } }, label) : h("span", { class: "no-ref plain", title: kind }, label);
+}
+
+function proofItem(app, x) {
+  const { h } = app;
+  return h("li", { class: "no-proof" + (x.absent ? " absent" : "") },
+    h("span", { class: "k", title: x.absent ? "A check that came back empty" : null }, PROOF_KIND[x.kind] || x.kind),
+    h("span", {}, localTimes(x.claim)),
+    x.excerpt ? h("code", { class: "no-quote", title: x.excerpt }, x.excerpt) : null,
+    h("span", { class: "refs" }, (x.refs || []).slice(0, 8).map((r) => refChip(app, r)),
+      h("a", { class: "no-link small", href: "#", title: "Run its query again and see the rows", onclick: (e) => { e.preventDefault(); proofDrawer(app, x); } }, x.absent ? "the check, which finds nothing ›" : "the rows behind it ›")));
+}
+
+async function proofDrawer(app, x) {
+  const { h, C } = app;
+  const body = h("div", {}, h("div", { class: "muted" }, "Running its query again…"));
+  C.drawer({ title: localTimes(x.claim), sub: `${PROOF_KIND[x.kind] || x.kind} · the query the agent kept with this claim, run again now`, wide: true, body });
+  try {
+    const j = await app.call(`/v1/evidence/${encodeURIComponent(x.id)}`);
+    // The columns in the order the query names them; times in the reader's own zone.
+    const rows = j.rows || [], sel = (j.evidence.sql_text.match(/^SELECT\s+([\s\S]*?)\s+FROM\s/i) || [])[1] || "";
+    const named = sel.split(",").map((c) => c.trim().split(/\s+AS\s+/i).pop().trim());
+    const cols = rows.length ? [...named.filter((c) => c in rows[0]), ...Object.keys(rows[0]).filter((c) => !named.includes(c))] : [];
+    const stamp = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?Z$/;
+    const cell = (v) => h("span", { class: "mono small", style: { whiteSpace: "nowrap" } }, Array.isArray(v) ? v.join(", ") : v == null ? "" : typeof v === "string" && stamp.test(v) ? new Date(T(v)).toLocaleTimeString("en-GB", { hour12: false }) : typeof v === "number" && !Number.isInteger(v) ? String(Math.round(v * 1000) / 1000) : String(v));
+    const params = j.evidence.params && Object.keys(j.evidence.params).length ? `\n-- ${JSON.stringify(j.evidence.params)}` : "";
+    put(body,
+      x.excerpt ? [h("div", { class: "no-sec" }, "As the agent saw it"), h("code", { class: "no-quote" }, x.excerpt)] : null,
+      (x.refs || []).length ? [h("div", { class: "no-sec" }, "What it points at"), h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, x.refs.map((r) => refChip(app, r)))] : null,
+      h("div", { class: "no-sec" }, x.absent ? "The rows: none, which is what the claim says" : `The rows behind it · ${rows.length}`),
+      rows.length ? C.table(cols.map((c) => ({ key: c, label: c, sortable: false, render: (r) => cell(r[c]) })), { rows, compact: true })
+        : C.empty("db", "No rows", x.absent ? "The claim is that nothing of this kind happened in the window, and the query finds nothing." : "The rows may have aged out of the table's retention since."),
+      h("div", { class: "no-sec" }, "The query"), C.sqlBlock(j.evidence.sql_text + params));
+  } catch (e) { put(body, C.failure(e, "The evidence")); }
+}
+
 function runFacts(app, r) {
   return facts(app, [["queries", String(r.queries ?? Math.max(0, (r.steps || 1) - 1))], ["time in the database", app.C.fmt.ms(r.ms)], ["rows read", app.C.fmt.n(r.rows_read)], r.tokens ? ["tokens packed", app.C.fmt.n(r.tokens)] : null, r.graph_engine ? ["graph walked by", r.graph_engine === "sql" ? "SQL (REACHABLE, ppr)" : "the app"] : null]);
 }
@@ -1195,13 +1259,18 @@ function incidentRoom(body, app, path) {
         open ? h("button", { class: "btn sm", title: "Run the root-cause agent again on the alerts as they are now", onclick: () => act("investigate", "Investigated again") }, C.icon("agent"), "Investigate again") : null,
         i.postmortem ? h("button", { class: "btn sm", onclick: () => C.drawer({ title: "Postmortem draft", sub: `${i.id} · written by the agent from the timeline when the incident resolved`, wide: true, body: h("div", { style: { whiteSpace: "pre-wrap", lineHeight: 1.55 } }, i.postmortem), foot: h("button", { class: "btn", onclick: () => C.copy(i.postmortem, "Postmortem copied") }, C.icon("copy"), "Copy") }) }, C.icon("note"), "Postmortem") : null,
         h("button", { class: "btn sm " + (open ? "primary" : ""), onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), open ? "Close…" : "Record the runbook"))));
-    // Cause.
+    // Cause: what happened, why this is the cause (each claim with the rows behind it), and what it is not.
     const rc = j.runs.filter((r) => r.agent === "root-cause").pop();
     const last = j.steps[j.steps.length - 1];
     const because = last && last.tool === "reason" && last.detail.includes("Because:") ? last.detail.split("Because:")[1].split(";").map((x) => x.trim().replace(/\.$/, "")).filter(Boolean) : [];
-    putIf(causeEl, [i.root_cause, i.confidence, because, rc], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
+    const ev = j.evidence || [], story = ev.find((x) => x.role === "story");
+    const pro = ev.filter((x) => x.role === "for"), con = ev.filter((x) => x.role === "against");
+    putIf(causeEl, [i.root_cause, i.confidence, because, rc, ev], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
       h("div", { class: "no-conf", style: { marginTop: "10px" } }, h("div", { class: "meter" }, h("i", { style: { width: i.confidence * 100 + "%", background: i.confidence >= 0.8 ? "var(--good)" : i.confidence >= 0.5 ? "var(--warn)" : "var(--crit)" } })), h("b", {}, pct(i.confidence) + " confident")),
-      because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
+      story ? [h("div", { class: "no-sec" }, "What happened"), h("p", { class: "no-story" }, localTimes(story.claim))] : null,
+      pro.length ? [h("div", { class: "no-sec" }, "Why this is probably the cause"), h("ol", { class: "no-proofs" }, pro.map((x) => proofItem(app, x)))]
+        : because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
+      con.length ? h("details", { class: "no-against", open: true }, h("summary", {}, `What it is not: ${con.length} other ${con.length === 1 ? "explanation" : "explanations"} checked`), h("ul", { class: "no-proofs", style: { marginTop: "8px" } }, con.map((x) => proofItem(app, x)))) : null,
       rc ? runFacts(app, rc) : null)
       : C.empty("agent", "No cause named yet", "The agent runs when the incident opens and again as alerts arrive."));
     // The estate's outages are worked by its own agent, and the simulator keeps no answer key for them.

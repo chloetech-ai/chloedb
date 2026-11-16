@@ -119,6 +119,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/incidents/:id", get(incident))
         .route("/v1/incidents/:id/replay", get(replay))
         .route("/v1/incidents/:id/key", get(answer_key))
+        .route("/v1/evidence/:id", get(cause_evidence))
         .route("/v1/incidents/:id/:action", post(incident_act))
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/webhook", post(webhook))
@@ -470,13 +471,19 @@ async fn incident(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let runs = q.rows("Agent runs on it", "SELECT * FROM netops_agent_runs WHERE incident = :id ORDER BY started DESC LIMIT 20", json!({"id": id})).await?;
     let acts = q.rows("Actions proposed for it", "SELECT * FROM netops_actions WHERE incident = :id ORDER BY proposed LIMIT 50", json!({"id": id})).await?;
     let rca = runs.iter().find(|r| r.s("agent") == "root-cause" || r.s("agent") == "estate").map(|r| r.s("id"));
-    let (steps, receipts) = match &rca {
+    let (steps, receipts, mut evidence) = match &rca {
         Some(run) => (
             q.rows("What the root-cause agent did, step by step", "SELECT n, tool, title, detail, sql_text, row_count, ms FROM netops_agent_steps\nWHERE run = :run ORDER BY n LIMIT 100", json!({"run": run})).await?,
             q.rows("What it was shown, and what did not fit (the receipt)", "SELECT n, source, row_id, title, score, tokens, used, decision, excerpt FROM netops_receipts\nWHERE run = :run ORDER BY n LIMIT 400", json!({"run": run})).await?,
+            q.soft("Why it named that cause: what happened, the evidence, what it ruled out", "SELECT id, n, role, kind, claim, refs, ts, excerpt, sql_text, absent FROM netops_evidence\nWHERE run = :run ORDER BY n LIMIT 100", json!({"run": run})).await,
         ),
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
+    // The SQL as it runs on this network's tables.
+    for r in evidence.iter_mut() {
+        let sql = q.e.db.renamed(&r.s("sql_text")).into_owned();
+        r.insert("sql_text".into(), json!(sql));
+    }
     let runbook = if inc.s("runbook").is_empty() { Vec::new() } else { q.rows("The runbook", "SELECT id, title, body, category, uses, wins, owner FROM netops_runbooks WHERE id = :id", json!({"id": inc.s("runbook")})).await? };
     let semantic = q.e.st().semantic;
     let text = format!("{} {}", inc.s("title"), inc.s("summary"));
@@ -513,9 +520,25 @@ async fn incident(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let logs = if around.is_empty() { Vec::new() } else { q.rows("Warnings and errors around it", &format!("SELECT ts, device, severity, sev, template, message FROM netops_syslog\nWHERE ts >= :a AND ts <= :b AND sev <= 4 AND device IN ({})\nORDER BY ts LIMIT 150", quoted(&around)), json!({"a": iso(started - 5 * 60), "b": b})).await? };
     let change = if inc.s("change_id").is_empty() { Vec::new() } else { q.rows("The change it names", "SELECT id, title, description, kind, risk, status, executed, owner, approver, diff, rollback_plan, outcome FROM netops_changes WHERE id = :id", json!({"id": inc.s("change_id")})).await? };
     let judged = q.soft("Runbooks graded for it", "SELECT runbook, grade, judge, ts FROM netops_judgments WHERE incident = :id LIMIT 10", json!({"id": id})).await;
-    q.done(json!({"incident": inc, "alerts": alerts, "timeline": timeline, "runs": runs, "steps": steps, "receipts": receipts, "actions": acts, "runbook": runbook.first(), "similar": similar,
+    q.done(json!({"incident": inc, "alerts": alerts, "timeline": timeline, "runs": runs, "steps": steps, "receipts": receipts, "evidence": evidence, "actions": acts, "runbook": runbook.first(), "similar": similar,
         "blast": blast, "customers": customers, "link_series": link_series, "device_series": dev_series, "service_series": svc_series, "logs": logs, "change": change.first(), "around": around, "judgments": judged,
         "window": {"from": a, "to": b}}))
+}
+
+/// One piece of the root-cause agent's evidence, with its query run again:
+/// the rows behind the claim, as the tables hold them now.
+async fn cause_evidence(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let q = Q::new(&svc);
+    let rows = q.rows("The claim", "SELECT id, run, incident, n, role, kind, claim, refs, ts, excerpt, sql_text, params, absent FROM netops_evidence WHERE id = :id", json!({"id": id})).await?;
+    let Some(mut ev) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no evidence {id}"))) };
+    let sql = ev.s("sql_text");
+    // Only the agent's own reads are run again.
+    let read = sql.trim_start().to_ascii_uppercase().starts_with("SELECT") && !sql.contains(';');
+    let params: Value = serde_json::from_str(&ev.s("params")).unwrap_or_else(|_| json!({}));
+    let found = if read && !sql.is_empty() { q.soft("The rows behind it, read again", &sql, params.clone()).await } else { Vec::new() };
+    ev.insert("sql_text".into(), json!(q.e.db.renamed(&sql)));
+    ev.insert("params".into(), params);
+    q.done(json!({"evidence": ev, "rows": found}))
 }
 
 async fn replay(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
