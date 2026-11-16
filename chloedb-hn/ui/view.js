@@ -35,6 +35,10 @@ const CSS = `
 .hn-box input { width: 100%; font: 15px var(--sans); padding: 10px 14px 10px 38px; border-radius: 11px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); outline: none; box-shadow: var(--shadow-1); }
 .hn-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .hn-box > svg { position: absolute; left: 12px; top: 50%; width: 17px; height: 17px; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.hn-fast { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 600 13px var(--sans); padding: 9px 13px; border-radius: 11px; border: 1px solid var(--line-2); background: var(--surface); color: var(--muted); cursor: pointer; box-shadow: var(--shadow-1); }
+.hn-fast .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
+.hn-fast.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.hn-fast.on .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .hn-box .kbd { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; }
 .hn-sugg { position: absolute; left: 0; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line-2); border-radius: 11px; box-shadow: var(--shadow-2); padding: 6px; display: none; z-index: 9; }
 .hn-sugg.on { display: block; }
@@ -263,6 +267,67 @@ const CSS = `
 .hn-foot { font-size: 12px; color: var(--muted); text-align: center; padding: 26px 0 6px; border-top: 1px solid var(--line); margin-top: 30px; }
 .hn-foot a { color: var(--text-2); }
 .hn-err { padding: 12px 14px; border-radius: 9px; background: var(--crit-soft); color: var(--crit-ink); font-size: 13.5px; margin: 10px 0; }
+.hn-link-h { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin: 4px 0 2px; }
+.hn-link-h h1 { font: 650 21px/1.25 var(--sans); margin: 0; word-break: break-all; }
+.hn-link-h h1 a { color: var(--text); text-decoration: none; }
+.hn-link-box { display: flex; gap: 8px; margin: 6px 0 14px; }
+.hn-link-box input { flex: 1; min-width: 0; font: 14px var(--sans); padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.hn-link-box button { font: 600 13px var(--sans); padding: 9px 14px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+.hn-lg { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow-1); margin-bottom: 14px; overflow: hidden; }
+.hn-lg svg { display: block; width: 100%; height: auto; touch-action: none; }
+.hn-lg .e { stroke: var(--line-2); stroke-width: 1.2; }
+.hn-lg .e.cited { stroke: #5b8def; stroke-dasharray: 4 3; }
+.hn-lg .e.links { stroke: var(--muted); stroke-dasharray: 2 3; }
+.hn-lg .n { cursor: pointer; }
+.hn-lg .n circle { stroke: var(--surface); stroke-width: 2; }
+.hn-lg .n text { font: 11px var(--sans); fill: var(--text-2); pointer-events: none; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.hn-lg .n.link circle { fill: var(--accent); }
+.hn-lg .n.story circle { fill: #f08a24; }
+.hn-lg .n.cites circle { fill: #5b8def; }
+.hn-lg .n.linked circle { fill: #9aa3ad; }
+.hn-lg .n.user circle { fill: #2fa37a; }
+.hn-lg.focus .n, .hn-lg.focus .e { opacity: .15; transition: opacity .12s; }
+.hn-lg.focus .n.hot, .hn-lg.focus .e.hot { opacity: 1; }
+.hn-lg .tip { position: absolute; pointer-events: none; max-width: 300px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; font-size: 12.5px; line-height: 1.35; box-shadow: var(--shadow-2); display: none; z-index: 2; }
+.hn-lg .tip .m { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.hn-lg .legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.hn-lg .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.hn-roles { display: inline-flex; gap: 5px; margin-left: 6px; }
+.hn-roles span { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); }
+.hn-roles span.s { background: color-mix(in srgb, #f08a24 16%, transparent); }
+.hn-roles span.c { background: color-mix(in srgb, #5b8def 16%, transparent); }
+.hn-roles span.t { background: color-mix(in srgb, #2fa37a 16%, transparent); }
+.hn-cite { padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.45; }
+.hn-cite:first-child { border-top: 0; padding-top: 2px; }
+.hn-cite .on { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.hn-cite .txt { color: var(--text-2); overflow-wrap: anywhere; }
+.hn-xlink { font-size: 12px; color: var(--accent); text-decoration: none; }
+.hn-h3 { font: 650 14px var(--sans); margin: 4px 0 8px; color: var(--text-2); }
+.hn-dg { max-width: 860px; margin: 0 auto; }
+.hn-dg-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 6px 0 4px; }
+.hn-dg-top h1 { font: 700 26px/1.2 var(--sans); margin: 0; letter-spacing: -.01em; }
+.hn-dg-top .wk { color: var(--muted); font-size: 14px; }
+.hn-dg-top .nv { margin-left: auto; display: flex; gap: 8px; font-size: 13px; }
+.hn-dg-top .nv a { color: var(--accent); text-decoration: none; }
+.hn-dg-intro { font: 16.5px/1.6 var(--sans); color: var(--text); margin: 10px 0 14px; padding: 14px 18px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0; }
+.hn-dg-toc { columns: 2 320px; gap: 26px; margin: 8px 0 18px; padding: 0; list-style: none; counter-reset: toc; }
+.hn-dg-toc li { counter-increment: toc; break-inside: avoid; padding: 4px 0; font-size: 13.5px; }
+.hn-dg-toc li::before { content: counter(toc) ". "; color: var(--muted); }
+.hn-dg-toc a { color: var(--text); text-decoration: none; }
+.hn-dg-e { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--shadow-1); }
+.hn-dg-e .n { font: 700 12px var(--mono); color: var(--accent); }
+.hn-dg-e h2 { font: 650 19px/1.3 var(--sans); margin: 2px 0 4px; }
+.hn-dg-e h2 a { color: var(--text); text-decoration: none; }
+.hn-dg-e .img { float: right; width: 220px; max-height: 150px; object-fit: cover; border-radius: 9px; margin: 2px 0 10px 16px; border: 1px solid var(--line); }
+.hn-dg-e h5 { font: 650 11px var(--sans); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 0 3px; }
+.hn-dg-e p { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--text); }
+.hn-dg-e .terms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; clear: both; }
+.hn-dg-e .terms span { font-size: 12px; padding: 3px 8px; border-radius: 7px; background: var(--surface-2); color: var(--text-2); }
+.hn-dg-e .qs { clear: both; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.hn-dg-e .q { font-size: 13px; line-height: 1.45; color: var(--text-2); padding: 6px 0; }
+.hn-dg-e .q b { color: var(--text); font-weight: 600; }
+.hn-dg-e .wait { color: var(--muted); font-size: 13.5px; font-style: italic; }
+@media (max-width: 760px) { .hn-dg-e .img { float: none; width: 100%; max-height: 180px; margin: 6px 0; } }
 `;
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4h0A2.5 2.5 0 0 1 4 13.5z"/><circle cx="11.5" cy="9.3" r="2.8"/><path d="M13.6 11.4 15.6 13.4"/></svg>`;
@@ -374,8 +439,13 @@ function excerpt(text, re, n = 320) {
 
 function render(el, ctx) {
   if (!document.getElementById("hn-css")) document.head.append(h("style", { id: "hn-css" }, CSS));
+  // Fast mode: every search by BM25 alone, no candidates by meaning and
+  // no reranking, until switched off (kept in this browser).
+  let fastOn = false;
+  try { fastOn = localStorage.getItem("hn.fast") === "1"; } catch { /* storage off */ }
   const app = {
     ctx,
+    get fast() { return fastOn; },
     queries: [],
     took: 0,
     seq: 0,
@@ -400,12 +470,22 @@ function render(el, ctx) {
   // The bar: the box, with completions, and the pages.
   const input = h("input", { type: "search", placeholder: "Search stories and comments: try  rust by:steveklabnik  or  postgres vs mysql after:2020", autocomplete: "off", spellcheck: "false", "aria-label": "Search Hacker News" });
   const sugg = h("div", { class: "hn-sugg" });
+  const fastBtn = h("button", { class: "hn-fast", title: "Fast mode: rank by words alone (BM25), no meaning and no reranking. Applies to every search until switched off.", "aria-pressed": "false" });
+  const drawFast = () => { fill(fastBtn, h("span", { class: "dot" }), "Fast"); fastBtn.classList.toggle("on", fastOn); fastBtn.setAttribute("aria-pressed", String(fastOn)); };
+  drawFast();
+  fastBtn.addEventListener("click", () => {
+    fastOn = !fastOn;
+    try { localStorage.setItem("hn.fast", fastOn ? "1" : "0"); } catch { /* storage off */ }
+    drawFast();
+    if (current && (current[0] === "search" || (current[0] || "") === "")) show(current);
+  });
   const nav = h("nav", { class: "hn-nav" });
   const live = h("span", { class: "live" });
   const top = h("div", { class: "hn-top" },
     h("div", { class: "hn-bar" },
       h("a", { class: "hn-brand", href: app.href(""), html: `${ICON}<span>HN Search <small>on ChloeDB</small></span>` }),
-      h("div", { class: "hn-box" }, h("span", { html: SEARCH, style: { display: "contents" } }), input, h("span", { class: "kbd" }, "/"), sugg)),
+      h("div", { class: "hn-box" }, h("span", { html: SEARCH, style: { display: "contents" } }), input, h("span", { class: "kbd" }, "/"), sugg),
+      fastBtn),
     nav);
   const main = h("main", { class: "hn-main" });
   const sqlBtn = h("button", { onclick: () => sqlPanel.classList.toggle("on"), title: "The SQL behind this page" });
@@ -427,7 +507,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["front", "Front page"], ["trends", "Trends"], ["people", "People"], ["ask", "What HN thinks"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["front", "Front page"], ["trends", "Trends"], ["link", "Links"], ["digest", "Weekly"], ["people", "People"], ["ask", "What HN thinks"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && (page === "search" || page === "item"))) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -542,6 +622,8 @@ function render(el, ctx) {
       if (page === "trends") return await trends(main, app, (rest[0] || ""), alive);
       if (page === "ask") return await ask(main, app, (rest[0] || ""), alive);
       if (page === "front") return await front(main, app, alive);
+      if (page === "link") return await linkPage(main, app, (rest[0] || ""), alive);
+      if (page === "digest") return await digest(main, app, (rest[0] || ""), alive);
       if (page === "about") return about(main, app);
       fill(main, h("div", { class: "hn-empty" }, "No such page."));
     } catch (e) {
@@ -633,7 +715,8 @@ function storyItem(app, s, re, extra) {
         h("a", { href: app.href("user", s.author) }, s.author),
         h("span", { title: day(s.created) }, ago(s.created)),
         topics.map((t) => h("a", { class: "tp", href: app.href("search", `topic:${t.replace(/\s+/g, "-")}`) }, t)),
-        s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", title: s.url }, "link ↗") : null),
+        s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", title: s.url }, "link ↗") : null,
+        s.url ? h("a", { href: app.href("link", s.url), title: "Every discussion of this link, and who was there" }, "across HN") : null),
       s.body_hl ? h("div", { class: "hn-snip", html: s.body_hl }) : s.body ? h("div", { class: "hn-snip" }, marked(excerpt(s.body, re, 240), re)) : null,
       extra));
 }
@@ -646,7 +729,7 @@ function commentItem(app, c, re) {
     h("div", { class: "hn-meta" },
       h("a", { href: app.href("user", c.author), style: { color: "var(--text-2)", fontWeight: 600 } }, c.author),
       h("span", { title: day(c.created) }, ago(c.created)),
-      c.parent_author && c.depth > 0 ? h("span", {}, `↳ replying to ${c.parent_author}`) : h("span", {}, "top-level"),
+      c.parent_author && c.depth > 1 ? h("span", {}, `↳ replying to ${c.parent_author}`) : h("span", {}, "top-level"),
       c.thread > 0 ? h("span", {}, `${fmt(c.thread)} ${c.thread === 1 ? "reply" : "replies"} under it`) : null,
       h("a", { href: app.href("item", c.id), style: { color: "var(--accent)" } }, "in context →")),
     txt);
@@ -695,7 +778,9 @@ function slots(parts) {
 }
 
 async function results(main, app, q, opts, alive) {
-  const [only = "", sort = "", mode = ""] = opts;
+  const [only = "", sort = "", picked = ""] = opts;
+  // The bar's fast switch, unless this search picked its own way to match.
+  const mode = picked || (app.fast ? "fast" : "");
   const head = h("div", { class: "hn-head" });
   const body = h("div", {}, skel(5));
   const left = h("aside", { class: "hn-left" });
@@ -720,7 +805,7 @@ async function results(main, app, q, opts, alive) {
   for (const x of u.exclude || []) chips.push(h("span", { class: "hn-chip", style: { cursor: "default" } }, h("span", { class: "from" }, "without"), x));
   fill(und, chips.length ? h("span", {}, "Understood as") : null, chips);
 
-  const set = (o, s, m) => app.go("search", q, o ?? only, s ?? sort, m ?? mode);
+  const set = (o, s, m) => app.go("search", q, o ?? only, s ?? sort, m ?? picked);
   const seg = (items, cur, pick) => h("div", { class: "hn-seg" }, items.map(([v, t]) => h("button", { class: (cur || items[0][0]) === v ? "on" : "", onclick: () => pick(v) }, t)));
   const ts = j.total_stories || 0;
   let tc = j.total_comments || 0;
@@ -734,10 +819,16 @@ async function results(main, app, q, opts, alive) {
   if (j.did_you_mean) list.push(h("div", { class: "hn-dym" }, "Did you mean ", h("a", { href: app.href("search", j.did_you_mean) }, j.did_you_mean), "?"));
   if (j.answer) list.push(answerCard(app, j.answer, re, q, j));
   const countLine = h("span", { class: "t" });
-  const drawCount = () => fill(countLine, fast ? [h("b", {}, "fast"), " · BM25 of the title alone, no ranking, no count"] : [h("b", {}, fmt(ts)), " stories"], !fast && tc > 0 ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`);
+  const byMeaning = j.mode === "meaning";
+  const nStories = (j.stories || []).length;
+  const storyCount = () => fast ? [h("b", {}, "fast"), " · BM25 of the title alone, no ranking, no count"]
+    : byMeaning ? [h("b", {}, "by meaning"), " · the closest stories first, no count"]
+    : ts < 0 || (ts === 0 && nStories) ? [h("b", {}, `${fmt(nStories)}+`), " stories"]
+    : [h("b", {}, fmt(ts)), " stories"];
+  const drawCount = () => fill(countLine, storyCount(), !fast && tc > 0 ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`);
   drawCount();
   list.push(h("div", { class: "hn-head", style: { margin: "8px 0 2px" } }, countLine, h("span", { class: "sp" }),
-    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"], ["exact", "exact text"], ["fast", "fast"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
+    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"], ["exact", "exact text"], ["fast", "fast"]], j.mode, (v) => set(null, null, v === "hybrid" && !app.fast ? "" : v))));
   // The same link submitted again folds under its best discussion.
   const seen = new Map();
   const stories = [];
@@ -922,7 +1013,8 @@ async function thread(main, app, id, alive) {
       s ? h("div", { class: "hn-story" },
         h("h1", {}, s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title) : s.title, s.site ? h("a", { class: "site", href: app.href("search", `site:${s.site}`), style: { fontSize: "14px", color: "var(--muted)", fontWeight: 400, marginLeft: "8px" } }, s.site) : null),
         h("div", { class: "hn-meta" }, k && k !== "story" ? h("span", { class: `k ${k}` }, k) : null, h("span", {}, `${fmt(s.points)} points`), h("a", { href: app.href("user", s.author) }, s.author), h("span", { title: day(s.created) }, `${day(s.created)} · ${ago(s.created)}`), h("span", {}, `${fmt(s.comments)} comments`),
-          h("a", { href: `https://news.ycombinator.com/item?id=${s.id}`, target: "_blank", rel: "noopener noreferrer" }, "on HN ↗")),
+          h("a", { href: `https://news.ycombinator.com/item?id=${s.id}`, target: "_blank", rel: "noopener noreferrer" }, "on HN ↗"),
+          s.url ? h("a", { href: app.href("link", s.url) }, "this link across HN →") : null),
         s.body ? h("div", { class: "body" }, marked(s.body, re)) : null)
         : h("div", { class: "hn-err" }, "This story is older than the months loaded; its comments are below."),
       (j.comments || []).length ? tree : h("div", { class: "hn-empty" }, s?.comments ? "This discussion's comments are not loaded yet." : "No comments.")),
@@ -934,10 +1026,239 @@ async function thread(main, app, id, alive) {
     h("li", {}, h("a", { href: app.href("item", r.id) }, r.title), h("span", { class: "m" }, `${fmt(r.points)} points · ${fmt(r.comments)} comments · ${new Date(r.created).getFullYear()}`))))) : null;
   fill(side, 
     a.site?.site ? h("div", { class: "hn-card" }, h("h4", {}, a.site.site, h("a", { href: app.href("search", `site:${a.site.site}`) }, "All →")), h("div", { class: "hn-kpis", style: { marginTop: 0 } }, h("span", {}, h("b", {}, fmt(a.site.stories)), "stories"), h("span", {}, h("b", {}, compact(a.site.points)), "points"), a.site.first ? h("span", {}, "since ", h("b", {}, new Date(a.site.first).getFullYear())) : null)) : null,
-    mini(`The same link, discussed again`, a.same_link),
+    mini(`The same link, discussed again`, a.same_link, s?.url ? h("a", { href: app.href("link", s.url) }, "Map →") : null),
     mini("Discussions this one links to", a.links_to),
     mini("Discussions that link here", a.linked_from),
     mini("Nearest by meaning", a.similar));
+}
+
+// ---- a link across HN ------------------------------------------------------
+
+// A small force layout: springs on the edges, every node pushing every
+// other away, a pull to the middle; the link is pinned there.
+function layout(nodes, edges, W, H) {
+  const by = new Map(nodes.map((n) => [n.id, n]));
+  // Who and when on the left (submissions, people), where else on the
+  // right (discussions citing it, discussions linked to it).
+  const ring = { link: 0, story: 0.2, user: 0.4, cites: 0.4, linked: 0.46 };
+  const arc = { story: [110, 250], user: [100, 260], cites: [-75, 75], linked: [-50, 50] };
+  const side = { story: 0.36, user: 0.26, cites: 0.74, linked: 0.8 };
+  const count = {}, seen = {};
+  for (const n of nodes) count[n.kind] = (count[n.kind] || 0) + 1;
+  nodes.forEach((n) => {
+    const [a0, a1] = arc[n.kind] || [0, 360];
+    const i = (seen[n.kind] = (seen[n.kind] || 0) + 1);
+    const a = ((a0 + ((a1 - a0) * i) / ((count[n.kind] || 1) + 1)) * Math.PI) / 180;
+    const r = (ring[n.kind] ?? 0.4) * Math.min(W, H);
+    n.x = W / 2 + Math.cos(a) * r * 1.3; n.y = H / 2 + Math.sin(a) * r; n.vx = 0; n.vy = 0;
+  });
+  const E = edges.map((e) => [by.get(e.a), by.get(e.b), e]).filter(([a, b]) => a && b);
+  const len = { submitted: 70, "submitted it": 46, commented: 60, cited: 120, "cited it here": 48, "links to": 70 };
+  for (let it = 0; it < 360; it++) {
+    const k = 1 - it / 360;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
+        if (d2 > 90000) continue;
+        const f = 1400 / d2;
+        const d = Math.sqrt(d2);
+        dx /= d; dy /= d;
+        a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+      }
+    }
+    for (const [a, b, e] of E) {
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      const f = (d - (len[e.kind] || 70)) * 0.03;
+      a.vx += (dx / d) * f; a.vy += (dy / d) * f; b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
+    }
+    for (const n of nodes) {
+      n.vx += ((side[n.kind] ?? 0.5) * W - n.x) * 0.006; n.vy += (H / 2 - n.y) * 0.006;
+      if (n.kind === "link") { n.x = W / 2; n.y = H / 2; n.vx = n.vy = 0; continue; }
+      const cap = 18 * k + 1;
+      n.x += Math.max(-cap, Math.min(cap, n.vx)); n.y += Math.max(-cap, Math.min(cap, n.vy));
+      n.vx *= 0.6; n.vy *= 0.6;
+      n.x = Math.max(24, Math.min(W - 24, n.x)); n.y = Math.max(20, Math.min(H - 20, n.y));
+    }
+  }
+  return E;
+}
+
+function linkGraph(app, g) {
+  const nodes = (g?.nodes || []).map((n) => ({ ...n }));
+  if (nodes.length < 2) return null;
+  const W = 1000, H = Math.min(560, 300 + nodes.length * 4);
+  const E = layout(nodes, g.edges || [], W, H);
+  const tip = h("div", { class: "tip" });
+  const wrap = h("div", { class: "hn-lg" });
+  const radius = (n) => n.kind === "link" ? 15 : 5 + Math.max(0, Math.min(1, n.w || 0)) * 9;
+  const edgeEls = E.map(([a, b, e]) => ({ a, b, el: h("line", { class: `e ${e.kind === "cited" ? "cited" : e.kind === "links to" ? "links" : ""}`, x1: a.x.toFixed(1), y1: a.y.toFixed(1), x2: b.x.toFixed(1), y2: b.y.toFixed(1) }) }));
+  const near = new Map(nodes.map((n) => [n.id, new Set([n.id])]));
+  for (const { a, b } of edgeEls) { near.get(a.id).add(b.id); near.get(b.id).add(a.id); }
+  const said = (n) => {
+    if (n.kind === "link") return [n.label, "the link"];
+    if (n.kind === "story") return [n.title, `submitted ${n.label}`];
+    if (n.kind === "cites") return [n.title, "a discussion where it was cited"];
+    if (n.kind === "linked") return [n.title, "a discussion linked to its discussions"];
+    const r = n.roles || {};
+    return [n.user, [r.submitted ? `submitted it ${r.submitted === 1 ? "once" : `${r.submitted} times`}` : "", r.commented ? `${fmt(r.commented)} comments in its discussions` : "", r.cited ? `cited it ${r.cited === 1 ? "once" : `${r.cited} times`} elsewhere` : ""].filter(Boolean).join(" · ")];
+  };
+  const go = (n) => n.kind === "user" ? app.go("user", n.user) : n.item ? app.go("item", n.item) : null;
+  const nodeEls = nodes.map((n) => {
+    const r = radius(n);
+    const show = n.kind === "link" || n.kind === "cites" || (n.kind === "story" && (n.w || 0) > 0.35) || (n.kind === "user" && ((n.roles?.submitted || 0) + (n.roles?.cited || 0)) > 0);
+    const lbl = n.kind === "link" ? (n.label.length > 42 ? n.label.slice(0, 41) + "…" : n.label) : n.kind === "story" ? n.label : n.kind === "user" ? n.user : n.label;
+    const el = h("g", { class: `n ${n.kind}`, transform: `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})` },
+      h("circle", { r: r.toFixed(1) }),
+      show ? h("text", { x: (r + 4).toFixed(1), y: "4" }, lbl) : null);
+    el.addEventListener("mouseenter", (ev) => {
+      const set = near.get(n.id);
+      wrap.classList.add("focus");
+      nodeEls.forEach((x) => x.el.classList.toggle("hot", set.has(x.n.id)));
+      edgeEls.forEach((x) => x.el.classList.toggle("hot", x.a.id === n.id || x.b.id === n.id));
+      const [t, m] = said(n);
+      fill(tip, h("b", {}, t), h("span", { class: "m" }, m));
+      const box = wrap.getBoundingClientRect();
+      const sx = box.width / W;
+      tip.style.display = "block";
+      tip.style.left = `${Math.min(box.width - 300, Math.max(6, n.x * sx + 12))}px`;
+      tip.style.top = `${Math.max(6, n.y * sx - 10)}px`;
+    });
+    el.addEventListener("mouseleave", () => { wrap.classList.remove("focus"); tip.style.display = "none"; });
+    el.addEventListener("click", () => go(n));
+    return { n, el };
+  });
+  const svg = h("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "The link, its submissions, the discussions citing it and the people around it" },
+    h("g", {}, edgeEls.map((x) => x.el)), h("g", {}, nodeEls.map((x) => x.el)));
+  const dot = (c, t) => h("span", {}, h("i", { style: { background: c } }), t);
+  return add(wrap, [svg, tip, h("div", { class: "legend" },
+    dot("var(--accent)", "the link"), dot("#f08a24", "a submission (size: points)"), dot("#2fa37a", "a person"), dot("#5b8def", "cited in another discussion"), dot("#9aa3ad", "a discussion linked to it"),
+    h("span", { style: { marginLeft: "auto" } }, "hover to see, click to open"))]);
+}
+
+function roles(p) {
+  return h("span", { class: "hn-roles" },
+    p.submitted ? h("span", { class: "s" }, p.submitted === 1 ? "submitted" : `submitted ×${p.submitted}`) : null,
+    p.cited ? h("span", { class: "c" }, p.cited === 1 ? "cited it" : `cited ×${p.cited}`) : null,
+    p.commented ? h("span", { class: "t" }, `${fmt(p.commented)} comments`) : null);
+}
+
+async function linkPage(main, app, u, alive) {
+  const box = h("input", { type: "url", placeholder: "Paste a link (or a site, like paulgraham.com) to see it across HN", value: u, "aria-label": "A link" });
+  const go = () => { const v = box.value.trim(); if (v) app.go("link", v); };
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const head = h("div", { class: "hn-link-box" }, box, h("button", { onclick: go }, "Explore"));
+  fill(main, head, h("div", { class: "hn-grid two" }, h("section", {}, skel(5)), h("aside", {})));
+  const j = await app.api(`/v1/link?u=${encodeURIComponent(u)}`);
+  if (!alive()) return;
+  if (j.error) return fill(main, head, h("div", { class: "hn-err" }, j.error));
+  const mini = (title, rows, li) => rows?.length ? h("div", { class: "hn-card" }, h("h4", {}, title), h("ul", { class: "hn-mini" }, rows.map(li))) : null;
+  if (j.kind === "start") {
+    return fill(main, head, h("div", { class: "hn-card" }, h("h4", {}, "The links HN discussed the most"),
+      h("ul", { class: "hn-mini" }, (j.links || []).map((r) => h("li", {}, h("a", { href: app.href("link", r.url || r.curl) }, r.title), h("span", { class: "m" }, `${r.curl} · ${fmt(r.comments)} comments · ${fmt(r.points)} points · ${new Date(r.created).getFullYear()}`))))));
+  }
+  if (j.kind === "site") {
+    return fill(main, head,
+      h("div", { class: "hn-link-h" }, h("h1", {}, j.site), h("a", { class: "hn-xlink", href: app.href("search", `site:${j.site}`) }, "search the site →")),
+      h("div", { class: "hn-kpis" }, h("span", {}, h("b", {}, fmt(j.totals?.stories)), "stories")),
+      h("div", { class: "hn-grid two" },
+        h("section", {}, h("h3", { class: "hn-h3" }, "Its most discussed links"), h("ul", { class: "hn-res" }, (j.top || []).map((s) => storyItem(app, s, null)))),
+        h("aside", { class: "hn-right", style: { display: "block" } },
+          mini("Submitted again and again", j.again, (r) => h("li", {}, h("a", { href: app.href("link", r.curl) }, r.curl), h("span", { class: "m" }, `${r.n} submissions`))),
+          mini("Who submits it", j.people, (r) => h("li", {}, h("a", { href: app.href("user", r.author) }, r.author), h("span", { class: "m" }, `${fmt(r.n)} stories`))))));
+  }
+  const t = j.totals || {};
+  const first = j.first ? new Date(j.first).getFullYear() : null;
+  const cites = (j.cited || []).map((c) => h("div", { class: "hn-cite" },
+    h("div", { class: "on" }, h("a", { href: app.href("user", c.author) }, c.author), " on ", h("a", { href: app.href("item", c.story) }, c.story_title || `story ${c.story}`), " · ", h("span", { title: day(c.created) }, ago(c.created)), " · ", h("a", { href: app.href("item", c.id) }, "in context →")),
+    h("div", { class: "txt" }, c.text)));
+  fill(main, head,
+    h("div", { class: "hn-link-h" }, h("h1", {}, h("a", { href: j.url, target: "_blank", rel: "noopener noreferrer" }, j.curl, " ↗")), j.site ? h("a", { class: "hn-xlink", href: app.href("link", j.site) }, `all of ${j.site} →`) : null),
+    h("div", { class: "hn-kpis" },
+      h("span", {}, h("b", {}, fmt(t.submissions)), t.submissions === 1 ? "submission" : "submissions"),
+      h("span", {}, h("b", {}, compact(t.points)), "points"),
+      h("span", {}, h("b", {}, compact(t.comments)), "comments"),
+      h("span", {}, h("b", {}, fmt(t.cited)), "comments mention it"),
+      first ? h("span", {}, "first seen ", h("b", {}, first)) : null),
+    t.submissions || t.cited ? linkGraph(app, j.graph) : h("div", { class: "hn-empty" }, "HN has no submission of this link, and no comment that cites it."),
+    h("div", { class: "hn-grid two" },
+      h("section", {},
+        (j.submissions || []).length ? [h("h3", { class: "hn-h3" }, "Every time it was submitted"), h("ul", { class: "hn-res" }, j.submissions.slice().reverse().map((s) => storyItem(app, s, null)))] : null,
+        cites.length ? h("div", { class: "hn-card" }, h("h4", {}, `Cited in other discussions${t.cited > cites.length ? ` · the newest ${cites.length} of ${fmt(t.cited)}` : ""}`), cites) : null),
+      h("aside", { class: "hn-right", style: { display: "block" } },
+        mini("People around it", j.people, (p) => h("li", {}, h("a", { href: app.href("user", p.author) }, p.author), roles(p))),
+        mini("Links discussed where it was cited", j.related, (r) => h("li", {}, h("a", { href: app.href("link", r.curl) }, r.title || r.curl), h("span", { class: "m" }, `${r.curl} · cited there ${r.cites === 1 ? "once" : `${r.cites} times`}`))),
+        mini("Discussions linked to its discussions", j.linked, (r) => h("li", {}, h("a", { href: app.href("item", r.id) }, r.title), h("span", { class: "m" }, `${fmt(r.points)} points · ${fmt(r.comments)} comments · ${new Date(r.created).getFullYear()}`))))));
+}
+
+// ---- the weekly digest -----------------------------------------------------
+
+async function digest(main, app, week, alive) {
+  fill(main, h("div", { class: "hn-dg" }, skel(6)));
+  const j = await app.api(`/v1/digest${week ? `?week=${encodeURIComponent(week)}` : ""}`);
+  if (!alive()) return;
+  const t = j.totals || {};
+  const intro = h("div", { class: "hn-dg-intro" }, j.intro?.intro || h("span", { class: "wait" }, "The opening is written once the entries are."));
+  const boxes = new Map();
+  const body = (e, w) => {
+    const s = e.story;
+    const box = boxes.get(s.id);
+    const parts = w ? [
+      w.brief ? [h("h5", {}, "In brief"), h("p", {}, w.brief)] : null,
+      w.why ? [h("h5", {}, "Why it mattered"), h("p", {}, w.why)] : null,
+      w.take ? [h("h5", {}, "What HN made of it"), h("p", {}, w.take)] : null,
+      Array.isArray(w.terms) && w.terms.length ? h("div", { class: "terms" }, w.terms.slice(0, 3).map((x) => h("span", {}, x))) : null,
+    ] : h("p", { class: "wait" }, "Reading the article and the discussion…");
+    fill(box, parts);
+  };
+  const entries = (j.entries || []).map((e, i) => {
+    const s = e.story;
+    const box = h("div", {});
+    boxes.set(s.id, box);
+    const img = e.image ? h("img", { class: "img", src: e.image, alt: "", loading: "lazy", referrerpolicy: "no-referrer", onerror: (ev) => ev.target.remove() }) : null;
+    const el = h("article", { class: "hn-dg-e", id: `e${s.id}` },
+      img,
+      h("div", { class: "n" }, String(i + 1).padStart(2, "0")),
+      h("h2", {}, s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title, " ↗") : h("a", { href: app.href("item", s.id) }, s.title)),
+      h("div", { class: "hn-meta" }, s.site ? h("a", { href: app.href("link", s.site) }, s.site) : null, h("span", {}, `${fmt(s.points)} points`), h("a", { href: app.href("item", s.id) }, `${fmt(s.comments)} comments`), h("a", { href: app.href("user", s.author) }, s.author), s.url ? h("a", { href: app.href("link", s.url) }, "across HN") : null),
+      box,
+      (e.quotes || []).length ? h("div", { class: "qs" }, h("h5", {}, "In the thread"), e.quotes.map((q) => h("div", { class: "q" }, h("b", {}, h("a", { href: app.href("user", q.author), style: { color: "inherit" } }, q.author)), q.replies ? ` (${fmt(q.replies)} replies) ` : " ", q.text, " ", h("a", { href: app.href("item", q.id) }, "→")))) : null);
+    body(e, e.written);
+    return el;
+  });
+  fill(main, h("div", { class: "hn-dg" },
+    h("div", { class: "hn-dg-top" }, h("h1", {}, "HN Weekly"), h("span", { class: "wk" }, `${j.label} · ${j.issue}${j.complete ? "" : " · so far"}`),
+      h("span", { class: "nv" }, h("a", { href: app.href("digest", j.prev) }, "← earlier"), j.next ? h("a", { href: app.href("digest", j.next) }, "later →") : null)),
+    h("div", { class: "hn-kpis" }, h("span", {}, h("b", {}, fmt(t.stories)), "stories"), h("span", {}, h("b", {}, compact(t.points)), "points"), h("span", {}, h("b", {}, compact(t.comments)), "comments"),
+      (j.sites || []).slice(0, 4).map((x) => h("span", {}, h("a", { href: app.href("link", x.site) }, x.site)))),
+    intro,
+    h("ol", { class: "hn-dg-toc" }, (j.entries || []).map((e) => h("li", {}, h("a", { href: `#e${e.story.id}`, onclick: (ev) => { ev.preventDefault(); document.getElementById(`e${e.story.id}`)?.scrollIntoView({ behavior: "smooth" }); } }, e.story.title)))),
+    entries));
+  // Entries not written yet are written now, one at a time, then the opening.
+  const todo = (j.entries || []).filter((e) => !e.written);
+  for (const e of todo) {
+    if (!alive()) return;
+    try {
+      const r = await app.api(`/v1/digest/write?week=${j.week}&id=${e.story.id}`);
+      if (!alive()) return;
+      body(e, r.written);
+      if (r.image && !e.image) boxes.get(e.story.id)?.parentElement?.prepend(h("img", { class: "img", src: r.image, alt: "", loading: "lazy", referrerpolicy: "no-referrer", onerror: (ev) => ev.target.remove() }));
+    } catch (err) {
+      const again = h("a", { href: "#", onclick: async (ev) => {
+        ev.preventDefault();
+        fill(boxes.get(e.story.id), h("p", { class: "wait" }, "Reading the article and the discussion…"));
+        try { body(e, (await app.api(`/v1/digest/write?week=${j.week}&id=${e.story.id}`)).written); }
+        catch (x) { fill(boxes.get(e.story.id), h("p", { class: "wait" }, String(x.message || x))); }
+      } }, "try again");
+      fill(boxes.get(e.story.id), h("p", { class: "wait" }, String(err.message || err), " · ", again));
+    }
+  }
+  if (!j.intro && (j.entries || []).length) {
+    try {
+      const r = await app.api(`/v1/digest/write?week=${j.week}&id=intro`);
+      if (alive() && r.written?.intro) fill(intro, r.written.intro);
+    } catch (err) { /* the opening waits for the next visit */ }
+  }
 }
 
 // ---- a person --------------------------------------------------------------

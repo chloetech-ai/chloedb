@@ -252,16 +252,20 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
         let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories {} ORDER BY similarity(emb, :v) DESC LIMIT {limit} OFFSET {offset}", where_(""));
         let rows = c.rows("stories by meaning", &sql, Value::Object(params.clone())).await?;
-        return Ok((rows, 0));
+        // Every story is some distance away: no count, only whether a next page exists.
+        let n = rows.len() as i64;
+        return Ok((rows, if n < limit as i64 { offset as i64 + n } else { -1 }));
     }
     // Phase 1, words: the exact top rows by BM25 times popularity.
-    let cand = (offset + limit).max(150) * 2;
+    // Enough for the first pages after tiers reorder them; each candidate
+    // costs the rerank five scores, so the lists are kept short.
+    let cand = (offset + limit).max(60) * 2;
     let lex = format!(
         "SELECT id FROM hn_stories {} ORDER BY bm25(title, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT {cand}",
         where_("")
     );
     let body_sql = format!(
-        "SELECT id FROM hn_stories {} ORDER BY bm25(body, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT 60",
+        "SELECT id FROM hn_stories {} ORDER BY bm25(body, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT 30",
         where_("")
     );
     // Code as written (`std::move`, `node.js`): the substring index finds
@@ -269,12 +273,12 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     let mut code_sql = Vec::new();
     for (i, x) in p.code.iter().take(2).enumerate() {
         params.insert(format!("cx{i}"), json!(like(x)));
-        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("title ILIKE :cx{i}")))));
+        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 50", where_(&format!("title ILIKE :cx{i}")))));
     }
     if mode == "hybrid" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
     }
-    let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 80", where_(""));
+    let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 40", where_(""));
     // Every candidate list and the count at once: one round trip's time, not five.
     let pv = Value::Object(params.clone());
     let count_where = where_(matched);
@@ -304,8 +308,8 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         "(coalesce(bm25(title, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.8 * coalesce(bm25(title, :phrase), 0) + 0.2 * coalesce(bm25(body, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.3 * coalesce(bm25(urlwords, :q), 0){sim}) * pow(points + 1, 0.35) * (0.8 + 0.2 * decay(created, now(), 157680000))"
     );
     // The top candidates by score are re-ordered by tier; fetching every
-    // candidate's row costs more than the order gains past the first 150.
-    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {}", list.join(", "), (offset + limit).max(150).min(ids.len()));
+    // candidate's row costs more than the order gains past the first 80.
+    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {}", list.join(", "), (offset + limit).max(80).min(ids.len()));
     let mut rows = c.rows("stories, ranked", &sql, Value::Object(params.clone())).await?;
     // Then tiers, as people expect of a search box: a code word as typed
     // in the title, then every word of a short query in the title (as

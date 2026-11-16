@@ -39,9 +39,14 @@ pub struct Service {
     pub public: bool,
     /// The model behind "What HN thinks", called through the server's llm().
     pub model: String,
+    /// The model that writes the weekly digest's entries.
+    pub digest_model: String,
     /// Questions answered a day (new answers; kept ones are free).
     pub ask_per_day: usize,
     pub asks: Mutex<(i64, usize)>,
+    /// New digest entries a day, and today's count (the day, the count).
+    pub digest_per_day: usize,
+    pub digests: Mutex<(i64, usize)>,
     /// Requests a minute from one address, in public.
     pub per_minute: usize,
     pub seen: Mutex<HashMap<String, (i64, usize)>>,
@@ -95,6 +100,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/front", get(front))
         .route("/v1/trending", get(trending_route))
         .route("/v1/spikes", get(spikes_route))
+        .route("/v1/link", get(link_route))
+        .route("/v1/digest", get(digest_route))
+        .route("/v1/digest/write", get(digest_write_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         // Up, for a probe: no token, nothing read.
         .route("/healthz", get(|| async { "ok" }))
@@ -538,6 +546,71 @@ async fn spikes_route(State(svc): State<Shared>, Query(a): Query<TrendingParams>
     let trace = Trace::new();
     let c = Ctx { db: &svc.db, trace: &trace };
     let v = crate::trending::history(&c, a.year).await;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct DigestParams {
+    #[serde(default)]
+    week: Option<String>,
+    #[serde(default)]
+    id: String,
+}
+
+/// A week's issue of the digest: its picks, numbers and kept prose.
+async fn digest_route(State(svc): State<Shared>, Query(a): Query<DigestParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let v = crate::digest::issue(&c, a.week.as_deref()).await;
+    done(&trace, v, t0)
+}
+
+/// Writes one entry of an issue (or its opening, `id=intro`) through
+/// `llm()`, once: a kept entry comes back as it is, and a new one counts
+/// against the day's allowance of new answers.
+async fn digest_write_route(State(svc): State<Shared>, Query(a): Query<DigestParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let week = a.week.clone().unwrap_or_default();
+    let id = a.id.trim();
+    if id != "intro" && id.parse::<u64>().is_err() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "id is a story's id, or intro".into()));
+    }
+    let from = crate::digest::monday(Some(&week));
+    let k = format!("digest:{}:{id}", from.format("%Y-%m-%d"));
+    let kept = c.soft("a kept entry?", "SELECT id FROM hn_answers WHERE id = :k", json!({"k": k})).await;
+    if kept.is_empty() {
+        let day = crate::ingest::now() / 86_400;
+        let mut n = svc.digests.lock().unwrap_or_else(|e| e.into_inner());
+        if n.0 != day {
+            *n = (day, 0);
+        }
+        if n.1 >= svc.digest_per_day {
+            return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, format!("today's {} new digest entries are written: this one is written tomorrow", svc.digest_per_day)));
+        }
+        n.1 += 1;
+    }
+    let v = crate::digest::write(&c, &week, id, &svc.digest_model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct LinkParams {
+    #[serde(default)]
+    u: String,
+}
+
+/// One link across HN: its submissions, the comments elsewhere that cite
+/// it, the people around it and the graph of them; a site's most
+/// discussed links; with no link, the most discussed links of all.
+async fn link_route(State(svc): State<Shared>, Query(a): Query<LinkParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let u = a.u.trim();
+    let v = if u.is_empty() { crate::link::famous(&c).await } else { crate::link::link(&c, u).await };
     done(&trace, v, t0)
 }
 

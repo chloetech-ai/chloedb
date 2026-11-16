@@ -99,6 +99,12 @@ struct ServeArgs {
     /// The model behind "What HN thinks", called through the server's llm() (it holds the provider's key).
     #[arg(long, env = "CHLOEDB_HN_ANSWER_MODEL", default_value = "anthropic/claude-haiku-5-5")]
     answer_model: String,
+    /// The model that writes the weekly digest (each story once, from the article and its thread).
+    #[arg(long, env = "CHLOEDB_HN_DIGEST_MODEL", default_value = "anthropic/claude-sonnet-5-5")]
+    digest_model: String,
+    /// New digest entries a day (each story is written once and kept).
+    #[arg(long, default_value_t = 60)]
+    digest_per_day: usize,
     /// New answers a day (answers asked before are kept and cost nothing).
     #[arg(long, default_value_t = 300)]
     ask_per_day: usize,
@@ -303,8 +309,11 @@ async fn serve(a: ServeArgs) {
         token: token.clone(),
         public: a.public,
         model: a.answer_model.clone(),
+        digest_model: a.digest_model.clone(),
         ask_per_day: a.ask_per_day,
         asks: Mutex::new((0, 0)),
+        digest_per_day: a.digest_per_day,
+        digests: Mutex::new((0, 0)),
         per_minute: a.per_minute.max(10),
         seen: Mutex::new(Default::default()),
         started: Instant::now(),
